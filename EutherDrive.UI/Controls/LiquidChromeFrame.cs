@@ -237,6 +237,7 @@ public class LiquidChromeFrame : Decorator
         DrawEnvironmentField(context, bounds, coolSpec, intensity, warp);
         DrawReflectionTiles(context, bounds, coolSpec, intensity, warp);
         DrawFresnel(context, bounds, coolSpec, intensity);
+        DrawArmorSeams(context, bounds, coolSpec, intensity);
 
         double width = bounds.Width;
         double height = bounds.Height;
@@ -280,7 +281,6 @@ public class LiquidChromeFrame : Decorator
             context.DrawGeometry(coreBrush, null, coreGeometry);
         }
 
-        DrawMicroSpecular(context, bounds, coolSpec, intensity);
         DrawReflectionSweep(context, bounds, coolSpec, intensity, warp);
         DrawHotSpots(context, bounds, coolSpec, intensity, warp);
     }
@@ -475,22 +475,29 @@ public class LiquidChromeFrame : Decorator
         context.DrawRectangle(bottomBrush, null, new Rect(bounds.X, bounds.Bottom - edgeHeight, bounds.Width, edgeHeight));
     }
 
-    private void DrawMicroSpecular(DrawingContext context, Rect bounds, Color coolSpec, double intensity)
+    private void DrawArmorSeams(DrawingContext context, Rect bounds, Color coolSpec, double intensity)
     {
-        int lineCount = Math.Clamp((int)(bounds.Width / 18), 18, 90);
-        double width = bounds.Width;
-        double height = bounds.Height;
+        Color seamHighlight = WithOpacity(Blend(coolSpec, Colors.White, 0.48), 0.16 + (intensity * 0.04));
+        Color seamShadow = WithOpacity(Blend(ShadowColor, Colors.Black, 0.7), 0.28);
 
-        for (int i = 0; i < lineCount; i++)
-        {
-            double t = i / (double)Math.Max(1, lineCount - 1);
-            double x = width * t;
-            double y0 = (height * 0.06) + (Math.Sin((t * Math.PI * 8.0) + 0.5 + (_chromePhase * 0.6)) * height * 0.04);
-            double y1 = height - (height * 0.1) + (Math.Cos((t * Math.PI * 7.0) + 0.3 - (_chromePhase * 0.45)) * height * 0.05);
-            byte alpha = (byte)Math.Clamp((int)Math.Round((10 + (Math.Sin(t * Math.PI * 5.0) * 18) + (intensity * 22))), 4, 54);
-            var pen = new Pen(new SolidColorBrush(WithAlpha(coolSpec, alpha)), Math.Max(0.6, width / 900));
-            context.DrawLine(pen, new Point(x, y0), new Point(x + (width * 0.045), y1));
-        }
+        double topInset = Math.Max(18, bounds.Height * 0.13);
+        double sideInset = Math.Max(18, bounds.Width * 0.085);
+        double lowerInset = Math.Max(20, bounds.Height * 0.18);
+        double diagonalDepth = Math.Max(16, bounds.Width * 0.06);
+
+        var shadowPen = new Pen(new SolidColorBrush(seamShadow), 1.2);
+        var highlightPen = new Pen(new SolidColorBrush(seamHighlight), 0.9);
+
+        Point leftA = new(bounds.X + sideInset, bounds.Y + topInset);
+        Point leftB = new(bounds.X + sideInset + diagonalDepth, bounds.Bottom - lowerInset);
+        Point rightA = new(bounds.Right - sideInset, bounds.Y + topInset);
+        Point rightB = new(bounds.Right - sideInset - diagonalDepth, bounds.Bottom - lowerInset);
+        Point midLeft = new(bounds.X + bounds.Width * 0.32, bounds.Y + bounds.Height * 0.16);
+        Point midRight = new(bounds.X + bounds.Width * 0.68, bounds.Y + bounds.Height * 0.16);
+
+        DrawInsetLine(context, shadowPen, highlightPen, leftA, leftB, 1.2);
+        DrawInsetLine(context, shadowPen, highlightPen, rightA, rightB, 1.2);
+        DrawInsetLine(context, shadowPen, highlightPen, midLeft, midRight, 1.0);
     }
 
     private void DrawReflectionSweep(DrawingContext context, Rect bounds, Color coolSpec, double intensity, double warp)
@@ -560,6 +567,15 @@ public class LiquidChromeFrame : Decorator
                 null,
                 new Rect(centerX - radiusX, centerY - radiusY, radiusX * 2.0, radiusY * 2.0));
         }
+    }
+
+    private static void DrawInsetLine(DrawingContext context, Pen shadowPen, Pen highlightPen, Point a, Point b, double offset)
+    {
+        context.DrawLine(shadowPen, a, b);
+        context.DrawLine(
+            highlightPen,
+            new Point(a.X, a.Y - offset),
+            new Point(b.X, b.Y - offset));
     }
 
     private Color SampleEnvironmentColor(double u, double v, Color coolSpec, double intensity)

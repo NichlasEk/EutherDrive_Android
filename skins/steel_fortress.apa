@@ -1,44 +1,44 @@
 # Steel Fortress Skin
-# Kall borstad metall med nitar och vitglans
+# Mork gunmetal med UE3-kansla, harda paneler och kalla highlights
 
 [skin]
 name = "Steel Fortress"
 author = "EutherDrive"
 version = "1.0"
-description = "Industriellt stålskin med kall metallglans, nitar och hårda maskinlinjer."
+description = "Morkt gunmetal-skin med kalla highlights, armor-plating och tung UE3-energi."
 
 [colors]
-background = "#0A0D12"
-background_soft = "#111720"
-background_alt = "#070A0F"
+background = "#06080B"
+background_soft = "#0C1016"
+background_alt = "#05070A"
 
-panel = "#1A212A"
-panel_raised = "#222B35"
-panel_glass = "#D41E2832"
-sub_panel = "#CC18212A"
-option_card = "#D8202B36"
+panel = "#1A2027"
+panel_raised = "#242D37"
+panel_glass = "#D4192028"
+sub_panel = "#CC121920"
+option_card = "#D8162029"
 
-stroke = "#5B6A7A"
-stroke_bright = "#B7C6D4"
+stroke = "#465362"
+stroke_bright = "#8FA9C3"
 
-text = "#18232E"
-text_muted = "#4A5867"
+text = "#E2C66B"
+text_muted = "#A58F4B"
 
-accent = "#294A66"
+accent = "#4E83B8"
 accent_warm = "#E0B15E"
 accent_hot = "#D96E6E"
 
 [gradient.hero]
 angle = 135
-stop0 = "#394653,0.0"
-stop1 = "#1A212A,0.45"
-stop2 = "#0E1218,1.0"
+stop0 = "#2A3340,0.0"
+stop1 = "#141A21,0.45"
+stop2 = "#090C10,1.0"
 
 [gradient.screen_glow]
 angle = 30
-stop0 = "#33E8F3FF,0.0"
-stop1 = "#11D6E1EF,0.6"
-stop2 = "#22FFFFFF,1.0"
+stop0 = "#3369B6FF,0.0"
+stop1 = "#114C96D8,0.6"
+stop2 = "#22EAF6FF,1.0"
 
 [typography]
 primary_font = "Inter, Noto Sans"
@@ -70,36 +70,36 @@ shadow_blur = 36
 shadow_spread = 8
 
 [buttons]
-background = "#2A3440"
-background_hover = "#364250"
-background_pressed = "#1F2730"
-background_action = "#6A7A89"
-background_action_hover = "#8194A6"
-background_ghost = "#1B232C"
-border = "#7B8B9C"
-border_hover = "#E7F0F7"
-border_ghost = "#566473"
+background = "#2A3139"
+background_hover = "#36404B"
+background_pressed = "#1B2128"
+background_action = "#486E96"
+background_action_hover = "#5C87B5"
+background_ghost = "#141A20"
+border = "#74889C"
+border_hover = "#DDEBFA"
+border_ghost = "#495867"
 border_radius = 8
 transition_duration = 0.18
 hover_scale = 1.015
 pressed_scale = 0.988
 
 [panels]
-glass_background = "#D41E2832"
+glass_background = "#D4161D24"
 glass_opacity = 0.88
-subpanel_background = "#CC18212A"
-subpanel_border = "#75879A"
-optioncard_background = "#D8202B36"
-optioncard_border = "#93A6B8"
+subpanel_background = "#CC11171D"
+subpanel_border = "#667A8F"
+optioncard_background = "#D8151C23"
+optioncard_border = "#8399AE"
 border_radius = 12
 subpanel_radius = 10
 optioncard_radius = 8
 
 [inputs]
-background = "#141B23"
-background_focus = "#1A232D"
-border = "#6B7A89"
-border_focus = "#E7F0F7"
+background = "#10151B"
+background_focus = "#17202A"
+border = "#617385"
+border_focus = "#CFE4FA"
 border_radius = 8
 padding = 9
 
@@ -108,38 +108,38 @@ use_transparency = true
 use_blur = true
 blur_radius = 14
 use_glow = true
-glow_color = "#C9D7E4"
-glow_intensity = 0.16
+glow_color = "#9FC6EE"
+glow_intensity = 0.12
 use_animations = true
 animation_speed = 0.9
 use_background_effects = true
-background_color_1 = "#394654"
-background_color_2 = "#161B22"
+background_color_1 = "#253240"
+background_color_2 = "#0F141A"
 background_opacity = 0.2
 
 [custom]
 liquid_chrome = "true"
-liquid_chrome_intensity = "1.04"
-liquid_chrome_warp = "1.35"
+liquid_chrome_intensity = "0.88"
+liquid_chrome_warp = "0.92"
 liquid_chrome_bands = "7"
-liquid_chrome_coolness = "0.28"
-liquid_chrome_specular = "#F8FBFF"
-liquid_chrome_shadow = "#03070B"
+liquid_chrome_coolness = "0.42"
+liquid_chrome_specular = "#BDD7F3"
+liquid_chrome_shadow = "#020406"
 metal_surface = "true"
-metal_surface_gloss = "0.86"
-metal_surface_contrast = "0.26"
-metal_surface_specular = "#F8FBFF"
+metal_surface_gloss = "0.74"
+metal_surface_contrast = "0.34"
+metal_surface_specular = "#C5DCF2"
 metal_surface_shadow = "#05080C"
 metal_sheen = "true"
-metal_sheen_opacity = "0.24"
-metal_sheen_angle = "-20"
-metal_sheen_band_thickness = "0.16"
-metal_sheen_edge_opacity = "0.28"
-metal_sheen_tint = "#D5DEE7"
-metal_sheen_edge_tint = "#F8FBFF"
+metal_sheen_opacity = "0.11"
+metal_sheen_angle = "-18"
+metal_sheen_band_thickness = "0.10"
+metal_sheen_edge_opacity = "0.14"
+metal_sheen_tint = "#AFC4D8"
+metal_sheen_edge_tint = "#D5E7F7"
 metal_rivets = "true"
 metal_rivet_count = "7"
-metal_rivet_radius = "4.6"
+metal_rivet_radius = "4.2"
 metal_rivet_inset = "16"
-metal_rivet_opacity = "0.82"
-metal_rivet_tint = "#C0CAD4"
+metal_rivet_opacity = "0.68"
+metal_rivet_tint = "#8FA4B8"

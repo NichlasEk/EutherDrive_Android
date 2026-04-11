@@ -248,8 +248,8 @@ public class SkinManager
         // Update Brushes
         SetResource(resources, "EdBgBrush", new SolidColorBrush(Color.Parse(colors.Background)));
         SetResource(resources, "EdBgSoftBrush", new SolidColorBrush(Color.Parse(colors.BackgroundSoft)));
-        SetResource(resources, "EdPanelBrush", new SolidColorBrush(Color.Parse(colors.Panel)));
-        SetResource(resources, "EdPanelRaisedBrush", new SolidColorBrush(Color.Parse(colors.PanelRaised)));
+        SetResource(resources, "EdPanelBrush", CreateSurfaceBrush(Color.Parse(colors.Panel), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.04), metalContrast));
+        SetResource(resources, "EdPanelRaisedBrush", CreateSurfaceBrush(Color.Parse(colors.PanelRaised), metalSpecular, metalShadow, useMetalSurface, Math.Min(1.0, metalGloss + 0.02), Math.Min(0.6, metalContrast + 0.02)));
         SetResource(resources, "EdPanelGlassBrush", CreateSurfaceBrush(Color.Parse(colors.PanelGlass), metalSpecular, metalShadow, useMetalSurface, metalGloss, metalContrast));
         SetResource(resources, "EdStrokeBrush", new SolidColorBrush(Color.Parse(colors.Stroke)));
         SetResource(resources, "EdStrokeBrightBrush", new SolidColorBrush(Color.Parse(colors.StrokeBright)));
