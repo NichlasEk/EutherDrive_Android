@@ -473,15 +473,57 @@
                     VerticalAlignment="Stretch"
                     Width="0"
                     IsVisible="False"
-                    Background="#162019"
+                    Background="Transparent"
                     BorderBrush="#00000000"
                     BorderThickness="0">
               <Viewbox Stretch="Uniform">
-                <Grid Width="180" Height="224" Margin="10,14">
-                  <Border Background="#006AA7"/>
-                  <Border Width="32" Background="#FECC00" HorizontalAlignment="Center"/>
-                  <Border Height="32" Background="#FECC00" VerticalAlignment="Center"/>
-                </Grid>
+                <Canvas Width="120" Height="280" Margin="8,10,8,0">
+                  <Border Width="74"
+                          Height="8"
+                          CornerRadius="4"
+                          Background="#9098A4"
+                          Canvas.Left="23"
+                          Canvas.Top="0"/>
+                  <Border Width="10"
+                          Height="24"
+                          CornerRadius="4"
+                          Background="#D9E1EA"
+                          Canvas.Left="30"
+                          Canvas.Top="0"/>
+                  <Border Width="10"
+                          Height="24"
+                          CornerRadius="4"
+                          Background="#D9E1EA"
+                          Canvas.Left="80"
+                          Canvas.Top="0"/>
+                  <Border Width="78"
+                          Height="2"
+                          Background="#F4F7FA"
+                          Opacity="0.75"
+                          Canvas.Left="21"
+                          Canvas.Top="2"/>
+                  <Path Tag="flag-shadow"
+                        Fill="#22000000"
+                        Data="M 27 18 L 93 18 L 93 206 L 82 240 L 71 206 L 60 240 L 49 206 L 38 240 L 27 206 Z"/>
+                  <Path Tag="flag-blue"
+                        Fill="#006AA7"
+                        Data="M 24 14 L 90 14 L 90 202 L 79 236 L 68 202 L 57 236 L 46 202 L 35 236 L 24 202 Z"/>
+                  <Border Tag="flag-yellow"
+                          Width="16"
+                          Height="128"
+                          Background="#FECC00"
+                          Canvas.Left="48"
+                          Canvas.Top="14"/>
+                  <Path Tag="flag-yellow"
+                        Fill="#FECC00"
+                        Data="M 48 142 L 64 142 L 64 202 L 56 226 L 48 202 Z"/>
+                  <Border Tag="flag-yellow"
+                          Width="66"
+                          Height="16"
+                          Background="#FECC00"
+                          Canvas.Left="24"
+                          Canvas.Top="74"/>
+                </Canvas>
               </Viewbox>
             </Border>
             <Border Name="RightFlagHost"
@@ -489,15 +531,57 @@
                     VerticalAlignment="Stretch"
                     Width="0"
                     IsVisible="False"
-                    Background="#162019"
+                    Background="Transparent"
                     BorderBrush="#00000000"
                     BorderThickness="0">
               <Viewbox Stretch="Uniform">
-                <Grid Width="180" Height="224" Margin="10,14">
-                  <Border Background="#006AA7"/>
-                  <Border Width="32" Background="#FECC00" HorizontalAlignment="Center"/>
-                  <Border Height="32" Background="#FECC00" VerticalAlignment="Center"/>
-                </Grid>
+                <Canvas Width="120" Height="280" Margin="8,10,8,0">
+                  <Border Width="74"
+                          Height="8"
+                          CornerRadius="4"
+                          Background="#9098A4"
+                          Canvas.Left="23"
+                          Canvas.Top="0"/>
+                  <Border Width="10"
+                          Height="24"
+                          CornerRadius="4"
+                          Background="#D9E1EA"
+                          Canvas.Left="30"
+                          Canvas.Top="0"/>
+                  <Border Width="10"
+                          Height="24"
+                          CornerRadius="4"
+                          Background="#D9E1EA"
+                          Canvas.Left="80"
+                          Canvas.Top="0"/>
+                  <Border Width="78"
+                          Height="2"
+                          Background="#F4F7FA"
+                          Opacity="0.75"
+                          Canvas.Left="21"
+                          Canvas.Top="2"/>
+                  <Path Tag="flag-shadow"
+                        Fill="#22000000"
+                        Data="M 27 18 L 93 18 L 93 206 L 82 240 L 71 206 L 60 240 L 49 206 L 38 240 L 27 206 Z"/>
+                  <Path Tag="flag-blue"
+                        Fill="#006AA7"
+                        Data="M 24 14 L 90 14 L 90 202 L 79 236 L 68 202 L 57 236 L 46 202 L 35 236 L 24 202 Z"/>
+                  <Border Tag="flag-yellow"
+                          Width="16"
+                          Height="128"
+                          Background="#FECC00"
+                          Canvas.Left="48"
+                          Canvas.Top="14"/>
+                  <Path Tag="flag-yellow"
+                        Fill="#FECC00"
+                        Data="M 48 142 L 64 142 L 64 202 L 56 226 L 48 202 Z"/>
+                  <Border Tag="flag-yellow"
+                          Width="66"
+                          Height="16"
+                          Background="#FECC00"
+                          Canvas.Left="24"
+                          Canvas.Top="74"/>
+                </Canvas>
               </Viewbox>
             </Border>
           </Grid>

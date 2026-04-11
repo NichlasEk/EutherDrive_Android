@@ -8126,15 +8126,52 @@ public partial class MainWindow : Window
 
     private static void ApplyFlagColors(Border? host, Color blue, Color yellow)
     {
-        if (host?.Child is not Viewbox { Child: Grid grid } || grid.Children.Count < 3)
+        if (host == null)
             return;
 
-        if (grid.Children[0] is Border bg)
-            bg.Background = new SolidColorBrush(blue);
-        if (grid.Children[1] is Border verticalCross)
-            verticalCross.Background = new SolidColorBrush(yellow);
-        if (grid.Children[2] is Border horizontalCross)
-            horizontalCross.Background = new SolidColorBrush(yellow);
+        ApplyFlagColorsRecursive(host, blue, yellow);
+    }
+
+    private static void ApplyFlagColorsRecursive(Control control, Color blue, Color yellow)
+    {
+        if (control.Tag is string tag)
+        {
+            if (string.Equals(tag, "flag-blue", StringComparison.Ordinal))
+            {
+                SetControlFill(control, blue);
+            }
+            else if (string.Equals(tag, "flag-yellow", StringComparison.Ordinal))
+            {
+                SetControlFill(control, yellow);
+            }
+        }
+
+        if (control is Decorator { Child: Control child })
+        {
+            ApplyFlagColorsRecursive(child, blue, yellow);
+            return;
+        }
+
+        if (control is Panel panel)
+        {
+            foreach (Control childControl in panel.Children.OfType<Control>())
+                ApplyFlagColorsRecursive(childControl, blue, yellow);
+        }
+    }
+
+    private static void SetControlFill(Control control, Color color)
+    {
+        SolidColorBrush brush = new(color);
+
+        switch (control)
+        {
+            case Border border:
+                border.Background = brush;
+                break;
+            case Avalonia.Controls.Shapes.Path path:
+                path.Fill = brush;
+                break;
+        }
     }
 
     private bool UsesNativeDesktopPresentationLayout()
