@@ -12,8 +12,6 @@ internal enum Sega32XPwmOutputDirection : ushort
 
 internal sealed class Sega32XPwm
 {
-    public static bool VerboseLogging { get; set; } = false;
-
     private const int FifoLength = 3;
     private const int DefaultOutputSampleRate = 44_100;
     private const ulong NominalSh2ClockHz = 23_011_361;
@@ -221,9 +219,6 @@ internal sealed class Sega32XPwm
 
     private void WriteRegister(uint address, ushort value, bool sh2Access)
     {
-        if (VerboseLogging)
-            Console.WriteLine($"[S32X-PWM-WRITE] src={(sh2Access ? "SH2" : "M68K")} addr=0x{address:X8} value=0x{value:X4}");
-
         switch (address & 0xF)
         {
             case 0x0:

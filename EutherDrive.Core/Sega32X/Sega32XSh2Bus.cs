@@ -78,26 +78,21 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private ushort _dmaOperation;
     private uint _dmaVector0;
     private uint _dmaVector1;
-    [NonSerialized] public ulong _schedulerCycleCounter;
+    [NonSerialized] private ulong _schedulerCycleCounter;
     [NonSerialized] private uint _lastStablePollPc;
     [NonSerialized] private uint _lastStablePollAddress;
     [NonSerialized] private ushort _lastStablePollValue;
     [NonSerialized] private int _stablePollCount;
 
-    private ushort[] _sdram;
-    private Sega32XSystemRegisters _registers;
-
     public Sega32XSh2Bus(Sega32XScaffoldCore core, Sega32XCpu whichCpu)
     {
         _core = core;
         _whichCpu = whichCpu;
-        _sdram = core.Bus.Sdram;
-        _registers = core.Registers;
     }
 
-    public ulong CycleCounter;
+    public ulong CycleCounter { get; private set; }
     public ulong SchedulerCycleCounter => _schedulerCycleCounter;
-    public ulong CycleLimit = ulong.MaxValue;
+    public ulong CycleLimit { get; set; } = ulong.MaxValue;
     public bool ShouldStopExecution => _schedulerCycleCounter >= CycleLimit;
     public ulong M68kReferenceCyclesDone => (_schedulerCycleCounter + (NativeSh2CyclesPerM68kCycle - 1)) / NativeSh2CyclesPerM68kCycle;
 
@@ -213,12 +208,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             Sega32XSh2Cpu otherCpu = _core.GetOtherCpu(_whichCpu);
             Sega32XSh2Bus otherBus = _core.GetOtherBus(_whichCpu);
-
-            // Match jgenesis here: sync the other SH-2 only up to the current CPU's observed
-            // scheduler time, not all the way to CycleLimit. Brutal is sensitive to rapid
-            // two-step mailbox updates and can miss the first token if the peer CPU is allowed
-            // to run too far ahead before the read completes.
-            ulong limit = Math.Min(CycleLimit, _schedulerCycleCounter);
+            
+            // För läsningar från comm-portar: Synka den andra CPUn hela vägen till CycleLimit.
+            // Detta är kritiskt för boot-sekvenser där en CPU väntar på att den andra ska skriva
+            // till kommunikationsportarna. Genom att synka hela vägen till CycleLimit säkerställer
+            // vi att den andra CPUn har fått chansen att köra och eventuellt skriva sina värden.
+            // För skrivningar: Använd gamla beteendet (synka bara till nuvarande cykel).
+            ulong limit = isRead ? CycleLimit : Math.Min(CycleLimit, _schedulerCycleCounter);
             
             if (otherBus.SchedulerCycleCounter >= limit)
                 return;
@@ -264,7 +260,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
 
-        return 16;
+        return 32;
     }
 
     private static uint? ParseOptionalHex(string name)
@@ -376,16 +372,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             return;
         }
 
-        bool isComm = IsCommPortRegister(maskedAddress);
-        bool isPcNear = pc >= _lastStablePollPc && (pc - _lastStablePollPc) <= 32 || _lastStablePollPc > pc && (_lastStablePollPc - pc) <= 32;
-        bool isStable = isPcNear && maskedAddress == _lastStablePollAddress && value == _lastStablePollValue;
-        
-        // Brutal and other games often poll multiple communication ports in a single loop.
-        // Allow the poll count to increment if we are polling ANY comm port and PC is near.
-        if (!isStable && isComm && isPcNear)
-            isStable = true;
-
-        if (isStable)
+        if (pc == _lastStablePollPc && maskedAddress == _lastStablePollAddress && value == _lastStablePollValue)
             _stablePollCount++;
         else
             _stablePollCount = 1;
@@ -470,29 +457,6 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         TracePcWatch("read8", masked, value, context);
         TraceAddressWatch("read8", masked, value, context);
         return value;
-    }
-
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public ushort FastFetchInstruction(uint pc)
-    {
-        uint addressSpace = pc >> 29;
-        if (addressSpace == 0 && TryReadCachedWord(pc, out ushort cachedWord))
-        {
-            CycleCounter += 1;
-            return cachedWord;
-        }
-
-        uint masked = pc & 0x1FFFFFFF;
-        if (masked >= 0x06000000 && masked < 0x06040000)
-        {
-            CycleCounter += 1 + Sh2SdramReadCycles;
-            int wordIndex = unchecked((int)((masked - 0x06000000) >> 1));
-            ushort value = _sdram[wordIndex];
-            if (addressSpace == 0) MaybeReplaceCache(pc, Sega32XSh2AccessContext.Fetch);
-            return value;
-        }
-        
-        return ReadWord(pc, Sega32XSh2AccessContext.Fetch);
     }
 
     public ushort ReadWord(uint address, Sega32XSh2AccessContext context)
@@ -737,10 +701,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
             CycleCounter += 1 + Sh2SdramWriteCycles;
-            int wordIndex = unchecked((int)((masked - 0x06000000) >> 1));
-            _sdram[wordIndex] = value;
-            TracePcWatch("write16", masked, value, context);
-            TraceAddressWatch("write16", masked, value, context);
+            int wordIndex = (int)((masked - 0x06000000) >> 1);
+            if ((uint)wordIndex < _core.Bus.Sdram.Length)
+            {
+                _core.Bus.Sdram[wordIndex] = value;
+                TracePcWatch("write16", masked, value, context);
+                TraceAddressWatch("write16", masked, value, context);
+            }
             return;
         }
 
@@ -1743,8 +1710,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
             CycleCounter += 1 + Sh2SdramReadCycles;
-            int wordIndex = unchecked((int)((masked - 0x06000000) >> 1));
-            return _sdram[wordIndex];
+            int wordIndex = (int)((masked - 0x06000000) >> 1);
+            return (uint)wordIndex < _core.Bus.Sdram.Length ? _core.Bus.Sdram[wordIndex] : (ushort)0;
         }
 
         if (masked >= 0x04000000 && masked < 0x06000000)
@@ -1791,13 +1758,6 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 return 0xFFFFFFFF;
             if (IsSh2VdpRegister(masked))
                 CycleCounter += 2 * Sh2VdpCycles;
-
-            if (masked >= 0x00004020 && masked <= 0x0000402D)
-            {
-                uint pairAddress = masked & ~3u;
-                if (_core.TryConsumeRecentCommPairWrite(pairAddress, _whichCpu, M68kReferenceCyclesDone, out uint queuedPair))
-                    return queuedPair;
-            }
 
             ushort highWord = IsSh2VdpRegister(masked)
                 ? _core.Bus.Vdp.ReadRegister(masked & ~1u)
@@ -1963,8 +1923,9 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
             CycleCounter += 1 + Sh2SdramWriteCycles;
-            int wordIndex = unchecked((int)((masked - 0x06000000) >> 1));
-            _sdram[wordIndex] = value;
+            int wordIndex = (int)((masked - 0x06000000) >> 1);
+            if ((uint)wordIndex < _core.Bus.Sdram.Length)
+                _core.Bus.Sdram[wordIndex] = value;
             return;
         }
 
