@@ -13,7 +13,7 @@
             Height="520"
             HorizontalAlignment="Left"
             VerticalAlignment="Top"
-            CornerRadius="260"
+            CornerRadius="{DynamicResource EdCornerFull}"
             Background="{DynamicResource EdBgFx1Brush}"
             Opacity="{DynamicResource EdBgFxOpacity}"/>
     <Border Margin="0,120,-180,0"
@@ -21,7 +21,7 @@
             Height="460"
             HorizontalAlignment="Right"
             VerticalAlignment="Top"
-            CornerRadius="230"
+            CornerRadius="{DynamicResource EdCornerFull}"
             Background="{DynamicResource EdBgFx2Brush}"
             Opacity="{DynamicResource EdBgFxOpacity}"/>
 
@@ -240,7 +240,7 @@
                       ValueChanged="OnNoiseMixChanged"/>
               <TextBlock Name="NoiseMixValueText" Width="40" Text="100%" VerticalAlignment="Center"/>
             </StackPanel>
-            <Border Padding="6,4" CornerRadius="10" Background="#1A2B1E" BorderBrush="#2E5A3A" BorderThickness="1">
+            <Border Classes="log-panel-accent" Padding="6,4">
               <TextBox Name="AudioDebugText"
                        Classes="log-view"
                        IsReadOnly="True"
@@ -248,8 +248,7 @@
                        BorderThickness="0"
                        MinHeight="54"
                        FontSize="12"
-                       Foreground="#BFE9C8"
-                       FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
+                       Foreground="{DynamicResource EdLogPanelAccentTextBrush}"
                        TextWrapping="Wrap"
                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
                        ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -258,7 +257,7 @@
             <CheckBox Name="Pad2MirrorCheck" Content="Mirror P1 → P2" Margin="0,6,0,0"/>
             <CheckBox Name="InputTraceCheck" Content="Input Trace" Margin="0,2,0,0"/>
             <TextBlock Text="Input Debug" FontWeight="Bold" Margin="0,6,0,0"/>
-            <Border Padding="6,4" CornerRadius="10" Background="#1A1E2B" BorderBrush="#2E3A5A" BorderThickness="1">
+            <Border Classes="log-panel" Padding="6,4">
               <TextBox Name="InputDebugText"
                        Classes="log-view"
                        IsReadOnly="True"
@@ -266,8 +265,6 @@
                        BorderThickness="0"
                        MinHeight="54"
                        FontSize="12"
-                       Foreground="#C7D7FF"
-                       FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
                        TextWrapping="Wrap"
                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
                        ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -395,7 +392,7 @@
               <Button Classes="compact" Content="Perf snapshot" Click="OnCapturePerfSnapshot"/>
               <TextBlock Classes="muted" FontSize="11" VerticalAlignment="Center" Text="Captures and copies current perf text"/>
             </StackPanel>
-            <Border Padding="6,4" CornerRadius="10" Background="#171B25" BorderBrush="#2E3A5A" BorderThickness="1">
+            <Border Classes="log-panel" Padding="6,4">
               <TextBox Name="PerfSnapshotText"
                        Classes="log-view"
                        IsReadOnly="True"
@@ -403,8 +400,6 @@
                        BorderThickness="0"
                        MinHeight="88"
                        FontSize="12"
-                       Foreground="#DCE7FF"
-                       FontFamily="JetBrains Mono, Consolas, Menlo, monospace"
                        TextWrapping="NoWrap"
                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
                        ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -462,15 +457,12 @@
       </LayoutTransformControl>
 
       <Border Name="ScreenBorder"
+              Classes="screen-shell"
               Grid.Row="1"
               Grid.Column="1"
-              Padding="10"
-              CornerRadius="8"
-              Background="#081018"
-              BorderBrush="{StaticResource EdStrokeBrightBrush}"
-              BorderThickness="1">
+              Padding="10">
         <Grid>
-          <Border Background="{DynamicResource EdScreenGlowBrush}" CornerRadius="6" Opacity="{DynamicResource EdScreenGlowOpacity}"/>
+          <Border Background="{DynamicResource EdScreenGlowBrush}" CornerRadius="{DynamicResource EdCornerLarge}" Opacity="{DynamicResource EdScreenGlowOpacity}"/>
           <Border Name="InputSurface" Background="Transparent" Focusable="True">
             <Viewbox Stretch="Uniform">
               <Grid Name="ScreenGrid" Width="320" Height="224" ClipToBounds="True">
@@ -492,7 +484,7 @@
                         Width="320"
                         Height="224"
                         Background="#F7F9FF"
-                        CornerRadius="112"
+                        CornerRadius="{DynamicResource EdCornerFull}"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Center"
                         Opacity="0"

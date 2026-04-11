@@ -8,8 +8,8 @@
         Width="680"
         Height="520"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource EdBgBrush}"
-        FontFamily="Inter">
+        Background="{DynamicResource EdBgBrush}"
+        FontFamily="{DynamicResource EdPrimaryFont}">
   
   <Grid RowDefinitions="Auto,*,Auto" Margin="20">
     <!-- Header -->
@@ -17,9 +17,9 @@
       <TextBlock Text="🎨 Skin Library" 
                  FontSize="24" 
                  FontWeight="Black"
-                 Foreground="{StaticResource EdAccentBrush}"/>
+                 Foreground="{DynamicResource EdAccentBrush}"/>
       <TextBlock Text="Choose a skin to customize the look of EutherDrive"
-                 Foreground="{StaticResource EdTextMutedBrush}"
+                 Foreground="{DynamicResource EdTextMutedBrush}"
                  FontSize="13"/>
     </StackPanel>
     

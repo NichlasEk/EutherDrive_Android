@@ -52,12 +52,20 @@
         <Color x:Key="EdInputBorderFocus">#5EEAD4</Color>
         <Color x:Key="EdBgFx1">#182A3D</Color>
         <Color x:Key="EdBgFx2">#2A1B24</Color>
+        <CornerRadius x:Key="EdCornerSmall">10</CornerRadius>
+        <CornerRadius x:Key="EdCornerMedium">12</CornerRadius>
+        <CornerRadius x:Key="EdCornerLarge">18</CornerRadius>
+        <CornerRadius x:Key="EdCornerXLarge">22</CornerRadius>
+        <CornerRadius x:Key="EdCornerFull">999</CornerRadius>
         <CornerRadius x:Key="EdPanelCornerRadius">18</CornerRadius>
         <CornerRadius x:Key="EdSubPanelCornerRadius">14</CornerRadius>
         <CornerRadius x:Key="EdOptionCardCornerRadius">12</CornerRadius>
         <CornerRadius x:Key="EdButtonCornerRadius">12</CornerRadius>
         <CornerRadius x:Key="EdInputCornerRadius">12</CornerRadius>
         <Thickness x:Key="EdButtonPadding">12,8</Thickness>
+        <Thickness x:Key="EdButtonCompactPadding">10,6</Thickness>
+        <Thickness x:Key="EdButtonSmallPadding">8,4</Thickness>
+        <Thickness x:Key="EdInputPadding">8,6</Thickness>
         <x:Double x:Key="EdDeckLabelSize">14</x:Double>
         <x:Double x:Key="EdDeckLabelSpacing">1.1</x:Double>
         <x:Double x:Key="EdKickerSize">11</x:Double>
@@ -67,9 +75,24 @@
         <FontFamily x:Key="EdPrimaryFont">Inter</FontFamily>
         <FontFamily x:Key="EdDisplayFont">Inter</FontFamily>
         <FontFamily x:Key="EdDeckLabelFont">Noto Sans, Inter</FontFamily>
+        <FontFamily x:Key="EdMonoFont">JetBrains Mono, Consolas, Menlo, monospace</FontFamily>
+        <Color x:Key="EdScreenShellBg">#081018</Color>
+        <Color x:Key="EdLogPanelBg">#171B25</Color>
+        <Color x:Key="EdLogPanelBorder">#2E3A5A</Color>
+        <Color x:Key="EdLogPanelAccentBg">#1A2B1E</Color>
+        <Color x:Key="EdLogPanelAccentBorder">#2E5A3A</Color>
+        <Color x:Key="EdLogPanelText">#DCE7FF</Color>
+        <Color x:Key="EdLogPanelAccentText">#BFE9C8</Color>
 
         <SolidColorBrush x:Key="EdBgFx1Brush" Color="{DynamicResource EdBgFx1}" />
         <SolidColorBrush x:Key="EdBgFx2Brush" Color="{DynamicResource EdBgFx2}" />
+        <SolidColorBrush x:Key="EdScreenShellBrush" Color="{DynamicResource EdScreenShellBg}" />
+        <SolidColorBrush x:Key="EdLogPanelBrush" Color="{DynamicResource EdLogPanelBg}" />
+        <SolidColorBrush x:Key="EdLogPanelBorderBrush" Color="{DynamicResource EdLogPanelBorder}" />
+        <SolidColorBrush x:Key="EdLogPanelAccentBrush" Color="{DynamicResource EdLogPanelAccentBg}" />
+        <SolidColorBrush x:Key="EdLogPanelAccentBorderBrush" Color="{DynamicResource EdLogPanelAccentBorder}" />
+        <SolidColorBrush x:Key="EdLogPanelTextBrush" Color="{DynamicResource EdLogPanelText}" />
+        <SolidColorBrush x:Key="EdLogPanelAccentTextBrush" Color="{DynamicResource EdLogPanelAccentText}" />
 
         <LinearGradientBrush x:Key="EdHeroBrush" StartPoint="0,0" EndPoint="1,1">
             <GradientStop Color="#183249" Offset="0.0" />
@@ -151,16 +174,30 @@
             <Setter Property="Background" Value="{DynamicResource EdHeroBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrightBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="22" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdCornerXLarge}" />
             <Setter Property="BoxShadow" Value="0 24 70 0 #66000000" />
         </Style>
 
         <Style Selector="Border.screen-shell">
-            <Setter Property="Background" Value="#0A0F14" />
+            <Setter Property="Background" Value="{DynamicResource EdScreenShellBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrightBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="24" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdCornerXLarge}" />
             <Setter Property="BoxShadow" Value="0 24 80 0 #77000000" />
+        </Style>
+
+        <Style Selector="Border.log-panel">
+            <Setter Property="Background" Value="{DynamicResource EdLogPanelBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdLogPanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdCornerSmall}" />
+        </Style>
+
+        <Style Selector="Border.log-panel-accent">
+            <Setter Property="Background" Value="{DynamicResource EdLogPanelAccentBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdLogPanelAccentBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdCornerSmall}" />
         </Style>
 
         <Style Selector="Button">
@@ -207,13 +244,13 @@
         </Style>
 
         <Style Selector="Button.small">
-            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Padding" Value="{DynamicResource EdButtonSmallPadding}" />
             <Setter Property="FontSize" Value="11" />
-            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdCornerSmall}" />
         </Style>
 
         <Style Selector="Button.compact">
-            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="Padding" Value="{DynamicResource EdButtonCompactPadding}" />
             <Setter Property="FontSize" Value="13" />
         </Style>
 
@@ -222,8 +259,8 @@
             <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource EdButtonBorder}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="999" />
-            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdCornerFull}" />
+            <Setter Property="Padding" Value="{DynamicResource EdButtonSmallPadding}" />
             <Setter Property="RenderTransform" Value="scale(1)" />
             <Setter Property="Transitions">
                 <Transitions>
@@ -246,7 +283,7 @@
         <Style Selector="ToggleButton.autofire">
             <Setter Property="MinWidth" Value="36" />
             <Setter Property="Height" Value="30" />
-            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Padding" Value="{DynamicResource EdButtonSmallPadding}" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="HorizontalAlignment" Value="Left" />
@@ -257,7 +294,7 @@
             <Setter Property="BorderBrush" Value="{DynamicResource EdInputBorder}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="{DynamicResource EdInputCornerRadius}" />
-            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="Padding" Value="{DynamicResource EdInputPadding}" />
         </Style>
 
         <Style Selector="TextBox">
@@ -266,18 +303,21 @@
             <Setter Property="BorderBrush" Value="{DynamicResource EdInputBorder}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="{DynamicResource EdInputCornerRadius}" />
-            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="Padding" Value="{DynamicResource EdInputPadding}" />
         </Style>
 
         <Style Selector="TextBox.log-view">
             <Setter Property="Background" Value="#00000000" />
             <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FontFamily" Value="{DynamicResource EdMonoFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdLogPanelTextBrush}" />
         </Style>
 
         <Style Selector="TextBox.status-inline">
             <Setter Property="Background" Value="#00000000" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="0" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource EdAccentBrush}" />
         </Style>
 
         <Style Selector="Separator">

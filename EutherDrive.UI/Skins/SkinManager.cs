@@ -210,6 +210,13 @@ public class SkinManager
         SetResource(resources, "EdInputBorderFocus", Color.Parse(inputs.BorderFocus));
         SetResource(resources, "EdBgFx1", Color.Parse(effects.BackgroundEffectColor1));
         SetResource(resources, "EdBgFx2", Color.Parse(effects.BackgroundEffectColor2));
+        SetResource(resources, "EdScreenShellBg", Color.Parse(colors.BackgroundAlt));
+        SetResource(resources, "EdLogPanelBg", Color.Parse(colors.BackgroundSoft));
+        SetResource(resources, "EdLogPanelBorder", Color.Parse(colors.StrokeBright));
+        SetResource(resources, "EdLogPanelAccentBg", Color.Parse(panels.SubPanelBackground));
+        SetResource(resources, "EdLogPanelAccentBorder", Color.Parse(colors.Accent));
+        SetResource(resources, "EdLogPanelText", Color.Parse(colors.Text));
+        SetResource(resources, "EdLogPanelAccentText", Color.Parse(colors.Text));
 
         // Update Brushes
         SetResource(resources, "EdBgBrush", new SolidColorBrush(Color.Parse(colors.Background)));
@@ -224,7 +231,22 @@ public class SkinManager
         SetResource(resources, "EdAccentBrush", new SolidColorBrush(Color.Parse(colors.Accent)));
         SetResource(resources, "EdAccentWarmBrush", new SolidColorBrush(Color.Parse(colors.AccentWarm)));
         SetResource(resources, "EdAccentHotBrush", new SolidColorBrush(Color.Parse(colors.AccentHot)));
+        SetResource(resources, "EdScreenShellBrush", new SolidColorBrush(Color.Parse(colors.BackgroundAlt)));
+        SetResource(resources, "EdLogPanelBrush", new SolidColorBrush(Color.Parse(colors.BackgroundSoft)));
+        SetResource(resources, "EdLogPanelBorderBrush", new SolidColorBrush(Color.Parse(colors.StrokeBright)));
+        SetResource(resources, "EdLogPanelAccentBrush", new SolidColorBrush(Color.Parse(panels.SubPanelBackground)));
+        SetResource(resources, "EdLogPanelAccentBorderBrush", new SolidColorBrush(Color.Parse(colors.Accent)));
+        SetResource(resources, "EdLogPanelTextBrush", new SolidColorBrush(Color.Parse(colors.Text)));
+        SetResource(resources, "EdLogPanelAccentTextBrush", new SolidColorBrush(Color.Parse(colors.Text)));
+        SetResource(resources, "EdCornerSmall", new CornerRadius(layout.BorderRadiusSmall));
+        SetResource(resources, "EdCornerMedium", new CornerRadius(layout.BorderRadiusMedium));
+        SetResource(resources, "EdCornerLarge", new CornerRadius(layout.BorderRadiusLarge));
+        SetResource(resources, "EdCornerXLarge", new CornerRadius(layout.BorderRadiusXLarge));
+        SetResource(resources, "EdCornerFull", new CornerRadius(layout.BorderRadiusFull));
         SetResource(resources, "EdButtonPadding", new Thickness(layout.ButtonPaddingX, layout.ButtonPaddingY));
+        SetResource(resources, "EdButtonCompactPadding", new Thickness(Math.Max(6, layout.ButtonPaddingX - 2), Math.Max(4, layout.ButtonPaddingY - 2)));
+        SetResource(resources, "EdButtonSmallPadding", new Thickness(Math.Max(5, layout.ButtonPaddingX - 4), Math.Max(3, layout.ButtonPaddingY - 4)));
+        SetResource(resources, "EdInputPadding", new Thickness(inputs.Padding, Math.Max(4, inputs.Padding - 2)));
         SetResource(resources, "EdPanelCornerRadius", new CornerRadius(panels.BorderRadius > 0 ? panels.BorderRadius : layout.BorderRadiusLarge));
         SetResource(resources, "EdSubPanelCornerRadius", new CornerRadius(panels.SubPanelRadius > 0 ? panels.SubPanelRadius : layout.BorderRadiusMedium));
         SetResource(resources, "EdOptionCardCornerRadius", new CornerRadius(panels.OptionCardRadius > 0 ? panels.OptionCardRadius : layout.BorderRadiusMedium));
@@ -233,6 +255,7 @@ public class SkinManager
         SetResource(resources, "EdPrimaryFont", new FontFamily(string.IsNullOrWhiteSpace(typo.PrimaryFont) ? "Inter" : typo.PrimaryFont));
         SetResource(resources, "EdDisplayFont", new FontFamily(string.IsNullOrWhiteSpace(typo.DisplayFont) ? "Inter" : typo.DisplayFont));
         SetResource(resources, "EdDeckLabelFont", new FontFamily(string.IsNullOrWhiteSpace(typo.DeckLabelFont) ? "Noto Sans, Inter" : typo.DeckLabelFont));
+        SetResource(resources, "EdMonoFont", new FontFamily(string.IsNullOrWhiteSpace(typo.MonoFont) ? "JetBrains Mono, Consolas, Menlo, monospace" : typo.MonoFont));
         SetResource(resources, "EdDeckLabelSize", typo.DeckLabelSize > 0 ? typo.DeckLabelSize : 14.0);
         SetResource(resources, "EdDeckLabelSpacing", typo.DeckLabelSpacing);
         SetResource(resources, "EdKickerSize", typo.KickerSize > 0 ? typo.KickerSize : 11.0);
