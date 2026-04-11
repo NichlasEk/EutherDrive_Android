@@ -21,10 +21,10 @@ option_card = "#D8202B36"
 stroke = "#5B6A7A"
 stroke_bright = "#B7C6D4"
 
-text = "#F1F6FB"
-text_muted = "#9AA8B8"
+text = "#18232E"
+text_muted = "#4A5867"
 
-accent = "#C8D3DE"
+accent = "#294A66"
 accent_warm = "#E0B15E"
 accent_hot = "#D96E6E"
 

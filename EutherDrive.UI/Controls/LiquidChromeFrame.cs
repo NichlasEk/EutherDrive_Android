@@ -2,14 +2,17 @@ using System;
 using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 
 namespace EutherDrive.UI.Controls;
 
 public class LiquidChromeFrame : Decorator
 {
-    public static readonly StyledProperty<Thickness> PaddingProperty =
+    private readonly DispatcherTimer _animationTimer;
+    private double _chromePhase;
+
+    public new static readonly StyledProperty<Thickness> PaddingProperty =
         AvaloniaProperty.Register<LiquidChromeFrame, Thickness>(nameof(Padding), new Thickness(0));
 
     public static readonly StyledProperty<CornerRadius> CornerRadiusProperty =
@@ -45,7 +48,7 @@ public class LiquidChromeFrame : Decorator
     public static readonly StyledProperty<double> ChromeCoolnessProperty =
         AvaloniaProperty.Register<LiquidChromeFrame, double>(nameof(ChromeCoolness), 0.18);
 
-    public Thickness Padding
+    public new Thickness Padding
     {
         get => GetValue(PaddingProperty);
         set => SetValue(PaddingProperty, value);
@@ -117,6 +120,35 @@ public class LiquidChromeFrame : Decorator
         set => SetValue(ChromeCoolnessProperty, value);
     }
 
+    public LiquidChromeFrame()
+    {
+        _animationTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) =>
+        {
+            _chromePhase += 0.018;
+            InvalidateVisual();
+        });
+    }
+
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        UpdateAnimationState();
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        _animationTimer.Stop();
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+
+        if (change.Property == ChromeEnabledProperty)
+            UpdateAnimationState();
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
         Thickness chromeThickness = GetChromeThickness();
@@ -185,8 +217,8 @@ public class LiquidChromeFrame : Decorator
         double coolness = Math.Clamp(ChromeCoolness, 0.0, 1.0);
 
         Color coolSpec = Blend(SpecularColor, Color.Parse("#B7DBFF"), coolness * 0.36);
-        Color baseTop = Blend(Lighten(BaseColor, 0.12 + (intensity * 0.1)), coolSpec, 0.20 + (intensity * 0.1));
-        Color baseBottom = Blend(Darken(BaseColor, 0.48), ShadowColor, 0.58);
+        Color baseTop = Blend(Lighten(BaseColor, 0.10 + (intensity * 0.08)), coolSpec, 0.18 + (intensity * 0.08));
+        Color baseBottom = Blend(Darken(BaseColor, 0.42), ShadowColor, 0.64);
 
         var baseBrush = new LinearGradientBrush
         {
@@ -201,6 +233,10 @@ public class LiquidChromeFrame : Decorator
             }
         };
         context.DrawRectangle(baseBrush, null, bounds);
+
+        DrawEnvironmentField(context, bounds, coolSpec, intensity, warp);
+        DrawReflectionTiles(context, bounds, coolSpec, intensity, warp);
+        DrawFresnel(context, bounds, coolSpec, intensity);
 
         double width = bounds.Width;
         double height = bounds.Height;
@@ -245,6 +281,8 @@ public class LiquidChromeFrame : Decorator
         }
 
         DrawMicroSpecular(context, bounds, coolSpec, intensity);
+        DrawReflectionSweep(context, bounds, coolSpec, intensity, warp);
+        DrawHotSpots(context, bounds, coolSpec, intensity, warp);
     }
 
     private static StreamGeometry CreateBandGeometry(
@@ -293,7 +331,151 @@ public class LiquidChromeFrame : Decorator
              + (tertiary * amplitude * 0.24);
     }
 
-    private static void DrawMicroSpecular(DrawingContext context, Rect bounds, Color coolSpec, double intensity)
+    private void DrawEnvironmentField(DrawingContext context, Rect bounds, Color coolSpec, double intensity, double warp)
+    {
+        int columns = Math.Clamp((int)(bounds.Width / 10), 36, 160);
+        double columnWidth = bounds.Width / columns;
+        double height = bounds.Height;
+
+        for (int i = 0; i < columns; i++)
+        {
+            double t = i / (double)Math.Max(1, columns - 1);
+            double sweep = (t * 2.0) - 1.0;
+            double flow = (_chromePhase * 0.42) + (sweep * warp * 0.7);
+            double warpField = Math.Sin((sweep * 6.2) + flow)
+                             + (Math.Cos((sweep * 11.7) - (_chromePhase * 0.31)) * 0.55)
+                             + (Math.Sin((sweep * 18.0) + (_chromePhase * 0.83)) * 0.28);
+            double normalized = Math.Clamp((warpField + 1.9) / 3.8, 0.0, 1.0);
+
+            double hotBand = Math.Exp(-Math.Pow((sweep - Math.Sin(_chromePhase * 0.34) * 0.22) / 0.16, 2.0));
+            double secondaryBand = Math.Exp(-Math.Pow((sweep + 0.46 + (Math.Cos(_chromePhase * 0.27) * 0.08)) / 0.24, 2.0));
+            double chromeValue = Math.Clamp((normalized * 0.72) + (hotBand * 0.9) + (secondaryBand * 0.52), 0.0, 1.0);
+
+            Color dark = Blend(ShadowColor, BaseColor, 0.24);
+            Color mid = Blend(BaseColor, coolSpec, 0.20 + (intensity * 0.12));
+            Color bright = Blend(coolSpec, Colors.White, 0.55 + (intensity * 0.18));
+
+            var brush = new LinearGradientBrush
+            {
+                StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+                EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+                GradientStops =
+                {
+                    new GradientStop(Blend(mid, bright, chromeValue * 0.62), 0.0),
+                    new GradientStop(Blend(dark, bright, chromeValue), 0.18 + (Math.Sin((t * Math.PI * 3.0) + _chromePhase) * 0.04)),
+                    new GradientStop(Blend(mid, Colors.White, chromeValue * 0.85), 0.46),
+                    new GradientStop(Blend(dark, coolSpec, chromeValue * 0.44), 0.74),
+                    new GradientStop(Blend(ShadowColor, dark, 0.45), 1.0)
+                }
+            };
+
+            Rect columnRect = new(bounds.X + (i * columnWidth), bounds.Y, columnWidth + 1.2, height);
+            context.DrawRectangle(brush, null, columnRect);
+        }
+    }
+
+    private void DrawReflectionTiles(DrawingContext context, Rect bounds, Color coolSpec, double intensity, double warp)
+    {
+        int columns = Math.Clamp((int)(bounds.Width / 22), 20, 64);
+        int rows = Math.Clamp((int)(bounds.Height / 26), 8, 26);
+        double cellWidth = bounds.Width / columns;
+        double cellHeight = bounds.Height / rows;
+
+        for (int y = 0; y < rows; y++)
+        {
+            double v = y / (double)Math.Max(1, rows - 1);
+            for (int x = 0; x < columns; x++)
+            {
+                double u = x / (double)Math.Max(1, columns - 1);
+                double nx = (u * 2.0) - 1.0;
+                double ny = (v * 2.0) - 1.0;
+
+                double distortionX = (Math.Sin((ny * 5.4) + (_chromePhase * 0.42) + (nx * 6.8)) * 0.24)
+                                   + (Math.Cos((nx * 10.6) - (_chromePhase * 0.27) + (ny * 4.2)) * 0.16);
+                double distortionY = (Math.Cos((nx * 7.1) + (_chromePhase * 0.34) - (ny * 5.7)) * 0.18)
+                                   + (Math.Sin((ny * 13.8) + (_chromePhase * 0.22) + (nx * 4.8)) * 0.12);
+
+                double sampleU = Math.Clamp(u + (distortionX * 0.18 * warp), 0.0, 1.0);
+                double sampleV = Math.Clamp(v + (distortionY * 0.22 * warp), 0.0, 1.0);
+
+                Color envColor = SampleEnvironmentColor(sampleU, sampleV, coolSpec, intensity);
+                double reflectivity = Math.Clamp(0.10 + (Math.Abs(distortionX) * 0.24) + (Math.Abs(distortionY) * 0.16), 0.0, 0.34);
+                var brush = new SolidColorBrush(WithOpacity(envColor, reflectivity));
+
+                Rect tile = new(
+                    bounds.X + (x * cellWidth),
+                    bounds.Y + (y * cellHeight),
+                    cellWidth + 0.8,
+                    cellHeight + 0.8);
+                context.DrawRectangle(brush, null, tile);
+            }
+        }
+    }
+
+    private void DrawFresnel(DrawingContext context, Rect bounds, Color coolSpec, double intensity)
+    {
+        double edgeAlpha = Math.Clamp(0.11 + (intensity * 0.08), 0.0, 0.28);
+        Color edgeHighlight = WithOpacity(Blend(coolSpec, Colors.White, 0.72), edgeAlpha);
+        Color edgeShadow = WithOpacity(Blend(ShadowColor, Colors.Black, 0.55), 0.30);
+
+        var leftBrush = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new GradientStop(edgeHighlight, 0.0),
+                new GradientStop(WithOpacity(edgeHighlight, edgeAlpha * 0.35), 0.22),
+                new GradientStop(WithOpacity(edgeHighlight, 0), 1.0)
+            }
+        };
+
+        var rightBrush = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new GradientStop(edgeHighlight, 0.0),
+                new GradientStop(WithOpacity(edgeHighlight, edgeAlpha * 0.42), 0.18),
+                new GradientStop(WithOpacity(edgeHighlight, 0), 1.0)
+            }
+        };
+
+        var topBrush = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new GradientStop(WithOpacity(Blend(coolSpec, Colors.White, 0.78), edgeAlpha * 1.35), 0.0),
+                new GradientStop(WithOpacity(coolSpec, edgeAlpha * 0.58), 0.2),
+                new GradientStop(WithOpacity(coolSpec, 0), 1.0)
+            }
+        };
+
+        var bottomBrush = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new GradientStop(edgeShadow, 0.0),
+                new GradientStop(WithOpacity(edgeShadow, 0.12), 0.26),
+                new GradientStop(WithOpacity(edgeShadow, 0), 1.0)
+            }
+        };
+
+        double edgeWidth = Math.Max(8, bounds.Width * 0.04);
+        double edgeHeight = Math.Max(8, bounds.Height * 0.12);
+
+        context.DrawRectangle(leftBrush, null, new Rect(bounds.X, bounds.Y, edgeWidth, bounds.Height));
+        context.DrawRectangle(rightBrush, null, new Rect(bounds.Right - edgeWidth, bounds.Y, edgeWidth, bounds.Height));
+        context.DrawRectangle(topBrush, null, new Rect(bounds.X, bounds.Y, bounds.Width, edgeHeight));
+        context.DrawRectangle(bottomBrush, null, new Rect(bounds.X, bounds.Bottom - edgeHeight, bounds.Width, edgeHeight));
+    }
+
+    private void DrawMicroSpecular(DrawingContext context, Rect bounds, Color coolSpec, double intensity)
     {
         int lineCount = Math.Clamp((int)(bounds.Width / 18), 18, 90);
         double width = bounds.Width;
@@ -303,12 +485,102 @@ public class LiquidChromeFrame : Decorator
         {
             double t = i / (double)Math.Max(1, lineCount - 1);
             double x = width * t;
-            double y0 = (height * 0.06) + (Math.Sin((t * Math.PI * 8.0) + 0.5) * height * 0.04);
-            double y1 = height - (height * 0.1) + (Math.Cos((t * Math.PI * 7.0) + 0.3) * height * 0.05);
+            double y0 = (height * 0.06) + (Math.Sin((t * Math.PI * 8.0) + 0.5 + (_chromePhase * 0.6)) * height * 0.04);
+            double y1 = height - (height * 0.1) + (Math.Cos((t * Math.PI * 7.0) + 0.3 - (_chromePhase * 0.45)) * height * 0.05);
             byte alpha = (byte)Math.Clamp((int)Math.Round((10 + (Math.Sin(t * Math.PI * 5.0) * 18) + (intensity * 22))), 4, 54);
             var pen = new Pen(new SolidColorBrush(WithAlpha(coolSpec, alpha)), Math.Max(0.6, width / 900));
             context.DrawLine(pen, new Point(x, y0), new Point(x + (width * 0.045), y1));
         }
+    }
+
+    private void DrawReflectionSweep(DrawingContext context, Rect bounds, Color coolSpec, double intensity, double warp)
+    {
+        double width = bounds.Width;
+        double height = bounds.Height;
+        double yBase = height * (0.28 + (Math.Sin(_chromePhase * 0.21) * 0.08));
+        double thickness = Math.Max(18, Math.Sqrt((width * width) + (height * height)) * 0.08 * intensity);
+        double amplitude = Math.Max(24, height * 0.22 * warp);
+        double phase = 1.2 + (_chromePhase * 0.55);
+
+        StreamGeometry sweepGeometry = CreateBandGeometry(
+            width,
+            yBase,
+            thickness,
+            amplitude,
+            1.6 / Math.Max(240.0, width),
+            4.3 / Math.Max(180.0, width),
+            phase,
+            0.78);
+
+        var sweepBrush = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(1, 1, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new GradientStop(WithOpacity(coolSpec, 0), 0.0),
+                new GradientStop(WithOpacity(Blend(coolSpec, Colors.White, 0.82), 0.08), 0.24),
+                new GradientStop(WithOpacity(Colors.White, 0.24 + (intensity * 0.12)), 0.46),
+                new GradientStop(WithOpacity(Blend(coolSpec, Colors.White, 0.70), 0.10), 0.66),
+                new GradientStop(WithOpacity(coolSpec, 0), 1.0)
+            }
+        };
+
+        context.DrawGeometry(sweepBrush, null, sweepGeometry);
+    }
+
+    private void DrawHotSpots(DrawingContext context, Rect bounds, Color coolSpec, double intensity, double warp)
+    {
+        int hotspotCount = 3;
+        for (int i = 0; i < hotspotCount; i++)
+        {
+            double t = (i + 1.0) / (hotspotCount + 1.0);
+            double drift = Math.Sin((_chromePhase * (0.4 + (i * 0.11))) + (i * 1.37)) * 0.12 * warp;
+            double centerX = bounds.X + ((t + drift) * bounds.Width);
+            double centerY = bounds.Y + bounds.Height * (0.18 + (0.24 * i)) + (Math.Cos((_chromePhase * 0.52) + i) * bounds.Height * 0.05);
+            double radiusX = Math.Max(34, bounds.Width * (0.10 + (i * 0.025)));
+            double radiusY = Math.Max(18, bounds.Height * (0.08 + (i * 0.018)));
+
+            var brush = new RadialGradientBrush
+            {
+                GradientOrigin = new RelativePoint(0.42, 0.38, RelativeUnit.Relative),
+                Center = new RelativePoint(centerX, centerY, RelativeUnit.Absolute),
+                Radius = 1.0,
+                GradientStops =
+                {
+                    new GradientStop(WithOpacity(Colors.White, 0.22 + (intensity * 0.1)), 0.0),
+                    new GradientStop(WithOpacity(Blend(coolSpec, Colors.White, 0.58), 0.16 + (intensity * 0.08)), 0.22),
+                    new GradientStop(WithOpacity(coolSpec, 0.06), 0.55),
+                    new GradientStop(WithOpacity(coolSpec, 0), 1.0)
+                }
+            };
+
+            context.DrawRectangle(
+                brush,
+                null,
+                new Rect(centerX - radiusX, centerY - radiusY, radiusX * 2.0, radiusY * 2.0));
+        }
+    }
+
+    private Color SampleEnvironmentColor(double u, double v, Color coolSpec, double intensity)
+    {
+        double horizon = Math.Exp(-Math.Pow((v - 0.18) / 0.16, 2.0));
+        double lowerGlow = Math.Exp(-Math.Pow((v - 0.74) / 0.24, 2.0));
+        double verticalBands = (Math.Sin((u * Math.PI * 7.0) + (_chromePhase * 0.23))
+                              + Math.Cos((u * Math.PI * 15.0) - (_chromePhase * 0.14))
+                              + 2.0) / 4.0;
+        double lateralBloom = Math.Exp(-Math.Pow((u - 0.34 - (Math.Sin(_chromePhase * 0.19) * 0.08)) / 0.12, 2.0))
+                            + (Math.Exp(-Math.Pow((u - 0.72 + (Math.Cos(_chromePhase * 0.16) * 0.07)) / 0.14, 2.0)) * 0.72);
+
+        Color deep = Blend(ShadowColor, BaseColor, 0.18);
+        Color mid = Blend(BaseColor, coolSpec, 0.24 + (intensity * 0.1));
+        Color sky = Blend(coolSpec, Colors.White, 0.82);
+        Color floor = Blend(ShadowColor, coolSpec, 0.16);
+
+        Color topMix = Blend(mid, sky, Math.Clamp((horizon * 0.88) + (verticalBands * 0.22), 0.0, 1.0));
+        Color bottomMix = Blend(deep, floor, Math.Clamp((lowerGlow * 0.75) + (verticalBands * 0.12), 0.0, 1.0));
+        Color combined = Blend(bottomMix, topMix, Math.Clamp(0.18 + (horizon * 0.66) + (lateralBloom * 0.18), 0.0, 1.0));
+        return Blend(combined, Colors.White, Math.Clamp(lateralBloom * 0.42, 0.0, 0.42));
     }
 
     private void DrawBorder(DrawingContext context, RoundedRect outer)
@@ -374,4 +646,24 @@ public class LiquidChromeFrame : Decorator
 
     private static Color WithAlpha(Color color, byte alpha)
         => Color.FromArgb(alpha, color.R, color.G, color.B);
+
+    private static Color WithOpacity(Color color, double opacity)
+        => Color.FromArgb(
+            (byte)Math.Clamp((int)Math.Round(opacity * 255.0), 0, 255),
+            color.R,
+            color.G,
+            color.B);
+
+    private void UpdateAnimationState()
+    {
+        if (ChromeEnabled && VisualRoot != null)
+        {
+            if (!_animationTimer.IsEnabled)
+                _animationTimer.Start();
+        }
+        else
+        {
+            _animationTimer.Stop();
+        }
+    }
 }
