@@ -1,0 +1,118 @@
+# Velvet Round Skin
+# Mörkt, mjukt och väldigt rundat
+
+[skin]
+name = "Velvet Round"
+author = "EutherDrive"
+version = "1.0"
+description = "Ett mörkt skin med djupa toner, mjuka highlights och rejält rundade hörn."
+
+[colors]
+background = "#0A0C12"
+background_soft = "#111522"
+background_alt = "#05070D"
+
+panel = "#171C2B"
+panel_raised = "#1F2638"
+panel_glass = "#D9181F30"
+sub_panel = "#CC151C2A"
+option_card = "#D920283B"
+
+stroke = "#39455E"
+stroke_bright = "#66769C"
+
+text = "#F4F6FB"
+text_muted = "#9EABC5"
+
+accent = "#8BE9FD"
+accent_warm = "#FFB86C"
+accent_hot = "#FF79C6"
+
+[gradient.hero]
+angle = 150
+stop0 = "#23314A,0.0"
+stop1 = "#171C2B,0.48"
+stop2 = "#27162C,1.0"
+
+[gradient.screen_glow]
+angle = 45
+stop0 = "#448BE9FD,0.0"
+stop1 = "#118BE9FD,0.7"
+stop2 = "#33FF79C6,1.0"
+
+[typography]
+primary_font = "Inter, Noto Sans"
+display_font = "Inter, Noto Sans"
+mono_font = "JetBrains Mono, Consolas, monospace"
+deck_font = "Inter, Noto Sans"
+base_size = 14
+small_size = 11
+display_size = 30
+kicker_size = 12
+deck_size = 15
+letter_spacing = 0.5
+deck_spacing = 1.4
+
+[layout]
+border_radius = 24
+border_radius_small = 16
+border_radius_large = 28
+border_radius_xlarge = 36
+border_radius_full = 999
+padding = 12
+button_padding_x = 18
+button_padding_y = 10
+spacing = 8
+spacing_small = 5
+spacing_large = 14
+shadow_opacity = 0.34
+shadow_blur = 44
+shadow_spread = 10
+
+[buttons]
+background = "#20283A"
+background_hover = "#273249"
+background_pressed = "#171E2C"
+background_action = "#233F53"
+background_action_hover = "#2C556E"
+background_ghost = "#241C2D"
+border = "#42506D"
+border_hover = "#8BE9FD"
+border_ghost = "#705A80"
+border_radius = 22
+transition_duration = 0.2
+hover_scale = 1.02
+pressed_scale = 0.985
+
+[panels]
+glass_background = "#D9181F30"
+glass_opacity = 0.88
+subpanel_background = "#CC151C2A"
+subpanel_border = "#465372"
+optioncard_background = "#D920283B"
+optioncard_border = "#596887"
+border_radius = 28
+subpanel_radius = 22
+optioncard_radius = 20
+
+[inputs]
+background = "#121826"
+background_focus = "#182031"
+border = "#465372"
+border_focus = "#8BE9FD"
+border_radius = 20
+padding = 10
+
+[effects]
+use_transparency = true
+use_blur = true
+blur_radius = 18
+use_glow = true
+glow_color = "#8BE9FD"
+glow_intensity = 0.32
+use_animations = true
+animation_speed = 1.0
+use_background_effects = true
+background_color_1 = "#20304A"
+background_color_2 = "#2B1934"
+background_opacity = 0.22

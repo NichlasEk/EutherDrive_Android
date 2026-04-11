@@ -467,6 +467,40 @@
               Padding="10">
         <Grid>
           <Border Background="{DynamicResource EdScreenGlowBrush}" CornerRadius="{DynamicResource EdCornerLarge}" Opacity="{DynamicResource EdScreenGlowOpacity}"/>
+          <Grid Name="ScreenBackdropDecor" IsHitTestVisible="False">
+            <Border Name="LeftFlagHost"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Stretch"
+                    Width="0"
+                    IsVisible="False"
+                    Background="#162019"
+                    BorderBrush="#00000000"
+                    BorderThickness="0">
+              <Viewbox Stretch="Uniform">
+                <Grid Width="180" Height="224" Margin="10,14">
+                  <Border Background="#006AA7"/>
+                  <Border Width="32" Background="#FECC00" HorizontalAlignment="Center"/>
+                  <Border Height="32" Background="#FECC00" VerticalAlignment="Center"/>
+                </Grid>
+              </Viewbox>
+            </Border>
+            <Border Name="RightFlagHost"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Stretch"
+                    Width="0"
+                    IsVisible="False"
+                    Background="#162019"
+                    BorderBrush="#00000000"
+                    BorderThickness="0">
+              <Viewbox Stretch="Uniform">
+                <Grid Width="180" Height="224" Margin="10,14">
+                  <Border Background="#006AA7"/>
+                  <Border Width="32" Background="#FECC00" HorizontalAlignment="Center"/>
+                  <Border Height="32" Background="#FECC00" VerticalAlignment="Center"/>
+                </Grid>
+              </Viewbox>
+            </Border>
+          </Grid>
           <Border Name="InputSurface" Background="Transparent" Focusable="True">
             <Viewbox Stretch="Uniform">
               <Grid Name="ScreenGrid" Width="320" Height="224" ClipToBounds="True">

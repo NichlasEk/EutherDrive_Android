@@ -28,6 +28,7 @@ using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
 using EutherDrive.UI.Savestates;
+using EutherDrive.UI.Skins;
 using Tomlyn;
 using SdlApi = Silk.NET.SDL.Sdl;
 using GameControllerAxis = Silk.NET.SDL.GameControllerAxis;
@@ -462,6 +463,7 @@ public partial class MainWindow : Window
     public MainWindow(string? romPath = null)
     {
         InitializeComponent();
+        SkinManager.Instance.SkinChanged += OnSkinChanged;
         if (ScreenContentRoot != null)
             ScreenContentRoot.RenderTransform = _screenContentScaleTransform;
         if (CrtPowerIntroFlash != null)
@@ -503,6 +505,7 @@ public partial class MainWindow : Window
         _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
+        UpdateBackdropDecorForSkin();
         RomPickerDialog.StartBackgroundBootCoverDeltaSync(_romLibraryPath);
         LoadTitleStats();
         ApplySnesSpecialRomOverrides();
@@ -4919,6 +4922,7 @@ public partial class MainWindow : Window
     private sealed class UiSettings
     {
         public string? LastRomPath { get; set; }
+        public string? SelectedSkinPath { get; set; }
         public string? RomLibraryPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
@@ -4962,6 +4966,7 @@ public partial class MainWindow : Window
     private sealed class UiSettingsToml
     {
         public string? LastRomPath { get; set; }
+        public string? SelectedSkinPath { get; set; }
         public string? RomLibraryPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
@@ -5097,6 +5102,17 @@ public partial class MainWindow : Window
             _romPath = settings.LastRomPath;
             if (RomPathText != null)
                 RomPathText.Text = _romPath;
+        }
+        if (!string.IsNullOrWhiteSpace(settings.SelectedSkinPath))
+        {
+            try
+            {
+                SkinManager.Instance.LoadSkin(settings.SelectedSkinPath);
+            }
+            catch
+            {
+                // Ignore invalid or missing skin files and keep the active skin.
+            }
         }
         if (!string.IsNullOrWhiteSpace(settings.PsxBiosPath))
         {
@@ -5319,6 +5335,9 @@ public partial class MainWindow : Window
         var settings = new UiSettings
         {
             LastRomPath = _romPath,
+            SelectedSkinPath = string.IsNullOrWhiteSpace(SkinManager.Instance.CurrentSkin.SourcePath)
+                ? null
+                : SkinManager.Instance.CurrentSkin.SourcePath,
             RomLibraryPath = _romLibraryPath,
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
@@ -5466,6 +5485,7 @@ public partial class MainWindow : Window
         var model = new UiSettingsToml
         {
             LastRomPath = settings.LastRomPath,
+            SelectedSkinPath = settings.SelectedSkinPath,
             RomLibraryPath = settings.RomLibraryPath,
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
@@ -5569,6 +5589,7 @@ public partial class MainWindow : Window
         var settings = new UiSettings
         {
             LastRomPath = raw.LastRomPath,
+            SelectedSkinPath = raw.SelectedSkinPath,
             RomLibraryPath = raw.RomLibraryPath,
             RecentRomPaths = raw.RecentRomPaths,
             PceBiosPath = raw.PceBiosPath,
@@ -6162,7 +6183,9 @@ public partial class MainWindow : Window
     private async void OnSkinSettings(object? sender, RoutedEventArgs e)
     {
         var dialog = new EutherDrive.UI.Skins.SkinPickerDialog();
-        await dialog.ShowDialog(this);
+        var selectedSkin = await dialog.ShowDialog<ApaSkin?>(this);
+        if (selectedSkin != null)
+            SaveSettings();
     }
 
     private static Control BuildControlsSection(string title, params string[] lines)
@@ -8004,6 +8027,7 @@ public partial class MainWindow : Window
         }
 
         ApplyPresentationLayoutSize(targetWidth, targetHeight);
+        UpdateBackdropDecorLayout();
     }
 
     private void ApplyPresentationLayoutSize(double targetWidth, double targetHeight)
@@ -8033,6 +8057,84 @@ public partial class MainWindow : Window
             CrtPowerIntroFlash.Width = targetWidth;
             CrtPowerIntroFlash.Height = targetHeight;
         }
+    }
+
+    private void OnSkinChanged(object? sender, SkinChangedEventArgs e)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            UpdateBackdropDecorForSkin();
+            UpdateBackdropDecorLayout();
+        });
+    }
+
+    private void UpdateBackdropDecorForSkin()
+    {
+        bool enabled = IsSwedishBackdropEnabled(SkinManager.Instance.CurrentSkin);
+        Color blue = Color.Parse("#006AA7");
+        Color yellow = Color.Parse("#FECC00");
+
+        if (enabled && SkinManager.Instance.CurrentSkin.StyleOverrides.TryGetValue("flag_colors", out string? rawColors))
+        {
+            string[] parts = rawColors.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length >= 2)
+            {
+                try
+                {
+                    blue = Color.Parse(parts[0]);
+                    yellow = Color.Parse(parts[1]);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        ApplyFlagColors(LeftFlagHost, blue, yellow);
+        ApplyFlagColors(RightFlagHost, blue, yellow);
+        UpdateBackdropDecorLayout();
+    }
+
+    private void UpdateBackdropDecorLayout()
+    {
+        if (InputSurface == null || LeftFlagHost == null || RightFlagHost == null)
+            return;
+
+        bool enabled = IsSwedishBackdropEnabled(SkinManager.Instance.CurrentSkin);
+        double availableWidth = InputSurface.Bounds.Width;
+        double contentWidth = ScreenGrid?.Width ?? 0;
+        double gutterWidth = Math.Floor(Math.Max(0, (availableWidth - contentWidth) * 0.5));
+        bool visible = enabled && gutterWidth >= 24;
+
+        LeftFlagHost.IsVisible = visible;
+        RightFlagHost.IsVisible = visible;
+        LeftFlagHost.Width = visible ? gutterWidth : 0;
+        RightFlagHost.Width = visible ? gutterWidth : 0;
+    }
+
+    private static bool IsSwedishBackdropEnabled(ApaSkin skin)
+    {
+        if (skin.StyleOverrides.TryGetValue("viking_mode", out string? vikingMode)
+            && bool.TryParse(vikingMode, out bool enabled)
+            && enabled)
+        {
+            return true;
+        }
+
+        return string.Equals(skin.SkinName, "Svensk Viking", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ApplyFlagColors(Border? host, Color blue, Color yellow)
+    {
+        if (host?.Child is not Viewbox { Child: Grid grid } || grid.Children.Count < 3)
+            return;
+
+        if (grid.Children[0] is Border bg)
+            bg.Background = new SolidColorBrush(blue);
+        if (grid.Children[1] is Border verticalCross)
+            verticalCross.Background = new SolidColorBrush(yellow);
+        if (grid.Children[2] is Border horizontalCross)
+            horizontalCross.Background = new SolidColorBrush(yellow);
     }
 
     private bool UsesNativeDesktopPresentationLayout()

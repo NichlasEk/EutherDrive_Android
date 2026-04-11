@@ -63,24 +63,25 @@ public class SkinManager
     {
         try
         {
-            if (!File.Exists(filePath))
-            {
-                Console.WriteLine($"[SkinManager] Skin file not found: {filePath}");
+            var skin = await Task.Run(() => TryLoadSkinFromFile(filePath));
+            if (skin == null)
                 return false;
-            }
-            
-            var skin = await Task.Run(() => _loader.LoadFromFile(filePath));
-            
-            if (!skin.IsValid)
-            {
-                Console.WriteLine($"[SkinManager] Invalid skin file: {filePath}");
+            return ApplySkin(skin);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SkinManager] Failed to load skin: {ex.Message}");
+            return false;
+        }
+    }
+
+    public bool LoadSkin(string filePath)
+    {
+        try
+        {
+            var skin = TryLoadSkinFromFile(filePath);
+            if (skin == null)
                 return false;
-            }
-            
-            // Remove previous skin from loaded list if same path
-            _loadedSkins.RemoveAll(s => s.SourcePath == filePath);
-            _loadedSkins.Add(skin);
-            
             return ApplySkin(skin);
         }
         catch (Exception ex)
@@ -158,6 +159,26 @@ public class SkinManager
     {
         _currentSkin = CreateDefaultSkin();
         _loadedSkins.Add(_currentSkin);
+    }
+
+    private ApaSkin? TryLoadSkinFromFile(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            Console.WriteLine($"[SkinManager] Skin file not found: {filePath}");
+            return null;
+        }
+
+        var skin = _loader.LoadFromFile(filePath);
+        if (!skin.IsValid)
+        {
+            Console.WriteLine($"[SkinManager] Invalid skin file: {filePath}");
+            return null;
+        }
+
+        _loadedSkins.RemoveAll(s => string.Equals(s.SourcePath, filePath, StringComparison.OrdinalIgnoreCase));
+        _loadedSkins.Add(skin);
+        return skin;
     }
     
     /// <summary>

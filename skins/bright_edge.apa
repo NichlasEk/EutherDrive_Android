@@ -1,0 +1,118 @@
+# Bright Edge Skin
+# Ljust, skarpt och kantigt
+
+[skin]
+name = "Bright Edge"
+author = "EutherDrive"
+version = "1.0"
+description = "Ett ljust high-contrast skin med helt kantiga hörn och tydliga linjer."
+
+[colors]
+background = "#F5F7FB"
+background_soft = "#E8EDF5"
+background_alt = "#DDE5F0"
+
+panel = "#FFFFFF"
+panel_raised = "#F3F6FB"
+panel_glass = "#F2FFFFFF"
+sub_panel = "#EEF3FA"
+option_card = "#F7FAFF"
+
+stroke = "#17324D"
+stroke_bright = "#2F5D87"
+
+text = "#0F1B2A"
+text_muted = "#506273"
+
+accent = "#0072CE"
+accent_warm = "#F59E0B"
+accent_hot = "#D9465F"
+
+[gradient.hero]
+angle = 135
+stop0 = "#FFFFFF,0.0"
+stop1 = "#EEF4FB,0.55"
+stop2 = "#DCE7F5,1.0"
+
+[gradient.screen_glow]
+angle = 45
+stop0 = "#220072CE,0.0"
+stop1 = "#110072CE,0.7"
+stop2 = "#22FFFFFF,1.0"
+
+[typography]
+primary_font = "Inter, Noto Sans"
+display_font = "Inter, Noto Sans"
+mono_font = "JetBrains Mono, Consolas, monospace"
+deck_font = "Inter, Noto Sans"
+base_size = 14
+small_size = 11
+display_size = 28
+kicker_size = 11
+deck_size = 14
+letter_spacing = 0.2
+deck_spacing = 0.8
+
+[layout]
+border_radius = 0
+border_radius_small = 0
+border_radius_large = 0
+border_radius_xlarge = 0
+border_radius_full = 0
+padding = 10
+button_padding_x = 14
+button_padding_y = 8
+spacing = 6
+spacing_small = 4
+spacing_large = 12
+shadow_opacity = 0.08
+shadow_blur = 12
+shadow_spread = 0
+
+[buttons]
+background = "#FFFFFF"
+background_hover = "#EAF2FC"
+background_pressed = "#DDEAF9"
+background_action = "#0072CE"
+background_action_hover = "#0A84E6"
+background_ghost = "#F3F6FB"
+border = "#17324D"
+border_hover = "#0072CE"
+border_ghost = "#7B8EA3"
+border_radius = 0
+transition_duration = 0.16
+hover_scale = 1.0
+pressed_scale = 0.99
+
+[panels]
+glass_background = "#F2FFFFFF"
+glass_opacity = 0.95
+subpanel_background = "#EEF3FA"
+subpanel_border = "#2F5D87"
+optioncard_background = "#F7FAFF"
+optioncard_border = "#17324D"
+border_radius = 0
+subpanel_radius = 0
+optioncard_radius = 0
+
+[inputs]
+background = "#FFFFFF"
+background_focus = "#F5FAFF"
+border = "#17324D"
+border_focus = "#0072CE"
+border_radius = 0
+padding = 9
+
+[effects]
+use_transparency = false
+use_blur = false
+blur_radius = 0
+use_glow = true
+glow_color = "#0072CE"
+glow_intensity = 0.12
+use_animations = true
+animation_speed = 0.8
+use_background_effects = true
+background_color_1 = "#C9DAEE"
+background_color_2 = "#E8EEF7"
+background_opacity = 0.18

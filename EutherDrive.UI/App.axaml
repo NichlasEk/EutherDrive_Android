@@ -328,6 +328,20 @@
 
         <Style Selector="CheckBox">
             <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
+            <Setter Property="Opacity" Value="1" />
+        </Style>
+
+        <Style Selector="CheckBox /template/ ContentPresenter">
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
+        </Style>
+
+        <Style Selector="CheckBox:disabled">
+            <Setter Property="Foreground" Value="{DynamicResource EdTextMutedBrush}" />
+            <Setter Property="Opacity" Value="0.85" />
+        </Style>
+
+        <Style Selector="CheckBox:disabled /template/ ContentPresenter">
+            <Setter Property="Foreground" Value="{DynamicResource EdTextMutedBrush}" />
         </Style>
 
         <Style Selector="CheckBox.option-check">
@@ -338,6 +352,7 @@
 
         <Style Selector="CheckBox.option-check /template/ ContentPresenter">
             <Setter Property="Margin" Value="8,0,0,0" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
         </Style>
 
         <Style Selector="Slider">
