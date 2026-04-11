@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Globalization;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -196,6 +197,11 @@ public class SkinManager
         var inputs = skin.Inputs;
         var typo = skin.Typography;
         var effects = skin.Effects;
+        bool useMetalSurface = TryGetStyleBool(skin, "metal_surface");
+        double metalGloss = TryGetStyleDouble(skin, "metal_surface_gloss", 0.72, 0.0, 1.0);
+        double metalContrast = TryGetStyleDouble(skin, "metal_surface_contrast", 0.22, 0.0, 0.6);
+        Color metalSpecular = TryGetStyleColor(skin, "metal_surface_specular", Color.Parse(colors.Text));
+        Color metalShadow = TryGetStyleColor(skin, "metal_surface_shadow", Color.Parse(colors.Background));
         
         // Update Colors
         SetResource(resources, "EdBg", Color.Parse(colors.Background));
@@ -244,7 +250,7 @@ public class SkinManager
         SetResource(resources, "EdBgSoftBrush", new SolidColorBrush(Color.Parse(colors.BackgroundSoft)));
         SetResource(resources, "EdPanelBrush", new SolidColorBrush(Color.Parse(colors.Panel)));
         SetResource(resources, "EdPanelRaisedBrush", new SolidColorBrush(Color.Parse(colors.PanelRaised)));
-        SetResource(resources, "EdPanelGlassBrush", CreateTransparentBrush(colors.PanelGlass));
+        SetResource(resources, "EdPanelGlassBrush", CreateSurfaceBrush(Color.Parse(colors.PanelGlass), metalSpecular, metalShadow, useMetalSurface, metalGloss, metalContrast));
         SetResource(resources, "EdStrokeBrush", new SolidColorBrush(Color.Parse(colors.Stroke)));
         SetResource(resources, "EdStrokeBrightBrush", new SolidColorBrush(Color.Parse(colors.StrokeBright)));
         SetResource(resources, "EdTextBrush", new SolidColorBrush(Color.Parse(colors.Text)));
@@ -252,10 +258,29 @@ public class SkinManager
         SetResource(resources, "EdAccentBrush", new SolidColorBrush(Color.Parse(colors.Accent)));
         SetResource(resources, "EdAccentWarmBrush", new SolidColorBrush(Color.Parse(colors.AccentWarm)));
         SetResource(resources, "EdAccentHotBrush", new SolidColorBrush(Color.Parse(colors.AccentHot)));
-        SetResource(resources, "EdScreenShellBrush", new SolidColorBrush(Color.Parse(colors.BackgroundAlt)));
-        SetResource(resources, "EdLogPanelBrush", new SolidColorBrush(Color.Parse(colors.BackgroundSoft)));
-        SetResource(resources, "EdLogPanelBorderBrush", new SolidColorBrush(Color.Parse(colors.StrokeBright)));
-        SetResource(resources, "EdLogPanelAccentBrush", new SolidColorBrush(Color.Parse(panels.SubPanelBackground)));
+        SetResource(resources, "EdButtonBgBrush", CreateSurfaceBrush(Color.Parse(buttons.Background), metalSpecular, metalShadow, useMetalSurface, metalGloss, metalContrast));
+        SetResource(resources, "EdButtonBgHoverBrush", CreateSurfaceBrush(Color.Parse(buttons.BackgroundHover), metalSpecular, metalShadow, useMetalSurface, Math.Min(1.0, metalGloss + 0.08), Math.Min(0.6, metalContrast + 0.03)));
+        SetResource(resources, "EdButtonBgPressedBrush", CreateSurfaceBrush(Color.Parse(buttons.BackgroundPressed), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.16), Math.Min(0.6, metalContrast + 0.04)));
+        SetResource(resources, "EdButtonActionBgBrush", CreateSurfaceBrush(Color.Parse(buttons.BackgroundAction), metalSpecular, metalShadow, useMetalSurface, Math.Min(1.0, metalGloss + 0.06), Math.Min(0.6, metalContrast + 0.02)));
+        SetResource(resources, "EdButtonActionBgHoverBrush", CreateSurfaceBrush(Color.Parse(buttons.BackgroundActionHover), metalSpecular, metalShadow, useMetalSurface, Math.Min(1.0, metalGloss + 0.12), Math.Min(0.6, metalContrast + 0.05)));
+        SetResource(resources, "EdButtonGhostBgBrush", CreateSurfaceBrush(Color.Parse(buttons.BackgroundGhost), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.08), metalContrast));
+        SetResource(resources, "EdButtonBorderBrush", CreateMetalBorderBrush(Color.Parse(buttons.Border), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdButtonBorderHoverBrush", CreateMetalBorderBrush(Color.Parse(buttons.BorderHover), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdButtonGhostBorderBrush", CreateMetalBorderBrush(Color.Parse(buttons.BorderGhost), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdToggleBgBrush", CreateSurfaceBrush(Color.Parse(buttons.Background), metalSpecular, metalShadow, useMetalSurface, metalGloss, metalContrast));
+        SetResource(resources, "EdToggleCheckedBgBrush", CreateSurfaceBrush(Color.Parse(buttons.BackgroundAction), metalSpecular, metalShadow, useMetalSurface, Math.Min(1.0, metalGloss + 0.08), Math.Min(0.6, metalContrast + 0.03)));
+        SetResource(resources, "EdSubPanelBrush", CreateSurfaceBrush(Color.Parse(panels.SubPanelBackground), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.08), metalContrast));
+        SetResource(resources, "EdSubPanelBorderBrush", CreateMetalBorderBrush(Color.Parse(panels.SubPanelBorder), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdOptionCardBrush", CreateSurfaceBrush(Color.Parse(panels.OptionCardBackground), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.03), metalContrast));
+        SetResource(resources, "EdOptionCardBorderBrush", CreateMetalBorderBrush(Color.Parse(panels.OptionCardBorder), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdInputBgBrush", CreateSurfaceBrush(Color.Parse(inputs.Background), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.12), metalContrast));
+        SetResource(resources, "EdInputBgFocusBrush", CreateSurfaceBrush(Color.Parse(inputs.BackgroundFocus), metalSpecular, metalShadow, useMetalSurface, metalGloss, Math.Min(0.6, metalContrast + 0.02)));
+        SetResource(resources, "EdInputBorderBrush", CreateMetalBorderBrush(Color.Parse(inputs.Border), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdInputBorderFocusBrush", CreateMetalBorderBrush(Color.Parse(inputs.BorderFocus), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdScreenShellBrush", CreateSurfaceBrush(Color.Parse(colors.BackgroundAlt), metalSpecular, metalShadow, useMetalSurface, Math.Min(1.0, metalGloss + 0.05), metalContrast));
+        SetResource(resources, "EdLogPanelBrush", CreateSurfaceBrush(Color.Parse(colors.BackgroundSoft), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.1), metalContrast));
+        SetResource(resources, "EdLogPanelBorderBrush", CreateMetalBorderBrush(Color.Parse(colors.StrokeBright), metalSpecular, useMetalSurface));
+        SetResource(resources, "EdLogPanelAccentBrush", CreateSurfaceBrush(Color.Parse(panels.SubPanelBackground), metalSpecular, metalShadow, useMetalSurface, Math.Max(0.0, metalGloss - 0.04), metalContrast));
         SetResource(resources, "EdLogPanelAccentBorderBrush", new SolidColorBrush(Color.Parse(colors.Accent)));
         SetResource(resources, "EdLogPanelTextBrush", new SolidColorBrush(Color.Parse(colors.Text)));
         SetResource(resources, "EdLogPanelAccentTextBrush", new SolidColorBrush(Color.Parse(colors.Text)));
@@ -321,6 +346,120 @@ public class SkinManager
         
         return new SolidColorBrush(Color.Parse(hexColor));
     }
+
+    private static IBrush CreateSurfaceBrush(Color baseColor, Color specularColor, Color shadowColor, bool metallic, double gloss, double contrast)
+    {
+        if (!metallic)
+            return new SolidColorBrush(baseColor);
+
+        Color top = Blend(Lighten(baseColor, 0.22 + (gloss * 0.22)), specularColor, 0.30 + (gloss * 0.22));
+        Color upperMid = Blend(Lighten(baseColor, 0.10 + (gloss * 0.08)), specularColor, 0.10 + (gloss * 0.10));
+        Color lowerMid = Blend(Darken(baseColor, 1.0 - contrast), shadowColor, 0.12 + (contrast * 0.4));
+        Color bottom = Blend(Darken(baseColor, 0.72 - (contrast * 0.18)), shadowColor, 0.24 + (contrast * 0.42));
+
+        byte alpha = baseColor.A;
+        top = WithAlpha(top, alpha);
+        upperMid = WithAlpha(upperMid, alpha);
+        lowerMid = WithAlpha(lowerMid, alpha);
+        bottom = WithAlpha(bottom, alpha);
+
+        return new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new AvaloniaGradientStop(top, 0.0),
+                new AvaloniaGradientStop(upperMid, 0.18),
+                new AvaloniaGradientStop(WithAlpha(Blend(specularColor, baseColor, 0.65), (byte)(alpha * (0.35 + (gloss * 0.2)))), 0.24),
+                new AvaloniaGradientStop(lowerMid, 0.56),
+                new AvaloniaGradientStop(WithAlpha(Blend(specularColor, baseColor, 0.78), (byte)(alpha * (0.18 + (gloss * 0.12)))), 0.78),
+                new AvaloniaGradientStop(bottom, 1.0)
+            }
+        };
+    }
+
+    private static IBrush CreateMetalBorderBrush(Color baseColor, Color specularColor, bool metallic)
+    {
+        if (!metallic)
+            return new SolidColorBrush(baseColor);
+
+        byte alpha = baseColor.A;
+        Color top = WithAlpha(Blend(Lighten(baseColor, 0.16), specularColor, 0.28), alpha);
+        Color middle = WithAlpha(baseColor, alpha);
+        Color bottom = WithAlpha(Darken(baseColor, 0.78), alpha);
+
+        return new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new AvaloniaGradientStop(top, 0.0),
+                new AvaloniaGradientStop(middle, 0.48),
+                new AvaloniaGradientStop(bottom, 1.0)
+            }
+        };
+    }
+
+    private static bool TryGetStyleBool(ApaSkin skin, string key)
+        => skin.StyleOverrides.TryGetValue(key, out string? raw)
+            && bool.TryParse(raw, out bool enabled)
+            && enabled;
+
+    private static double TryGetStyleDouble(ApaSkin skin, string key, double defaultValue, double min, double max)
+    {
+        if (skin.StyleOverrides.TryGetValue(key, out string? raw)
+            && double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+        {
+            return Math.Clamp(value, min, max);
+        }
+
+        return defaultValue;
+    }
+
+    private static Color TryGetStyleColor(ApaSkin skin, string key, Color fallback)
+    {
+        if (skin.StyleOverrides.TryGetValue(key, out string? raw))
+        {
+            try
+            {
+                return Color.Parse(raw);
+            }
+            catch
+            {
+            }
+        }
+
+        return fallback;
+    }
+
+    private static Color Lighten(Color color, double amount)
+        => Color.FromArgb(
+            color.A,
+            (byte)Math.Clamp((int)Math.Round(color.R + ((255 - color.R) * amount)), 0, 255),
+            (byte)Math.Clamp((int)Math.Round(color.G + ((255 - color.G) * amount)), 0, 255),
+            (byte)Math.Clamp((int)Math.Round(color.B + ((255 - color.B) * amount)), 0, 255));
+
+    private static Color Darken(Color color, double factor)
+        => Color.FromArgb(
+            color.A,
+            (byte)Math.Clamp((int)Math.Round(color.R * factor), 0, 255),
+            (byte)Math.Clamp((int)Math.Round(color.G * factor), 0, 255),
+            (byte)Math.Clamp((int)Math.Round(color.B * factor), 0, 255));
+
+    private static Color Blend(Color a, Color b, double amount)
+    {
+        double t = Math.Clamp(amount, 0.0, 1.0);
+        return Color.FromArgb(
+            (byte)Math.Clamp((int)Math.Round(a.A + ((b.A - a.A) * t)), 0, 255),
+            (byte)Math.Clamp((int)Math.Round(a.R + ((b.R - a.R) * t)), 0, 255),
+            (byte)Math.Clamp((int)Math.Round(a.G + ((b.G - a.G) * t)), 0, 255),
+            (byte)Math.Clamp((int)Math.Round(a.B + ((b.B - a.B) * t)), 0, 255));
+    }
+
+    private static Color WithAlpha(Color color, byte alpha)
+        => Color.FromArgb(alpha, color.R, color.G, color.B);
     
     private LinearGradientBrush CreateGradientBrush(SkinGradient gradient)
     {

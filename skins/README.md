@@ -101,6 +101,25 @@ metal_rivet_tint = "#C0CAD4"
 - `metal_rivet_opacity`: styrka/kontrast i nitarna
 - `metal_rivet_tint`: baston för nitmetallen
 
+## Metallytor
+
+Om du vill att paneler, knappar och inputfält ska få mer metallisk materialkänsla, inte bara ett overlay, kan du även slå på metallytor:
+
+```toml
+[custom]
+metal_surface = "true"
+metal_surface_gloss = "0.86"
+metal_surface_contrast = "0.26"
+metal_surface_specular = "#F8FBFF"
+metal_surface_shadow = "#05080C"
+```
+
+- `metal_surface`: slår på metalliska gradientmaterial för paneler, knappar och inputs
+- `metal_surface_gloss`: hur stark den polerade highlighten är
+- `metal_surface_contrast`: hur hårt materialet går mellan ljus och skugga
+- `metal_surface_specular`: färgton för de ljusaste reflexerna
+- `metal_surface_shadow`: färgton för de mörkaste metallskuggorna
+
 ## Tips
 
 - Använd [Adobe Color](https://color.adobe.com) för att skapa färgscheman

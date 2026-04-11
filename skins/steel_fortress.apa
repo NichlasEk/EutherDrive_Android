@@ -118,6 +118,11 @@ background_color_2 = "#161B22"
 background_opacity = 0.2
 
 [custom]
+metal_surface = "true"
+metal_surface_gloss = "0.86"
+metal_surface_contrast = "0.26"
+metal_surface_specular = "#F8FBFF"
+metal_surface_shadow = "#05080C"
 metal_sheen = "true"
 metal_sheen_opacity = "0.24"
 metal_sheen_angle = "-20"
