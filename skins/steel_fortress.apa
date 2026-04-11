@@ -1,0 +1,133 @@
+# Steel Fortress Skin
+# Kall borstad metall med nitar och vitglans
+
+[skin]
+name = "Steel Fortress"
+author = "EutherDrive"
+version = "1.0"
+description = "Industriellt stålskin med kall metallglans, nitar och hårda maskinlinjer."
+
+[colors]
+background = "#0A0D12"
+background_soft = "#111720"
+background_alt = "#070A0F"
+
+panel = "#1A212A"
+panel_raised = "#222B35"
+panel_glass = "#D41E2832"
+sub_panel = "#CC18212A"
+option_card = "#D8202B36"
+
+stroke = "#5B6A7A"
+stroke_bright = "#B7C6D4"
+
+text = "#F1F6FB"
+text_muted = "#9AA8B8"
+
+accent = "#C8D3DE"
+accent_warm = "#E0B15E"
+accent_hot = "#D96E6E"
+
+[gradient.hero]
+angle = 135
+stop0 = "#394653,0.0"
+stop1 = "#1A212A,0.45"
+stop2 = "#0E1218,1.0"
+
+[gradient.screen_glow]
+angle = 30
+stop0 = "#33E8F3FF,0.0"
+stop1 = "#11D6E1EF,0.6"
+stop2 = "#22FFFFFF,1.0"
+
+[typography]
+primary_font = "Inter, Noto Sans"
+display_font = "Cinzel, Inter, Noto Sans"
+mono_font = "JetBrains Mono, Consolas, monospace"
+deck_font = "Inter, Noto Sans"
+base_size = 14
+small_size = 11
+display_size = 30
+kicker_size = 11
+deck_size = 15
+letter_spacing = 0.5
+deck_spacing = 1.4
+
+[layout]
+border_radius = 8
+border_radius_small = 6
+border_radius_large = 12
+border_radius_xlarge = 16
+border_radius_full = 999
+padding = 11
+button_padding_x = 15
+button_padding_y = 9
+spacing = 7
+spacing_small = 4
+spacing_large = 13
+shadow_opacity = 0.34
+shadow_blur = 36
+shadow_spread = 8
+
+[buttons]
+background = "#2A3440"
+background_hover = "#364250"
+background_pressed = "#1F2730"
+background_action = "#6A7A89"
+background_action_hover = "#8194A6"
+background_ghost = "#1B232C"
+border = "#7B8B9C"
+border_hover = "#E7F0F7"
+border_ghost = "#566473"
+border_radius = 8
+transition_duration = 0.18
+hover_scale = 1.015
+pressed_scale = 0.988
+
+[panels]
+glass_background = "#D41E2832"
+glass_opacity = 0.88
+subpanel_background = "#CC18212A"
+subpanel_border = "#75879A"
+optioncard_background = "#D8202B36"
+optioncard_border = "#93A6B8"
+border_radius = 12
+subpanel_radius = 10
+optioncard_radius = 8
+
+[inputs]
+background = "#141B23"
+background_focus = "#1A232D"
+border = "#6B7A89"
+border_focus = "#E7F0F7"
+border_radius = 8
+padding = 9
+
+[effects]
+use_transparency = true
+use_blur = true
+blur_radius = 14
+use_glow = true
+glow_color = "#C9D7E4"
+glow_intensity = 0.16
+use_animations = true
+animation_speed = 0.9
+use_background_effects = true
+background_color_1 = "#394654"
+background_color_2 = "#161B22"
+background_opacity = 0.2
+
+[custom]
+metal_sheen = "true"
+metal_sheen_opacity = "0.24"
+metal_sheen_angle = "-20"
+metal_sheen_band_thickness = "0.16"
+metal_sheen_edge_opacity = "0.28"
+metal_sheen_tint = "#D5DEE7"
+metal_sheen_edge_tint = "#F8FBFF"
+metal_rivets = "true"
+metal_rivet_count = "7"
+metal_rivet_radius = "4.6"
+metal_rivet_inset = "16"
+metal_rivet_opacity = "0.82"
+metal_rivet_tint = "#C0CAD4"

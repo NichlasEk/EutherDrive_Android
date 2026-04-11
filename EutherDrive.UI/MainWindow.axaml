@@ -3,6 +3,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:imaging="clr-namespace:Avalonia.Media.Imaging;assembly=Avalonia"
+        xmlns:controls="clr-namespace:EutherDrive.UI.Controls"
         xmlns:savestates="clr-namespace:EutherDrive.UI.Savestates"
         mc:Ignorable="d"
         x:Class="EutherDrive.UI.MainWindow">
@@ -619,6 +620,12 @@
           </Border>
         </Grid>
       </Border>
+
+      <controls:MetalSheenOverlay Name="GlobalMetalSheenOverlay"
+                                  Grid.RowSpan="2"
+                                  Grid.ColumnSpan="2"
+                                  IsHitTestVisible="False"
+                                  IsVisible="False"/>
     </Grid>
   </Grid>
 </Window>

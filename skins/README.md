@@ -18,6 +18,13 @@ Detta är skins-mappen för EutherDrive emulatorn. Skins använder `.apa` format
 - Turkosa accenter (#5EEAD4)
 - Modern, minimalistisk design
 
+### ⚙️ steel_fortress.apa
+**Steel Fortress** - Industriellt metallskin med:
+- Kall borstad stålpalett
+- Polerad metallglans över UI:t
+- Nitdetaljer i overlay-lagret
+- Skarpare, maskinella paneler
+
 ### 🔥 neon_pink.apa
 **Neon Pink Cyberpunk** - Cyberpunk-tema med:
 - Rosa och lila neonlys
@@ -58,6 +65,41 @@ panel_glass = "#CC0D2847" # Med alpha (CC = 80% opacitet)
 - `[inputs]` - Textfält och dropdowns
 - `[effects]` - Transparens, glow, animationer
 - `[custom]` - Egna inställningar för speciella skins
+
+## Metallglanslager
+
+Du kan slå på ett generellt metallglans-overlay från vilken `.apa`-fil som helst via `[custom]`.
+
+```toml
+[custom]
+metal_sheen = "true"
+metal_sheen_opacity = "0.16"
+metal_sheen_angle = "-24"
+metal_sheen_band_thickness = "0.14"
+metal_sheen_edge_opacity = "0.12"
+metal_sheen_tint = "#DCE6F2"
+metal_sheen_edge_tint = "#F6FAFF"
+metal_rivets = "true"
+metal_rivet_count = "7"
+metal_rivet_radius = "4.6"
+metal_rivet_inset = "16"
+metal_rivet_opacity = "0.82"
+metal_rivet_tint = "#C0CAD4"
+```
+
+- `metal_sheen`: slår av/på overlay-lagret
+- `metal_sheen_opacity`: total styrka, `0.0` till `1.0`
+- `metal_sheen_angle`: vinkel på glansbanden i grader
+- `metal_sheen_band_thickness`: bredd på glansbanden, `0.02` till `0.45`
+- `metal_sheen_edge_opacity`: hur stark top-/kantglansen är
+- `metal_sheen_tint`: huvudton för metallreflexen
+- `metal_sheen_edge_tint`: ljusare ton för skarpa highlights
+- `metal_rivets`: slår av/på nitdetaljer längs kanterna
+- `metal_rivet_count`: antal nitar längs överkanten
+- `metal_rivet_radius`: storlek på nitarna
+- `metal_rivet_inset`: avstånd från kanterna
+- `metal_rivet_opacity`: styrka/kontrast i nitarna
+- `metal_rivet_tint`: baston för nitmetallen
 
 ## Tips
 

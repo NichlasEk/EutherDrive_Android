@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -506,6 +507,7 @@ public partial class MainWindow : Window
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
         UpdateBackdropDecorForSkin();
+        UpdateMetalSheenForSkin();
         RomPickerDialog.StartBackgroundBootCoverDeltaSync(_romLibraryPath);
         LoadTitleStats();
         ApplySnesSpecialRomOverrides();
@@ -8065,6 +8067,7 @@ public partial class MainWindow : Window
         {
             UpdateBackdropDecorForSkin();
             UpdateBackdropDecorLayout();
+            UpdateMetalSheenForSkin();
         });
     }
 
@@ -8171,6 +8174,86 @@ public partial class MainWindow : Window
             case Avalonia.Controls.Shapes.Path path:
                 path.Fill = brush;
                 break;
+        }
+    }
+
+    private void UpdateMetalSheenForSkin()
+    {
+        if (GlobalMetalSheenOverlay == null)
+            return;
+
+        ApaSkin skin = SkinManager.Instance.CurrentSkin;
+        bool enabled = TryGetSkinBool(skin, "metal_sheen", defaultValue: false);
+        GlobalMetalSheenOverlay.SheenEnabled = enabled;
+        GlobalMetalSheenOverlay.IsVisible = enabled;
+
+        if (!enabled)
+            return;
+
+        Color fallbackTint = ParseSkinColorOrDefault(skin.Colors.Text, "#E6EEF7");
+        Color fallbackEdge = ParseSkinColorOrDefault(skin.Colors.StrokeBright, "#F6FAFF");
+
+        GlobalMetalSheenOverlay.SheenOpacity = TryGetSkinDouble(skin, "metal_sheen_opacity", 0.16, 0.0, 1.0);
+        GlobalMetalSheenOverlay.SheenAngleDegrees = TryGetSkinDouble(skin, "metal_sheen_angle", -24.0, -89.0, 89.0);
+        GlobalMetalSheenOverlay.BandThickness = TryGetSkinDouble(skin, "metal_sheen_band_thickness", 0.14, 0.02, 0.45);
+        GlobalMetalSheenOverlay.EdgeOpacity = TryGetSkinDouble(skin, "metal_sheen_edge_opacity", 0.12, 0.0, 1.0);
+        GlobalMetalSheenOverlay.TintColor = TryGetSkinColor(skin, "metal_sheen_tint", fallbackTint);
+        GlobalMetalSheenOverlay.EdgeColor = TryGetSkinColor(skin, "metal_sheen_edge_tint", fallbackEdge);
+        GlobalMetalSheenOverlay.RivetsEnabled = TryGetSkinBool(skin, "metal_rivets", defaultValue: false);
+        GlobalMetalSheenOverlay.RivetCount = (int)Math.Round(TryGetSkinDouble(skin, "metal_rivet_count", 6, 2, 24));
+        GlobalMetalSheenOverlay.RivetRadius = TryGetSkinDouble(skin, "metal_rivet_radius", 4.0, 1.5, 20.0);
+        GlobalMetalSheenOverlay.RivetInset = TryGetSkinDouble(skin, "metal_rivet_inset", 14.0, 4.0, 64.0);
+        GlobalMetalSheenOverlay.RivetOpacity = TryGetSkinDouble(skin, "metal_rivet_opacity", 0.7, 0.0, 1.0);
+        GlobalMetalSheenOverlay.RivetColor = TryGetSkinColor(skin, "metal_rivet_tint", fallbackTint);
+    }
+
+    private static bool TryGetSkinBool(ApaSkin skin, string key, bool defaultValue)
+    {
+        if (skin.StyleOverrides.TryGetValue(key, out string? raw)
+            && bool.TryParse(raw, out bool value))
+        {
+            return value;
+        }
+
+        return defaultValue;
+    }
+
+    private static double TryGetSkinDouble(ApaSkin skin, string key, double defaultValue, double min, double max)
+    {
+        if (skin.StyleOverrides.TryGetValue(key, out string? raw)
+            && double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+        {
+            return Math.Clamp(value, min, max);
+        }
+
+        return defaultValue;
+    }
+
+    private static Color TryGetSkinColor(ApaSkin skin, string key, Color fallback)
+    {
+        if (skin.StyleOverrides.TryGetValue(key, out string? raw))
+        {
+            try
+            {
+                return Color.Parse(raw);
+            }
+            catch
+            {
+            }
+        }
+
+        return fallback;
+    }
+
+    private static Color ParseSkinColorOrDefault(string rawColor, string fallbackColor)
+    {
+        try
+        {
+            return Color.Parse(rawColor);
+        }
+        catch
+        {
+            return Color.Parse(fallbackColor);
         }
     }
 
