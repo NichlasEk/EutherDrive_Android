@@ -30,7 +30,10 @@
       <LayoutTransformControl Name="TopControlsScaler" Grid.Row="0" Grid.ColumnSpan="2">
         <Border Classes="panel" Padding="6">
           <StackPanel Name="TopControlsPanel" Orientation="Horizontal" Spacing="6">
-          <Button Classes="action compact" Content="Open ROM…" Click="OnOpenRom"/>
+          <StackPanel Spacing="6">
+            <Button Classes="action compact" Content="Open ROM…" Click="OnOpenRom"/>
+            <Button Classes="compact" Content="Skin" Click="OnSkinSettings"/>
+          </StackPanel>
           <Border Classes="panel" Padding="6,5">
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
               <TextBlock Classes="kicker" Text="Recent"/>
@@ -85,7 +88,6 @@
               <Button Classes="compact" Content="Stop" Click="OnStop"/>
               <Button Classes="ghost compact" Content="About" Click="OnAbout"/>
               <Button Classes="compact" Content="Input Settings" Click="OnInputSettings"/>
-              <Button Classes="action compact" Content="🎨 Skin" Click="OnSkinSettings"/>
             </StackPanel>
             <Expander ExpandDirection="Down" IsExpanded="False" HorizontalAlignment="Left" Width="324">
               <Expander.Header>
@@ -118,15 +120,17 @@
             </Expander>
           </StackPanel>
           <Border Classes="panel" Padding="6,5">
-            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <StackPanel Spacing="4" VerticalAlignment="Center">
               <TextBlock Classes="deck-label" Text="MASTER VOL"/>
-              <Slider Name="MasterVolumeSlider"
-                      Minimum="0"
-                      Maximum="100"
-                      Width="100"
-                      Value="50"
-                      ValueChanged="OnMasterVolumeChanged"/>
-              <TextBlock Name="MasterVolumeValueText" Width="36" Text="50%" VerticalAlignment="Center"/>
+              <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                <Slider Name="MasterVolumeSlider"
+                        Minimum="0"
+                        Maximum="100"
+                        Width="100"
+                        Value="50"
+                        ValueChanged="OnMasterVolumeChanged"/>
+                <TextBlock Name="MasterVolumeValueText" Width="36" Text="50%" VerticalAlignment="Center"/>
+              </StackPanel>
             </StackPanel>
           </Border>
           <Border Classes="panel" Padding="8,5" MinWidth="300">
@@ -160,7 +164,7 @@
                        Background="Transparent"
                        TextWrapping="NoWrap"
                        SelectionBrush="#3A7BD5"
-                       Width="220"/>
+                       Width="260"/>
             </StackPanel>
           </Border>
           </StackPanel>
@@ -472,7 +476,7 @@
                       Height="224"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Center"
-                      RenderTransformOrigin="50%,50%">
+                      RenderTransformOrigin="0.5,0.5">
                   <Grid Name="ScreenSurfaceHost"
                         Width="320"
                         Height="224"/>
@@ -490,7 +494,8 @@
                         Opacity="0"
                         IsVisible="False"
                         IsHitTestVisible="False"
-                        RenderTransformOrigin="50%,50%"/>
+                        ZIndex="100"
+                        RenderTransformOrigin="0.5,0.5"/>
               </Grid>
             </Viewbox>
           </Border>
