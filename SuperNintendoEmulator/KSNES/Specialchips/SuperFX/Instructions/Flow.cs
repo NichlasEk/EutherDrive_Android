@@ -66,6 +66,7 @@ internal static class Flow
         gsu.R[15] = gsu.R[opcode & 0x0F];
         gsu.State.JustJumped = true;
 
+        Instructions.ClearPrefixFlags(gsu);
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
@@ -109,6 +110,7 @@ internal static class Flow
 
         if (!condition)
         {
+            Instructions.ClearPrefixFlags(gsu);
             return (byte)(2 * memoryType.AccessCycles(gsu.ClockSpeed));
         }
 
@@ -117,6 +119,7 @@ internal static class Flow
         gsu.R[15] = unchecked((ushort)(gsu.R[15] + e - 1));
         gsu.State.JustJumped = true;
 
+        Instructions.ClearPrefixFlags(gsu);
         return (byte)(cycles + 2 * memoryType.AccessCycles(gsu.ClockSpeed));
     }
 }

@@ -505,6 +505,7 @@ public class ROM : IROM
 
         if (_superFx != null)
         {
+            SyncSuperFxForSharedAccess();
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_superFx.Read(address, out byte value))
                 return value;
@@ -657,6 +658,7 @@ public class ROM : IROM
 
         if (_superFx != null)
         {
+            SyncSuperFxForSharedAccess();
             uint address = (uint)((bank << 16) | (adr & 0xFFFF));
             if (_superFx.Write(address, value, out bool wroteRam))
             {
@@ -856,6 +858,7 @@ public class ROM : IROM
 
     private byte ReadFastSuperFx(int bank, int adr)
     {
+        SyncSuperFxForSharedAccess();
         uint address = (uint)((bank << 16) | (adr & 0xFFFF));
         if (_superFx!.Read(address, out byte value))
             return value;
@@ -866,6 +869,7 @@ public class ROM : IROM
 
     private void WriteFastSuperFx(int bank, int adr, byte value)
     {
+        SyncSuperFxForSharedAccess();
         uint address = (uint)((bank << 16) | (adr & 0xFFFF));
         if (_superFx!.Write(address, value, out bool wroteRam))
         {
@@ -1479,6 +1483,8 @@ public class ROM : IROM
         if (_superFx == null)
             return false;
 
+        SyncSuperFxForSharedAccess();
+
         int bank = (fullAddress >> 16) & 0xFF;
         int adr = fullAddress & 0xFFFF;
         if (!IsSuperFxMappedAddress(bank, adr))
@@ -2032,6 +2038,7 @@ public class ROM : IROM
         get
         {
             SyncSa1ForDispatch(GetCurrentSnesCycles());
+            SyncSuperFxForSharedAccess();
             return (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
         }
     }
@@ -2041,6 +2048,7 @@ public class ROM : IROM
         get
         {
             SyncSa1ForDispatch(GetCurrentSnesCycles());
+            SyncSuperFxForSharedAccess();
             return _sa1?.SnesNmi() ?? false;
         }
     }
@@ -2060,6 +2068,14 @@ public class ROM : IROM
             _lastSa1DispatchCycles = snesCycles;
         _sa1.Tick(snesCycles);
         _lastSa1DispatchCycles = snesCycles;
+    }
+
+    private void SyncSuperFxForSharedAccess()
+    {
+        if (_superFx == null)
+            return;
+
+        _superFx.Tick(GetCurrentSnesCycles());
     }
 
     private void SyncSa1ForDispatch(ulong snesCycles)

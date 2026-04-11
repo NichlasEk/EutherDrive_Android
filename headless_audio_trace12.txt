@@ -1,0 +1,1472 @@
+[HEADLESS] Loading ROM: /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA).cue
+[HEADLESS] Loading savestate: /home/nichlas/roms/PCE/Valis II (USA)/Valis_II__USA_.cue_18d5779b.euthstate
+[HEADLESS] Running 1200 frames from savestate
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 01).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 02).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 03).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 04).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 05).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 06).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 07).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 08).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 09).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 10).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 11).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 12).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 13).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 14).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 15).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 16).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 17).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 18).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 19).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 20).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 21).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 22).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 23).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 24).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 25).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 26).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 27).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 28).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 29).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 30).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 31).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 32).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 33).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 34).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 35).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 36).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 37).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 38).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 39).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 40).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 41).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 42).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 43).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 44).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 45).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 46).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 47).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 48).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 49).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 50).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 51).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 52).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 53).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 54).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 55).bin BINARY LOADED
+[CD-AUDIO] Track 1 detection: LE=13200 BE=3374355 Result BE=False
+[CD-AUDIO] Track 3 detection: LE=854730 BE=165791003 Result BE=False
+[CD-AUDIO] Track 4 detection: LE=15594764 BE=169324945 Result BE=False
+[CD-AUDIO] Track 5 detection: LE=110215 BE=43211326 Result BE=False
+[CD-AUDIO] Track 6 detection: LE=465276 BE=198659621 Result BE=False
+[CD-AUDIO] Track 7 detection: LE=5004416 BE=180819564 Result BE=False
+[CD-AUDIO] Track 8 detection: LE=2969983 BE=165118201 Result BE=False
+[CD-AUDIO] Track 9 detection: LE=881748 BE=117455200 Result BE=False
+[CD-AUDIO] Track 10 detection: LE=222262 BE=91941726 Result BE=False
+[CD-AUDIO] Track 11 detection: LE=1133295 BE=159745363 Result BE=False
+[CD-AUDIO] Track 12 detection: LE=395943 BE=102563038 Result BE=False
+[CD-AUDIO] Track 13 detection: LE=124061 BE=43086107 Result BE=False
+[CD-AUDIO] Track 14 detection: LE=2448900 BE=159634114 Result BE=False
+[CD-AUDIO] Track 15 detection: LE=3247794 BE=169112328 Result BE=False
+[CD-AUDIO] Track 16 detection: LE=526932 BE=167959020 Result BE=False
+[CD-AUDIO] Track 17 detection: LE=3092183 BE=159561265 Result BE=False
+[CD-AUDIO] Track 18 detection: LE=2395085 BE=144795383 Result BE=False
+[CD-AUDIO] Track 19 detection: LE=36557 BE=9354512 Result BE=False
+[CD-AUDIO] Track 20 detection: LE=1055286 BE=133095068 Result BE=False
+[CD-AUDIO] Track 21 detection: LE=836393 BE=155569302 Result BE=False
+[CD-AUDIO] Track 22 detection: LE=1700599 BE=143201713 Result BE=False
+[CD-AUDIO] Track 23 detection: LE=1468065 BE=155179373 Result BE=False
+[CD-AUDIO] Track 24 detection: LE=601297 BE=116944723 Result BE=False
+[CD-AUDIO] Track 25 detection: LE=6952022 BE=164891902 Result BE=False
+[CD-AUDIO] Track 26 detection: LE=15254 BE=3904259 Result BE=False
+[CD-AUDIO] Track 27 detection: LE=9111956 BE=161193029 Result BE=False
+[CD-AUDIO] Track 28 detection: LE=116158 BE=49597597 Result BE=False
+[CD-AUDIO] Track 29 detection: LE=388866 BE=118740883 Result BE=False
+[CD-AUDIO] Track 30 detection: LE=5694652 BE=152054179 Result BE=False
+[CD-AUDIO] Track 31 detection: LE=7866517 BE=163781258 Result BE=False
+[CD-AUDIO] Track 32 detection: LE=827321 BE=148626730 Result BE=False
+[CD-AUDIO] Track 33 detection: LE=8114502 BE=167803358 Result BE=False
+[CD-AUDIO] Track 34 detection: LE=26137466 BE=158891630 Result BE=False
+[CD-AUDIO] Track 35 detection: LE=1180818 BE=165816211 Result BE=False
+[CD-AUDIO] Track 36 detection: LE=12036446 BE=161231137 Result BE=False
+[CD-AUDIO] Track 37 detection: LE=17441545 BE=182055402 Result BE=False
+[CD-AUDIO] Track 38 detection: LE=44370491 BE=175594676 Result BE=False
+[CD-AUDIO] Track 39 detection: LE=11807427 BE=176592877 Result BE=False
+[CD-AUDIO] Track 40 detection: LE=9696110 BE=162622900 Result BE=False
+[CD-AUDIO] Track 41 detection: LE=34213836 BE=171925250 Result BE=False
+[CD-AUDIO] Track 42 detection: LE=3406782 BE=171955847 Result BE=False
+[CD-AUDIO] Track 43 detection: LE=3807166 BE=163632120 Result BE=False
+[CD-AUDIO] Track 44 detection: LE=2035945 BE=166621703 Result BE=False
+[CD-AUDIO] Track 45 detection: LE=1432245 BE=167424609 Result BE=False
+[CD-AUDIO] Track 46 detection: LE=4263391 BE=175517826 Result BE=False
+[CD-AUDIO] Track 47 detection: LE=1609598 BE=171053276 Result BE=False
+[CD-AUDIO] Track 48 detection: LE=31870 BE=8113075 Result BE=False
+[CD-AUDIO] Track 49 detection: LE=29924 BE=7654679 Result BE=False
+[CD-AUDIO] Track 50 detection: LE=5987193 BE=190691490 Result BE=False
+[CD-AUDIO] Track 51 detection: LE=2749187 BE=201179592 Result BE=False
+[CD-AUDIO] Track 52 detection: LE=553343 BE=128953115 Result BE=False
+[CD-AUDIO] Track 53 detection: LE=70824007 BE=181274518 Result BE=False
+[CD-AUDIO] Track 54 detection: LE=26105939 BE=199665112 Result BE=False
+[CD-AUDIO] Track 55 detection: LE=9543878 BE=180775562 Result BE=False
+Loaded 55 tracks
+[PCE] Reset: MPR7=0x00, PC=0xE0F3, op0=0x78
+[HEADLESS] Savestate slots:
+[HEADLESS]  slot=1 hasData=True payloadLen=7128040 offset=265
+[HEADLESS]  slot=2 hasData=False payloadLen=0 offset=7128305
+[HEADLESS]  slot=3 hasData=False payloadLen=0 offset=7128305
+[HEADLESS] Loaded savestate slot 1 payload (7128040 bytes)
+[PCE] Reset: MPR7=0x00, PC=0xE0F3, op0=0x78
+CD-ROM: state restore phase=BusFree buf=null busy=0 busyCycles=0 dmaAck=0
+[HEADLESS] Frame 0: fb_has_content=False nonzero_pixels=0 first_nonzero=(−1,−1)
+[HEADLESS] Frame 0: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
+[HEADLESS] Dumped frame 0 to /home/nichlas/EutherDrive_Android/logs/headless_frame0.ppm
+[HEADLESS] Frame 5: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
+[HEADLESS] Dumped frame 5 to /home/nichlas/EutherDrive_Android/logs/headless_frame5.ppm
+[HEADLESS] Frame 10: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
+[HEADLESS] Dumped frame 10 to /home/nichlas/EutherDrive_Android/logs/headless_frame10.ppm
+CD-ROM: ReadSector 4576 to 4579
+CD-ROM: READ6 consume 8192/8192 bytes before STATUS
+CD-ROM: ReadSector 4442 to 4453
+CD-ROM: READ6 consume 24576/24576 bytes before STATUS
+CD-ROM: ReadSector 4454 to 4473
+CD-ROM: READ6 consume 40960/40960 bytes before STATUS
+CD-ROM: ReadSector 4474 to 4481
+CD-ROM: READ6 consume 16384/16384 bytes before STATUS
+CD-ROM: ReadSector 4482 to 4489
+CD-ROM: READ6 consume 16384/16384 bytes before STATUS
+CD-ROM: ReadSector 4504 to 4511
+CD-ROM: READ6 consume 16384/16384 bytes before STATUS
+CD-ROM: AudioStartPos [10282]
+CD-ROM: STATUS STALL val=0x80 phase=Busy pc=0xE9A7 cmd=0xD8 cmdbuf=D8-01-02-19-07-00-00-00-00-40 buf=null req=False ack=False bsy=True cd=False io=False msg=False irqA=0x0C irqE=0x00
+CD-ROM: REG RING (newest last)
+  WR reg=0x01 val=0x01 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x02 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x19 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x07 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x00 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x00 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x00 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x00 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x90 pc=0xEA29 phase=CMD
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=CMD
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=CMD
+  RD reg=0x00 val=0xD0 pc=0xE95E phase=CMD
+  WR reg=0x01 val=0x40 pc=0xE97E phase=CMD
+  RD reg=0x02 val=0x00 pc=0xEA37 phase=CMD
+  WR reg=0x02 val=0x80 pc=0xEA37 phase=CMD
+  RD reg=0x00 val=0x80 pc=0xEA29 phase=Busy
+  RD reg=0x02 val=0x80 pc=0xEA31 phase=Busy
+  WR reg=0x02 val=0x00 pc=0xEA31 phase=Busy
+  RD reg=0x00 val=0x80 pc=0xE95E phase=Busy
+  RD reg=0x00 val=0x80 pc=0xE9A7 phase=Busy
+CD-ROM: AudioStartPos busy complete mediaSector=10282 audioCS=10282 state=Playing
+CD-ROM: CDDA load sector=10282 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10282 first samples L=44 R=29 type=AUDIO
+CD-ROM: CDDA advance nextSector=10283 audioES=11403
+CD-ROM: CDDA load sector=10283 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10283 first samples L=−98 R=−81 type=AUDIO
+CD-ROM: CDDA advance nextSector=10284 audioES=11403
+CD-ROM: CDDA load sector=10284 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10284 first samples L=−53 R=−33 type=AUDIO
+CD-ROM: CDDA advance nextSector=10285 audioES=11403
+CD-ROM: CDDA load sector=10285 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10285 first samples L=−147 R=−119 type=AUDIO
+CD-ROM: CDDA advance nextSector=10286 audioES=11403
+CD-ROM: CDDA load sector=10286 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10286 first samples L=−46 R=−36 type=AUDIO
+CD-ROM: CDDA advance nextSector=10287 audioES=11403
+CD-ROM: CDDA load sector=10287 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10287 first samples L=16 R=31 type=AUDIO
+CD-ROM: CDDA advance nextSector=10288 audioES=11403
+CD-ROM: CDDA load sector=10288 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10288 first samples L=−12 R=−10 type=AUDIO
+CD-ROM: CDDA advance nextSector=10289 audioES=11403
+CD-ROM: CDDA load sector=10289 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10289 first samples L=−30 R=−24 type=AUDIO
+CD-ROM: CDDA advance nextSector=10290 audioES=11403
+CD-ROM: CDDA load sector=10290 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10290 first samples L=−88 R=−62 type=AUDIO
+CD-ROM: CDDA advance nextSector=10291 audioES=11403
+CD-ROM: CDDA load sector=10291 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10291 first samples L=−86 R=−76 type=AUDIO
+CD-ROM: CDDA advance nextSector=10292 audioES=11403
+CD-ROM: CDDA load sector=10292 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10292 first samples L=71 R=56 type=AUDIO
+CD-ROM: CDDA advance nextSector=10293 audioES=11403
+CD-ROM: CDDA load sector=10293 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10293 first samples L=59 R=55 type=AUDIO
+CD-ROM: CDDA advance nextSector=10294 audioES=11403
+CD-ROM: CDDA load sector=10294 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10294 first samples L=24 R=15 type=AUDIO
+CD-ROM: CDDA advance nextSector=10295 audioES=11403
+CD-ROM: CDDA load sector=10295 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10295 first samples L=−47 R=−38 type=AUDIO
+CD-ROM: CDDA advance nextSector=10296 audioES=11403
+CD-ROM: CDDA load sector=10296 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10296 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=10297 audioES=11403
+CD-ROM: CDDA load sector=10297 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10297 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=10298 audioES=11403
+CD-ROM: CDDA load sector=10298 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10298 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=10299 audioES=11403
+CD-ROM: CDDA load sector=10299 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10299 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=10300 audioES=11403
+CD-ROM: CDDA load sector=10300 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10300 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=10301 audioES=11403
+CD-ROM: CDDA load sector=10301 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10301 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=10302 audioES=11403
+CD-ROM: CDDA load sector=10302 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10302 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=10303 audioES=11403
+CD-ROM: CDDA load sector=10303 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10303 first samples L=−12 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=10304 audioES=11403
+CD-ROM: CDDA load sector=10304 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10304 first samples L=−11 R=−11 type=AUDIO
+CD-ROM: CDDA advance nextSector=10305 audioES=11403
+CD-ROM: CDDA load sector=10305 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10305 first samples L=−12 R=−7 type=AUDIO
+CD-ROM: CDDA advance nextSector=10306 audioES=11403
+CD-ROM: CDDA load sector=10306 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10306 first samples L=−11 R=−6 type=AUDIO
+CD-ROM: CDDA advance nextSector=10307 audioES=11403
+CD-ROM: CDDA load sector=10307 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10307 first samples L=−11 R=−7 type=AUDIO
+CD-ROM: CDDA advance nextSector=10308 audioES=11403
+CD-ROM: CDDA load sector=10308 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10308 first samples L=−10 R=−7 type=AUDIO
+CD-ROM: CDDA advance nextSector=10309 audioES=11403
+CD-ROM: CDDA load sector=10309 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10309 first samples L=−12 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=10310 audioES=11403
+CD-ROM: CDDA load sector=10310 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10310 first samples L=−11 R=−6 type=AUDIO
+CD-ROM: CDDA advance nextSector=10311 audioES=11403
+CD-ROM: CDDA load sector=10311 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10311 first samples L=−11 R=−6 type=AUDIO
+CD-ROM: CDDA advance nextSector=10312 audioES=11403
+CD-ROM: CDDA load sector=10312 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10312 first samples L=−9 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=10313 audioES=11403
+CD-ROM: CDDA load sector=10313 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10313 first samples L=−14 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=10314 audioES=11403
+CD-ROM: CDDA load sector=10314 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10314 first samples L=−11 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=10315 audioES=11403
+CD-ROM: CDDA load sector=10315 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10315 first samples L=−13 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=10316 audioES=11403
+CD-ROM: CDDA load sector=10316 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10316 first samples L=−15 R=−10 type=AUDIO
+CD-ROM: CDDA advance nextSector=10317 audioES=11403
+CD-ROM: CDDA load sector=10317 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10317 first samples L=−12 R=−7 type=AUDIO
+CD-ROM: CDDA advance nextSector=10318 audioES=11403
+CD-ROM: CDDA load sector=10318 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10318 first samples L=−12 R=−6 type=AUDIO
+CD-ROM: CDDA advance nextSector=10319 audioES=11403
+CD-ROM: CDDA load sector=10319 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10319 first samples L=−12 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=10320 audioES=11403
+CD-ROM: CDDA load sector=10320 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10320 first samples L=−10 R=−7 type=AUDIO
+CD-ROM: CDDA advance nextSector=10321 audioES=11403
+CD-ROM: CDDA load sector=10321 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10321 first samples L=−10 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=10322 audioES=11403
+CD-ROM: CDDA load sector=10322 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10322 first samples L=−14 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=10323 audioES=11403
+CD-ROM: CDDA load sector=10323 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10323 first samples L=−11 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=10324 audioES=11403
+CD-ROM: CDDA load sector=10324 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10324 first samples L=−14 R=−7 type=AUDIO
+CD-ROM: CDDA advance nextSector=10325 audioES=11403
+CD-ROM: CDDA load sector=10325 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10325 first samples L=−14 R=−6 type=AUDIO
+CD-ROM: CDDA advance nextSector=10326 audioES=11403
+CD-ROM: CDDA load sector=10326 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10326 first samples L=−12 R=−5 type=AUDIO
+CD-ROM: CDDA advance nextSector=10327 audioES=11403
+CD-ROM: CDDA load sector=10327 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10327 first samples L=−12 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=10328 audioES=11403
+CD-ROM: CDDA load sector=10328 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10328 first samples L=−36 R=−29 type=AUDIO
+CD-ROM: CDDA advance nextSector=10329 audioES=11403
+CD-ROM: CDDA load sector=10329 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10329 first samples L=−3 R=−15 type=AUDIO
+CD-ROM: CDDA advance nextSector=10330 audioES=11403
+CD-ROM: CDDA load sector=10330 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10330 first samples L=−25 R=−18 type=AUDIO
+CD-ROM: CDDA advance nextSector=10331 audioES=11403
+CD-ROM: CDDA load sector=10331 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10331 first samples L=−15 R=13 type=AUDIO
+CD-ROM: CDDA advance nextSector=10332 audioES=11403
+CD-ROM: CDDA load sector=10332 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10332 first samples L=−28 R=−53 type=AUDIO
+CD-ROM: CDDA advance nextSector=10333 audioES=11403
+CD-ROM: CDDA load sector=10333 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10333 first samples L=25 R=64 type=AUDIO
+CD-ROM: CDDA advance nextSector=10334 audioES=11403
+CD-ROM: CDDA load sector=10334 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10334 first samples L=−55 R=−47 type=AUDIO
+CD-ROM: CDDA advance nextSector=10335 audioES=11403
+CD-ROM: CDDA load sector=10335 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10335 first samples L=20 R=43 type=AUDIO
+CD-ROM: CDDA advance nextSector=10336 audioES=11403
+CD-ROM: CDDA load sector=10336 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10336 first samples L=3885 R=1806 type=AUDIO
+CD-ROM: CDDA advance nextSector=10337 audioES=11403
+CD-ROM: CDDA load sector=10337 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10337 first samples L=−10091 R=−4719 type=AUDIO
+CD-ROM: CDDA advance nextSector=10338 audioES=11403
+CD-ROM: CDDA load sector=10338 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10338 first samples L=4158 R=1934 type=AUDIO
+CD-ROM: CDDA advance nextSector=10339 audioES=11403
+CD-ROM: CDDA load sector=10339 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10339 first samples L=−846 R=−286 type=AUDIO
+CD-ROM: CDDA advance nextSector=10340 audioES=11403
+CD-ROM: CDDA load sector=10340 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10340 first samples L=−4218 R=−1991 type=AUDIO
+CD-ROM: CDDA advance nextSector=10341 audioES=11403
+CD-ROM: CDDA load sector=10341 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10341 first samples L=−1559 R=−669 type=AUDIO
+CD-ROM: CDDA advance nextSector=10342 audioES=11403
+CD-ROM: CDDA load sector=10342 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10342 first samples L=1501 R=717 type=AUDIO
+CD-ROM: CDDA advance nextSector=10343 audioES=11403
+CD-ROM: CDDA load sector=10343 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10343 first samples L=−839 R=−349 type=AUDIO
+CD-ROM: CDDA advance nextSector=10344 audioES=11403
+CD-ROM: CDDA load sector=10344 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10344 first samples L=7094 R=3325 type=AUDIO
+CD-ROM: CDDA advance nextSector=10345 audioES=11403
+CD-ROM: CDDA load sector=10345 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10345 first samples L=1673 R=825 type=AUDIO
+CD-ROM: CDDA advance nextSector=10346 audioES=11403
+CD-ROM: CDDA load sector=10346 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10346 first samples L=−276 R=−91 type=AUDIO
+CD-ROM: CDDA advance nextSector=10347 audioES=11403
+CD-ROM: CDDA load sector=10347 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10347 first samples L=9036 R=4201 type=AUDIO
+CD-ROM: CDDA advance nextSector=10348 audioES=11403
+CD-ROM: CDDA load sector=10348 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10348 first samples L=−1198 R=−525 type=AUDIO
+CD-ROM: CDDA advance nextSector=10349 audioES=11403
+CD-ROM: CDDA load sector=10349 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10349 first samples L=1216 R=570 type=AUDIO
+CD-ROM: CDDA advance nextSector=10350 audioES=11403
+CD-ROM: CDDA load sector=10350 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10350 first samples L=−396 R=−159 type=AUDIO
+CD-ROM: CDDA advance nextSector=10351 audioES=11403
+CD-ROM: CDDA load sector=10351 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10351 first samples L=−3286 R=−1586 type=AUDIO
+CD-ROM: CDDA advance nextSector=10352 audioES=11403
+CD-ROM: CDDA load sector=10352 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10352 first samples L=−447 R=−185 type=AUDIO
+CD-ROM: CDDA advance nextSector=10353 audioES=11403
+CD-ROM: CDDA load sector=10353 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10353 first samples L=−5532 R=−2603 type=AUDIO
+CD-ROM: CDDA advance nextSector=10354 audioES=11403
+CD-ROM: CDDA load sector=10354 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10354 first samples L=−596 R=−278 type=AUDIO
+CD-ROM: CDDA advance nextSector=10355 audioES=11403
+CD-ROM: CDDA load sector=10355 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10355 first samples L=212 R=204 type=AUDIO
+CD-ROM: CDDA advance nextSector=10356 audioES=11403
+CD-ROM: CDDA load sector=10356 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10356 first samples L=2485 R=1141 type=AUDIO
+CD-ROM: CDDA advance nextSector=10357 audioES=11403
+CD-ROM: CDDA load sector=10357 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10357 first samples L=10724 R=5113 type=AUDIO
+CD-ROM: CDDA advance nextSector=10358 audioES=11403
+CD-ROM: CDDA load sector=10358 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10358 first samples L=−76 R=15 type=AUDIO
+CD-ROM: CDDA advance nextSector=10359 audioES=11403
+CD-ROM: CDDA load sector=10359 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10359 first samples L=1729 R=746 type=AUDIO
+CD-ROM: CDDA advance nextSector=10360 audioES=11403
+CD-ROM: CDDA load sector=10360 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10360 first samples L=6343 R=2971 type=AUDIO
+CD-ROM: CDDA advance nextSector=10361 audioES=11403
+CD-ROM: CDDA load sector=10361 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10361 first samples L=848 R=408 type=AUDIO
+CD-ROM: CDDA advance nextSector=10362 audioES=11403
+CD-ROM: CDDA load sector=10362 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10362 first samples L=−1381 R=−675 type=AUDIO
+CD-ROM: CDDA advance nextSector=10363 audioES=11403
+CD-ROM: CDDA load sector=10363 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10363 first samples L=−2315 R=−1107 type=AUDIO
+CD-ROM: CDDA advance nextSector=10364 audioES=11403
+CD-ROM: CDDA load sector=10364 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10364 first samples L=810 R=343 type=AUDIO
+CD-ROM: CDDA advance nextSector=10365 audioES=11403
+CD-ROM: CDDA load sector=10365 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10365 first samples L=4182 R=1966 type=AUDIO
+CD-ROM: CDDA advance nextSector=10366 audioES=11403
+CD-ROM: CDDA load sector=10366 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10366 first samples L=923 R=419 type=AUDIO
+CD-ROM: CDDA advance nextSector=10367 audioES=11403
+CD-ROM: CDDA load sector=10367 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10367 first samples L=−1514 R=−767 type=AUDIO
+CD-ROM: CDDA advance nextSector=10368 audioES=11403
+CD-ROM: CDDA load sector=10368 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10368 first samples L=596 R=253 type=AUDIO
+CD-ROM: CDDA advance nextSector=10369 audioES=11403
+CD-ROM: CDDA load sector=10369 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10369 first samples L=−6385 R=−2975 type=AUDIO
+CD-ROM: CDDA advance nextSector=10370 audioES=11403
+CD-ROM: CDDA load sector=10370 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10370 first samples L=3382 R=1560 type=AUDIO
+CD-ROM: CDDA advance nextSector=10371 audioES=11403
+CD-ROM: CDDA load sector=10371 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10371 first samples L=1066 R=557 type=AUDIO
+CD-ROM: CDDA advance nextSector=10372 audioES=11403
+CD-ROM: CDDA load sector=10372 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10372 first samples L=−3745 R=−1815 type=AUDIO
+CD-ROM: CDDA advance nextSector=10373 audioES=11403
+CD-ROM: CDDA load sector=10373 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10373 first samples L=46 R=67 type=AUDIO
+CD-ROM: CDDA advance nextSector=10374 audioES=11403
+CD-ROM: CDDA load sector=10374 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10374 first samples L=−1008 R=−477 type=AUDIO
+CD-ROM: CDDA advance nextSector=10375 audioES=11403
+CD-ROM: CDDA load sector=10375 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10375 first samples L=267 R=111 type=AUDIO
+CD-ROM: CDDA advance nextSector=10376 audioES=11403
+CD-ROM: CDDA load sector=10376 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10376 first samples L=−1637 R=−678 type=AUDIO
+CD-ROM: CDDA advance nextSector=10377 audioES=11403
+CD-ROM: CDDA load sector=10377 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10377 first samples L=4621 R=2154 type=AUDIO
+CD-ROM: CDDA advance nextSector=10378 audioES=11403
+CD-ROM: CDDA load sector=10378 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10378 first samples L=−18 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=10379 audioES=11403
+CD-ROM: CDDA load sector=10379 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10379 first samples L=4936 R=2275 type=AUDIO
+CD-ROM: CDDA advance nextSector=10380 audioES=11403
+CD-ROM: CDDA load sector=10380 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10380 first samples L=618 R=284 type=AUDIO
+CD-ROM: CDDA advance nextSector=10381 audioES=11403
+CD-ROM: CDDA load sector=10381 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10381 first samples L=−6368 R=−2973 type=AUDIO
+CD-ROM: CDDA advance nextSector=10382 audioES=11403
+CD-ROM: CDDA load sector=10382 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10382 first samples L=2362 R=1095 type=AUDIO
+CD-ROM: CDDA advance nextSector=10383 audioES=11403
+CD-ROM: CDDA load sector=10383 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10383 first samples L=−5863 R=−2776 type=AUDIO
+CD-ROM: CDDA advance nextSector=10384 audioES=11403
+CD-ROM: CDDA load sector=10384 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10384 first samples L=−1192 R=−569 type=AUDIO
+CD-ROM: CDDA advance nextSector=10385 audioES=11403
+CD-ROM: CDDA load sector=10385 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10385 first samples L=739 R=347 type=AUDIO
+CD-ROM: CDDA advance nextSector=10386 audioES=11403
+CD-ROM: CDDA load sector=10386 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10386 first samples L=−3916 R=−1857 type=AUDIO
+CD-ROM: CDDA advance nextSector=10387 audioES=11403
+CD-ROM: CDDA load sector=10387 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10387 first samples L=3929 R=1800 type=AUDIO
+CD-ROM: CDDA advance nextSector=10388 audioES=11403
+CD-ROM: CDDA load sector=10388 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10388 first samples L=2836 R=1320 type=AUDIO
+CD-ROM: CDDA advance nextSector=10389 audioES=11403
+CD-ROM: CDDA load sector=10389 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10389 first samples L=−5427 R=−2566 type=AUDIO
+CD-ROM: CDDA advance nextSector=10390 audioES=11403
+CD-ROM: CDDA load sector=10390 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10390 first samples L=6303 R=2927 type=AUDIO
+CD-ROM: CDDA advance nextSector=10391 audioES=11403
+CD-ROM: CDDA load sector=10391 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10391 first samples L=−2703 R=−1284 type=AUDIO
+CD-ROM: CDDA advance nextSector=10392 audioES=11403
+CD-ROM: CDDA load sector=10392 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10392 first samples L=−2202 R=−1105 type=AUDIO
+CD-ROM: CDDA advance nextSector=10393 audioES=11403
+CD-ROM: CDDA load sector=10393 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10393 first samples L=2967 R=1445 type=AUDIO
+CD-ROM: CDDA advance nextSector=10394 audioES=11403
+CD-ROM: CDDA load sector=10394 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10394 first samples L=−4517 R=−2181 type=AUDIO
+CD-ROM: CDDA advance nextSector=10395 audioES=11403
+CD-ROM: CDDA load sector=10395 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10395 first samples L=5335 R=2499 type=AUDIO
+CD-ROM: CDDA advance nextSector=10396 audioES=11403
+CD-ROM: CDDA load sector=10396 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10396 first samples L=−5227 R=−2470 type=AUDIO
+CD-ROM: CDDA advance nextSector=10397 audioES=11403
+CD-ROM: CDDA load sector=10397 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10397 first samples L=5561 R=2565 type=AUDIO
+CD-ROM: CDDA advance nextSector=10398 audioES=11403
+CD-ROM: CDDA load sector=10398 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10398 first samples L=−1567 R=−754 type=AUDIO
+CD-ROM: CDDA advance nextSector=10399 audioES=11403
+CD-ROM: CDDA load sector=10399 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10399 first samples L=−148 R=−88 type=AUDIO
+CD-ROM: CDDA advance nextSector=10400 audioES=11403
+CD-ROM: CDDA load sector=10400 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10400 first samples L=4740 R=2183 type=AUDIO
+CD-ROM: CDDA advance nextSector=10401 audioES=11403
+CD-ROM: CDDA load sector=10401 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10401 first samples L=−6137 R=−2886 type=AUDIO
+CD-ROM: CDDA advance nextSector=10402 audioES=11403
+CD-ROM: CDDA load sector=10402 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10402 first samples L=4180 R=1936 type=AUDIO
+CD-ROM: CDDA advance nextSector=10403 audioES=11403
+CD-ROM: CDDA load sector=10403 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10403 first samples L=−2365 R=−1133 type=AUDIO
+CD-ROM: CDDA advance nextSector=10404 audioES=11403
+CD-ROM: CDDA load sector=10404 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10404 first samples L=−2436 R=−1136 type=AUDIO
+CD-ROM: CDDA advance nextSector=10405 audioES=11403
+CD-ROM: CDDA load sector=10405 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10405 first samples L=3431 R=1619 type=AUDIO
+CD-ROM: CDDA advance nextSector=10406 audioES=11403
+CD-ROM: CDDA load sector=10406 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10406 first samples L=−2631 R=−1253 type=AUDIO
+CD-ROM: CDDA advance nextSector=10407 audioES=11403
+CD-ROM: CDDA load sector=10407 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10407 first samples L=1647 R=765 type=AUDIO
+CD-ROM: CDDA advance nextSector=10408 audioES=11403
+CD-ROM: CDDA load sector=10408 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10408 first samples L=−677 R=−298 type=AUDIO
+CD-ROM: CDDA advance nextSector=10409 audioES=11403
+CD-ROM: CDDA load sector=10409 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10409 first samples L=−243 R=−146 type=AUDIO
+CD-ROM: CDDA advance nextSector=10410 audioES=11403
+CD-ROM: CDDA load sector=10410 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10410 first samples L=−275 R=−224 type=AUDIO
+CD-ROM: CDDA advance nextSector=10411 audioES=11403
+CD-ROM: CDDA load sector=10411 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10411 first samples L=−542 R=925 type=AUDIO
+CD-ROM: CDDA advance nextSector=10412 audioES=11403
+CD-ROM: CDDA load sector=10412 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10412 first samples L=1369 R=1503 type=AUDIO
+CD-ROM: CDDA advance nextSector=10413 audioES=11403
+CD-ROM: CDDA load sector=10413 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10413 first samples L=1698 R=866 type=AUDIO
+CD-ROM: CDDA advance nextSector=10414 audioES=11403
+CD-ROM: CDDA load sector=10414 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10414 first samples L=1536 R=3365 type=AUDIO
+CD-ROM: CDDA advance nextSector=10415 audioES=11403
+CD-ROM: CDDA load sector=10415 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10415 first samples L=−1280 R=−728 type=AUDIO
+CD-ROM: CDDA advance nextSector=10416 audioES=11403
+CD-ROM: CDDA load sector=10416 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10416 first samples L=1436 R=592 type=AUDIO
+CD-ROM: CDDA advance nextSector=10417 audioES=11403
+CD-ROM: CDDA load sector=10417 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10417 first samples L=4971 R=5221 type=AUDIO
+CD-ROM: CDDA advance nextSector=10418 audioES=11403
+CD-ROM: CDDA load sector=10418 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10418 first samples L=−4432 R=−5889 type=AUDIO
+CD-ROM: CDDA advance nextSector=10419 audioES=11403
+CD-ROM: CDDA load sector=10419 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10419 first samples L=4480 R=4800 type=AUDIO
+CD-ROM: CDDA advance nextSector=10420 audioES=11403
+CD-ROM: CDDA load sector=10420 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10420 first samples L=−1025 R=−2835 type=AUDIO
+CD-ROM: CDDA advance nextSector=10421 audioES=11403
+CD-ROM: CDDA load sector=10421 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10421 first samples L=2288 R=5917 type=AUDIO
+CD-ROM: CDDA advance nextSector=10422 audioES=11403
+CD-ROM: CDDA load sector=10422 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10422 first samples L=2275 R=1563 type=AUDIO
+CD-ROM: CDDA advance nextSector=10423 audioES=11403
+CD-ROM: CDDA load sector=10423 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10423 first samples L=667 R=3011 type=AUDIO
+CD-ROM: CDDA advance nextSector=10424 audioES=11403
+CD-ROM: CDDA load sector=10424 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10424 first samples L=4174 R=3082 type=AUDIO
+CD-ROM: CDDA advance nextSector=10425 audioES=11403
+CD-ROM: CDDA load sector=10425 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10425 first samples L=9530 R=4454 type=AUDIO
+CD-ROM: CDDA advance nextSector=10426 audioES=11403
+CD-ROM: CDDA load sector=10426 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10426 first samples L=−5567 R=−3552 type=AUDIO
+CD-ROM: CDDA advance nextSector=10427 audioES=11403
+CD-ROM: CDDA load sector=10427 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10427 first samples L=−6541 R=−4822 type=AUDIO
+CD-ROM: CDDA advance nextSector=10428 audioES=11403
+CD-ROM: CDDA load sector=10428 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10428 first samples L=−4662 R=−2705 type=AUDIO
+CD-ROM: CDDA advance nextSector=10429 audioES=11403
+CD-ROM: CDDA load sector=10429 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10429 first samples L=−7674 R=−7785 type=AUDIO
+CD-ROM: CDDA advance nextSector=10430 audioES=11403
+CD-ROM: CDDA load sector=10430 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10430 first samples L=−3934 R=−2702 type=AUDIO
+CD-ROM: CDDA advance nextSector=10431 audioES=11403
+CD-ROM: CDDA load sector=10431 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10431 first samples L=−167 R=520 type=AUDIO
+CD-ROM: CDDA advance nextSector=10432 audioES=11403
+CD-ROM: CDDA load sector=10432 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10432 first samples L=5064 R=2300 type=AUDIO
+CD-ROM: CDDA advance nextSector=10433 audioES=11403
+CD-ROM: CDDA load sector=10433 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10433 first samples L=2354 R=4271 type=AUDIO
+CD-ROM: CDDA advance nextSector=10434 audioES=11403
+CD-ROM: CDDA load sector=10434 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10434 first samples L=2477 R=1524 type=AUDIO
+CD-ROM: CDDA advance nextSector=10435 audioES=11403
+CD-ROM: CDDA load sector=10435 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10435 first samples L=−10374 R=−4952 type=AUDIO
+CD-ROM: CDDA advance nextSector=10436 audioES=11403
+CD-ROM: CDDA load sector=10436 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10436 first samples L=−555 R=−1873 type=AUDIO
+CD-ROM: CDDA advance nextSector=10437 audioES=11403
+CD-ROM: CDDA load sector=10437 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10437 first samples L=−4013 R=−900 type=AUDIO
+CD-ROM: CDDA advance nextSector=10438 audioES=11403
+CD-ROM: CDDA load sector=10438 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10438 first samples L=−1330 R=−1986 type=AUDIO
+CD-ROM: CDDA advance nextSector=10439 audioES=11403
+CD-ROM: CDDA load sector=10439 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10439 first samples L=524 R=−420 type=AUDIO
+CD-ROM: CDDA advance nextSector=10440 audioES=11403
+CD-ROM: CDDA load sector=10440 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10440 first samples L=16289 R=15052 type=AUDIO
+CD-ROM: CDDA advance nextSector=10441 audioES=11403
+CD-ROM: CDDA load sector=10441 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10441 first samples L=−8236 R=−3096 type=AUDIO
+CD-ROM: CDDA advance nextSector=10442 audioES=11403
+CD-ROM: CDDA load sector=10442 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10442 first samples L=−271 R=−3197 type=AUDIO
+CD-ROM: CDDA advance nextSector=10443 audioES=11403
+CD-ROM: CDDA load sector=10443 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10443 first samples L=−3690 R=−4045 type=AUDIO
+CD-ROM: CDDA advance nextSector=10444 audioES=11403
+CD-ROM: CDDA load sector=10444 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10444 first samples L=−2317 R=−1110 type=AUDIO
+CD-ROM: CDDA advance nextSector=10445 audioES=11403
+CD-ROM: CDDA load sector=10445 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10445 first samples L=9966 R=10645 type=AUDIO
+CD-ROM: CDDA advance nextSector=10446 audioES=11403
+CD-ROM: CDDA load sector=10446 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10446 first samples L=−3892 R=−3700 type=AUDIO
+CD-ROM: CDDA advance nextSector=10447 audioES=11403
+CD-ROM: CDDA load sector=10447 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10447 first samples L=−7375 R=−8059 type=AUDIO
+CD-ROM: CDDA advance nextSector=10448 audioES=11403
+CD-ROM: CDDA load sector=10448 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10448 first samples L=11151 R=11459 type=AUDIO
+CD-ROM: CDDA advance nextSector=10449 audioES=11403
+CD-ROM: CDDA load sector=10449 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10449 first samples L=66 R=112 type=AUDIO
+CD-ROM: CDDA advance nextSector=10450 audioES=11403
+CD-ROM: CDDA load sector=10450 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10450 first samples L=6870 R=6150 type=AUDIO
+CD-ROM: CDDA advance nextSector=10451 audioES=11403
+CD-ROM: CDDA load sector=10451 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10451 first samples L=−21990 R=−18130 type=AUDIO
+CD-ROM: CDDA advance nextSector=10452 audioES=11403
+CD-ROM: CDDA load sector=10452 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10452 first samples L=−12765 R=−10040 type=AUDIO
+CD-ROM: CDDA advance nextSector=10453 audioES=11403
+CD-ROM: CDDA load sector=10453 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10453 first samples L=1020 R=2711 type=AUDIO
+CD-ROM: CDDA advance nextSector=10454 audioES=11403
+CD-ROM: CDDA load sector=10454 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10454 first samples L=14374 R=11782 type=AUDIO
+CD-ROM: CDDA advance nextSector=10455 audioES=11403
+CD-ROM: CDDA load sector=10455 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10455 first samples L=−643 R=−6419 type=AUDIO
+CD-ROM: CDDA advance nextSector=10456 audioES=11403
+CD-ROM: CDDA load sector=10456 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10456 first samples L=−16432 R=−12421 type=AUDIO
+CD-ROM: CDDA advance nextSector=10457 audioES=11403
+CD-ROM: CDDA load sector=10457 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10457 first samples L=−4210 R=−5365 type=AUDIO
+CD-ROM: CDDA advance nextSector=10458 audioES=11403
+CD-ROM: CDDA load sector=10458 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10458 first samples L=−4942 R=−5931 type=AUDIO
+CD-ROM: CDDA advance nextSector=10459 audioES=11403
+CD-ROM: CDDA load sector=10459 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10459 first samples L=9514 R=6549 type=AUDIO
+CD-ROM: CDDA advance nextSector=10460 audioES=11403
+CD-ROM: CDDA load sector=10460 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10460 first samples L=−2208 R=−521 type=AUDIO
+CD-ROM: CDDA advance nextSector=10461 audioES=11403
+CD-ROM: CDDA load sector=10461 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10461 first samples L=11127 R=12464 type=AUDIO
+CD-ROM: CDDA advance nextSector=10462 audioES=11403
+CD-ROM: CDDA load sector=10462 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10462 first samples L=6324 R=2893 type=AUDIO
+CD-ROM: CDDA advance nextSector=10463 audioES=11403
+CD-ROM: CDDA load sector=10463 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10463 first samples L=−7284 R=−6226 type=AUDIO
+CD-ROM: CDDA advance nextSector=10464 audioES=11403
+CD-ROM: CDDA load sector=10464 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10464 first samples L=7940 R=5883 type=AUDIO
+CD-ROM: CDDA advance nextSector=10465 audioES=11403
+CD-ROM: CDDA load sector=10465 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10465 first samples L=−4970 R=−3551 type=AUDIO
+CD-ROM: CDDA advance nextSector=10466 audioES=11403
+CD-ROM: CDDA load sector=10466 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10466 first samples L=7192 R=9318 type=AUDIO
+CD-ROM: CDDA advance nextSector=10467 audioES=11403
+CD-ROM: CDDA load sector=10467 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10467 first samples L=−4564 R=−4286 type=AUDIO
+CD-ROM: CDDA advance nextSector=10468 audioES=11403
+CD-ROM: CDDA load sector=10468 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10468 first samples L=−1433 R=2305 type=AUDIO
+CD-ROM: CDDA advance nextSector=10469 audioES=11403
+CD-ROM: CDDA load sector=10469 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10469 first samples L=−11581 R=−10822 type=AUDIO
+CD-ROM: CDDA advance nextSector=10470 audioES=11403
+CD-ROM: CDDA load sector=10470 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10470 first samples L=−12919 R=−10417 type=AUDIO
+CD-ROM: CDDA advance nextSector=10471 audioES=11403
+CD-ROM: CDDA load sector=10471 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10471 first samples L=6856 R=5041 type=AUDIO
+CD-ROM: CDDA advance nextSector=10472 audioES=11403
+CD-ROM: CDDA load sector=10472 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10472 first samples L=12459 R=10432 type=AUDIO
+CD-ROM: CDDA advance nextSector=10473 audioES=11403
+CD-ROM: CDDA load sector=10473 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10473 first samples L=6459 R=6754 type=AUDIO
+CD-ROM: CDDA advance nextSector=10474 audioES=11403
+CD-ROM: CDDA load sector=10474 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10474 first samples L=−1525 R=−1320 type=AUDIO
+CD-ROM: CDDA advance nextSector=10475 audioES=11403
+CD-ROM: CDDA load sector=10475 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10475 first samples L=6186 R=7121 type=AUDIO
+CD-ROM: CDDA advance nextSector=10476 audioES=11403
+CD-ROM: CDDA load sector=10476 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10476 first samples L=−1007 R=−3657 type=AUDIO
+CD-ROM: CDDA advance nextSector=10477 audioES=11403
+CD-ROM: CDDA load sector=10477 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10477 first samples L=−3202 R=−3102 type=AUDIO
+CD-ROM: CDDA advance nextSector=10478 audioES=11403
+CD-ROM: CDDA load sector=10478 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10478 first samples L=−10378 R=−7275 type=AUDIO
+CD-ROM: CDDA advance nextSector=10479 audioES=11403
+CD-ROM: CDDA load sector=10479 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10479 first samples L=10753 R=5387 type=AUDIO
+CD-ROM: CDDA advance nextSector=10480 audioES=11403
+CD-ROM: CDDA load sector=10480 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10480 first samples L=−2066 R=−1385 type=AUDIO
+CD-ROM: CDDA advance nextSector=10481 audioES=11403
+CD-ROM: CDDA load sector=10481 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10481 first samples L=−5601 R=−4068 type=AUDIO
+CD-ROM: CDDA advance nextSector=10482 audioES=11403
+CD-ROM: CDDA load sector=10482 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10482 first samples L=8328 R=6140 type=AUDIO
+CD-ROM: CDDA advance nextSector=10483 audioES=11403
+CD-ROM: CDDA load sector=10483 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10483 first samples L=6267 R=5402 type=AUDIO
+CD-ROM: CDDA advance nextSector=10484 audioES=11403
+CD-ROM: CDDA load sector=10484 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10484 first samples L=−4055 R=−3874 type=AUDIO
+CD-ROM: CDDA advance nextSector=10485 audioES=11403
+CD-ROM: CDDA load sector=10485 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10485 first samples L=−8595 R=−9171 type=AUDIO
+CD-ROM: CDDA advance nextSector=10486 audioES=11403
+CD-ROM: CDDA load sector=10486 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10486 first samples L=1655 R=−1616 type=AUDIO
+CD-ROM: CDDA advance nextSector=10487 audioES=11403
+CD-ROM: CDDA load sector=10487 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10487 first samples L=4971 R=3011 type=AUDIO
+CD-ROM: CDDA advance nextSector=10488 audioES=11403
+CD-ROM: CDDA load sector=10488 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10488 first samples L=5904 R=2876 type=AUDIO
+CD-ROM: CDDA advance nextSector=10489 audioES=11403
+CD-ROM: CDDA load sector=10489 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10489 first samples L=964 R=392 type=AUDIO
+CD-ROM: CDDA advance nextSector=10490 audioES=11403
+CD-ROM: CDDA load sector=10490 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10490 first samples L=−1717 R=−301 type=AUDIO
+CD-ROM: CDDA advance nextSector=10491 audioES=11403
+CD-ROM: CDDA load sector=10491 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10491 first samples L=1447 R=−206 type=AUDIO
+CD-ROM: CDDA advance nextSector=10492 audioES=11403
+CD-ROM: CDDA load sector=10492 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10492 first samples L=7449 R=7535 type=AUDIO
+CD-ROM: CDDA advance nextSector=10493 audioES=11403
+CD-ROM: CDDA load sector=10493 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10493 first samples L=−15049 R=−12803 type=AUDIO
+CD-ROM: CDDA advance nextSector=10494 audioES=11403
+CD-ROM: CDDA load sector=10494 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10494 first samples L=5866 R=2521 type=AUDIO
+CD-ROM: CDDA advance nextSector=10495 audioES=11403
+CD-ROM: CDDA load sector=10495 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10495 first samples L=5147 R=5838 type=AUDIO
+CD-ROM: CDDA advance nextSector=10496 audioES=11403
+CD-ROM: CDDA load sector=10496 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10496 first samples L=−8635 R=−9387 type=AUDIO
+CD-ROM: CDDA advance nextSector=10497 audioES=11403
+CD-ROM: CDDA load sector=10497 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10497 first samples L=−9787 R=−8810 type=AUDIO
+CD-ROM: CDDA advance nextSector=10498 audioES=11403
+CD-ROM: CDDA load sector=10498 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10498 first samples L=−1166 R=−569 type=AUDIO
+CD-ROM: CDDA advance nextSector=10499 audioES=11403
+CD-ROM: CDDA load sector=10499 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10499 first samples L=14545 R=10513 type=AUDIO
+CD-ROM: CDDA advance nextSector=10500 audioES=11403
+CD-ROM: CDDA load sector=10500 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10500 first samples L=1152 R=1391 type=AUDIO
+CD-ROM: CDDA advance nextSector=10501 audioES=11403
+CD-ROM: CDDA load sector=10501 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10501 first samples L=20644 R=20344 type=AUDIO
+CD-ROM: CDDA advance nextSector=10502 audioES=11403
+CD-ROM: CDDA load sector=10502 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10502 first samples L=−2063 R=−2549 type=AUDIO
+CD-ROM: CDDA advance nextSector=10503 audioES=11403
+CD-ROM: CDDA load sector=10503 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10503 first samples L=−6489 R=−6243 type=AUDIO
+CD-ROM: CDDA advance nextSector=10504 audioES=11403
+CD-ROM: CDDA load sector=10504 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10504 first samples L=−3262 R=503 type=AUDIO
+CD-ROM: CDDA advance nextSector=10505 audioES=11403
+CD-ROM: CDDA load sector=10505 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10505 first samples L=−2886 R=−2933 type=AUDIO
+CD-ROM: CDDA advance nextSector=10506 audioES=11403
+CD-ROM: CDDA load sector=10506 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10506 first samples L=6314 R=5938 type=AUDIO
+CD-ROM: CDDA advance nextSector=10507 audioES=11403
+CD-ROM: CDDA load sector=10507 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10507 first samples L=6805 R=5523 type=AUDIO
+CD-ROM: CDDA advance nextSector=10508 audioES=11403
+CD-ROM: CDDA load sector=10508 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10508 first samples L=−5002 R=−3025 type=AUDIO
+CD-ROM: CDDA advance nextSector=10509 audioES=11403
+CD-ROM: CDDA load sector=10509 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10509 first samples L=−1022 R=25 type=AUDIO
+CD-ROM: CDDA advance nextSector=10510 audioES=11403
+CD-ROM: CDDA load sector=10510 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10510 first samples L=−3992 R=−7636 type=AUDIO
+CD-ROM: CDDA advance nextSector=10511 audioES=11403
+CD-ROM: CDDA load sector=10511 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10511 first samples L=−7058 R=−5731 type=AUDIO
+CD-ROM: CDDA advance nextSector=10512 audioES=11403
+CD-ROM: CDDA load sector=10512 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10512 first samples L=−1737 R=528 type=AUDIO
+CD-ROM: CDDA advance nextSector=10513 audioES=11403
+CD-ROM: CDDA load sector=10513 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10513 first samples L=−12394 R=−11055 type=AUDIO
+CD-ROM: CDDA advance nextSector=10514 audioES=11403
+CD-ROM: CDDA load sector=10514 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10514 first samples L=12999 R=10005 type=AUDIO
+CD-ROM: CDDA advance nextSector=10515 audioES=11403
+CD-ROM: CDDA load sector=10515 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10515 first samples L=2471 R=5433 type=AUDIO
+CD-ROM: CDDA advance nextSector=10516 audioES=11403
+CD-ROM: CDDA load sector=10516 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10516 first samples L=−11359 R=−11774 type=AUDIO
+CD-ROM: CDDA advance nextSector=10517 audioES=11403
+CD-ROM: CDDA load sector=10517 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10517 first samples L=−1877 R=−1771 type=AUDIO
+CD-ROM: CDDA advance nextSector=10518 audioES=11403
+CD-ROM: CDDA load sector=10518 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10518 first samples L=−1014 R=−1993 type=AUDIO
+CD-ROM: CDDA advance nextSector=10519 audioES=11403
+CD-ROM: CDDA load sector=10519 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10519 first samples L=−1519 R=−1189 type=AUDIO
+CD-ROM: CDDA advance nextSector=10520 audioES=11403
+CD-ROM: CDDA load sector=10520 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10520 first samples L=7253 R=7298 type=AUDIO
+CD-ROM: CDDA advance nextSector=10521 audioES=11403
+CD-ROM: CDDA load sector=10521 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10521 first samples L=2218 R=981 type=AUDIO
+CD-ROM: CDDA advance nextSector=10522 audioES=11403
+CD-ROM: CDDA load sector=10522 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10522 first samples L=430 R=2436 type=AUDIO
+CD-ROM: CDDA advance nextSector=10523 audioES=11403
+CD-ROM: CDDA load sector=10523 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10523 first samples L=−1537 R=−2240 type=AUDIO
+CD-ROM: CDDA advance nextSector=10524 audioES=11403
+CD-ROM: CDDA load sector=10524 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10524 first samples L=11300 R=7487 type=AUDIO
+CD-ROM: CDDA advance nextSector=10525 audioES=11403
+CD-ROM: CDDA load sector=10525 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10525 first samples L=7 R=975 type=AUDIO
+CD-ROM: CDDA advance nextSector=10526 audioES=11403
+CD-ROM: CDDA load sector=10526 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10526 first samples L=2842 R=548 type=AUDIO
+CD-ROM: CDDA advance nextSector=10527 audioES=11403
+CD-ROM: CDDA load sector=10527 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10527 first samples L=81 R=−663 type=AUDIO
+CD-ROM: CDDA advance nextSector=10528 audioES=11403
+CD-ROM: CDDA load sector=10528 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10528 first samples L=−7186 R=−2027 type=AUDIO
+CD-ROM: CDDA advance nextSector=10529 audioES=11403
+CD-ROM: CDDA load sector=10529 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10529 first samples L=−2231 R=−5285 type=AUDIO
+CD-ROM: CDDA advance nextSector=10530 audioES=11403
+CD-ROM: CDDA load sector=10530 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10530 first samples L=−10375 R=−7157 type=AUDIO
+CD-ROM: CDDA advance nextSector=10531 audioES=11403
+CD-ROM: CDDA load sector=10531 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10531 first samples L=−11703 R=−9855 type=AUDIO
+CD-ROM: CDDA advance nextSector=10532 audioES=11403
+CD-ROM: CDDA load sector=10532 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10532 first samples L=−3624 R=−4508 type=AUDIO
+CD-ROM: CDDA advance nextSector=10533 audioES=11403
+CD-ROM: CDDA load sector=10533 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10533 first samples L=4187 R=3591 type=AUDIO
+CD-ROM: CDDA advance nextSector=10534 audioES=11403
+CD-ROM: CDDA load sector=10534 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10534 first samples L=−4019 R=−1601 type=AUDIO
+CD-ROM: CDDA advance nextSector=10535 audioES=11403
+CD-ROM: CDDA load sector=10535 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10535 first samples L=−9669 R=−7411 type=AUDIO
+CD-ROM: CDDA advance nextSector=10536 audioES=11403
+CD-ROM: CDDA load sector=10536 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10536 first samples L=−6936 R=−7660 type=AUDIO
+CD-ROM: CDDA advance nextSector=10537 audioES=11403
+CD-ROM: CDDA load sector=10537 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10537 first samples L=6707 R=6195 type=AUDIO
+CD-ROM: CDDA advance nextSector=10538 audioES=11403
+CD-ROM: CDDA load sector=10538 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10538 first samples L=−866 R=−11 type=AUDIO
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2048
+ADPCM-FILTER x=20 y=20 state=8 gain=0,9999901 out=7 pred=2050
+ADPCM-FILTER x=20 y=19,939999 state=12,775999 gain=0,9999901 out=12 pred=2050
+ADPCM-FILTER x=20 y=19,880178 state=15,617671 gain=0,9999901 out=15 pred=2050
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2050
+CD-ROM: ReadSector 4512 to 4527
+ADPCM-DECODE nibble=0B val=3 sign=−1 idx=0 delta=−14 predBefore=2048
+ADPCM-FILTER x=−140 y=−140,17839 state=−52,766724 gain=0,9999901 out=−52 pred=2034
+ADPCM-FILTER x=−140 y=−139,75786 state=−87,56318 gain=0,9999901 out=−87 pred=2034
+ADPCM-FILTER x=−140 y=−139,33858 state=−108,27334 gain=0,9999901 out=−108 pred=2034
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2034
+ADPCM-FILTER x=−160 y=−158,92056 state=−128,53223 gain=0,9999901 out=−128 pred=2032
+ADPCM-FILTER x=−160 y=−158,4438 state=−140,49686 gain=0,9999901 out=−140 pred=2032
+ADPCM-FILTER x=−160 y=−157,96846 state=−147,4855 gain=0,9999901 out=−147 pred=2032
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=0 delta=14 predBefore=2032
+ADPCM-FILTER x=−20 y=−17,494553 state=−95,48912 gain=0,9999901 out=−95 pred=2046
+ADPCM-FILTER x=−20 y=−17,442068 state=−64,2703 gain=0,9999901 out=−64 pred=2046
+ADPCM-DECODE nibble=0C val=4 sign=−1 idx=0 delta=−18 predBefore=2046
+ADPCM-FILTER x=−200 y=−197,38974 state=−117,51808 gain=0,9999901 out=−117 pred=2028
+ADPCM-FILTER x=−200 y=−196,79756 state=−149,22987 gain=0,9999901 out=−149 pred=2028
+ADPCM-FILTER x=−200 y=−196,20717 state=−168,0208 gain=0,9999901 out=−168 pred=2028
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=2 delta=15 predBefore=2028
+ADPCM-FILTER x=−50 y=−45,618546 state=−119,05989 gain=0,9999901 out=−119 pred=2043
+ADPCM-FILTER x=−50 y=−45,48169 state=−89,62861 gain=0,9999901 out=−89 pred=2043
+ADPCM-FILTER x=−50 y=−45,34524 state=−71,91526 gain=0,9999901 out=−71 pred=2043
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=1 delta=2 predBefore=2043
+ADPCM-FILTER x=−30 y=−25,209206 state=−53,232838 gain=0,9999901 out=−53 pred=2045
+ADPCM-FILTER x=−30 y=−25,133577 state=−41,993134 gain=0,9999901 out=−41 pred=2045
+ADPCM-FILTER x=−30 y=−25,058176 state=−35,21915 gain=0,9999901 out=−35 pred=2045
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2045
+ADPCM-FILTER x=−50 y=−44,983 state=−39,12469 gain=0,9999901 out=−39 pred=2043
+ADPCM-FILTER x=−50 y=−44,848053 state=−41,414036 gain=0,9999901 out=−41 pred=2043
+ADPCM-DECODE nibble=0B val=3 sign=−1 idx=0 delta=−14 predBefore=2043
+ADPCM-FILTER x=−190 y=−184,7135 state=−98,733826 gain=0,9999901 out=−98 pred=2029
+ADPCM-FILTER x=−190 y=−184,15936 state=−132,90404 gain=0,9999901 out=−132 pred=2029
+ADPCM-FILTER x=−190 y=−183,60689 state=−153,18518 gain=0,9999901 out=−153 pred=2029
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2029
+ADPCM-FILTER x=−210 y=−203,05606 state=−173,13353 gain=0,9999901 out=−173 pred=2027
+ADPCM-FILTER x=−210 y=−202,44688 state=−184,85887 gain=0,9999901 out=−184 pred=2027
+ADPCM-FILTER x=−210 y=−201,83954 state=−191,65114 gain=0,9999901 out=−191 pred=2027
+ADPCM-DECODE nibble=0B val=3 sign=−1 idx=0 delta=−14 predBefore=2027
+ADPCM-FILTER x=−350 y=−341,234 state=−251,48428 gain=0,9999901 out=−251 pred=2013
+ADPCM-FILTER x=−350 y=−340,2103 state=−286,9747 gain=0,9999901 out=−286 pred=2013
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2013
+ADPCM-FILTER x=−370 y=−359,18967 state=−315,8607 gain=0,9999901 out=−315 pred=2011
+ADPCM-FILTER x=−370 y=−358,1121 state=−332,76126 gain=0,9999901 out=−332 pred=2011
+ADPCM-FILTER x=−370 y=−357,03775 state=−342,47186 gain=0,9999901 out=−342 pred=2011
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2011
+ADPCM-FILTER x=−350 y=−335,96664 state=−339,86978 gain=0,9999901 out=−339 pred=2013
+ADPCM-FILTER x=−350 y=−334,95874 state=−337,90536 gain=0,9999901 out=−337 pred=2013
+ADPCM-FILTER x=−350 y=−333,95386 state=−336,32477 gain=0,9999901 out=−336 pred=2013
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=0 delta=14 predBefore=2013
+ADPCM-FILTER x=−210 y=−192,952 state=−278,97565 gain=0,9999901 out=−278 pred=2027
+ADPCM-FILTER x=−210 y=−192,37314 state=−244,33464 gain=0,9999901 out=−244 pred=2027
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2027
+ADPCM-FILTER x=−190 y=−171,79602 state=−215,3192 gain=0,9999901 out=−215 pred=2029
+ADPCM-FILTER x=−190 y=−171,28062 state=−197,70377 gain=0,9999901 out=−197 pred=2029
+ADPCM-FILTER x=−190 y=−170,76678 state=−186,92897 gain=0,9999901 out=−186 pred=2029
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2029
+ADPCM-FILTER x=−210 y=−190,25449 state=−188,25917 gain=0,9999901 out=−188 pred=2027
+ADPCM-FILTER x=−210 y=−189,68372 state=−188,829 gain=0,9999901 out=−188 pred=2027
+ADPCM-FILTER x=−210 y=−189,11465 state=−188,94325 gain=0,9999901 out=−188 pred=2027
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2027
+ADPCM-FILTER x=−190 y=−168,5473 state=−180,78487 gain=0,9999901 out=−180 pred=2029
+ADPCM-FILTER x=−190 y=−168,04166 state=−175,68758 gain=0,9999901 out=−175 pred=2029
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2029
+ADPCM-FILTER x=−210 y=−187,53752 state=−180,42755 gain=0,9999901 out=−180 pred=2027
+ADPCM-FILTER x=−210 y=−186,9749 state=−183,0465 gain=0,9999901 out=−183 pred=2027
+ADPCM-FILTER x=−210 y=−186,41397 state=−184,39348 gain=0,9999901 out=−184 pred=2027
+ADPCM-DECODE nibble=0B val=3 sign=−1 idx=0 delta=−14 predBefore=2027
+ADPCM-FILTER x=−350 y=−325,85474 state=−240,97798 gain=0,9999901 out=−240 pred=2013
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2013
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2011
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2013
+ADPCM-DECODE nibble=04 val=4 sign=1 idx=0 delta=18 predBefore=2011
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=2 delta=15 predBefore=2029
+ADPCM-DECODE nibble=0B val=3 sign=−1 idx=1 delta=−14 predBefore=2044
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2030
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2028
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2030
+ADPCM-DECODE nibble=04 val=4 sign=1 idx=0 delta=18 predBefore=2028
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=2 delta=−2 predBefore=2046
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=1 delta=2 predBefore=2044
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=0 delta=−2 predBefore=2046
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2044
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=0 delta=14 predBefore=2046
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=0 delta=2 predBefore=2060
+ADPCM-DECODE nibble=0F val=7 sign=−1 idx=0 delta=−30 predBefore=2062
+ADPCM-DECODE nibble=04 val=4 sign=1 idx=8 delta=38 predBefore=2032
+ADPCM-DECODE nibble=09 val=1 sign=−1 idx=10 delta=−15 predBefore=2070
+ADPCM-DECODE nibble=0E val=6 sign=−1 idx=9 delta=−59 predBefore=2055
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=15 delta=57 predBefore=1996
+ADPCM-DECODE nibble=00 val=0 sign=1 idx=14 delta=7 predBefore=2053
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=13 delta=46 predBefore=2060
+ADPCM-DECODE nibble=02 val=2 sign=1 idx=12 delta=31 predBefore=2106
+ADPCM-DECODE nibble=0E val=6 sign=−1 idx=11 delta=−72 predBefore=2137
+ADPCM-DECODE nibble=08 val=0 sign=−1 idx=17 delta=−10 predBefore=2065
+ADPCM-DECODE nibble=03 val=3 sign=1 idx=16 delta=63 predBefore=2055
+ADPCM-DECODE nibble=0C val=4 sign=−1 idx=15 delta=−74 predBefore=2118
+ADPCM-DECODE nibble=01 val=1 sign=1 idx=17 delta=30 predBefore=2044
+ADPCM-DECODE nibble=06 val=6 sign=1 idx=16 delta=118 predBefore=2074
+CD-ROM: CDDA advance nextSector=10539 audioES=11403
+CD-ROM: CDDA load sector=10539 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10539 first samples L=6526 R=5103 type=AUDIO
+CD-ROM: CDDA advance nextSector=10540 audioES=11403
+CD-ROM: CDDA load sector=10540 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10540 first samples L=−567 R=159 type=AUDIO
+CD-ROM: CDDA advance nextSector=10541 audioES=11403
+CD-ROM: CDDA load sector=10541 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10541 first samples L=−1282 R=−1296 type=AUDIO
+CD-ROM: CDDA advance nextSector=10542 audioES=11403
+CD-ROM: CDDA load sector=10542 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10542 first samples L=1980 R=−317 type=AUDIO
+CD-ROM: CDDA advance nextSector=10543 audioES=11403
+CD-ROM: CDDA load sector=10543 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10543 first samples L=3865 R=5025 type=AUDIO
+CD-ROM: CDDA advance nextSector=10544 audioES=11403
+CD-ROM: CDDA load sector=10544 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10544 first samples L=−4395 R=−5728 type=AUDIO
+CD-ROM: CDDA advance nextSector=10545 audioES=11403
+CD-ROM: CDDA load sector=10545 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10545 first samples L=4272 R=5588 type=AUDIO
+CD-ROM: CDDA advance nextSector=10546 audioES=11403
+CD-ROM: CDDA load sector=10546 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10546 first samples L=−1844 R=−1870 type=AUDIO
+CD-ROM: CDDA advance nextSector=10547 audioES=11403
+CD-ROM: CDDA load sector=10547 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10547 first samples L=309 R=−966 type=AUDIO
+CD-ROM: CDDA advance nextSector=10548 audioES=11403
+CD-ROM: CDDA load sector=10548 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10548 first samples L=−3713 R=−3946 type=AUDIO
+CD-ROM: CDDA advance nextSector=10549 audioES=11403
+CD-ROM: CDDA load sector=10549 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10549 first samples L=−3895 R=−4897 type=AUDIO
+CD-ROM: CDDA advance nextSector=10550 audioES=11403
+CD-ROM: CDDA load sector=10550 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10550 first samples L=−1509 R=1051 type=AUDIO
+CD-ROM: CDDA advance nextSector=10551 audioES=11403
+CD-ROM: CDDA load sector=10551 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10551 first samples L=7547 R=4272 type=AUDIO
+CD-ROM: READ6 consume 32768/32768 bytes before STATUS
+CD-ROM: ReadSector 4488 to 4503
+CD-ROM: CDDA advance nextSector=10552 audioES=11403
+CD-ROM: CDDA load sector=10552 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10552 first samples L=−1309 R=−587 type=AUDIO
+CD-ROM: CDDA advance nextSector=10553 audioES=11403
+CD-ROM: CDDA load sector=10553 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10553 first samples L=1100 R=1310 type=AUDIO
+CD-ROM: CDDA advance nextSector=10554 audioES=11403
+CD-ROM: CDDA load sector=10554 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10554 first samples L=−6235 R=−4418 type=AUDIO
+CD-ROM: CDDA advance nextSector=10555 audioES=11403
+CD-ROM: CDDA load sector=10555 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10555 first samples L=6710 R=5643 type=AUDIO
+CD-ROM: CDDA advance nextSector=10556 audioES=11403
+CD-ROM: CDDA load sector=10556 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10556 first samples L=6345 R=6363 type=AUDIO
+CD-ROM: CDDA advance nextSector=10557 audioES=11403
+CD-ROM: CDDA load sector=10557 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10557 first samples L=−902 R=−4064 type=AUDIO
+CD-ROM: CDDA advance nextSector=10558 audioES=11403
+CD-ROM: CDDA load sector=10558 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10558 first samples L=−370 R=319 type=AUDIO
+CD-ROM: CDDA advance nextSector=10559 audioES=11403
+CD-ROM: CDDA load sector=10559 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10559 first samples L=3893 R=3518 type=AUDIO
+CD-ROM: CDDA advance nextSector=10560 audioES=11403
+CD-ROM: CDDA load sector=10560 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10560 first samples L=5823 R=3457 type=AUDIO
+CD-ROM: CDDA advance nextSector=10561 audioES=11403
+CD-ROM: CDDA load sector=10561 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10561 first samples L=−12912 R=−8338 type=AUDIO
+CD-ROM: CDDA advance nextSector=10562 audioES=11403
+CD-ROM: CDDA load sector=10562 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10562 first samples L=8725 R=7002 type=AUDIO
+CD-ROM: CDDA advance nextSector=10563 audioES=11403
+CD-ROM: CDDA load sector=10563 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10563 first samples L=−12358 R=−11117 type=AUDIO
+CD-ROM: CDDA advance nextSector=10564 audioES=11403
+CD-ROM: CDDA load sector=10564 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10564 first samples L=−4350 R=−4250 type=AUDIO
+CD-ROM: CDDA advance nextSector=10565 audioES=11403
+CD-ROM: CDDA load sector=10565 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10565 first samples L=−5219 R=−5202 type=AUDIO
+CD-ROM: CDDA advance nextSector=10566 audioES=11403
+CD-ROM: CDDA load sector=10566 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10566 first samples L=−4286 R=−4942 type=AUDIO
+CD-ROM: CDDA advance nextSector=10567 audioES=11403
+CD-ROM: CDDA load sector=10567 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10567 first samples L=176 R=841 type=AUDIO
+CD-ROM: CDDA advance nextSector=10568 audioES=11403
+CD-ROM: CDDA load sector=10568 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10568 first samples L=−1202 R=−544 type=AUDIO
+CD-ROM: CDDA advance nextSector=10569 audioES=11403
+CD-ROM: CDDA load sector=10569 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10569 first samples L=2852 R=2982 type=AUDIO
+CD-ROM: CDDA advance nextSector=10570 audioES=11403
+CD-ROM: CDDA load sector=10570 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10570 first samples L=5653 R=7344 type=AUDIO
+CD-ROM: CDDA advance nextSector=10571 audioES=11403
+CD-ROM: CDDA load sector=10571 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10571 first samples L=3549 R=1770 type=AUDIO
+CD-ROM: CDDA advance nextSector=10572 audioES=11403
+CD-ROM: CDDA load sector=10572 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10572 first samples L=−5445 R=−4593 type=AUDIO
+CD-ROM: CDDA advance nextSector=10573 audioES=11403
+CD-ROM: CDDA load sector=10573 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10573 first samples L=−6131 R=−3643 type=AUDIO
+CD-ROM: CDDA advance nextSector=10574 audioES=11403
+CD-ROM: CDDA load sector=10574 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10574 first samples L=−4026 R=−1345 type=AUDIO
+CD-ROM: CDDA advance nextSector=10575 audioES=11403
+CD-ROM: CDDA load sector=10575 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10575 first samples L=3230 R=1970 type=AUDIO
+CD-ROM: CDDA advance nextSector=10576 audioES=11403
+CD-ROM: CDDA load sector=10576 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10576 first samples L=−870 R=161 type=AUDIO
+CD-ROM: CDDA advance nextSector=10577 audioES=11403
+CD-ROM: CDDA load sector=10577 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10577 first samples L=4280 R=1055 type=AUDIO
+CD-ROM: CDDA advance nextSector=10578 audioES=11403
+CD-ROM: CDDA load sector=10578 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10578 first samples L=−5288 R=−3917 type=AUDIO
+CD-ROM: CDDA advance nextSector=10579 audioES=11403
+CD-ROM: CDDA load sector=10579 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10579 first samples L=252 R=1962 type=AUDIO
+CD-ROM: CDDA advance nextSector=10580 audioES=11403
+CD-ROM: CDDA load sector=10580 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10580 first samples L=4609 R=456 type=AUDIO
+CD-ROM: CDDA advance nextSector=10581 audioES=11403
+CD-ROM: CDDA load sector=10581 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10581 first samples L=−1854 R=−1025 type=AUDIO
+CD-ROM: CDDA advance nextSector=10582 audioES=11403
+CD-ROM: CDDA load sector=10582 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10582 first samples L=199 R=1392 type=AUDIO
+CD-ROM: CDDA advance nextSector=10583 audioES=11403
+CD-ROM: CDDA load sector=10583 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10583 first samples L=−6581 R=−6527 type=AUDIO
+CD-ROM: CDDA advance nextSector=10584 audioES=11403
+CD-ROM: CDDA load sector=10584 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10584 first samples L=−3388 R=−1634 type=AUDIO
+CD-ROM: CDDA advance nextSector=10585 audioES=11403
+CD-ROM: CDDA load sector=10585 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10585 first samples L=879 R=621 type=AUDIO
+CD-ROM: CDDA advance nextSector=10586 audioES=11403
+CD-ROM: CDDA load sector=10586 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10586 first samples L=−4750 R=−3706 type=AUDIO
+CD-ROM: CDDA advance nextSector=10587 audioES=11403
+CD-ROM: CDDA load sector=10587 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10587 first samples L=−5869 R=−5524 type=AUDIO
+CD-ROM: CDDA advance nextSector=10588 audioES=11403
+CD-ROM: CDDA load sector=10588 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10588 first samples L=−8380 R=−6862 type=AUDIO
+CD-ROM: CDDA advance nextSector=10589 audioES=11403
+CD-ROM: CDDA load sector=10589 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10589 first samples L=3598 R=2391 type=AUDIO
+CD-ROM: CDDA advance nextSector=10590 audioES=11403
+CD-ROM: CDDA load sector=10590 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10590 first samples L=−4981 R=−3963 type=AUDIO
+CD-ROM: CDDA advance nextSector=10591 audioES=11403
+CD-ROM: CDDA load sector=10591 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10591 first samples L=−2863 R=−770 type=AUDIO
+CD-ROM: CDDA advance nextSector=10592 audioES=11403
+CD-ROM: CDDA load sector=10592 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10592 first samples L=3520 R=3100 type=AUDIO
+CD-ROM: CDDA advance nextSector=10593 audioES=11403
+CD-ROM: CDDA load sector=10593 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10593 first samples L=2571 R=1549 type=AUDIO
+CD-ROM: CDDA advance nextSector=10594 audioES=11403
+CD-ROM: CDDA load sector=10594 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10594 first samples L=−9754 R=−6522 type=AUDIO
+CD-ROM: CDDA advance nextSector=10595 audioES=11403
+CD-ROM: CDDA load sector=10595 audioES=11403 offset=−1 state=Playing
+CD-ROM: CDDA sector 10595 first samples L=8946 R=7602 type=AUDIO
+CD-ROM: READ6 consume 32768/32768 bytes before STATUS
+CD-ROM: AudioStartPos [11404]
+CD-ROM: STATUS STALL val=0x80 phase=Busy pc=0xE9A7 cmd=0xD8 cmdbuf=D8-01-02-34-04-00-00-00-00-40 buf=null req=False ack=False bsy=True cd=False io=False msg=False irqA=0x04 irqE=0x08
+CD-ROM: AudioStartPos busy complete mediaSector=11404 audioCS=11404 state=Playing
+CD-ROM: CDDA load sector=11404 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11404 first samples L=13 R=19 type=AUDIO
+CD-ROM: CDDA advance nextSector=11405 audioES=11821
+CD-ROM: CDDA load sector=11405 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11405 first samples L=84 R=154 type=AUDIO
+CD-ROM: CDDA advance nextSector=11406 audioES=11821
+CD-ROM: CDDA load sector=11406 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11406 first samples L=−142 R=−204 type=AUDIO
+CD-ROM: CDDA advance nextSector=11407 audioES=11821
+CD-ROM: CDDA load sector=11407 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11407 first samples L=−114 R=−156 type=AUDIO
+CD-ROM: CDDA advance nextSector=11408 audioES=11821
+CD-ROM: CDDA load sector=11408 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11408 first samples L=119 R=201 type=AUDIO
+CD-ROM: CDDA advance nextSector=11409 audioES=11821
+CD-ROM: CDDA load sector=11409 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11409 first samples L=−78 R=−101 type=AUDIO
+CD-ROM: CDDA advance nextSector=11410 audioES=11821
+CD-ROM: CDDA load sector=11410 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11410 first samples L=122 R=181 type=AUDIO
+CD-ROM: CDDA advance nextSector=11411 audioES=11821
+CD-ROM: CDDA load sector=11411 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11411 first samples L=−29 R=−55 type=AUDIO
+CD-ROM: CDDA advance nextSector=11412 audioES=11821
+CD-ROM: CDDA load sector=11412 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11412 first samples L=−44 R=−89 type=AUDIO
+CD-ROM: CDDA advance nextSector=11413 audioES=11821
+CD-ROM: CDDA load sector=11413 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11413 first samples L=125 R=224 type=AUDIO
+CD-ROM: CDDA advance nextSector=11414 audioES=11821
+CD-ROM: CDDA load sector=11414 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11414 first samples L=168 R=286 type=AUDIO
+CD-ROM: CDDA advance nextSector=11415 audioES=11821
+CD-ROM: CDDA load sector=11415 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11415 first samples L=−186 R=−290 type=AUDIO
+CD-ROM: CDDA advance nextSector=11416 audioES=11821
+CD-ROM: CDDA load sector=11416 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11416 first samples L=106 R=177 type=AUDIO
+CD-ROM: CDDA advance nextSector=11417 audioES=11821
+CD-ROM: CDDA load sector=11417 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11417 first samples L=−112 R=−185 type=AUDIO
+CD-ROM: CDDA advance nextSector=11418 audioES=11821
+CD-ROM: CDDA load sector=11418 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11418 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=11419 audioES=11821
+CD-ROM: CDDA load sector=11419 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11419 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=11420 audioES=11821
+CD-ROM: CDDA load sector=11420 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11420 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=11421 audioES=11821
+CD-ROM: CDDA load sector=11421 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11421 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=11422 audioES=11821
+CD-ROM: CDDA load sector=11422 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11422 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=11423 audioES=11821
+CD-ROM: CDDA load sector=11423 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11423 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=11424 audioES=11821
+CD-ROM: CDDA load sector=11424 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11424 first samples L=0 R=0 type=AUDIO
+CD-ROM: CDDA advance nextSector=11425 audioES=11821
+CD-ROM: CDDA load sector=11425 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11425 first samples L=−11 R=−10 type=AUDIO
+CD-ROM: CDDA advance nextSector=11426 audioES=11821
+CD-ROM: CDDA load sector=11426 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11426 first samples L=−12 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=11427 audioES=11821
+CD-ROM: CDDA load sector=11427 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11427 first samples L=−11 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=11428 audioES=11821
+CD-ROM: CDDA load sector=11428 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11428 first samples L=−10 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=11429 audioES=11821
+CD-ROM: CDDA load sector=11429 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11429 first samples L=−12 R=−10 type=AUDIO
+CD-ROM: CDDA advance nextSector=11430 audioES=11821
+CD-ROM: CDDA load sector=11430 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11430 first samples L=−11 R=−9 type=AUDIO
+CD-ROM: CDDA advance nextSector=11431 audioES=11821
+CD-ROM: CDDA load sector=11431 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11431 first samples L=−9 R=−10 type=AUDIO
+CD-ROM: CDDA advance nextSector=11432 audioES=11821
+CD-ROM: CDDA load sector=11432 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11432 first samples L=−13 R=−8 type=AUDIO
+CD-ROM: CDDA advance nextSector=11433 audioES=11821
+CD-ROM: CDDA load sector=11433 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11433 first samples L=−17 R=−13 type=AUDIO
+CD-ROM: CDDA advance nextSector=11434 audioES=11821
+CD-ROM: CDDA load sector=11434 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11434 first samples L=−14 R=−14 type=AUDIO
+CD-ROM: CDDA advance nextSector=11435 audioES=11821
+CD-ROM: CDDA load sector=11435 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11435 first samples L=−19 R=−10 type=AUDIO
+CD-ROM: CDDA advance nextSector=11436 audioES=11821
+CD-ROM: CDDA load sector=11436 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11436 first samples L=−13 R=−4 type=AUDIO
+CD-ROM: CDDA advance nextSector=11437 audioES=11821
+CD-ROM: CDDA load sector=11437 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11437 first samples L=3 R=5 type=AUDIO
+CD-ROM: CDDA advance nextSector=11438 audioES=11821
+CD-ROM: CDDA load sector=11438 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11438 first samples L=−14 R=−2 type=AUDIO
+CD-ROM: CDDA advance nextSector=11439 audioES=11821
+CD-ROM: CDDA load sector=11439 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11439 first samples L=−27 R=−23 type=AUDIO
+CD-ROM: CDDA advance nextSector=11440 audioES=11821
+CD-ROM: CDDA load sector=11440 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11440 first samples L=−14 R=−7 type=AUDIO
+CD-ROM: CDDA advance nextSector=11441 audioES=11821
+CD-ROM: CDDA load sector=11441 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11441 first samples L=−11 R=−4 type=AUDIO
+CD-ROM: CDDA advance nextSector=11442 audioES=11821
+CD-ROM: CDDA load sector=11442 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11442 first samples L=−28 R=−36 type=AUDIO
+CD-ROM: CDDA advance nextSector=11443 audioES=11821
+CD-ROM: CDDA load sector=11443 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11443 first samples L=−17 R=−15 type=AUDIO
+CD-ROM: CDDA advance nextSector=11444 audioES=11821
+CD-ROM: CDDA load sector=11444 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11444 first samples L=−6 R=4 type=AUDIO
+CD-ROM: CDDA advance nextSector=11445 audioES=11821
+CD-ROM: CDDA load sector=11445 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11445 first samples L=−12 R=−23 type=AUDIO
+CD-ROM: CDDA advance nextSector=11446 audioES=11821
+CD-ROM: CDDA load sector=11446 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11446 first samples L=−20 R=−10 type=AUDIO
+CD-ROM: CDDA advance nextSector=11447 audioES=11821
+CD-ROM: CDDA load sector=11447 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11447 first samples L=−25 R=−12 type=AUDIO
+CD-ROM: CDDA advance nextSector=11448 audioES=11821
+CD-ROM: CDDA load sector=11448 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11448 first samples L=−11 R=−18 type=AUDIO
+CD-ROM: CDDA advance nextSector=11449 audioES=11821
+CD-ROM: CDDA load sector=11449 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11449 first samples L=−1327 R=−558 type=AUDIO
+CD-ROM: CDDA advance nextSector=11450 audioES=11821
+CD-ROM: CDDA load sector=11450 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11450 first samples L=−3783 R=−1538 type=AUDIO
+CD-ROM: CDDA advance nextSector=11451 audioES=11821
+CD-ROM: CDDA load sector=11451 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11451 first samples L=5147 R=2090 type=AUDIO
+CD-ROM: CDDA advance nextSector=11452 audioES=11821
+CD-ROM: CDDA load sector=11452 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11452 first samples L=3300 R=1331 type=AUDIO
+CD-ROM: CDDA advance nextSector=11453 audioES=11821
+CD-ROM: CDDA load sector=11453 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11453 first samples L=106 R=79 type=AUDIO
+CD-ROM: CDDA advance nextSector=11454 audioES=11821
+CD-ROM: CDDA load sector=11454 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11454 first samples L=−4445 R=−1795 type=AUDIO
+CD-ROM: CDDA advance nextSector=11455 audioES=11821
+CD-ROM: CDDA load sector=11455 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11455 first samples L=−11269 R=−4472 type=AUDIO
+CD-ROM: CDDA advance nextSector=11456 audioES=11821
+CD-ROM: CDDA load sector=11456 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11456 first samples L=−1770 R=−685 type=AUDIO
+CD-ROM: CDDA advance nextSector=11457 audioES=11821
+CD-ROM: CDDA load sector=11457 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11457 first samples L=−2669 R=−970 type=AUDIO
+CD-ROM: CDDA advance nextSector=11458 audioES=11821
+CD-ROM: CDDA load sector=11458 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11458 first samples L=−4499 R=−1758 type=AUDIO
+CD-ROM: CDDA advance nextSector=11459 audioES=11821
+CD-ROM: CDDA load sector=11459 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11459 first samples L=−17099 R=−6763 type=AUDIO
+CD-ROM: CDDA advance nextSector=11460 audioES=11821
+CD-ROM: CDDA load sector=11460 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11460 first samples L=−12910 R=−5105 type=AUDIO
+CD-ROM: CDDA advance nextSector=11461 audioES=11821
+CD-ROM: CDDA load sector=11461 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11461 first samples L=−6292 R=−2487 type=AUDIO
+CD-ROM: CDDA advance nextSector=11462 audioES=11821
+CD-ROM: CDDA load sector=11462 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11462 first samples L=7994 R=3198 type=AUDIO
+CD-ROM: CDDA advance nextSector=11463 audioES=11821
+CD-ROM: CDDA load sector=11463 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11463 first samples L=−7538 R=−2984 type=AUDIO
+CD-ROM: CDDA advance nextSector=11464 audioES=11821
+CD-ROM: CDDA load sector=11464 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11464 first samples L=−6524 R=−2532 type=AUDIO
+CD-ROM: CDDA advance nextSector=11465 audioES=11821
+CD-ROM: CDDA load sector=11465 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11465 first samples L=4172 R=1687 type=AUDIO
+CD-ROM: CDDA advance nextSector=11466 audioES=11821
+CD-ROM: CDDA load sector=11466 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11466 first samples L=−12261 R=−4921 type=AUDIO
+CD-ROM: CDDA advance nextSector=11467 audioES=11821
+CD-ROM: CDDA load sector=11467 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11467 first samples L=13122 R=5266 type=AUDIO
+CD-ROM: CDDA advance nextSector=11468 audioES=11821
+CD-ROM: CDDA load sector=11468 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11468 first samples L=6257 R=2550 type=AUDIO
+CD-ROM: CDDA advance nextSector=11469 audioES=11821
+CD-ROM: CDDA load sector=11469 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11469 first samples L=−6175 R=−2442 type=AUDIO
+CD-ROM: CDDA advance nextSector=11470 audioES=11821
+CD-ROM: CDDA load sector=11470 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11470 first samples L=17677 R=7076 type=AUDIO
+CD-ROM: CDDA advance nextSector=11471 audioES=11821
+CD-ROM: CDDA load sector=11471 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11471 first samples L=−6915 R=−2746 type=AUDIO
+CD-ROM: CDDA advance nextSector=11472 audioES=11821
+CD-ROM: CDDA load sector=11472 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11472 first samples L=−10427 R=−4133 type=AUDIO
+CD-ROM: CDDA advance nextSector=11473 audioES=11821
+CD-ROM: CDDA load sector=11473 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11473 first samples L=−8309 R=−3306 type=AUDIO
+CD-ROM: CDDA advance nextSector=11474 audioES=11821
+CD-ROM: CDDA load sector=11474 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11474 first samples L=−652 R=−239 type=AUDIO
+CD-ROM: CDDA advance nextSector=11475 audioES=11821
+CD-ROM: CDDA load sector=11475 audioES=11821 offset=−1 state=Playing
+CD-ROM: CDDA sector 11475 first samples L=−536 R=−188 type=AUDIO
+[HEADLESS] Final: fb_has_content=True nonzero_pixels=54128 first_nonzero=(0,0)

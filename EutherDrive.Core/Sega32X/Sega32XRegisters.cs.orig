@@ -1,0 +1,582 @@
+using EutherDrive.Core.Savestates;
+
+namespace EutherDrive.Core.Sega32X;
+
+internal enum Sega32XAccess : ushort
+{
+    M68k = 0,
+    Sh2 = 1,
+}
+
+internal enum Sega32XCpu
+{
+    Master,
+    Slave,
+}
+
+internal enum Sega32XCommSource
+{
+    M68k,
+    MasterSh2,
+    SlaveSh2,
+}
+
+internal sealed class Sega32XSh2Interrupts
+{
+    public bool ResetPending { get; set; }
+    public bool VPending { get; set; }
+    public bool VEnabled { get; set; }
+    public bool HPending { get; set; }
+    public bool HEnabled { get; set; }
+    public bool CommandPending { get; set; }
+    public bool CommandEnabled { get; set; }
+    public bool PwmPending { get; set; }
+    public bool PwmEnabled { get; set; }
+    public byte CurrentInterruptLevel { get; private set; }
+
+    public ushort MaskBits =>
+        (ushort)((VEnabled ? 1 << 3 : 0)
+        | (HEnabled ? 1 << 2 : 0)
+        | (CommandEnabled ? 1 << 1 : 0)
+        | (PwmEnabled ? 1 : 0));
+
+    public void WriteMaskBits(ushort value, bool adapterEnabled)
+    {
+        VEnabled = (value & 0x0008) != 0;
+        HEnabled = (value & 0x0004) != 0;
+        CommandEnabled = (value & 0x0002) != 0;
+        PwmEnabled = (value & 0x0001) != 0;
+        UpdateInterruptLevel(adapterEnabled);
+    }
+
+    public void ClearReset(bool adapterEnabled)
+    {
+        ResetPending = false;
+        UpdateInterruptLevel(adapterEnabled);
+    }
+
+    public void ClearV(bool adapterEnabled)
+    {
+        // Clear pending flag only if VINTs are enabled (verified on hardware by jgenesis)
+        if (VEnabled)
+            VPending = false;
+        UpdateInterruptLevel(adapterEnabled);
+    }
+
+    public void ClearH(bool adapterEnabled)
+    {
+        HPending = false;
+        UpdateInterruptLevel(adapterEnabled);
+    }
+
+    public void ClearCommand(bool adapterEnabled)
+    {
+        CommandPending = false;
+        UpdateInterruptLevel(adapterEnabled);
+    }
+
+    public void ClearPwm(bool adapterEnabled)
+    {
+        PwmPending = false;
+        UpdateInterruptLevel(adapterEnabled);
+    }
+
+    public void UpdateInterruptLevel(bool adapterEnabled)
+    {
+        byte oldLevel = CurrentInterruptLevel;
+        CurrentInterruptLevel = ResetPending ? (byte)14
+            : VPending && VEnabled ? (byte)12
+            // Match jgenesis/hardware behavior: H/PWM only gate on enable when the event is
+            // latched, not when the pending interrupt is later prioritized.
+            : HPending ? (byte)10
+            : CommandPending && CommandEnabled ? (byte)8
+            : PwmPending ? (byte)6
+            : (byte)0;
+
+        if (CurrentInterruptLevel != oldLevel && (CurrentInterruptLevel == 6 || oldLevel == 6))
+        {
+            // Log PWM level changes to see if they are actually reaching the CPU
+            // Console.WriteLine($"[S32X-INT-LEVEL] level: {oldLevel} -> {CurrentInterruptLevel} (pwm_p:{PwmPending} pwm_e:{PwmEnabled})");
+        }
+    }
+}
+
+internal sealed class Sega32XDmaFifo
+{
+    private const int BlockLength = 4;
+    private readonly ushort[,] _blocks = new ushort[2, BlockLength];
+    private readonly bool[] _ready = new bool[2];
+    private int _m68kBlock;
+    private int _m68kIndex;
+    private int _sh2Block;
+    private int _sh2Index;
+
+    public bool Sh2IsEmpty => !_ready[_sh2Block];
+    public bool IsFull => _ready[_m68kBlock];
+
+    public void Push(ushort value)
+    {
+        _blocks[_m68kBlock, _m68kIndex++] = value;
+        if (_m68kIndex == BlockLength)
+        {
+            _ready[_m68kBlock] = true;
+            _m68kBlock ^= 1;
+            _m68kIndex = 0;
+        }
+    }
+
+    public ushort Pop()
+    {
+        ushort value = _blocks[_sh2Block, _sh2Index++];
+        if (_sh2Index == BlockLength)
+        {
+            _ready[_sh2Block] = false;
+            _sh2Block ^= 1;
+            _sh2Index = 0;
+        }
+
+        return value;
+    }
+
+    public void Clear()
+    {
+        Array.Clear(_blocks, 0, _blocks.Length);
+        Array.Clear(_ready, 0, _ready.Length);
+        _m68kBlock = 0;
+        _m68kIndex = 0;
+        _sh2Block = 0;
+        _sh2Index = 0;
+    }
+}
+
+internal sealed class Sega32XDmaRegisters
+{
+    public bool RomToVramDma { get; set; }
+    public bool UnknownBit1 { get; set; }
+    public bool Active { get; set; }
+    public uint SourceAddress { get; set; }
+    public uint DestinationAddress { get; set; }
+    public ushort Length { get; set; } = 0xFFFF;
+    public Sega32XDmaFifo Fifo { get; } = new();
+}
+
+internal sealed class Sega32XSystemRegisters
+{
+    private static readonly bool TraceSh2ControlWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CONTROL_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceSh2ControlReads =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CONTROL_READS"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceM68kControlWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_M68K_CONTROL_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceCommPorts =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_COMM_PORTS"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceDreq =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_DREQ"),
+            "1",
+            StringComparison.Ordinal);
+    public Action<Sega32XCommSource, uint, ushort>? CommunicationPortWritten { get; set; }
+    public Action<Sega32XCpu, uint, ushort>? Sh2ControlRegisterWritten { get; set; }
+    public Action? PwmTimerNotified { get; set; }
+    public bool AdapterEnabled { get; private set; }
+    public bool ResetSh2 { get; private set; }
+    public Sega32XAccess VdpAccess { get; private set; }
+    public byte M68kRomBank { get; private set; }
+    public ushort[] CommunicationPorts { get; } = new ushort[8];
+    public Sega32XSh2Interrupts MasterInterrupts { get; } = new();
+    public Sega32XSh2Interrupts SlaveInterrupts { get; } = new();
+    public Sega32XDmaRegisters Dma { get; } = new();
+    public ushort SegaTvBits { get; private set; }
+
+    public Sega32XSystemRegisters()
+    {
+        Reset();
+    }
+
+    public void Reset()
+    {
+        AdapterEnabled = false;
+        ResetSh2 = true;
+        VdpAccess = Sega32XAccess.M68k;
+        M68kRomBank = 0;
+        Array.Clear(CommunicationPorts, 0, CommunicationPorts.Length);
+        Dma.RomToVramDma = false;
+        Dma.UnknownBit1 = false;
+        Dma.Active = false;
+        Dma.SourceAddress = 0;
+        Dma.DestinationAddress = 0;
+        Dma.Length = 0xFFFF;
+        Dma.Fifo.Clear();
+        SegaTvBits = 0;
+
+        MasterInterrupts.ResetPending = true;
+        SlaveInterrupts.ResetPending = true;
+        UpdateInterruptLevels();
+    }
+
+    public ushort M68kRead(uint address)
+    {
+        return address switch
+        {
+            0xA15100 => ReadAdapterControl(),
+            0xA15102 => ReadInterruptControl(),
+            0xA15104 => M68kRomBank,
+            0xA15106 => ReadM68kDreqControl(),
+            0xA15108 => (ushort)(Dma.SourceAddress >> 16),
+            0xA1510A => (ushort)Dma.SourceAddress,
+            0xA1510C => (ushort)(Dma.DestinationAddress >> 16),
+            0xA1510E => (ushort)Dma.DestinationAddress,
+            0xA15110 => Dma.Length,
+            0xA1511A => SegaTvBits,
+            >= 0xA15120 and <= 0xA1512F => ReadCommunicationPort(address),
+            _ => 0,
+        };
+    }
+
+    public void M68kWrite(uint address, ushort value)
+    {
+        switch (address)
+        {
+            case 0xA15100:
+                bool oldAdapterEnabled = AdapterEnabled;
+                bool oldResetSh2 = ResetSh2;
+                Sega32XAccess oldVdpAccess = VdpAccess;
+                AdapterEnabled = (value & 0x0001) != 0;
+                ResetSh2 = (value & 0x0002) == 0;
+                VdpAccess = (value & 0x8000) != 0 ? Sega32XAccess.Sh2 : Sega32XAccess.M68k;
+                
+                if (oldAdapterEnabled != AdapterEnabled)
+                    UpdateInterruptLevels();
+
+                if (TraceM68kControlWrites)
+                {
+                    Console.WriteLine(
+                        $"[S32X-M68K-CTRL] addr=0x{address:X8} value=0x{value:X4} " +
+                        $"aden:{(oldAdapterEnabled ? 1 : 0)}->{(AdapterEnabled ? 1 : 0)} " +
+                        $"reset:{(oldResetSh2 ? 1 : 0)}->{(ResetSh2 ? 1 : 0)} " +
+                        $"fm:{(oldVdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}->{(VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}");
+                }
+                break;
+            case 0xA15102:
+                MasterInterrupts.CommandPending = (value & 0x0001) != 0;
+                SlaveInterrupts.CommandPending = (value & 0x0002) != 0;
+                UpdateInterruptLevels();
+                if (TraceM68kControlWrites)
+                {
+                    Console.WriteLine(
+                        $"[S32X-M68K-INT-WRITE] value=0x{value:X4} mcmd={(MasterInterrupts.CommandPending ? 1 : 0)} " +
+                        $"scmd={(SlaveInterrupts.CommandPending ? 1 : 0)}");
+                }
+                break;
+            case 0xA15104:
+                M68kRomBank = (byte)(value & 0x0003);
+                break;
+            case 0xA15106:
+                Dma.RomToVramDma = (value & 0x0001) != 0;
+                Dma.UnknownBit1 = (value & 0x0002) != 0;
+                Dma.Active = (value & 0x0004) != 0;
+                if (!Dma.Active)
+                    Dma.Fifo.Clear();
+                if (TraceDreq)
+                {
+                    Console.WriteLine(
+                        $"[S32X-DREQ-M68K-CTRL] value=0x{value:X4} active={(Dma.Active ? 1 : 0)} " +
+                        $"rv={(Dma.RomToVramDma ? 1 : 0)} b1={(Dma.UnknownBit1 ? 1 : 0)} " +
+                        $"len=0x{Dma.Length:X4} full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+                }
+                break;
+            case 0xA15108:
+                Dma.SourceAddress = (Dma.SourceAddress & 0x0000FFFFu) | ((uint)(value & 0x00FF) << 16);
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-SRC-HI] value=0x{value:X4} src=0x{Dma.SourceAddress:X6}");
+                break;
+            case 0xA1510A:
+                Dma.SourceAddress = (Dma.SourceAddress & 0xFFFF0000u) | (uint)(value & 0xFFFE);
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-SRC-LO] value=0x{value:X4} src=0x{Dma.SourceAddress:X6}");
+                break;
+            case 0xA1510C:
+                Dma.DestinationAddress = (Dma.DestinationAddress & 0x0000FFFFu) | ((uint)(value & 0x00FF) << 16);
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-DST-HI] value=0x{value:X4} dst=0x{Dma.DestinationAddress:X6}");
+                break;
+            case 0xA1510E:
+                Dma.DestinationAddress = (Dma.DestinationAddress & 0xFFFF0000u) | value;
+                if (TraceDreq)
+                    Console.WriteLine($"[S32X-DREQ-M68K-DST-LO] value=0x{value:X4} dst=0x{Dma.DestinationAddress:X6}");
+                break;
+            case 0xA15110:
+                // Lowest 2 bits are forced to 0
+                Dma.Length = (ushort)(value & 0xFFFC);
+                if (TraceDreq)
+                {
+                    Console.WriteLine(
+                        $"[S32X-DREQ-M68K-LEN] value=0x{value:X4} latched=0x{Dma.Length:X4} " +
+                        $"active={(Dma.Active ? 1 : 0)}");
+                }
+                break;
+            case 0xA15112:
+                // Virtua Racing Deluxe depends on this: only push if active
+                if (Dma.Active)
+                {
+                    Dma.Fifo.Push(value);
+                    if (TraceDreq)
+                    {
+                        Console.WriteLine(
+                            $"[S32X-DREQ-M68K-PUSH] value=0x{value:X4} len=0x{Dma.Length:X4} " +
+                            $"full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+                    }
+                }
+                break;
+            case 0xA1511A:
+                SegaTvBits = (ushort)(value & 0x0101);
+                break;
+            default:
+                if (address >= 0xA15120 && address <= 0xA1512F)
+                    WriteCommunicationPort(address, value, Sega32XCommSource.M68k);
+                break;
+        }
+    }
+
+    public ushort Sh2Read(uint address, Sega32XCpu whichCpu, Sega32XVdp vdp)
+    {
+        ushort value = address switch
+        {
+            0x4000 => ReadSh2InterruptMask(whichCpu, vdp),
+            0x4002 => ReadSh2Status(vdp),
+            0x4004 => vdp.HInterruptInterval,
+            0x4006 => ReadSh2DreqControl(),
+            0x4008 => (ushort)(Dma.SourceAddress >> 16),
+            0x400A => (ushort)Dma.SourceAddress,
+            0x400C => (ushort)(Dma.DestinationAddress >> 16),
+            0x400E => (ushort)Dma.DestinationAddress,
+            0x4010 => Dma.Length,
+            0x4012 => ReadSh2DreqFifo(),
+            >= 0x4020 and <= 0x402F => ReadCommunicationPort(address),
+            _ => 0,
+        };
+
+        if (TraceSh2ControlReads && address >= 0x4000 && address <= 0x401C)
+        {
+            Console.WriteLine(
+                $"[S32X-SH2-READ] cpu={whichCpu} addr=0x{address:X4} value=0x{value:X4} " +
+                $"aden={(AdapterEnabled ? 1 : 0)} fm={(VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}");
+        }
+
+        return value;
+    }
+
+    public void Sh2Write(uint address, ushort value, Sega32XCpu whichCpu, Sega32XVdp vdp)
+    {
+        if (TraceSh2ControlWrites
+            && ((address >= 0x4000 && address <= 0x401C) || (address >= 0x4020 && address <= 0x402F)))
+        {
+            Console.WriteLine(
+                $"[S32X-SH2-WRITE] cpu={whichCpu} addr=0x{address:X4} value=0x{value:X4} " +
+                $"aden={(AdapterEnabled ? 1 : 0)} fm={(VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}");
+        }
+
+        switch (address)
+        {
+            case 0x4000:
+                VdpAccess = (value & 0x8000) != 0 ? Sega32XAccess.Sh2 : Sega32XAccess.M68k;
+                vdp.WriteHenBit((value & 0x0080) != 0);
+                GetInterrupts(whichCpu).WriteMaskBits(value, AdapterEnabled);
+                Sh2ControlRegisterWritten?.Invoke(whichCpu, address, value);
+                break;
+            case 0x4004:
+                vdp.WriteHInterruptInterval(value);
+                Sh2ControlRegisterWritten?.Invoke(whichCpu, address, value);
+                break;
+            case 0x4014:
+                GetInterrupts(whichCpu).ClearReset(AdapterEnabled);
+                Sh2ControlRegisterWritten?.Invoke(whichCpu, address, value);
+                break;
+            case 0x4016:
+                GetInterrupts(whichCpu).ClearV(AdapterEnabled);
+                Sh2ControlRegisterWritten?.Invoke(whichCpu, address, value);
+                break;
+            case 0x4018:
+                GetInterrupts(whichCpu).ClearH(AdapterEnabled);
+                Sh2ControlRegisterWritten?.Invoke(whichCpu, address, value);
+                break;
+            case 0x401A:
+                GetInterrupts(whichCpu).ClearCommand(AdapterEnabled);
+                Sh2ControlRegisterWritten?.Invoke(whichCpu, address, value);
+                break;
+            case 0x401C:
+                GetInterrupts(whichCpu).ClearPwm(AdapterEnabled);
+                Sh2ControlRegisterWritten?.Invoke(whichCpu, address, value);
+                break;
+            default:
+                if (address >= 0x4020 && address <= 0x402F)
+                    WriteCommunicationPort(
+                        address,
+                        value,
+                        whichCpu == Sega32XCpu.Master ? Sega32XCommSource.MasterSh2 : Sega32XCommSource.SlaveSh2);
+                break;
+        }
+    }
+
+    public void NotifyVBlankStart()
+    {
+        MasterInterrupts.VPending = true;
+        SlaveInterrupts.VPending = true;
+        UpdateInterruptLevels();
+    }
+
+    public void NotifyVBlankEnd()
+    {
+        MasterInterrupts.VPending = false;
+        SlaveInterrupts.VPending = false;
+        UpdateInterruptLevels();
+    }
+
+    public void NotifyHInterrupt()
+    {
+        MasterInterrupts.HPending |= MasterInterrupts.HEnabled;
+        SlaveInterrupts.HPending |= SlaveInterrupts.HEnabled;
+        UpdateInterruptLevels();
+    }
+
+    public void NotifyPwmTimer()
+    {
+        MasterInterrupts.PwmPending |= MasterInterrupts.PwmEnabled;
+        SlaveInterrupts.PwmPending |= SlaveInterrupts.PwmEnabled;
+        UpdateInterruptLevels();
+        PwmTimerNotified?.Invoke();
+    }
+
+    public bool EitherHInterruptEnabled => MasterInterrupts.HEnabled || SlaveInterrupts.HEnabled;
+
+    public void UpdateInterruptLevels()
+    {
+        MasterInterrupts.UpdateInterruptLevel(AdapterEnabled);
+        SlaveInterrupts.UpdateInterruptLevel(AdapterEnabled);
+    }
+
+    public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
+
+    public void LoadState(BinaryReader reader)
+    {
+        StateBinarySerializer.ReadInto(reader, this);
+        UpdateInterruptLevels();
+    }
+
+    private ushort ReadAdapterControl()
+    {
+        return (ushort)(((ushort)VdpAccess << 15)
+            | (1 << 7)
+            | ((!ResetSh2 ? 1 : 0) << 1)
+            | (AdapterEnabled ? 1 : 0));
+    }
+
+    private ushort ReadInterruptControl()
+    {
+        ushort value = (ushort)(((SlaveInterrupts.CommandPending ? 1 : 0) << 1)
+            | (MasterInterrupts.CommandPending ? 1 : 0));
+        if (TraceM68kControlWrites)
+        {
+            Console.WriteLine(
+                $"[S32X-M68K-INT-READ] value=0x{value:X4} mcmd={(MasterInterrupts.CommandPending ? 1 : 0)} " +
+                $"scmd={(SlaveInterrupts.CommandPending ? 1 : 0)}");
+        }
+        return value;
+    }
+
+    private ushort ReadM68kDreqControl()
+    {
+        return (ushort)(((Dma.Fifo.IsFull ? 1 : 0) << 7)
+            | ((Dma.Active ? 1 : 0) << 2)
+            | ((Dma.UnknownBit1 ? 1 : 0) << 1)
+            | (Dma.RomToVramDma ? 1 : 0));
+    }
+
+    private ushort ReadSh2DreqControl()
+    {
+        ushort value = (ushort)(((Dma.Fifo.IsFull ? 1 : 0) << 15)
+            | ((Dma.Fifo.Sh2IsEmpty ? 1 : 0) << 14)
+            | ((Dma.Active ? 1 : 0) << 2)
+            | ((Dma.UnknownBit1 ? 1 : 0) << 1)
+            | (Dma.RomToVramDma ? 1 : 0));
+        if (TraceDreq)
+        {
+            Console.WriteLine(
+                $"[S32X-DREQ-SH2-CTRL] value=0x{value:X4} active={(Dma.Active ? 1 : 0)} " +
+                $"len=0x{Dma.Length:X4} full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+        }
+        return value;
+    }
+
+    private ushort ReadSh2InterruptMask(Sega32XCpu whichCpu, Sega32XVdp vdp)
+    {
+        Sega32XSh2Interrupts interrupts = GetInterrupts(whichCpu);
+        return (ushort)(((ushort)VdpAccess << 15)
+            | (AdapterEnabled ? 1 << 9 : 0)
+            | (vdp.HInterruptInVBlank ? 1 << 7 : 0)
+            | interrupts.MaskBits);
+    }
+
+    private ushort ReadSh2Status(Sega32XVdp vdp)
+    {
+        return (ushort)((vdp.VBlankStatus ? 1 << 1 : 0) | (vdp.HBlankStatus ? 1 : 0));
+    }
+
+    private ushort ReadSh2DreqFifo()
+    {
+        ushort value = Dma.Fifo.Pop();
+        Dma.Length = (ushort)(Dma.Length - 1);
+        if (Dma.Length == 0)
+            Dma.Active = false;
+        if (TraceDreq)
+        {
+            Console.WriteLine(
+                $"[S32X-DREQ-SH2-POP] value=0x{value:X4} len=0x{Dma.Length:X4} " +
+                $"active={(Dma.Active ? 1 : 0)} full={(Dma.Fifo.IsFull ? 1 : 0)} empty={(Dma.Fifo.Sh2IsEmpty ? 1 : 0)}");
+        }
+        return value;
+    }
+
+    private ushort ReadCommunicationPort(uint address)
+    {
+        int index = (int)((address >> 1) & 0x7);
+        ushort value = CommunicationPorts[index];
+        if (TraceCommPorts)
+            Console.WriteLine($"[S32X-COMM-READ] addr=0x{address:X8} idx={index} value=0x{value:X4}");
+        return value;
+    }
+
+    private void WriteCommunicationPort(uint address, ushort value, Sega32XCommSource source)
+    {
+        int index = (int)((address >> 1) & 0x7);
+        ushort oldValue = CommunicationPorts[index];
+        if (TraceCommPorts)
+        {
+            string sourceName = source switch
+            {
+                Sega32XCommSource.M68k => "M68K",
+                Sega32XCommSource.MasterSh2 => "MSH2",
+                _ => "SSH2",
+            };
+            Console.WriteLine($"[S32X-COMM-WRITE] src={sourceName} addr=0x{address:X8} idx={index} old=0x{oldValue:X4} new=0x{value:X4}");
+        }
+        CommunicationPorts[index] = value;
+        if (oldValue != value)
+            CommunicationPortWritten?.Invoke(source, address & ~1u, value);
+    }
+
+    private Sega32XSh2Interrupts GetInterrupts(Sega32XCpu whichCpu)
+        => whichCpu == Sega32XCpu.Master ? MasterInterrupts : SlaveInterrupts;
+}

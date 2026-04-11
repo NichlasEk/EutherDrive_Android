@@ -8,6 +8,7 @@ internal sealed class Sega32XScaffoldCore
     private const ulong DefaultNominalSh2CyclesPerFrame = 400_000;
     private static readonly bool ExperimentalSharedTimebaseEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_EXPERIMENTAL_SHARED_TIMEBASE");
     private static readonly bool ExperimentalCommPollEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_EXPERIMENTAL_COMM_POLL");
+    private static readonly bool BrutalLoopWatchEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_BRUTAL_WATCH");
     private static readonly ulong DefaultSh2InstructionsPerFrame = ParseInstructionBudget();
     private static readonly ulong DefaultM68kCyclesPerFrame = ParseM68kCycleBudget();
     private const ulong NativeM68kDivider = 7;
@@ -32,6 +33,10 @@ internal sealed class Sega32XScaffoldCore
     private int _commWriteNextIndex;
     private ulong _globalSh2Cycles;
     private bool _commPortSyncInProgress;
+    private readonly Dictionary<string, ulong> _masterBrutalLoopStates = new();
+    private readonly Dictionary<string, ulong> _slaveBrutalLoopStates = new();
+    private ulong _masterBrutalLoopSamples;
+    private ulong _slaveBrutalLoopSamples;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
 
     public Sega32XScaffoldCore(byte[] romData, Sega32XSystemRegisters? sharedRegisters = null)
@@ -75,6 +80,34 @@ internal sealed class Sega32XScaffoldCore
     public bool UseExperimentalCommPollModel => ExperimentalCommPollEnabled;
     public ulong Sh2InstructionsPerFrame => DefaultSh2InstructionsPerFrame;
     public ulong Sh2ExecutionSliceLength => DefaultSh2ExecutionSliceLength;
+    public string? BuildAndResetPerfPcSummary()
+    {
+        string? master = MasterSh2.BuildAndResetPerfPcSummary();
+        string? slave = SlaveSh2.BuildAndResetPerfPcSummary();
+
+        if (string.IsNullOrWhiteSpace(master))
+            return string.IsNullOrWhiteSpace(slave) ? null : slave;
+        if (string.IsNullOrWhiteSpace(slave))
+            return master;
+
+        return $"{master} | {slave}";
+    }
+
+    public string? BuildAndResetBrutalLoopWatchSummary()
+    {
+        if (!BrutalLoopWatchEnabled)
+            return null;
+
+        string? master = BuildAndResetLoopSummary("M", _masterBrutalLoopStates, ref _masterBrutalLoopSamples);
+        string? slave = BuildAndResetLoopSummary("S", _slaveBrutalLoopStates, ref _slaveBrutalLoopSamples);
+
+        if (string.IsNullOrWhiteSpace(master))
+            return string.IsNullOrWhiteSpace(slave) ? null : slave;
+        if (string.IsNullOrWhiteSpace(slave))
+            return master;
+
+        return $"{master} | {slave}";
+    }
 
     public void Reset()
     {
@@ -98,6 +131,10 @@ internal sealed class Sega32XScaffoldCore
         Array.Clear(_commWriteSources, 0, _commWriteSources.Length);
         Array.Clear(_commWriteValid, 0, _commWriteValid.Length);
         _commWriteNextIndex = 0;
+        _masterBrutalLoopStates.Clear();
+        _slaveBrutalLoopStates.Clear();
+        _masterBrutalLoopSamples = 0;
+        _slaveBrutalLoopSamples = 0;
         FrameCounter = 0;
     }
 
@@ -134,6 +171,7 @@ internal sealed class Sega32XScaffoldCore
             while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
                 SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
 
+            ObserveBrutalLoopState(slice);
             _masterBus.TickPeripherals(slice);
             _slaveBus.TickPeripherals(slice);
             Bus.Pwm.Tick(slice, Registers);
@@ -165,6 +203,7 @@ internal sealed class Sega32XScaffoldCore
             while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
                 SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
 
+            ObserveBrutalLoopState(elapsedSh2Cycles);
             _masterBus.TickPeripherals(elapsedSh2Cycles);
             _slaveBus.TickPeripherals(elapsedSh2Cycles);
             Bus.Pwm.Tick(elapsedSh2Cycles, Registers);
@@ -223,8 +262,10 @@ internal sealed class Sega32XScaffoldCore
             ulong syncLimit = Math.Max(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultM68kCommSyncSliceLength;
             _masterBus.CycleLimit = syncLimit;
             _slaveBus.CycleLimit = syncLimit;
-            SlaveSh2.Execute(DefaultM68kCommSyncSliceLength, _slaveBus);
+            // Kör master först så att den hinner skriva till comm-portarna
+            // innan M68K läser dem (viktigt för Star Trek-boot)
             MasterSh2.Execute(DefaultM68kCommSyncSliceLength, _masterBus);
+            SlaveSh2.Execute(DefaultM68kCommSyncSliceLength, _slaveBus);
         }
         finally
         {
@@ -388,6 +429,94 @@ internal sealed class Sega32XScaffoldCore
     {
         string? raw = Environment.GetEnvironmentVariable(name);
         return raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ObserveBrutalLoopState(ulong weight)
+    {
+        if (!BrutalLoopWatchEnabled || weight == 0)
+            return;
+
+        ObserveBrutalCpuLoopState(
+            MasterSh2,
+            _masterBus,
+            0x060003FC,
+            0x06000406,
+            _masterBrutalLoopStates,
+            ref _masterBrutalLoopSamples,
+            weight);
+        ObserveBrutalCpuLoopState(
+            SlaveSh2,
+            _slaveBus,
+            0x06003B30,
+            0x06003B38,
+            _slaveBrutalLoopStates,
+            ref _slaveBrutalLoopSamples,
+            weight);
+    }
+
+    private static void ObserveBrutalCpuLoopState(
+        Sega32XSh2Cpu cpu,
+        Sega32XSh2Bus bus,
+        uint startPc,
+        uint endPc,
+        Dictionary<string, ulong> states,
+        ref ulong samples,
+        ulong weight)
+    {
+        uint pc = cpu.Registers.ProgramCounter;
+        if (pc < startPc || pc > endPc)
+            return;
+
+        string key =
+            $"pc=0x{pc:X8} " +
+            $"r0=0x{cpu.Registers.GeneralPurposeRegisters[0]:X8} " +
+            $"r1=0x{cpu.Registers.GeneralPurposeRegisters[1]:X8} " +
+            $"r2=0x{cpu.Registers.GeneralPurposeRegisters[2]:X8} " +
+            $"r3=0x{cpu.Registers.GeneralPurposeRegisters[3]:X8} " +
+            $"t={(cpu.Registers.StatusRegister.T ? 1 : 0)} " +
+            $"ext={bus.InterruptLevel} int={bus.InternalInterruptLevel} im={cpu.Registers.StatusRegister.InterruptMask}";
+
+        states[key] = states.GetValueOrDefault(key) + weight;
+        samples += weight;
+    }
+
+    private static string? BuildAndResetLoopSummary(string tag, Dictionary<string, ulong> states, ref ulong totalSamples)
+    {
+        if (states.Count == 0 || totalSamples == 0)
+        {
+            states.Clear();
+            totalSamples = 0;
+            return null;
+        }
+
+        KeyValuePair<string, ulong>[] top = states
+            .OrderByDescending(static pair => pair.Value)
+            .Take(2)
+            .ToArray();
+
+        states.Clear();
+        ulong capturedSamples = totalSamples;
+        totalSamples = 0;
+
+        if (top.Length == 0)
+            return null;
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append(tag);
+        sb.Append(':');
+        for (int i = 0; i < top.Length; i++)
+        {
+            if (i != 0)
+                sb.Append(" || ");
+
+            double percent = (top[i].Value * 100.0) / capturedSamples;
+            sb.Append(top[i].Key);
+            sb.Append(' ');
+            sb.Append(percent.ToString("0.0"));
+            sb.Append('%');
+        }
+
+        return sb.ToString();
     }
 
     private void DumpWordsNearPc(string tag, uint pc)

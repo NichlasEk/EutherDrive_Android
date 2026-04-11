@@ -435,6 +435,8 @@ internal static class Instructions
             updated = true;
         }
 
+        ClearPrefixFlags(gsu);
+
         if (memoryType == MemoryType.CodeCache)
         {
             return (byte)(cycles + 1);

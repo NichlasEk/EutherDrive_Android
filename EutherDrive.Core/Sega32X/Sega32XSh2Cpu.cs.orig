@@ -17,26 +17,32 @@ internal sealed class Sega32XSh2Cpu
     public uint CurrentInstructionPc { get; private set; }
     public ulong CycleCounter { get; private set; }
     public bool ResetPending { get; set; } = true;
+    public Action<byte?, uint, uint>? ExceptionRaised { get; set; }
+    public Action<uint, byte, byte, byte>? ExternalInterruptObserved { get; set; }
     private int _unsupportedLogCount;
     private IdleState _idleState;
     private uint _commPollAddress;
     private ushort _commPollValue;
-    private readonly Dictionary<uint, ulong> _pcSampleTicks = new();
 
     private static readonly byte ResetInterruptMask = 0x0F;
     private static readonly bool TraceBootLoop =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_BOOT_LOOP"), "1", StringComparison.Ordinal);
     private static readonly bool TraceExceptions =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_EXCEPTIONS"), "1", StringComparison.Ordinal);
-    private static readonly bool PerfPcHistogramEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_PERF_PC_HIST"), "1", StringComparison.Ordinal);
     private static readonly uint? TraceInstructionStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_INST_START");
     private static readonly uint? TraceInstructionEnd = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_INST_END");
     private static readonly int TraceInstructionMaxLogs = ParseTraceInstructionMaxLogs();
     private static readonly ulong DispatchLoopBatchLimit = ParseDispatchLoopBatchLimit();
+    private static readonly bool DisableTightDelayLoopBatching =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_TIGHT_DELAY_BATCH"),
+            "1",
+            StringComparison.Ordinal);
     private const ulong EmptyDispatchLoopInstructionCycles = 28;
     private const ulong EmptyDispatchLoopExtraDetailCycles = 44;
     private const ulong EmptyDispatchLoopFirstIterationSkippedDetailCycles = 22;
+    private const uint InterruptFenceStart = 0x06001360;
+    private const uint InterruptFenceEnd = 0x06001390;
     private int _traceInstructionLogs;
 
     public Sega32XSh2Cpu(string name)
@@ -63,7 +69,6 @@ internal sealed class Sega32XSh2Cpu
         _commPollAddress = 0;
         _commPollValue = 0;
         _traceInstructionLogs = 0;
-        _pcSampleTicks.Clear();
     }
 
     public bool IsCommPolling => (_idleState & IdleState.CommPoll) != 0;
@@ -87,41 +92,6 @@ internal sealed class Sega32XSh2Cpu
 
         uint maskedAddress = address & ~1u;
         return maskedAddress >= _commPollAddress && maskedAddress - _commPollAddress <= 3;
-    }
-
-    public string? BuildAndResetPerfPcSummary(int maxEntries = 4)
-    {
-        if (!PerfPcHistogramEnabled || _pcSampleTicks.Count == 0)
-            return null;
-
-        KeyValuePair<uint, ulong>[] top = _pcSampleTicks
-            .OrderByDescending(static pair => pair.Value)
-            .Take(maxEntries)
-            .ToArray();
-        ulong total = 0;
-        foreach (ulong ticks in _pcSampleTicks.Values)
-            total += ticks;
-
-        _pcSampleTicks.Clear();
-        if (top.Length == 0 || total == 0)
-            return null;
-
-        var sb = new System.Text.StringBuilder();
-        sb.Append(Name);
-        sb.Append(':');
-        for (int i = 0; i < top.Length; i++)
-        {
-            KeyValuePair<uint, ulong> entry = top[i];
-            double percent = (entry.Value * 100.0) / total;
-            sb.Append(' ');
-            sb.Append("pc=0x");
-            sb.Append(entry.Key.ToString("X8"));
-            sb.Append(' ');
-            sb.Append(percent.ToString("0.0"));
-            sb.Append('%');
-        }
-
-        return sb.ToString();
     }
 
     public void Execute(ulong ticks, ISega32XSh2Bus bus)
@@ -170,6 +140,8 @@ internal sealed class Sega32XSh2Cpu
         {
             byte externalInterruptLevel = bus.InterruptLevel;
             byte internalInterruptLevel = bus.InternalInterruptLevel;
+            if (externalInterruptLevel != 0)
+                ExternalInterruptObserved?.Invoke(Registers.ProgramCounter, externalInterruptLevel, Registers.StatusRegister.InterruptMask, internalInterruptLevel);
             if (externalInterruptLevel > Registers.StatusRegister.InterruptMask
                 && externalInterruptLevel >= internalInterruptLevel)
             {
@@ -197,6 +169,9 @@ internal sealed class Sega32XSh2Cpu
         ulong remainingInstructions = ticks;
         while (remainingInstructions > 0)
         {
+            if (TryHandleInterruptFence(bus))
+                return;
+
             if (TryExecuteEmptyDispatchLoop(bus, remainingInstructions, out ulong consumedDispatchInstructions))
             {
                 remainingInstructions -= consumedDispatchInstructions;
@@ -205,7 +180,8 @@ internal sealed class Sega32XSh2Cpu
                 continue;
             }
 
-            if (TryExecuteTightDelayLoop(bus, remainingInstructions, out ulong consumedInstructions))
+            if (!DisableTightDelayLoopBatching &&
+                TryExecuteTightDelayLoop(bus, remainingInstructions, out ulong consumedInstructions))
             {
                 remainingInstructions -= consumedInstructions;
                 if (bus.ShouldStopExecution)
@@ -218,6 +194,26 @@ internal sealed class Sega32XSh2Cpu
             if (bus.ShouldStopExecution)
                 return;
         }
+    }
+
+    private bool TryHandleInterruptFence(ISega32XSh2Bus bus)
+    {
+        uint pc = Registers.ProgramCounter;
+        if (pc < InterruptFenceStart || pc > InterruptFenceEnd)
+            return false;
+
+        byte externalInterruptLevel = bus.InterruptLevel;
+        byte internalInterruptLevel = bus.InternalInterruptLevel;
+        if (externalInterruptLevel <= Registers.StatusRegister.InterruptMask
+            || externalInterruptLevel < internalInterruptLevel)
+        {
+            return false;
+        }
+
+        uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
+        _idleState = IdleState.None;
+        HandleException(externalInterruptLevel, vectorNumber, bus);
+        return true;
     }
 
     private bool TryExecuteTightDelayLoop(ISega32XSh2Bus bus, ulong remainingInstructions, out ulong consumedInstructions)
@@ -266,7 +262,6 @@ internal sealed class Sega32XSh2Cpu
         // Tight cached delay loops still pay instruction fetch cost even though they do no data bus work.
         bus.IncrementDetailCycleCounter(schedulerCycles);
         CycleCounter += schedulerCycles;
-        AccumulatePcSample(loopStartPc, schedulerCycles);
 
         if (loopFinished)
         {
@@ -326,7 +321,6 @@ internal sealed class Sega32XSh2Cpu
         ulong schedulerCycles = iterations * EmptyDispatchLoopInstructionCycles;
         bus.IncrementCycleCounter(schedulerCycles);
         CycleCounter += schedulerCycles;
-        AccumulatePcSample(loopStartPc, schedulerCycles);
 
         Registers.GeneralPurposeRegisters[0] = 0;
         Registers.GeneralPurposeRegisters[1] = tableBaseAddress;
@@ -500,7 +494,6 @@ internal sealed class Sega32XSh2Cpu
             {
                 bus.IncrementCycleCounter(1);
                 CycleCounter += 1;
-                AccumulatePcSample(pc, 1);
                 return;
             }
 
@@ -516,7 +509,6 @@ internal sealed class Sega32XSh2Cpu
             HandleException(null, 4, bus);
             bus.IncrementCycleCounter(1);
             CycleCounter += 1;
-            AccumulatePcSample(pc, 1);
         }
         finally
         {
@@ -550,19 +542,13 @@ internal sealed class Sega32XSh2Cpu
             Console.WriteLine($"[S32X-SH2-{Name}-EXC] pc=0x{faultPc:X8} vector=0x{vectorNumber:X2} target=0x{Registers.ProgramCounter:X8}");
         }
 
+        ExceptionRaised?.Invoke(interruptLevel, vectorNumber, faultPc);
+
         bus.IncrementCycleCounter(5);
         CycleCounter += 5;
     }
 
     private static void EmitTraceLine(string line) => Console.WriteLine(line);
-
-    private void AccumulatePcSample(uint pc, ulong ticks)
-    {
-        if (!PerfPcHistogramEnabled || ticks == 0)
-            return;
-
-        _pcSampleTicks[pc] = _pcSampleTicks.GetValueOrDefault(pc) + ticks;
-    }
 
     private static uint? ParseOptionalHex(string name)
     {
@@ -1228,6 +1214,7 @@ internal enum Sega32XSh2AccessContext
 {
     Fetch,
     Data,
+    Dma,
     InterruptVector,
 }
 

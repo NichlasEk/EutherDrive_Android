@@ -3824,6 +3824,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         if (anyHotspot)
             Console.WriteLine(hotspotLine);
 
+        string? s32xPcSummary = _sega32XCore?.BuildAndResetPerfPcSummary();
+        if (!string.IsNullOrWhiteSpace(s32xPcSummary))
+            Console.WriteLine($"[MdTracerAdapter] 32X pc-hist {s32xPcSummary}");
+        string? s32xBrutalSummary = _sega32XCore?.BuildAndResetBrutalLoopWatchSummary();
+        if (!string.IsNullOrWhiteSpace(s32xBrutalSummary))
+            Console.WriteLine($"[MdTracerAdapter] 32X brutal-watch {s32xBrutalSummary}");
+
         _framePerfSummary = string.IsNullOrWhiteSpace(hotspotLine)
             ? perfLine
             : $"{perfLine}\n{hotspotLine}";

@@ -1,0 +1,129 @@
+[HEADLESS] Loading ROM: /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA).cue
+[HEADLESS] Loading savestate: /home/nichlas/roms/PCE/Valis II (USA)/Valis_II__USA_.cue_18d5779b.euthstate
+[HEADLESS] Running 10 frames from savestate
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 01).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 02).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 03).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 04).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 05).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 06).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 07).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 08).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 09).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 10).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 11).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 12).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 13).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 14).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 15).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 16).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 17).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 18).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 19).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 20).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 21).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 22).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 23).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 24).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 25).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 26).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 27).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 28).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 29).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 30).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 31).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 32).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 33).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 34).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 35).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 36).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 37).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 38).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 39).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 40).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 41).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 42).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 43).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 44).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 45).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 46).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 47).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 48).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 49).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 50).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 51).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 52).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 53).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 54).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 55).bin BINARY LOADED
+Loaded 55 tracks
+[PCE-TOC] ---
+[PCE-TOC] Track 01 AUDIO Start 0 End 3364 LeadIn - Offset 0x0
+[PCE-TOC] Track 02 MODE1_2352 Start 3590 End 5994 LeadIn 3365 Offset 0x81330
+[PCE-TOC] Track 03 AUDIO Start 6145 End 8178 LeadIn 5995 Offset 0x56220
+[PCE-TOC] Track 04 AUDIO Start 8179 End 10281 LeadIn - Offset 0x0
+[PCE-TOC] Track 05 AUDIO Start 10282 End 11403 LeadIn - Offset 0x0
+[PCE-TOC] Track 06 AUDIO Start 11404 End 11821 LeadIn - Offset 0x0
+[PCE-TOC] Track 07 AUDIO Start 11822 End 13387 LeadIn - Offset 0x0
+[PCE-TOC] Track 08 AUDIO Start 13388 End 30250 LeadIn - Offset 0x0
+[PCE-TOC] Track 09 AUDIO Start 30251 End 31717 LeadIn - Offset 0x0
+[PCE-TOC] Track 10 AUDIO Start 31718 End 33651 LeadIn - Offset 0x0
+[PCE-TOC] Track 11 AUDIO Start 33652 End 34124 LeadIn - Offset 0x0
+[PCE-TOC] Track 12 AUDIO Start 34125 End 34824 LeadIn - Offset 0x0
+[PCE-TOC] Track 13 AUDIO Start 34825 End 36843 LeadIn - Offset 0x0
+[PCE-TOC] Track 14 AUDIO Start 36844 End 37818 LeadIn - Offset 0x0
+[PCE-TOC] Track 15 AUDIO Start 37819 End 38926 LeadIn - Offset 0x0
+[PCE-TOC] Track 16 AUDIO Start 38927 End 40925 LeadIn - Offset 0x0
+[PCE-TOC] Track 17 AUDIO Start 40926 End 42297 LeadIn - Offset 0x0
+[PCE-TOC] Track 18 AUDIO Start 42298 End 42693 LeadIn - Offset 0x0
+[PCE-TOC] Track 19 AUDIO Start 42694 End 42994 LeadIn - Offset 0x0
+[PCE-TOC] Track 20 AUDIO Start 42995 End 45926 LeadIn - Offset 0x0
+[PCE-TOC] Track 21 AUDIO Start 45927 End 47189 LeadIn - Offset 0x0
+[PCE-TOC] Track 22 AUDIO Start 47190 End 48872 LeadIn - Offset 0x0
+[PCE-TOC] Track 23 AUDIO Start 48873 End 49669 LeadIn - Offset 0x0
+[PCE-TOC] Track 24 AUDIO Start 49670 End 50731 LeadIn - Offset 0x0
+[PCE-TOC] Track 25 AUDIO Start 50732 End 55040 LeadIn - Offset 0x0
+[PCE-TOC] Track 26 AUDIO Start 55041 End 56141 LeadIn - Offset 0x0
+[PCE-TOC] Track 27 AUDIO Start 56142 End 60953 LeadIn - Offset 0x0
+[PCE-TOC] Track 28 AUDIO Start 60954 End 63187 LeadIn - Offset 0x0
+[PCE-TOC] Track 29 AUDIO Start 63188 End 68467 LeadIn - Offset 0x0
+[PCE-TOC] Track 30 AUDIO Start 68468 End 70800 LeadIn - Offset 0x0
+[PCE-TOC] Track 31 AUDIO Start 70801 End 71101 LeadIn - Offset 0x0
+[PCE-TOC] Track 32 AUDIO Start 71102 End 73813 LeadIn - Offset 0x0
+[PCE-TOC] Track 33 AUDIO Start 73814 End 89335 LeadIn - Offset 0x0
+[PCE-TOC] Track 34 AUDIO Start 89336 End 120044 LeadIn - Offset 0x0
+[PCE-TOC] Track 35 AUDIO Start 120045 End 125511 LeadIn - Offset 0x0
+[PCE-TOC] Track 36 AUDIO Start 125512 End 131737 LeadIn - Offset 0x0
+[PCE-TOC] Track 37 AUDIO Start 131738 End 137375 LeadIn - Offset 0x0
+[PCE-TOC] Track 38 AUDIO Start 137376 End 148631 LeadIn - Offset 0x0
+[PCE-TOC] Track 39 AUDIO Start 148632 End 156177 LeadIn - Offset 0x0
+[PCE-TOC] Track 40 AUDIO Start 156178 End 163850 LeadIn - Offset 0x0
+[PCE-TOC] Track 41 AUDIO Start 163851 End 171091 LeadIn - Offset 0x0
+[PCE-TOC] Track 42 AUDIO Start 171092 End 172209 LeadIn - Offset 0x0
+[PCE-TOC] Track 43 AUDIO Start 172210 End 173380 LeadIn - Offset 0x0
+[PCE-TOC] Track 44 AUDIO Start 173381 End 174577 LeadIn - Offset 0x0
+[PCE-TOC] Track 45 AUDIO Start 174578 End 175568 LeadIn - Offset 0x0
+[PCE-TOC] Track 46 AUDIO Start 175569 End 176704 LeadIn - Offset 0x0
+[PCE-TOC] Track 47 AUDIO Start 176705 End 177917 LeadIn - Offset 0x0
+[PCE-TOC] Track 48 AUDIO Start 177918 End 186479 LeadIn - Offset 0x0
+[PCE-TOC] Track 49 AUDIO Start 186480 End 203086 LeadIn - Offset 0x0
+[PCE-TOC] Track 50 AUDIO Start 203087 End 203666 LeadIn - Offset 0x0
+[PCE-TOC] Track 51 AUDIO Start 203667 End 204273 LeadIn - Offset 0x0
+[PCE-TOC] Track 52 AUDIO Start 204274 End 204880 LeadIn - Offset 0x0
+[PCE-TOC] Track 53 AUDIO Start 204881 End 205549 LeadIn - Offset 0x0
+[PCE-TOC] Track 54 AUDIO Start 205550 End 206218 LeadIn - Offset 0x0
+[PCE-TOC] Track 55 AUDIO Start 206219 End 206854 LeadIn - Offset 0x0
+[PCE] Reset: MPR7=0x00, PC=0xE0F3, op0=0x78
+[HEADLESS] Savestate slots:
+[HEADLESS]  slot=1 hasData=True payloadLen=7128040 offset=265
+[HEADLESS]  slot=2 hasData=True payloadLen=7128040 offset=7128305
+[HEADLESS]  slot=3 hasData=False payloadLen=0 offset=14256345
+[HEADLESS] Loaded savestate slot 1 payload (7128040 bytes)
+[PCE] Reset: MPR7=0x00, PC=0xE0F3, op0=0x78
+CD-ROM: state restore phase=BusFree buf=null busy=0 busyCycles=0 dmaAck=0
+[HEADLESS] Frame 0: fb_has_content=False nonzero_pixels=0 first_nonzero=(−1,−1)
+[HEADLESS] Frame 0: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
+[HEADLESS] Dumped frame 0 to /home/nichlas/EutherDrive_Android/logs/headless_frame0.ppm
+[HEADLESS] Frame 5: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
+[HEADLESS] Dumped frame 5 to /home/nichlas/EutherDrive_Android/logs/headless_frame5.ppm
+[HEADLESS] Final: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)

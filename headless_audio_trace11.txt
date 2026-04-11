@@ -1,0 +1,127 @@
+[HEADLESS] Loading ROM: /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA).cue
+[HEADLESS] Loading savestate: /home/nichlas/roms/PCE/Valis II (USA)/Valis_II__USA_.cue_18d5779b.euthstate
+[HEADLESS] Running 10 frames from savestate
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 01).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 02).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 03).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 04).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 05).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 06).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 07).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 08).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 09).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 10).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 11).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 12).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 13).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 14).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 15).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 16).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 17).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 18).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 19).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 20).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 21).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 22).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 23).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 24).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 25).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 26).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 27).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 28).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 29).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 30).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 31).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 32).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 33).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 34).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 35).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 36).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 37).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 38).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 39).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 40).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 41).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 42).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 43).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 44).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 45).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 46).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 47).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 48).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 49).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 50).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 51).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 52).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 53).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 54).bin BINARY LOADED
+CDROM /home/nichlas/roms/PCE/Valis II (USA)/Valis II (USA) (Track 55).bin BINARY LOADED
+[CD-AUDIO] Track 1 detection: LE=13200 BE=3374355 Result BE=False
+[CD-AUDIO] Track 3 detection: LE=854730 BE=165791003 Result BE=False
+[CD-AUDIO] Track 4 detection: LE=15594764 BE=169324945 Result BE=False
+[CD-AUDIO] Track 5 detection: LE=110215 BE=43211326 Result BE=False
+[CD-AUDIO] Track 6 detection: LE=465276 BE=198659621 Result BE=False
+[CD-AUDIO] Track 7 detection: LE=5004416 BE=180819564 Result BE=False
+[CD-AUDIO] Track 8 detection: LE=2969983 BE=165118201 Result BE=False
+[CD-AUDIO] Track 9 detection: LE=881748 BE=117455200 Result BE=False
+[CD-AUDIO] Track 10 detection: LE=222262 BE=91941726 Result BE=False
+[CD-AUDIO] Track 11 detection: LE=1133295 BE=159745363 Result BE=False
+[CD-AUDIO] Track 12 detection: LE=395943 BE=102563038 Result BE=False
+[CD-AUDIO] Track 13 detection: LE=124061 BE=43086107 Result BE=False
+[CD-AUDIO] Track 14 detection: LE=2448900 BE=159634114 Result BE=False
+[CD-AUDIO] Track 15 detection: LE=3247794 BE=169112328 Result BE=False
+[CD-AUDIO] Track 16 detection: LE=526932 BE=167959020 Result BE=False
+[CD-AUDIO] Track 17 detection: LE=3092183 BE=159561265 Result BE=False
+[CD-AUDIO] Track 18 detection: LE=2395085 BE=144795383 Result BE=False
+[CD-AUDIO] Track 19 detection: LE=36557 BE=9354512 Result BE=False
+[CD-AUDIO] Track 20 detection: LE=1055286 BE=133095068 Result BE=False
+[CD-AUDIO] Track 21 detection: LE=836393 BE=155569302 Result BE=False
+[CD-AUDIO] Track 22 detection: LE=1700599 BE=143201713 Result BE=False
+[CD-AUDIO] Track 23 detection: LE=1468065 BE=155179373 Result BE=False
+[CD-AUDIO] Track 24 detection: LE=601297 BE=116944723 Result BE=False
+[CD-AUDIO] Track 25 detection: LE=6952022 BE=164891902 Result BE=False
+[CD-AUDIO] Track 26 detection: LE=15254 BE=3904259 Result BE=False
+[CD-AUDIO] Track 27 detection: LE=9111956 BE=161193029 Result BE=False
+[CD-AUDIO] Track 28 detection: LE=116158 BE=49597597 Result BE=False
+[CD-AUDIO] Track 29 detection: LE=388866 BE=118740883 Result BE=False
+[CD-AUDIO] Track 30 detection: LE=5694652 BE=152054179 Result BE=False
+[CD-AUDIO] Track 31 detection: LE=7866517 BE=163781258 Result BE=False
+[CD-AUDIO] Track 32 detection: LE=827321 BE=148626730 Result BE=False
+[CD-AUDIO] Track 33 detection: LE=8114502 BE=167803358 Result BE=False
+[CD-AUDIO] Track 34 detection: LE=26137466 BE=158891630 Result BE=False
+[CD-AUDIO] Track 35 detection: LE=1180818 BE=165816211 Result BE=False
+[CD-AUDIO] Track 36 detection: LE=12036446 BE=161231137 Result BE=False
+[CD-AUDIO] Track 37 detection: LE=17441545 BE=182055402 Result BE=False
+[CD-AUDIO] Track 38 detection: LE=44370491 BE=175594676 Result BE=False
+[CD-AUDIO] Track 39 detection: LE=11807427 BE=176592877 Result BE=False
+[CD-AUDIO] Track 40 detection: LE=9696110 BE=162622900 Result BE=False
+[CD-AUDIO] Track 41 detection: LE=34213836 BE=171925250 Result BE=False
+[CD-AUDIO] Track 42 detection: LE=3406782 BE=171955847 Result BE=False
+[CD-AUDIO] Track 43 detection: LE=3807166 BE=163632120 Result BE=False
+[CD-AUDIO] Track 44 detection: LE=2035945 BE=166621703 Result BE=False
+[CD-AUDIO] Track 45 detection: LE=1432245 BE=167424609 Result BE=False
+[CD-AUDIO] Track 46 detection: LE=4263391 BE=175517826 Result BE=False
+[CD-AUDIO] Track 47 detection: LE=1609598 BE=171053276 Result BE=False
+[CD-AUDIO] Track 48 detection: LE=31870 BE=8113075 Result BE=False
+[CD-AUDIO] Track 49 detection: LE=29924 BE=7654679 Result BE=False
+[CD-AUDIO] Track 50 detection: LE=5987193 BE=190691490 Result BE=False
+[CD-AUDIO] Track 51 detection: LE=2749187 BE=201179592 Result BE=False
+[CD-AUDIO] Track 52 detection: LE=553343 BE=128953115 Result BE=False
+[CD-AUDIO] Track 53 detection: LE=70824007 BE=181274518 Result BE=False
+[CD-AUDIO] Track 54 detection: LE=26105939 BE=199665112 Result BE=False
+[CD-AUDIO] Track 55 detection: LE=9543878 BE=180775562 Result BE=False
+Loaded 55 tracks
+[PCE] Reset: MPR7=0x00, PC=0xE0F3, op0=0x78
+[HEADLESS] Savestate slots:
+[HEADLESS]  slot=1 hasData=True payloadLen=7128040 offset=265
+[HEADLESS]  slot=2 hasData=False payloadLen=0 offset=7128305
+[HEADLESS]  slot=3 hasData=False payloadLen=0 offset=7128305
+[HEADLESS] Loaded savestate slot 1 payload (7128040 bytes)
+[PCE] Reset: MPR7=0x00, PC=0xE0F3, op0=0x78
+CD-ROM: state restore phase=BusFree buf=null busy=0 busyCycles=0 dmaAck=0
+[HEADLESS] Frame 0: fb_has_content=False nonzero_pixels=0 first_nonzero=(−1,−1)
+[HEADLESS] Frame 0: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
+[HEADLESS] Dumped frame 0 to /home/nichlas/EutherDrive_Android/logs/headless_frame0.ppm
+[HEADLESS] Frame 5: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
+[HEADLESS] Dumped frame 5 to /home/nichlas/EutherDrive_Android/logs/headless_frame5.ppm
+[HEADLESS] Final: fb_has_content=True nonzero_pixels=54067 first_nonzero=(0,0)
