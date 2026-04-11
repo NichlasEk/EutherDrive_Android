@@ -46,9 +46,9 @@ public sealed class RomPickerDialog : Window
     private readonly List<RomPickerEntry> _allEntries = new();
     private readonly List<RomPickerEntry> _romSearchEntries = new();
     private readonly TextBox _pathText;
-    private readonly TextBox _romLibraryText;
     private readonly TextBox _coverCacheText;
-    private readonly TextBox _statusText;
+    private readonly TextBlock _romLibraryText;
+    private readonly TextBlock _statusText;
     private readonly TextBlock _coverSyncStatusText;
     private readonly TextBox _searchBox;
     private readonly TextBox _romSearchBox;
@@ -78,7 +78,6 @@ public sealed class RomPickerDialog : Window
     private Dictionary<string, CoverDatEntry> _coverDatCache = new(StringComparer.OrdinalIgnoreCase);
     private bool _coverIndexDirty;
     private bool _romSearchInProgress;
-    private bool _suppressSelectionStatus;
 
     public string? SelectedPath { get; private set; }
     public string? RomLibraryPath => _romLibraryPath;
@@ -132,20 +131,21 @@ public sealed class RomPickerDialog : Window
             TextWrapping = TextWrapping.NoWrap
         };
 
-        _statusText = new TextBox
+        _statusText = new TextBlock
         {
-            IsReadOnly = true,
-            BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent,
-            Text = "Choose a ROM or navigate into a directory."
+            Text = "Choose a ROM or navigate into a directory.",
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis
         };
 
-        _romLibraryText = new TextBox
+        _romLibraryText = new TextBlock
         {
-            IsReadOnly = true,
-            BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent,
-            TextWrapping = TextWrapping.NoWrap
+            Classes = { "muted" },
+            FontSize = 12,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 320,
+            VerticalAlignment = VerticalAlignment.Center
         };
 
         _coverCacheText = new TextBox
@@ -318,8 +318,8 @@ public sealed class RomPickerDialog : Window
                         [Grid.ColumnProperty] = 1,
                         Orientation = Orientation.Horizontal,
                         Spacing = 8,
-                        VerticalAlignment = VerticalAlignment.Top,
-                        Children = { _syncCoversButton, setRomsButton }
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Children = { _romLibraryText, _syncCoversButton, setRomsButton }
                     }
                 }
             }
@@ -359,9 +359,6 @@ public sealed class RomPickerDialog : Window
                                     _starsFilterCombo
                                 }
                             },
-                            _pathText,
-                            _romLibraryText,
-                            _coverCacheText,
                             _romSearchBox,
                             new Grid
                             {
@@ -536,8 +533,6 @@ public sealed class RomPickerDialog : Window
 
         _openButton.IsEnabled = true;
         _openButton.Content = entry.IsDirectory ? "Enter" : "Open";
-        if (!_suppressSelectionStatus)
-            _statusText.Text = entry.DetailText;
         UpdateCoverPreview(entry);
     }
 
@@ -611,6 +606,8 @@ public sealed class RomPickerDialog : Window
         _statusText.Text = $"ROM library set to {_romLibraryPath}";
         if (IsRomLibrarySearchActive)
             StartRomLibrarySearch();
+        else
+            UpdateVisibleStatusText();
         StartCoverDeltaSyncIfNeeded();
     }
 
@@ -728,30 +725,13 @@ public sealed class RomPickerDialog : Window
             RomPickerEntry? newSelected = _entries.FirstOrDefault(entry => string.Equals(entry.FullPath, selectedPath, StringComparison.OrdinalIgnoreCase));
             if (newSelected != null)
             {
-                _suppressSelectionStatus = true;
-                try
-                {
-                    _listBox.SelectedItem = newSelected;
-                }
-                finally
-                {
-                    _suppressSelectionStatus = false;
-                }
-
+                _listBox.SelectedItem = newSelected;
                 UpdateVisibleStatusText();
                 return;
             }
         }
 
-        _suppressSelectionStatus = true;
-        try
-        {
-            _listBox.SelectedItem = _entries.FirstOrDefault();
-        }
-        finally
-        {
-            _suppressSelectionStatus = false;
-        }
+        _listBox.SelectedItem = _entries.FirstOrDefault();
 
         if (_listBox.SelectedItem == null)
             UpdateCoverPreview(null);
@@ -891,6 +871,7 @@ public sealed class RomPickerDialog : Window
         ToolTip.SetTip(_romSearchBox, hasRomLibrary
             ? _romLibraryPath
             : "Set a ROM library folder to search across all ROMs.");
+        ToolTip.SetTip(_romLibraryText, hasRomLibrary ? _romLibraryPath : "ROM library folder is not set.");
 
         _searchBox.Watermark = IsRomLibrarySearchActive
             ? "Filter ROM search results"
@@ -961,8 +942,8 @@ public sealed class RomPickerDialog : Window
         _romLibraryText.Text = hasValue
             ? exists
                 ? $"ROMs: {_romLibraryPath}"
-                : $"ROM library: {_romLibraryPath} (missing)"
-            : "ROM library: not set";
+                : $"ROMs: {_romLibraryPath} (missing)"
+            : "ROMs: not set";
     }
 
     private void UpdateCoverCacheUi()
