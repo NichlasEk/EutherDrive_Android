@@ -119,7 +119,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly bool GenesisLowPassFilterEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_LPF"), "0", StringComparison.Ordinal);
     private static readonly double GenesisLowPassCutoffHz =
-        ParsePositiveDouble("EUTHERDRIVE_GENESIS_LPF_CUTOFF_HZ", 12000.0);
+        ParsePositiveDouble("EUTHERDRIVE_GENESIS_LPF_CUTOFF_HZ", 3390.0);
     private static readonly bool YmSecondLowPassFilterEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_2ND_LPF"), "1", StringComparison.Ordinal);
     private static readonly double YmSecondLowPassCutoffHz =
@@ -133,7 +133,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly bool PsgResampleSimple =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool PsgResampleSinc =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SINC"), "1", StringComparison.OrdinalIgnoreCase);
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SINC"), "0", StringComparison.OrdinalIgnoreCase);
     private static readonly bool YmFilterPreResampleEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_FILTER_PRE_RESAMPLE"), "0", StringComparison.OrdinalIgnoreCase);
     private static readonly int PsgSincTaps = NormalizeEvenTaps(ParseNonNegativeInt("EUTHERDRIVE_PSG_RESAMPLE_SINC_TAPS", 24));
@@ -2817,13 +2817,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                                 ranCycles = slice;
 
                             svpOverride.Tick((uint)ranCycles);
-                            md_main.AdvanceSystemCycles(ranCycles, flushAudio: false);
+                            md_main.AdvanceSystemCycles(slice, flushAudio: false);
                             remaining -= slice;
                         }
                     }
                     else
                     {
-                        int beforeCycles = md_m68k.g_clock_now;
                         if (TracePerf)
                         {
                             long cpuStart = Stopwatch.GetTimestamp();
@@ -2835,13 +2834,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                             _cpu.RunSome(budget: cpuBudget);
                         }
 
-                        int ranCycles = md_m68k.g_clock_now - beforeCycles;
-                        if (ranCycles <= 0)
-                            ranCycles = cpuBudget;
-
                         if (_sega32XCore != null && useExperimental32XTiming)
                         {
-                            int remainingM68kCycles = ranCycles - _s32xAccessDrivenM68kCycles;
+                            int remainingM68kCycles = cpuBudget - _s32xAccessDrivenM68kCycles;
                             if (remainingM68kCycles < 0)
                                 remainingM68kCycles = 0;
 
@@ -2860,7 +2855,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                             _s32xAccessDrivenM68kCycles = 0;
                         }
 
-                        md_main.AdvanceSystemCycles(ranCycles, flushAudio: false);
+                        md_main.AdvanceSystemCycles(cpuBudget, flushAudio: false);
                     }
 
                     // Captain America can wedge in semaphore wait loops mid-frame;
