@@ -133,7 +133,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly bool PsgResampleSimple =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SIMPLE"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool PsgResampleSinc =
-        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SINC"), "0", StringComparison.OrdinalIgnoreCase);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PSG_RESAMPLE_SINC"), "1", StringComparison.OrdinalIgnoreCase);
     private static readonly bool YmFilterPreResampleEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_FILTER_PRE_RESAMPLE"), "0", StringComparison.OrdinalIgnoreCase);
     private static readonly int PsgSincTaps = NormalizeEvenTaps(ParseNonNegativeInt("EUTHERDRIVE_PSG_RESAMPLE_SINC_TAPS", 24));
