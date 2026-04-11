@@ -20,6 +20,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using EutherDrive.Core;
 using SharpCompress.Archives;
+using Tomlyn;
 
 namespace EutherDrive.UI;
 
@@ -30,6 +31,9 @@ public sealed class RomPickerDialog : Window
     {
         Timeout = TimeSpan.FromSeconds(15)
     };
+    private static readonly object s_bootCoverSyncLock = new();
+    private static Task? s_bootCoverSyncTask;
+    private static string? s_bootCoverSyncLibraryPath;
 
     private static readonly HashSet<string> s_supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -73,6 +77,31 @@ public sealed class RomPickerDialog : Window
 
     public string? SelectedPath { get; private set; }
     public string? RomLibraryPath => _romLibraryPath;
+
+    public static void StartBackgroundBootCoverDeltaSync(string? romLibraryPath)
+    {
+        string? normalizedPath = NormalizeDirectoryPath(romLibraryPath);
+        if (string.IsNullOrWhiteSpace(normalizedPath) || !Directory.Exists(normalizedPath))
+            return;
+
+        lock (s_bootCoverSyncLock)
+        {
+            if (s_bootCoverSyncTask is { IsCompleted: false } &&
+                string.Equals(s_bootCoverSyncLibraryPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (string.Equals(s_bootCoverSyncLibraryPath, normalizedPath, StringComparison.OrdinalIgnoreCase) &&
+                s_bootCoverSyncTask?.IsCompleted == true)
+            {
+                return;
+            }
+
+            s_bootCoverSyncLibraryPath = normalizedPath;
+            s_bootCoverSyncTask = Task.Run(() => new BackgroundCoverSyncWorker(normalizedPath).RunDeltaSyncAsync());
+        }
+    }
 
     public RomPickerDialog(string? initialPath, string? romLibraryPath, double uiScale, Func<string, RomPickerStats> statsProvider)
     {
@@ -1137,31 +1166,27 @@ public sealed class RomPickerDialog : Window
 
         if (!string.IsNullOrWhiteSpace(coverCacheRoot))
         {
-            string indexPath = GetCoverIndexPath(coverCacheRoot);
-            if (File.Exists(indexPath))
+            try
             {
-                try
+                CoverIndexFile? file = LoadCoverIndexFile(coverCacheRoot);
+                if (file?.Entries != null)
                 {
-                    CoverIndexFile? file = JsonSerializer.Deserialize<CoverIndexFile>(File.ReadAllText(indexPath));
-                    if (file?.Entries != null)
+                    foreach (CoverIndexEntry entry in file.Entries)
                     {
-                        foreach (CoverIndexEntry entry in file.Entries)
+                        if (string.IsNullOrWhiteSpace(entry.RomPath) ||
+                            string.IsNullOrWhiteSpace(entry.CoverRelativePath))
                         {
-                            if (string.IsNullOrWhiteSpace(entry.RomPath) ||
-                                string.IsNullOrWhiteSpace(entry.CoverRelativePath))
-                            {
-                                continue;
-                            }
-
-                            byPath[entry.RomPath] = entry;
-                            if (!string.IsNullOrWhiteSpace(entry.HashHex))
-                                byHash[entry.HashHex] = entry;
+                            continue;
                         }
+
+                        byPath[entry.RomPath] = entry;
+                        if (!string.IsNullOrWhiteSpace(entry.HashHex))
+                            byHash[entry.HashHex] = entry;
                     }
                 }
-                catch
-                {
-                }
+            }
+            catch
+            {
             }
         }
 
@@ -1194,11 +1219,7 @@ public sealed class RomPickerDialog : Window
         try
         {
             Directory.CreateDirectory(coverCacheRoot);
-            string json = JsonSerializer.Serialize(new CoverIndexFile { Entries = entries }, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-            File.WriteAllText(GetCoverIndexPath(coverCacheRoot), json);
+            SaveCoverIndexFile(coverCacheRoot, new CoverIndexFile { Entries = entries.ToList() });
         }
         catch
         {
@@ -1277,10 +1298,50 @@ public sealed class RomPickerDialog : Window
     }
 
     private static string GetCoverIndexPath(string coverCacheRoot)
+        => Path.Combine(coverCacheRoot, ".cover-index.toml");
+
+    private static string GetLegacyCoverIndexJsonPath(string coverCacheRoot)
         => Path.Combine(coverCacheRoot, ".cover-index.json");
 
     private static string GetCoverDatRoot(string coverCacheRoot)
         => Path.Combine(coverCacheRoot, ".dat-cache");
+
+    private static CoverIndexFile? LoadCoverIndexFile(string coverCacheRoot)
+    {
+        string tomlPath = GetCoverIndexPath(coverCacheRoot);
+        if (File.Exists(tomlPath))
+        {
+            try
+            {
+                return Toml.ToModel<CoverIndexFile>(File.ReadAllText(tomlPath));
+            }
+            catch
+            {
+            }
+        }
+
+        string legacyJsonPath = GetLegacyCoverIndexJsonPath(coverCacheRoot);
+        if (!File.Exists(legacyJsonPath))
+            return null;
+
+        try
+        {
+            CoverIndexFile? legacy = JsonSerializer.Deserialize<CoverIndexFile>(File.ReadAllText(legacyJsonPath));
+            if (legacy != null)
+                SaveCoverIndexFile(coverCacheRoot, legacy);
+            return legacy;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void SaveCoverIndexFile(string coverCacheRoot, CoverIndexFile file)
+    {
+        Directory.CreateDirectory(coverCacheRoot);
+        File.WriteAllText(GetCoverIndexPath(coverCacheRoot), Toml.FromModel(file));
+    }
 
     private void StartCoverSync(bool forceRestart)
     {
@@ -2505,7 +2566,7 @@ public sealed class RomPickerDialog : Window
 
     private sealed class CoverIndexFile
     {
-        public CoverIndexEntry[]? Entries { get; set; }
+        public List<CoverIndexEntry>? Entries { get; set; }
     }
 
     private sealed class CoverIndexEntry
@@ -2521,6 +2582,236 @@ public sealed class RomPickerDialog : Window
     {
         public string DatName { get; set; } = string.Empty;
         public Dictionary<string, List<string>> TitlesByCrc { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class BackgroundCoverSyncWorker
+    {
+        private readonly string _romLibraryPath;
+        private readonly string _coverCacheRoot;
+        private readonly Dictionary<string, CoverIndexEntry> _coverIndexByPath = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, CoverIndexEntry> _coverIndexByHash = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, CoverDatEntry> _coverDatCache = new(StringComparer.OrdinalIgnoreCase);
+
+        public BackgroundCoverSyncWorker(string romLibraryPath)
+        {
+            _romLibraryPath = romLibraryPath;
+            _coverCacheRoot = Path.Combine(romLibraryPath, ".eutherdrive-thumbnails");
+            LoadIndex();
+        }
+
+        public async Task RunDeltaSyncAsync()
+        {
+            try
+            {
+                List<string> pending = new();
+                foreach (string romPath in EnumerateRomFiles(_romLibraryPath))
+                {
+                    if (NeedsCoverSync(romPath))
+                        pending.Add(romPath);
+                }
+
+                if (pending.Count == 0)
+                    return;
+
+                await EnsureDatMetadataForRomsAsync(pending, CancellationToken.None);
+
+                foreach (string romPath in pending)
+                    await EnsureCoverAsync(romPath, CancellationToken.None);
+
+                SaveIndex();
+            }
+            catch
+            {
+            }
+        }
+
+        private void LoadIndex()
+        {
+            try
+            {
+                CoverIndexFile? file = LoadCoverIndexFile(_coverCacheRoot);
+                if (file?.Entries == null)
+                    return;
+
+                foreach (CoverIndexEntry entry in file.Entries)
+                {
+                    if (string.IsNullOrWhiteSpace(entry.RomPath) ||
+                        string.IsNullOrWhiteSpace(entry.CoverRelativePath))
+                    {
+                        continue;
+                    }
+
+                    _coverIndexByPath[entry.RomPath] = entry;
+                    if (!string.IsNullOrWhiteSpace(entry.HashHex))
+                        _coverIndexByHash[entry.HashHex] = entry;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void SaveIndex()
+        {
+            try
+            {
+                SaveCoverIndexFile(_coverCacheRoot, new CoverIndexFile
+                {
+                    Entries = _coverIndexByPath.Values
+                        .OrderBy(static entry => entry.RomPath, StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        private bool NeedsCoverSync(string romPath)
+        {
+            string? indexedPath = TryResolveCoverPathFromIndex(romPath);
+            if (!string.IsNullOrWhiteSpace(indexedPath) && File.Exists(indexedPath))
+                return false;
+
+            string? expectedPath = GetExpectedCoverLocalPath(romPath, _coverCacheRoot);
+            if (!string.IsNullOrWhiteSpace(expectedPath) && File.Exists(expectedPath))
+                return false;
+
+            return true;
+        }
+
+        private string? TryResolveCoverPathFromIndex(string romPath)
+        {
+            FileInfo? fileInfo = TryGetFileInfo(romPath);
+            if (fileInfo == null)
+                return null;
+
+            if (!_coverIndexByPath.TryGetValue(romPath, out CoverIndexEntry? entry))
+                return null;
+
+            if (entry.FileLength != fileInfo.Length || entry.LastWriteUtcTicks != fileInfo.LastWriteTimeUtc.Ticks)
+                return null;
+
+            string fullCoverPath = Path.Combine(_coverCacheRoot, entry.CoverRelativePath);
+            return File.Exists(fullCoverPath) ? fullCoverPath : null;
+        }
+
+        private string? TryResolveCoverPathByHash(string hashHex)
+        {
+            if (string.IsNullOrWhiteSpace(hashHex))
+                return null;
+
+            if (!_coverIndexByHash.TryGetValue(hashHex, out CoverIndexEntry? entry))
+                return null;
+
+            string fullCoverPath = Path.Combine(_coverCacheRoot, entry.CoverRelativePath);
+            return File.Exists(fullCoverPath) ? fullCoverPath : null;
+        }
+
+        private void UpsertCoverIndex(string romPath, string? hashHex, string coverPath)
+        {
+            FileInfo? romInfo = TryGetFileInfo(romPath);
+            if (romInfo == null)
+                return;
+
+            string relativePath = Path.GetRelativePath(_coverCacheRoot, coverPath);
+            var entry = new CoverIndexEntry
+            {
+                RomPath = romPath,
+                HashHex = hashHex,
+                FileLength = romInfo.Length,
+                LastWriteUtcTicks = romInfo.LastWriteTimeUtc.Ticks,
+                CoverRelativePath = relativePath
+            };
+
+            _coverIndexByPath[romPath] = entry;
+            if (!string.IsNullOrWhiteSpace(hashHex))
+                _coverIndexByHash[hashHex] = entry;
+        }
+
+        private async Task EnsureDatMetadataForRomsAsync(IEnumerable<string> romPaths, CancellationToken cancellationToken)
+        {
+            var playlists = romPaths
+                .SelectMany(path => GetThumbnailPlaylistCandidates(path, Path.GetExtension(path)))
+                .Select(TryMapPlaylistToDatName)
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            foreach (string datName in playlists!)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await EnsureDatLoadedAsync(datName, cancellationToken);
+            }
+        }
+
+        private async Task<CoverDatEntry?> EnsureDatLoadedAsync(string playlist, CancellationToken cancellationToken)
+        {
+            string? datName = TryMapPlaylistToDatName(playlist);
+            if (string.IsNullOrWhiteSpace(datName))
+                return null;
+
+            if (_coverDatCache.TryGetValue(datName, out CoverDatEntry? cached))
+                return cached;
+
+            string? localPath = await EnsureDatFileLocalAsync(datName, _coverCacheRoot, cancellationToken);
+            if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+                return null;
+
+            CoverDatEntry parsed = ParseCoverDat(localPath, datName);
+            _coverDatCache[datName] = parsed;
+            return parsed;
+        }
+
+        private async Task<IReadOnlyList<string>?> TryResolveCanonicalCoverNamesAsync(string romPath, CancellationToken cancellationToken)
+        {
+            string? crcHex = await TryComputeRomCrc32HexAsync(romPath, cancellationToken);
+            if (string.IsNullOrWhiteSpace(crcHex))
+                return null;
+
+            foreach (string playlist in GetThumbnailPlaylistCandidates(romPath, Path.GetExtension(romPath)))
+            {
+                CoverDatEntry? dat = await EnsureDatLoadedAsync(playlist, cancellationToken);
+                if (dat == null)
+                    continue;
+
+                if (dat.TitlesByCrc.TryGetValue(crcHex, out List<string>? canonicalNames) && canonicalNames.Count > 0)
+                    return canonicalNames;
+            }
+
+            return null;
+        }
+
+        private async Task EnsureCoverAsync(string romPath, CancellationToken cancellationToken)
+        {
+            IReadOnlyList<string>? canonicalNames = await TryResolveCanonicalCoverNamesAsync(romPath, cancellationToken);
+            string? localPath = GetExpectedCoverLocalPath(romPath, _coverCacheRoot, canonicalNames);
+            if (!string.IsNullOrWhiteSpace(localPath) && File.Exists(localPath))
+            {
+                string? cachedHash = await TryComputeRomHashHexAsync(romPath, cancellationToken);
+                UpsertCoverIndex(romPath, cachedHash, localPath);
+                return;
+            }
+
+            string? hashHex = await TryComputeRomHashHexAsync(romPath, cancellationToken);
+            string? indexedCoverPath = TryResolveCoverPathByHash(hashHex ?? string.Empty);
+            if (!string.IsNullOrWhiteSpace(indexedCoverPath))
+            {
+                UpsertCoverIndex(romPath, hashHex, indexedCoverPath);
+                return;
+            }
+
+            CoverDownloadResult result = await TryDownloadCoverAsync(romPath, _coverCacheRoot, canonicalNames, cancellationToken);
+            if (result is not CoverDownloadResult.Downloaded and not CoverDownloadResult.AlreadyCached)
+                return;
+
+            string? resolvedPath = TryResolveCoverPathFromIndex(romPath)
+                ?? ResolveCoverPath(romPath, _coverCacheRoot)
+                ?? GetExpectedCoverLocalPath(romPath, _coverCacheRoot, canonicalNames);
+
+            if (!string.IsNullOrWhiteSpace(resolvedPath) && File.Exists(resolvedPath))
+                UpsertCoverIndex(romPath, hashHex, resolvedPath);
+        }
     }
 
     private static uint[] BuildCrc32Table()

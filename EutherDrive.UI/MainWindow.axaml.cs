@@ -485,6 +485,7 @@ public partial class MainWindow : Window
         _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
+        RomPickerDialog.StartBackgroundBootCoverDeltaSync(_romLibraryPath);
         LoadTitleStats();
         ApplySnesSpecialRomOverrides();
         UpdateRecentRomCombo();
@@ -1889,7 +1890,10 @@ public partial class MainWindow : Window
         bool selected = await dialog.ShowDialog<bool>(this);
         bool romLibraryChanged = !string.Equals(_romLibraryPath, dialog.RomLibraryPath, StringComparison.OrdinalIgnoreCase);
         if (romLibraryChanged)
+        {
             _romLibraryPath = dialog.RomLibraryPath;
+            RomPickerDialog.StartBackgroundBootCoverDeltaSync(_romLibraryPath);
+        }
         if (!selected || string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
             if (romLibraryChanged)
