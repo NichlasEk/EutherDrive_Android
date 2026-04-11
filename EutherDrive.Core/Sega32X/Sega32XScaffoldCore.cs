@@ -5,9 +5,10 @@ namespace EutherDrive.Core.Sega32X;
 internal sealed class Sega32XScaffoldCore
 {
     private const int CommWriteFifoSize = 8;
+    private const int CommPairWriteFifoSize = 8;
     private const ulong DefaultNominalSh2CyclesPerFrame = 400_000;
     private static readonly bool ExperimentalSharedTimebaseEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_EXPERIMENTAL_SHARED_TIMEBASE");
-    private static readonly bool ExperimentalCommPollEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_EXPERIMENTAL_COMM_POLL");
+    private static readonly bool ExperimentalCommPollEnabled = !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_EXPERIMENTAL_COMM_POLL"), "0", StringComparison.Ordinal);
     private static readonly bool BrutalLoopWatchEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_BRUTAL_WATCH");
     private static readonly ulong DefaultSh2InstructionsPerFrame = ParseInstructionBudget();
     private static readonly ulong DefaultM68kCyclesPerFrame = ParseM68kCycleBudget();
@@ -30,7 +31,16 @@ internal sealed class Sega32XScaffoldCore
     private readonly ulong[] _commWriteM68kReferenceCycles = new ulong[CommWriteFifoSize];
     private readonly Sega32XCommSource[] _commWriteSources = new Sega32XCommSource[CommWriteFifoSize];
     private readonly bool[] _commWriteValid = new bool[CommWriteFifoSize];
+    private readonly uint[] _commPairWriteAddresses = new uint[CommPairWriteFifoSize];
+    private readonly uint[] _commPairWriteValues = new uint[CommPairWriteFifoSize];
+    private readonly ulong[] _commPairWriteM68kReferenceCycles = new ulong[CommPairWriteFifoSize];
+    private readonly Sega32XCommSource[] _commPairWriteSources = new Sega32XCommSource[CommPairWriteFifoSize];
+    private readonly bool[] _commPairWriteValid = new bool[CommPairWriteFifoSize];
+    private readonly string[] _brutalCommWriteHistory = new string[8];
+    private int _brutalCommWriteHistoryNextIndex;
+    private int _brutalCommWriteHistoryCount;
     private int _commWriteNextIndex;
+    private int _commPairWriteNextIndex;
     private ulong _globalSh2Cycles;
     private bool _commPortSyncInProgress;
     private readonly Dictionary<string, ulong> _masterBrutalLoopStates = new();
@@ -100,13 +110,14 @@ internal sealed class Sega32XScaffoldCore
 
         string? master = BuildAndResetLoopSummary("M", _masterBrutalLoopStates, ref _masterBrutalLoopSamples);
         string? slave = BuildAndResetLoopSummary("S", _slaveBrutalLoopStates, ref _slaveBrutalLoopSamples);
+        string? writes = BuildAndResetBrutalCommWriteSummary();
 
         if (string.IsNullOrWhiteSpace(master))
-            return string.IsNullOrWhiteSpace(slave) ? null : slave;
+            return string.IsNullOrWhiteSpace(slave) ? writes : AppendSummary(slave, writes);
         if (string.IsNullOrWhiteSpace(slave))
-            return master;
+            return AppendSummary(master, writes);
 
-        return $"{master} | {slave}";
+        return AppendSummary($"{master} | {slave}", writes);
     }
 
     public void Reset()
@@ -130,7 +141,16 @@ internal sealed class Sega32XScaffoldCore
         Array.Clear(_commWriteM68kReferenceCycles, 0, _commWriteM68kReferenceCycles.Length);
         Array.Clear(_commWriteSources, 0, _commWriteSources.Length);
         Array.Clear(_commWriteValid, 0, _commWriteValid.Length);
+        Array.Clear(_commPairWriteAddresses, 0, _commPairWriteAddresses.Length);
+        Array.Clear(_commPairWriteValues, 0, _commPairWriteValues.Length);
+        Array.Clear(_commPairWriteM68kReferenceCycles, 0, _commPairWriteM68kReferenceCycles.Length);
+        Array.Clear(_commPairWriteSources, 0, _commPairWriteSources.Length);
+        Array.Clear(_commPairWriteValid, 0, _commPairWriteValid.Length);
+        Array.Clear(_brutalCommWriteHistory, 0, _brutalCommWriteHistory.Length);
+        _brutalCommWriteHistoryNextIndex = 0;
+        _brutalCommWriteHistoryCount = 0;
         _commWriteNextIndex = 0;
+        _commPairWriteNextIndex = 0;
         _masterBrutalLoopStates.Clear();
         _slaveBrutalLoopStates.Clear();
         _masterBrutalLoopSamples = 0;
@@ -242,18 +262,22 @@ internal sealed class Sega32XScaffoldCore
         _commPortSyncInProgress = false;
     }
 
+    private ulong _lastM68kSyncGlobalCycles;
+
     public void SyncSh2sForM68kCommAccess()
     {
-        if (!_commPortSyncInProgress)
-        {
-            if (!BeginCommPortSync())
-                return;
-        }
-        else
-        {
+        if (_commPortSyncInProgress)
             return;
-        }
 
+        // Only sync if at least some time has passed since the last sync to avoid
+        // drowning in overhead from tight polling loops.
+        if (_globalSh2Cycles <= _lastM68kSyncGlobalCycles + 32)
+            return;
+
+        if (!BeginCommPortSync())
+            return;
+
+        _lastM68kSyncGlobalCycles = _globalSh2Cycles;
         ulong previousMasterLimit = _masterBus.CycleLimit;
         ulong previousSlaveLimit = _slaveBus.CycleLimit;
 
@@ -262,8 +286,7 @@ internal sealed class Sega32XScaffoldCore
             ulong syncLimit = Math.Max(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultM68kCommSyncSliceLength;
             _masterBus.CycleLimit = syncLimit;
             _slaveBus.CycleLimit = syncLimit;
-            // Kör master först så att den hinner skriva till comm-portarna
-            // innan M68K läser dem (viktigt för Star Trek-boot)
+            
             MasterSh2.Execute(DefaultM68kCommSyncSliceLength, _masterBus);
             SlaveSh2.Execute(DefaultM68kCommSyncSliceLength, _slaveBus);
         }
@@ -304,6 +327,34 @@ internal sealed class Sega32XScaffoldCore
 
             value = _commWriteValues[index];
             _commWriteValid[index] = false;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    public bool TryConsumeRecentCommPairWrite(uint address, Sega32XCpu readerCpu, ulong readerM68kReferenceCyclesDone, out uint value)
+    {
+        Sega32XCommSource readerSource = ToCommSource(readerCpu);
+        uint pairAddress = address & ~3u;
+
+        for (int offset = 1; offset <= CommPairWriteFifoSize; offset++)
+        {
+            int index = (_commPairWriteNextIndex - offset + CommPairWriteFifoSize) % CommPairWriteFifoSize;
+            if (!_commPairWriteValid[index] || _commPairWriteAddresses[index] != pairAddress)
+                continue;
+            if (_commPairWriteSources[index] == readerSource)
+                continue;
+
+            ulong eventCycles = _commPairWriteM68kReferenceCycles[index];
+            if (eventCycles > readerM68kReferenceCyclesDone)
+                continue;
+            if (readerM68kReferenceCyclesDone - eventCycles > CommWriteVisibilityWindow)
+                continue;
+
+            value = _commPairWriteValues[index];
+            _commPairWriteValid[index] = false;
             return true;
         }
 
@@ -355,6 +406,22 @@ internal sealed class Sega32XScaffoldCore
         _commWriteSources[index] = source;
         _commWriteValid[index] = true;
         _commWriteNextIndex = (_commWriteNextIndex + 1) % CommWriteFifoSize;
+
+        uint pairAddress = address & ~3u;
+        int pairIndex = _commPairWriteNextIndex;
+        int highCommIndex = (int)((pairAddress >> 1) & 0x7);
+        int lowCommIndex = highCommIndex + 1;
+        uint pairValue =
+            ((uint)Registers.CommunicationPorts[highCommIndex] << 16)
+            | Registers.CommunicationPorts[lowCommIndex];
+        _commPairWriteAddresses[pairIndex] = pairAddress;
+        _commPairWriteValues[pairIndex] = pairValue;
+        _commPairWriteM68kReferenceCycles[pairIndex] = m68kReferenceCycles;
+        _commPairWriteSources[pairIndex] = source;
+        _commPairWriteValid[pairIndex] = true;
+        _commPairWriteNextIndex = (_commPairWriteNextIndex + 1) % CommPairWriteFifoSize;
+
+        MaybeRecordBrutalCommWrite(source, address & ~1u, value);
 
         if (ExperimentalCommPollEnabled)
             WakeCommPollers(source, address);
@@ -411,8 +478,6 @@ internal sealed class Sega32XScaffoldCore
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
             return parsed;
 
-        // A small same-line catch-up slice lets the SH-2s respond to tight 68k communication-port
-        // polling loops without paying the cost of globally finer interleaving.
         return 128;
     }
 
@@ -436,11 +501,13 @@ internal sealed class Sega32XScaffoldCore
         if (!BrutalLoopWatchEnabled || weight == 0)
             return;
 
+        ushort[] comm = Registers.CommunicationPorts;
         ObserveBrutalCpuLoopState(
             MasterSh2,
             _masterBus,
             0x060003FC,
             0x06000406,
+            comm,
             _masterBrutalLoopStates,
             ref _masterBrutalLoopSamples,
             weight);
@@ -449,6 +516,7 @@ internal sealed class Sega32XScaffoldCore
             _slaveBus,
             0x06003B30,
             0x06003B38,
+            comm,
             _slaveBrutalLoopStates,
             ref _slaveBrutalLoopSamples,
             weight);
@@ -459,6 +527,7 @@ internal sealed class Sega32XScaffoldCore
         Sega32XSh2Bus bus,
         uint startPc,
         uint endPc,
+        ushort[] comm,
         Dictionary<string, ulong> states,
         ref ulong samples,
         ulong weight)
@@ -473,8 +542,10 @@ internal sealed class Sega32XScaffoldCore
             $"r1=0x{cpu.Registers.GeneralPurposeRegisters[1]:X8} " +
             $"r2=0x{cpu.Registers.GeneralPurposeRegisters[2]:X8} " +
             $"r3=0x{cpu.Registers.GeneralPurposeRegisters[3]:X8} " +
+            $"gbr=0x{cpu.Registers.GlobalBaseRegister:X8} " +
             $"t={(cpu.Registers.StatusRegister.T ? 1 : 0)} " +
-            $"ext={bus.InterruptLevel} int={bus.InternalInterruptLevel} im={cpu.Registers.StatusRegister.InterruptMask}";
+            $"ext={bus.InterruptLevel} int={bus.InternalInterruptLevel} im={cpu.Registers.StatusRegister.InterruptMask} " +
+            $"c4=0x{comm[4]:X4} c5=0x{comm[5]:X4} c6=0x{comm[6]:X4} c7=0x{comm[7]:X4}";
 
         states[key] = states.GetValueOrDefault(key) + weight;
         samples += weight;
@@ -517,6 +588,70 @@ internal sealed class Sega32XScaffoldCore
         }
 
         return sb.ToString();
+    }
+
+    private void MaybeRecordBrutalCommWrite(Sega32XCommSource source, uint address, ushort value)
+    {
+        if (!BrutalLoopWatchEnabled)
+            return;
+
+        uint masked = address & ~1u;
+        if (masked is not 0x00004020 and not 0x00004022 and not 0x00004024 and not 0x00004026
+            && masked is not 0x00A15120 and not 0x00A15122 and not 0x00A15124 and not 0x00A15126)
+        {
+            return;
+        }
+
+        string sourceName = source switch
+        {
+            Sega32XCommSource.M68k => "68K",
+            Sega32XCommSource.MasterSh2 => "M",
+            _ => "S",
+        };
+
+        uint pc = source switch
+        {
+            Sega32XCommSource.MasterSh2 => MasterSh2.CurrentInstructionPc,
+            Sega32XCommSource.SlaveSh2 => SlaveSh2.CurrentInstructionPc,
+            _ => 0,
+        };
+
+        _brutalCommWriteHistory[_brutalCommWriteHistoryNextIndex] =
+            $"src={sourceName} addr=0x{masked:X8} val=0x{value:X4} pc=0x{pc:X8} f={FrameCounter}";
+        _brutalCommWriteHistoryNextIndex = (_brutalCommWriteHistoryNextIndex + 1) % _brutalCommWriteHistory.Length;
+        if (_brutalCommWriteHistoryCount < _brutalCommWriteHistory.Length)
+            _brutalCommWriteHistoryCount++;
+    }
+
+    private string? BuildAndResetBrutalCommWriteSummary()
+    {
+        if (_brutalCommWriteHistoryCount == 0)
+            return null;
+
+        var sb = new System.Text.StringBuilder("W:");
+        for (int i = 0; i < _brutalCommWriteHistoryCount; i++)
+        {
+            int index = (_brutalCommWriteHistoryNextIndex - _brutalCommWriteHistoryCount + i + _brutalCommWriteHistory.Length) % _brutalCommWriteHistory.Length;
+            string? entry = _brutalCommWriteHistory[index];
+            if (string.IsNullOrWhiteSpace(entry))
+                continue;
+            if (sb.Length > 2)
+                sb.Append(" || ");
+            sb.Append(entry);
+        }
+
+        Array.Clear(_brutalCommWriteHistory, 0, _brutalCommWriteHistory.Length);
+        _brutalCommWriteHistoryNextIndex = 0;
+        _brutalCommWriteHistoryCount = 0;
+        return sb.ToString();
+    }
+
+    private static string AppendSummary(string primary, string? extra)
+    {
+        if (string.IsNullOrWhiteSpace(extra))
+            return primary;
+
+        return $"{primary} | {extra}";
     }
 
     private void DumpWordsNearPc(string tag, uint pc)
