@@ -472,7 +472,7 @@
                       Height="224"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Center"
-                      RenderTransformOrigin="0.5,0.5">
+                      RenderTransformOrigin="50%,50%">
                   <Grid Name="ScreenSurfaceHost"
                         Width="320"
                         Height="224"/>
@@ -490,7 +490,7 @@
                         Opacity="0"
                         IsVisible="False"
                         IsHitTestVisible="False"
-                        RenderTransformOrigin="0.5,0.5"/>
+                        RenderTransformOrigin="50%,50%"/>
               </Grid>
             </Viewbox>
           </Border>

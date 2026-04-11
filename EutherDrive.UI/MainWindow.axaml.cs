@@ -1399,7 +1399,7 @@ public partial class MainWindow : Window
         {
             _crtPowerIntroTimer = new DispatcherTimer(
                 TimeSpan.FromMilliseconds(16.0),
-                DispatcherPriority.Render,
+                DispatcherPriority.Normal,
                 (_, _) => TickCrtPowerIntro());
         }
 
@@ -1492,6 +1492,15 @@ public partial class MainWindow : Window
         _screenContentScaleTransform.ScaleY = scaleY;
         _crtPowerIntroFlashScaleTransform.ScaleX = scaleX;
         _crtPowerIntroFlashScaleTransform.ScaleY = scaleY;
+
+        if (ScreenContentRoot != null)
+        {
+            ScreenContentRoot.InvalidateVisual();
+        }
+        if (CrtPowerIntroFlash != null)
+        {
+            CrtPowerIntroFlash.InvalidateVisual();
+        }
     }
 
     private static double EaseOutCubic(double value)
