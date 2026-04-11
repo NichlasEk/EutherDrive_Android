@@ -1,0 +1,123 @@
+# EutherDrive Default Skin
+# This is the classic dark theme with teal accents
+
+[skin]
+name = "EutherDrive Default"
+author = "EutherDrive Team"
+version = "1.0"
+description = "The classic EutherDrive dark theme with teal accents"
+
+[colors]
+# Background colors
+background = "#091119"
+background_soft = "#0F1923"
+background_alt = "#0A0F14"
+
+# Panel colors
+panel = "#121C27"
+panel_raised = "#172433"
+panel_glass = "#CC162330"
+sub_panel = "#B8142230"
+option_card = "#D0132030"
+
+# Border colors
+stroke = "#324356"
+stroke_bright = "#4E6B86"
+
+# Text colors
+text = "#EEF6FF"
+text_muted = "#91A8BD"
+
+# Accent colors
+accent = "#5EEAD4"
+accent_warm = "#F59E0B"
+accent_hot = "#FB7185"
+
+[gradient.hero]
+angle = 45
+stop0 = "#183249,0.0"
+stop1 = "#111F2D,0.42"
+stop2 = "#271A2A,1.0"
+
+[gradient.screen_glow]
+angle = 45
+stop0 = "#6626C6DA,0.0"
+stop1 = "#0026C6DA,0.7"
+stop2 = "#44F59E0B,1.0"
+
+[typography]
+primary_font = "Inter"
+display_font = "Inter"
+mono_font = "JetBrains Mono, Consolas, Menlo, monospace"
+deck_font = "Noto Sans, Inter"
+base_size = 14
+small_size = 11
+display_size = 28
+kicker_size = 11
+deck_size = 14
+letter_spacing = 0.4
+deck_spacing = 1.1
+
+[layout]
+border_radius = 12
+border_radius_small = 10
+border_radius_large = 18
+border_radius_xlarge = 22
+border_radius_full = 999
+padding = 10
+button_padding_x = 12
+button_padding_y = 8
+spacing = 6
+spacing_small = 4
+spacing_large = 12
+shadow_opacity = 0.27
+shadow_blur = 50
+shadow_spread = 18
+
+[buttons]
+background = "#172433"
+background_hover = "#1D3143"
+background_pressed = "#12202C"
+background_action = "#163B41"
+background_action_hover = "#1A4B53"
+background_ghost = "#22131D"
+border = "#324356"
+border_hover = "#5EEAD4"
+border_ghost = "#6E4758"
+border_radius = 12
+transition_duration = 0.18
+hover_scale = 1.025
+pressed_scale = 0.985
+
+[panels]
+glass_background = "#CC162330"
+glass_opacity = 0.8
+subpanel_background = "#B8142230"
+subpanel_border = "#35506A"
+optioncard_background = "#D0132030"
+optioncard_border = "#304355"
+border_radius = 18
+subpanel_radius = 14
+optioncard_radius = 12
+
+[inputs]
+background = "#101B26"
+background_focus = "#0E1822"
+border = "#324356"
+border_focus = "#5EEAD4"
+border_radius = 12
+padding = 8
+
+[effects]
+use_transparency = true
+use_blur = false
+blur_radius = 10
+use_glow = true
+glow_color = "#5EEAD4"
+glow_intensity = 0.28
+use_animations = true
+animation_speed = 1.0
+use_background_effects = true
+background_color_1 = "#182A3D"
+background_color_2 = "#2A1B24"
+background_opacity = 0.18

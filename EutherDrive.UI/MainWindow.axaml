@@ -7,23 +7,23 @@
         mc:Ignorable="d"
         x:Class="EutherDrive.UI.MainWindow">
   <Grid>
-    <Border Background="{StaticResource EdBgBrush}"/>
+    <Border Background="{DynamicResource EdBgBrush}"/>
     <Border Margin="-160,-120,0,0"
             Width="520"
             Height="520"
             HorizontalAlignment="Left"
             VerticalAlignment="Top"
             CornerRadius="260"
-            Background="#182A3D"
-            Opacity="0.18"/>
+            Background="{DynamicResource EdBgFx1Brush}"
+            Opacity="{DynamicResource EdBgFxOpacity}"/>
     <Border Margin="0,120,-180,0"
             Width="460"
             Height="460"
             HorizontalAlignment="Right"
             VerticalAlignment="Top"
             CornerRadius="230"
-            Background="#2A1B24"
-            Opacity="0.16"/>
+            Background="{DynamicResource EdBgFx2Brush}"
+            Opacity="{DynamicResource EdBgFxOpacity}"/>
 
     <Grid Name="RootGrid" RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
 
@@ -79,12 +79,13 @@
                          Opacity="0.8"/>
             </StackPanel>
           </Border>
-          <StackPanel Spacing="6" VerticalAlignment="Top">
+            <StackPanel Spacing="6" VerticalAlignment="Top">
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Button Classes="action compact" Content="Start" Click="OnStart"/>
               <Button Classes="compact" Content="Stop" Click="OnStop"/>
               <Button Classes="ghost compact" Content="About" Click="OnAbout"/>
               <Button Classes="compact" Content="Input Settings" Click="OnInputSettings"/>
+              <Button Classes="action compact" Content="🎨 Skin" Click="OnSkinSettings"/>
             </StackPanel>
             <Expander ExpandDirection="Down" IsExpanded="False" HorizontalAlignment="Left" Width="324">
               <Expander.Header>
@@ -440,6 +441,7 @@
             <CheckBox Content="Sharp Pixels" IsChecked="True" Name="SharpPixelsCheck" Checked="OnSharpPixelsToggle" Unchecked="OnSharpPixelsToggle"/>
             <CheckBox Content="Advanced Pixel Filter" IsChecked="False" Name="AdvancedPixelFilterCheck" Checked="OnAdvancedPixelFilterToggle" Unchecked="OnAdvancedPixelFilterToggle"/>
             <CheckBox Content="CRT Scanlines" IsChecked="False" Name="CrtScanlinesCheck" Checked="OnCrtScanlinesToggle" Unchecked="OnCrtScanlinesToggle"/>
+            <CheckBox Content="CRT power-on intro" IsChecked="True" Name="CrtPowerIntroCheck" Checked="OnCrtPowerIntroToggle" Unchecked="OnCrtPowerIntroToggle"/>
             <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
               <TextBlock Text="Scanline Strength" VerticalAlignment="Center"/>
               <Slider Name="CrtScanlineStrengthSlider"
@@ -468,16 +470,35 @@
               BorderBrush="{StaticResource EdStrokeBrightBrush}"
               BorderThickness="1">
         <Grid>
-          <Border Background="{StaticResource EdScreenGlowBrush}" CornerRadius="6" Opacity="0.28"/>
+          <Border Background="{DynamicResource EdScreenGlowBrush}" CornerRadius="6" Opacity="{DynamicResource EdScreenGlowOpacity}"/>
           <Border Name="InputSurface" Background="Transparent" Focusable="True">
             <Viewbox Stretch="Uniform">
-              <Grid Name="ScreenGrid" Width="320" Height="224">
-                <Grid Name="ScreenSurfaceHost"
+              <Grid Name="ScreenGrid" Width="320" Height="224" ClipToBounds="True">
+                <Border Background="#000000"/>
+                <Grid Name="ScreenContentRoot"
                       Width="320"
-                      Height="224"/>
+                      Height="224"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      RenderTransformOrigin="0.5,0.5">
+                  <Grid Name="ScreenSurfaceHost"
+                        Width="320"
+                        Height="224"/>
+                </Grid>
                 <Image Name="SplashImage"
                        Source="avares://EutherDrive.UI/Assets/logo_crop.jpeg"
                        Stretch="Uniform"/>
+                <Border Name="CrtPowerIntroFlash"
+                        Width="320"
+                        Height="224"
+                        Background="#F7F9FF"
+                        CornerRadius="112"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Opacity="0"
+                        IsVisible="False"
+                        IsHitTestVisible="False"
+                        RenderTransformOrigin="0.5,0.5"/>
               </Grid>
             </Viewbox>
           </Border>

@@ -1,0 +1,129 @@
+# Retro Amber CRT Skin
+# Classic amber monochrome terminal aesthetic
+
+[skin]
+name = "Retro Amber CRT"
+author = "EutherDrive Skins"
+version = "1.0"
+description = "Classic amber monochrome terminal with scanline effects"
+
+[colors]
+# Dark backgrounds
+background = "#0A0A08"
+background_soft = "#12120E"
+background_alt = "#080806"
+
+# Warm panel colors
+panel = "#181610"
+panel_raised = "#201A12"
+panel_glass = "#CC181610"
+sub_panel = "#CC14120C"
+option_card = "#D012100A"
+
+# Amber borders
+stroke = "#4A3A10"
+stroke_bright = "#FFB000"
+
+# Amber text
+text = "#FFB000"
+text_muted = "#B88A20"
+
+# Amber accents
+accent = "#FFB000"
+accent_warm = "#FF8C00"
+accent_hot = "#FF4500"
+
+[gradient.hero]
+angle = 0
+stop0 = "#1A1810,0.0"
+stop1 = "#12100A,0.5"
+stop2 = "#0D0B08,1.0"
+
+[gradient.screen_glow]
+angle = 0
+stop0 = "#44FFB000,0.0"
+stop1 = "#11FFB000,0.8"
+stop2 = "#00FFB000,1.0"
+
+[typography]
+primary_font = "VT323, Consolas, monospace"
+display_font = "VT323, monospace"
+mono_font = "VT323, Consolas, monospace"
+deck_font = "VT323, monospace"
+base_size = 16
+small_size = 12
+display_size = 36
+kicker_size = 14
+deck_size = 18
+letter_spacing = 0.1
+deck_spacing = 0.5
+
+[layout]
+border_radius = 0
+border_radius_small = 0
+border_radius_large = 0
+border_radius_xlarge = 0
+border_radius_full = 0
+padding = 8
+button_padding_x = 16
+button_padding_y = 6
+spacing = 4
+spacing_small = 2
+spacing_large = 8
+shadow_opacity = 0
+shadow_blur = 0
+shadow_spread = 0
+
+[buttons]
+background = "#181610"
+background_hover = "#201A12"
+background_pressed = "#12100A"
+background_action = "#FFB000"
+background_action_hover = "#FFC840"
+background_ghost = "#12100A"
+border = "#4A3A10"
+border_hover = "#FFB000"
+border_ghost = "#6A5A20"
+border_radius = 0
+transition_duration = 0.05
+hover_scale = 1.0
+pressed_scale = 0.98
+
+[panels]
+glass_background = "#CC181610"
+glass_opacity = 0.9
+subpanel_background = "#CC14120C"
+subpanel_border = "#4A3A10"
+optioncard_background = "#CC12100A"
+optioncard_border = "#3A2A10"
+border_radius = 0
+subpanel_radius = 0
+optioncard_radius = 0
+
+[inputs]
+background = "#12100A"
+background_focus = "#181610"
+border = "#4A3A10"
+border_focus = "#FFB000"
+border_radius = 0
+padding = 6
+
+[effects]
+use_transparency = false
+use_blur = false
+blur_radius = 0
+use_glow = true
+glow_color = "#FFB000"
+glow_intensity = 0.15
+use_animations = false
+animation_speed = 0.5
+use_background_effects = true
+background_color_1 = "#FFB000"
+background_color_2 = "#4A3A10"
+background_opacity = 0.05
+
+[custom]
+crt_mode = "true"
+scanlines = "true"
+cursor_blink = "true"
+phosphor_decay = "0.8"

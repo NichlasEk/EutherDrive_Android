@@ -407,6 +407,19 @@ public partial class MainWindow : Window
     private const int DefaultNoiseMixPercent = 100;
     private const int DefaultCpuCyclesPerLine = 488;
     private const int DefaultCrtScanlineStrengthPercent = 22;
+    private const double CrtPowerIntroMinScale = 0.01;
+    private const double CrtPowerIntroBlackoutDurationMs = 90.0;
+    private const double CrtPowerIntroHorizontalDurationMs = 150.0;
+    private const double CrtPowerIntroVerticalDurationMs = 210.0;
+    private const double CrtPowerIntroTotalDurationMs =
+        CrtPowerIntroBlackoutDurationMs + CrtPowerIntroHorizontalDurationMs + CrtPowerIntroVerticalDurationMs;
+    private readonly ScaleTransform _screenContentScaleTransform = new(1.0, 1.0);
+    private readonly ScaleTransform _crtPowerIntroFlashScaleTransform = new(1.0, 1.0);
+    private DispatcherTimer? _crtPowerIntroTimer;
+    private bool _crtPowerIntroEnabled = true;
+    private bool _crtPowerIntroPending;
+    private bool _crtPowerIntroRunning;
+    private long _crtPowerIntroStartTicks;
 
     // UI heartbeat
     private readonly bool _heartbeatEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_UI_HEARTBEAT") == "1";
@@ -449,6 +462,11 @@ public partial class MainWindow : Window
     public MainWindow(string? romPath = null)
     {
         InitializeComponent();
+        if (ScreenContentRoot != null)
+            ScreenContentRoot.RenderTransform = _screenContentScaleTransform;
+        if (CrtPowerIntroFlash != null)
+            CrtPowerIntroFlash.RenderTransform = _crtPowerIntroFlashScaleTransform;
+        ResetCrtPowerIntroVisualState(showSplash: true, revealContent: false);
 
         ApplyConsoleSilence();
         HookInput();
@@ -537,6 +555,7 @@ public partial class MainWindow : Window
         UpdateSharpPixelsUi();
         UpdateAdvancedPixelFilterUi();
         UpdateCrtScanlinesUi();
+        UpdateCrtPowerIntroUi();
         UpdateDangerousSportTitlesUi();
 
         // Initialize timer
@@ -1181,6 +1200,15 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private void OnCrtPowerIntroToggle(object? sender, RoutedEventArgs e)
+    {
+        _crtPowerIntroEnabled = CrtPowerIntroCheck?.IsChecked != false;
+        UpdateCrtPowerIntroUi();
+        if (!_crtPowerIntroEnabled)
+            StopCrtPowerIntro(revealContent: _core != null, showSplash: _core == null);
+        SaveSettings();
+    }
+
     private void OnCrtScanlineStrengthChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         if (_updatingCrtScanlineUi)
@@ -1322,6 +1350,159 @@ public partial class MainWindow : Window
             _updatingCrtScanlineUi = false;
         }
     }
+
+    private void UpdateCrtPowerIntroUi()
+    {
+        if (CrtPowerIntroCheck != null)
+            CrtPowerIntroCheck.IsChecked = _crtPowerIntroEnabled;
+    }
+
+    private bool ShouldRunCrtPowerIntroOnStart()
+        => _crtPowerIntroEnabled
+            && (UseDummyCoreCheck?.IsChecked == true || !string.IsNullOrWhiteSpace(_romPath));
+
+    private void PrepareCrtPowerIntroForStart()
+    {
+        StopCrtPowerIntro(revealContent: false, showSplash: false);
+        if (!ShouldRunCrtPowerIntroOnStart())
+        {
+            if (SplashImage != null)
+                SplashImage.IsVisible = true;
+            if (ScreenContentRoot != null)
+                ScreenContentRoot.IsVisible = true;
+            return;
+        }
+
+        _crtPowerIntroPending = true;
+        ApplyCrtPowerIntroScale(CrtPowerIntroMinScale, CrtPowerIntroMinScale);
+        if (ScreenContentRoot != null)
+            ScreenContentRoot.IsVisible = false;
+        if (SplashImage != null)
+            SplashImage.IsVisible = false;
+        if (CrtPowerIntroFlash != null)
+        {
+            CrtPowerIntroFlash.IsVisible = true;
+            CrtPowerIntroFlash.Opacity = 0;
+        }
+    }
+
+    private void MaybeStartCrtPowerIntro()
+    {
+        if (!_crtPowerIntroPending || _crtPowerIntroRunning)
+            return;
+
+        _crtPowerIntroPending = false;
+        _crtPowerIntroRunning = true;
+        _crtPowerIntroStartTicks = Stopwatch.GetTimestamp();
+
+        if (_crtPowerIntroTimer == null)
+        {
+            _crtPowerIntroTimer = new DispatcherTimer(
+                TimeSpan.FromMilliseconds(16.0),
+                DispatcherPriority.Render,
+                (_, _) => TickCrtPowerIntro());
+        }
+
+        TickCrtPowerIntro();
+        _crtPowerIntroTimer.Start();
+    }
+
+    private void TickCrtPowerIntro()
+    {
+        if (!_crtPowerIntroRunning)
+        {
+            _crtPowerIntroTimer?.Stop();
+            return;
+        }
+
+        double elapsedMs = (Stopwatch.GetTimestamp() - _crtPowerIntroStartTicks) * 1000.0 / Stopwatch.Frequency;
+        if (elapsedMs >= CrtPowerIntroTotalDurationMs)
+        {
+            StopCrtPowerIntro(revealContent: true, showSplash: false);
+            return;
+        }
+
+        double scaleX;
+        double scaleY;
+        double flashOpacity;
+        if (elapsedMs <= CrtPowerIntroBlackoutDurationMs)
+        {
+            if (ScreenContentRoot != null)
+                ScreenContentRoot.IsVisible = false;
+            ApplyCrtPowerIntroScale(CrtPowerIntroMinScale, CrtPowerIntroMinScale);
+            if (CrtPowerIntroFlash != null)
+            {
+                CrtPowerIntroFlash.IsVisible = false;
+                CrtPowerIntroFlash.Opacity = 0;
+            }
+            return;
+        }
+
+        if (ScreenContentRoot != null)
+            ScreenContentRoot.IsVisible = true;
+        if (CrtPowerIntroFlash != null)
+            CrtPowerIntroFlash.IsVisible = true;
+
+        double introElapsedMs = elapsedMs - CrtPowerIntroBlackoutDurationMs;
+        if (introElapsedMs <= CrtPowerIntroHorizontalDurationMs)
+        {
+            double phase = EaseOutCubic(introElapsedMs / CrtPowerIntroHorizontalDurationMs);
+            scaleX = Lerp(CrtPowerIntroMinScale, 1.0, phase);
+            scaleY = CrtPowerIntroMinScale;
+            flashOpacity = Lerp(1.0, 0.94, phase);
+        }
+        else
+        {
+            double phase = EaseOutCubic((introElapsedMs - CrtPowerIntroHorizontalDurationMs) / CrtPowerIntroVerticalDurationMs);
+            scaleX = 1.0;
+            scaleY = Lerp(CrtPowerIntroMinScale, 1.0, phase);
+            flashOpacity = Lerp(0.94, 0.0, phase);
+        }
+
+        ApplyCrtPowerIntroScale(scaleX, scaleY);
+        if (CrtPowerIntroFlash != null)
+            CrtPowerIntroFlash.Opacity = flashOpacity;
+    }
+
+    private void StopCrtPowerIntro(bool revealContent, bool showSplash)
+    {
+        _crtPowerIntroPending = false;
+        _crtPowerIntroRunning = false;
+        _crtPowerIntroTimer?.Stop();
+        ResetCrtPowerIntroVisualState(showSplash, revealContent);
+    }
+
+    private void ResetCrtPowerIntroVisualState(bool showSplash, bool revealContent)
+    {
+        ApplyCrtPowerIntroScale(1.0, 1.0);
+        if (ScreenContentRoot != null)
+            ScreenContentRoot.IsVisible = revealContent;
+        if (SplashImage != null)
+            SplashImage.IsVisible = showSplash;
+        if (CrtPowerIntroFlash != null)
+        {
+            CrtPowerIntroFlash.IsVisible = false;
+            CrtPowerIntroFlash.Opacity = 0;
+        }
+    }
+
+    private void ApplyCrtPowerIntroScale(double scaleX, double scaleY)
+    {
+        _screenContentScaleTransform.ScaleX = scaleX;
+        _screenContentScaleTransform.ScaleY = scaleY;
+        _crtPowerIntroFlashScaleTransform.ScaleX = scaleX;
+        _crtPowerIntroFlashScaleTransform.ScaleY = scaleY;
+    }
+
+    private static double EaseOutCubic(double value)
+    {
+        double t = Math.Clamp(value, 0.0, 1.0);
+        double inv = 1.0 - t;
+        return 1.0 - (inv * inv * inv);
+    }
+
+    private static double Lerp(double start, double end, double t)
+        => start + ((end - start) * Math.Clamp(t, 0.0, 1.0));
 
     private void RefreshAutoFireUi()
     {
@@ -1904,9 +2085,11 @@ public partial class MainWindow : Window
         _romPath = dialog.SelectedPath;
         RomPathText.Text = _romPath;
         ApplyPsxSbiSelectionForRom(_romPath);
-        StatusText.Text = "ROM selected";
         AddRecentRom(_romPath);
         RefreshAutoFireUi();
+        StatusText.Text = "Starting selected ROM";
+        SaveSettings();
+        OnStart(null, null);
     }
 
     private async void OnSelectPsxBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2403,8 +2586,7 @@ public partial class MainWindow : Window
             _earlyMagentaTimer.Restart();
             _earlyMagentaReported = false;
             _audioPullReady = false;
-            if (SplashImage != null)
-                SplashImage.IsVisible = true;
+            PrepareCrtPowerIntroForStart();
 
             // välj core
             if (UseDummyCoreCheck.IsChecked == true)
@@ -2563,7 +2745,7 @@ public partial class MainWindow : Window
 
             // skapa bitmap utifrån core-storlek
             EnsureBitmapFromCore();
-            if (SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
+            if (!_crtPowerIntroPending && SplashImage != null && !string.IsNullOrWhiteSpace(_romPath))
                 SplashImage.IsVisible = false;
             StartHeartbeat();
 
@@ -2577,6 +2759,7 @@ public partial class MainWindow : Window
             TryUpdateNesRomInfoOnFailure(_romPath);
             LogException(ex, "Start");
             _audioPullReady = false;
+            StopCrtPowerIntro(revealContent: false, showSplash: true);
         }
     }
 
@@ -4756,6 +4939,7 @@ public partial class MainWindow : Window
         public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
         public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
+        public bool CrtPowerIntroEnabled { get; set; } = true;
         public double MouseCaptureSensitivity { get; set; } = DefaultMouseCaptureSensitivity;
         public ConsoleRegion DefaultRegionOverride { get; set; } = ConsoleRegion.Auto;
         public Dictionary<string, ConsoleRegion>? RomRegionOverrides { get; set; }
@@ -4798,6 +4982,7 @@ public partial class MainWindow : Window
         public bool AdvancedPixelFilterEnabled { get; set; } = false;
         public bool CrtScanlinesEnabled { get; set; } = false;
         public int CrtScanlineStrengthPercent { get; set; } = DefaultCrtScanlineStrengthPercent;
+        public bool CrtPowerIntroEnabled { get; set; } = true;
         public double MouseCaptureSensitivity { get; set; } = DefaultMouseCaptureSensitivity;
         public string? DefaultRegionOverride { get; set; }
         public Dictionary<string, string>? RomRegionOverrides { get; set; }
@@ -4988,6 +5173,7 @@ public partial class MainWindow : Window
         _advancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled;
         _crtScanlinesEnabled = settings.CrtScanlinesEnabled;
         _crtScanlineStrengthPercent = ClampPercent(settings.CrtScanlineStrengthPercent);
+        _crtPowerIntroEnabled = settings.CrtPowerIntroEnabled;
         _mouseCaptureSensitivity = NormalizeMouseCaptureSensitivity(settings.MouseCaptureSensitivity);
         if (MouseCaptureSensitivitySlider != null)
             MouseCaptureSensitivitySlider.Value = _mouseCaptureSensitivity;
@@ -5057,6 +5243,7 @@ public partial class MainWindow : Window
         UpdateSharpPixelsUi();
         UpdateAdvancedPixelFilterUi();
         UpdateCrtScanlinesUi();
+        UpdateCrtPowerIntroUi();
     }
 
     private static void NormalizeMappingSet(InputMappingSet set, bool includePause)
@@ -5156,6 +5343,7 @@ public partial class MainWindow : Window
             AdvancedPixelFilterEnabled = _advancedPixelFilterEnabled,
             CrtScanlinesEnabled = _crtScanlinesEnabled,
             CrtScanlineStrengthPercent = _crtScanlineStrengthPercent,
+            CrtPowerIntroEnabled = _crtPowerIntroEnabled,
             MouseCaptureSensitivity = _mouseCaptureSensitivity,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
@@ -5298,6 +5486,7 @@ public partial class MainWindow : Window
             AdvancedPixelFilterEnabled = settings.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = settings.CrtScanlinesEnabled,
             CrtScanlineStrengthPercent = settings.CrtScanlineStrengthPercent,
+            CrtPowerIntroEnabled = settings.CrtPowerIntroEnabled,
             MouseCaptureSensitivity = settings.MouseCaptureSensitivity,
             DefaultRegionOverride = settings.DefaultRegionOverride.ToString(),
             FrameRateMode = settings.FrameRateMode.ToString()
@@ -5397,6 +5586,7 @@ public partial class MainWindow : Window
             AdvancedPixelFilterEnabled = raw.AdvancedPixelFilterEnabled,
             CrtScanlinesEnabled = raw.CrtScanlinesEnabled,
             CrtScanlineStrengthPercent = raw.CrtScanlineStrengthPercent,
+            CrtPowerIntroEnabled = raw.CrtPowerIntroEnabled,
             MouseCaptureSensitivity = raw.MouseCaptureSensitivity
         };
 
@@ -5641,6 +5831,7 @@ public partial class MainWindow : Window
             SplashImage.IsVisible = true;
         StopHeartbeat();
         ResetPresentationState(clearBitmap: true);
+        StopCrtPowerIntro(revealContent: false, showSplash: true);
         DisposeCurrentCore();
         _toneTestRunning = false;
         _psgBlipRunning = false;
@@ -5957,6 +6148,12 @@ public partial class MainWindow : Window
             SaveSettings();
             RefreshAutoFireUi();
         }
+    }
+
+    private async void OnSkinSettings(object? sender, RoutedEventArgs e)
+    {
+        var dialog = new EutherDrive.UI.Skins.SkinPickerDialog();
+        await dialog.ShowDialog(this);
     }
 
     private static Control BuildControlsSection(string title, params string[] lines)
@@ -7647,6 +7844,8 @@ public partial class MainWindow : Window
                 Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
         }
 
+        MaybeStartCrtPowerIntro();
+
         if (TraceUiProfile)
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
     }
@@ -7728,6 +7927,8 @@ public partial class MainWindow : Window
                 Console.WriteLine($"[MainWindow] Early magenta ready after {_earlyMagentaTimer.Elapsed.TotalMilliseconds:0.0} ms");
         }
 
+        MaybeStartCrtPowerIntro();
+
         if (TraceUiProfile)
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
 
@@ -7804,10 +8005,24 @@ public partial class MainWindow : Window
             ScreenGrid.Height = targetHeight;
         }
 
+        if (ScreenContentRoot != null
+            && (Math.Abs(ScreenContentRoot.Width - targetWidth) > 0.5 || Math.Abs(ScreenContentRoot.Height - targetHeight) > 0.5))
+        {
+            ScreenContentRoot.Width = targetWidth;
+            ScreenContentRoot.Height = targetHeight;
+        }
+
         if (Math.Abs(ScreenSurfaceHost.Width - targetWidth) > 0.5 || Math.Abs(ScreenSurfaceHost.Height - targetHeight) > 0.5)
         {
             ScreenSurfaceHost.Width = targetWidth;
             ScreenSurfaceHost.Height = targetHeight;
+        }
+
+        if (CrtPowerIntroFlash != null
+            && (Math.Abs(CrtPowerIntroFlash.Width - targetWidth) > 0.5 || Math.Abs(CrtPowerIntroFlash.Height - targetHeight) > 0.5))
+        {
+            CrtPowerIntroFlash.Width = targetWidth;
+            CrtPowerIntroFlash.Height = targetHeight;
         }
     }
 

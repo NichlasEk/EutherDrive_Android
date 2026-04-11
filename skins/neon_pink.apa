@@ -1,0 +1,128 @@
+# Neon Pink Cyberpunk Skin
+# Hot pink and cyan neon aesthetic
+
+[skin]
+name = "Neon Pink Cyberpunk"
+author = "EutherDrive Skins"
+version = "1.0"
+description = "Cyberpunk-inspired theme with hot pink and cyan neon glows"
+
+[colors]
+# Deep dark backgrounds
+background = "#0D0208"
+background_soft = "#1A0510"
+background_alt = "#12030A"
+
+# Panel colors with purple tint
+panel = "#1E0B18"
+panel_raised = "#2A1222"
+panel_glass = "#CC1E0B18"
+sub_panel = "#CC150515"
+option_card = "#D0120510"
+
+# Neon borders
+stroke = "#FF006E"
+stroke_bright = "#FF4D9E"
+
+# Text colors - bright for contrast
+text = "#FFF0F5"
+text_muted = "#FFB3D1"
+
+# Hot neon accents
+accent = "#FF006E"
+accent_warm = "#FF4D00"
+accent_hot = "#FF00FF"
+
+[gradient.hero]
+angle = 135
+stop0 = "#FF006E,0.0"
+stop1 = "#8338EC,0.5"
+stop2 = "#3A86FF,1.0"
+
+[gradient.screen_glow]
+angle = 45
+stop0 = "#66FF006E,0.0"
+stop1 = "#00FF006E,0.7"
+stop2 = "#4400FFFF,1.0"
+
+[typography]
+primary_font = "Inter"
+display_font = "Orbitron, Inter"
+mono_font = "Fira Code, Consolas, monospace"
+deck_font = "Rajdhani, Inter"
+base_size = 14
+small_size = 11
+display_size = 32
+kicker_size = 12
+deck_size = 16
+letter_spacing = 0.5
+deck_spacing = 1.5
+
+[layout]
+border_radius = 4
+border_radius_small = 2
+border_radius_large = 8
+border_radius_xlarge = 12
+border_radius_full = 999
+padding = 12
+button_padding_x = 16
+button_padding_y = 10
+spacing = 8
+spacing_small = 4
+spacing_large = 16
+shadow_opacity = 0.5
+shadow_blur = 30
+shadow_spread = 0
+
+[buttons]
+background = "#2A1222"
+background_hover = "#3D1832"
+background_pressed = "#1A0D15"
+background_action = "#FF006E"
+background_action_hover = "#FF2D8C"
+background_ghost = "#1A0D15"
+border = "#FF006E"
+border_hover = "#FF4D9E"
+border_ghost = "#8338EC"
+border_radius = 4
+transition_duration = 0.15
+hover_scale = 1.05
+pressed_scale = 0.95
+
+[panels]
+glass_background = "#CC1E0B18"
+glass_opacity = 0.85
+subpanel_background = "#CC150515"
+subpanel_border = "#FF006E"
+optioncard_background = "#CC120510"
+optioncard_border = "#8338EC"
+border_radius = 8
+subpanel_radius = 6
+optioncard_radius = 4
+
+[inputs]
+background = "#150515"
+background_focus = "#1E0B18"
+border = "#FF006E"
+border_focus = "#FF4D9E"
+border_radius = 4
+padding = 10
+
+[effects]
+use_transparency = true
+use_blur = true
+blur_radius = 20
+use_glow = true
+glow_color = "#FF006E"
+glow_intensity = 0.5
+use_animations = true
+animation_speed = 1.2
+use_background_effects = true
+background_color_1 = "#FF006E"
+background_color_2 = "#8338EC"
+background_opacity = 0.12
+
+[custom]
+neon_glow = "true"
+scanline_effect = "true"
+terminal_mode = "false"

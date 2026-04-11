@@ -1,0 +1,139 @@
+# Svensk Viking Skin
+# Ett stolt svenskt tema med gul och blå från Sveriges flagga
+# Med vikingainspirerad estetik och runkänsla
+
+[skin]
+name = "Svensk Viking"
+author = "EutherDrive"
+version = "1.0"
+description = "Svenskt tema med gul och blå från Sveriges flagga. Vikingainspirerad estetik med blåa knappar och gula accenter."
+
+[colors]
+# Djupblå bakgrund - som havet och Sveriges flagga
+background = "#051424"
+background_soft = "#0A1E33"
+background_alt = "#03101C"
+
+# Paneler i olika blå nyanser
+panel = "#0D2847"
+panel_raised = "#14355C"
+panel_glass = "#CC0D2847"
+sub_panel = "#CC0A1E33"
+option_card = "#D0081A2E"
+
+# Kantlinjer - svensk blå
+stroke = "#006AA7"
+stroke_bright = "#4A9BC7"
+
+# Text - vit/snövit för kontrast
+text = "#F0F8FF"
+text_muted = "#8BA8C4"
+
+# Accenter - Sveriges gul!
+accent = "#FECC00"
+accent_warm = "#FFD93D"
+accent_hot = "#FF6B35"
+
+[gradient.hero]
+angle = 180
+stop0 = "#006AA7,0.0"
+stop1 = "#004B7C,0.5"
+stop2 = "#051424,1.0"
+
+[gradient.screen_glow]
+angle = 45
+stop0 = "#44FECC00,0.0"
+stop1 = "#11FECC00,0.7"
+stop2 = "#44006AA7,1.0"
+
+[typography]
+# Run-liknande stil på rubriker
+primary_font = "Cinzel, Inter, Noto Sans"
+display_font = "Cinzel Decorative, Cinzel, serif"
+mono_font = "JetBrains Mono, Consolas, monospace"
+deck_font = "Cinzel, Noto Sans, Inter"
+base_size = 14
+small_size = 11
+display_size = 30
+kicker_size = 12
+deck_size = 16
+letter_spacing = 0.6
+deck_spacing = 1.8
+
+[layout]
+# Lite rundare, mjukare former
+border_radius = 8
+border_radius_small = 4
+border_radius_large = 16
+border_radius_xlarge = 20
+border_radius_full = 999
+padding = 12
+button_padding_x = 20
+button_padding_y = 10
+spacing = 8
+spacing_small = 4
+spacing_large = 14
+shadow_opacity = 0.35
+shadow_blur = 40
+shadow_spread = 12
+
+[buttons]
+# Blå knappar med guldiga detaljer - som Sveriges flagga!
+background = "#0A3D62"
+background_hover = "#0F4F7D"
+background_pressed = "#072D4A"
+background_action = "#006AA7"
+background_action_hover = "#0080C7"
+background_ghost = "#1A2A3A"
+
+# Gula kantlinjer på hover - svensk stolthet!
+border = "#004B7C"
+border_hover = "#FECC00"
+border_ghost = "#6B7B8C"
+
+border_radius = 8
+transition_duration = 0.2
+hover_scale = 1.03
+pressed_scale = 0.97
+
+[panels]
+# Glasiga paneler i blått
+glass_background = "#CC0D2847"
+glass_opacity = 0.85
+subpanel_background = "#CC0A1E33"
+subpanel_border = "#006AA7"
+optioncard_background = "#CC081A2E"
+optioncard_border = "#FECC00"
+border_radius = 16
+subpanel_radius = 12
+optioncard_radius = 8
+
+[inputs]
+# Blå inputs med gul fokus
+background = "#081E33"
+background_focus = "#0A2847"
+border = "#006AA7"
+border_focus = "#FECC00"
+border_radius = 8
+padding = 10
+
+[effects]
+use_transparency = true
+use_blur = true
+blur_radius = 15
+use_glow = true
+glow_color = "#FECC00"
+glow_intensity = 0.35
+use_animations = true
+animation_speed = 0.9
+use_background_effects = true
+background_color_1 = "#006AA7"
+background_color_2 = "#FECC00"
+background_opacity = 0.15
+
+[custom]
+# Viking temainställningar
+viking_mode = "true"
+nordic_runes = "true"
+flag_colors = "#006AA7,#FECC00"
+scandinavian_design = "true"

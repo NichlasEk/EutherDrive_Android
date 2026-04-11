@@ -1,0 +1,47 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        x:Class="EutherDrive.UI.Skins.SkinPickerDialog"
+        Title="Select Skin"
+        Width="680"
+        Height="520"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource EdBgBrush}"
+        FontFamily="Inter">
+  
+  <Grid RowDefinitions="Auto,*,Auto" Margin="20">
+    <!-- Header -->
+    <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,16">
+      <TextBlock Text="🎨 Skin Library" 
+                 FontSize="24" 
+                 FontWeight="Black"
+                 Foreground="{StaticResource EdAccentBrush}"/>
+      <TextBlock Text="Choose a skin to customize the look of EutherDrive"
+                 Foreground="{StaticResource EdTextMutedBrush}"
+                 FontSize="13"/>
+    </StackPanel>
+    
+    <!-- Skin List -->
+    <Border Grid.Row="1" Classes="panel" Padding="12">
+      <ScrollViewer>
+        <StackPanel Spacing="8" Name="SkinsContainer">
+          <!-- Skins will be added here dynamically -->
+        </StackPanel>
+      </ScrollViewer>
+    </Border>
+    
+    <!-- Footer / Actions -->
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="0,16,0,0">
+      <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+        <Button Classes="action" Name="LoadFromFileButton" Content="📂 Load from File..." Click="OnLoadFromFile"/>
+        <Button Classes="ghost" Name="OpenSkinsFolderButton" Content="📁 Open Skins Folder" Click="OnOpenSkinsFolder"/>
+        <Button Classes="ghost" Name="ReloadButton" Content="🔄 Reload" Click="OnReload"/>
+      </StackPanel>
+      
+      <Button Grid.Column="1" Classes="compact" Content="Cancel" Click="OnCancel" Margin="0,0,8,0"/>
+      <Button Grid.Column="2" Classes="action compact" Content="Apply" Click="OnApply" Name="ApplyButton" IsEnabled="False"/>
+    </Grid>
+  </Grid>
+</Window>

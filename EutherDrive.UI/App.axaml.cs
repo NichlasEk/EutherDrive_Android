@@ -3,6 +3,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using System;
 using System.Linq;
+using EutherDrive.UI.Skins;
 
 namespace EutherDrive.UI;
 
@@ -17,6 +18,9 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
+        // Initialize skin manager before creating windows
+        SkinManager.Instance.Initialize(this);
+        
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             // Check for ROM path in command line args

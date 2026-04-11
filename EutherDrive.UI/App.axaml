@@ -18,18 +18,58 @@
         <Color x:Key="EdAccentWarm">#F59E0B</Color>
         <Color x:Key="EdAccentHot">#FB7185</Color>
 
-        <SolidColorBrush x:Key="EdBgBrush" Color="{StaticResource EdBg}" />
-        <SolidColorBrush x:Key="EdBgSoftBrush" Color="{StaticResource EdBgSoft}" />
-        <SolidColorBrush x:Key="EdPanelBrush" Color="{StaticResource EdPanel}" />
-        <SolidColorBrush x:Key="EdPanelRaisedBrush" Color="{StaticResource EdPanelRaised}" />
-        <SolidColorBrush x:Key="EdPanelGlassBrush" Color="{StaticResource EdPanelGlass}" />
-        <SolidColorBrush x:Key="EdStrokeBrush" Color="{StaticResource EdStroke}" />
-        <SolidColorBrush x:Key="EdStrokeBrightBrush" Color="{StaticResource EdStrokeBright}" />
-        <SolidColorBrush x:Key="EdTextBrush" Color="{StaticResource EdText}" />
-        <SolidColorBrush x:Key="EdTextMutedBrush" Color="{StaticResource EdTextMuted}" />
-        <SolidColorBrush x:Key="EdAccentBrush" Color="{StaticResource EdAccent}" />
-        <SolidColorBrush x:Key="EdAccentWarmBrush" Color="{StaticResource EdAccentWarm}" />
-        <SolidColorBrush x:Key="EdAccentHotBrush" Color="{StaticResource EdAccentHot}" />
+        <SolidColorBrush x:Key="EdBgBrush" Color="{DynamicResource EdBg}" />
+        <SolidColorBrush x:Key="EdBgSoftBrush" Color="{DynamicResource EdBgSoft}" />
+        <SolidColorBrush x:Key="EdPanelBrush" Color="{DynamicResource EdPanel}" />
+        <SolidColorBrush x:Key="EdPanelRaisedBrush" Color="{DynamicResource EdPanelRaised}" />
+        <SolidColorBrush x:Key="EdPanelGlassBrush" Color="{DynamicResource EdPanelGlass}" />
+        <SolidColorBrush x:Key="EdStrokeBrush" Color="{DynamicResource EdStroke}" />
+        <SolidColorBrush x:Key="EdStrokeBrightBrush" Color="{DynamicResource EdStrokeBright}" />
+        <SolidColorBrush x:Key="EdTextBrush" Color="{DynamicResource EdText}" />
+        <SolidColorBrush x:Key="EdTextMutedBrush" Color="{DynamicResource EdTextMuted}" />
+        <SolidColorBrush x:Key="EdAccentBrush" Color="{DynamicResource EdAccent}" />
+        <SolidColorBrush x:Key="EdAccentWarmBrush" Color="{DynamicResource EdAccentWarm}" />
+        <SolidColorBrush x:Key="EdAccentHotBrush" Color="{DynamicResource EdAccentHot}" />
+
+        <Color x:Key="EdButtonBg">#172433</Color>
+        <Color x:Key="EdButtonBgHover">#1D3143</Color>
+        <Color x:Key="EdButtonBgPressed">#12202C</Color>
+        <Color x:Key="EdButtonActionBg">#163B41</Color>
+        <Color x:Key="EdButtonActionBgHover">#1A4B53</Color>
+        <Color x:Key="EdButtonGhostBg">#22131D</Color>
+        <Color x:Key="EdButtonBorder">#324356</Color>
+        <Color x:Key="EdButtonBorderHover">#5EEAD4</Color>
+        <Color x:Key="EdButtonGhostBorder">#6E4758</Color>
+        <Color x:Key="EdToggleBg">#14202C</Color>
+        <Color x:Key="EdToggleCheckedBg">#1D454C</Color>
+        <Color x:Key="EdSubPanelBg">#B8142230</Color>
+        <Color x:Key="EdSubPanelBorder">#35506A</Color>
+        <Color x:Key="EdOptionCardBg">#D0132030</Color>
+        <Color x:Key="EdOptionCardBorder">#304355</Color>
+        <Color x:Key="EdInputBg">#101B26</Color>
+        <Color x:Key="EdInputBgFocus">#0E1822</Color>
+        <Color x:Key="EdInputBorder">#324356</Color>
+        <Color x:Key="EdInputBorderFocus">#5EEAD4</Color>
+        <Color x:Key="EdBgFx1">#182A3D</Color>
+        <Color x:Key="EdBgFx2">#2A1B24</Color>
+        <CornerRadius x:Key="EdPanelCornerRadius">18</CornerRadius>
+        <CornerRadius x:Key="EdSubPanelCornerRadius">14</CornerRadius>
+        <CornerRadius x:Key="EdOptionCardCornerRadius">12</CornerRadius>
+        <CornerRadius x:Key="EdButtonCornerRadius">12</CornerRadius>
+        <CornerRadius x:Key="EdInputCornerRadius">12</CornerRadius>
+        <Thickness x:Key="EdButtonPadding">12,8</Thickness>
+        <x:Double x:Key="EdDeckLabelSize">14</x:Double>
+        <x:Double x:Key="EdDeckLabelSpacing">1.1</x:Double>
+        <x:Double x:Key="EdKickerSize">11</x:Double>
+        <x:Double x:Key="EdDisplaySize">28</x:Double>
+        <x:Double x:Key="EdBgFxOpacity">0.18</x:Double>
+        <x:Double x:Key="EdScreenGlowOpacity">0.28</x:Double>
+        <FontFamily x:Key="EdPrimaryFont">Inter</FontFamily>
+        <FontFamily x:Key="EdDisplayFont">Inter</FontFamily>
+        <FontFamily x:Key="EdDeckLabelFont">Noto Sans, Inter</FontFamily>
+
+        <SolidColorBrush x:Key="EdBgFx1Brush" Color="{DynamicResource EdBgFx1}" />
+        <SolidColorBrush x:Key="EdBgFx2Brush" Color="{DynamicResource EdBgFx2}" />
 
         <LinearGradientBrush x:Key="EdHeroBrush" StartPoint="0,0" EndPoint="1,1">
             <GradientStop Color="#183249" Offset="0.0" />
@@ -48,67 +88,68 @@
         <FluentTheme />
 
         <Style Selector="Window">
-            <Setter Property="Background" Value="{StaticResource EdBgBrush}" />
-            <Setter Property="FontFamily" Value="Inter" />
-            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdBgBrush}" />
+            <Setter Property="FontFamily" Value="{DynamicResource EdPrimaryFont}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
         </Style>
 
         <Style Selector="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
         </Style>
 
         <Style Selector="TextBlock.muted">
-            <Setter Property="Foreground" Value="{StaticResource EdTextMutedBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextMutedBrush}" />
         </Style>
 
         <Style Selector="TextBlock.kicker">
-            <Setter Property="Foreground" Value="{StaticResource EdAccentBrush}" />
-            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{DynamicResource EdAccentBrush}" />
+            <Setter Property="FontSize" Value="{DynamicResource EdKickerSize}" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Opacity" Value="0.9" />
         </Style>
 
         <Style Selector="TextBlock.deck-label">
-            <Setter Property="Foreground" Value="{StaticResource EdAccentBrush}" />
-            <Setter Property="FontFamily" Value="Noto Sans, Inter" />
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Foreground" Value="{DynamicResource EdAccentBrush}" />
+            <Setter Property="FontFamily" Value="{DynamicResource EdDeckLabelFont}" />
+            <Setter Property="FontSize" Value="{DynamicResource EdDeckLabelSize}" />
             <Setter Property="FontWeight" Value="Black" />
             <Setter Property="FontStyle" Value="Italic" />
-            <Setter Property="LetterSpacing" Value="1.1" />
+            <Setter Property="LetterSpacing" Value="{DynamicResource EdDeckLabelSpacing}" />
             <Setter Property="Opacity" Value="0.96" />
         </Style>
 
         <Style Selector="TextBlock.display">
-            <Setter Property="FontSize" Value="28" />
+            <Setter Property="FontSize" Value="{DynamicResource EdDisplaySize}" />
+            <Setter Property="FontFamily" Value="{DynamicResource EdDisplayFont}" />
             <Setter Property="FontWeight" Value="Black" />
             <Setter Property="LetterSpacing" Value="0.4" />
         </Style>
 
         <Style Selector="Border.panel">
-            <Setter Property="Background" Value="{StaticResource EdPanelGlassBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdPanelGlassBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="18" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdPanelCornerRadius}" />
             <Setter Property="BoxShadow" Value="0 18 50 0 #44000000" />
         </Style>
 
         <Style Selector="Border.subpanel">
-            <Setter Property="Background" Value="#B8142230" />
-            <Setter Property="BorderBrush" Value="#35506A" />
+            <Setter Property="Background" Value="{DynamicResource EdSubPanelBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdSubPanelBorder}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdSubPanelCornerRadius}" />
         </Style>
 
         <Style Selector="Border.option-card">
-            <Setter Property="Background" Value="#D0132030" />
-            <Setter Property="BorderBrush" Value="#304355" />
+            <Setter Property="Background" Value="{DynamicResource EdOptionCardBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdOptionCardBorder}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdOptionCardCornerRadius}" />
         </Style>
 
         <Style Selector="Border.hero">
-            <Setter Property="Background" Value="{StaticResource EdHeroBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrightBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdHeroBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrightBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="22" />
             <Setter Property="BoxShadow" Value="0 24 70 0 #66000000" />
@@ -116,19 +157,19 @@
 
         <Style Selector="Border.screen-shell">
             <Setter Property="Background" Value="#0A0F14" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrightBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrightBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="24" />
             <Setter Property="BoxShadow" Value="0 24 80 0 #77000000" />
         </Style>
 
         <Style Selector="Button">
-            <Setter Property="Background" Value="{StaticResource EdPanelRaisedBrush}" />
-            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdButtonBg}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdButtonBorder}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="12" />
-            <Setter Property="Padding" Value="12,8" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdButtonCornerRadius}" />
+            <Setter Property="Padding" Value="{DynamicResource EdButtonPadding}" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="RenderTransform" Value="scale(1)" />
             <Setter Property="Transitions">
@@ -141,28 +182,28 @@
         </Style>
 
         <Style Selector="Button:pointerover">
-            <Setter Property="Background" Value="#1D3143" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdAccentBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdButtonBgHover}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdButtonBorderHover}" />
             <Setter Property="RenderTransform" Value="scale(1.025)" />
         </Style>
 
         <Style Selector="Button:pressed">
-            <Setter Property="Background" Value="#12202C" />
+            <Setter Property="Background" Value="{DynamicResource EdButtonBgPressed}" />
             <Setter Property="RenderTransform" Value="scale(0.985)" />
         </Style>
 
         <Style Selector="Button.action">
-            <Setter Property="Background" Value="#163B41" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdAccentBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdButtonActionBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdAccentBrush}" />
         </Style>
 
         <Style Selector="Button.action:pointerover">
-            <Setter Property="Background" Value="#1A4B53" />
+            <Setter Property="Background" Value="{DynamicResource EdButtonActionBgHover}" />
         </Style>
 
         <Style Selector="Button.ghost">
-            <Setter Property="Background" Value="#22131D" />
-            <Setter Property="BorderBrush" Value="#6E4758" />
+            <Setter Property="Background" Value="{DynamicResource EdButtonGhostBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdButtonGhostBorder}" />
         </Style>
 
         <Style Selector="Button.small">
@@ -177,9 +218,9 @@
         </Style>
 
         <Style Selector="ToggleButton">
-            <Setter Property="Background" Value="#14202C" />
-            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdToggleBg}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdButtonBorder}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="999" />
             <Setter Property="Padding" Value="10,5" />
@@ -198,8 +239,8 @@
         </Style>
 
         <Style Selector="ToggleButton:checked">
-            <Setter Property="Background" Value="#1D454C" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdAccentBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdToggleCheckedBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdAccentBrush}" />
         </Style>
 
         <Style Selector="ToggleButton.autofire">
@@ -212,19 +253,19 @@
         </Style>
 
         <Style Selector="ComboBox">
-            <Setter Property="Background" Value="#101B26" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdInputBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdInputBorder}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdInputCornerRadius}" />
             <Setter Property="Padding" Value="8,6" />
         </Style>
 
         <Style Selector="TextBox">
-            <Setter Property="Background" Value="#0E1822" />
-            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource EdStrokeBrush}" />
+            <Setter Property="Background" Value="{DynamicResource EdInputBgFocus}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdInputBorder}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="CornerRadius" Value="{DynamicResource EdInputCornerRadius}" />
             <Setter Property="Padding" Value="8,6" />
         </Style>
 
@@ -246,7 +287,7 @@
         </Style>
 
         <Style Selector="CheckBox">
-            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
         </Style>
 
         <Style Selector="CheckBox.option-check">
@@ -268,7 +309,7 @@
         </Style>
 
         <Style Selector="Expander">
-            <Setter Property="Foreground" Value="{StaticResource EdTextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
         </Style>
     </Application.Styles>
 </Application>
