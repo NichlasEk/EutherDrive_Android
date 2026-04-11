@@ -85,11 +85,12 @@ internal sealed class Sega32XSh2Interrupts
     {
         CurrentInterruptLevel = ResetPending ? (byte)14
             : VPending && VEnabled ? (byte)12
-            : HPending && HEnabled ? (byte)10
+            : HPending ? (byte)10
             : CommandPending && CommandEnabled ? (byte)8
-            : PwmPending && PwmEnabled ? (byte)6
+            : PwmPending ? (byte)6
             : (byte)0;
     }
+
 }
 
 internal sealed class Sega32XDmaFifo
@@ -387,18 +388,23 @@ internal sealed class Sega32XSystemRegisters
                 vdp.WriteHInterruptInterval(value);
                 break;
             case 0x4014:
+            case 0x4015:
                 GetInterrupts(whichCpu).ClearReset(AdapterEnabled);
                 break;
             case 0x4016:
+            case 0x4017:
                 GetInterrupts(whichCpu).ClearV(AdapterEnabled);
                 break;
             case 0x4018:
+            case 0x4019:
                 GetInterrupts(whichCpu).ClearH(AdapterEnabled);
                 break;
             case 0x401A:
+            case 0x401B:
                 GetInterrupts(whichCpu).ClearCommand(AdapterEnabled);
                 break;
             case 0x401C:
+            case 0x401D:
                 GetInterrupts(whichCpu).ClearPwm(AdapterEnabled);
                 break;
             default:
