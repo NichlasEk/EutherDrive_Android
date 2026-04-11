@@ -29,7 +29,11 @@
     <Grid Name="RootGrid" RowDefinitions="Auto,*" ColumnDefinitions="Auto,*" Margin="12" RowSpacing="12" ColumnSpacing="12">
 
       <LayoutTransformControl Name="TopControlsScaler" Grid.Row="0" Grid.ColumnSpan="2">
-        <Border Classes="panel" Padding="6">
+        <controls:LiquidChromeFrame Name="TopChromeFrame"
+                                    Padding="6"
+                                    CornerRadius="{DynamicResource EdPanelCornerRadius}"
+                                    BorderBrush="{DynamicResource EdStrokeBrush}"
+                                    BorderThickness="1">
           <StackPanel Name="TopControlsPanel" Orientation="Horizontal" Spacing="6">
           <StackPanel Spacing="6">
             <Button Classes="action compact" Content="Open ROM…" Click="OnOpenRom"/>
@@ -169,11 +173,15 @@
             </StackPanel>
           </Border>
           </StackPanel>
-        </Border>
+        </controls:LiquidChromeFrame>
       </LayoutTransformControl>
 
       <LayoutTransformControl Name="InfoPanelScaler" Grid.Row="1" Grid.Column="0">
-        <Border Name="InfoPanel" Classes="panel" Padding="10">
+        <controls:LiquidChromeFrame Name="InfoPanel"
+                                    Padding="10"
+                                    CornerRadius="{DynamicResource EdPanelCornerRadius}"
+                                    BorderBrush="{DynamicResource EdStrokeBrush}"
+                                    BorderThickness="1">
           <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="8" Width="240">
             <TextBlock Classes="deck-label" Text="MACHINE ROOM"/>
@@ -458,14 +466,16 @@
             <TextBlock Name="InterlaceTestInfo" Classes="muted" FontSize="11" TextWrapping="Wrap"/>
             </StackPanel>
           </ScrollViewer>
-        </Border>
+        </controls:LiquidChromeFrame>
       </LayoutTransformControl>
 
-      <Border Name="ScreenBorder"
-              Classes="screen-shell"
-              Grid.Row="1"
-              Grid.Column="1"
-              Padding="10">
+      <controls:LiquidChromeFrame Name="ScreenBorder"
+                                  Grid.Row="1"
+                                  Grid.Column="1"
+                                  Padding="10"
+                                  CornerRadius="{DynamicResource EdCornerXLarge}"
+                                  BorderBrush="{DynamicResource EdStrokeBrightBrush}"
+                                  BorderThickness="1">
         <Grid>
           <Border Background="{DynamicResource EdScreenGlowBrush}" CornerRadius="{DynamicResource EdCornerLarge}" Opacity="{DynamicResource EdScreenGlowOpacity}"/>
           <Grid Name="ScreenBackdropDecor" IsHitTestVisible="False">
@@ -619,7 +629,7 @@
             </Viewbox>
           </Border>
         </Grid>
-      </Border>
+      </controls:LiquidChromeFrame>
 
       <controls:MetalSheenOverlay Name="GlobalMetalSheenOverlay"
                                   Grid.RowSpan="2"

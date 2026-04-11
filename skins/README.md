@@ -120,6 +120,29 @@ metal_surface_shadow = "#05080C"
 - `metal_surface_specular`: färgton för de ljusaste reflexerna
 - `metal_surface_shadow`: färgton för de mörkaste metallskuggorna
 
+## Liquid Chrome
+
+För stora paneler och `screen-shell` finns även en separat procedural render-väg för mer flytande kromreflektioner:
+
+```toml
+[custom]
+liquid_chrome = "true"
+liquid_chrome_intensity = "1.04"
+liquid_chrome_warp = "1.35"
+liquid_chrome_bands = "7"
+liquid_chrome_coolness = "0.28"
+liquid_chrome_specular = "#F8FBFF"
+liquid_chrome_shadow = "#03070B"
+```
+
+- `liquid_chrome`: aktiverar den dedikerade chrome-renderern för större ramar/paneler
+- `liquid_chrome_intensity`: hur starka de speglande banden är
+- `liquid_chrome_warp`: hur mycket reflektionerna böjs och flyter
+- `liquid_chrome_bands`: antal stora reflektionsband
+- `liquid_chrome_coolness`: hur kall/blå kromtonen känns
+- `liquid_chrome_specular`: högdagerfärg
+- `liquid_chrome_shadow`: mörk bas/skuggton
+
 ## Tips
 
 - Använd [Adobe Color](https://color.adobe.com) för att skapa färgscheman

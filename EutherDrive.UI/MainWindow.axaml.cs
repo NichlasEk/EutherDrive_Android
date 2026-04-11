@@ -508,6 +508,7 @@ public partial class MainWindow : Window
         LoadSettings();
         UpdateBackdropDecorForSkin();
         UpdateMetalSheenForSkin();
+        UpdateLiquidChromeForSkin();
         RomPickerDialog.StartBackgroundBootCoverDeltaSync(_romLibraryPath);
         LoadTitleStats();
         ApplySnesSpecialRomOverrides();
@@ -8068,6 +8069,7 @@ public partial class MainWindow : Window
             UpdateBackdropDecorForSkin();
             UpdateBackdropDecorLayout();
             UpdateMetalSheenForSkin();
+            UpdateLiquidChromeForSkin();
         });
     }
 
@@ -8205,6 +8207,47 @@ public partial class MainWindow : Window
         GlobalMetalSheenOverlay.RivetInset = TryGetSkinDouble(skin, "metal_rivet_inset", 14.0, 4.0, 64.0);
         GlobalMetalSheenOverlay.RivetOpacity = TryGetSkinDouble(skin, "metal_rivet_opacity", 0.7, 0.0, 1.0);
         GlobalMetalSheenOverlay.RivetColor = TryGetSkinColor(skin, "metal_rivet_tint", fallbackTint);
+    }
+
+    private void UpdateLiquidChromeForSkin()
+    {
+        ApaSkin skin = SkinManager.Instance.CurrentSkin;
+        bool enabled = TryGetSkinBool(skin, "liquid_chrome", defaultValue: false);
+        double intensity = TryGetSkinDouble(skin, "liquid_chrome_intensity", 0.92, 0.0, 1.4);
+        double warp = TryGetSkinDouble(skin, "liquid_chrome_warp", 1.0, 0.1, 2.5);
+        int bandCount = (int)Math.Round(TryGetSkinDouble(skin, "liquid_chrome_bands", 6, 3, 12));
+        double coolness = TryGetSkinDouble(skin, "liquid_chrome_coolness", 0.18, 0.0, 1.0);
+        Color specular = TryGetSkinColor(skin, "liquid_chrome_specular", ParseSkinColorOrDefault(skin.Colors.Text, "#F8FBFF"));
+        Color shadow = TryGetSkinColor(skin, "liquid_chrome_shadow", ParseSkinColorOrDefault(skin.Colors.BackgroundAlt, "#05080C"));
+
+        ApplyLiquidChromeFrame(TopChromeFrame, ParseSkinColorOrDefault(skin.Colors.Panel, "#1A212A"), specular, shadow, enabled, intensity, warp, bandCount, coolness);
+        ApplyLiquidChromeFrame(InfoPanel, ParseSkinColorOrDefault(skin.Colors.Panel, "#1A212A"), specular, shadow, enabled, intensity, warp, bandCount, coolness);
+        ApplyLiquidChromeFrame(ScreenBorder, ParseSkinColorOrDefault(skin.Colors.BackgroundAlt, "#0A0F14"), specular, shadow, enabled, intensity, warp, bandCount, coolness);
+    }
+
+    private static void ApplyLiquidChromeFrame(
+        EutherDrive.UI.Controls.LiquidChromeFrame? frame,
+        Color baseColor,
+        Color specular,
+        Color shadow,
+        bool enabled,
+        double intensity,
+        double warp,
+        int bandCount,
+        double coolness)
+    {
+        if (frame == null)
+            return;
+
+        frame.BaseColor = baseColor;
+        frame.SpecularColor = specular;
+        frame.ShadowColor = shadow;
+        frame.ChromeEnabled = enabled;
+        frame.ChromeIntensity = intensity;
+        frame.ChromeWarp = warp;
+        frame.ChromeBandCount = bandCount;
+        frame.ChromeCoolness = coolness;
+        frame.InvalidateVisual();
     }
 
     private static bool TryGetSkinBool(ApaSkin skin, string key, bool defaultValue)

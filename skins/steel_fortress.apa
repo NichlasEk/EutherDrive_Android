@@ -118,6 +118,13 @@ background_color_2 = "#161B22"
 background_opacity = 0.2
 
 [custom]
+liquid_chrome = "true"
+liquid_chrome_intensity = "1.04"
+liquid_chrome_warp = "1.35"
+liquid_chrome_bands = "7"
+liquid_chrome_coolness = "0.28"
+liquid_chrome_specular = "#F8FBFF"
+liquid_chrome_shadow = "#03070B"
 metal_surface = "true"
 metal_surface_gloss = "0.86"
 metal_surface_contrast = "0.26"
