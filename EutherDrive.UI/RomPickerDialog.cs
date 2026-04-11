@@ -2043,6 +2043,8 @@ public sealed class RomPickerDialog : Window
     private static string? TryMapPlaylistToDatName(string playlist)
         => playlist switch
         {
+            "Sega - 32X" or "Sega 32X" or "32X"
+                => "Sega - 32X",
             "Nintendo - Game Boy Advance" or "Nintendo - Game Boy Advance (No-Intro)" or "Game Boy Advance"
                 => "Nintendo - Game Boy Advance",
             "Nintendo - Game Boy" or "Game Boy"
