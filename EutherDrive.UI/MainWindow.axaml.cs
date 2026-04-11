@@ -8102,7 +8102,7 @@ public partial class MainWindow : Window
 
     private void UpdateBackdropDecorLayout()
     {
-        if (InputSurface == null || LeftFlagHost == null || RightFlagHost == null)
+        if (InputSurface == null || LeftFlagHost == null || RightFlagHost == null || CenterHeraldryHost == null)
             return;
 
         bool enabled = IsSwedishBackdropEnabled(SkinManager.Instance.CurrentSkin);
@@ -8113,6 +8113,7 @@ public partial class MainWindow : Window
 
         LeftFlagHost.IsVisible = visible;
         RightFlagHost.IsVisible = visible;
+        CenterHeraldryHost.IsVisible = enabled;
         LeftFlagHost.Width = visible ? gutterWidth : 0;
         RightFlagHost.Width = visible ? gutterWidth : 0;
     }

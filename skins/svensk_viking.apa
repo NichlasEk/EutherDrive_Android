@@ -1,120 +1,120 @@
 # Svensk Viking Skin
-# Ett stolt svenskt tema med gul och blå från Sveriges flagga
-# Med vikingainspirerad estetik och runkänsla
+# Nationalromantik 2.0: kunglig heraldik, djup svart fond och svenskt guld/blatt
+# Monumental, hogtidlig och mer fanborg an dashboard
 
 [skin]
 name = "Svensk Viking"
 author = "EutherDrive"
 version = "1.0"
-description = "Svenskt tema med gul och blå från Sveriges flagga. Vikingainspirerad estetik med blåa knappar och gula accenter."
+description = "Nationalromantiskt Sverige-tema med heraldisk tyngd, djup fond, tretungade fanor och kungligt guld."
 
 [colors]
-# Djupblå bakgrund - som havet och Sveriges flagga
-background = "#051424"
-background_soft = "#0A1E33"
-background_alt = "#03101C"
+# Djup svartbla bakgrund - mer kungasigill an modern app
+background = "#060808"
+background_soft = "#0E1416"
+background_alt = "#040607"
 
-# Paneler i olika blå nyanser
-panel = "#0D2847"
-panel_raised = "#14355C"
-panel_glass = "#CC0D2847"
-sub_panel = "#CC0A1E33"
-option_card = "#D0081A2E"
+# Paneler i heraldisk blect blatt
+panel = "#112A45"
+panel_raised = "#17385A"
+panel_glass = "#CC112A45"
+sub_panel = "#CC0C1E31"
+option_card = "#D00E2338"
 
-# Kantlinjer - svensk blå
-stroke = "#006AA7"
-stroke_bright = "#4A9BC7"
+# Kantlinjer - gammalt guld och sval svensk blatt
+stroke = "#7B6314"
+stroke_bright = "#D6B23A"
 
-# Text - vit/snövit för kontrast
-text = "#F0F8FF"
-text_muted = "#8BA8C4"
+# Text - varmt guld som i nationalromantiska affischer
+text = "#F4D56A"
+text_muted = "#B79A44"
 
-# Accenter - Sveriges gul!
+# Accenter - riksguld och gammalemalj
 accent = "#FECC00"
-accent_warm = "#FFD93D"
-accent_hot = "#FF6B35"
+accent_warm = "#FFD768"
+accent_hot = "#C96B2C"
 
 [gradient.hero]
 angle = 180
-stop0 = "#006AA7,0.0"
-stop1 = "#004B7C,0.5"
-stop2 = "#051424,1.0"
+stop0 = "#17385A,0.0"
+stop1 = "#0C2237,0.46"
+stop2 = "#060808,1.0"
 
 [gradient.screen_glow]
 angle = 45
 stop0 = "#44FECC00,0.0"
-stop1 = "#11FECC00,0.7"
-stop2 = "#44006AA7,1.0"
+stop1 = "#12D6B23A,0.62"
+stop2 = "#3317385A,1.0"
 
 [typography]
-# Run-liknande stil på rubriker
-primary_font = "Cinzel, Inter, Noto Sans"
-display_font = "Cinzel Decorative, Cinzel, serif"
+# Run-liknande men hogtidligare stil pa rubriker
+primary_font = "Cinzel, Noto Serif, Inter"
+display_font = "Cinzel Decorative, Cinzel, Noto Serif, serif"
 mono_font = "JetBrains Mono, Consolas, monospace"
-deck_font = "Cinzel, Noto Sans, Inter"
+deck_font = "Cinzel, Noto Serif, Inter"
 base_size = 14
 small_size = 11
-display_size = 30
+display_size = 32
 kicker_size = 12
-deck_size = 16
-letter_spacing = 0.6
-deck_spacing = 1.8
+deck_size = 17
+letter_spacing = 0.8
+deck_spacing = 2.1
 
 [layout]
-# Lite rundare, mjukare former
-border_radius = 8
-border_radius_small = 4
-border_radius_large = 16
-border_radius_xlarge = 20
+# Hogtidligare former - mindre mjuka, mer monumentala
+border_radius = 6
+border_radius_small = 3
+border_radius_large = 14
+border_radius_xlarge = 18
 border_radius_full = 999
 padding = 12
-button_padding_x = 20
+button_padding_x = 18
 button_padding_y = 10
 spacing = 8
 spacing_small = 4
 spacing_large = 14
-shadow_opacity = 0.35
-shadow_blur = 40
-shadow_spread = 12
+shadow_opacity = 0.42
+shadow_blur = 46
+shadow_spread = 14
 
 [buttons]
-# Blå knappar med guldiga detaljer - som Sveriges flagga!
-background = "#0A3D62"
-background_hover = "#0F4F7D"
-background_pressed = "#072D4A"
-background_action = "#006AA7"
-background_action_hover = "#0080C7"
-background_ghost = "#1A2A3A"
+# Blatta knappar med forgyllt kantspel
+background = "#13324F"
+background_hover = "#1A4167"
+background_pressed = "#0D2337"
+background_action = "#1D4D7A"
+background_action_hover = "#256195"
+background_ghost = "#161B1E"
 
-# Gula kantlinjer på hover - svensk stolthet!
-border = "#004B7C"
-border_hover = "#FECC00"
-border_ghost = "#6B7B8C"
+# Guldfattning och sma svartjarnsinslag
+border = "#8B6D19"
+border_hover = "#F4D56A"
+border_ghost = "#6E6A58"
 
-border_radius = 8
+border_radius = 6
 transition_duration = 0.2
-hover_scale = 1.03
-pressed_scale = 0.97
+hover_scale = 1.02
+pressed_scale = 0.98
 
 [panels]
-# Glasiga paneler i blått
-glass_background = "#CC0D2847"
-glass_opacity = 0.85
-subpanel_background = "#CC0A1E33"
-subpanel_border = "#006AA7"
-optioncard_background = "#CC081A2E"
-optioncard_border = "#FECC00"
-border_radius = 16
-subpanel_radius = 12
-optioncard_radius = 8
+# Tunga paneler med svagt lackad emaljkansla
+glass_background = "#CC112A45"
+glass_opacity = 0.88
+subpanel_background = "#CC0C1E31"
+subpanel_border = "#8B6D19"
+optioncard_background = "#CC10263D"
+optioncard_border = "#D6B23A"
+border_radius = 14
+subpanel_radius = 10
+optioncard_radius = 6
 
 [inputs]
-# Blå inputs med gul fokus
-background = "#081E33"
-background_focus = "#0A2847"
-border = "#006AA7"
-border_focus = "#FECC00"
-border_radius = 8
+# Blatta inputs med guldram
+background = "#0A1A2A"
+background_focus = "#10263D"
+border = "#7B6314"
+border_focus = "#F4D56A"
+border_radius = 6
 padding = 10
 
 [effects]
@@ -123,16 +123,16 @@ use_blur = true
 blur_radius = 15
 use_glow = true
 glow_color = "#FECC00"
-glow_intensity = 0.35
+glow_intensity = 0.24
 use_animations = true
 animation_speed = 0.9
 use_background_effects = true
-background_color_1 = "#006AA7"
-background_color_2 = "#FECC00"
-background_opacity = 0.15
+background_color_1 = "#17385A"
+background_color_2 = "#D6B23A"
+background_opacity = 0.1
 
 [custom]
-# Viking temainställningar
+# Viking / nationalromantik
 viking_mode = "true"
 nordic_runes = "true"
 flag_colors = "#006AA7,#FECC00"
