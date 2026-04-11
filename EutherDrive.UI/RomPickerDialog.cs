@@ -691,7 +691,9 @@ public sealed class RomPickerDialog : Window
             || entry.Name.Contains(search, StringComparison.OrdinalIgnoreCase)
             || entry.DetailText.Contains(search, StringComparison.OrdinalIgnoreCase));
 
-        items = items.Where(entry => entry.IsDirectory || entry.Stars >= minStars);
+        items = minStars == 0
+            ? items
+            : items.Where(entry => !entry.IsDirectory && entry.Stars >= minStars);
 
         items = (_sortCombo.SelectedItem as string) switch
         {
