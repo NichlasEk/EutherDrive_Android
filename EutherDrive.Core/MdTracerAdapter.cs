@@ -119,7 +119,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly bool GenesisLowPassFilterEnabled =
         !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_GENESIS_LPF"), "0", StringComparison.Ordinal);
     private static readonly double GenesisLowPassCutoffHz =
-        ParsePositiveDouble("EUTHERDRIVE_GENESIS_LPF_CUTOFF_HZ", 3390.0);
+        ParsePositiveDouble("EUTHERDRIVE_GENESIS_LPF_CUTOFF_HZ", 12000.0);
     private static readonly bool YmSecondLowPassFilterEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_2ND_LPF"), "1", StringComparison.Ordinal);
     private static readonly double YmSecondLowPassCutoffHz =
@@ -1038,7 +1038,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         {
             return value;
         }
-        return 0.85;
+        return 1.0;
     }
 
     public RomInfo RomInfo { get; private set; } = new RomInfo();
