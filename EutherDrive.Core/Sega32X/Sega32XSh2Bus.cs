@@ -196,7 +196,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         return false;
     }
 
-    private void SyncIfCommPortAccessed(uint maskedAddress)
+    private void SyncIfCommPortAccessed(uint maskedAddress, bool isRead)
     {
         if (maskedAddress < 0x00004020 || maskedAddress > 0x0000402F)
             return;
@@ -208,14 +208,32 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             Sega32XSh2Cpu otherCpu = _core.GetOtherCpu(_whichCpu);
             Sega32XSh2Bus otherBus = _core.GetOtherBus(_whichCpu);
-            ulong limit = Math.Min(CycleLimit, _schedulerCycleCounter);
+            
+            // För läsningar från comm-portar: Synka den andra CPUn hela vägen till CycleLimit.
+            // Detta är kritiskt för boot-sekvenser där en CPU väntar på att den andra ska skriva
+            // till kommunikationsportarna. Genom att synka hela vägen till CycleLimit säkerställer
+            // vi att den andra CPUn har fått chansen att köra och eventuellt skriva sina värden.
+            // För skrivningar: Använd gamla beteendet (synka bara till nuvarande cykel).
+            ulong limit = isRead ? CycleLimit : Math.Min(CycleLimit, _schedulerCycleCounter);
+            
             if (otherBus.SchedulerCycleCounter >= limit)
                 return;
 
-            while (otherBus.SchedulerCycleCounter < limit)
+            // Växla temporärt andra CPU:ns CycleLimit för att tillåta den att köra fram till vår limit
+            ulong originalOtherLimit = otherBus.CycleLimit;
+            otherBus.CycleLimit = limit;
+            
+            try
             {
-                ulong toRun = Math.Min(CommPortSyncChunkSize, limit - otherBus.SchedulerCycleCounter);
-                otherCpu.Execute(toRun, otherBus);
+                while (otherBus.SchedulerCycleCounter < limit)
+                {
+                    ulong toRun = Math.Min(CommPortSyncChunkSize, limit - otherBus.SchedulerCycleCounter);
+                    otherCpu.Execute(toRun, otherBus);
+                }
+            }
+            finally
+            {
+                otherBus.CycleLimit = originalOtherLimit;
             }
         }
         finally
@@ -552,7 +570,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
             CycleCounter += 1;
-            SyncIfCommPortAccessed(masked);
+            SyncIfCommPortAccessed(masked, isRead: true);
             ushort word = IsSh2VdpRegister(masked)
                 ? _core.Bus.Vdp.ReadRegister(masked & ~1u)
                 : _core.Registers.Sh2Read(masked & ~1u, _whichCpu, _core.Bus.Vdp);
@@ -667,7 +685,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
             CycleCounter += 1;
-            SyncIfCommPortAccessed(masked);
+            SyncIfCommPortAccessed(masked, isRead: true);
             if (IsSh2VdpRegister(masked))
             {
                 CycleCounter += Sh2VdpCycles;
@@ -1662,7 +1680,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
             CycleCounter += 1;
-            SyncIfCommPortAccessed(masked);
+            SyncIfCommPortAccessed(masked, isRead: true);
             if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return 0xFFFF;
             if (IsSh2VdpRegister(masked))
@@ -1735,7 +1753,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
             CycleCounter += 2;
-            SyncIfCommPortAccessed(masked);
+            SyncIfCommPortAccessed(masked, isRead: true);
             if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return 0xFFFFFFFF;
             if (IsSh2VdpRegister(masked))
@@ -1808,7 +1826,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
             CycleCounter += 2;
-            SyncIfCommPortAccessed(masked);
+            SyncIfCommPortAccessed(masked, isRead: false);
             if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
             if (IsSh2VdpRegister(masked))
@@ -1887,7 +1905,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     {
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
-            SyncIfCommPortAccessed(masked);
+            SyncIfCommPortAccessed(masked, isRead: true);
             if (IsSh2VdpRegister(masked))
             {
                 if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)

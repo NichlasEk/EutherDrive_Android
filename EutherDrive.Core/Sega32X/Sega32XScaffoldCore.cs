@@ -126,11 +126,13 @@ internal sealed class Sega32XScaffoldCore
             _slaveBus.CycleLimit = _globalSh2Cycles;
             _masterBus.CycleLimit = _globalSh2Cycles;
 
-            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
-                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
-
+            // Kör master först i varje slice för att säkerställa att master har skrivit
+            // till kommunikationsportarna innan slave läser dem (viktigt för Star Trek-boot)
             while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
                 MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+
+            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
+                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
 
             _masterBus.TickPeripherals(slice);
             _slaveBus.TickPeripherals(slice);
@@ -155,11 +157,13 @@ internal sealed class Sega32XScaffoldCore
             _slaveBus.CycleLimit = _globalSh2Cycles;
             _masterBus.CycleLimit = _globalSh2Cycles;
 
-            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
-                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
-
+            // Kör master först i varje slice för att säkerställa att master har skrivit
+            // till kommunikationsportarna innan slave läser dem (viktigt för Star Trek-boot)
             while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
                 MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+
+            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
+                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
 
             _masterBus.TickPeripherals(elapsedSh2Cycles);
             _slaveBus.TickPeripherals(elapsedSh2Cycles);
