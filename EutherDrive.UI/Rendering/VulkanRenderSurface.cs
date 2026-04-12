@@ -65,6 +65,7 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         private bool _initAttempted;
         private bool _initSucceeded;
         private string _fallbackReason = string.Empty;
+        private OwnedX11ChildWindow? _ownedX11ChildWindow;
         private int _presentCount;
         private int _renderCount;
         private int _uploadCount;
@@ -208,7 +209,11 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
 
         protected override IPlatformHandle CreateNativeControlCore(IPlatformHandle parent)
         {
-            IPlatformHandle handle = base.CreateNativeControlCore(parent);
+            IPlatformHandle handle = TryCreateTransparentLinuxNativeChild(parent, out OwnedX11ChildWindow? ownedChild)
+                ? new PlatformHandle(ownedChild!.Window, "XID")
+                : base.CreateNativeControlCore(parent);
+
+            _ownedX11ChildWindow = ownedChild;
             lock (_frameSync)
             {
                 _nativeHandle = handle.Handle;
@@ -237,7 +242,95 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
                 _initSucceeded = false;
             }
 
+            if (_ownedX11ChildWindow is { } ownedChildWindow)
+            {
+                _ownedX11ChildWindow = null;
+                ownedChildWindow.Dispose();
+                return;
+            }
+
             base.DestroyNativeControlCore(control);
+        }
+
+        private static bool TryCreateTransparentLinuxNativeChild(
+            IPlatformHandle parent,
+            out OwnedX11ChildWindow? ownedChildWindow)
+        {
+            ownedChildWindow = null;
+
+            if (!OperatingSystem.IsLinux()
+                || parent.Handle == IntPtr.Zero
+                || !string.Equals(parent.HandleDescriptor, "XID", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            IntPtr display = X11Api.XOpenDisplay(IntPtr.Zero);
+            if (display == IntPtr.Zero)
+                return false;
+
+            IntPtr colormap = IntPtr.Zero;
+            IntPtr childWindow = IntPtr.Zero;
+
+            try
+            {
+                int screen = X11Api.XDefaultScreen(display);
+                if (X11Api.XMatchVisualInfo(display, screen, 32, X11Api.TrueColor, out XVisualInfo visualInfo) == 0)
+                {
+                    X11Api.XCloseDisplay(display);
+                    return false;
+                }
+
+                colormap = X11Api.XCreateColormap(display, parent.Handle, visualInfo.Visual, X11Api.AllocNone);
+                if (colormap == IntPtr.Zero)
+                {
+                    X11Api.XCloseDisplay(display);
+                    return false;
+                }
+
+                XSetWindowAttributes windowAttributes = new()
+                {
+                    BackgroundPixel = 0,
+                    BorderPixel = 0,
+                    Colormap = colormap,
+                    EventMask = 0
+                };
+
+                childWindow = X11Api.XCreateWindow(
+                    display,
+                    parent.Handle,
+                    0,
+                    0,
+                    1,
+                    1,
+                    0,
+                    visualInfo.Depth,
+                    X11Api.InputOutput,
+                    visualInfo.Visual,
+                    X11Api.CWBackPixel | X11Api.CWBorderPixel | X11Api.CWColormap,
+                    ref windowAttributes);
+
+                if (childWindow == IntPtr.Zero)
+                {
+                    X11Api.XFreeColormap(display, colormap);
+                    X11Api.XCloseDisplay(display);
+                    return false;
+                }
+
+                X11Api.XMapWindow(display, childWindow);
+                X11Api.XSync(display, false);
+                ownedChildWindow = new OwnedX11ChildWindow(display, colormap, childWindow);
+                return true;
+            }
+            catch
+            {
+                if (childWindow != IntPtr.Zero)
+                    X11Api.XDestroyWindow(display, childWindow);
+                if (colormap != IntPtr.Zero)
+                    X11Api.XFreeColormap(display, colormap);
+                X11Api.XCloseDisplay(display);
+                throw;
+            }
         }
 
         private void StartRendererThread()
@@ -663,6 +756,30 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
             return textEdgePolarity > 0
                 ? center + ((distance * push256) >> 8)
                 : center - ((distance * push256) >> 8);
+        }
+
+        private sealed class OwnedX11ChildWindow : IDisposable
+        {
+            private readonly IntPtr _display;
+            private readonly IntPtr _colormap;
+            public IntPtr Window { get; }
+
+            public OwnedX11ChildWindow(IntPtr display, IntPtr colormap, IntPtr window)
+            {
+                _display = display;
+                _colormap = colormap;
+                Window = window;
+            }
+
+            public void Dispose()
+            {
+                if (Window != IntPtr.Zero)
+                    X11Api.XDestroyWindow(_display, Window);
+                if (_colormap != IntPtr.Zero)
+                    X11Api.XFreeColormap(_display, _colormap);
+                if (_display != IntPtr.Zero)
+                    X11Api.XCloseDisplay(_display);
+            }
         }
     }
 
@@ -2140,11 +2257,54 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
 
     private static class X11Api
     {
+        public const int TrueColor = 4;
+        public const int InputOutput = 1;
+        public const int AllocNone = 0;
+        public const ulong CWBackPixel = 1UL << 1;
+        public const ulong CWBorderPixel = 1UL << 3;
+        public const ulong CWColormap = 1UL << 13;
+
         [DllImport("libX11.so.6")]
         public static extern IntPtr XOpenDisplay(IntPtr displayName);
 
         [DllImport("libX11.so.6")]
         public static extern int XCloseDisplay(IntPtr display);
+
+        [DllImport("libX11.so.6")]
+        public static extern int XDefaultScreen(IntPtr display);
+
+        [DllImport("libX11.so.6")]
+        public static extern int XMatchVisualInfo(IntPtr display, int screen, int depth, int @class, out XVisualInfo visualInfo);
+
+        [DllImport("libX11.so.6")]
+        public static extern IntPtr XCreateColormap(IntPtr display, IntPtr window, IntPtr visual, int alloc);
+
+        [DllImport("libX11.so.6")]
+        public static extern int XFreeColormap(IntPtr display, IntPtr colormap);
+
+        [DllImport("libX11.so.6")]
+        public static extern IntPtr XCreateWindow(
+            IntPtr display,
+            IntPtr parent,
+            int x,
+            int y,
+            uint width,
+            uint height,
+            uint borderWidth,
+            int depth,
+            int @class,
+            IntPtr visual,
+            ulong valueMask,
+            ref XSetWindowAttributes attributes);
+
+        [DllImport("libX11.so.6")]
+        public static extern int XMapWindow(IntPtr display, IntPtr window);
+
+        [DllImport("libX11.so.6")]
+        public static extern int XDestroyWindow(IntPtr display, IntPtr window);
+
+        [DllImport("libX11.so.6")]
+        public static extern int XSync(IntPtr display, [MarshalAs(UnmanagedType.I1)] bool discard);
 
         [DllImport("libX11.so.6")]
         public static extern int XGetWindowAttributes(IntPtr display, IntPtr window, out XWindowAttributes windowAttributes);
@@ -2186,6 +2346,41 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
         public long DoNotPropagateMask;
         public int OverrideRedirect;
         public IntPtr Screen;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct XVisualInfo
+    {
+        public IntPtr Visual;
+        public IntPtr VisualId;
+        public int Screen;
+        public int Depth;
+        public int Class;
+        public ulong RedMask;
+        public ulong GreenMask;
+        public ulong BlueMask;
+        public int ColormapSize;
+        public int BitsPerRgb;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct XSetWindowAttributes
+    {
+        public IntPtr BackgroundPixmap;
+        public ulong BackgroundPixel;
+        public IntPtr BorderPixmap;
+        public ulong BorderPixel;
+        public int BitGravity;
+        public int WinGravity;
+        public int BackingStore;
+        public ulong BackingPlanes;
+        public ulong BackingPixel;
+        public int SaveUnder;
+        public long EventMask;
+        public long DoNotPropagateMask;
+        public int OverrideRedirect;
+        public IntPtr Colormap;
+        public IntPtr Cursor;
     }
 
     [StructLayout(LayoutKind.Sequential)]

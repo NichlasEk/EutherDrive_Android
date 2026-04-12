@@ -18,12 +18,15 @@ internal static class RenderBackendConfig
 {
     public const string SettingsFileName = "eutherdrive_settings.toml";
     private const string RenderBackendEnvKey = "EUTHERDRIVE_RENDERER";
+    private const string UiVulkanShellEnvKey = "EUTHERDRIVE_UI_VULKAN_SHELL";
     public static RenderBackendMode StartupMode { get; private set; } = RenderBackendMode.Bitmap;
     public static bool SupportsVulkanPlatform => OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
+    public static bool UsesVulkanShellRenderer { get; private set; }
 
     public static AppBuilder Configure(AppBuilder builder)
     {
         StartupMode = ResolvePreferredMode();
+        UsesVulkanShellRenderer = ShouldUseVulkanShellRenderer();
 
         builder = builder.With(new AvaloniaNativePlatformOptions
         {
@@ -49,17 +52,40 @@ internal static class RenderBackendConfig
                 })
                 .With(new X11PlatformOptions
                 {
-                    RenderingMode = new[]
-                    {
-                        X11RenderingMode.Vulkan,
-                        X11RenderingMode.Glx,
-                        X11RenderingMode.Egl,
-                        X11RenderingMode.Software
-                    }
+                    RenderingMode = UsesVulkanShellRenderer
+                        ? new[]
+                        {
+                            X11RenderingMode.Vulkan,
+                            X11RenderingMode.Glx,
+                            X11RenderingMode.Egl,
+                            X11RenderingMode.Software
+                        }
+                        : new[]
+                        {
+                            X11RenderingMode.Glx,
+                            X11RenderingMode.Egl,
+                            X11RenderingMode.Software
+                        }
                 });
         }
 
         return builder;
+    }
+
+    private static bool ShouldUseVulkanShellRenderer()
+    {
+        if (!OperatingSystem.IsLinux())
+            return true;
+
+        string? raw = Environment.GetEnvironmentVariable(UiVulkanShellEnvKey);
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        raw = raw.Trim();
+        return raw == "1"
+            || raw.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     public static RenderBackendMode ResolvePreferredMode()

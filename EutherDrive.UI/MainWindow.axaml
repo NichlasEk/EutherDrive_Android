@@ -731,6 +731,11 @@
               </Grid>
             </Viewbox>
           </Border>
+          <Canvas Name="NativeScreenOverlayHost"
+                  IsHitTestVisible="False"
+                  ClipToBounds="True"
+                  HorizontalAlignment="Stretch"
+                  VerticalAlignment="Stretch"/>
         </Grid>
       </controls:LiquidChromeFrame>
 

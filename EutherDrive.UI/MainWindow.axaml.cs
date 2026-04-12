@@ -1320,6 +1320,11 @@ public partial class MainWindow : Window
 
     private string GetRenderBackendStateText(bool activeAccelerated, bool activeVulkan)
     {
+        bool linuxVulkanPresenterOnGlShell = OperatingSystem.IsLinux()
+            && _renderBackendMode == RenderBackendMode.Vulkan
+            && activeVulkan
+            && !RenderBackendConfig.UsesVulkanShellRenderer;
+
         return _renderBackendMode switch
         {
             RenderBackendMode.OpenGl => activeAccelerated
@@ -1329,6 +1334,8 @@ public partial class MainWindow : Window
                     : $"Active: Bitmap fallback ({_renderBackendFallbackReason})",
             RenderBackendMode.Vulkan => !RenderBackendConfig.SupportsVulkanPlatform
                 ? "Active: Bitmap (Vulkan unsupported)"
+                : linuxVulkanPresenterOnGlShell
+                    ? "Active: Vulkan presenter / UI GL"
                 : activeVulkan && RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan
                     ? "Active: Vulkan"
                     : activeVulkan
@@ -7732,17 +7739,41 @@ public partial class MainWindow : Window
             return;
 
         Control view = _renderSurface.View;
-        if (view.Parent is Panel existingParent && !ReferenceEquals(existingParent, ScreenSurfaceHost))
-            existingParent.Children.Remove(view);
+        bool useDetachedNativeOverlay = UsesDetachedNativeOverlayHost();
+        Panel? targetHost = useDetachedNativeOverlay ? NativeScreenOverlayHost : ScreenSurfaceHost;
+        Panel? alternateHost = useDetachedNativeOverlay ? ScreenSurfaceHost : NativeScreenOverlayHost;
+        if (targetHost == null)
+            return;
 
-        if (!ScreenSurfaceHost.Children.Contains(view))
+        if (view.Parent is Panel existingParent
+            && !ReferenceEquals(existingParent, targetHost))
         {
-            ScreenSurfaceHost.Children.Clear();
-            ScreenSurfaceHost.Children.Add(view);
+            existingParent.Children.Remove(view);
         }
 
-        view.Width = double.NaN;
-        view.Height = double.NaN;
+        if (alternateHost != null && alternateHost.Children.Contains(view))
+            alternateHost.Children.Remove(view);
+
+        if (!targetHost.Children.Contains(view))
+        {
+            targetHost.Children.Clear();
+            targetHost.Children.Add(view);
+        }
+
+        if (useDetachedNativeOverlay)
+        {
+            if (ScreenSurfaceHost.Children.Contains(view))
+                ScreenSurfaceHost.Children.Remove(view);
+        }
+        else
+        {
+            if (NativeScreenOverlayHost != null && NativeScreenOverlayHost.Children.Contains(view))
+                NativeScreenOverlayHost.Children.Remove(view);
+
+            view.Width = double.NaN;
+            view.Height = double.NaN;
+        }
+
         UpdatePresentationLayout();
     }
 
@@ -8090,7 +8121,44 @@ public partial class MainWindow : Window
         }
 
         ApplyPresentationLayoutSize(targetWidth, targetHeight);
+        UpdateDetachedNativeOverlayBounds();
         UpdateBackdropDecorLayout();
+    }
+
+    private void UpdateDetachedNativeOverlayBounds()
+    {
+        if (!UsesDetachedNativeOverlayHost()
+            || _renderSurface?.View is not Control view
+            || NativeScreenOverlayHost == null
+            || ScreenSurfaceHost == null)
+        {
+            return;
+        }
+
+        Point? topLeft = ScreenSurfaceHost.TranslatePoint(new Point(0, 0), NativeScreenOverlayHost);
+        Point? bottomRight = ScreenSurfaceHost.TranslatePoint(
+            new Point(ScreenSurfaceHost.Bounds.Width, ScreenSurfaceHost.Bounds.Height),
+            NativeScreenOverlayHost);
+
+        if (topLeft is null || bottomRight is null)
+        {
+            view.IsVisible = false;
+            return;
+        }
+
+        double width = Math.Max(0, bottomRight.Value.X - topLeft.Value.X);
+        double height = Math.Max(0, bottomRight.Value.Y - topLeft.Value.Y);
+        if (width < 1 || height < 1)
+        {
+            view.IsVisible = false;
+            return;
+        }
+
+        view.IsVisible = true;
+        Canvas.SetLeft(view, topLeft.Value.X);
+        Canvas.SetTop(view, topLeft.Value.Y);
+        view.Width = width;
+        view.Height = height;
     }
 
     private void ApplyPresentationLayoutSize(double targetWidth, double targetHeight)
@@ -8485,6 +8553,9 @@ public partial class MainWindow : Window
 
     private bool UsesNativeDesktopPresentationLayout()
         => _renderSurface is VulkanRenderSurface or SdlNativeRenderSurface;
+
+    private bool UsesDetachedNativeOverlayHost()
+        => UsesNativeDesktopPresentationLayout() && NativeScreenOverlayHost != null;
 
     private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
     {
