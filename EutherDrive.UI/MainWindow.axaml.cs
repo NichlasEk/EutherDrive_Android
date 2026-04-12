@@ -40,6 +40,13 @@ namespace EutherDrive.UI;
 
 public partial class MainWindow : Window
 {
+    private enum BackdropDecorMode
+    {
+        None,
+        Swedish,
+        Jungle
+    }
+
     private IEmulatorCore? _core;
     private readonly object _coreAudioLock = new();
     private readonly SavestateService _savestateService;
@@ -8262,93 +8269,169 @@ public partial class MainWindow : Window
 
     private void UpdateBackdropDecorForSkin()
     {
-        bool enabled = IsSwedishBackdropEnabled(SkinManager.Instance.CurrentSkin);
-        Color blue = Color.Parse("#006AA7");
-        Color yellow = Color.Parse("#FECC00");
+        ApaSkin skin = SkinManager.Instance.CurrentSkin;
+        BackdropDecorMode mode = GetBackdropDecorMode(skin);
 
-        if (enabled && SkinManager.Instance.CurrentSkin.StyleOverrides.TryGetValue("flag_colors", out string? rawColors))
+        if (mode == BackdropDecorMode.Swedish)
         {
-            string[] parts = rawColors.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (parts.Length >= 2)
+            Color blue = Color.Parse("#006AA7");
+            Color yellow = Color.Parse("#FECC00");
+
+            if (skin.StyleOverrides.TryGetValue("flag_colors", out string? rawColors))
             {
-                try
+                string[] parts = rawColors.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (parts.Length >= 2)
                 {
-                    blue = Color.Parse(parts[0]);
-                    yellow = Color.Parse(parts[1]);
-                }
-                catch
-                {
+                    try
+                    {
+                        blue = Color.Parse(parts[0]);
+                        yellow = Color.Parse(parts[1]);
+                    }
+                    catch
+                    {
+                    }
                 }
             }
+
+            var swedishColors = new Dictionary<string, Color>(StringComparer.Ordinal)
+            {
+                ["flag-blue"] = blue,
+                ["flag-yellow"] = yellow
+            };
+
+            ApplyTaggedColors(LeftFlagHost, swedishColors);
+            ApplyTaggedColors(RightFlagHost, swedishColors);
+            ApplyTaggedColors(CenterHeraldryHost, swedishColors);
+        }
+        else if (mode == BackdropDecorMode.Jungle)
+        {
+            Color bark = TryGetSkinColor(skin, "jungle_bark_color", Color.Parse("#5A3D29"));
+            Color leaf = TryGetSkinColor(skin, "jungle_leaf_color", Color.Parse("#437448"));
+            Color moss = TryGetSkinColor(skin, "jungle_moss_color", Color.Parse("#89A95C"));
+            Color vine = TryGetSkinColor(skin, "jungle_vine_color", Color.Parse("#294E33"));
+            Color flower = TryGetSkinColor(skin, "jungle_flower_color", ParseSkinColorOrDefault(skin.Colors.AccentWarm, "#E2B56E"));
+            Color gold = TryGetSkinColor(skin, "jungle_gold_color", ParseSkinColorOrDefault(skin.Colors.Text, "#EAD7A3"));
+            Color mist = TryGetSkinColor(skin, "jungle_mist_color", Color.Parse("#8096A882"));
+
+            var jungleColors = new Dictionary<string, Color>(StringComparer.Ordinal)
+            {
+                ["jungle-bark"] = bark,
+                ["jungle-leaf"] = leaf,
+                ["jungle-moss"] = moss,
+                ["jungle-vine"] = vine,
+                ["jungle-flower"] = flower,
+                ["jungle-gold"] = gold,
+                ["jungle-mist"] = mist
+            };
+
+            ApplyTaggedColors(LeftJungleHost, jungleColors);
+            ApplyTaggedColors(RightJungleHost, jungleColors);
+            ApplyTaggedColors(CenterJungleHost, jungleColors);
         }
 
-        ApplyFlagColors(LeftFlagHost, blue, yellow);
-        ApplyFlagColors(RightFlagHost, blue, yellow);
         UpdateBackdropDecorLayout();
     }
 
     private void UpdateBackdropDecorLayout()
     {
-        if (InputSurface == null || LeftFlagHost == null || RightFlagHost == null || CenterHeraldryHost == null)
+        if (InputSurface == null
+            || LeftFlagHost == null
+            || RightFlagHost == null
+            || CenterHeraldryHost == null
+            || LeftJungleHost == null
+            || RightJungleHost == null
+            || CenterJungleHost == null)
+        {
             return;
+        }
 
-        bool enabled = IsSwedishBackdropEnabled(SkinManager.Instance.CurrentSkin);
+        BackdropDecorMode mode = GetBackdropDecorMode(SkinManager.Instance.CurrentSkin);
         double availableWidth = InputSurface.Bounds.Width;
         double contentWidth = ScreenGrid?.Width ?? 0;
         double gutterWidth = Math.Floor(Math.Max(0, (availableWidth - contentWidth) * 0.5));
-        bool visible = enabled && gutterWidth >= 24;
+        double minGutterWidth = mode == BackdropDecorMode.Jungle ? 42 : 24;
+        bool showSides = mode != BackdropDecorMode.None && gutterWidth >= minGutterWidth;
+        double sideWidth = showSides ? gutterWidth : 0;
 
-        LeftFlagHost.IsVisible = visible;
-        RightFlagHost.IsVisible = visible;
-        CenterHeraldryHost.IsVisible = enabled;
-        LeftFlagHost.Width = visible ? gutterWidth : 0;
-        RightFlagHost.Width = visible ? gutterWidth : 0;
+        LeftFlagHost.IsVisible = showSides && mode == BackdropDecorMode.Swedish;
+        RightFlagHost.IsVisible = showSides && mode == BackdropDecorMode.Swedish;
+        CenterHeraldryHost.IsVisible = mode == BackdropDecorMode.Swedish;
+        LeftFlagHost.Width = mode == BackdropDecorMode.Swedish ? sideWidth : 0;
+        RightFlagHost.Width = mode == BackdropDecorMode.Swedish ? sideWidth : 0;
+
+        LeftJungleHost.IsVisible = showSides && mode == BackdropDecorMode.Jungle;
+        RightJungleHost.IsVisible = showSides && mode == BackdropDecorMode.Jungle;
+        CenterJungleHost.IsVisible = mode == BackdropDecorMode.Jungle;
+        LeftJungleHost.Width = mode == BackdropDecorMode.Jungle ? sideWidth : 0;
+        RightJungleHost.Width = mode == BackdropDecorMode.Jungle ? sideWidth : 0;
     }
 
-    private static bool IsSwedishBackdropEnabled(ApaSkin skin)
+    private static BackdropDecorMode GetBackdropDecorMode(ApaSkin skin)
     {
-        if (skin.StyleOverrides.TryGetValue("viking_mode", out string? vikingMode)
-            && bool.TryParse(vikingMode, out bool enabled)
-            && enabled)
+        if (skin.StyleOverrides.TryGetValue("backdrop_mode", out string? backdropMode)
+            && !string.IsNullOrWhiteSpace(backdropMode))
         {
-            return true;
+            if (string.Equals(backdropMode, "swedish", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(backdropMode, "viking", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(backdropMode, "nordic", StringComparison.OrdinalIgnoreCase))
+            {
+                return BackdropDecorMode.Swedish;
+            }
+
+            if (string.Equals(backdropMode, "jungle", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(backdropMode, "rainforest", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(backdropMode, "canopy", StringComparison.OrdinalIgnoreCase))
+            {
+                return BackdropDecorMode.Jungle;
+            }
         }
 
-        return string.Equals(skin.SkinName, "Svensk Viking", StringComparison.OrdinalIgnoreCase);
+        if (skin.StyleOverrides.TryGetValue("viking_mode", out string? vikingMode)
+            && bool.TryParse(vikingMode, out bool swedishEnabled)
+            && swedishEnabled)
+        {
+            return BackdropDecorMode.Swedish;
+        }
+
+        if (skin.StyleOverrides.TryGetValue("jungle_mode", out string? jungleMode)
+            && bool.TryParse(jungleMode, out bool jungleEnabled)
+            && jungleEnabled)
+        {
+            return BackdropDecorMode.Jungle;
+        }
+
+        if (string.Equals(skin.SkinName, "Svensk Viking", StringComparison.OrdinalIgnoreCase))
+            return BackdropDecorMode.Swedish;
+
+        if (string.Equals(skin.SkinName, "Rainforest Shrine", StringComparison.OrdinalIgnoreCase))
+            return BackdropDecorMode.Jungle;
+
+        return BackdropDecorMode.None;
     }
 
-    private static void ApplyFlagColors(Border? host, Color blue, Color yellow)
+    private static void ApplyTaggedColors(Border? host, IReadOnlyDictionary<string, Color> colors)
     {
         if (host == null)
             return;
 
-        ApplyFlagColorsRecursive(host, blue, yellow);
+        ApplyTaggedColorsRecursive(host, colors);
     }
 
-    private static void ApplyFlagColorsRecursive(Control control, Color blue, Color yellow)
+    private static void ApplyTaggedColorsRecursive(Control control, IReadOnlyDictionary<string, Color> colors)
     {
-        if (control.Tag is string tag)
-        {
-            if (string.Equals(tag, "flag-blue", StringComparison.Ordinal))
-            {
-                SetControlFill(control, blue);
-            }
-            else if (string.Equals(tag, "flag-yellow", StringComparison.Ordinal))
-            {
-                SetControlFill(control, yellow);
-            }
-        }
+        if (control.Tag is string tag && colors.TryGetValue(tag, out Color color))
+            SetControlFill(control, color);
 
         if (control is Decorator { Child: Control child })
         {
-            ApplyFlagColorsRecursive(child, blue, yellow);
+            ApplyTaggedColorsRecursive(child, colors);
             return;
         }
 
         if (control is Panel panel)
         {
             foreach (Control childControl in panel.Children.OfType<Control>())
-                ApplyFlagColorsRecursive(childControl, blue, yellow);
+                ApplyTaggedColorsRecursive(childControl, colors);
         }
     }
 
@@ -8361,8 +8444,8 @@ public partial class MainWindow : Window
             case Border border:
                 border.Background = brush;
                 break;
-            case Avalonia.Controls.Shapes.Path path:
-                path.Fill = brush;
+            case Avalonia.Controls.Shapes.Shape shape:
+                shape.Fill = brush;
                 break;
         }
     }
@@ -8404,7 +8487,7 @@ public partial class MainWindow : Window
 
         ApaSkin skin = SkinManager.Instance.CurrentSkin;
         bool enabled = TryGetSkinBool(skin, "emboss_texture", defaultValue: false)
-            || IsSwedishBackdropEnabled(skin);
+            || GetBackdropDecorMode(skin) == BackdropDecorMode.Swedish;
 
         GlobalEmbossTextureOverlay.TextureEnabled = enabled;
         GlobalEmbossTextureOverlay.IsVisible = enabled;
@@ -8425,7 +8508,7 @@ public partial class MainWindow : Window
     {
         ApaSkin skin = SkinManager.Instance.CurrentSkin;
         bool enabled = TryGetSkinBool(skin, "relief_frames", defaultValue: false)
-            || IsSwedishBackdropEnabled(skin);
+            || GetBackdropDecorMode(skin) == BackdropDecorMode.Swedish;
         double opacity = TryGetSkinDouble(skin, "relief_frames_opacity", 0.2, 0.0, 1.0);
         double scale = TryGetSkinDouble(skin, "relief_frames_scale", 1.0, 0.4, 2.2);
         Color highlight = TryGetSkinColor(skin, "relief_frames_highlight", ParseSkinColorOrDefault(skin.Colors.Text, "#D6B23A"));

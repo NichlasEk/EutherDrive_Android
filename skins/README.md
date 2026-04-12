@@ -12,6 +12,13 @@ Detta är skins-mappen för EutherDrive emulatorn. Skins använder `.apa` format
 - Blå knappar med gula hover-effekter
 - Perfekt för svenska användare!
 
+### 🌿 rainforest_shrine.apa
+**Rainforest Shrine** - Mörkt djungeltema med:
+- Mossiga gröna paneler och barkbruna accenter
+- Lianer, blad och träplakat runt skärmen
+- Varmt tempelguld i text och highlights
+- Regnskogs-/ruinkänsla snarare än modern dashboard
+
 ### 🎨 default.apa
 **EutherDrive Default** - Den klassiska mörka temat med:
 - Mörkblå/svart bakgrund
@@ -72,6 +79,32 @@ panel_glass = "#CC0D2847" # Med alpha (CC = 80% opacitet)
 - `[inputs]` - Textfält och dropdowns
 - `[effects]` - Transparens, glow, animationer
 - `[custom]` - Egna inställningar för speciella skins
+
+## Skärmdekor / Backdrop
+
+Du kan slå på särskild grafik runt skärmen via `[custom]` och `backdrop_mode`.
+
+```toml
+[custom]
+backdrop_mode = "jungle"
+```
+
+Stödda värden just nu:
+- `swedish` / `viking` / `nordic`
+- `jungle` / `rainforest` / `canopy`
+
+För djungelläget kan du även färgstyra grafiken:
+
+```toml
+[custom]
+jungle_bark_color = "#63442B"
+jungle_leaf_color = "#437448"
+jungle_moss_color = "#92A85B"
+jungle_vine_color = "#284B31"
+jungle_flower_color = "#D69357"
+jungle_gold_color = "#E7D29B"
+jungle_mist_color = "#7B8E775E"
+```
 
 ## Metallglanslager
 

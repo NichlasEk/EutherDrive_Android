@@ -1,0 +1,144 @@
+# Rainforest Shrine Skin
+# Mork regnskog, mossiga ramar och djungelgrafik runt skarmen
+
+[skin]
+name = "Rainforest Shrine"
+author = "EutherDrive"
+version = "1.0"
+description = "Djungelinspirerat skin med mossiga paneler, barktoner, lianer och ett tempelliknande skarmaltare."
+
+[colors]
+background = "#060906"
+background_soft = "#101711"
+background_alt = "#0A0F0A"
+
+panel = "#1A271B"
+panel_raised = "#223526"
+panel_glass = "#D0172419"
+sub_panel = "#CC121C14"
+option_card = "#D01A261C"
+
+stroke = "#556744"
+stroke_bright = "#D4C18B"
+
+text = "#F0E2B4"
+text_muted = "#A8A17B"
+
+accent = "#7C9A49"
+accent_warm = "#D7944B"
+accent_hot = "#F0C96E"
+
+[gradient.hero]
+angle = 165
+stop0 = "#243423,0.0"
+stop1 = "#121A12,0.48"
+stop2 = "#060906,1.0"
+
+[gradient.screen_glow]
+angle = 45
+stop0 = "#2C8EA35A,0.0"
+stop1 = "#167C9A49,0.58"
+stop2 = "#20D7944B,1.0"
+
+[typography]
+primary_font = "Alegreya Sans, Noto Sans, Inter"
+display_font = "Cormorant Garamond, Cinzel, Noto Serif, serif"
+mono_font = "JetBrains Mono, Consolas, monospace"
+deck_font = "Alegreya, Noto Serif, serif"
+base_size = 14
+small_size = 11
+display_size = 31
+kicker_size = 12
+deck_size = 16
+letter_spacing = 0.55
+deck_spacing = 1.6
+
+[layout]
+border_radius = 10
+border_radius_small = 6
+border_radius_large = 18
+border_radius_xlarge = 22
+border_radius_full = 999
+padding = 12
+button_padding_x = 16
+button_padding_y = 9
+spacing = 8
+spacing_small = 4
+spacing_large = 14
+shadow_opacity = 0.4
+shadow_blur = 42
+shadow_spread = 10
+
+[buttons]
+background = "#283324"
+background_hover = "#33402E"
+background_pressed = "#1A2218"
+background_action = "#556A35"
+background_action_hover = "#6E8546"
+background_ghost = "#141A12"
+border = "#708456"
+border_hover = "#F0E2B4"
+border_ghost = "#49563E"
+border_radius = 10
+transition_duration = 0.18
+hover_scale = 1.018
+pressed_scale = 0.988
+
+[panels]
+glass_background = "#D0192418"
+glass_opacity = 0.9
+subpanel_background = "#CC101811"
+subpanel_border = "#708456"
+optioncard_background = "#D0182319"
+optioncard_border = "#D4C18B"
+border_radius = 16
+subpanel_radius = 12
+optioncard_radius = 10
+
+[inputs]
+background = "#10170F"
+background_focus = "#172117"
+border = "#6D8155"
+border_focus = "#F0E2B4"
+border_radius = 10
+padding = 9
+
+[effects]
+use_transparency = false
+use_blur = false
+blur_radius = 0
+use_glow = true
+glow_color = "#9BAE6C"
+glow_intensity = 0.08
+use_animations = true
+animation_speed = 0.92
+use_background_effects = true
+background_color_1 = "#405233"
+background_color_2 = "#8B5A32"
+background_opacity = 0.1
+
+[custom]
+backdrop_mode = "jungle"
+jungle_mode = "true"
+jungle_bark_color = "#63442B"
+jungle_leaf_color = "#437448"
+jungle_moss_color = "#92A85B"
+jungle_vine_color = "#284B31"
+jungle_flower_color = "#D69357"
+jungle_gold_color = "#E7D29B"
+jungle_mist_color = "#7B8E775E"
+emboss_texture = "true"
+emboss_texture_opacity = "0.18"
+emboss_texture_scale = "1.12"
+emboss_texture_depth = "1.18"
+emboss_texture_tint = "#162117"
+emboss_texture_highlight = "#C3B07A"
+emboss_texture_shadow = "#050705"
+relief_frames = "true"
+relief_frames_opacity = "0.2"
+relief_frames_scale = "1.06"
+relief_frames_highlight = "#CDBA82"
+relief_frames_shadow = "#070907"
+metal_sheen = "false"
+metal_surface = "false"
+liquid_chrome = "false"

@@ -555,6 +555,113 @@
                 </Canvas>
               </Viewbox>
             </Border>
+            <Border Name="LeftJungleHost"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Stretch"
+                    Width="0"
+                    IsVisible="False"
+                    Background="Transparent"
+                    BorderBrush="#00000000"
+                    BorderThickness="0">
+              <Viewbox Stretch="Uniform">
+                <Canvas Width="156" Height="320" Margin="6,0,6,0">
+                  <Ellipse Tag="jungle-mist"
+                           Width="88"
+                           Height="236"
+                           Opacity="0.12"
+                           Canvas.Left="18"
+                           Canvas.Top="18"/>
+                  <Path Fill="#18000000"
+                        Data="M 16 0 C 34 46, 18 92, 32 146 C 44 198, 58 252, 44 320 L 76 320 C 90 248, 72 196, 62 144 C 50 88, 64 44, 44 0 Z"/>
+                  <Path Tag="jungle-bark"
+                        Fill="#5A3D29"
+                        Data="M 12 0 C 28 44, 14 92, 26 146 C 38 198, 52 252, 38 320 L 68 320 C 82 248, 64 198, 56 146 C 46 90, 60 44, 40 0 Z"/>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Opacity="0.88"
+                        Data="M 18 24 C 30 12, 50 12, 62 28 C 54 42, 34 46, 18 40 Z"/>
+                  <Path Tag="jungle-bark"
+                        Fill="#5A3D29"
+                        Data="M 38 74 C 68 62, 100 68, 130 92 L 122 106 C 94 88, 68 84, 34 92 Z"/>
+                  <Path Tag="jungle-vine"
+                        Fill="#294E33"
+                        Data="M 86 0 C 102 34, 80 76, 90 112 C 98 150, 118 188, 110 228 C 104 258, 84 286, 88 320 L 100 320 C 96 290, 116 262, 122 230 C 132 188, 112 150, 104 112 C 96 74, 116 34, 100 0 Z"/>
+                  <Path Tag="jungle-vine"
+                        Fill="#294E33"
+                        Data="M 116 0 C 128 24, 120 54, 126 88 C 132 126, 146 160, 140 198 C 136 226, 118 250, 122 320 L 134 320 C 130 250, 148 226, 154 198 C 162 158, 146 124, 138 86 C 132 54, 142 24, 130 0 Z"/>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 12 C 11 0, 28 0, 40 12 C 28 24, 11 24, 0 12 Z"
+                        Canvas.Left="72"
+                        Canvas.Top="44"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="-28"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 11 C 10 0, 24 0, 34 11 C 24 22, 10 22, 0 11 Z"
+                        Canvas.Left="94"
+                        Canvas.Top="70"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="24"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 13 C 12 0, 28 0, 42 13 C 28 26, 12 26, 0 13 Z"
+                        Canvas.Left="70"
+                        Canvas.Top="118"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="-16"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 12 C 10 0, 26 0, 38 12 C 26 24, 10 24, 0 12 Z"
+                        Canvas.Left="96"
+                        Canvas.Top="160"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="28"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Data="M 0 9 C 10 0, 22 0, 30 9 C 22 18, 10 18, 0 9 Z"
+                        Canvas.Left="32"
+                        Canvas.Top="102"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="-14"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Data="M 0 9 C 10 0, 22 0, 30 9 C 22 18, 10 18, 0 9 Z"
+                        Canvas.Left="24"
+                        Canvas.Top="182"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="18"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Ellipse Tag="jungle-flower"
+                           Width="6"
+                           Height="6"
+                           Canvas.Left="106"
+                           Canvas.Top="232"/>
+                  <Ellipse Tag="jungle-flower"
+                           Width="5"
+                           Height="5"
+                           Canvas.Left="126"
+                           Canvas.Top="276"/>
+                </Canvas>
+              </Viewbox>
+            </Border>
             <Border Name="CenterHeraldryHost"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Top"
@@ -640,6 +747,100 @@
                 </Canvas>
               </Viewbox>
             </Border>
+            <Border Name="CenterJungleHost"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Width="264"
+                    Height="96"
+                    Margin="0,8,0,0"
+                    IsVisible="False"
+                    Background="Transparent"
+                    BorderBrush="#00000000"
+                    BorderThickness="0">
+              <Viewbox Stretch="Uniform">
+                <Canvas Width="264" Height="96">
+                  <Ellipse Tag="jungle-mist"
+                           Width="168"
+                           Height="44"
+                           Opacity="0.11"
+                           Canvas.Left="48"
+                           Canvas.Top="8"/>
+                  <Path Fill="#1E000000"
+                        Data="M 18 22 C 52 6, 96 10, 132 20 C 176 32, 218 28, 246 10 L 252 22 C 224 40, 176 44, 132 34 C 92 24, 52 24, 20 36 Z"/>
+                  <Path Tag="jungle-bark"
+                        Fill="#5A3D29"
+                        Data="M 16 18 C 52 4, 96 8, 132 18 C 176 30, 218 26, 246 10 L 252 24 C 224 40, 176 42, 132 32 C 92 22, 52 22, 18 34 Z"/>
+                  <Border Tag="jungle-bark"
+                          Width="126"
+                          Height="34"
+                          CornerRadius="15"
+                          Background="#5A3D29"
+                          Canvas.Left="69"
+                          Canvas.Top="18"/>
+                  <Border Tag="jungle-gold"
+                          Width="118"
+                          Height="4"
+                          CornerRadius="2"
+                          Background="#D9C08A"
+                          Canvas.Left="73"
+                          Canvas.Top="22"/>
+                  <Border Tag="jungle-moss"
+                          Width="108"
+                          Height="6"
+                          CornerRadius="3"
+                          Background="#89A95C"
+                          Opacity="0.86"
+                          Canvas.Left="79"
+                          Canvas.Top="44"/>
+                  <Path Tag="jungle-vine"
+                        Fill="#294E33"
+                        Data="M 76 0 C 84 18, 70 32, 74 50 C 78 66, 92 78, 88 96 L 98 96 C 102 76, 88 64, 84 48 C 80 32, 94 18, 86 0 Z"/>
+                  <Path Tag="jungle-vine"
+                        Fill="#294E33"
+                        Data="M 186 0 C 194 18, 180 32, 184 50 C 188 66, 202 78, 198 96 L 208 96 C 212 76, 198 64, 194 48 C 190 32, 204 18, 196 0 Z"/>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 10 C 10 0, 24 0, 36 10 C 24 20, 10 20, 0 10 Z"
+                        Canvas.Left="36"
+                        Canvas.Top="18"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="-24"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 11 C 10 0, 26 0, 38 11 C 26 22, 10 22, 0 11 Z"
+                        Canvas.Left="192"
+                        Canvas.Top="14"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="24"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Data="M 0 9 C 9 0, 20 0, 28 9 C 20 18, 9 18, 0 9 Z"
+                        Canvas.Left="52"
+                        Canvas.Top="54"/>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Data="M 0 9 C 9 0, 20 0, 28 9 C 20 18, 9 18, 0 9 Z"
+                        Canvas.Left="184"
+                        Canvas.Top="52"/>
+                  <Ellipse Tag="jungle-flower"
+                           Width="5"
+                           Height="5"
+                           Canvas.Left="98"
+                           Canvas.Top="54"/>
+                  <Ellipse Tag="jungle-flower"
+                           Width="5"
+                           Height="5"
+                           Canvas.Left="162"
+                           Canvas.Top="54"/>
+                </Canvas>
+              </Viewbox>
+            </Border>
             <Border Name="RightFlagHost"
                     HorizontalAlignment="Right"
                     VerticalAlignment="Stretch"
@@ -695,6 +896,113 @@
                           Background="#FECC00"
                           Canvas.Left="24"
                           Canvas.Top="74"/>
+                </Canvas>
+              </Viewbox>
+            </Border>
+            <Border Name="RightJungleHost"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Stretch"
+                    Width="0"
+                    IsVisible="False"
+                    Background="Transparent"
+                    BorderBrush="#00000000"
+                    BorderThickness="0">
+              <Viewbox Stretch="Uniform">
+                <Canvas Width="156" Height="320" Margin="6,0,6,0">
+                  <Ellipse Tag="jungle-mist"
+                           Width="88"
+                           Height="236"
+                           Opacity="0.12"
+                           Canvas.Left="50"
+                           Canvas.Top="18"/>
+                  <Path Fill="#18000000"
+                        Data="M 140 0 C 122 46, 138 92, 124 146 C 112 198, 98 252, 112 320 L 80 320 C 66 248, 84 196, 94 144 C 106 88, 92 44, 112 0 Z"/>
+                  <Path Tag="jungle-bark"
+                        Fill="#5A3D29"
+                        Data="M 144 0 C 128 44, 142 92, 130 146 C 118 198, 104 252, 118 320 L 88 320 C 74 248, 92 198, 100 146 C 110 90, 96 44, 116 0 Z"/>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Opacity="0.88"
+                        Data="M 94 28 C 106 12, 126 12, 138 24 C 136 40, 116 46, 100 42 Z"/>
+                  <Path Tag="jungle-bark"
+                        Fill="#5A3D29"
+                        Data="M 18 92 C 50 68, 82 62, 118 74 L 122 90 C 88 82, 60 88, 24 106 Z"/>
+                  <Path Tag="jungle-vine"
+                        Fill="#294E33"
+                        Data="M 56 0 C 40 34, 62 76, 52 112 C 44 150, 24 188, 32 228 C 38 258, 58 286, 54 320 L 42 320 C 46 290, 26 262, 20 230 C 10 188, 30 150, 38 112 C 46 74, 26 34, 42 0 Z"/>
+                  <Path Tag="jungle-vine"
+                        Fill="#294E33"
+                        Data="M 26 0 C 14 24, 22 54, 16 88 C 10 126, -4 160, 2 198 C 6 226, 24 250, 20 320 L 8 320 C 12 250, -6 226, -12 198 C -20 158, -4 124, 4 86 C 10 54, 0 24, 12 0 Z"/>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 12 C 11 0, 28 0, 40 12 C 28 24, 11 24, 0 12 Z"
+                        Canvas.Left="44"
+                        Canvas.Top="44"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="28"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 11 C 10 0, 24 0, 34 11 C 24 22, 10 22, 0 11 Z"
+                        Canvas.Left="18"
+                        Canvas.Top="76"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="-24"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 13 C 12 0, 28 0, 42 13 C 28 26, 12 26, 0 13 Z"
+                        Canvas.Left="40"
+                        Canvas.Top="120"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="16"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-leaf"
+                        Fill="#437448"
+                        Data="M 0 12 C 10 0, 26 0, 38 12 C 26 24, 10 24, 0 12 Z"
+                        Canvas.Left="12"
+                        Canvas.Top="162"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="-28"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Data="M 0 9 C 10 0, 22 0, 30 9 C 22 18, 10 18, 0 9 Z"
+                        Canvas.Left="106"
+                        Canvas.Top="104"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="14"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Path Tag="jungle-moss"
+                        Fill="#89A95C"
+                        Data="M 0 9 C 10 0, 22 0, 30 9 C 22 18, 10 18, 0 9 Z"
+                        Canvas.Left="108"
+                        Canvas.Top="186"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform>
+                      <RotateTransform Angle="-18"/>
+                    </Path.RenderTransform>
+                  </Path>
+                  <Ellipse Tag="jungle-flower"
+                           Width="6"
+                           Height="6"
+                           Canvas.Left="36"
+                           Canvas.Top="234"/>
+                  <Ellipse Tag="jungle-flower"
+                           Width="5"
+                           Height="5"
+                           Canvas.Left="16"
+                           Canvas.Top="278"/>
                 </Canvas>
               </Viewbox>
             </Border>
