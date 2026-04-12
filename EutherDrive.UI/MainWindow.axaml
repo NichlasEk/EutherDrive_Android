@@ -9,6 +9,8 @@
         x:Class="EutherDrive.UI.MainWindow">
   <Grid>
     <Border Background="{DynamicResource EdBgBrush}"/>
+    <controls:EmbossTextureOverlay Name="GlobalEmbossTextureOverlay"
+                                   IsHitTestVisible="False"/>
     <Border Margin="-160,-120,0,0"
             Width="520"
             Height="520"

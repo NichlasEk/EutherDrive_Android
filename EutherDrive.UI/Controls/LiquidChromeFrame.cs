@@ -48,6 +48,21 @@ public class LiquidChromeFrame : Decorator
     public static readonly StyledProperty<double> ChromeCoolnessProperty =
         AvaloniaProperty.Register<LiquidChromeFrame, double>(nameof(ChromeCoolness), 0.18);
 
+    public static readonly StyledProperty<bool> ReliefEnabledProperty =
+        AvaloniaProperty.Register<LiquidChromeFrame, bool>(nameof(ReliefEnabled), false);
+
+    public static readonly StyledProperty<double> ReliefOpacityProperty =
+        AvaloniaProperty.Register<LiquidChromeFrame, double>(nameof(ReliefOpacity), 0.16);
+
+    public static readonly StyledProperty<double> ReliefScaleProperty =
+        AvaloniaProperty.Register<LiquidChromeFrame, double>(nameof(ReliefScale), 1.0);
+
+    public static readonly StyledProperty<Color> ReliefHighlightColorProperty =
+        AvaloniaProperty.Register<LiquidChromeFrame, Color>(nameof(ReliefHighlightColor), Color.Parse("#D6B23A"));
+
+    public static readonly StyledProperty<Color> ReliefShadowColorProperty =
+        AvaloniaProperty.Register<LiquidChromeFrame, Color>(nameof(ReliefShadowColor), Color.Parse("#050607"));
+
     public new Thickness Padding
     {
         get => GetValue(PaddingProperty);
@@ -118,6 +133,36 @@ public class LiquidChromeFrame : Decorator
     {
         get => GetValue(ChromeCoolnessProperty);
         set => SetValue(ChromeCoolnessProperty, value);
+    }
+
+    public bool ReliefEnabled
+    {
+        get => GetValue(ReliefEnabledProperty);
+        set => SetValue(ReliefEnabledProperty, value);
+    }
+
+    public double ReliefOpacity
+    {
+        get => GetValue(ReliefOpacityProperty);
+        set => SetValue(ReliefOpacityProperty, value);
+    }
+
+    public double ReliefScale
+    {
+        get => GetValue(ReliefScaleProperty);
+        set => SetValue(ReliefScaleProperty, value);
+    }
+
+    public Color ReliefHighlightColor
+    {
+        get => GetValue(ReliefHighlightColorProperty);
+        set => SetValue(ReliefHighlightColorProperty, value);
+    }
+
+    public Color ReliefShadowColor
+    {
+        get => GetValue(ReliefShadowColorProperty);
+        set => SetValue(ReliefShadowColorProperty, value);
     }
 
     public LiquidChromeFrame()
@@ -202,6 +247,9 @@ public class LiquidChromeFrame : Decorator
             {
                 context.DrawRectangle(new SolidColorBrush(BaseColor), null, outer);
             }
+
+            if (ReliefEnabled)
+                DrawReliefTexture(context, bounds);
         }
 
         base.Render(context);
@@ -498,6 +546,56 @@ public class LiquidChromeFrame : Decorator
         DrawInsetLine(context, shadowPen, highlightPen, leftA, leftB, 1.2);
         DrawInsetLine(context, shadowPen, highlightPen, rightA, rightB, 1.2);
         DrawInsetLine(context, shadowPen, highlightPen, midLeft, midRight, 1.0);
+    }
+
+    private void DrawReliefTexture(DrawingContext context, Rect bounds)
+    {
+        double opacity = Math.Clamp(ReliefOpacity, 0.0, 1.0);
+        double scale = Math.Clamp(ReliefScale, 0.4, 2.2);
+        double spacing = 72 / scale;
+        double inset = spacing * 0.2;
+
+        var shadowPen = new Pen(new SolidColorBrush(WithOpacity(ReliefShadowColor, opacity * 0.42)), 1.1);
+        var highlightPen = new Pen(new SolidColorBrush(WithOpacity(ReliefHighlightColor, opacity * 0.26)), 0.8);
+
+        for (double y = -spacing; y < bounds.Height + spacing; y += spacing)
+        {
+            for (double x = -spacing; x < bounds.Width + spacing; x += spacing)
+            {
+                Point top = new(x + (spacing * 0.5), y + inset);
+                Point right = new(x + spacing - inset, y + (spacing * 0.5));
+                Point bottom = new(x + (spacing * 0.5), y + spacing - inset);
+                Point left = new(x + inset, y + (spacing * 0.5));
+
+                DrawInsetLine(context, shadowPen, highlightPen, top, right, -0.7);
+                DrawInsetLine(context, shadowPen, highlightPen, right, bottom, -0.7);
+                DrawInsetLine(context, shadowPen, highlightPen, bottom, left, -0.7);
+                DrawInsetLine(context, shadowPen, highlightPen, left, top, -0.7);
+            }
+        }
+
+        double rosetteSpacing = 144 / scale;
+        double radius = Math.Max(14, 18 / scale);
+        for (double y = rosetteSpacing * 0.5; y < bounds.Height; y += rosetteSpacing)
+        {
+            for (double x = rosetteSpacing * 0.5; x < bounds.Width; x += rosetteSpacing)
+            {
+                var brush = new RadialGradientBrush
+                {
+                    Center = new RelativePoint(x, y, RelativeUnit.Absolute),
+                    GradientOrigin = new RelativePoint(0.35, 0.35, RelativeUnit.Relative),
+                    Radius = 1.0,
+                    GradientStops =
+                    {
+                        new GradientStop(WithOpacity(ReliefHighlightColor, opacity * 0.18), 0.0),
+                        new GradientStop(WithOpacity(ReliefHighlightColor, opacity * 0.08), 0.28),
+                        new GradientStop(WithOpacity(ReliefShadowColor, opacity * 0.24), 1.0)
+                    }
+                };
+
+                context.DrawRectangle(brush, null, new Rect(x - radius, y - radius, radius * 2.0, radius * 2.0));
+            }
+        }
     }
 
     private void DrawReflectionSweep(DrawingContext context, Rect bounds, Color coolSpec, double intensity, double warp)

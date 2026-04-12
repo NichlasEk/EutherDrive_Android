@@ -507,6 +507,8 @@ public partial class MainWindow : Window
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
         UpdateBackdropDecorForSkin();
+        UpdateEmbossTextureForSkin();
+        UpdateReliefFramesForSkin();
         UpdateMetalSheenForSkin();
         UpdateLiquidChromeForSkin();
         RomPickerDialog.StartBackgroundBootCoverDeltaSync(_romLibraryPath);
@@ -8068,6 +8070,8 @@ public partial class MainWindow : Window
         {
             UpdateBackdropDecorForSkin();
             UpdateBackdropDecorLayout();
+            UpdateEmbossTextureForSkin();
+            UpdateReliefFramesForSkin();
             UpdateMetalSheenForSkin();
             UpdateLiquidChromeForSkin();
         });
@@ -8208,6 +8212,64 @@ public partial class MainWindow : Window
         GlobalMetalSheenOverlay.RivetInset = TryGetSkinDouble(skin, "metal_rivet_inset", 14.0, 4.0, 64.0);
         GlobalMetalSheenOverlay.RivetOpacity = TryGetSkinDouble(skin, "metal_rivet_opacity", 0.7, 0.0, 1.0);
         GlobalMetalSheenOverlay.RivetColor = TryGetSkinColor(skin, "metal_rivet_tint", fallbackTint);
+    }
+
+    private void UpdateEmbossTextureForSkin()
+    {
+        if (GlobalEmbossTextureOverlay == null)
+            return;
+
+        ApaSkin skin = SkinManager.Instance.CurrentSkin;
+        bool enabled = TryGetSkinBool(skin, "emboss_texture", defaultValue: false)
+            || IsSwedishBackdropEnabled(skin);
+
+        GlobalEmbossTextureOverlay.TextureEnabled = enabled;
+        GlobalEmbossTextureOverlay.IsVisible = enabled;
+
+        if (!enabled)
+            return;
+
+        GlobalEmbossTextureOverlay.TextureOpacity = TryGetSkinDouble(skin, "emboss_texture_opacity", 0.14, 0.0, 1.0);
+        GlobalEmbossTextureOverlay.PatternScale = TryGetSkinDouble(skin, "emboss_texture_scale", 1.0, 0.4, 2.4);
+        GlobalEmbossTextureOverlay.Depth = TryGetSkinDouble(skin, "emboss_texture_depth", 1.0, 0.3, 2.0);
+        GlobalEmbossTextureOverlay.TintColor = TryGetSkinColor(skin, "emboss_texture_tint", ParseSkinColorOrDefault(skin.Colors.Panel, "#112A45"));
+        GlobalEmbossTextureOverlay.HighlightColor = TryGetSkinColor(skin, "emboss_texture_highlight", ParseSkinColorOrDefault(skin.Colors.Text, "#F4D56A"));
+        GlobalEmbossTextureOverlay.ShadowColor = TryGetSkinColor(skin, "emboss_texture_shadow", ParseSkinColorOrDefault(skin.Colors.BackgroundAlt, "#040607"));
+        GlobalEmbossTextureOverlay.InvalidateVisual();
+    }
+
+    private void UpdateReliefFramesForSkin()
+    {
+        ApaSkin skin = SkinManager.Instance.CurrentSkin;
+        bool enabled = TryGetSkinBool(skin, "relief_frames", defaultValue: false)
+            || IsSwedishBackdropEnabled(skin);
+        double opacity = TryGetSkinDouble(skin, "relief_frames_opacity", 0.2, 0.0, 1.0);
+        double scale = TryGetSkinDouble(skin, "relief_frames_scale", 1.0, 0.4, 2.2);
+        Color highlight = TryGetSkinColor(skin, "relief_frames_highlight", ParseSkinColorOrDefault(skin.Colors.Text, "#D6B23A"));
+        Color shadow = TryGetSkinColor(skin, "relief_frames_shadow", ParseSkinColorOrDefault(skin.Colors.BackgroundAlt, "#050607"));
+
+        ApplyReliefFrame(TopChromeFrame, enabled, opacity, scale, highlight, shadow);
+        ApplyReliefFrame(InfoPanel, enabled, opacity, scale, highlight, shadow);
+        ApplyReliefFrame(ScreenBorder, enabled, opacity * 0.9, scale * 0.92, highlight, shadow);
+    }
+
+    private static void ApplyReliefFrame(
+        EutherDrive.UI.Controls.LiquidChromeFrame? frame,
+        bool enabled,
+        double opacity,
+        double scale,
+        Color highlight,
+        Color shadow)
+    {
+        if (frame == null)
+            return;
+
+        frame.ReliefEnabled = enabled;
+        frame.ReliefOpacity = opacity;
+        frame.ReliefScale = scale;
+        frame.ReliefHighlightColor = highlight;
+        frame.ReliefShadowColor = shadow;
+        frame.InvalidateVisual();
     }
 
     private void UpdateLiquidChromeForSkin()
