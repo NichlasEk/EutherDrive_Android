@@ -39,7 +39,8 @@
                                     CornerRadius="{DynamicResource EdPanelCornerRadius}"
                                     BorderBrush="{DynamicResource EdStrokeBrush}"
                                     BorderThickness="1">
-          <StackPanel Name="TopControlsPanel" Orientation="Horizontal" Spacing="6">
+          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+          <StackPanel Name="TopControlsPanel" Grid.Column="0" Orientation="Horizontal" Spacing="6">
           <Border Classes="panel" Padding="6,5" MinWidth="336">
             <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="6" RowSpacing="6">
               <Button Grid.Row="0"
@@ -208,6 +209,24 @@
             </StackPanel>
           </Border>
           </StackPanel>
+          <Border Name="TopRightSigilHost"
+                  Grid.Column="1"
+                  Width="178"
+                  Height="96"
+                  HorizontalAlignment="Right"
+                  VerticalAlignment="Center"
+                  Margin="0,0,8,0"
+                  IsHitTestVisible="False"
+                  Background="Transparent"
+                  BorderBrush="#00000000"
+                  BorderThickness="0">
+            <Image Source="avares://EutherDrive.UI/Assets/eutherdrive_rune.png"
+                   Stretch="Uniform"
+                   HorizontalAlignment="Right"
+                   VerticalAlignment="Center"
+                   Opacity="0.96"/>
+          </Border>
+          </Grid>
         </controls:LiquidChromeFrame>
       </LayoutTransformControl>
 
