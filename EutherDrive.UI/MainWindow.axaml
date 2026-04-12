@@ -40,15 +40,32 @@
                                     BorderBrush="{DynamicResource EdStrokeBrush}"
                                     BorderThickness="1">
           <StackPanel Name="TopControlsPanel" Orientation="Horizontal" Spacing="6">
-          <StackPanel Spacing="6">
-            <Button Classes="action compact" Content="Open ROM…" Click="OnOpenRom"/>
-            <Button Classes="compact" Content="Skin" Click="OnSkinSettings"/>
-          </StackPanel>
-          <Border Classes="panel" Padding="6,5">
-            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-              <TextBlock Classes="kicker" Text="Recent"/>
-              <ComboBox Name="RecentRomCombo" Width="280" SelectionChanged="OnRecentRomSelected"/>
-            </StackPanel>
+          <Border Classes="panel" Padding="6,5" MinWidth="336">
+            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="6" RowSpacing="6">
+              <Button Grid.Row="0"
+                      Grid.Column="0"
+                      Classes="action compact"
+                      Content="Open ROM…"
+                      Click="OnOpenRom"/>
+              <Button Grid.Row="0"
+                      Grid.Column="1"
+                      Classes="compact"
+                      Content="Skin"
+                      Click="OnSkinSettings"/>
+              <TextBlock Grid.Row="0"
+                         Grid.Column="2"
+                         Classes="kicker"
+                         Text="Recent"
+                         HorizontalAlignment="Right"
+                         VerticalAlignment="Center"/>
+              <ComboBox Grid.Row="1"
+                        Grid.Column="0"
+                        Grid.ColumnSpan="3"
+                        Name="RecentRomCombo"
+                        HorizontalAlignment="Stretch"
+                        MinWidth="300"
+                        SelectionChanged="OnRecentRomSelected"/>
+            </Grid>
           </Border>
           <Border Classes="panel" Padding="8,5">
             <StackPanel Spacing="4">
@@ -164,7 +181,7 @@
               </StackPanel>
             </Grid>
           </Border>
-          <Border Classes="panel" Padding="6,5">
+          <Border Classes="panel" Padding="6,5" IsVisible="False">
             <StackPanel Spacing="3">
               <TextBlock Classes="kicker" Text="Status"/>
               <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
