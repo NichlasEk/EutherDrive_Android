@@ -25,6 +25,13 @@ Detta är skins-mappen för EutherDrive emulatorn. Skins använder `.apa` format
 - Nitdetaljer i overlay-lagret
 - Skarpare, maskinella paneler
 
+### 🫧 floating_glass.apa
+**Floating Glass** - Transparent svävskin med:
+- Nästan osynliga glaspaneler
+- Ljus text och tunna flytande konturer
+- Kall cyan/guld-accent för ett lätt holografiskt uttryck
+- UI som känns frikopplat från bakgrunden
+
 ### 🔥 neon_pink.apa
 **Neon Pink Cyberpunk** - Cyberpunk-tema med:
 - Rosa och lila neonlys

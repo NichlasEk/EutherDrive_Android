@@ -1689,14 +1689,14 @@ public sealed class VulkanRenderSurface : IAcceleratedRenderSurface, IDisposable
 
         private static uint ChooseCompositeAlpha(uint supportedCompositeAlpha)
         {
-            if ((supportedCompositeAlpha & VulkanApi.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0)
-                return VulkanApi.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
             if ((supportedCompositeAlpha & VulkanApi.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) != 0)
                 return VulkanApi.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
             if ((supportedCompositeAlpha & VulkanApi.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR) != 0)
                 return VulkanApi.VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
             if ((supportedCompositeAlpha & VulkanApi.VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) != 0)
                 return VulkanApi.VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+            if ((supportedCompositeAlpha & VulkanApi.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0)
+                return VulkanApi.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
             return VulkanApi.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
         }
     }

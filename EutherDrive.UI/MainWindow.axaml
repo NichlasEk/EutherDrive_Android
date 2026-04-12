@@ -6,12 +6,14 @@
         xmlns:controls="clr-namespace:EutherDrive.UI.Controls"
         xmlns:savestates="clr-namespace:EutherDrive.UI.Savestates"
         mc:Ignorable="d"
+        Background="Transparent"
         x:Class="EutherDrive.UI.MainWindow">
   <Grid>
-    <Border Background="{DynamicResource EdBgBrush}"/>
+    <Border Name="RootBackgroundLayer" Background="{DynamicResource EdBgBrush}"/>
     <controls:EmbossTextureOverlay Name="GlobalEmbossTextureOverlay"
                                    IsHitTestVisible="False"/>
-    <Border Margin="-160,-120,0,0"
+    <Border Name="RootFxLeft"
+            Margin="-160,-120,0,0"
             Width="520"
             Height="520"
             HorizontalAlignment="Left"
@@ -19,7 +21,8 @@
             CornerRadius="{DynamicResource EdCornerFull}"
             Background="{DynamicResource EdBgFx1Brush}"
             Opacity="{DynamicResource EdBgFxOpacity}"/>
-    <Border Margin="0,120,-180,0"
+    <Border Name="RootFxRight"
+            Margin="0,120,-180,0"
             Width="460"
             Height="460"
             HorizontalAlignment="Right"
@@ -162,16 +165,29 @@
             </Grid>
           </Border>
           <Border Classes="panel" Padding="6,5">
-            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <StackPanel Spacing="3">
               <TextBlock Classes="kicker" Text="Status"/>
-              <TextBox Name="StatusText"
-                       Classes="status-inline"
-                       IsReadOnly="True"
-                       BorderThickness="0"
-                       Background="Transparent"
-                       TextWrapping="NoWrap"
-                       SelectionBrush="#3A7BD5"
-                       Width="260"/>
+              <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBox Name="StatusText"
+                         Classes="status-inline"
+                         IsReadOnly="True"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         TextWrapping="NoWrap"
+                         SelectionBrush="#3A7BD5"
+                         Width="320"/>
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBox Name="TransparencyStatusText"
+                         Classes="status-inline"
+                         IsReadOnly="True"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         TextWrapping="NoWrap"
+                         SelectionBrush="#3A7BD5"
+                         Width="360"
+                         Text="Transparency: unknown"/>
+              </StackPanel>
             </StackPanel>
           </Border>
           </StackPanel>

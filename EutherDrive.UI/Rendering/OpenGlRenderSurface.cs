@@ -716,7 +716,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             gl.Viewport(0, 0, viewportWidth, viewportHeight);
             gl.Disable(GlScissorTest);
             gl.Disable(GlCullFace);
-            gl.ClearColor(0f, 0f, 0f, 1f);
+            gl.ClearColor(0f, 0f, 0f, 0f);
             gl.Clear(GlColorBufferBit);
 
             byte[] frameBytes;

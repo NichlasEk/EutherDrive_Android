@@ -1,0 +1,133 @@
+# Floating Glass Skin
+# Transparent, svävande och lätt - UI-elementen ska kännas frikopplade från bakgrunden.
+
+[skin]
+name = "Floating Glass"
+author = "EutherDrive"
+version = "1.0"
+description = "Transparent glasskin där text, knappar och paneler känns som att de svävar ovanpå innehållet."
+
+[colors]
+# Nästan osynlig botten för att låta hela UI:t andas
+background = "#00000000"
+background_soft = "#04081114"
+background_alt = "#06091318"
+
+# Glaspaneler med låg massa
+panel = "#0C0D1B2A"
+panel_raised = "#0F112338"
+panel_glass = "#100E1B2B"
+sub_panel = "#0C0A1522"
+option_card = "#100C1A29"
+
+# Tunna ljuskanter som definierar formen utan att göra den tung
+stroke = "#6A8FB7"
+stroke_bright = "#BEE7FF"
+
+# Ljus text som svävar över glaset
+text = "#F3FBFF"
+text_muted = "#B2D6E8"
+
+# Kall cyan med varmt guldfång för highlights
+accent = "#72D8FF"
+accent_warm = "#FFD76A"
+accent_hot = "#FF9B73"
+
+[gradient.hero]
+angle = 135
+stop0 = "#10C5F1FF,0.0"
+stop1 = "#0409141A,0.42"
+stop2 = "#080C1A22,1.0"
+
+[gradient.screen_glow]
+angle = 45
+stop0 = "#2CC9F5FF,0.0"
+stop1 = "#0C72D8FF,0.64"
+stop2 = "#1AFFD76A,1.0"
+
+[typography]
+primary_font = "Inter, Noto Sans"
+display_font = "Sora, Inter, Noto Sans"
+mono_font = "JetBrains Mono, Consolas, monospace"
+deck_font = "Sora, Inter, Noto Sans"
+base_size = 14
+small_size = 11
+display_size = 29
+kicker_size = 11
+deck_size = 15
+letter_spacing = 0.5
+deck_spacing = 1.4
+
+[layout]
+border_radius = 16
+border_radius_small = 12
+border_radius_large = 24
+border_radius_xlarge = 30
+border_radius_full = 999
+padding = 12
+button_padding_x = 14
+button_padding_y = 8
+spacing = 8
+spacing_small = 4
+spacing_large = 14
+shadow_opacity = 0.18
+shadow_blur = 38
+shadow_spread = 10
+
+[buttons]
+background = "#1011232E"
+background_hover = "#16173340"
+background_pressed = "#180C1822"
+background_action = "#18113242"
+background_action_hover = "#20183F56"
+background_ghost = "#0B0A161E"
+border = "#8ECFF1"
+border_hover = "#E6FBFF"
+border_ghost = "#5D8FB3"
+border_radius = 14
+transition_duration = 0.2
+hover_scale = 1.03
+pressed_scale = 0.985
+
+[panels]
+glass_background = "#100E1B2B"
+glass_opacity = 0.24
+subpanel_background = "#0C0A1522"
+subpanel_border = "#8ECFF1"
+optioncard_background = "#100F1E2A"
+optioncard_border = "#BEE7FF"
+border_radius = 22
+subpanel_radius = 18
+optioncard_radius = 14
+
+[inputs]
+background = "#0E0B171E"
+background_focus = "#12122428"
+border = "#8ECFF1"
+border_focus = "#F3FBFF"
+border_radius = 14
+padding = 9
+
+[effects]
+use_transparency = true
+use_blur = true
+blur_radius = 22
+use_glow = true
+glow_color = "#9BE6FF"
+glow_intensity = 0.06
+use_animations = true
+animation_speed = 1.0
+use_background_effects = true
+background_color_1 = "#8CE9FF"
+background_color_2 = "#FFD76A"
+background_opacity = 0.02
+
+[custom]
+metal_sheen = "false"
+metal_surface = "false"
+liquid_chrome = "false"
+emboss_texture = "false"
+relief_frames = "false"
+top_frame_base_color = "#00000000"
+info_frame_base_color = "#00000000"
+screen_frame_base_color = "#00000000"

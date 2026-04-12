@@ -28,6 +28,7 @@ using EutherDrive.Core.SegaCd;
 using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
+using EutherDrive.UI.Effects;
 using EutherDrive.UI.Savestates;
 using EutherDrive.UI.Skins;
 using Tomlyn;
@@ -43,6 +44,7 @@ public partial class MainWindow : Window
     private readonly object _coreAudioLock = new();
     private readonly SavestateService _savestateService;
     private readonly SavestateViewModel _savestateViewModel;
+    private readonly EffectManager _effectManager = new();
 
     private IGameRenderSurface? _renderSurface;
 
@@ -131,6 +133,11 @@ public partial class MainWindow : Window
     private bool _advancedPixelFilterEnabled;
     private bool _crtScanlinesEnabled;
     private int _crtScanlineStrengthPercent = DefaultCrtScanlineStrengthPercent;
+    private bool _uiEffectsEnabled = true;
+    private bool _bootDisintegrateEnabled = true;
+    private double _bootDisintegrateIntensity = 0.9;
+    private double _bootDisintegrateFragmentSize = 0.7;
+    private string _romStartEffect = "boot_disintegrate";
     private bool _updatingCrtScanlineUi;
     private RenderBackendMode _renderBackendMode = GetDefaultRenderBackendMode();
     private bool _updatingRenderBackendUi;
@@ -506,6 +513,9 @@ public partial class MainWindow : Window
         _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
+        ConfigureUiEffects();
+        ApplyWindowTransparencyForSkin(SkinManager.Instance.CurrentSkin);
+        UpdateRootBackdropForSkin();
         UpdateBackdropDecorForSkin();
         UpdateEmbossTextureForSkin();
         UpdateReliefFramesForSkin();
@@ -611,6 +621,20 @@ public partial class MainWindow : Window
         {
             OnStart(null, null);
         }
+    }
+
+    private void ConfigureUiEffects()
+    {
+        _effectManager.EffectsEnabled = _uiEffectsEnabled;
+        _effectManager.Register(
+            "boot_disintegrate",
+            new DisintegrateEffect
+            {
+                Intensity = _bootDisintegrateIntensity,
+                FragmentSize = _bootDisintegrateFragmentSize
+            });
+        _effectManager.SetEffectEnabled("boot_disintegrate", _bootDisintegrateEnabled);
+        _effectManager.BindEvent("rom_start", string.IsNullOrWhiteSpace(_romStartEffect) ? "boot_disintegrate" : _romStartEffect);
     }
 
     public ConsoleRegion RegionOverride
@@ -2604,6 +2628,7 @@ public partial class MainWindow : Window
             _earlyMagentaReported = false;
             _audioPullReady = false;
             PrepareCrtPowerIntroForStart();
+            await _effectManager.TriggerEventAsync("rom_start", RootGrid);
 
             // välj core
             if (UseDummyCoreCheck.IsChecked == true)
@@ -4965,6 +4990,11 @@ public partial class MainWindow : Window
         public Dictionary<string, bool>? RomSegaCdLoadCdToRamOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdForceNoDiscOverrides { get; set; }
         public FrameRateMode FrameRateMode { get; set; } = FrameRateMode.Auto;
+        public bool UiEffectsEnabled { get; set; } = true;
+        public bool BootDisintegrateEnabled { get; set; } = true;
+        public double BootDisintegrateIntensity { get; set; } = 0.9;
+        public double BootDisintegrateFragmentSize { get; set; } = 0.7;
+        public string? RomStartEffect { get; set; } = "boot_disintegrate";
         public InputMappingSettings InputMappings { get; set; } = new();
     }
 
@@ -5009,6 +5039,11 @@ public partial class MainWindow : Window
         public Dictionary<string, bool>? RomSegaCdLoadCdToRamOverrides { get; set; }
         public Dictionary<string, bool>? RomSegaCdForceNoDiscOverrides { get; set; }
         public string? FrameRateMode { get; set; }
+        public bool UiEffectsEnabled { get; set; } = true;
+        public bool BootDisintegrateEnabled { get; set; } = true;
+        public double BootDisintegrateIntensity { get; set; } = 0.9;
+        public double BootDisintegrateFragmentSize { get; set; } = 0.7;
+        public string? RomStartEffect { get; set; } = "boot_disintegrate";
         public InputMappingSettingsToml? InputMappings { get; set; }
     }
 
@@ -5205,9 +5240,17 @@ public partial class MainWindow : Window
         _crtScanlineStrengthPercent = ClampPercent(settings.CrtScanlineStrengthPercent);
         _crtPowerIntroEnabled = settings.CrtPowerIntroEnabled;
         _mouseCaptureSensitivity = NormalizeMouseCaptureSensitivity(settings.MouseCaptureSensitivity);
+        _uiEffectsEnabled = settings.UiEffectsEnabled;
+        _bootDisintegrateEnabled = settings.BootDisintegrateEnabled;
+        _bootDisintegrateIntensity = Math.Clamp(settings.BootDisintegrateIntensity, 0.0, 1.0);
+        _bootDisintegrateFragmentSize = Math.Clamp(settings.BootDisintegrateFragmentSize, 0.0, 1.0);
+        _romStartEffect = string.IsNullOrWhiteSpace(settings.RomStartEffect)
+            ? "boot_disintegrate"
+            : settings.RomStartEffect;
         if (MouseCaptureSensitivitySlider != null)
             MouseCaptureSensitivitySlider.Value = _mouseCaptureSensitivity;
         UpdateMouseCaptureSensitivityText();
+        ConfigureUiEffects();
 
         _defaultRegionOverride = settings.DefaultRegionOverride;
         _romRegionOverrides.Clear();
@@ -5378,6 +5421,11 @@ public partial class MainWindow : Window
             CrtScanlineStrengthPercent = _crtScanlineStrengthPercent,
             CrtPowerIntroEnabled = _crtPowerIntroEnabled,
             MouseCaptureSensitivity = _mouseCaptureSensitivity,
+            UiEffectsEnabled = _uiEffectsEnabled,
+            BootDisintegrateEnabled = _bootDisintegrateEnabled,
+            BootDisintegrateIntensity = _bootDisintegrateIntensity,
+            BootDisintegrateFragmentSize = _bootDisintegrateFragmentSize,
+            RomStartEffect = _romStartEffect,
             DefaultRegionOverride = _defaultRegionOverride,
             RomRegionOverrides = new Dictionary<string, ConsoleRegion>(_romRegionOverrides, StringComparer.OrdinalIgnoreCase),
             RomSegaCdRamCartOverrides = new Dictionary<string, bool>(_romSegaCdRamCartOverrides, StringComparer.OrdinalIgnoreCase),
@@ -5514,6 +5562,11 @@ public partial class MainWindow : Window
             RenderSkipEnabled = settings.RenderSkipEnabled,
             SpeedScale = settings.SpeedScale,
             SmsOverscanEnabled = settings.SmsOverscanEnabled,
+            UiEffectsEnabled = settings.UiEffectsEnabled,
+            BootDisintegrateEnabled = settings.BootDisintegrateEnabled,
+            BootDisintegrateIntensity = settings.BootDisintegrateIntensity,
+            BootDisintegrateFragmentSize = settings.BootDisintegrateFragmentSize,
+            RomStartEffect = settings.RomStartEffect,
             AllowDangerousSportTitles = settings.AllowDangerousSportTitles,
             SportTitleKeywords = settings.SportTitleKeywords,
             SharpPixelsEnabled = settings.SharpPixelsEnabled,
@@ -5622,7 +5675,12 @@ public partial class MainWindow : Window
             CrtScanlinesEnabled = raw.CrtScanlinesEnabled,
             CrtScanlineStrengthPercent = raw.CrtScanlineStrengthPercent,
             CrtPowerIntroEnabled = raw.CrtPowerIntroEnabled,
-            MouseCaptureSensitivity = raw.MouseCaptureSensitivity
+            MouseCaptureSensitivity = raw.MouseCaptureSensitivity,
+            UiEffectsEnabled = raw.UiEffectsEnabled,
+            BootDisintegrateEnabled = raw.BootDisintegrateEnabled,
+            BootDisintegrateIntensity = raw.BootDisintegrateIntensity,
+            BootDisintegrateFragmentSize = raw.BootDisintegrateFragmentSize,
+            RomStartEffect = raw.RomStartEffect
         };
 
         if (Enum.TryParse<ConsoleRegion>(raw.DefaultRegionOverride ?? string.Empty, out var region))
@@ -8068,6 +8126,8 @@ public partial class MainWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
+            ApplyWindowTransparencyForSkin(e.NewSkin);
+            UpdateRootBackdropForSkin();
             UpdateBackdropDecorForSkin();
             UpdateBackdropDecorLayout();
             UpdateEmbossTextureForSkin();
@@ -8075,6 +8135,61 @@ public partial class MainWindow : Window
             UpdateMetalSheenForSkin();
             UpdateLiquidChromeForSkin();
         });
+    }
+
+    private void ApplyWindowTransparencyForSkin(ApaSkin skin)
+    {
+        if (skin.Effects.UseTransparency)
+        {
+            TransparencyLevelHint =
+            [
+                WindowTransparencyLevel.Transparent
+            ];
+            TransparencyBackgroundFallback = Brushes.Transparent;
+            Background = Brushes.Transparent;
+            SystemDecorations = SystemDecorations.None;
+            ExtendClientAreaToDecorationsHint = false;
+            ExtendClientAreaChromeHints = ExtendClientAreaChromeHints.NoChrome;
+            ExtendClientAreaTitleBarHeightHint = -1;
+            Dispatcher.UIThread.Post(ReportActualTransparencyLevel, DispatcherPriority.Loaded);
+            return;
+        }
+
+        TransparencyLevelHint =
+        [
+            WindowTransparencyLevel.None
+        ];
+        TransparencyBackgroundFallback = new SolidColorBrush(ParseSkinColorOrDefault(skin.Colors.Background, "#091119"));
+        Background = null;
+        SystemDecorations = SystemDecorations.Full;
+        ExtendClientAreaToDecorationsHint = false;
+        ExtendClientAreaChromeHints = ExtendClientAreaChromeHints.Default;
+        ExtendClientAreaTitleBarHeightHint = -1;
+    }
+
+    private void UpdateRootBackdropForSkin()
+    {
+        ApaSkin skin = SkinManager.Instance.CurrentSkin;
+        bool transparentWindow = skin.Effects.UseTransparency;
+
+        if (RootBackgroundLayer != null)
+            RootBackgroundLayer.IsVisible = !transparentWindow;
+
+        if (RootFxLeft != null)
+            RootFxLeft.IsVisible = !transparentWindow;
+
+        if (RootFxRight != null)
+            RootFxRight.IsVisible = !transparentWindow;
+    }
+
+    private void ReportActualTransparencyLevel()
+    {
+        WindowTransparencyLevel actualLevel = ActualTransparencyLevel;
+        string message = $"Window transparency: {actualLevel}";
+        Debug.WriteLine($"[EutherDrive.UI] {message}");
+        Title = $"EutherDrive [{actualLevel}]";
+        if (TransparencyStatusText != null)
+            TransparencyStatusText.Text = message;
     }
 
     private void UpdateBackdropDecorForSkin()
@@ -8282,10 +8397,15 @@ public partial class MainWindow : Window
         double coolness = TryGetSkinDouble(skin, "liquid_chrome_coolness", 0.18, 0.0, 1.0);
         Color specular = TryGetSkinColor(skin, "liquid_chrome_specular", ParseSkinColorOrDefault(skin.Colors.Text, "#F8FBFF"));
         Color shadow = TryGetSkinColor(skin, "liquid_chrome_shadow", ParseSkinColorOrDefault(skin.Colors.BackgroundAlt, "#05080C"));
+        Color defaultPanelBase = ParseSkinColorOrDefault(skin.Colors.Panel, "#1A212A");
+        Color defaultScreenBase = ParseSkinColorOrDefault(skin.Colors.BackgroundAlt, "#0A0F14");
+        Color topBase = TryGetSkinColor(skin, "top_frame_base_color", defaultPanelBase);
+        Color infoBase = TryGetSkinColor(skin, "info_frame_base_color", defaultPanelBase);
+        Color screenBase = TryGetSkinColor(skin, "screen_frame_base_color", defaultScreenBase);
 
-        ApplyLiquidChromeFrame(TopChromeFrame, ParseSkinColorOrDefault(skin.Colors.Panel, "#1A212A"), specular, shadow, enabled, intensity, warp, bandCount, coolness);
-        ApplyLiquidChromeFrame(InfoPanel, ParseSkinColorOrDefault(skin.Colors.Panel, "#1A212A"), specular, shadow, enabled, intensity, warp, bandCount, coolness);
-        ApplyLiquidChromeFrame(ScreenBorder, ParseSkinColorOrDefault(skin.Colors.BackgroundAlt, "#0A0F14"), specular, shadow, enabled, intensity, warp, bandCount, coolness);
+        ApplyLiquidChromeFrame(TopChromeFrame, topBase, specular, shadow, enabled, intensity, warp, bandCount, coolness);
+        ApplyLiquidChromeFrame(InfoPanel, infoBase, specular, shadow, enabled, intensity, warp, bandCount, coolness);
+        ApplyLiquidChromeFrame(ScreenBorder, screenBase, specular, shadow, enabled, intensity, warp, bandCount, coolness);
     }
 
     private static void ApplyLiquidChromeFrame(

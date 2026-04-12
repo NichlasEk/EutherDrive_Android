@@ -427,7 +427,7 @@ public sealed class SdlNativeRenderSurface : IAcceleratedRenderSurface, IDisposa
                     }
 
                     long renderStart = Stopwatch.GetTimestamp();
-                    _ = sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                    _ = sdl.SetRenderDrawColor(renderer, 0, 0, 0, 0);
                     _ = sdl.RenderClear(renderer);
                     if (sdl.RenderCopy(renderer, texture, (Rectangle<int>*)null, (Rectangle<int>*)null) != 0)
                         throw new InvalidOperationException($"SDL render copy failed: {sdl.GetErrorS()}");
