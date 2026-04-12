@@ -55,6 +55,9 @@ public partial class MainWindow : Window
     private readonly EffectManager _effectManager = new();
     private readonly AmbientMusicController _ambientMusicController;
     private Bitmap? _ambientMusicCoverBitmap;
+    private readonly DispatcherTimer _deckMonitorTimer;
+    private readonly Stopwatch _deckMonitorSessionStopwatch = Stopwatch.StartNew();
+    private long _deckMonitorLastRefreshMs;
 
     private IGameRenderSurface? _renderSurface;
 
@@ -591,6 +594,9 @@ public partial class MainWindow : Window
         _ambientMusicController.SetMasterVolumePercent(_masterVolumePercent);
         _ambientMusicController.SetAudioEnabled(AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled);
         UpdateAmbientMusicUi(_ambientMusicController.GetSnapshot());
+        _deckMonitorTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (_, _) => MaybeUpdateDeckMonitorUi(force: true));
+        _deckMonitorTimer.Start();
+        MaybeUpdateDeckMonitorUi(force: true);
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -953,6 +959,7 @@ public partial class MainWindow : Window
                 : "Renderer: Vulkan (restart required)",
             _ => "Renderer: Bitmap"
         };
+        MaybeUpdateDeckMonitorUi(force: true);
 
         if (save)
             SaveSettings();
@@ -998,6 +1005,7 @@ public partial class MainWindow : Window
     private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
     {
         EndTrackedPlaySession();
+        _deckMonitorTimer.Stop();
         _ambientMusicController.StateChanged -= OnAmbientMusicStateChanged;
         _ambientMusicController.Dispose();
         DisposeAmbientMusicCoverBitmap();
@@ -3589,6 +3597,7 @@ public partial class MainWindow : Window
         if (AmbientMusicButton != null)
             AmbientMusicButton.IsEnabled = !snapshot.IsBusy;
         UpdateAmbientMusicCover(snapshot.CoverPath);
+        MaybeUpdateDeckMonitorUi(force: true);
     }
 
     private void UpdateAmbientMusicCover(string? coverPath)
@@ -3636,7 +3645,192 @@ public partial class MainWindow : Window
         _masterVolumePercent = percent;
         UpdateMasterVolumeText();
         ApplyMasterVolumeToCore();
+        MaybeUpdateDeckMonitorUi(force: true);
         SaveSettings();
+    }
+
+    private void MaybeUpdateDeckMonitorUi(bool force = false)
+    {
+        if (DeckMonitorPulseText == null)
+            return;
+
+        long nowMs = _deckMonitorSessionStopwatch.ElapsedMilliseconds;
+        if (!force && nowMs - _deckMonitorLastRefreshMs < 250)
+            return;
+
+        _deckMonitorLastRefreshMs = nowMs;
+        UpdateDeckMonitorUi();
+    }
+
+    private void UpdateDeckMonitorUi()
+    {
+        AmbientMusicSnapshot ambient = _ambientMusicController.GetSnapshot();
+        bool romRunning = _emuRunning && _core != null;
+        bool audioEnabled = AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled;
+
+        if (DeckMonitorPulseText != null)
+            DeckMonitorPulseText.Text = GetDeckMonitorPulseText(romRunning, audioEnabled, ambient);
+        if (DeckMonitorSystemText != null)
+            DeckMonitorSystemText.Text = GetDeckMonitorSystemText();
+        if (DeckMonitorQueueText != null)
+            DeckMonitorQueueText.Text = GetDeckMonitorQueueText();
+        if (DeckMonitorVideoText != null)
+            DeckMonitorVideoText.Text = GetDeckMonitorVideoText(romRunning);
+        if (DeckMonitorMixText != null)
+            DeckMonitorMixText.Text = GetDeckMonitorMixText(romRunning, audioEnabled, ambient);
+        if (DeckMonitorUptimeText != null)
+            DeckMonitorUptimeText.Text = FormatDeckMonitorUptime(_deckMonitorSessionStopwatch.Elapsed);
+        if (DeckMonitorHintText != null)
+            DeckMonitorHintText.Text = GetDeckMonitorHintText(romRunning, audioEnabled, ambient);
+    }
+
+    private string GetDeckMonitorPulseText(bool romRunning, bool audioEnabled, AmbientMusicSnapshot ambient)
+    {
+        string romText = romRunning
+            ? "ROM LIVE"
+            : string.IsNullOrWhiteSpace(_romPath)
+                ? "ROM EMPTY"
+                : "ROM ARMED";
+        string audioText = !audioEnabled
+            ? "AUDIO OFF"
+            : _masterVolumePercent == 0
+                ? "AUDIO 0%"
+                : "AUDIO ON";
+        string ambientText = ambient.IsBusy
+            ? "AMBIENT LOAD"
+            : ambient.IsActive
+                ? romRunning
+                    ? "AMBIENT HOLD"
+                    : audioEnabled && _masterVolumePercent > 0
+                        ? "AMBIENT LIVE"
+                        : "AMBIENT ARMED"
+                : "AMBIENT OFF";
+        return $"{romText} | {audioText} | {ambientText}";
+    }
+
+    private string GetDeckMonitorSystemText()
+    {
+        if (_core == null)
+            return UseDummyCoreCheck?.IsChecked == true ? "DummyCore queued" : "Standby";
+
+        return _core switch
+        {
+            DummyCore => "Diagnostic DummyCore",
+            SnesAdapter => "Super Nintendo",
+            NesAdapter => "Nintendo Entertainment System",
+            SmsGgAdapter => "Master System / Game Gear",
+            GbAdapter => "Game Boy / Color",
+            GbaAdapter => "Game Boy Advance",
+            PsxAdapter => "PlayStation",
+            PceCdAdapter => "PC Engine CD",
+            EutherDrive.Core.SegaCd.SegaCdAdapter => "Mega-CD / Sega CD",
+            EutherDrive.Core.Sega32XAdapter => "Sega 32X",
+            N64Adapter => "Nintendo 64",
+            MdTracerAdapter => "Mega Drive / Genesis",
+            _ => _core.GetType().Name
+        };
+    }
+
+    private string GetDeckMonitorQueueText()
+    {
+        if (string.IsNullOrWhiteSpace(_romPath))
+            return UseDummyCoreCheck?.IsChecked == true ? "DummyCore run path" : "No cartridge armed";
+
+        return Path.GetFileName(_romPath);
+    }
+
+    private string GetDeckMonitorVideoText(bool romRunning)
+    {
+        string backend = _renderBackendMode switch
+        {
+            RenderBackendMode.OpenGl => "OpenGL",
+            RenderBackendMode.Vulkan => RenderBackendConfig.StartupMode == RenderBackendMode.Vulkan
+                ? "Vulkan"
+                : "Vulkan (restart)",
+            _ => "Bitmap"
+        };
+
+        string resolution = _lastPresentedWidth > 0 && _lastPresentedHeight > 0
+            ? $"{_lastPresentedWidth}x{_lastPresentedHeight}"
+            : romRunning
+                ? "syncing"
+                : "idle";
+
+        if (!romRunning)
+            return $"{backend} / {resolution}";
+
+        double emuFps = Volatile.Read(ref _emuActualFps);
+        if (emuFps > 0.1)
+            return $"{backend} / {resolution} / {emuFps:0.0} fps";
+
+        double targetFps = GetLiveTargetFps();
+        return targetFps > 0.1
+            ? $"{backend} / {resolution} / target {targetFps:0.0} fps"
+            : $"{backend} / {resolution}";
+    }
+
+    private string GetDeckMonitorMixText(bool romRunning, bool audioEnabled, AmbientMusicSnapshot ambient)
+    {
+        string audioText = !audioEnabled
+            ? "audio disabled"
+            : _masterVolumePercent == 0
+                ? "audio gated"
+                : "audio live";
+        string ambientText = ambient.IsBusy
+            ? "ambient loading"
+            : ambient.IsActive
+                ? romRunning
+                    ? "ambient parked"
+                    : audioEnabled && _masterVolumePercent > 0
+                        ? "ambient playing"
+                        : "ambient armed"
+                : "ambient off";
+        return $"Master {_masterVolumePercent}% / {audioText} / {ambientText}";
+    }
+
+    private string GetDeckMonitorHintText(bool romRunning, bool audioEnabled, AmbientMusicSnapshot ambient)
+    {
+        if (ambient.IsBusy)
+            return "Crawler is scavenging StockTune for a fresh five-track night shift.";
+
+        if (romRunning)
+        {
+            if (!audioEnabled || _masterVolumePercent == 0)
+                return "Silent run. The deck is hot, but the global audio gate is closed.";
+
+            return ambient.IsActive
+                ? "Game audio owns the line. Ambient is parked and will return the instant the ROM stops."
+                : "Signal locked. The deck is all game right now.";
+        }
+
+        if (ambient.IsActive)
+        {
+            if (!audioEnabled)
+                return "Ambient is armed, but Enable audio is off.";
+            if (_masterVolumePercent == 0)
+                return "Ambient is armed, but master volume is pinned at 0%.";
+            if (!string.IsNullOrWhiteSpace(ambient.TrackTitle)
+                && !string.Equals(ambient.TrackTitle, "Cyberpunk Ambient", StringComparison.Ordinal))
+            {
+                return $"{ambient.TrackTitle} owns the room until you slot a ROM.";
+            }
+
+            return "Machine room lounge is live. Slot a ROM and ambient yields automatically.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(_romPath))
+            return "Deck is armed. Hit Start and the machine room will hand over to the ROM.";
+
+        return "Idle deck. Hit Music for a fresh crawl or arm a cartridge for launch.";
+    }
+
+    private static string FormatDeckMonitorUptime(TimeSpan elapsed)
+    {
+        if (elapsed.TotalHours >= 1)
+            return $"{(int)elapsed.TotalHours}h {elapsed.Minutes:00}m";
+        if (elapsed.TotalMinutes >= 1)
+            return $"{(int)elapsed.TotalMinutes:00}m {elapsed.Seconds:00}s";
+        return $"{Math.Max(0, elapsed.Seconds):00}s";
     }
 
     private void UpdatePsgMixText()
@@ -6772,6 +6966,7 @@ public partial class MainWindow : Window
     {
         StartAudioEngineIfEnabled();
         _ambientMusicController.SetAudioEnabled(AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled);
+        MaybeUpdateDeckMonitorUi(force: true);
         SaveSettings();
     }
 

@@ -228,6 +228,38 @@
                         Click="OnAmbientMusicClick"/>
               </StackPanel>
             </Border>
+            <Border Classes="panel" Padding="8">
+              <StackPanel Spacing="6">
+                <TextBlock Classes="kicker" Text="DECK MONITOR"/>
+                <TextBlock Name="DeckMonitorPulseText"
+                           FontWeight="Bold"
+                           FontFamily="Cascadia Mono,Consolas,Monaco,monospace"
+                           TextWrapping="Wrap"
+                           Text="ROM EMPTY | AUDIO ON | AMBIENT OFF"/>
+                <Grid ColumnDefinitions="Auto,*"
+                      RowDefinitions="Auto,Auto,Auto,Auto,Auto"
+                      ColumnSpacing="10"
+                      RowSpacing="4">
+                  <TextBlock Grid.Row="0" Text="Deck" Classes="muted"/>
+                  <TextBlock Grid.Row="0" Grid.Column="1" Name="DeckMonitorSystemText" Text="Standby"/>
+                  <TextBlock Grid.Row="1" Text="Queue" Classes="muted"/>
+                  <TextBlock Grid.Row="1" Grid.Column="1" Name="DeckMonitorQueueText" Text="No cartridge armed" TextWrapping="Wrap"/>
+                  <TextBlock Grid.Row="2" Text="Video" Classes="muted"/>
+                  <TextBlock Grid.Row="2" Grid.Column="1" Name="DeckMonitorVideoText" Text="Bitmap / idle" TextWrapping="Wrap"/>
+                  <TextBlock Grid.Row="3" Text="Mix" Classes="muted"/>
+                  <TextBlock Grid.Row="3" Grid.Column="1" Name="DeckMonitorMixText" Text="Master 50% / audio live / ambient off" TextWrapping="Wrap"/>
+                  <TextBlock Grid.Row="4" Text="Uptime" Classes="muted"/>
+                  <TextBlock Grid.Row="4" Grid.Column="1" Name="DeckMonitorUptimeText" Text="00s"/>
+                </Grid>
+                <Border Classes="log-panel" Padding="6,4">
+                  <TextBlock Name="DeckMonitorHintText"
+                             Classes="muted"
+                             FontSize="12"
+                             TextWrapping="Wrap"
+                             Text="Idle deck. Hit Music for a fresh crawl or arm a cartridge for launch."/>
+                </Border>
+              </StackPanel>
+            </Border>
             <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
             <CheckBox Content="Use 6-button controller" IsChecked="False" Name="SixButtonPadCheck"/>
             <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
