@@ -220,10 +220,11 @@
                   Background="Transparent"
                   BorderBrush="#00000000"
                   BorderThickness="0">
-            <Image Source="avares://EutherDrive.UI/Assets/eutherdrive_rune.png"
+            <Image Source="avares://EutherDrive.UI/Assets/eutherdrive_rune_top.png"
                    Stretch="Uniform"
                    HorizontalAlignment="Right"
                    VerticalAlignment="Center"
+                   Margin="0,0,18,0"
                    Opacity="0.96"/>
           </Border>
           </Grid>

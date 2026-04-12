@@ -37,9 +37,7 @@
     <AvaloniaResource Include="..\Icons\logo_crop.jpeg">
       <Link>Assets/logo_crop.jpeg</Link>
     </AvaloniaResource>
-    <AvaloniaResource Include="..\EutherDrive.Android\eutherdrive_rune.png">
-      <Link>Assets/eutherdrive_rune.png</Link>
-    </AvaloniaResource>
+    <AvaloniaResource Include="Assets\eutherdrive_rune_top.png" />
     <AvaloniaResource Include="Assets\zuul_demo.jox" />
     <AvaloniaResource Include="Assets\zuul_svg.jox" />
     <AvaloniaResource Include="Assets\eutherdrive_logo.jox" />
