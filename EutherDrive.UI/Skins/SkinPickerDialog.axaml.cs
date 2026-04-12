@@ -40,7 +40,8 @@ public partial class SkinPickerDialog : Window
         container.Children.Clear();
         
         // Add built-in default skin
-        AddSkinCard(container, SkinManager.CreateDefaultSkin(), true);
+        ApaSkin builtInDefaultSkin = SkinManager.CreateDefaultSkin();
+        AddSkinCard(container, builtInDefaultSkin, true);
         
         // Scan for skins in the skins directory
         var skinsDir = GetSkinsDirectory();
@@ -48,6 +49,9 @@ public partial class SkinPickerDialog : Window
         {
             foreach (var skin in _skinManager.ScanSkinsDirectory(skinsDir))
             {
+                if (IsDuplicateOfBuiltInDefault(skin, builtInDefaultSkin))
+                    continue;
+
                 AddSkinCard(container, skin, false);
             }
         }
@@ -55,6 +59,9 @@ public partial class SkinPickerDialog : Window
         // Add currently loaded skins
         foreach (var skin in _skinManager.LoadedSkins.Where(s => !string.IsNullOrEmpty(s.SourcePath)))
         {
+            if (IsDuplicateOfBuiltInDefault(skin, builtInDefaultSkin))
+                continue;
+
             // Check if already added
             bool alreadyAdded = container.Children.OfType<Border>().Any(b => 
             {
@@ -72,8 +79,7 @@ public partial class SkinPickerDialog : Window
     
     private void AddSkinCard(StackPanel container, ApaSkin skin, bool isBuiltIn)
     {
-        bool isActive = _skinManager.CurrentSkin.SkinName == skin.SkinName &&
-                       (isBuiltIn || _skinManager.CurrentSkin.SourcePath == skin.SourcePath);
+        bool isActive = IsActiveSkinCard(skin, isBuiltIn);
 
         IBrush? activeBackground = TryGetBrush("EdToggleCheckedBg");
         IBrush? activeBorder = TryGetBrush("EdAccentBrush");
@@ -235,6 +241,201 @@ public partial class SkinPickerDialog : Window
         };
         
         container.Children.Add(card);
+    }
+
+    private bool IsActiveSkinCard(ApaSkin skin, bool isBuiltIn)
+    {
+        ApaSkin currentSkin = _skinManager.CurrentSkin;
+        bool currentIsBuiltIn = string.IsNullOrWhiteSpace(currentSkin.SourcePath);
+
+        if (isBuiltIn)
+        {
+            return currentIsBuiltIn
+                && string.Equals(currentSkin.SkinName, skin.SkinName, StringComparison.Ordinal);
+        }
+
+        if (string.IsNullOrWhiteSpace(skin.SourcePath) || currentIsBuiltIn)
+            return false;
+
+        return string.Equals(currentSkin.SourcePath, skin.SourcePath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDuplicateOfBuiltInDefault(ApaSkin candidate, ApaSkin builtInDefaultSkin)
+    {
+        return !string.IsNullOrWhiteSpace(candidate.SourcePath)
+            && AreEquivalentSkins(candidate, builtInDefaultSkin);
+    }
+
+    private static bool AreEquivalentSkins(ApaSkin left, ApaSkin right)
+    {
+        return EqualText(left.SkinName, right.SkinName)
+            && EqualText(left.Author, right.Author)
+            && EqualText(left.Version, right.Version)
+            && EqualText(left.Description, right.Description)
+            && EqualText(left.ThumbnailPath, right.ThumbnailPath)
+            && AreEquivalentColors(left.Colors, right.Colors)
+            && AreEquivalentTypography(left.Typography, right.Typography)
+            && AreEquivalentLayout(left.Layout, right.Layout)
+            && AreEquivalentButtons(left.Buttons, right.Buttons)
+            && AreEquivalentPanels(left.Panels, right.Panels)
+            && AreEquivalentInputs(left.Inputs, right.Inputs)
+            && AreEquivalentEffects(left.Effects, right.Effects)
+            && AreEquivalentStyleOverrides(left.StyleOverrides, right.StyleOverrides);
+    }
+
+    private static bool AreEquivalentColors(SkinColors left, SkinColors right)
+    {
+        return EqualText(left.Background, right.Background)
+            && EqualText(left.BackgroundSoft, right.BackgroundSoft)
+            && EqualText(left.BackgroundAlt, right.BackgroundAlt)
+            && EqualText(left.Panel, right.Panel)
+            && EqualText(left.PanelRaised, right.PanelRaised)
+            && EqualText(left.PanelGlass, right.PanelGlass)
+            && EqualText(left.SubPanel, right.SubPanel)
+            && EqualText(left.OptionCard, right.OptionCard)
+            && EqualText(left.Stroke, right.Stroke)
+            && EqualText(left.StrokeBright, right.StrokeBright)
+            && EqualText(left.Text, right.Text)
+            && EqualText(left.TextMuted, right.TextMuted)
+            && EqualText(left.Accent, right.Accent)
+            && EqualText(left.AccentWarm, right.AccentWarm)
+            && EqualText(left.AccentHot, right.AccentHot)
+            && AreEquivalentGradient(left.HeroGradient, right.HeroGradient)
+            && AreEquivalentGradient(left.ScreenGlowGradient, right.ScreenGlowGradient)
+            && AreEquivalentGradient(left.BackgroundGradient, right.BackgroundGradient);
+    }
+
+    private static bool AreEquivalentGradient(SkinGradient? left, SkinGradient? right)
+    {
+        if (left == null || right == null)
+            return left == right;
+
+        if (left.Angle != right.Angle || left.Stops.Count != right.Stops.Count)
+            return false;
+
+        for (int i = 0; i < left.Stops.Count; i++)
+        {
+            GradientStop leftStop = left.Stops[i];
+            GradientStop rightStop = right.Stops[i];
+
+            if (!EqualText(leftStop.Color, rightStop.Color) || leftStop.Offset != rightStop.Offset)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool AreEquivalentTypography(SkinTypography left, SkinTypography right)
+    {
+        return EqualText(left.PrimaryFont, right.PrimaryFont)
+            && EqualText(left.DisplayFont, right.DisplayFont)
+            && EqualText(left.MonoFont, right.MonoFont)
+            && EqualText(left.DeckLabelFont, right.DeckLabelFont)
+            && left.BaseSize == right.BaseSize
+            && left.SmallSize == right.SmallSize
+            && left.DisplaySize == right.DisplaySize
+            && left.KickerSize == right.KickerSize
+            && left.DeckLabelSize == right.DeckLabelSize
+            && left.LetterSpacing == right.LetterSpacing
+            && left.DeckLabelSpacing == right.DeckLabelSpacing;
+    }
+
+    private static bool AreEquivalentLayout(SkinLayout left, SkinLayout right)
+    {
+        return left.BorderRadiusSmall == right.BorderRadiusSmall
+            && left.BorderRadiusMedium == right.BorderRadiusMedium
+            && left.BorderRadiusLarge == right.BorderRadiusLarge
+            && left.BorderRadiusXLarge == right.BorderRadiusXLarge
+            && left.BorderRadiusFull == right.BorderRadiusFull
+            && left.PanelPadding == right.PanelPadding
+            && left.ButtonPaddingX == right.ButtonPaddingX
+            && left.ButtonPaddingY == right.ButtonPaddingY
+            && left.SpacingSmall == right.SpacingSmall
+            && left.SpacingMedium == right.SpacingMedium
+            && left.SpacingLarge == right.SpacingLarge
+            && left.ShadowOpacity == right.ShadowOpacity
+            && left.ShadowBlur == right.ShadowBlur
+            && left.ShadowSpread == right.ShadowSpread;
+    }
+
+    private static bool AreEquivalentButtons(SkinButtons left, SkinButtons right)
+    {
+        return EqualText(left.Background, right.Background)
+            && EqualText(left.BackgroundHover, right.BackgroundHover)
+            && EqualText(left.BackgroundPressed, right.BackgroundPressed)
+            && EqualText(left.BackgroundAction, right.BackgroundAction)
+            && EqualText(left.BackgroundActionHover, right.BackgroundActionHover)
+            && EqualText(left.BackgroundGhost, right.BackgroundGhost)
+            && EqualText(left.Border, right.Border)
+            && EqualText(left.BorderHover, right.BorderHover)
+            && EqualText(left.BorderGhost, right.BorderGhost)
+            && left.BorderRadius == right.BorderRadius
+            && left.TransitionDuration == right.TransitionDuration
+            && left.HoverScale == right.HoverScale
+            && left.PressedScale == right.PressedScale;
+    }
+
+    private static bool AreEquivalentPanels(SkinPanels left, SkinPanels right)
+    {
+        return EqualText(left.GlassBackground, right.GlassBackground)
+            && left.GlassOpacity == right.GlassOpacity
+            && EqualText(left.SubPanelBackground, right.SubPanelBackground)
+            && EqualText(left.SubPanelBorder, right.SubPanelBorder)
+            && EqualText(left.OptionCardBackground, right.OptionCardBackground)
+            && EqualText(left.OptionCardBorder, right.OptionCardBorder)
+            && left.BorderRadius == right.BorderRadius
+            && left.SubPanelRadius == right.SubPanelRadius
+            && left.OptionCardRadius == right.OptionCardRadius;
+    }
+
+    private static bool AreEquivalentInputs(SkinInputs left, SkinInputs right)
+    {
+        return EqualText(left.Background, right.Background)
+            && EqualText(left.BackgroundFocus, right.BackgroundFocus)
+            && EqualText(left.Border, right.Border)
+            && EqualText(left.BorderFocus, right.BorderFocus)
+            && left.BorderRadius == right.BorderRadius
+            && left.Padding == right.Padding;
+    }
+
+    private static bool AreEquivalentEffects(SkinEffects left, SkinEffects right)
+    {
+        return left.UseTransparency == right.UseTransparency
+            && left.UseBlur == right.UseBlur
+            && left.BlurRadius == right.BlurRadius
+            && left.UseGlow == right.UseGlow
+            && EqualText(left.GlowColor, right.GlowColor)
+            && left.GlowIntensity == right.GlowIntensity
+            && left.UseAnimations == right.UseAnimations
+            && left.AnimationSpeed == right.AnimationSpeed
+            && left.UseBackgroundEffects == right.UseBackgroundEffects
+            && EqualText(left.BackgroundEffectColor1, right.BackgroundEffectColor1)
+            && EqualText(left.BackgroundEffectColor2, right.BackgroundEffectColor2)
+            && left.BackgroundEffectOpacity == right.BackgroundEffectOpacity;
+    }
+
+    private static bool AreEquivalentStyleOverrides(
+        System.Collections.Generic.Dictionary<string, string> left,
+        System.Collections.Generic.Dictionary<string, string> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+
+        foreach ((string key, string value) in left)
+        {
+            if (!right.TryGetValue(key, out string? rightValue) || !EqualText(value, rightValue))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool EqualText(string? left, string? right)
+    {
+        return string.Equals(
+            left?.Trim(),
+            right?.Trim(),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private IBrush? TryGetBrush(string key)
