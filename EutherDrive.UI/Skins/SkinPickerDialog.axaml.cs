@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
@@ -76,6 +77,8 @@ public partial class SkinPickerDialog : Window
 
         IBrush? activeBackground = TryGetBrush("EdToggleCheckedBg");
         IBrush? activeBorder = TryGetBrush("EdAccentBrush");
+        IBrush? defaultBackground = TryGetBrush("EdOptionCardBrush");
+        IBrush? defaultBorder = TryGetBrush("EdOptionCardBorderBrush");
         IBrush? strongText = TryGetBrush("EdTextBrush");
         IBrush? mutedText = TryGetBrush("EdTextMutedBrush");
         IBrush? accentText = TryGetBrush("EdAccentBrush");
@@ -86,8 +89,9 @@ public partial class SkinPickerDialog : Window
             Classes = { "option-card" },
             Padding = new Thickness(12),
             Tag = skin,
-            Background = isActive ? activeBackground : null,
-            BorderBrush = isActive ? activeBorder : null
+            Background = isActive ? activeBackground : defaultBackground,
+            BorderBrush = isActive ? activeBorder : defaultBorder,
+            Cursor = new Cursor(StandardCursorType.Hand)
         };
         
         var grid = new Grid { ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) } };
@@ -215,8 +219,8 @@ public partial class SkinPickerDialog : Window
             // Deselect all
             foreach (var child in container.Children.OfType<Border>())
             {
-                child.Background = null;
-                child.BorderBrush = null;
+                child.Background = defaultBackground;
+                child.BorderBrush = defaultBorder;
             }
             
             // Select this one
