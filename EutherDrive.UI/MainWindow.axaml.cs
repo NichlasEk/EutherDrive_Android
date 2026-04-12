@@ -30,6 +30,7 @@ using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
 using EutherDrive.UI.Ambient;
 using EutherDrive.UI.Effects;
+using EutherDrive.UI.Offworld;
 using EutherDrive.UI.Savestates;
 using EutherDrive.UI.Skins;
 using Tomlyn;
@@ -54,6 +55,7 @@ public partial class MainWindow : Window
     private readonly SavestateViewModel _savestateViewModel;
     private readonly EffectManager _effectManager = new();
     private readonly AmbientMusicController _ambientMusicController;
+    private readonly OffworldMonitorViewModel _offworldMonitorViewModel;
     private Bitmap? _ambientMusicCoverBitmap;
     private readonly DispatcherTimer _deckMonitorTimer;
     private readonly Stopwatch _deckMonitorSessionStopwatch = Stopwatch.StartNew();
@@ -482,7 +484,12 @@ public partial class MainWindow : Window
     private const string AmbientMusicCacheDirectoryName = ".ambient-music-cache";
     private double _uiScale = DefaultUiScale;
 
-    public MainWindow(string? romPath = null)
+    public MainWindow()
+        : this(null, null)
+    {
+    }
+
+    internal MainWindow(string? romPath, OffworldMonitorViewModel? offworldMonitorViewModel)
     {
         InitializeComponent();
         SkinManager.Instance.SkinChanged += OnSkinChanged;
@@ -529,6 +536,9 @@ public partial class MainWindow : Window
         LoadSettings();
         _ambientMusicController = new AmbientMusicController(GetAmbientMusicCachePath());
         _ambientMusicController.StateChanged += OnAmbientMusicStateChanged;
+        _offworldMonitorViewModel = offworldMonitorViewModel ?? OffworldMonitorViewModel.CreatePreview();
+        if (OffworldMonitorPanel != null)
+            OffworldMonitorPanel.DataContext = _offworldMonitorViewModel;
         ConfigureUiEffects();
         ApplyWindowTransparencyForSkin(SkinManager.Instance.CurrentSkin);
         UpdateRootBackdropForSkin();
@@ -597,6 +607,7 @@ public partial class MainWindow : Window
         _deckMonitorTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (_, _) => MaybeUpdateDeckMonitorUi(force: true));
         _deckMonitorTimer.Start();
         MaybeUpdateDeckMonitorUi(force: true);
+        _ = _offworldMonitorViewModel.InitializeAsync();
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -1008,6 +1019,7 @@ public partial class MainWindow : Window
         _deckMonitorTimer.Stop();
         _ambientMusicController.StateChanged -= OnAmbientMusicStateChanged;
         _ambientMusicController.Dispose();
+        _offworldMonitorViewModel.Dispose();
         DisposeAmbientMusicCoverBitmap();
     }
 

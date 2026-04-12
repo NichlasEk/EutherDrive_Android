@@ -277,6 +277,7 @@
                 </Border>
               </StackPanel>
             </Border>
+            <controls:OffworldMonitor Name="OffworldMonitorPanel"/>
             <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
             <CheckBox Content="Use 6-button controller" IsChecked="False" Name="SixButtonPadCheck"/>
             <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
