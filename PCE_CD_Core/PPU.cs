@@ -598,6 +598,8 @@ namespace ePceCD
         {
             Array.Clear(m_VRAM);
             Array.Clear(m_SatRaw);
+            Array.Clear(m_BxrByLine);
+            Array.Clear(m_ByrByLine);
 
                 for (var i = 0; i < 64; i++)
                 {
@@ -623,6 +625,48 @@ namespace ePceCD
             _currentLineSpriteVisible = -1;
             _nextLineSpriteCount = 0;
             _nextLineSpriteVisible = -1;
+        }
+
+        // HuC6270 scroll writes latch for subsequent raster lines, not the pixels already being drawn.
+        private void RebuildScrollSchedule(int startRasterLine)
+        {
+            RebuildScrollSchedule(startRasterLine, m_VDC_BYR & 0x1FF);
+        }
+
+        private void RebuildScrollSchedule(int startRasterLine, int firstByrValue)
+        {
+            int vdw = m_LatchedVDW > 0 ? m_LatchedVDW : GetEffectiveVdw();
+            if (startRasterLine < 0)
+                startRasterLine = 0;
+            if (startRasterLine >= vdw)
+                return;
+
+            int bxr = m_VDC_BXR & 0x3FF;
+            int byr = firstByrValue & 0x1FF;
+            for (int line = startRasterLine; line < vdw && line < m_BxrByLine.Length; line++)
+            {
+                m_BxrByLine[line] = bxr;
+                m_ByrByLine[line] = byr;
+                byr = (byr + 1) & 0x1FF;
+            }
+        }
+
+        private void ScheduleScrollWriteForNextRasterLine(bool byrWritten)
+        {
+            int currentRasterLine = m_DisplayCounter - m_LatchedVDS;
+            int nextRasterLine = Math.Max(0, currentRasterLine + 1);
+
+            if (!byrWritten)
+            {
+                RebuildScrollSchedule(nextRasterLine);
+                return;
+            }
+
+            int firstByrValue = m_VDC_BYR & 0x1FF;
+            if (currentRasterLine >= 0 && currentRasterLine < m_LatchedVDW && nextRasterLine > 0)
+                firstByrValue = (firstByrValue + 1) & 0x1FF;
+
+            RebuildScrollSchedule(nextRasterLine, firstByrValue);
         }
 
         private void BuildSpriteLineBuffer(int visibleLine, int rasterLine)
@@ -792,9 +836,7 @@ namespace ePceCD
                 m_LatchedScreenWidth = (m_LatchedHDW + 1) * 8;
                 m_LatchedMWR = m_VDC_MWR;
                 m_DisplayCounter = 0;
-                m_LatchedBxr = m_VDC_BXR & 0x3FF;
-                m_BgCounterY = m_VDC_BYR & 0x1FF;
-                m_BgOffsetY = m_BgCounterY;
+                RebuildScrollSchedule(0);
                 _currentLineSpriteCount = 0;
                 _currentLineSpriteVisible = -1;
                 _nextLineSpriteCount = 0;
@@ -1172,12 +1214,10 @@ namespace ePceCD
 
             if (m_LatchedEnableBackground)
             {
-                // The visible framebuffer line is not always the same as the internal
-                // HuC6270 raster line. When VDW starts before the global top crop, the PPU
-                // still advances BYR and sprite selection through those hidden lines.
-                m_BgCounterY = (m_VDC_BYR + rasterLine) & 0x1FF;
+                int scheduleLine = Math.Clamp(rasterLine, 0, m_ByrByLine.Length - 1);
+                m_BgCounterY = m_ByrByLine[scheduleLine];
                 m_BgOffsetY = m_BgCounterY;
-                m_LatchedBxr = m_VDC_BXR & 0x3FF;
+                m_LatchedBxr = m_BxrByLine[scheduleLine];
                 int screenReg = (m_LatchedMWR >> 4) & 0x07;
                 bool bgCgMode = (m_LatchedMWR & 0x03) == 0x03 && (m_LatchedMWR & 0x80) != 0;
                 int screenSizeX = ScreenSizeX[screenReg];
@@ -1443,12 +1483,14 @@ namespace ePceCD
                     break;
                 case 0x07:
                     m_VDC_BXR = (m_VDC_BXR & 0x0300) | data;
+                    ScheduleScrollWriteForNextRasterLine(byrWritten: false);
                     TraceVdcWriteIfNeeded("LSB", reg, data);
                     break;
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0x0100) | data;
                     m_BgCounterY = m_VDC_BYR & 0x1FF;
+                    ScheduleScrollWriteForNextRasterLine(byrWritten: true);
                     TraceVdcWriteIfNeeded("LSB", reg, data);
                     break;
                 case 0x09:
@@ -1553,12 +1595,14 @@ namespace ePceCD
                     break;
                 case 0x07:
                     m_VDC_BXR = (m_VDC_BXR & 0xFF) | ((data << 8) & 0x0300);
+                    ScheduleScrollWriteForNextRasterLine(byrWritten: false);
                     TraceVdcWriteIfNeeded("MSB", reg, data);
                     break;
                 case 0x08:
                     m_VDC_BYR_Offset = (m_RenderLine + 1 >= m_VDC_VDW || !m_VDC_EnableBackground) ? 0 : (m_RenderLine - 1);
                     m_VDC_BYR = (m_VDC_BYR & 0xFF) | ((data << 8) & 0x0100);
                     m_BgCounterY = m_VDC_BYR & 0x1FF;
+                    ScheduleScrollWriteForNextRasterLine(byrWritten: true);
                     TraceVdcWriteIfNeeded("MSB", reg, data);
                     break;
                 case 0x0A:
