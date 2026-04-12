@@ -28,6 +28,7 @@ using EutherDrive.Core.SegaCd;
 using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
+using EutherDrive.UI.Ambient;
 using EutherDrive.UI.Effects;
 using EutherDrive.UI.Savestates;
 using EutherDrive.UI.Skins;
@@ -52,6 +53,8 @@ public partial class MainWindow : Window
     private readonly SavestateService _savestateService;
     private readonly SavestateViewModel _savestateViewModel;
     private readonly EffectManager _effectManager = new();
+    private readonly AmbientMusicController _ambientMusicController;
+    private Bitmap? _ambientMusicCoverBitmap;
 
     private IGameRenderSurface? _renderSurface;
 
@@ -473,6 +476,7 @@ public partial class MainWindow : Window
     private const double DefaultMouseCaptureSensitivity = 1.0;
     private const double MinMouseCaptureSensitivity = 0.25;
     private const double MaxMouseCaptureSensitivity = 4.0;
+    private const string AmbientMusicCacheDirectoryName = ".ambient-music-cache";
     private double _uiScale = DefaultUiScale;
 
     public MainWindow(string? romPath = null)
@@ -520,6 +524,8 @@ public partial class MainWindow : Window
         _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
+        _ambientMusicController = new AmbientMusicController(GetAmbientMusicCachePath());
+        _ambientMusicController.StateChanged += OnAmbientMusicStateChanged;
         ConfigureUiEffects();
         ApplyWindowTransparencyForSkin(SkinManager.Instance.CurrentSkin);
         UpdateRootBackdropForSkin();
@@ -582,6 +588,9 @@ public partial class MainWindow : Window
         UpdateCrtScanlinesUi();
         UpdateCrtPowerIntroUi();
         UpdateDangerousSportTitlesUi();
+        _ambientMusicController.SetMasterVolumePercent(_masterVolumePercent);
+        _ambientMusicController.SetAudioEnabled(AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled);
+        UpdateAmbientMusicUi(_ambientMusicController.GetSnapshot());
 
         // Initialize timer
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16.666), DispatcherPriority.Render, (_, _) => Tick());
@@ -989,6 +998,9 @@ public partial class MainWindow : Window
     private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
     {
         EndTrackedPlaySession();
+        _ambientMusicController.StateChanged -= OnAmbientMusicStateChanged;
+        _ambientMusicController.Dispose();
+        DisposeAmbientMusicCoverBitmap();
     }
 
     private void OnSpeedSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
@@ -2625,6 +2637,7 @@ public partial class MainWindow : Window
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
             if (await ShouldBlockSportTitleLaunchAsync())
                 return;
+            await _ambientMusicController.SetRomActiveAsync(true);
             EndTrackedPlaySession();
             ApplyPsxSbiSelectionForRom(_romPath);
             DeactivateMouseCapture(updateStatus: false);
@@ -2816,6 +2829,7 @@ public partial class MainWindow : Window
             LogException(ex, "Start");
             _audioPullReady = false;
             StopCrtPowerIntro(revealContent: false, showSplash: true);
+            await _ambientMusicController.SetRomActiveAsync(false);
         }
     }
 
@@ -3514,6 +3528,7 @@ public partial class MainWindow : Window
 
     private void ApplyMasterVolumeToCore()
     {
+        _ambientMusicController.SetMasterVolumePercent(_masterVolumePercent);
         if (_core is MdTracerAdapter adapter)
             adapter.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is SmsGgAdapter sms)
@@ -3554,6 +3569,60 @@ public partial class MainWindow : Window
     {
         if (MasterVolumeValueText != null)
             MasterVolumeValueText.Text = $"{_masterVolumePercent}%";
+    }
+
+    private static string GetAmbientMusicCachePath()
+        => Path.Combine(Directory.GetCurrentDirectory(), AmbientMusicCacheDirectoryName);
+
+    private void OnAmbientMusicStateChanged(object? sender, EventArgs e)
+    {
+        AmbientMusicSnapshot snapshot = _ambientMusicController.GetSnapshot();
+        Dispatcher.UIThread.Post(() => UpdateAmbientMusicUi(snapshot), DispatcherPriority.Background);
+    }
+
+    private void UpdateAmbientMusicUi(AmbientMusicSnapshot snapshot)
+    {
+        if (AmbientMusicTitleText != null)
+            AmbientMusicTitleText.Text = snapshot.TrackTitle;
+        if (AmbientMusicStatusText != null)
+            AmbientMusicStatusText.Text = snapshot.StatusText;
+        if (AmbientMusicButton != null)
+            AmbientMusicButton.IsEnabled = !snapshot.IsBusy;
+        UpdateAmbientMusicCover(snapshot.CoverPath);
+    }
+
+    private void UpdateAmbientMusicCover(string? coverPath)
+    {
+        DisposeAmbientMusicCoverBitmap();
+
+        if (AmbientMusicCoverImage == null || string.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
+        {
+            if (AmbientMusicCoverImage != null)
+                AmbientMusicCoverImage.Source = null;
+            return;
+        }
+
+        try
+        {
+            _ambientMusicCoverBitmap = new Bitmap(coverPath);
+            AmbientMusicCoverImage.Source = _ambientMusicCoverBitmap;
+        }
+        catch
+        {
+            AmbientMusicCoverImage.Source = null;
+            _ambientMusicCoverBitmap = null;
+        }
+    }
+
+    private void DisposeAmbientMusicCoverBitmap()
+    {
+        if (_ambientMusicCoverBitmap == null)
+            return;
+
+        if (AmbientMusicCoverImage != null)
+            AmbientMusicCoverImage.Source = null;
+        _ambientMusicCoverBitmap.Dispose();
+        _ambientMusicCoverBitmap = null;
     }
 
     private void OnMasterVolumeChanged(object? sender, RangeBaseValueChangedEventArgs e)
@@ -5924,7 +5993,7 @@ public partial class MainWindow : Window
     private static string GetLegacyLastRomPathSettingsPath()
         => Path.Combine(Directory.GetCurrentDirectory(), LegacyLastRomPathFileName);
 
-    private void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         DeactivateMouseCapture(updateStatus: false);
         _timer.Stop();
@@ -5942,6 +6011,7 @@ public partial class MainWindow : Window
         DisposeCurrentCore();
         _toneTestRunning = false;
         _psgBlipRunning = false;
+        await _ambientMusicController.SetRomActiveAsync(false);
     }
 
     private void DisposeCurrentCore()
@@ -6701,7 +6771,14 @@ public partial class MainWindow : Window
     private void OnAudioToggle(object? sender, RoutedEventArgs e)
     {
         StartAudioEngineIfEnabled();
+        _ambientMusicController.SetAudioEnabled(AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled);
         SaveSettings();
+    }
+
+    private async void OnAmbientMusicClick(object? sender, RoutedEventArgs e)
+    {
+        await _ambientMusicController.ToggleAsync();
+        UpdateAmbientMusicUi(_ambientMusicController.GetSnapshot());
     }
 
     private void OnMouseCaptureToggle(object? sender, RoutedEventArgs e)

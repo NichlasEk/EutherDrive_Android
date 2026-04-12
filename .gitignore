@@ -33,6 +33,7 @@ roms/
 logs/
 bios/
 saves/
+.ambient-music-cache/
 
 # Local notes
 MEMO.md

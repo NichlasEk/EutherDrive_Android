@@ -203,6 +203,31 @@
           <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="8" Width="240">
             <TextBlock Classes="deck-label" Text="MACHINE ROOM"/>
+            <Border Classes="panel" Padding="8">
+              <StackPanel Spacing="6">
+                <Border Height="132"
+                        CornerRadius="10"
+                        ClipToBounds="True"
+                        Background="#0C1520"
+                        BorderBrush="{DynamicResource EdStrokeBrush}"
+                        BorderThickness="1">
+                  <Image Name="AmbientMusicCoverImage" Stretch="UniformToFill"/>
+                </Border>
+                <TextBlock Name="AmbientMusicTitleText"
+                           Text="Cyberpunk Ambient"
+                           FontWeight="Bold"
+                           TextWrapping="Wrap"/>
+                <TextBlock Name="AmbientMusicStatusText"
+                           Classes="muted"
+                           FontSize="12"
+                           Text="Ambient off."
+                           TextWrapping="Wrap"/>
+                <Button Name="AmbientMusicButton"
+                        Classes="compact"
+                        Content="Music"
+                        Click="OnAmbientMusicClick"/>
+              </StackPanel>
+            </Border>
             <CheckBox Content="Use DummyCore" IsChecked="False" Name="UseDummyCoreCheck"/>
             <CheckBox Content="Use 6-button controller" IsChecked="False" Name="SixButtonPadCheck"/>
             <CheckBox Content="Enable audio" IsChecked="True" Name="AudioEnabledCheck" Checked="OnAudioToggle" Unchecked="OnAudioToggle"/>
