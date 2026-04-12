@@ -34,15 +34,22 @@
       <Setter Property="FontWeight" Value="Black"/>
       <Setter Property="LetterSpacing" Value="0.5"/>
     </Style>
+    <Style Selector="TextBlock.telemetry-tagline">
+      <Setter Property="Foreground" Value="{DynamicResource EdTextMutedBrush}"/>
+      <Setter Property="FontFamily" Value="{DynamicResource EdMonoFont}"/>
+      <Setter Property="FontSize" Value="10"/>
+      <Setter Property="LetterSpacing" Value="0.4"/>
+      <Setter Property="Opacity" Value="0.82"/>
+    </Style>
   </UserControl.Styles>
 
   <Border Classes="panel" Padding="7,6" HorizontalAlignment="Stretch">
     <StackPanel Spacing="5">
-      <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto" ColumnSpacing="8" RowSpacing="2">
+      <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto" ColumnSpacing="8" RowSpacing="2">
         <TextBlock Grid.Row="0"
                    Grid.Column="0"
                    Classes="deck-label"
-                   Text="OFFWORLD LINK"/>
+                   Text="OFFWORLD"/>
         <Border Grid.Row="0"
                 Grid.Column="1"
                 Classes="telemetry-band"
@@ -53,6 +60,12 @@
                      Text="{Binding SourceLabel}"/>
         </Border>
         <TextBlock Grid.Row="1"
+                   Grid.Column="0"
+                   Grid.ColumnSpan="2"
+                   Classes="telemetry-tagline"
+                   Text="MARS SURFACE TELEMETRY"
+                   TextWrapping="Wrap"/>
+        <TextBlock Grid.Row="2"
                    Grid.Column="0"
                    Grid.ColumnSpan="2"
                    Classes="muted"
