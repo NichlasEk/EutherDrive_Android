@@ -893,7 +893,27 @@ public class PPU : IPPU
         switch (adr)
         {
             case 0x00:
-                _forcedBlank = (value & 0x80) > 0;
+                bool newForcedBlank = (value & 0x80) > 0;
+                
+                // Enhanced workaround for Aladdin timing issue on Android
+                // During scene transition (frame ~345), Aladdin sets forcedBlank=True
+                // but timing is off. If TM/TS is 0x17 (gameplay mode), don't allow forced blank
+                if (_snes != null)
+                {
+                    bool isAladdin = _snes.GameName?.Contains("Aladdin", StringComparison.OrdinalIgnoreCase) == true;
+                    
+                    if (isAladdin && newForcedBlank && (_tmRaw == 0x17 || _tsRaw == 0x17) && GetCurrentVblank())
+                    {
+                        // This is likely the failed scene transition at frame 345
+                        // Keep screen active for gameplay
+                        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_TM_TS") == "1")
+                            Console.WriteLine($"[PPU-ALADDIN] INIDISP blocked forcedBlank (tm=0x{_tmRaw:X2} ts=0x{_tsRaw:X2})");
+                        newForcedBlank = false;
+                        value = (value & ~0x80) | 0x0F; // Set brightness to max
+                    }
+                }
+                
+                _forcedBlank = newForcedBlank;
                 _brightness = value & 0xf;
                 TracePpuWrite($"[PPU] INIDISP=0x{value:X2} forcedBlank={_forcedBlank} bright={_brightness}");
                 return;
@@ -1214,26 +1234,86 @@ public class PPU : IPPU
             case 0x2c:
                 if (_tmRaw == (byte)value)
                     return;
+                
+                // Enhanced workaround for Aladdin timing issue on Android
+                // Track Aladdin's state machine during scene transitions
+                if (_snes != null)
+                {
+                    // Aladdin state tracking
+                    bool isAladdin = _snes.GameName?.Contains("Aladdin", StringComparison.OrdinalIgnoreCase) == true;
+                    
+                    if (isAladdin)
+                    {
+                        // State 1: During cold boot, fix 0x04 -> 0x17
+                        if (value == 0x04 && GetCurrentVblank() && (_snes?.YPos >= 240) == true && (_tmRaw == 0x00))
+                        {
+                            value = 0x17;
+                        }
+                        // State 2: After scene transition (frame ~345), if TM goes to 0x01,
+                        // it might be trying to reset for gameplay but timing is off
+                        // Change it to 0x17 for gameplay (desktop version behavior)
+                        else if (value == 0x01)
+                        {
+                            // Game is trying to reset TM during scene transition
+                            // but timing is off. Force it to gameplay mode (0x17)
+                            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_TM_TS") == "1")
+                                Console.WriteLine($"[PPU-ALADDIN] TM 0x01->0x17");
+                            value = 0x17;
+                        }
+                    }
+                }
+                
                 _tmRaw = (byte)value;
-                _mainScreenEnabled[0] = (value & 0x1) > 0;
-                _mainScreenEnabled[1] = (value & 0x2) > 0;
-                _mainScreenEnabled[2] = (value & 0x4) > 0;
-                _mainScreenEnabled[3] = (value & 0x8) > 0;
-                _mainScreenEnabled[4] = (value & 0x10) > 0;
-                MarkLineCachesDirty();
-                TracePpuWrite($"[PPU] TM=0x{value:X2}");
+                 _mainScreenEnabled[0] = (value & 0x1) > 0;
+                 _mainScreenEnabled[1] = (value & 0x2) > 0;
+                 _mainScreenEnabled[2] = (value & 0x4) > 0;
+                 _mainScreenEnabled[3] = (value & 0x8) > 0;
+                 _mainScreenEnabled[4] = (value & 0x10) > 0;
+                 MarkLineCachesDirty();
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_TM_TS") == "1")
+                      Console.WriteLine($"[PPU-TM-TS] TM=0x{value:X2}");
                 return;
             case 0x2d:
                 if (_tsRaw == (byte)value)
                     return;
+                
+                // Enhanced workaround for Aladdin timing issue on Android
+                // Track Aladdin's state machine during scene transitions
+                if (_snes != null)
+                {
+                    // Aladdin state tracking
+                    bool isAladdin = _snes.GameName?.Contains("Aladdin", StringComparison.OrdinalIgnoreCase) == true;
+                    
+                    if (isAladdin)
+                    {
+                        // State 1: During cold boot, fix 0x04 -> 0x17
+                        if (value == 0x04 && GetCurrentVblank() && (_snes?.YPos >= 240) == true && (_tsRaw == 0x00))
+                        {
+                            value = 0x17;
+                        }
+                        // State 2: After scene transition (frame ~345), if TS goes to 0x01,
+                        // it might be trying to reset for gameplay but timing is off
+                        // Change it to 0x17 for gameplay (desktop version behavior)
+                        else if (value == 0x01)
+                        {
+                            // Game is trying to reset TS during scene transition
+                            // but timing is off. Force it to gameplay mode (0x17)
+                            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_TM_TS") == "1")
+                                Console.WriteLine($"[PPU-ALADDIN] TS 0x01->0x17");
+                            value = 0x17;
+                        }
+                    }
+                }
+                
                 _tsRaw = (byte)value;
-                _subScreenEnabled[0] = (value & 0x1) > 0;
-                _subScreenEnabled[1] = (value & 0x2) > 0;
-                _subScreenEnabled[2] = (value & 0x4) > 0;
-                _subScreenEnabled[3] = (value & 0x8) > 0;
-                _subScreenEnabled[4] = (value & 0x10) > 0;
-                MarkLineCachesDirty();
-                TracePpuWrite($"[PPU] TS=0x{value:X2}");
+                 _subScreenEnabled[0] = (value & 0x1) > 0;
+                 _subScreenEnabled[1] = (value & 0x2) > 0;
+                 _subScreenEnabled[2] = (value & 0x4) > 0;
+                 _subScreenEnabled[3] = (value & 0x8) > 0;
+                 _subScreenEnabled[4] = (value & 0x10) > 0;
+                 MarkLineCachesDirty();
+                  if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_TM_TS") == "1")
+                      Console.WriteLine($"[PPU-TM-TS] TS=0x{value:X2}");
                 return;
             case 0x2e:
                 if (GetScreenWindowRaw(_mainScreenWindow) == (byte)value)
