@@ -29,6 +29,7 @@ public class PPU : IPPU
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_PROBE"), "1", StringComparison.Ordinal);
     private static readonly int TracePpuProbeX = GetTraceProbeCoord("EUTHERDRIVE_TRACE_SNES_PPU_PROBE_X", 16);
     private static readonly int TracePpuProbeY = GetTraceProbeCoord("EUTHERDRIVE_TRACE_SNES_PPU_PROBE_Y", 8);
+    
     private static readonly bool DebugDisableBg1 =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_BG1"), "1", StringComparison.Ordinal);
     private static readonly bool DebugDisableBg2 =
@@ -155,11 +156,16 @@ public class PPU : IPPU
 
     private int[] _bgHoff = [];
     private int[] _bgVoff = [];
+    // Line-specific scroll buffers (like snes9x's LineData)
+    private int[] _lineHoff = new int[5];
+    private int[] _lineVoff = new int[5];
 
-    // Keep the original serialized field layout intact for savestate compatibility.
-    // `_offPrev1` now serves as the BG scroll write buffer; `_offPrev2` is retained
-    // so old savestates keep matching the binary field order.
+    // Separate write buffers for each BG layer pair (BG1, BG2, BG3, BG4)
+    // On real SNES hardware, each BGxHOFS/BGxVOFS pair shares its own latch
+    private int[] _bgScrollWriteBuffer = new int[4];
+    // `_offPrev1` is retained for savestate compatibility but no longer used
     private int _offPrev1;
+    // `_offPrev2` is retained so old savestates keep matching the binary field order.
     private int _offPrev2;
     private int _mode;
     private bool _layer3Prio;
@@ -400,16 +406,32 @@ public class PPU : IPPU
         return _oamAdr | (_oamInHigh ? 0x100 : 0);
     }
 
-    private void WriteBgHScroll(int layer, int value)
+private void WriteBgHScroll(int layer, int value, bool dma = false)
     {
+        // Exact snes9x implementation:
+        // PPU.BG[layer].HOffset = (Byte << 8) | (PPU.BGnxOFSbyte & ~7) | ((PPU.BG[layer].HOffset >> 8) & 7);
+        // PPU.BGnxOFSbyte = Byte;
         int current = _bgHoff[layer];
-        _bgHoff[layer] = (value << 8) | (_offPrev1 & ~0x07) | ((current >> 8) & 0x07);
+        int newValue = (value << 8) | (_bgScrollWriteBuffer[layer] & ~0x07) | ((current >> 8) & 0x07);
+        _bgScrollWriteBuffer[layer] = value;
+        _bgHoff[layer] = newValue;
+        
+    
+        
+        // Keep _offPrev1 for savestate compatibility
         _offPrev1 = value;
     }
 
-    private void WriteBgVScroll(int layer, int value)
+    private void WriteBgVScroll(int layer, int value, bool dma = false)
     {
-        _bgVoff[layer] = (value << 8) | _offPrev1;
+        // Exact snes9x implementation:
+        // PPU.BG[layer].VOffset = (Byte << 8) | PPU.BGnxOFSbyte;
+        // PPU.BGnxOFSbyte = Byte;
+        int oldValue = _bgVoff[layer];
+        _bgVoff[layer] = (value << 8) | _bgScrollWriteBuffer[layer];
+        _bgScrollWriteBuffer[layer] = value;
+
+        // Keep _offPrev1 for savestate compatibility
         _offPrev1 = value;
     }
 
@@ -663,6 +685,9 @@ public class PPU : IPPU
         _tileAdr = new int[4];
         _bgHoff = new int[5];
         _bgVoff = new int[5];
+        _lineHoff = new int[5];
+        _lineVoff = new int[5];
+        _bgScrollWriteBuffer = new int[4];
         _offPrev1 = 0;
         _offPrev2 = 0;
         _mode = 0;
@@ -1019,22 +1044,22 @@ public class PPU : IPPU
             case 0x0d:
                 _mode7Hoff = Get13Signed((value << 8) | _mode7Prev);
                 _mode7Prev = value;
-                WriteBgHScroll((adr - 0xd) >> 1, value);
+                WriteBgHScroll((adr - 0xd) >> 1, value, dma);
                 return;
             case 0x0f:
             case 0x11:
             case 0x13:
-                WriteBgHScroll((adr - 0xd) >> 1, value);
+                WriteBgHScroll((adr - 0xd) >> 1, value, dma);
                 return;
             case 0x0e:
                 _mode7Voff = Get13Signed((value << 8) | _mode7Prev);
                 _mode7Prev = value;
-                WriteBgVScroll((adr - 0xe) >> 1, value);
+                WriteBgVScroll((adr - 0xe) >> 1, value, dma);
                 return;
             case 0x10:
             case 0x12:
             case 0x14:
-                WriteBgVScroll((adr - 0xe) >> 1, value);
+                WriteBgVScroll((adr - 0xe) >> 1, value, dma);
                 return;
             case 0x15:
                 var incVal = value & 0x3;
@@ -1727,8 +1752,8 @@ public class PPU : IPPU
                 ly -= (ly - _mosaicStartLine) % _mosaicSize;
             }
 
-            lx += _mode == 7 ? 0 : _bgHoff[layer];
-            ly += _mode == 7 ? 0 : _bgVoff[layer];
+            lx += _mode == 7 ? 0 : _lineHoff[layer];
+            ly += _mode == 7 ? 0 : _lineVoff[layer];
             if ((_mode == 5 || _mode == 6) && layer < 4)
                 lx = lx * 2 + 1;
 
@@ -1740,11 +1765,11 @@ public class PPU : IPPU
             int tilePrio = _tilePriorityBuffer[layer];
             _lastTileFetchedX[layer] = -1;
             _lastTileFetchedY[layer] = -1;
-            FetchTileInBuffer(x, screenY, layer, false);
-            int rawPixelIndex = (layer << 3) | (x & 0x7);
-            int rawTilePixel = _tilePixelBuffer[rawPixelIndex];
+            //FetchTileInBuffer(x, screenY, layer, false);
+            //int rawPixelIndex = (layer << 3) | (x & 0x7);
+            //int rawTilePixel = _tilePixelBuffer[rawPixelIndex];
             layerParts[layer] =
-                $"bg{layer + 1} visM={(_mainScreenEnabled[layer] ? 1 : 0)} visS={(_subScreenEnabled[layer] ? 1 : 0)} pix=0x{tilePixel:X2} rawPix=0x{rawTilePixel:X2} prio={tilePrio} map=0x{_tilemapBuffer[layer]:X4} lx={lx} ly={ly}";
+                $"bg{layer + 1} visM={(_mainScreenEnabled[layer] ? 1 : 0)} visS={(_subScreenEnabled[layer] ? 1 : 0)} pix=0x{tilePixel:X2} prio={tilePrio} map=0x{_tilemapBuffer[layer]:X4} lx={lx} ly={ly}";
         }
 
         TracePpuWrite(
@@ -1844,6 +1869,17 @@ public class PPU : IPPU
         }
         else if (line > 0 && line < (FrameOverscan ? 240 : 225))
         {
+            // Copy current scroll values to line buffers (like snes9x's LineData)
+            // VOffset +1 matches SNES hardware behavior: scroll registers are latched
+            // during previous scanline's HBlank, so the effective Y position is +1
+            for (int i = 0; i < 4; i++)
+            {
+                _lineHoff[i] = _bgHoff[i];
+                _lineVoff[i] = _bgVoff[i] + 1;
+            }
+            _lineHoff[4] = _bgHoff[4];
+            _lineVoff[4] = _bgVoff[4];
+            
             if (PerfStatsEnabled)
                 PerfRenderedLines++;
             if (line == 1)
@@ -2301,18 +2337,18 @@ public class PPU : IPPU
                             ly -= (ly - _mosaicStartLine) % _mosaicSize;
                         }
 
-                        lx += _bgHoff[layer];
-                        ly += _bgVoff[layer];
+lx += _lineHoff[layer];
+                         ly += _lineVoff[layer];
 
                         if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
                         {
                             int andVal = layer == 0 ? 0x2000 : 0x4000;
                             if (x == 0)
                                 _lastOrigTileX[layer] = lx >> 3;
-                            int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+int tileStartX = (lx - _lineHoff[layer]) - (lx - (lx & 0xfff8));
                             if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
                             {
-                                FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2], 2, true);
                                 _optHorBuffer[layer] = _tilemapBuffer[2];
                                 if (_mode == 4)
                                 {
@@ -2328,7 +2364,7 @@ public class PPU : IPPU
                                 }
                                 else
                                 {
-                                    FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2] + 8, 2, true);
                                     _optVerBuffer[layer] = _tilemapBuffer[2];
                                 }
                                 _lastOrigTileX[layer] = lx >> 3;
@@ -2337,7 +2373,7 @@ public class PPU : IPPU
                             if ((_optHorBuffer[layer] & andVal) != 0)
                                 lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
                             if ((_optVerBuffer[layer] & andVal) != 0)
-                                ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                         }
                     }
 
@@ -2627,8 +2663,8 @@ public class PPU : IPPU
         int tilePriority = -1;
         int loadedTileX = int.MinValue;
         int loadedY = int.MinValue;
-        int sampleX = startX + _bgHoff[layer];
-        int sampleY = y + _bgVoff[layer];
+        int sampleX = startX + _lineHoff[layer];
+        int sampleY = y + _lineVoff[layer];
         int count = destPixels.Length;
 
         for (int i = 0; i < count; i++)
@@ -2669,8 +2705,8 @@ public class PPU : IPPU
         int tilePriority = -1;
         int loadedTileX = int.MinValue;
         int loadedY = int.MinValue;
-        int sampleX = startX + _bgHoff[layer];
-        int sampleY = y + _bgVoff[layer];
+        int sampleX = startX + _lineHoff[layer];
+        int sampleY = y + _lineVoff[layer];
         int count = destPixels.Length;
 
         for (int i = 0; i < count; i++)
@@ -3000,10 +3036,10 @@ public class PPU : IPPU
                     ly -= (ly - _mosaicStartLine) % _mosaicSize;
                 }
 
-                lx += _mode == 7 ? 0 : _bgHoff[layer];
-                ly += _mode == 7 ? 0 : _bgVoff[layer];
+                lx += _mode == 7 ? 0 : _lineHoff[layer];
+                ly += _mode == 7 ? 0 : _lineVoff[layer];
 
-                int optX = lx - _bgHoff[layer];
+                int optX = lx - _lineHoff[layer];
                 if ((_mode == 5 || _mode == 6) && layer < 4)
                 {
                     lx = lx * 2 + (sub ? 0 : 1);
@@ -3019,7 +3055,7 @@ public class PPU : IPPU
                     int tileStartX = optX - (lx - (lx & 0xfff8));
                     if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
                     {
-                        FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                        FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2], 2, true);
                         _optHorBuffer[layer] = _tilemapBuffer[2];
                         if (_mode == 4)
                         {
@@ -3035,7 +3071,7 @@ public class PPU : IPPU
                         }
                         else
                         {
-                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                            FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2] + 8, 2, true);
                             _optVerBuffer[layer] = _tilemapBuffer[2];
                         }
 
@@ -3049,7 +3085,7 @@ public class PPU : IPPU
                     }
                     if ((_optVerBuffer[layer] & andVal) != 0)
                     {
-                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                     }
                 }
 
@@ -3224,17 +3260,17 @@ public class PPU : IPPU
                         lx -= lx % _mosaicSize;
                         ly -= (ly - _mosaicStartLine) % _mosaicSize;
                     }
-                    lx += _mode == 7 ? 0 : _bgHoff[layer];
-                    ly += _mode == 7 ? 0 : _bgVoff[layer];
+                    lx += _mode == 7 ? 0 : _lineHoff[layer];
+                    ly += _mode == 7 ? 0 : _lineVoff[layer];
 
                     if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
                     {
                         int andVal = layer == 0 ? 0x2000 : 0x4000;
                         if (x == 0) _lastOrigTileX[layer] = lx >> 3;
-                        int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+                        int tileStartX = (lx - _lineHoff[layer]) - (lx - (lx & 0xfff8));
                         if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
                         {
-                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2], 2, true);
                             _optHorBuffer[layer] = _tilemapBuffer[2];
                             if (_mode == 4)
                             {
@@ -3243,13 +3279,13 @@ public class PPU : IPPU
                             }
                             else
                             {
-                                FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2] + 8, 2, true);
                                 _optVerBuffer[layer] = _tilemapBuffer[2];
                             }
                             _lastOrigTileX[layer] = lx >> 3;
                         }
                         if ((_optHorBuffer[layer] & andVal) > 0) lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
-                        if ((_optVerBuffer[layer] & andVal) > 0) ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                        if ((_optVerBuffer[layer] & andVal) > 0) ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                     }
                     pixel = GetPixelForLayer(lx, ly, layer, priority);
                     if ((pixel & 0xFF) != 0) break;
@@ -3321,18 +3357,18 @@ public class PPU : IPPU
                     ly -= (ly - _mosaicStartLine) % _mosaicSize;
                 }
 
-                lx += _mode == 7 ? 0 : _bgHoff[layer];
-                ly += _mode == 7 ? 0 : _bgVoff[layer];
+                lx += _mode == 7 ? 0 : _lineHoff[layer];
+                ly += _mode == 7 ? 0 : _lineVoff[layer];
 
                 if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
                 {
                     int andVal = layer == 0 ? 0x2000 : 0x4000;
                     if (x == 0)
                         _lastOrigTileX[layer] = lx >> 3;
-                    int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+                    int tileStartX = (lx - _lineHoff[layer]) - (lx - (lx & 0xfff8));
                     if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
                     {
-                        FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                        FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2], 2, true);
                         _optHorBuffer[layer] = _tilemapBuffer[2];
                         if (_mode == 4)
                         {
@@ -3341,7 +3377,7 @@ public class PPU : IPPU
                         }
                         else
                         {
-                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                            FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2] + 8, 2, true);
                             _optVerBuffer[layer] = _tilemapBuffer[2];
                         }
                         _lastOrigTileX[layer] = lx >> 3;
@@ -3349,7 +3385,7 @@ public class PPU : IPPU
                     if ((_optHorBuffer[layer] & andVal) > 0)
                         lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
                     if ((_optVerBuffer[layer] & andVal) > 0)
-                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                 }
 
                 int pixel = GetPixelForLayer(lx, ly, layer, _lineOrderedPriorities[j]);
@@ -3441,18 +3477,18 @@ public class PPU : IPPU
                     ly -= (ly - _mosaicStartLine) % _mosaicSize;
                 }
 
-                lx += _mode == 7 ? 0 : _bgHoff[layer];
-                ly += _mode == 7 ? 0 : _bgVoff[layer];
+                lx += _mode == 7 ? 0 : _lineHoff[layer];
+                ly += _mode == 7 ? 0 : _lineVoff[layer];
 
                 if ((_mode == 2 || _mode == 4 || _mode == 6) && layer < 2)
                 {
                     int andVal = layer == 0 ? 0x2000 : 0x4000;
                     if (x == 0)
                         _lastOrigTileX[layer] = lx >> 3;
-                    int tileStartX = (lx - _bgHoff[layer]) - (lx - (lx & 0xfff8));
+                    int tileStartX = (lx - _lineHoff[layer]) - (lx - (lx & 0xfff8));
                     if (lx >> 3 != _lastOrigTileX[layer] && x > 0)
                     {
-                        FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2], 2, true);
+                        FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2], 2, true);
                         _optHorBuffer[layer] = _tilemapBuffer[2];
                         if (_mode == 4)
                         {
@@ -3461,7 +3497,7 @@ public class PPU : IPPU
                         }
                         else
                         {
-                            FetchTileInBuffer(_bgHoff[2] + ((tileStartX - 1) & 0x1f8), _bgVoff[2] + 8, 2, true);
+                            FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2] + 8, 2, true);
                             _optVerBuffer[layer] = _tilemapBuffer[2];
                         }
                         _lastOrigTileX[layer] = lx >> 3;
@@ -3469,7 +3505,7 @@ public class PPU : IPPU
                     if ((_optHorBuffer[layer] & andVal) > 0)
                         lx = (lx & 0x7) + ((_optHorBuffer[layer] + ((tileStartX + 7) & 0x1f8)) & 0x1ff8);
                     if ((_optVerBuffer[layer] & andVal) > 0)
-                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _bgVoff[layer]);
+                        ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                 }
 
                 int pixel = GetPixelForLayer(lx, ly, layer, _lineOrderedPriorities[j]);
