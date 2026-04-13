@@ -647,6 +647,24 @@ namespace ePceCD
             RebuildBxrSchedule(nextVisibleLine);
         }
 
+        private readonly struct ScanlineState
+        {
+            public ScanlineState(int vdw, int visibleCount, int rasterLine, int visibleLine)
+            {
+                Vdw = vdw;
+                VisibleCount = visibleCount;
+                RasterLine = rasterLine;
+                VisibleLine = visibleLine;
+            }
+
+            public int Vdw { get; }
+            public int VisibleCount { get; }
+            public int RasterLine { get; }
+            public int VisibleLine { get; }
+            public bool InVdw => RasterLine >= 0 && RasterLine < Vdw;
+            public bool InDisplay => VisibleLine >= 0 && VisibleLine < VisibleCount;
+        }
+
         // BYR behaves like a line anchor: a mid-frame write establishes the base
         // vertical scroll for the *next* raster line, while pre-display/vblank writes
         // simply define the frame baseline.
@@ -656,6 +674,193 @@ namespace ePceCD
             int currentRasterLine = m_DisplayCounter - m_LatchedVDS;
             bool inActiveRaster = m_VDC_EnableBackground && currentRasterLine >= 0 && currentRasterLine < vdw;
             m_VDC_BYR_Offset = inActiveRaster ? Math.Max(0, currentRasterLine + 1) : 0;
+        }
+
+        private void BeginFrameIfNeeded()
+        {
+            if (m_RenderLine != 0)
+                return;
+
+            if (ForceSatFromVsar)
+            {
+                for (int i = 0; i < 64; i++)
+                {
+                    int baseIndex = i << 2;
+                    int g = (m_VDC_VSAR + baseIndex) & 0x7FFF;
+                    m_SatRaw[baseIndex + 0] = ReadVramWord(g + 0);
+                    m_SatRaw[baseIndex + 1] = ReadVramWord(g + 1);
+                    m_SatRaw[baseIndex + 2] = ReadVramWord(g + 2);
+                    m_SatRaw[baseIndex + 3] = ReadVramWord(g + 3);
+                }
+            }
+
+            m_LatchedVDS = GetEffectiveVds(GetEffectiveVdw());
+            m_LatchedVDW = GetEffectiveVdw();
+            m_LatchedHDS = m_VDC_HDS;
+            m_LatchedHDE = m_VDC_HDE;
+            m_LatchedHDW = m_VDC_HDW;
+            m_LatchedScreenWidth = (m_LatchedHDW + 1) * 8;
+            m_LatchedMWR = m_VDC_MWR;
+            m_DisplayCounter = 0;
+            m_VDC_BYR_Offset = 0;
+            RebuildBxrSchedule(0);
+            _currentLineSpriteCount = 0;
+            _currentLineSpriteVisible = -1;
+            _nextLineSpriteCount = 0;
+            _nextLineSpriteVisible = -1;
+            TraceSatFrameIfNeeded();
+        }
+
+        private ScanlineState GetCurrentScanlineState()
+        {
+            int vdw = m_LatchedVDW;
+            int visibleCount = GetVisibleDisplayLineCount(vdw);
+            int rasterLine = m_DisplayCounter - m_LatchedVDS;
+            int visibleLine = m_DisplayCounter - GetFirstActiveDisplayLine();
+            return new ScanlineState(vdw, visibleCount, rasterLine, visibleLine);
+        }
+
+        private void ProcessNonDisplayScanline(in ScanlineState state)
+        {
+            HandleDMA();
+            MaybePrepareFirstVisibleSpriteLine(state);
+        }
+
+        private void MaybePrepareFirstVisibleSpriteLine(in ScanlineState state)
+        {
+            if (state.VisibleCount > 0 &&
+                state.VisibleLine + 1 == 0 &&
+                state.InVdw &&
+                (state.RasterLine + 1) < state.Vdw &&
+                _nextLineSpriteVisible != 0)
+            {
+                BuildSpriteLineBuffer(0, state.RasterLine + 1);
+            }
+        }
+
+        private void ProcessVisibleScanline(in ScanlineState state)
+        {
+            ActivatePreparedSpriteLine(state.VisibleLine);
+            DrawScanLine(state.VisibleLine, state.RasterLine);
+            QueueNextSpriteLine(state);
+        }
+
+        private void ActivatePreparedSpriteLine(int visibleLine)
+        {
+            if (_nextLineSpriteVisible == visibleLine)
+            {
+                var swapSprites = _currentLineSprites;
+                _currentLineSprites = _nextLineSprites;
+                _nextLineSprites = swapSprites;
+                _currentLineSpriteCount = _nextLineSpriteCount;
+                _currentLineSpriteVisible = _nextLineSpriteVisible;
+                _nextLineSpriteCount = 0;
+                _nextLineSpriteVisible = -1;
+                return;
+            }
+
+            if (_currentLineSpriteVisible != visibleLine)
+            {
+                _currentLineSpriteCount = 0;
+                _currentLineSpriteVisible = visibleLine;
+            }
+        }
+
+        private void QueueNextSpriteLine(in ScanlineState state)
+        {
+            if (state.VisibleLine + 1 < state.VisibleCount && state.RasterLine + 1 < state.Vdw)
+                BuildSpriteLineBuffer(state.VisibleLine + 1, state.RasterLine + 1);
+        }
+
+        private void AdvanceScanlineCounters(int vdw)
+        {
+            m_RenderLine++;
+            m_DisplayCounter++;
+            int displayReset = m_LatchedVDS + vdw + 3 + (m_VDC_VCR & 0xFF);
+            if (m_DisplayCounter >= displayReset)
+                m_DisplayCounter = 0;
+        }
+
+        private void UpdateScanlineInterrupts(in ScanlineState state)
+        {
+            if (state.RasterLine + 1 == state.Vdw)
+            {
+                TriggerEndOfDisplay();
+                return;
+            }
+
+            TriggerRasterCompare(state.RasterLine);
+        }
+
+        private void TriggerEndOfDisplay()
+        {
+            if (m_TriggerSAT_DMA || m_VDC_SATB_ENA)
+            {
+                m_DoSAT_DMA = true;
+                m_TriggerSAT_DMA = false;
+                Transient.SatTransferNextWord = 0;
+                Transient.SatTransferWordsRemaining = 0x100;
+            }
+
+            if (m_VDC_VBKIRQ)
+            {
+                m_VDC_VD = true;
+                m_WaitingIRQ = true;
+                if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
+                {
+                    Console.WriteLine($"[PCE-VDC] VBK line={m_RenderLine} VSR=0x{m_VDC_VSR:X4} VDW={m_VDC_VDW} RCR={m_VDC_RCR} CR={(m_VDC_EnableBackground ? 1 : 0)}:{(m_VDC_EnableSprites ? 1 : 0)}");
+                    m_VdcStatusLogCount++;
+                }
+            }
+        }
+
+        private void TriggerRasterCompare(int rasterLine)
+        {
+            if (rasterLine < 0 || rasterLine >= m_LatchedVDW || (m_VDC_RCR - 64) != rasterLine)
+                return;
+
+            if (m_VDC_RCRIRQ)
+            {
+                m_VDC_RR = true;
+                m_WaitingIRQ = true;
+                if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
+                {
+                    Console.WriteLine($"[PCE-VDC] RCR line={m_RenderLine} RCR={m_VDC_RCR}");
+                    m_VdcStatusLogCount++;
+                }
+            }
+        }
+
+        private void FinalizeFrameIfNeeded(int vdw)
+        {
+            if (m_RenderLine < 262)
+                return;
+
+            m_RenderLine = 0;
+            m_FrameCounter++;
+            _currentLineSpriteCount = 0;
+            _currentLineSpriteVisible = -1;
+            _nextLineSpriteCount = 0;
+            _nextLineSpriteVisible = -1;
+            Marshal.Copy(_screenBufPtr, _screenBuf, 0, _screenBuf.Length);
+            FrameReady = true;
+            host.RenderFrame(_screenBuf, m_LatchedScreenWidth, vdw);
+        }
+
+        private int ComputeBgCounterYForRasterLine(int rasterLine)
+            => (m_VDC_BYR + rasterLine - m_VDC_BYR_Offset) & 0x1FF;
+
+        private int GetLatchedBxrForVisibleLine(int visibleLine)
+        {
+            int scheduleLine = Math.Clamp(visibleLine, 0, m_BxrByLine.Length - 1);
+            return m_BxrByLine[scheduleLine];
+        }
+
+        private void LatchBackgroundStateForLine(int visibleLine, int rasterLine)
+        {
+            m_BgCounterY = ComputeBgCounterYForRasterLine(rasterLine);
+            m_BgOffsetY = m_BgCounterY;
+            m_LatchedBxr = GetLatchedBxrForVisibleLine(visibleLine);
         }
 
         private void BuildSpriteLineBuffer(int visibleLine, int rasterLine)
@@ -803,128 +1008,17 @@ namespace ePceCD
 
         public unsafe void tick()
         {
-            if (m_RenderLine == 0)
-            {
-                if (ForceSatFromVsar)
-                {
-                    for (int i = 0; i < 64; i++)
-                    {
-                        int baseIndex = i << 2;
-                        int g = (m_VDC_VSAR + baseIndex) & 0x7FFF;
-                        m_SatRaw[baseIndex + 0] = ReadVramWord(g + 0);
-                        m_SatRaw[baseIndex + 1] = ReadVramWord(g + 1);
-                        m_SatRaw[baseIndex + 2] = ReadVramWord(g + 2);
-                        m_SatRaw[baseIndex + 3] = ReadVramWord(g + 3);
-                    }
-                }
-                m_LatchedVDS = GetEffectiveVds(GetEffectiveVdw());
-                m_LatchedVDW = GetEffectiveVdw();
-                m_LatchedHDS = m_VDC_HDS;
-                m_LatchedHDE = m_VDC_HDE;
-                m_LatchedHDW = m_VDC_HDW;
-                m_LatchedScreenWidth = (m_LatchedHDW + 1) * 8;
-                m_LatchedMWR = m_VDC_MWR;
-                m_DisplayCounter = 0;
-                m_VDC_BYR_Offset = 0;
-                RebuildBxrSchedule(0);
-                _currentLineSpriteCount = 0;
-                _currentLineSpriteVisible = -1;
-                _nextLineSpriteCount = 0;
-                _nextLineSpriteVisible = -1;
-                TraceSatFrameIfNeeded();
-            }
-            int vdw = m_LatchedVDW;
-            int visibleCount = GetVisibleDisplayLineCount(vdw);
-            int rasterLine = m_DisplayCounter - m_LatchedVDS;
-            int visibleLine = m_DisplayCounter - GetFirstActiveDisplayLine();
-            bool inVdw = rasterLine >= 0 && rasterLine < vdw;
-            bool inDisplay = visibleLine >= 0 && visibleLine < visibleCount;
-            if (!inDisplay)
-            {
-                HandleDMA();
-                if (visibleCount > 0 && visibleLine + 1 == 0 && inVdw && (rasterLine + 1) < vdw && _nextLineSpriteVisible != 0)
-                    BuildSpriteLineBuffer(0, rasterLine + 1);
-            }
+            BeginFrameIfNeeded();
+            ScanlineState state = GetCurrentScanlineState();
+
+            if (state.InDisplay)
+                ProcessVisibleScanline(state);
             else
-            {
-                if (_nextLineSpriteVisible == visibleLine)
-                {
-                    var swapSprites = _currentLineSprites;
-                    _currentLineSprites = _nextLineSprites;
-                    _nextLineSprites = swapSprites;
-                    _currentLineSpriteCount = _nextLineSpriteCount;
-                    _currentLineSpriteVisible = _nextLineSpriteVisible;
-                    _nextLineSpriteCount = 0;
-                    _nextLineSpriteVisible = -1;
-                }
-                else if (_currentLineSpriteVisible != visibleLine)
-                {
-                    _currentLineSpriteCount = 0;
-                    _currentLineSpriteVisible = visibleLine;
-                }
+                ProcessNonDisplayScanline(state);
 
-                DrawScanLine(visibleLine, rasterLine);
-
-                if (visibleLine + 1 < visibleCount && rasterLine + 1 < vdw)
-                    BuildSpriteLineBuffer(visibleLine + 1, rasterLine + 1);
-            }
-
-            m_RenderLine++;
-            m_DisplayCounter++;
-            int displayReset = m_LatchedVDS + vdw + 3 + (m_VDC_VCR & 0xFF);
-            if (m_DisplayCounter >= displayReset)
-                m_DisplayCounter = 0;
-
-            if (rasterLine + 1 == vdw)
-            {
-                if (m_TriggerSAT_DMA || m_VDC_SATB_ENA)
-                {
-                    m_DoSAT_DMA = true;
-                    m_TriggerSAT_DMA = false;
-                    Transient.SatTransferNextWord = 0;
-                    Transient.SatTransferWordsRemaining = 0x100;
-                }
-                if (m_VDC_VBKIRQ)
-                {
-                    m_VDC_VD = true;
-                    m_WaitingIRQ = true;
-                    if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
-                    {
-                        Console.WriteLine($"[PCE-VDC] VBK line={m_RenderLine} VSR=0x{m_VDC_VSR:X4} VDW={m_VDC_VDW} RCR={m_VDC_RCR} CR={(m_VDC_EnableBackground ? 1 : 0)}:{(m_VDC_EnableSprites ? 1 : 0)}");
-                        m_VdcStatusLogCount++;
-                    }
-                }
-            }
-            else
-            {
-                if (rasterLine >= 0 && rasterLine < vdw && (m_VDC_RCR - 64) == rasterLine)
-                {
-                    if (m_VDC_RCRIRQ)
-                    {
-                        m_VDC_RR = true;
-                        m_WaitingIRQ = true;
-                        if (TraceVdcRegs && !m_VdcStatusSuppressed && m_VdcStatusLogCount < 20)
-                        {
-                            Console.WriteLine($"[PCE-VDC] RCR line={m_RenderLine} RCR={m_VDC_RCR}");
-                            m_VdcStatusLogCount++;
-                        }
-                    }
-                }
-            }
-
-            if (m_RenderLine >= 262)
-            {
-                m_RenderLine = 0;
-                m_FrameCounter++;
-                _currentLineSpriteCount = 0;
-                _currentLineSpriteVisible = -1;
-                _nextLineSpriteCount = 0;
-                _nextLineSpriteVisible = -1;
-                //ConvertColor();
-                Marshal.Copy(_screenBufPtr, _screenBuf, 0, _screenBuf.Length);
-                FrameReady = true;
-                host.RenderFrame(_screenBuf, m_LatchedScreenWidth, vdw);
-            }
+            AdvanceScanlineCounters(state.Vdw);
+            UpdateScanlineInterrupts(state);
+            FinalizeFrameIfNeeded(state.Vdw);
         }
 
         private unsafe void HandleDMA()
@@ -1204,10 +1298,7 @@ namespace ePceCD
 
             if (m_LatchedEnableBackground)
             {
-                m_BgCounterY = (m_VDC_BYR + rasterLine - m_VDC_BYR_Offset) & 0x1FF;
-                m_BgOffsetY = m_BgCounterY;
-                int scheduleLine = Math.Clamp(visibleLine, 0, m_BxrByLine.Length - 1);
-                m_LatchedBxr = m_BxrByLine[scheduleLine];
+                LatchBackgroundStateForLine(visibleLine, rasterLine);
                 int screenReg = (m_LatchedMWR >> 4) & 0x07;
                 bool bgCgMode = (m_LatchedMWR & 0x03) == 0x03 && (m_LatchedMWR & 0x80) != 0;
                 int screenSizeX = ScreenSizeX[screenReg];
