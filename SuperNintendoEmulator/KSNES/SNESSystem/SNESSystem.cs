@@ -14,13 +14,16 @@ public class SNESSystem : ISNESSystem
     private static readonly bool PerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
         || OperatingSystem.IsAndroid();
+    private static readonly bool ForceLegacyTiming =
+        OperatingSystem.IsAndroid() || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_LEGACY_TIMING"), "1", StringComparison.Ordinal);
     private static readonly bool DetailedPerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF_DETAIL"), "1", StringComparison.Ordinal);
     // Keep fast CPU windows opt-in for now. Raster IRQ-driven paths such as Kirby 3's HUD
     // self-disable the fast window anyway, and leaving the feature on by default just adds
     // more branch/work overhead in titles that spend most of the frame with H/V IRQ timing armed.
     private static readonly bool DisableFastPpuPaths =
-        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS"), "0", StringComparison.Ordinal);
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS"), "0", StringComparison.Ordinal) 
+        || OperatingSystem.IsAndroid();
     private enum GpDmaState
     {
         Idle,
@@ -37,6 +40,8 @@ public class SNESSystem : ISNESSystem
         JoypadPage,
         CpuRegs
     }
+
+    private readonly record struct DeferredCpuIoWrite(int Address, int Value, BusPageKind PageKind, int RemainingAccessBoundaries);
 
     [field: NonSerialized] public ICPU CPU { get; private set; }
     [field: NonSerialized] public IPPU PPU { get; private set; }
@@ -84,7 +89,7 @@ public class SNESSystem : ISNESSystem
 
     private const int BusPageAccessMask = 0xff;
     private const int BusPageKindShift = 8;
-    private const ulong ApuPeriodicCatchUpMask = 0xFF;
+    private const ulong ApuPeriodicCatchUpMask = 0x3F;
 
     [JsonIgnore]
     private readonly int[] _dmaOffs = [
@@ -105,7 +110,6 @@ public class SNESSystem : ISNESSystem
     private const ulong ApuMasterClockFrequency = ApuOutputFrequency * 768;
     private const ulong NtscMasterClockFrequency = 21_477_270;
     private const ulong PalMasterClockFrequency = 21_281_370;
-
     private byte[] _dmaBadr = [];
     private ushort[] _dmaAadr = [];
     private byte[] _dmaAadrBank = [];
@@ -201,6 +205,7 @@ public class SNESSystem : ISNESSystem
     [NonSerialized]
     private int _pendingDmaWriteValue;
     [NonSerialized]
+    private readonly List<DeferredCpuIoWrite> _deferredCpuIoWrites = [];
     private long _perfFrameTicks;
     [NonSerialized]
     private long _perfPpuTicks;
@@ -231,6 +236,8 @@ public class SNESSystem : ISNESSystem
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS"), "1", StringComparison.Ordinal);
     private readonly int _tracePpuBusLimit;
     private int _tracePpuBusCount;
+    [NonSerialized]
+    private readonly HashSet<int> _tracePpuBusAddrs = ParseTraceHexByteSet(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS_ADDRS"));
     private readonly bool _traceWramWrites =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_WRAM"), "1", StringComparison.Ordinal);
     [NonSerialized]
@@ -274,6 +281,7 @@ public class SNESSystem : ISNESSystem
         ParseTraceLimit("EUTHERDRIVE_TRACE_SGNG_IRQ_WINDOW_LIMIT", 128);
     [NonSerialized]
     private int _traceSgngIrqWindowCount;
+    private bool HasExplicitPpuBusTraceFilter => _tracePpuBusAddrs.Count > 0;
     private bool HasExplicitWramTraceFilter => _traceWramAddrs.Count > 0;
 
     private int[] _dmaMode = [];
@@ -536,6 +544,10 @@ public class SNESSystem : ISNESSystem
     {
         int fullAdr = adr & 0xffffff;
         ushort pageData = _busPageData[fullAdr >> 8];
+        if (!dma)
+        {
+            AdvanceDeferredCpuIoWritesForAccessBoundary();
+        }
         int accessTime = 0;
         if (!dma)
         {
@@ -569,6 +581,7 @@ public class SNESSystem : ISNESSystem
     internal int ReadCpuByteFast(int fullAdr, ushort pageData)
     {
         fullAdr &= 0xffffff;
+        AdvanceDeferredCpuIoWritesForAccessBoundary();
         if (PerfStatsEnabled)
             _perfCpuReads++;
         _cpuMemOps++;
@@ -587,6 +600,7 @@ public class SNESSystem : ISNESSystem
     internal void WriteCpuByteFast(int fullAdr, int value, ushort pageData)
     {
         fullAdr &= 0xffffff;
+        AdvanceDeferredCpuIoWritesForAccessBoundary();
         if (PerfStatsEnabled)
             _perfCpuWrites++;
         _cpuMemOps++;
@@ -594,8 +608,18 @@ public class SNESSystem : ISNESSystem
         _cpuCyclesLeft += accessTime;
         OpenBus = value;
         bool isApuPortAccess = accessTime > 0 && IsCpuApuPortAccess(fullAdr);
+        BusPageKind pageKind = GetBusPageKind(pageData);
+        if (ShouldDeferCpuIoWrite(pageKind))
+        {
+            _deferredCpuIoWrites.Add(new DeferredCpuIoWrite(fullAdr, value, pageKind, 1));
+            if (isApuPortAccess)
+            {
+                AdvanceApuForCpuAccess(accessTime);
+            }
+            return;
+        }
         if (_useFastWritePath)
-            WwriteFast(fullAdr, value, false, GetBusPageKind(pageData));
+            WwriteFast(fullAdr, value, false, pageKind);
         else
             Wwrite(fullAdr, value, false);
         if (isApuPortAccess)
@@ -609,6 +633,11 @@ public class SNESSystem : ISNESSystem
     {
         int fullAdr = adr & 0xffffff;
         ushort pageData = _busPageData[fullAdr >> 8];
+        BusPageKind pageKind = GetBusPageKind(pageData);
+        if (!dma)
+        {
+            AdvanceDeferredCpuIoWritesForAccessBoundary();
+        }
         int accessTime = 0;
         if (!dma)
         {
@@ -621,12 +650,21 @@ public class SNESSystem : ISNESSystem
         else
         {
             if (PerfStatsEnabled)
-                _perfDmaWrites++;
+            _perfDmaWrites++;
         }
         OpenBus = value;
         bool isApuPortAccess = !dma && accessTime > 0 && IsCpuApuPortAccess(fullAdr);
+        if (ShouldDeferCpuIoWrite(pageKind, dma))
+        {
+            _deferredCpuIoWrites.Add(new DeferredCpuIoWrite(fullAdr, value, pageKind, 1));
+            if (isApuPortAccess)
+            {
+                AdvanceApuForCpuAccess(accessTime);
+            }
+            return;
+        }
         if (_useFastWritePath)
-            WwriteFast(fullAdr, value, dma, GetBusPageKind(pageData));
+            WwriteFast(fullAdr, value, dma, pageKind);
         else
             Wwrite(fullAdr, value, dma);
         if (isApuPortAccess)
@@ -712,6 +750,7 @@ public class SNESSystem : ISNESSystem
         _dmaUnusedBit = new bool[8];
         _hdmaDoTransfer = new bool[8];
         _hdmaTerminated = new bool[8];
+        _deferredCpuIoWrites.Clear();
         OpenBus = 0;
         RomImpl.ResetCoprocessor();
         EnsureBusTables();
@@ -729,6 +768,7 @@ public class SNESSystem : ISNESSystem
         _irqRaisedAtCycle = Cycles;
         _oddFrame = false;
         _autoJoyPendingStart = false;
+        _deferredCpuIoWrites.Clear();
         _gpdmaState = _dmaBusy ? GpDmaState.Pending : GpDmaState.Idle;
         _gpdmaChannel = 0;
         _gpdmaBytesCopied = 0;
@@ -833,12 +873,16 @@ public class SNESSystem : ISNESSystem
                 _vblankNmiFlag = false;
                 _inVblank = false;
                 _autoJoyPendingStart = false;
-                InitHdma();
             }
         }
         else if (XPos == 4)
         {
             _inHblank = false;
+            if (YPos == 0)
+            {
+                // HDMA reload begins on H=4 of scanline 0, not at the scanline edge.
+                InitHdma();
+            }
         }
         else if (XPos == 1096)
         {
@@ -909,9 +953,67 @@ public class SNESSystem : ISNESSystem
         AdvanceBeamPosition(currentLineMclks);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool ShouldDeferCpuIoWrite(BusPageKind pageKind, bool dma = false)
+    {
+        return !dma && pageKind is BusPageKind.BBus or BusPageKind.JoypadPage or BusPageKind.CpuRegs;
+    }
+
+    private void AdvanceDeferredCpuIoWritesForAccessBoundary()
+    {
+        if (_deferredCpuIoWrites.Count == 0)
+            return;
+
+        for (int i = _deferredCpuIoWrites.Count - 1; i >= 0; i--)
+        {
+            var write = _deferredCpuIoWrites[i];
+            int remainingAccessBoundaries = write.RemainingAccessBoundaries - 1;
+            if (remainingAccessBoundaries > 0)
+            {
+                _deferredCpuIoWrites[i] = write with { RemainingAccessBoundaries = remainingAccessBoundaries };
+                continue;
+            }
+
+            ApplyDeferredCpuIoWrite(write);
+            _deferredCpuIoWrites.RemoveAt(i);
+        }
+    }
+
+    private void ApplyDeferredCpuIoWrite(DeferredCpuIoWrite write)
+    {
+        int adr = write.Address & 0xFFFF;
+        switch (write.PageKind)
+        {
+            case BusPageKind.BBus:
+                WriteBBusFast(adr & 0xFF, write.Value, false);
+                break;
+            case BusPageKind.JoypadPage:
+                if (adr == 0x4016)
+                    WriteJoypadStrobeFast(write.Value);
+                break;
+            case BusPageKind.CpuRegs:
+                if (adr >= 0x4200 && adr < 0x4380)
+                    WriteReg(adr, write.Value);
+                break;
+        }
+    }
+
+    private void FlushDeferredCpuIoWrites()
+    {
+        if (_deferredCpuIoWrites.Count == 0)
+            return;
+
+        foreach (var write in _deferredCpuIoWrites)
+        {
+            ApplyDeferredCpuIoWrite(write);
+        }
+
+        _deferredCpuIoWrites.Clear();
+    }
+
     private bool TryRunFastCpuWindow(bool noPpu)
     {
-        if (DisableFastPpuPaths)
+        if (DisableFastPpuPaths || ForceLegacyTiming)
             return false;
 
         if (!RomImpl.AllowsFastCpuWindow)
@@ -987,7 +1089,7 @@ public class SNESSystem : ISNESSystem
         // SA-1 can raise SNES-visible IRQ work while the main CPU is only "waiting".
         // Batching that wait still wakes the CPU too late for Kirby 3's mid-frame HUD DMA,
         // so keep the safe wait path for plain SNES titles only.
-        if (ROM.Sa1 != null)
+        if (ROM.Sa1 != null || ForceLegacyTiming)
             return false;
 
         if (_inIrq || _cpuImpl.NmiWanted || RomImpl.IrqWanted || RomImpl.NmiWanted)
@@ -1355,6 +1457,7 @@ public class SNESSystem : ISNESSystem
         _cpuImpl.CyclesLeft = 0;
         _cpuMemOps = 0;
         _cpuImpl.Cycle();
+        FlushDeferredCpuIoWrites();
         _cpuCyclesLeft += (_cpuImpl.CyclesLeft + 1 - _cpuMemOps) * 6;
         _cpuCyclesLeft -= 2;
     }
@@ -2212,6 +2315,10 @@ public class SNESSystem : ISNESSystem
         {
             return;
         }
+        if (HasExplicitPpuBusTraceFilter && !_tracePpuBusAddrs.Contains(adr & 0xFF))
+        {
+            return;
+        }
         switch (adr)
         {
             case 0x01: // OBJSEL
@@ -2265,8 +2372,13 @@ public class SNESSystem : ISNESSystem
                         regs = $" regs={cpu.GetTraceState()}";
                     }
                 }
+                string ppuState = string.Empty;
+                if (_ppuImpl is not null && adr is >= 0x16 and <= 0x19)
+                {
+                    ppuState = $" vramAdr=0x{_ppuImpl.PeekVramAddress():X4} remapAdr=0x{_ppuImpl.PeekVramRemapAddress():X4}";
+                }
                 Console.WriteLine(
-                    $"[PPU-BUS] {src} write $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes}{regs} xy=({XPos},{YPos}) vblank={_inVblank} hblank={_inHblank}");
+                    $"[PPU-BUS] {src} write $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes}{regs}{ppuState} xy=({XPos},{YPos}) vblank={_inVblank} hblank={_inHblank}");
                 _tracePpuBusCount++;
                 return;
         }
@@ -2317,6 +2429,7 @@ public class SNESSystem : ISNESSystem
     {
         if (adr < 0x34)
         {
+            TracePpuBusWrite(adr, value, dma);
             _ppuImpl.Write(adr, value, dma);
             return;
         }
@@ -2546,6 +2659,11 @@ public class SNESSystem : ISNESSystem
         return _busPageData[(adr & 0xffffff) >> 8] & BusPageAccessMask;
     }
 
+    internal int GetCpuAccessTimeForDebug(int adr)
+    {
+        return GetAccessTime(adr);
+    }
+
     private int GetDmaStartAlignmentDelay()
     {
         int remainder = (int)(Cycles & 0x7);
@@ -2716,6 +2834,26 @@ public class SNESSystem : ISNESSystem
             string token = part.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? part[2..] : part;
             if (int.TryParse(token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int value))
                 result.Add(value & 0x1FFFF);
+        }
+
+        return result;
+    }
+
+    private static HashSet<int> ParseTraceHexByteSet(string? raw)
+    {
+        var result = new HashSet<int>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return result;
+        }
+
+        foreach (string token in raw.Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string value = token.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? token[2..] : token;
+            if (int.TryParse(value, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int parsed))
+            {
+                result.Add(parsed & 0xFF);
+            }
         }
 
         return result;
