@@ -235,6 +235,8 @@ public class PPU : IPPU
     private int _mode7MultOperandR;
     private int _mode7Prev;
     private int _multResult;
+    private byte _ppu1OpenBus;
+    private byte _ppu2OpenBus;
 
     private bool _mode7LargeField;
     private bool _mode7Char0fill;
@@ -738,6 +740,8 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
         _mode7MultOperandR = -1;
         _mode7Prev = 0;
         _multResult = GetMode7MultResult();
+        _ppu1OpenBus = 0;
+        _ppu2OpenBus = 0;
         _mode7LargeField = false;
         _mode7Char0fill = false;
         _mode7FlipX = false;
@@ -792,14 +796,21 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
 
     public int Read(int adr)
     {
+        int value;
         switch (adr)
         {
             case 0x34:
-                return GetMode7MultResult() & 0xff;
+                value = GetMode7MultResult() & 0xff;
+                _ppu1OpenBus = (byte)value;
+                return value;
             case 0x35:
-                return (GetMode7MultResult() & 0xff00) >> 8;
+                value = (GetMode7MultResult() & 0xff00) >> 8;
+                _ppu1OpenBus = (byte)value;
+                return value;
             case 0x36:
-                return (GetMode7MultResult() & 0xff0000) >> 16;
+                value = (GetMode7MultResult() & 0xff0000) >> 16;
+                _ppu1OpenBus = (byte)value;
+                return value;
             case 0x37:
                 if (_snes!.PPULatch)
                 {
@@ -838,6 +849,7 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                     SetCurrentOamAddress(oamAddress + 1);
                     _oamSecond = false;
                 }
+                _ppu1OpenBus = (byte)val;
                 return val;
             case 0x39:
                 int val2 = _vramReadBuffer;
@@ -847,7 +859,9 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                     _vramAdr += _vramInc;
                     _vramAdr &= 0xffff;
                 }
-                return val2 & 0xff;
+                value = val2 & 0xff;
+                _ppu1OpenBus = (byte)value;
+                return value;
             case 0x3a:
                 int val3 = _vramReadBuffer;
                 _vramReadBuffer = _vram[GetVramRemap()];
@@ -856,7 +870,9 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                     _vramAdr += _vramInc;
                     _vramAdr &= 0xffff;
                 }
-                return (val3 & 0xff00) >> 8;
+                value = (val3 & 0xff00) >> 8;
+                _ppu1OpenBus = (byte)value;
+                return value;
             case 0x3b:
                 int val4;
                 if (!_cgramSecond)
@@ -870,6 +886,7 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                     _cgramAdr &= 0xff;
                     _cgramSecond = false;
                 }
+                _ppu2OpenBus = (byte)val4;
                 return val4;
             case 0x3c:
                 int val5;
@@ -883,6 +900,7 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                     val5 = (LatchedHpos & 0xff00) >> 8;
                     _latchHsecond = false;
                 }
+                _ppu2OpenBus = (byte)val5;
                 return val5;
             case 0x3d:
                 int val6;
@@ -896,14 +914,19 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                     val6 = (LatchedVpos & 0xff00) >> 8;
                     _latchVsecond = false;
                 }
+                _ppu2OpenBus = (byte)val6;
                 return val6;
             case 0x3e:
                 int val7 = _timeOver ? 0x80 : 0;
                 val7 |= _rangeOver ? 0x40 : 0;
-                return val7 | 0x1;
+                val7 |= _ppu1OpenBus & 0x10;
+                val7 |= 0x1;
+                _ppu1OpenBus = (byte)val7;
+                return val7;
             case 0x3f:
                 int val8 = _evenFrame ? 0x80 : 0;
                 val8 |= CountersLatched ? 0x40 : 0;
+                val8 |= _ppu2OpenBus & 0x20;
                 if (_snes!.IsPal)
                     val8 |= 0x10;
                 if (_snes!.PPULatch)
@@ -912,7 +935,9 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                 }
                 _latchHsecond = false;
                 _latchVsecond = false;
-                return val8 | 0x2;
+                val8 |= 0x1;
+                _ppu2OpenBus = (byte)val8;
+                return val8;
         }
         return _snes!.OpenBus;
     }
