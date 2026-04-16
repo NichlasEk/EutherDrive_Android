@@ -231,6 +231,8 @@ public class PPU : IPPU
     private int _mode7D;
     private int _mode7X;
     private int _mode7Y;
+    private int _mode7MultOperandL;
+    private int _mode7MultOperandR;
     private int _mode7Prev;
     private int _multResult;
 
@@ -732,8 +734,10 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
         _mode7D = 0;
         _mode7X = 0;
         _mode7Y = 0;
+        _mode7MultOperandL = -1;
+        _mode7MultOperandR = -1;
         _mode7Prev = 0;
-        _multResult = 0;
+        _multResult = GetMode7MultResult();
         _mode7LargeField = false;
         _mode7Char0fill = false;
         _mode7FlipX = false;
@@ -791,11 +795,11 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
         switch (adr)
         {
             case 0x34:
-                return _multResult & 0xff;
+                return GetMode7MultResult() & 0xff;
             case 0x35:
-                return (_multResult & 0xff00) >> 8;
+                return (GetMode7MultResult() & 0xff00) >> 8;
             case 0x36:
-                return (_multResult & 0xff0000) >> 16;
+                return (GetMode7MultResult() & 0xff0000) >> 16;
             case 0x37:
                 if (_snes!.PPULatch)
                 {
@@ -1133,13 +1137,15 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                 return;
             case 0x1b:
                 _mode7A = Get16Signed((value << 8) | _mode7Prev);
+                _mode7MultOperandL = _mode7A;
                 _mode7Prev = value;
-                _multResult = GetMultResult(_mode7A, _mode7B);
+                _multResult = GetMode7MultResult();
                 return;
             case 0x1c:
                 _mode7B = Get16Signed((value << 8) | _mode7Prev);
+                _mode7MultOperandR = unchecked((sbyte)value);
                 _mode7Prev = value;
-                _multResult = GetMultResult(_mode7A, _mode7B);
+                _multResult = GetMode7MultResult();
                 return;
             case 0x1d:
                 _mode7C = Get16Signed((value << 8) | _mode7Prev);
@@ -4147,11 +4153,8 @@ FetchTileInBuffer(_lineHoff[2] + ((tileStartX - 1) & 0x1f8), _lineVoff[2] + 8, 2
        return val;
     }
 
-    private static int GetMultResult(int a, int b) {
-        b = b < 0 ? 65536 + b : b;
-        b >>= 8;
-        b = (b & 0x80) > 0 ? -(256 - b) : b;
-        int ans = a * b;
+    private int GetMode7MultResult() {
+        int ans = _mode7MultOperandL * _mode7MultOperandR;
         if (ans < 0)
         {
             return 16777216 + ans;
