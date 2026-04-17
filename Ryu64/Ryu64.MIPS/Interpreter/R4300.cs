@@ -70,6 +70,8 @@ namespace Ryu64.MIPS
         private static int _traceViCalcWindowCount = 0;
         private static readonly bool TraceStuckPcDetails =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_STUCK_PC"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceExceptionEntry =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EXCEPTION_ENTRY"), "0", StringComparison.Ordinal);
         private static readonly bool TraceMegaDispatchWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaDispatchWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH_LIMIT", 160);
@@ -127,6 +129,7 @@ namespace Ryu64.MIPS
         private static uint _delaySlotExceptionBranchPc;
         private static bool _loggedPifTailEntry;
         private static bool _loggedFirstBfcEntry;
+        private static ulong _cpuExceptionLogCount;
         private static ulong _tlbRefillLogCount;
         private static ulong _addressErrorLogCount;
         private static bool _loadLinkedActive;
@@ -259,6 +262,35 @@ namespace Ryu64.MIPS
             else
             {
                 Registers.R4300.PC = bevSet ? 0xBFC00380u : 0x80000180u;
+            }
+
+            _cpuExceptionLogCount++;
+            if (TraceExceptionEntry && (_cpuExceptionLogCount <= 64 || (_cpuExceptionLogCount % 256) == 0))
+            {
+                uint vectorPc = Registers.R4300.PC;
+                uint vec0 = TraceReadWordOrZero(vectorPc);
+                uint vec4 = TraceReadWordOrZero(vectorPc + 4u);
+                uint vec8 = TraceReadWordOrZero(vectorPc + 8u);
+                uint vecC = TraceReadWordOrZero(vectorPc + 12u);
+                Common.Logger.PrintWarningLine(
+                    $"CPU exception entry (count={_cpuExceptionLogCount}) faultPc=0x{faultingPc:x8} vector=0x{vectorPc:x8} " +
+                    $"exc=0x{exceptionCode:x8} exlWasSet={exlAlreadySet} bev={bevSet} delay={inDelaySlot} " +
+                    $"epc=0x{Registers.COP0.Reg[Registers.COP0.EPC_REG]:x8} cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8} " +
+                    $"status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} badv=0x{Registers.COP0.Reg[Registers.COP0.BADVADDR_REG]:x8} " +
+                    $"vec[0]=0x{vec0:x8} vec[4]=0x{vec4:x8} vec[8]=0x{vec8:x8} vec[c]=0x{vecC:x8}");
+
+                if (_cpuExceptionLogCount <= 16)
+                {
+                    StringBuilder sb = new StringBuilder();
+                    sb.Append("Recent PCs before CPU exception:");
+                    for (int i = 0; i < 24; i++)
+                    {
+                        int idx = (_recentInstPos - 1 - i) & RecentInstHistoryMask;
+                        RecentInst rec = _recentInst[idx];
+                        sb.Append($" [{i}]pc=0x{rec.Pc:x8}/op=0x{rec.Op:x8}");
+                    }
+                    Common.Logger.PrintWarningLine(sb.ToString());
+                }
             }
 
             ClearLoadLinkedReservation();

@@ -37,7 +37,9 @@ namespace Ryu64.MIPS
         private static readonly bool EnableRspTaskHleDispatcher =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_RSP_TASK_HLE"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRspInterpreter =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INTERPRETER"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INTERPRETER"), "0", StringComparison.Ordinal);
+        private static readonly bool EnableRspInterpreterGraphicsOnly =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INTERPRETER_GRAPHICS_ONLY"), "1", StringComparison.Ordinal);
         private static ulong _rspKickCount;
         private static int _traceWatchRangeLogCount;
         private const int TraceWatchRangeLogLimit = 512;
@@ -103,6 +105,17 @@ namespace Ryu64.MIPS
             _traceWatchRangeLogCount++;
             Common.Logger.PrintWarningLine(
                 $"[N64WATCH] {op} addr=0x{virtualAddress:x8} phys=0x{physicalAddress:x8} value=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
+        }
+
+        private static void RefreshCpuInterruptView()
+        {
+            R4300.RefreshRcpInterruptPending();
+        }
+
+        private static void RaiseCpuInterruptFromRcpEvent()
+        {
+            R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         public readonly byte[] SP_DMEM_RW         = new byte[0x1000];
@@ -257,6 +270,57 @@ namespace Ryu64.MIPS
 
         private List<MemEntry> MemoryMapList = new List<MemEntry>();
         private MemEntry[]     MemoryMap;
+
+        private uint GetViLinesPerFrame()
+        {
+            uint viVSync = ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x03FFu;
+            return (viVSync == 0) ? 0u : (viVSync + 1u);
+        }
+
+        private uint GetCpuCyclesPerViLine(uint viLinesPerFrame)
+        {
+            if (viLinesPerFrame == 0)
+                return DefaultCpuCyclesPerViLine;
+
+            uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
+            return (cpuCyclesPerViLine == 0) ? 1u : cpuCyclesPerViLine;
+        }
+
+        private void RecomputeViInterruptSchedule()
+        {
+            uint viLinesPerFrame = GetViLinesPerFrame();
+            if (viLinesPerFrame == 0)
+            {
+                _viFrameDelayCycles = 0;
+                _viInterruptCyclesRemaining = 0;
+                return;
+            }
+
+            uint cpuCyclesPerViLine = GetCpuCyclesPerViLine(viLinesPerFrame);
+            _viFrameDelayCycles = cpuCyclesPerViLine * viLinesPerFrame;
+            if (_viFrameDelayCycles == 0)
+                _viFrameDelayCycles = CpuCyclesPerViFrame;
+
+            uint viIntrLine = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
+            if (viIntrLine >= viLinesPerFrame)
+            {
+                _viInterruptCyclesRemaining = 0;
+                return;
+            }
+
+            uint currentLine = _viCurrentLine % viLinesPerFrame;
+            uint currentOffset = _viLineCycleAccum % cpuCyclesPerViLine;
+            uint currentPos = currentLine * cpuCyclesPerViLine + currentOffset;
+            uint targetPos = viIntrLine * cpuCyclesPerViLine;
+
+            uint remaining = (targetPos > currentPos)
+                ? (targetPos - currentPos)
+                : (_viFrameDelayCycles - currentPos + targetPos);
+
+            // Match edge-triggered "next event" behavior: if we're exactly on the target,
+            // schedule the next frame's interrupt instead of firing continuously.
+            _viInterruptCyclesRemaining = (remaining == 0) ? _viFrameDelayCycles : remaining;
+        }
 
         public Memory(byte[] Rom)
         {
@@ -472,19 +536,13 @@ namespace Ryu64.MIPS
             }
 
             uint viLinesPerFrame = viVSync + 1u;
-            uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
-            if (cpuCyclesPerViLine == 0)
-                cpuCyclesPerViLine = 1;
+            uint cpuCyclesPerViLine = GetCpuCyclesPerViLine(viLinesPerFrame);
             uint viFrameDelayCycles = cpuCyclesPerViLine * viLinesPerFrame;
             if (viFrameDelayCycles == 0)
                 viFrameDelayCycles = CpuCyclesPerViFrame;
 
             if (_viFrameDelayCycles != viFrameDelayCycles)
-            {
-                _viFrameDelayCycles = viFrameDelayCycles;
-                if (_viInterruptCyclesRemaining == 0 || _viInterruptCyclesRemaining > viFrameDelayCycles)
-                    _viInterruptCyclesRemaining = viFrameDelayCycles;
-            }
+                RecomputeViInterruptSchedule();
 
             _viLineCycleAccum += cpuCycles;
             while (_viLineCycleAccum >= cpuCyclesPerViLine)
@@ -501,16 +559,19 @@ namespace Ryu64.MIPS
             if (viIntrLine >= viLinesPerFrame || _viFrameDelayCycles == 0)
                 return;
 
+            if (_viInterruptCyclesRemaining == 0)
+                RecomputeViInterruptSchedule();
+
             if (cpuCycles >= _viInterruptCyclesRemaining)
             {
                 uint remaining = cpuCycles;
                 while (remaining >= _viInterruptCyclesRemaining)
                 {
                     remaining -= _viInterruptCyclesRemaining;
-                    _viInterruptCyclesRemaining = _viFrameDelayCycles;
                     _viField ^= (ReadBigEndianWord(VI_STATUS_REG_RW) >> 6) & 0x1u;
                     WriteBigEndianWord(VI_CURRENT_REG_RW, (_viCurrentLine & ~1u) | (_viField & 1u));
-                    SetMiViInterrupt();
+                    SetMiViInterrupt(immediate: true);
+                    _viInterruptCyclesRemaining = _viFrameDelayCycles;
                 }
 
                 if (remaining != 0)
@@ -559,7 +620,7 @@ namespace Ryu64.MIPS
             piStatus &= ~0x00000003u;
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
 
-            SetMiPiInterrupt();
+            SetMiPiInterrupt(immediate: true);
         }
 
         private void AdvanceSiLifecycle(uint cpuCycles)
@@ -627,7 +688,7 @@ namespace Ryu64.MIPS
                     $"siStatus=0x{ReadBigEndianWord(SI_STATUS_REG_R):x8} pifCtl=0x{PIFRAM[63]:x2} pc=0x{Registers.R4300.PC:x8}");
             }
 
-            SetMiSiInterrupt();
+            SetMiSiInterrupt(immediate: true);
         }
 
         private void AdvanceRspDpLifecycle(uint cpuCycles)
@@ -757,7 +818,7 @@ namespace Ryu64.MIPS
             }
 
             if ((status & SpStatusIntrBreak) != 0)
-                SetMiSpInterrupt();
+                SetMiSpInterrupt(immediate: true);
         }
 
         private void FinalizeDpInterrupt()
@@ -769,7 +830,7 @@ namespace Ryu64.MIPS
                     $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} " +
                     $"dpcStatus=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8}");
             }
-            SetMiDpInterrupt();
+            SetMiDpInterrupt(immediate: true);
         }
 
         private void FinalizeGraphicsTask()
@@ -1239,8 +1300,7 @@ namespace Ryu64.MIPS
             ApplyMiMaskPair(ref mask, value, 10, 11, 5); // DP
 
             WriteBigEndianWord(MI_INTR_MASK_REG_R, mask);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
             if (TraceN64Io || (Registers.R4300.PC >= 0x80093000u && Registers.R4300.PC <= 0x80094500u))
             {
                 Common.Logger.PrintWarningLine($"[N64IO] MI_INTR_MASK new=0x{mask:x8}");
@@ -1663,6 +1723,13 @@ namespace Ryu64.MIPS
             if (!TryReadRspTaskFromDmem(out RspTask task))
                 return;
 
+            if (EnableRspInterpreterGraphicsOnly && task.Type != 1)
+            {
+                if (EnableRspTaskHleDispatcher)
+                    TryDispatchRspTaskHle(ref status);
+                return;
+            }
+
             _rspKickCount++;
             _activeRspTask = task;
 
@@ -1854,7 +1921,12 @@ namespace Ryu64.MIPS
                 case 4: return ReadBigEndianWord(SP_STATUS_REG_R);
                 case 5: return ReadBigEndianWord(SP_DMA_FULL_REG_R);
                 case 6: return ReadBigEndianWord(SP_DMA_BUSY_REG_R);
-                case 7: return ReadBigEndianWord(SP_SEMAPHORE_REG_R);
+                case 7:
+                    {
+                        uint value = ReadBigEndianWord(SP_SEMAPHORE_REG_R);
+                        WriteBigEndianWord(SP_SEMAPHORE_REG_R, 1);
+                        return value;
+                    }
                 case 8: return ReadBigEndianWord(DPC_START_REG_RW);
                 case 9: return ReadBigEndianWord(DPC_END_REG_RW);
                 case 10: return ReadBigEndianWord(DPC_CURRENT_REG_RW);
@@ -1939,13 +2011,15 @@ namespace Ryu64.MIPS
                 mask |= targetMask;
         }
 
-        private void SetMiSpInterrupt()
+        private void SetMiSpInterrupt(bool immediate = false)
         {
             const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
             bool wasSet = (MI_INTR_REG_R[3] & MiSpIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiSpIntrBit;
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (immediate)
+                RaiseCpuInterruptFromRcpEvent();
+            else
+                RefreshCpuInterruptView();
             if (TraceN64Io && !wasSet)
             {
                 Common.Logger.PrintWarningLine(
@@ -1958,8 +2032,7 @@ namespace Ryu64.MIPS
         {
             const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSpIntrBit);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
@@ -1968,7 +2041,7 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void SetMiPiInterrupt()
+        private void SetMiPiInterrupt(bool immediate = false)
         {
             const byte MiPiIntrBit = 0x10; // MI_INTR_REG bit for PI
             bool wasSet = (MI_INTR_REG_R[3] & MiPiIntrBit) != 0;
@@ -1977,8 +2050,10 @@ namespace Ryu64.MIPS
             uint piStatus = ReadBigEndianWord(PI_STATUS_REG_R);
             piStatus |= 0x00000008u; // PI interrupt pending
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (immediate)
+                RaiseCpuInterruptFromRcpEvent();
+            else
+                RefreshCpuInterruptView();
 
             if (TraceN64Io && !wasSet)
             {
@@ -1993,8 +2068,7 @@ namespace Ryu64.MIPS
             const byte MiPiIntrBit = 0x10; // MI_INTR_REG bit for PI
             bool wasSet = (MI_INTR_REG_R[3] & MiPiIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiPiIntrBit);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
 
             if (TraceN64Io && wasSet)
             {
@@ -2004,7 +2078,7 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void SetMiSiInterrupt()
+        private void SetMiSiInterrupt(bool immediate = false)
         {
             const byte MiSiIntrBit = 0x02; // MI_INTR_REG bit for SI
             bool wasSet = (MI_INTR_REG_R[3] & MiSiIntrBit) != 0;
@@ -2013,8 +2087,10 @@ namespace Ryu64.MIPS
             uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R);
             siStatus |= SiStatusInterrupt;
             WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (immediate)
+                RaiseCpuInterruptFromRcpEvent();
+            else
+                RefreshCpuInterruptView();
 
             if (TraceN64Io && !wasSet)
             {
@@ -2029,8 +2105,7 @@ namespace Ryu64.MIPS
             const byte MiSiIntrBit = 0x02; // MI_INTR_REG bit for SI
             bool wasSet = (MI_INTR_REG_R[3] & MiSiIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSiIntrBit);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
 
             if (TraceN64Io && wasSet)
             {
@@ -2040,13 +2115,15 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void SetMiViInterrupt()
+        private void SetMiViInterrupt(bool immediate = false)
         {
             const byte MiViIntrBit = 0x08; // MI_INTR_REG bit for VI
             bool wasSet = (MI_INTR_REG_R[3] & MiViIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiViIntrBit;
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (immediate)
+                RaiseCpuInterruptFromRcpEvent();
+            else
+                RefreshCpuInterruptView();
 
             if (TraceN64Io && !wasSet)
             {
@@ -2061,8 +2138,7 @@ namespace Ryu64.MIPS
             const byte MiViIntrBit = 0x08; // MI_INTR_REG bit for VI
             bool wasSet = (MI_INTR_REG_R[3] & MiViIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiViIntrBit);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
 
             if (TraceN64Io && wasSet)
             {
@@ -2075,25 +2151,25 @@ namespace Ryu64.MIPS
         {
             const byte MiAiIntrBit = 0x04; // MI_INTR_REG bit for AI
             MI_INTR_REG_R[3] |= MiAiIntrBit;
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
         }
 
         private void ClearMiAiInterrupt()
         {
             const byte MiAiIntrBit = 0x04; // MI_INTR_REG bit for AI
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiAiIntrBit);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
         }
 
-        private void SetMiDpInterrupt()
+        private void SetMiDpInterrupt(bool immediate = false)
         {
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
             bool wasSet = (MI_INTR_REG_R[3] & MiDpIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiDpIntrBit;
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (immediate)
+                RaiseCpuInterruptFromRcpEvent();
+            else
+                RefreshCpuInterruptView();
             if (TraceN64Io && !wasSet)
             {
                 Common.Logger.PrintWarningLine(
@@ -2106,8 +2182,7 @@ namespace Ryu64.MIPS
         {
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiDpIntrBit);
-            R4300.RefreshRcpInterruptPending();
-            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            RefreshCpuInterruptView();
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
@@ -2144,10 +2219,8 @@ namespace Ryu64.MIPS
 
         public void VI_INTR_WRITE_EVENT()
         {
-            uint viVSync = ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x03FFu;
             uint viIntr = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
-            if (viVSync != 0 && viIntr < viVSync && _viFrameDelayCycles != 0 && _viInterruptCyclesRemaining == 0)
-                _viInterruptCyclesRemaining = _viFrameDelayCycles;
+            RecomputeViInterruptSchedule();
 
             if (!TraceN64Io)
                 return;
@@ -2170,17 +2243,7 @@ namespace Ryu64.MIPS
             }
             else
             {
-                uint viLinesPerFrame = viVSync + 1u;
-                uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
-                if (cpuCyclesPerViLine == 0)
-                    cpuCyclesPerViLine = 1;
-
-                _viFrameDelayCycles = cpuCyclesPerViLine * viLinesPerFrame;
-                if (_viFrameDelayCycles == 0)
-                    _viFrameDelayCycles = CpuCyclesPerViFrame;
-
-                if (_viInterruptCyclesRemaining == 0 || _viInterruptCyclesRemaining > _viFrameDelayCycles)
-                    _viInterruptCyclesRemaining = _viFrameDelayCycles;
+                RecomputeViInterruptSchedule();
             }
 
             if (!TraceN64Io)
