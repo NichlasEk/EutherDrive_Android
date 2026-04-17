@@ -200,10 +200,9 @@ namespace Ryu64.MIPS
         private bool _dpInterruptDelayArmed;
         private RspTask _activeRspTask;
 
-        // VI_CURRENT is a 10-bit scan counter on N64 (0..1023).
-        private const uint ViLinesPerFrame = 1024;
         private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
-        private const uint CpuCyclesPerViLine = CpuCyclesPerViFrame / ViLinesPerFrame;
+        private const uint DefaultViLinesPerFrame = 1024;
+        private const uint DefaultCpuCyclesPerViLine = CpuCyclesPerViFrame / DefaultViLinesPerFrame;
         private const uint SiDmaDurationCycles = 512;
 
         private List<MemEntry> MemoryMapList = new List<MemEntry>();
@@ -385,25 +384,36 @@ namespace Ryu64.MIPS
 
         public void Tick(uint cpuCycles)
         {
-            if (CpuCyclesPerViLine == 0)
-                return;
-
             AdvanceRspDpLifecycle(cpuCycles);
             AdvancePiLifecycle(cpuCycles);
             AdvanceSiLifecycle(cpuCycles);
 
-            _viLineCycleAccum += cpuCycles;
-            while (_viLineCycleAccum >= CpuCyclesPerViLine)
+            uint viVSync = ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x03FFu;
+            if (viVSync == 0)
             {
-                _viLineCycleAccum -= CpuCyclesPerViLine;
+                _viCurrentLine = 0;
+                _viLineCycleAccum = 0;
+                WriteBigEndianWord(VI_CURRENT_REG_RW, 0u);
+                return;
+            }
+
+            uint viLinesPerFrame = viVSync + 1u;
+            uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
+            if (cpuCyclesPerViLine == 0)
+                cpuCyclesPerViLine = 1;
+
+            _viLineCycleAccum += cpuCycles;
+            while (_viLineCycleAccum >= cpuCyclesPerViLine)
+            {
+                _viLineCycleAccum -= cpuCyclesPerViLine;
                 _viCurrentLine++;
-                if (_viCurrentLine >= ViLinesPerFrame)
+                if (_viCurrentLine >= viLinesPerFrame)
                     _viCurrentLine = 0;
 
                 WriteBigEndianWord(VI_CURRENT_REG_RW, _viCurrentLine);
 
                 uint viIntrLine = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
-                if (_viCurrentLine == viIntrLine)
+                if (viIntrLine < viLinesPerFrame && _viCurrentLine == viIntrLine)
                     SetMiViInterrupt();
             }
         }
@@ -837,6 +847,8 @@ namespace Ryu64.MIPS
             ApplyMiMaskPair(ref mask, value, 10, 11, 5); // DP
 
             WriteBigEndianWord(MI_INTR_MASK_REG_R, mask);
+            R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine($"[N64IO] MI_INTR_MASK new=0x{mask:x8}");
@@ -1048,7 +1060,7 @@ namespace Ryu64.MIPS
                 && (clearHalt || clearBroke)
                 && (status & SpStatusHalt) == 0;
 
-            if (rspShouldStart && TraceN64Io)
+            if (rspShouldStart && (TraceN64Io || TraceRspTaskDmem))
                 TraceRspTaskHeaderWords(0x0FC0u, "sp-kick");
             if (rspShouldStart && EnableRspTaskHleDispatcher)
                 TryDispatchRspTaskHle(ref status);
@@ -1163,7 +1175,7 @@ namespace Ryu64.MIPS
                     "but real RSP microcode execution is not implemented yet.");
             }
 
-            if (TraceN64Io && (_rspKickCount <= 16 || (_rspKickCount % 256) == 0))
+            if ((TraceN64Io || TraceRspTaskDmem) && (_rspKickCount <= 16 || (_rspKickCount % 256) == 0))
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] RSP task dispatch type={task.Type} flags=0x{task.Flags:x8} " +
@@ -1291,12 +1303,14 @@ namespace Ryu64.MIPS
         {
             const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
             MI_INTR_REG_R[3] |= MiSpIntrBit;
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void ClearMiSpInterrupt()
         {
             const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSpIntrBit);
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void SetMiPiInterrupt()
@@ -1307,12 +1321,14 @@ namespace Ryu64.MIPS
             uint piStatus = ReadBigEndianWord(PI_STATUS_REG_R);
             piStatus |= 0x00000008u; // PI interrupt pending
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void ClearMiPiInterrupt()
         {
             const byte MiPiIntrBit = 0x10; // MI_INTR_REG bit for PI
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiPiIntrBit);
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void SetMiSiInterrupt()
@@ -1323,36 +1339,42 @@ namespace Ryu64.MIPS
             uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R);
             siStatus |= 0x00001000u; // SI interrupt pending
             WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void ClearMiSiInterrupt()
         {
             const byte MiSiIntrBit = 0x02; // MI_INTR_REG bit for SI
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSiIntrBit);
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void SetMiViInterrupt()
         {
             const byte MiViIntrBit = 0x08; // MI_INTR_REG bit for VI
             MI_INTR_REG_R[3] |= MiViIntrBit;
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void ClearMiViInterrupt()
         {
             const byte MiViIntrBit = 0x08; // MI_INTR_REG bit for VI
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiViIntrBit);
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void SetMiDpInterrupt()
         {
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
             MI_INTR_REG_R[3] |= MiDpIntrBit;
+            R4300.RefreshRcpInterruptPending();
         }
 
         private void ClearMiDpInterrupt()
         {
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiDpIntrBit);
+            R4300.RefreshRcpInterruptPending();
         }
 
         public void VI_CURRENT_WRITE_EVENT()

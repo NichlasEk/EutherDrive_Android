@@ -324,15 +324,7 @@ namespace Ryu64.MIPS
 
         private static bool ServiceInterrupts(uint pc)
         {
-            // N64 RCP interrupts are routed through MI and appear on CP0 IP2.
-            ulong cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
-            uint miIntr = memory.ReadUInt32(0xA4300008u);
-            uint miMask = memory.ReadUInt32(0xA430000Cu);
-            bool rcpPending = (miIntr & miMask & 0x3Fu) != 0;
-
-            // Only control IP2 from MI; preserve all other pending IP bits (timer/SW/etc).
-            cause = rcpPending ? (cause | CauseIp2Bit) : (cause & ~CauseIp2Bit);
-            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = cause;
+            ulong cause = RefreshRcpInterruptPending();
             ulong pendingIp = cause & CauseIpMask;
 
             ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
@@ -345,6 +337,20 @@ namespace Ryu64.MIPS
 
             RaiseCpuException(CauseExcCodeInterrupt, pc);
             return true;
+        }
+
+        internal static ulong RefreshRcpInterruptPending()
+        {
+            // N64 RCP interrupts are routed through MI and appear on CP0 IP2.
+            ulong cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
+            uint miIntr = memory.ReadUInt32(0xA4300008u);
+            uint miMask = memory.ReadUInt32(0xA430000Cu);
+            bool rcpPending = (miIntr & miMask & 0x3Fu) != 0;
+
+            // Only control IP2 from MI; preserve all other pending IP bits (timer/SW/etc).
+            cause = rcpPending ? (cause | CauseIp2Bit) : (cause & ~CauseIp2Bit);
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = cause;
+            return cause;
         }
 
         private static bool CanTraceReadWord(ulong address)

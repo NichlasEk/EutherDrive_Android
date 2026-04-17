@@ -496,7 +496,9 @@ namespace Ryu64Core
             }
 
             // When the VI-provided origin is obviously bogus, accept a smaller margin.
-            int requiredMargin = viOrigin < 0x00001000u ? 24 : 80;
+            // Low VI origins are common during bring-up and often point into scratch/state data.
+            // Require a much clearer win before replacing them with a scanned fallback.
+            int requiredMargin = viOrigin < 0x00001000u ? 256 : 80;
             if (bestOrigin != viOrigin && bestScore < viScore + requiredMargin)
                 return viOrigin;
 
