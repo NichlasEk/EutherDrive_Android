@@ -160,8 +160,8 @@ public class PPU : IPPU
     private int[] _lineHoff = new int[5];
     private int[] _lineVoff = new int[5];
 
-    // Separate write buffers for each BG layer pair (BG1, BG2, BG3, BG4)
-    // On real SNES hardware, each BGxHOFS/BGxVOFS pair shares its own latch
+    // Savestate compatibility: keep the old array field shape, but treat index 0 as the
+    // single shared BG scroll write latch used by real hardware.
     private int[] _bgScrollWriteBuffer = new int[4];
     // `_offPrev1` is retained for savestate compatibility but no longer used
     private int _offPrev1;
@@ -410,30 +410,39 @@ public class PPU : IPPU
         return _oamAdr | (_oamInHigh ? 0x100 : 0);
     }
 
-private void WriteBgHScroll(int layer, int value, bool dma = false)
+    private int GetBgScrollWriteLatch()
     {
-        // Exact snes9x implementation:
-        // PPU.BG[layer].HOffset = (Byte << 8) | (PPU.BGnxOFSbyte & ~7) | ((PPU.BG[layer].HOffset >> 8) & 7);
-        // PPU.BGnxOFSbyte = Byte;
+        return _bgScrollWriteBuffer[0];
+    }
+
+    private void SetBgScrollWriteLatch(int value)
+    {
+        for (int i = 0; i < _bgScrollWriteBuffer.Length; i++)
+        {
+            _bgScrollWriteBuffer[i] = value;
+        }
+    }
+
+    private void WriteBgHScroll(int layer, int value, bool dma = false)
+    {
+        // BGxHOFS/BGxVOFS all share a single write latch on real hardware.
         int current = _bgHoff[layer];
-        int newValue = (value << 8) | (_bgScrollWriteBuffer[layer] & ~0x07) | ((current >> 8) & 0x07);
-        _bgScrollWriteBuffer[layer] = value;
+        int prev = GetBgScrollWriteLatch();
+        int newValue = (value << 8) | (prev & ~0x07) | ((current >> 8) & 0x07);
+        SetBgScrollWriteLatch(value);
         _bgHoff[layer] = newValue;
-        
-    
-        
+        TracePpuWrite($"[PPU] BG{layer + 1}HOFS write=0x{value:X2} prev=0x{prev:X2} latched=0x{newValue:X4} dma={(dma ? 1 : 0)}");
+
         // Keep _offPrev1 for savestate compatibility
         _offPrev1 = value;
     }
 
     private void WriteBgVScroll(int layer, int value, bool dma = false)
     {
-        // Exact snes9x implementation:
-        // PPU.BG[layer].VOffset = (Byte << 8) | PPU.BGnxOFSbyte;
-        // PPU.BGnxOFSbyte = Byte;
-        int oldValue = _bgVoff[layer];
-        _bgVoff[layer] = (value << 8) | _bgScrollWriteBuffer[layer];
-        _bgScrollWriteBuffer[layer] = value;
+        int prev = GetBgScrollWriteLatch();
+        _bgVoff[layer] = (value << 8) | prev;
+        SetBgScrollWriteLatch(value);
+        TracePpuWrite($"[PPU] BG{layer + 1}VOFS write=0x{value:X2} prev=0x{prev:X2} latched=0x{_bgVoff[layer]:X4} dma={(dma ? 1 : 0)}");
 
         // Keep _offPrev1 for savestate compatibility
         _offPrev1 = value;
@@ -1558,6 +1567,10 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
         return (ushort[])_oam.Clone();
     }
 
+    public int PeekVramAddress() => _vramAdr & 0xFFFF;
+
+    public int PeekVramRemapAddress() => GetVramRemap() & 0x7FFF;
+
     public ulong ComputeVramHash()
     {
         return ComputeHash(_vram);
@@ -1591,6 +1604,7 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
             new[]
             {
                 $"ppu mode={_mode} tm=0x{_tmRaw:X2} ts=0x{_tsRaw:X2} forcedBlank={_forcedBlank} bright={_brightness}",
+                $"debug disable bg1={DebugDisableBg1} bg2={DebugDisableBg2} bg3={DebugDisableBg3} bg4={DebugDisableBg4} obj={DebugDisableObj}",
                 $"window wh0={_window1Left} wh1={_window1Right} wh2={_window2Left} wh3={_window2Right} mainW=[{BoolArrayString(_mainScreenWindow, 5)}] subW=[{BoolArrayString(_subScreenWindow, 5)}] w1E=[{BoolArrayString(_window1Enabled, 6)}] w2E=[{BoolArrayString(_window2Enabled, 6)}] w1Inv=[{BoolArrayString(_window1Inversed, 6)}] w2Inv=[{BoolArrayString(_window2Inversed, 6)}] logic=[{IntArrayString(_windowMaskLogic, 6)}]",
                 $"cgram[0]=0x{_cgram[0]:X4} cgramFrame[0]=0x{_cgramFrame[0]:X4} cgram[1]=0x{_cgram[1]:X4} cgramFrame[1]=0x{_cgramFrame[1]:X4}",
                 GetBgDebugSnapshot(0),
@@ -1616,6 +1630,9 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
         int tileAddr = _tileAdr.Length > layer ? _tileAdr[layer] & 0x7fff : 0;
         int hoff = _bgHoff.Length > layer ? _bgHoff[layer] : 0;
         int voff = _bgVoff.Length > layer ? _bgVoff[layer] : 0;
+        int lineHoff = _lineHoff.Length > layer ? _lineHoff[layer] : 0;
+        int lineVoff = _lineVoff.Length > layer ? _lineVoff[layer] : 0;
+        int sharedScrollLatch = GetBgScrollWriteLatch() & 0xFF;
         int bits = _bitPerMode[_mode * 4 + layer];
         ushort tilemapWord = _vram.Length > 0 ? _vram[mapAddr & 0x7fff] : (ushort)0;
         int tileNum = tilemapWord & 0x03ff;
@@ -1625,7 +1642,7 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
             Environment.NewLine,
             new[]
             {
-                $"bg{layer + 1} map=0x{mapAddr:X4} tile=0x{tileAddr:X4} hoff=0x{hoff:X4} voff=0x{voff:X4} bits={bits} wide={(_tilemapWider.Length > layer && _tilemapWider[layer] ? 1 : 0)} high={(_tilemapHigher.Length > layer && _tilemapHigher[layer] ? 1 : 0)} big={(_bigTiles.Length > layer && _bigTiles[layer] ? 1 : 0)}",
+                $"bg{layer + 1} map=0x{mapAddr:X4} tile=0x{tileAddr:X4} hoff=0x{hoff:X4} voff=0x{voff:X4} lineH=0x{lineHoff:X4} lineV=0x{lineVoff:X4} latch=0x{sharedScrollLatch:X2} bits={bits} wide={(_tilemapWider.Length > layer && _tilemapWider[layer] ? 1 : 0)} high={(_tilemapHigher.Length > layer && _tilemapHigher[layer] ? 1 : 0)} big={(_bigTiles.Length > layer && _bigTiles[layer] ? 1 : 0)}",
                 $"bg{layer + 1} tilemap[0..7]=[{GetVramWindow(mapAddr, 8)}]",
                 $"bg{layer + 1} tile0 word=0x{tilemapWord:X4} num=0x{tileNum:X3} pal={(tilemapWord >> 10) & 0x7} prio={((tilemapWord >> 13) & 0x1)} xflip={((tilemapWord >> 14) & 0x1)} yflip={((tilemapWord >> 15) & 0x1)}",
                 $"bg{layer + 1} tiledata[{tileNum:X3}]=[{GetVramWindow(tileWordBase, Math.Min(bits << 2, 8))}]"
@@ -1754,6 +1771,13 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
         Console.WriteLine(message);
     }
 
+    private static void TraceProbeWrite(string message)
+    {
+        if (!TracePpuProbe)
+            return;
+        Console.WriteLine(message);
+    }
+
     private void TraceProbeAtPoint(int screenY)
     {
         if (!TracePpuProbe || _tracePpuProbeDone || screenY != TracePpuProbeY)
@@ -1788,6 +1812,14 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
             if ((_mode == 5 || _mode == 6) && layer < 4)
                 lx = lx * 2 + 1;
 
+            int bits = _bitPerMode[_mode * 4 + layer];
+            if (bits is not (2 or 4 or 8))
+            {
+                layerParts[layer] =
+                    $"bg{layer + 1} visM={(_mainScreenEnabled[layer] ? 1 : 0)} visS={(_subScreenEnabled[layer] ? 1 : 0)} unsupportedBits={bits} lx={lx} ly={ly}";
+                continue;
+            }
+
             _lastTileFetchedX[layer] = -1;
             _lastTileFetchedY[layer] = -1;
             FetchTileInBuffer(lx, ly, layer, false);
@@ -1803,7 +1835,7 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
                 $"bg{layer + 1} visM={(_mainScreenEnabled[layer] ? 1 : 0)} visS={(_subScreenEnabled[layer] ? 1 : 0)} pix=0x{tilePixel:X2} prio={tilePrio} map=0x{_tilemapBuffer[layer]:X4} lx={lx} ly={ly}";
         }
 
-        TracePpuWrite(
+        TraceProbeWrite(
             $"[PPU-PROBE] x={x} y={screenY} main=(layer={mainLayer},pixel=0x{mainPixel:X2},color=0x{mainColor:X4}) " +
             $"sub=(layer={subLayer},pixel=0x{subPixel:X2},color=0x{subColor:X4}) {string.Join(" | ", layerParts)}");
     }
@@ -1828,7 +1860,7 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
             parts[i] = $"#{spriteIndex}(x={x},y={y},w={width},h={height},tile=0x{tile:X2},attr=0x{attr:X2},covers={(coversX ? 1 : 0)})";
         }
 
-        TracePpuWrite(
+        TraceProbeWrite(
             $"[PPU-SPR-PROBE] y={line} x={probeX} totalInRange={totalInRange} selected={spriteCount} rangeOver={(_rangeOver ? 1 : 0)} timeOver={(_timeOver ? 1 : 0)} startSprite={(_objPriority ? ((_oamAdr >> 1) & 0x7f) : 0)} selectedSprites=[{string.Join(", ", parts)}]");
     }
 
@@ -1900,13 +1932,13 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
         }
         else if (line > 0 && line < (FrameOverscan ? 240 : 225))
         {
-            // Copy current scroll values to line buffers (like snes9x's LineData)
-            // VOffset +1 matches SNES hardware behavior: scroll registers are latched
-            // during previous scanline's HBlank, so the effective Y position is +1
+            // Copy current scroll values to line buffers. A blanket +1 V scroll bias
+            // causes Secret of Evermore's large-tile backgrounds to pick the wrong
+            // tile quadrants; keep the latched values exact here.
             for (int i = 0; i < 4; i++)
             {
                 _lineHoff[i] = _bgHoff[i];
-                _lineVoff[i] = _bgVoff[i] + 1;
+                _lineVoff[i] = _bgVoff[i];
             }
             _lineHoff[4] = _bgHoff[4];
             _lineVoff[4] = _bgVoff[4];
@@ -2283,13 +2315,9 @@ private void WriteBgHScroll(int layer, int value, bool dma = false)
 
     private bool CanUseChunkedSimpleMainScreenPath()
     {
-        if (_mode == 2 || _mode == 4 || _mode == 6)
-            return false;
-
-        return !_mosaicEnabled[0]
-            && !_mosaicEnabled[1]
-            && !_mosaicEnabled[2]
-            && !_mosaicEnabled[3];
+        // Secret of Evermore and debug layer toggles both point at correctness issues
+        // in the chunked tile decode path. Keep the scalar path for now.
+        return false;
     }
 
     private bool CanUseChunkedComplexWindowlessPath(bool hiResOutput, bool trueHiResOutput, bool useLegacyLayerOrdering)

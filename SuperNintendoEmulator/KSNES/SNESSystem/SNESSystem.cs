@@ -234,8 +234,27 @@ public class SNESSystem : ISNESSystem
 
     private readonly bool _tracePpuBusWrites =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS"), "1", StringComparison.Ordinal);
+    private readonly bool _tracePpuBusReads =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS_READS"), "1", StringComparison.Ordinal);
     private readonly int _tracePpuBusLimit;
     private int _tracePpuBusCount;
+    [NonSerialized]
+    private int _frameCounter;
+    [NonSerialized]
+    private readonly int _tracePpuBusFrameStart =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_PPU_BUS_FRAME_START", 0);
+    [NonSerialized]
+    private readonly int _tracePpuBusFrameEnd =
+        ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_PPU_BUS_FRAME_END", int.MaxValue);
+    [NonSerialized]
+    private readonly bool _tracePpuBusPcRangeEnabled =
+        TryParseTraceRange("EUTHERDRIVE_TRACE_SNES_PPU_BUS_PC_RANGE", out _, out _);
+    [NonSerialized]
+    private readonly int _tracePpuBusPcStart =
+        TryParseTraceRange("EUTHERDRIVE_TRACE_SNES_PPU_BUS_PC_RANGE", out int ppuBusPcStart, out _) ? ppuBusPcStart : 0;
+    [NonSerialized]
+    private readonly int _tracePpuBusPcEnd =
+        TryParseTraceRange("EUTHERDRIVE_TRACE_SNES_PPU_BUS_PC_RANGE", out _, out int ppuBusPcEnd) ? ppuBusPcEnd : 0xFFFFFF;
     [NonSerialized]
     private readonly HashSet<int> _tracePpuBusAddrs = ParseTraceHexByteSet(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_BUS_ADDRS"));
     private readonly bool _traceWramWrites =
@@ -751,6 +770,7 @@ public class SNESSystem : ISNESSystem
         _hdmaDoTransfer = new bool[8];
         _hdmaTerminated = new bool[8];
         _deferredCpuIoWrites.Clear();
+        _frameCounter = 0;
         OpenBus = 0;
         RomImpl.ResetCoprocessor();
         EnsureBusTables();
@@ -762,6 +782,7 @@ public class SNESSystem : ISNESSystem
         RomImpl.ResyncAfterLoad();
         _apuMasterCyclesProduct = 0;
         _apuBorrowedMainCycles = 0;
+        _frameCounter = 0;
         _vblankNmiFlag = _inNmi;
         _irqLine = _inIrq;
         _lastIrqHTime = GetIrqHTime();
@@ -964,18 +985,32 @@ public class SNESSystem : ISNESSystem
         if (_deferredCpuIoWrites.Count == 0)
             return;
 
-        for (int i = _deferredCpuIoWrites.Count - 1; i >= 0; i--)
+        int writeCount = _deferredCpuIoWrites.Count;
+        for (int i = 0; i < writeCount; i++)
         {
             var write = _deferredCpuIoWrites[i];
             int remainingAccessBoundaries = write.RemainingAccessBoundaries - 1;
             if (remainingAccessBoundaries > 0)
             {
                 _deferredCpuIoWrites[i] = write with { RemainingAccessBoundaries = remainingAccessBoundaries };
-                continue;
             }
+            else
+            {
+                _deferredCpuIoWrites[i] = write with { RemainingAccessBoundaries = 0 };
+            }
+        }
 
-            ApplyDeferredCpuIoWrite(write);
-            _deferredCpuIoWrites.RemoveAt(i);
+        int nextWriteIndex = 0;
+        while (nextWriteIndex < _deferredCpuIoWrites.Count &&
+               _deferredCpuIoWrites[nextWriteIndex].RemainingAccessBoundaries <= 0)
+        {
+            ApplyDeferredCpuIoWrite(_deferredCpuIoWrites[nextWriteIndex]);
+            nextWriteIndex++;
+        }
+
+        if (nextWriteIndex > 0)
+        {
+            _deferredCpuIoWrites.RemoveRange(0, nextWriteIndex);
         }
     }
 
@@ -1294,6 +1329,7 @@ public class SNESSystem : ISNESSystem
         if (YPos == maxV)
         {
             YPos = 0;
+            _frameCounter++;
             _oddFrame = !_oddFrame;
             // The PPU is no longer in VBlank once the frame wraps back to scanline 0.
             // Clear both the live VBlank state and the RDNMI latch at frame wrap.
@@ -1605,12 +1641,25 @@ public class SNESSystem : ISNESSystem
                 $"[GPDMA-STATE] ch={channel} bytes={_gpdmaBytesCopied} size=0x{_dmaSize[channel]:X4} " +
                 $"mode={_dmaMode[channel]} bbus=0x{_dmaBadr[channel]:X2} offs={_dmaOffs[tableOff]} " +
                 $"fromB={(_dmaFromB[channel] ? 1 : 0)} fixed={(_dmaFixed[channel] ? 1 : 0)} dec={(_dmaDec[channel] ? 1 : 0)} " +
-                $"a=0x{_dmaAadrBank[channel]:X2}:0x{_dmaAadr[channel]:X4} xy=({XPos},{YPos}) pc=0x{pc:X6}");
+                $"a=0x{_dmaAadrBank[channel]:X2}:0x{_dmaAadr[channel]:X4} xy=({XPos},{YPos}) frame={_frameCounter} pc=0x{pc:X6}");
         }
         if (_dmaFromB[channel])
         {
-            QueueDmaWriteBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel],
-                ReadBBus((_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff));
+            int bbusAdr = (_dmaBadr[channel] + _dmaOffs[tableOff]) & 0xff;
+            int dmaValue = ReadBBus(bbusAdr);
+            if (_tracePpuBusReads &&
+                (_tracePpuBusLimit <= 0 || _tracePpuBusCount < _tracePpuBusLimit) &&
+                (!HasExplicitPpuBusTraceFilter || _tracePpuBusAddrs.Contains(bbusAdr)))
+            {
+                int pc = -1;
+                if (CPU is KSNES.CPU.CPU cpu)
+                    pc = cpu.ProgramCounter24;
+                Console.WriteLine(
+                    $"[GPDMA-FROMB] ch={channel} bbus=0x{bbusAdr:X2} val=0x{dmaValue:X2} " +
+                    $"a=0x{_dmaAadrBank[channel]:X2}:0x{_dmaAadr[channel]:X4} xy=({XPos},{YPos}) pc=0x{pc:X6}");
+                _tracePpuBusCount++;
+            }
+            QueueDmaWriteBusA((_dmaAadrBank[channel] << 16) | _dmaAadr[channel], dmaValue);
         }
         else
         {
@@ -1703,7 +1752,7 @@ public class SNESSystem : ISNESSystem
                         $"[HDMA-STATE] ch={i} do={(_hdmaDoTransfer[i] ? 1 : 0)} rep=0x{_hdmaRepCount[i]:X2} " +
                         $"mode={_dmaMode[i]} bbus=0x{_dmaBadr[i]:X2} ind={(_hdmaInd[i] ? 1 : 0)} fromB={(_dmaFromB[i] ? 1 : 0)} " +
                         $"tabBank=0x{_dmaAadrBank[i]:X2} tabAdr=0x{_hdmaTableAdr[i]:X4} srcBank=0x{sourceBank:X2} srcAdr=0x{sourceAddr:X4} " +
-                        $"xy=({XPos},{YPos}) pc=0x{pc:X6}");
+                        $"xy=({XPos},{YPos}) frame={_frameCounter} pc=0x{pc:X6}");
                 }
                 if (_hdmaDoTransfer[i])
                 {
@@ -2113,7 +2162,7 @@ public class SNESSystem : ISNESSystem
                             preview[i] = (byte)DmaReadBusA((sourceAddress + i) & 0xffffff);
                         }
                         string previewHex = Convert.ToHexString(preview.ToArray());
-                        Console.WriteLine($"[DMA-STATE] ch={ch} mode={_dmaMode[ch]} bbus=0x{_dmaBadr[ch]:X2} aaddr=0x{_dmaAadr[ch]:X4} abank=0x{_dmaAadrBank[ch]:X2} size=0x{_dmaSize[ch]:X4} fromB={_dmaFromB[ch]} fixed={_dmaFixed[ch]} dec={_dmaDec[ch]} src8={previewHex}");
+                        Console.WriteLine($"[DMA-STATE] ch={ch} mode={_dmaMode[ch]} bbus=0x{_dmaBadr[ch]:X2} aaddr=0x{_dmaAadr[ch]:X4} abank=0x{_dmaAadrBank[ch]:X2} size=0x{_dmaSize[ch]:X4} fromB={_dmaFromB[ch]} fixed={_dmaFixed[ch]} dec={_dmaDec[ch]} frame={_frameCounter} src8={previewHex}");
                     }
                 }
                 return;
@@ -2196,7 +2245,9 @@ public class SNESSystem : ISNESSystem
     {
         if (adr > 0x33 && adr < 0x40)
         {
-            return _ppuImpl.Read(adr);
+            int value = _ppuImpl.Read(adr);
+            TracePpuBusRead(adr, value);
+            return value;
         }
         if (adr >= 0x40 && adr < 0x80)
         {
@@ -2307,18 +2358,8 @@ public class SNESSystem : ISNESSystem
 
     private void TracePpuBusWrite(int adr, int value, bool dma)
     {
-        if (!_tracePpuBusWrites)
-        {
+        if (!ShouldTracePpuBusAccess(adr, isWrite: true, out int pc, out string pcBytes, out string regs))
             return;
-        }
-        if (_tracePpuBusLimit > 0 && _tracePpuBusCount >= _tracePpuBusLimit)
-        {
-            return;
-        }
-        if (HasExplicitPpuBusTraceFilter && !_tracePpuBusAddrs.Contains(adr & 0xFF))
-        {
-            return;
-        }
         switch (adr)
         {
             case 0x01: // OBJSEL
@@ -2344,6 +2385,8 @@ public class SNESSystem : ISNESSystem
             case 0x17: // VMADDH
             case 0x18: // VMDATAL
             case 0x19: // VMDATAH
+            case 0x1B: // M7A
+            case 0x1C: // M7B
             case 0x21: // CGADD
             case 0x22: // CGDATA
             case 0x00: // INIDISP
@@ -2357,31 +2400,76 @@ public class SNESSystem : ISNESSystem
             case 0x32: // COLDATA
             case 0x33: // SETINI
                 string src = dma ? "DMA" : "CPU";
-                int pc = -1;
-                string pcBytes = "";
-                string regs = "";
-                if (CPU is KSNES.CPU.CPU cpu)
-                {
-                    pc = cpu.ProgramCounter24;
-                    int b0 = Rread(pc);
-                    int b1 = Rread((pc + 1) & 0xffffff);
-                    int b2 = Rread((pc + 2) & 0xffffff);
-                    pcBytes = $" op=[{b0:X2} {b1:X2} {b2:X2}]";
-                    if (adr == 0x00)
-                    {
-                        regs = $" regs={cpu.GetTraceState()}";
-                    }
-                }
                 string ppuState = string.Empty;
                 if (_ppuImpl is not null && adr is >= 0x16 and <= 0x19)
                 {
                     ppuState = $" vramAdr=0x{_ppuImpl.PeekVramAddress():X4} remapAdr=0x{_ppuImpl.PeekVramRemapAddress():X4}";
                 }
                 Console.WriteLine(
-                    $"[PPU-BUS] {src} write $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes}{regs}{ppuState} xy=({XPos},{YPos}) vblank={_inVblank} hblank={_inHblank}");
+                    $"[PPU-BUS] {src} write $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes}{regs}{ppuState} xy=({XPos},{YPos}) frame={_frameCounter} vblank={_inVblank} hblank={_inHblank}");
                 _tracePpuBusCount++;
                 return;
         }
+    }
+
+    private void TracePpuBusRead(int adr, int value)
+    {
+        if (!ShouldTracePpuBusAccess(adr, isWrite: false, out int pc, out string pcBytes, out _))
+            return;
+        switch (adr)
+        {
+            case 0x34: // MPYL
+            case 0x35: // MPYM
+            case 0x36: // MPYH
+            case 0x37: // SLHV
+            case 0x38: // RDOAM
+            case 0x39: // RDVRAML
+            case 0x3A: // RDVRAMH
+            case 0x3B: // RDCGRAM
+            case 0x3C: // OPHCT
+            case 0x3D: // OPVCT
+            case 0x3E: // STAT77
+            case 0x3F: // STAT78
+                Console.WriteLine(
+                    $"[PPU-BUS-RD] read $21{adr:X2}=0x{value:X2} pc=0x{pc:X6}{pcBytes} xy=({XPos},{YPos}) frame={_frameCounter} vblank={_inVblank} hblank={_inHblank}");
+                _tracePpuBusCount++;
+                return;
+        }
+    }
+
+    private bool ShouldTracePpuBusAccess(int adr, bool isWrite, out int pc, out string pcBytes, out string regs)
+    {
+        pc = -1;
+        pcBytes = string.Empty;
+        regs = string.Empty;
+
+        if (isWrite ? !_tracePpuBusWrites : !_tracePpuBusReads)
+            return false;
+        if (_tracePpuBusLimit > 0 && _tracePpuBusCount >= _tracePpuBusLimit)
+            return false;
+        if (HasExplicitPpuBusTraceFilter && !_tracePpuBusAddrs.Contains(adr & 0xFF))
+            return false;
+        if (_frameCounter < _tracePpuBusFrameStart || _frameCounter > _tracePpuBusFrameEnd)
+            return false;
+
+        if (CPU is KSNES.CPU.CPU cpu)
+        {
+            pc = cpu.ProgramCounter24;
+            if (_tracePpuBusPcRangeEnabled && (pc < _tracePpuBusPcStart || pc > _tracePpuBusPcEnd))
+                return false;
+            int b0 = Rread(pc);
+            int b1 = Rread((pc + 1) & 0xffffff);
+            int b2 = Rread((pc + 2) & 0xffffff);
+            pcBytes = $" op=[{b0:X2} {b1:X2} {b2:X2}]";
+            if (adr == 0x00)
+                regs = $" regs={cpu.GetTraceState()}";
+        }
+        else if (_tracePpuBusPcRangeEnabled)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private void TraceApuPort(string message)
@@ -2466,9 +2554,26 @@ public class SNESSystem : ISNESSystem
         switch (pageKind)
         {
             case BusPageKind.WramBank:
-                return _ram[((bank & 0x1) << 16) | adr];
+                int fullWramAdr = ((bank & 0x1) << 16) | adr;
+                int bankVal = _ram[fullWramAdr];
+                if (_traceWramWrites && ShouldTraceWramRead(fullWramAdr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-RD] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{bankVal:X2} pc=0x{pc:X6}");
+                }
+                return bankVal;
             case BusPageKind.LowWram:
-                return _ram[adr & 0x1fff];
+                int lowVal = _ram[adr & 0x1fff];
+                if (_traceWramWrites && ShouldTraceWramRead(adr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-RD] adr=0x{adr:X4} val=0x{lowVal:X2} pc=0x{pc:X6}");
+                }
+                return lowVal;
             case BusPageKind.BBus:
                 return ReadBBus(adr & 0xff);
             case BusPageKind.JoypadPage:
@@ -2495,10 +2600,39 @@ public class SNESSystem : ISNESSystem
         switch (pageKind)
         {
             case BusPageKind.WramBank:
-                _ram[((bank & 0x1) << 16) | adr] = (byte)value;
+                int fullWramAdr = ((bank & 0x1) << 16) | adr;
+                _ram[fullWramAdr] = (byte)value;
+                if (_traceWramWrites && ShouldTraceWramWrite(fullWramAdr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-WR] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
+                if (dma && _traceWramWrites && ShouldTraceWramPortAccess(fullWramAdr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-DMA] bank=0x{bank:X2} adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
                 break;
             case BusPageKind.LowWram:
                 _ram[adr & 0x1fff] = (byte)value;
+                if (_traceWramWrites && ShouldTraceWramWrite(adr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
+                if (_traceWramWrites && ShouldTraceWramPortAccess(adr, adr))
+                {
+                    int pc = -1;
+                    if (CPU is KSNES.CPU.CPU cpu)
+                        pc = cpu.ProgramCounter24;
+                    Console.WriteLine($"[WRAM-WR] adr=0x{adr:X4} val=0x{value:X2} pc=0x{pc:X6}");
+                }
                 break;
             case BusPageKind.BBus:
                 WriteBBusFast(adr & 0xff, value, dma);
@@ -2697,6 +2831,35 @@ public class SNESSystem : ISNESSystem
         }
 
         return defaultValue;
+    }
+
+    private static bool TryParseTraceRange(string envName, out int start, out int end)
+    {
+        start = 0;
+        end = 0;
+
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        string[] parts = raw.Split('-', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2)
+            return false;
+
+        static bool TryParseTraceInt(string value, out int parsed)
+        {
+            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                return int.TryParse(value[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out parsed);
+            }
+
+            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed);
+        }
+
+        if (!TryParseTraceInt(parts[0], out start) || !TryParseTraceInt(parts[1], out end))
+            return false;
+
+        return start <= end;
     }
 
     private int TraceJoypadRead(int adr, int value)

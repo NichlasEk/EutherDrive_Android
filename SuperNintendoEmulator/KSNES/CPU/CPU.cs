@@ -267,6 +267,7 @@ public class CPU : ICPU
 
         _traceWramPc = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CPU_WRAM_PC"), "1", StringComparison.Ordinal);
         _traceWramPcLogged = false;
+        UpdateAnyTraceEnabled();
     }
 
     internal void RefreshTraceConfig() => InitTraceConfig();
@@ -327,6 +328,11 @@ public class CPU : ICPU
                 if (_anyTraceEnabled)
                 {
                     int pcAddr = (_r[K] << 16) | _br[PC];
+                    string busInfo = string.Empty;
+                    if (_snesImpl is { } traceSnes)
+                    {
+                        busInfo = $" pcWait={traceSnes.GetCpuAccessTimeForDebug(pcAddr)}";
+                    }
                     if (_traceWramPc && !_traceWramPcLogged && (pcAddr & 0xFFFF) < 0x2000)
                     {
                         if (_snesImpl is { } snes)
@@ -335,7 +341,7 @@ public class CPU : ICPU
                             int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
                             int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
                             int b3 = snes.Peek((pcAddr + 3) & 0xffffff);
-                            Console.WriteLine($"[CPU-WRAM-PC] pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2} {b3:X2}]");
+                            Console.WriteLine($"[CPU-WRAM-PC] pc=0x{pcAddr:X6}{busInfo} op=[{b0:X2} {b1:X2} {b2:X2} {b3:X2}]");
                             _traceWramPcLogged = true;
                         }
                     }
@@ -347,7 +353,7 @@ public class CPU : ICPU
                             int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
                             int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
                             string regs = GetDebugStateWithStack();
-                            Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
+                            Console.WriteLine($"[CPU-PC] cpu=SNES pc=0x{pcAddr:X6}{busInfo} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
                             _tracePcCount++;
                         }
                     }
@@ -359,7 +365,7 @@ public class CPU : ICPU
                             int b1 = snes.Peek((pcAddr + 1) & 0xffffff);
                             int b2 = snes.Peek((pcAddr + 2) & 0xffffff);
                             string regs = GetDebugStateWithStack();
-                            Console.WriteLine($"[CPU-PC-RANGE] cpu=SNES pc=0x{pcAddr:X6} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
+                            Console.WriteLine($"[CPU-PC-RANGE] cpu=SNES pc=0x{pcAddr:X6}{busInfo} op=[{b0:X2} {b1:X2} {b2:X2}] regs=[{regs}]");
                             _tracePcRangeCount++;
                         }
                     }

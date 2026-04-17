@@ -407,8 +407,6 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
 
     public string? GetPpuDebugSnapshot()
     {
-        if (!SnesPerfEnabled)
-            return null;
         return _system.PPU is PPU ppu ? ppu.GetDebugSnapshot() : null;
     }
 
@@ -756,16 +754,21 @@ public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInp
 
     private static void ConvertArgbToBgra(int[] source, byte[] dest, int width, int height, int sourceStridePixels)
     {
-        int bytesPerRow = width * sizeof(int);
-        if (width == sourceStridePixels)
-        {
-            Buffer.BlockCopy(source, 0, dest, 0, height * bytesPerRow);
-            return;
-        }
-
+        int di = 0;
+        int srcRowOffset = 0;
         for (int y = 0; y < height; y++)
         {
-            Buffer.BlockCopy(source, y * sourceStridePixels * sizeof(int), dest, y * bytesPerRow, bytesPerRow);
+            int si = srcRowOffset;
+            for (int x = 0; x < width; x++)
+            {
+                uint argb = unchecked((uint)source[si++]);
+                dest[di + 0] = (byte)argb;         // B
+                dest[di + 1] = (byte)(argb >> 8);  // G
+                dest[di + 2] = (byte)(argb >> 16); // R
+                dest[di + 3] = (byte)(argb >> 24); // A
+                di += 4;
+            }
+            srcRowOffset += sourceStridePixels;
         }
     }
 
