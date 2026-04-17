@@ -1,7 +1,12 @@
-﻿namespace Ryu64.MIPS
+﻿using System;
+
+namespace Ryu64.MIPS
 {
     public partial class InstInterp
     {
+        private static readonly bool TraceBranchWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_BRANCH_WINDOW"), "1", StringComparison.Ordinal);
+
         private static ulong SignExtendPcToReg(uint pc)
         {
             return unchecked((ulong)(long)(int)pc);
@@ -14,16 +19,24 @@
 
         public static void BEQ(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] == (long)Registers.R4300.Reg[Desc.op2];
+            if (TraceBranchWindow && Registers.R4300.PC >= 0x80322E18u && Registers.R4300.PC <= 0x80322E20u)
+            {
+                Console.WriteLine(
+                    $"[N64BEQ] pc=0x{Registers.R4300.PC:x8} rs={Desc.op1} rt={Desc.op2} " +
+                    $"rsv=0x{Registers.R4300.Reg[Desc.op1]:x16} rtv=0x{Registers.R4300.Reg[Desc.op2]:x16} imm=0x{Desc.Imm:x4}");
+            }
             Registers.R4300.PC += 4;
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] == (long)Registers.R4300.Reg[Desc.op2])
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BEQL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] == (long)Registers.R4300.Reg[Desc.op2];
             Registers.R4300.PC += 4;
-            if ((long)Registers.R4300.Reg[Desc.op1] == (long)Registers.R4300.Reg[Desc.op2])
+            if (take)
             {
                 R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
@@ -33,26 +46,29 @@
 
         public static void BGEZ(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] >= 0;
             Registers.R4300.PC += 4;
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BGEZAL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] >= 0;
             uint link = Registers.R4300.PC + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BGEZL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] >= 0;
             Registers.R4300.PC += 4;
-            if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
+            if (take)
             {
                 R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
@@ -65,10 +81,11 @@
 
         public static void BGEZALL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] >= 0;
             uint link = Registers.R4300.PC + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
-            if ((long)Registers.R4300.Reg[Desc.op1] >= 0)
+            if (take)
             {
                 R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
@@ -81,24 +98,27 @@
 
         public static void BGTZ(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] > 0;
             Registers.R4300.PC += 4;
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] > 0)
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BLEZ(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] <= 0;
             Registers.R4300.PC += 4;
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] <= 0)
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BLEZL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] <= 0;
             Registers.R4300.PC += 4;
-            if ((long)Registers.R4300.Reg[Desc.op1] <= 0)
+            if (take)
             {
                 R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
@@ -108,26 +128,29 @@
 
         public static void BLTZ(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] < 0;
             Registers.R4300.PC += 4;
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] < 0)
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BLTZAL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] < 0;
             uint link = Registers.R4300.PC + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] < 0)
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BLTZL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] < 0;
             Registers.R4300.PC += 4;
-            if ((long)Registers.R4300.Reg[Desc.op1] < 0)
+            if (take)
             {
                 R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
@@ -140,10 +163,11 @@
 
         public static void BLTZALL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] < 0;
             uint link = Registers.R4300.PC + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
-            if ((long)Registers.R4300.Reg[Desc.op1] < 0)
+            if (take)
             {
                 R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
@@ -156,16 +180,18 @@
 
         public static void BNE(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] != (long)Registers.R4300.Reg[Desc.op2];
             Registers.R4300.PC += 4;
             R4300.ExecuteDelaySlot();
-            if ((long)Registers.R4300.Reg[Desc.op1] != (long)Registers.R4300.Reg[Desc.op2])
+            if (take)
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
         public static void BNEL(OpcodeTable.OpcodeDesc Desc)
         {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] != (long)Registers.R4300.Reg[Desc.op2];
             Registers.R4300.PC += 4;
-            if ((long)Registers.R4300.Reg[Desc.op1] != (long)Registers.R4300.Reg[Desc.op2])
+            if (take)
             {
                 R4300.ExecuteDelaySlot();
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);

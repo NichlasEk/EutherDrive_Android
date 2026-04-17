@@ -52,6 +52,10 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_QUEUE_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceSm64QueueWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_SM64_QUEUE_WINDOW_LIMIT", 400);
         private static int _traceSm64QueueWindowCount = 0;
+        private static readonly bool TraceSm64DispatchWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_DISPATCH_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSm64DispatchWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_SM64_DISPATCH_WINDOW_LIMIT", 64);
+        private static int _traceSm64DispatchWindowCount = 0;
         private static readonly bool TraceViInitWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_INIT_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceViInitWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_INIT_WINDOW_LIMIT", 600);
@@ -266,19 +270,19 @@ namespace Ryu64.MIPS
                 uint v0wc = 0;
                 uint v0w10 = 0;
                 uint v0wm4 = 0;
-                try { a0w = memory.ReadUInt32((uint)a0); } catch { }
-                try { a0wm8 = memory.ReadUInt32((uint)a0 - 8u); } catch { }
-                try { a0wm4 = memory.ReadUInt32((uint)a0 - 4u); } catch { }
-                try { a0w4 = memory.ReadUInt32((uint)a0 + 4u); } catch { }
-                try { a0w8 = memory.ReadUInt32((uint)a0 + 8u); } catch { }
-                try { a0wc = memory.ReadUInt32((uint)a0 + 12u); } catch { }
-                try { a0w10 = memory.ReadUInt32((uint)a0 + 16u); } catch { }
-                try { v0w = memory.ReadUInt32((uint)v0); } catch { }
-                try { v0w4 = memory.ReadUInt32((uint)v0 + 4u); } catch { }
-                try { v0w8 = memory.ReadUInt32((uint)v0 + 8u); } catch { }
-                try { v0wc = memory.ReadUInt32((uint)v0 + 12u); } catch { }
-                try { v0w10 = memory.ReadUInt32((uint)v0 + 16u); } catch { }
-                try { v0wm4 = memory.ReadUInt32((uint)v0 - 4u); } catch { }
+                a0w = TraceReadWordOrZero(a0);
+                a0wm8 = TraceReadWordOrZero(a0 - 8u);
+                a0wm4 = TraceReadWordOrZero(a0 - 4u);
+                a0w4 = TraceReadWordOrZero(a0 + 4u);
+                a0w8 = TraceReadWordOrZero(a0 + 8u);
+                a0wc = TraceReadWordOrZero(a0 + 12u);
+                a0w10 = TraceReadWordOrZero(a0 + 16u);
+                v0w = TraceReadWordOrZero(v0);
+                v0w4 = TraceReadWordOrZero(v0 + 4u);
+                v0w8 = TraceReadWordOrZero(v0 + 8u);
+                v0wc = TraceReadWordOrZero(v0 + 12u);
+                v0w10 = TraceReadWordOrZero(v0 + 16u);
+                v0wm4 = TraceReadWordOrZero(v0 - 4u);
 
                 Common.Logger.PrintWarningLine(
                     $"Address error exception (count={_addressErrorLogCount}) " +
@@ -341,6 +345,30 @@ namespace Ryu64.MIPS
 
             RaiseCpuException(CauseExcCodeInterrupt, pc);
             return true;
+        }
+
+        private static bool CanTraceReadWord(ulong address)
+        {
+            uint addr32 = (uint)address;
+            uint segment = addr32 & 0xE0000000u;
+            return segment == 0x80000000u
+                || segment == 0xA0000000u
+                || segment == 0xC0000000u;
+        }
+
+        private static uint TraceReadWordOrZero(ulong address)
+        {
+            if (!CanTraceReadWord(address))
+                return 0;
+
+            try
+            {
+                return memory.ReadUInt32((uint)address);
+            }
+            catch
+            {
+                return 0;
+            }
         }
 
         internal static bool CheckPendingInterruptsNow(uint pc)
@@ -501,6 +529,18 @@ namespace Ryu64.MIPS
             OpcodeTable.OpcodeDesc Desc = new OpcodeTable.OpcodeDesc(Opcode);
             OpcodeTable.InstInfo   Info = OpcodeTable.GetOpcodeInfo(Opcode);
 
+            if (TraceSm64DispatchWindow
+                && _traceSm64DispatchWindowCount < TraceSm64DispatchWindowLimit
+                && Registers.R4300.PC >= 0x80322E10u
+                && Registers.R4300.PC <= 0x80322E20u)
+            {
+                _traceSm64DispatchWindowCount++;
+                Console.WriteLine(
+                    $"[N64DISPATCH] #{_traceSm64DispatchWindowCount} pc=0x{Registers.R4300.PC:x8} op=0x{Opcode:x8} " +
+                    $"handler={Info.Interpret.Method.Name} asm='{Info.FormattedASM}' " +
+                    $"rs=0x{Registers.R4300.Reg[Desc.op1]:x16} rt=0x{Registers.R4300.Reg[Desc.op2]:x16}");
+            }
+
             if (Common.Variables.Debug)
             {
                 string ASM = string.Format(
@@ -605,6 +645,8 @@ namespace Ryu64.MIPS
             _traceRefillWindowCount = 0;
             _traceEarlyLoopWindowCount = 0;
             _traceSm64WalkWindowCount = 0;
+            _traceSm64QueueWindowCount = 0;
+            _traceSm64DispatchWindowCount = 0;
 
             OpcodeTable.Init();
 
@@ -791,9 +833,9 @@ namespace Ryu64.MIPS
                                 uint t0w = 0;
                                 uint t1w = 0;
                                 uint t1w4 = 0;
-                                try { t0w = memory.ReadUInt32((uint)t0); } catch { }
-                                try { t1w = memory.ReadUInt32((uint)t1); } catch { }
-                                try { t1w4 = memory.ReadUInt32((uint)t1 + 4u); } catch { }
+                                t0w = TraceReadWordOrZero(t0);
+                                t1w = TraceReadWordOrZero(t1);
+                                t1w4 = TraceReadWordOrZero(t1 + 4u);
 
                                 Console.WriteLine(
                                     $"[N64EARLY] #{_traceEarlyLoopWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
@@ -812,13 +854,12 @@ namespace Ryu64.MIPS
                                 _traceEretWindowCount++;
                                 ulong k0 = Registers.R4300.Reg[26];
                                 ulong k1 = Registers.R4300.Reg[27];
-                                uint k0a = (uint)k0;
                                 uint m118 = 0;
                                 uint m11c = 0;
                                 try
                                 {
-                                    m118 = memory.ReadUInt32(k0a + 0x118u);
-                                    m11c = memory.ReadUInt32(k0a + 0x11Cu);
+                                    m118 = TraceReadWordOrZero(k0 + 0x118u);
+                                    m11c = TraceReadWordOrZero(k0 + 0x11Cu);
                                 }
                                 catch
                                 {
@@ -870,16 +911,16 @@ namespace Ryu64.MIPS
                                 uint a0w = 0, a0w4 = 0, a0w8 = 0, a0wc = 0;
                                 uint t8w = 0, t8w4 = 0, t8w8 = 0, t8wc = 0;
                                 uint v0w = 0, v0w4 = 0;
-                                try { a0w = memory.ReadUInt32((uint)a0); } catch { }
-                                try { a0w4 = memory.ReadUInt32((uint)a0 + 4u); } catch { }
-                                try { a0w8 = memory.ReadUInt32((uint)a0 + 8u); } catch { }
-                                try { a0wc = memory.ReadUInt32((uint)a0 + 12u); } catch { }
-                                try { t8w = memory.ReadUInt32((uint)t8); } catch { }
-                                try { t8w4 = memory.ReadUInt32((uint)t8 + 4u); } catch { }
-                                try { t8w8 = memory.ReadUInt32((uint)t8 + 8u); } catch { }
-                                try { t8wc = memory.ReadUInt32((uint)t8 + 12u); } catch { }
-                                try { v0w = memory.ReadUInt32((uint)v0); } catch { }
-                                try { v0w4 = memory.ReadUInt32((uint)v0 + 4u); } catch { }
+                                a0w = TraceReadWordOrZero(a0);
+                                a0w4 = TraceReadWordOrZero(a0 + 4u);
+                                a0w8 = TraceReadWordOrZero(a0 + 8u);
+                                a0wc = TraceReadWordOrZero(a0 + 12u);
+                                t8w = TraceReadWordOrZero(t8);
+                                t8w4 = TraceReadWordOrZero(t8 + 4u);
+                                t8w8 = TraceReadWordOrZero(t8 + 8u);
+                                t8wc = TraceReadWordOrZero(t8 + 12u);
+                                v0w = TraceReadWordOrZero(v0);
+                                v0w4 = TraceReadWordOrZero(v0 + 4u);
                                 uint opD64 = 0;
                                 try { opD64 = memory.ReadUInt32(0x80327D64u); } catch { }
 
@@ -908,21 +949,28 @@ namespace Ryu64.MIPS
                                 ulong t2 = Registers.R4300.Reg[10];
                                 ulong t3 = Registers.R4300.Reg[11];
                                 ulong ra = Registers.R4300.Reg[31];
-                                uint q0 = 0, q4 = 0, q8 = 0, qc = 0;
-                                uint a0w = 0, a0w4 = 0;
-                                try { q0 = memory.ReadUInt32(0x803359A0u); } catch { }
-                                try { q4 = memory.ReadUInt32(0x803359A4u); } catch { }
-                                try { q8 = memory.ReadUInt32(0x803359A8u); } catch { }
-                                try { qc = memory.ReadUInt32(0x803359ACu); } catch { }
-                                try { a0w = memory.ReadUInt32((uint)a0); } catch { }
-                                try { a0w4 = memory.ReadUInt32((uint)a0 + 4u); } catch { }
+                                uint q0 = 0, q4 = 0, q8 = 0, qc = 0, qb0 = 0, qb4 = 0;
+                                uint a0w = 0, a0w4 = 0, a0wc = 0, a0w10 = 0, a0w14 = 0, a0w18 = 0, a0w1c = 0;
+                                q0 = TraceReadWordOrZero(0x803359A0u);
+                                q4 = TraceReadWordOrZero(0x803359A4u);
+                                q8 = TraceReadWordOrZero(0x803359A8u);
+                                qc = TraceReadWordOrZero(0x803359ACu);
+                                qb0 = TraceReadWordOrZero(0x803359B0u);
+                                qb4 = TraceReadWordOrZero(0x803359B4u);
+                                a0w = TraceReadWordOrZero(a0);
+                                a0w4 = TraceReadWordOrZero(a0 + 4u);
+                                a0wc = TraceReadWordOrZero(a0 + 12u);
+                                a0w10 = TraceReadWordOrZero(a0 + 16u);
+                                a0w14 = TraceReadWordOrZero(a0 + 20u);
+                                a0w18 = TraceReadWordOrZero(a0 + 24u);
+                                a0w1c = TraceReadWordOrZero(a0 + 28u);
 
                                 Console.WriteLine(
                                     $"[N64SM64QUEUE] #{_traceSm64QueueWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} v0=0x{v0:x16} v1=0x{v1:x16} " +
                                     $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} ra=0x{ra:x16} " +
-                                    $"q[a0]=0x{q0:x8} q[a4]=0x{q4:x8} q[a8]=0x{q8:x8} q[ac]=0x{qc:x8} " +
-                                    $"[a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8}");
+                                    $"q[a0]=0x{q0:x8} q[a4]=0x{q4:x8} q[a8]=0x{q8:x8} q[ac]=0x{qc:x8} q[b0]=0x{qb0:x8} q[b4]=0x{qb4:x8} " +
+                                    $"[a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [a0+c]=0x{a0wc:x8} [a0+10]=0x{a0w10:x8} [a0+14]=0x{a0w14:x8} [a0+18]=0x{a0w18:x8} [a0+1c]=0x{a0w1c:x8}");
                             }
 
                             if (TraceViInitWindow
@@ -947,9 +995,9 @@ namespace Ryu64.MIPS
                                 uint sp3c = 0;
                                 uint sp38 = 0;
                                 uint sp40 = 0;
-                                try { sp38 = memory.ReadUInt32((uint)sp + 0x38u); } catch { }
-                                try { sp3c = memory.ReadUInt32((uint)sp + 0x3Cu); } catch { }
-                                try { sp40 = memory.ReadUInt32((uint)sp + 0x40u); } catch { }
+                                sp38 = TraceReadWordOrZero(sp + 0x38u);
+                                sp3c = TraceReadWordOrZero(sp + 0x3Cu);
+                                sp40 = TraceReadWordOrZero(sp + 0x40u);
                                 Console.WriteLine(
                                     $"[N64VIINIT] #{_traceViInitWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} v0=0x{v0:x16} v1=0x{v1:x16} " +
@@ -974,7 +1022,7 @@ namespace Ryu64.MIPS
                                 ulong a1 = Registers.R4300.Reg[5];
                                 ulong v0 = Registers.R4300.Reg[2];
                                 uint sp3c = 0;
-                                try { sp3c = memory.ReadUInt32((uint)sp + 0x3Cu); } catch { }
+                                sp3c = TraceReadWordOrZero(sp + 0x3Cu);
                                 Console.WriteLine(
                                     $"[N64VIPREP] #{_traceViPrepWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} v0=0x{v0:x16} " +

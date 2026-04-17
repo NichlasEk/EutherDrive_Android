@@ -1,7 +1,12 @@
-﻿namespace Ryu64.MIPS
+﻿using System;
+
+namespace Ryu64.MIPS
 {
     public partial class InstInterp
     {
+        private static readonly bool TraceLhuWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_LHU_WINDOW"), "1", StringComparison.Ordinal);
+
         private static uint EffectiveAddress(OpcodeTable.OpcodeDesc desc)
         {
             long baseAddr = (long)Registers.R4300.Reg[desc.op1];
@@ -107,7 +112,13 @@
         {
             uint addr = EffectiveAddress(Desc);
             RequireAlignment(addr, 2, isStore: false);
-            Registers.R4300.Reg[Desc.op2] = R4300.memory.ReadUInt16(addr);
+            ushort value = R4300.memory.ReadUInt16(addr);
+            if (TraceLhuWindow && Registers.R4300.PC >= 0x80322E10u && Registers.R4300.PC <= 0x80322E20u)
+            {
+                Console.WriteLine(
+                    $"[N64LHU] pc=0x{Registers.R4300.PC:x8} addr=0x{addr:x8} value=0x{value:x4} rt={Desc.op2}");
+            }
+            Registers.R4300.Reg[Desc.op2] = value;
             Registers.R4300.PC += 4;
         }
 
