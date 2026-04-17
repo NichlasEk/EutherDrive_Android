@@ -176,6 +176,7 @@ namespace Ryu64.MIPS
 
             const ulong StatusExlBit = 1UL << 1;
             const ulong StatusErlBit = 1UL << 2;
+            const ulong SentinelErrorEpc = 0xFFFFFFFFUL;
 
             ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
             ulong epc = Registers.COP0.Reg[Registers.COP0.EPC_REG];
@@ -191,21 +192,41 @@ namespace Ryu64.MIPS
             // - If ERL is set, return to ErrorEPC and clear ERL.
             // - Otherwise, return to EPC and clear EXL.
             uint targetPc;
+            string eretPath;
             if ((status & StatusErlBit) != 0)
             {
-                targetPc = (uint)errorEpc & 0xFFFFFFFCu;
-                Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusErlBit;
+                // Match mupen/N64 bring-up behavior more closely when software restores
+                // ERL without ever seeding ErrorEPC: prefer EPC over the power-on sentinel.
+                if ((uint)errorEpc == (uint)SentinelErrorEpc && (uint)epc != (uint)SentinelErrorEpc)
+                {
+                    targetPc = (uint)epc & 0xFFFFFFFCu;
+                    Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusErlBit;
+                    eretPath = "ERL->EPC-fallback";
+                }
+                else
+                {
+                    targetPc = (uint)errorEpc & 0xFFFFFFFCu;
+                    Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusErlBit;
+                    eretPath = "ERL->ErrorEPC";
+                }
             }
             else
             {
                 targetPc = (uint)epc & 0xFFFFFFFCu;
                 Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusExlBit;
+                eretPath = "EXL->EPC";
             }
 
             // This is a bring-up-only escape hatch.
             // Real VR4300 semantics return to EPC directly.
             if (CanonicalizeLowEretTargets && targetPc < 0x20000000u)
                 targetPc |= 0x80000000u;
+
+            if (TraceCop0)
+            {
+                Common.Logger.PrintInfoLine(
+                    $"[COP0] ERET target path={eretPath} target=0x{targetPc:x8} newStatus=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x16}");
+            }
 
             Registers.R4300.PC = targetPc;
         }
