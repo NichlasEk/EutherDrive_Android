@@ -303,7 +303,7 @@ namespace Ryu64.MIPS
 
             // MI Registers
             WriteBigEndianWord(MI_INIT_MODE_REG_R, 0x00000080); // MI_INIT_MODE_REG
-            WriteUInt32Physical(0x04300004, 0x01010101); // MI_VERSION_REG
+            WriteUInt32Physical(0x04300004, 0x02020102); // MI_VERSION_REG
 
             // VI Registers
             WriteUInt32Physical(0x0440000C, 1023); // VI_INTR_REG
@@ -338,7 +338,9 @@ namespace Ryu64.MIPS
             WriteUInt32Physical(0x40001000, 0x3C0DBFC0);
             WriteUInt32Physical(0x40001004, 0x8DA807FC);
             WriteUInt32Physical(0x40001008, 0x25AD07C0);
+            WriteUInt32Physical(0x4000100C, 0x31080080);
             WriteUInt32Physical(0x40001010, 0x5500FFFC);
+            WriteUInt32Physical(0x40001014, 0x3C0DBFC0);
             WriteUInt32Physical(0x40001018, 0x8DA80024);
             WriteUInt32Physical(0x4000101C, 0x3C0BB000);
         }
@@ -1339,12 +1341,39 @@ namespace Ryu64.MIPS
         private void SetSiBusy(bool busy)
         {
             uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R);
-            const uint SiDmaBusyBit = 0x00000001u;
+            const uint SiBusyBits = 0x00000003u; // DMA_BUSY | IO_BUSY
             if (busy)
-                siStatus |= SiDmaBusyBit;
+                siStatus |= SiBusyBits;
             else
-                siStatus &= ~SiDmaBusyBit;
+                siStatus &= ~SiBusyBits;
             WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
+        }
+
+        private void ProcessPifControlFlags()
+        {
+            byte flags = PIFRAM[63];
+            byte clearMask = 0x00;
+
+            if (flags == 0)
+                return;
+
+            // Minimal mupen-like control handling for boot/runtime handshakes.
+            if ((flags & 0x01) != 0)
+                clearMask |= 0x01;
+
+            if ((flags & 0x02) != 0)
+                clearMask |= 0x02;
+
+            if ((flags & 0x08) != 0)
+                clearMask |= 0x08;
+
+            if ((flags & 0x30) != 0)
+            {
+                PIFRAM[63] = 0x80;
+                return;
+            }
+
+            PIFRAM[63] = (byte)(flags & ~clearMask);
         }
 
         private void ProcessPifJoybusCommands()
@@ -1412,10 +1441,8 @@ namespace Ryu64.MIPS
                 i = rxIndex + rxLen;
             }
 
-            // Firmware expects PIF command/control bits to be consumed/acknowledged.
-            // Leaving these latched can trap execution in PIF polling loops.
             if (pifControl != 0)
-                PIFRAM[63] = 0x00;
+                ProcessPifControlFlags();
         }
 
         struct MemEntry

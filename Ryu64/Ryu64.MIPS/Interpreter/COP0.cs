@@ -11,7 +11,8 @@
 
             Registers.COP0.Reg[Registers.COP0.COMPARE_REG] = 0xFFFFFFFF;
             Registers.COP0.Reg[Registers.COP0.STATUS_REG]  = 0x34000000;
-            Registers.COP0.Reg[Registers.COP0.CONFIG_REG]  = 0x0006E463;
+            Registers.COP0.Reg[Registers.COP0.CONFIG_REG]  = 0x7006E463;
+            Registers.COP0.Reg[Registers.COP0.RANDOM_REG]  = 0x0000001F;
 
             COP0_ON = true;
         }

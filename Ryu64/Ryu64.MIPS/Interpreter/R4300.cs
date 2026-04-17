@@ -62,8 +62,6 @@ namespace Ryu64.MIPS
         private static int _traceViCalcWindowCount = 0;
         private static readonly bool TraceStuckPcDetails =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_STUCK_PC"), "1", StringComparison.Ordinal);
-        private static readonly bool EnableSm64AddressErrorPatch =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_SM64_ADDRERR_PATCH"), "1", StringComparison.Ordinal);
         private const ulong StatusExlBit = 1UL << 1;
         private const ulong StatusErlBit = 1UL << 2;
         private const ulong StatusIeBit = 1UL << 0;
@@ -86,6 +84,8 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_STRICT_ITLB"), "1", StringComparison.Ordinal);
         private static readonly bool AlignMisalignedPcDuringBringup =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_ALIGN_MISALIGNED_PC"), "0", StringComparison.Ordinal);
+        private static readonly bool UseBootRomHleStartup =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_BOOTROM_HLE"), "1", StringComparison.Ordinal);
         // Bring-up default: prefer RAM vectors when BEV is set because PIF/boot ROM exception
         // vectors are not fully emulated yet. Set EUTHERDRIVE_N64_STRICT_BEV_VECTORS=1 to force
         // strict VR4300 ROM-vector behavior.
@@ -99,7 +99,6 @@ namespace Ryu64.MIPS
         private static bool _loggedFirstBfcEntry;
         private static ulong _tlbRefillLogCount;
         private static ulong _addressErrorLogCount;
-        private static bool _sm64ThunkPatched;
 
         private static int ParseTraceLimit(string name, int fallback)
         {
@@ -233,31 +232,6 @@ namespace Ryu64.MIPS
 
         private static void RaiseAddressErrorException(uint badAddress, bool isStore, uint faultingPc)
         {
-            if (EnableSm64AddressErrorPatch
-                && !_sm64ThunkPatched
-                && !isStore
-                && badAddress == 0x3C1A8036u
-                && (uint)Registers.R4300.Reg[4] == 0x803359A8u)
-            {
-                try
-                {
-                    uint slot0 = memory.ReadUInt32(0x803359A8u);
-                    uint slot1 = memory.ReadUInt32(0x803359ACu);
-                    if (slot0 == 0 && (slot1 & 0xE0000000u) == 0x80000000u)
-                    {
-                        memory.WriteUInt32(0x803359A8u, slot1);
-                        _sm64ThunkPatched = true;
-                        Common.Logger.PrintWarningLine(
-                            $"Applied SM64 thunk patch: [803359a8]=0x{slot1:x8} after AddressError at pc=0x{faultingPc:x8}");
-                        return;
-                    }
-                }
-                catch
-                {
-                    // Best-effort recovery only.
-                }
-            }
-
             _addressErrorLogCount++;
             if (_addressErrorLogCount <= 64 || (_addressErrorLogCount % 256) == 0)
             {
@@ -493,22 +467,6 @@ namespace Ryu64.MIPS
             }
         }
 
-        private static byte GetInitialPifControlByte(uint cicSeed)
-        {
-            // Boot ROM/IPL paths are sensitive to the initial PIF control byte.
-            // Keep a pragmatic mapping for commonly used CICs during bring-up.
-            switch (cicSeed)
-            {
-                case CIC_SEED_NUS_6102:
-                    return 0x3D;
-                case CIC_SEED_NUS_6105:
-                case CIC_SEED_NUS_6106:
-                    return 0xD2;
-                default:
-                    return 0x3D;
-            }
-        }
-
         public static void InterpretOpcode(uint Opcode)
         {
             if (Registers.R4300.Reg[0] != 0) Registers.R4300.Reg[0] = 0;
@@ -583,8 +541,8 @@ namespace Ryu64.MIPS
             Registers.R4300.Reg[20] = TVType;
             Registers.R4300.Reg[21] = ResetType;
             uint cicSeed = GetCICSeed();
-            Registers.R4300.Reg[22] = (cicSeed >> 8) & 0xFF;
-            Registers.R4300.Reg[23] = osVersion;
+            Registers.R4300.Reg[22] = cicSeed & 0xFF;
+            Registers.R4300.Reg[23] = 0;
             Registers.R4300.Reg[25] = 0xFFFFFFFF9DEBB54F;
             Registers.R4300.Reg[29] = 0xFFFFFFFFA4001FF0;
             Registers.R4300.Reg[31] = 0xFFFFFFFFA4001550;
@@ -593,11 +551,23 @@ namespace Ryu64.MIPS
             Registers.R4300.PC      = 0xA4000040;
 
             memory.FastMemoryCopy(0xA4000000, 0xB0000000, 0x1000); // Load the 4 KiB IPL3 boot code into SP memory.
-            memory.WriteUInt8(0xBFC007FF, GetInitialPifControlByte(cicSeed)); // kseg1 alias of PIF RAM control byte.
+
+            // Match mupen's reset_pif()/bootrom_hle expectations:
+            // PIF RAM[0x24] carries reset metadata and control flags start cleared.
+            uint pif24 =
+                (((RomType & 0x1u) << 19)
+                | ((0u & 0x1u) << 18) // s7
+                | ((ResetType & 0x1u) << 17)
+                | ((cicSeed & 0xFFu) << 8)
+                | 0x3Fu);
+            memory.WriteUInt32(0xBFC007E4u, pif24);
+            memory.WriteUInt8(0xBFC007FFu, 0x00);
 
             TLB.Reset();
             COP0.PowerOnCOP0();
             COP1.PowerOnCOP1();
+            if (UseBootRomHleStartup)
+                ApplyBootRomHleStartup(RomType, ResetType, TVType, cicSeed);
 
             R4300_ON = true;
             UnknownOpcodeCount = 0;
@@ -1064,6 +1034,54 @@ namespace Ryu64.MIPS
             });
             CpuThread.Name = "R4300";
             CpuThread.Start();
+        }
+
+        private static void ApplyBootRomHleStartup(uint romType, uint resetType, uint tvType, uint cicSeed)
+        {
+            Registers.COP0.Reg[Registers.COP0.STATUS_REG] = 0x34000000;
+            Registers.COP0.Reg[Registers.COP0.CONFIG_REG] = 0x7006E463;
+
+            // Mirror mupen's pif_bootrom_hle_execute() startup subset:
+            // stop SP/PI, blank VI, mute AI, and seed IPL3 execution state.
+            memory.WriteUInt32(0xA4040010u, 0x0000000Au); // SP_STATUS: halt + clear intr
+            memory.WriteUInt32(0xA4600010u, 0x00000003u); // PI_STATUS: reset + clear intr
+
+            memory.WriteUInt32(0xA440000Cu, 1023u); // VI_INTR
+            memory.WriteUInt32(0xA4400010u, 0u);    // VI_CURRENT
+            memory.WriteUInt32(0xA4400024u, 0u);    // VI_H_START
+
+            memory.WriteUInt32(0xA4500000u, 0u);    // AI_DRAM_ADDR
+            memory.WriteUInt32(0xA4500004u, 0u);    // AI_LEN
+
+            uint pif24 = memory.ReadUInt32(0xBFC007E4u);
+            uint s7 = (pif24 >> 18) & 0x1u;
+            uint seed = (pif24 >> 8) & 0xFFu;
+            Registers.R4300.Reg[19] = romType;
+            Registers.R4300.Reg[20] = tvType;
+            Registers.R4300.Reg[21] = resetType;
+            Registers.R4300.Reg[22] = seed;
+            Registers.R4300.Reg[23] = s7;
+
+            uint bsdDom1Config = memory.ReadUInt32(0xB0000000u);
+            memory.WriteUInt32(0xA4600014u, bsdDom1Config & 0xFFu);
+            memory.WriteUInt32(0xA4600018u, (bsdDom1Config >> 8) & 0xFFu);
+            memory.WriteUInt32(0xA460001Cu, (bsdDom1Config >> 16) & 0x0Fu);
+            memory.WriteUInt32(0xA4600020u, (bsdDom1Config >> 20) & 0x03u);
+
+            memory.FastMemoryCopy(0xA4000040u, 0xB0000040u, 0xFC0);
+            memory.WriteUInt32(0xA4001000u, 0x3C0DBFC0u);
+            memory.WriteUInt32(0xA4001004u, 0x8DA807FCu);
+            memory.WriteUInt32(0xA4001008u, 0x25AD07C0u);
+            memory.WriteUInt32(0xA400100Cu, 0x31080080u);
+            memory.WriteUInt32(0xA4001010u, 0x5500FFFCu);
+            memory.WriteUInt32(0xA4001014u, 0x3C0DBFC0u);
+            memory.WriteUInt32(0xA4001018u, 0x8DA80024u);
+            memory.WriteUInt32(0xA400101Cu, 0x3C0BB000u);
+
+            Registers.R4300.Reg[11] = 0xFFFFFFFFA4000040;
+            Registers.R4300.Reg[29] = 0xFFFFFFFFA4001FF0;
+            Registers.R4300.Reg[31] = 0xFFFFFFFFA4001550;
+            Registers.R4300.PC = 0xA4000040;
         }
 
         public static void StopR4300()
