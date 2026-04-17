@@ -228,6 +228,12 @@ namespace Ryu64.MIPS
         private uint _viField;
         private bool _warnedRspTaskHle;
         private bool _warnedRspInterpreterFallback;
+        private bool _spDmaBusy;
+        private bool _spDmaFull;
+        private bool _spDmaDelayArmed;
+        private uint _spDmaDelayRemaining;
+        private SpDmaRequest _spQueuedDma;
+        private bool _spQueuedDmaValid;
         private bool _rspTaskActive;
         private uint _rspTaskCyclesRemaining;
         private uint _rspInterruptDelayRemaining;
@@ -276,7 +282,8 @@ namespace Ryu64.MIPS
                 null, SP_STATUS_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04040014, 0x04040017, SP_DMA_FULL_REG_R,  SP_DMA_FULL_REG_W,   "SP_DMA_FULL_REG"));
             MemoryMapList.Add(new MemEntry(0x04040018, 0x0404001B, SP_DMA_BUSY_REG_R,  SP_DMA_BUSY_REG_W,   "SP_DMA_BUSY_REG"));
-            MemoryMapList.Add(new MemEntry(0x0404001C, 0x0404001F, SP_SEMAPHORE_REG_R, SP_SEMAPHORE_REG_W,  "SP_SEMAPHORE_REG"));
+            MemoryMapList.Add(new MemEntry(0x0404001C, 0x0404001F, SP_SEMAPHORE_REG_R, SP_SEMAPHORE_REG_W,  "SP_SEMAPHORE_REG",
+                SP_SEMAPHORE_READ_EVENT, null));
             MemoryMapList.Add(new MemEntry(0x04080000, 0x04080003, SP_PC_REG_RW,       SP_PC_REG_RW,        "SP_PC_REG",
                 null, SP_PC_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04080004, 0x04080007, SP_IBIST_REG_RW,    SP_IBIST_REG_RW,     "SP_IBIST_REG"));
@@ -625,6 +632,20 @@ namespace Ryu64.MIPS
 
         private void AdvanceRspDpLifecycle(uint cpuCycles)
         {
+            if (_spDmaDelayArmed)
+            {
+                if (cpuCycles >= _spDmaDelayRemaining)
+                {
+                    _spDmaDelayRemaining = 0;
+                    _spDmaDelayArmed = false;
+                    FinalizeSpDma();
+                }
+                else
+                {
+                    _spDmaDelayRemaining -= cpuCycles;
+                }
+            }
+
             if (_rspTaskActive)
             {
                 if (cpuCycles >= _rspTaskCyclesRemaining)
@@ -665,6 +686,26 @@ namespace Ryu64.MIPS
                     _dpInterruptDelayRemaining -= cpuCycles;
                 }
             }
+        }
+
+        private void FinalizeSpDma()
+        {
+            if (_spQueuedDmaValid)
+            {
+                SpDmaRequest queued = _spQueuedDma;
+                _spQueuedDmaValid = false;
+                _spDmaFull = false;
+                WriteBigEndianWord(SP_DMA_FULL_REG_R, 0);
+                uint queuedStatus = ReadBigEndianWord(SP_STATUS_REG_R) & ~0x00000008u;
+                WriteBigEndianWord(SP_STATUS_REG_R, queuedStatus);
+                ExecuteSpDma(queued);
+                return;
+            }
+
+            _spDmaBusy = false;
+            WriteBigEndianWord(SP_DMA_BUSY_REG_R, 0);
+            uint status = ReadBigEndianWord(SP_STATUS_REG_R) & ~SpStatusDmaBusy;
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
         }
 
         private void CompleteRspTask()
@@ -1257,12 +1298,18 @@ namespace Ryu64.MIPS
                 $"[N64IO] SP_DRAM_ADDR write value=0x{value:x8} pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
         }
 
+        public void SP_SEMAPHORE_READ_EVENT()
+        {
+            WriteBigEndianWord(SP_SEMAPHORE_REG_R, 1);
+        }
+
         public void SP_PC_WRITE_EVENT()
         {
+            uint value = ReadBigEndianWord(SP_PC_REG_RW) & 0x00000FFCu;
+            WriteBigEndianWord(SP_PC_REG_RW, value);
             if (!TraceN64Io)
                 return;
 
-            uint value = ReadBigEndianWord(SP_PC_REG_RW);
             Common.Logger.PrintWarningLine(
                 $"[N64IO] SP_PC write value=0x{value:x8} pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
         }
@@ -1282,9 +1329,38 @@ namespace Ryu64.MIPS
 
         private void ExecuteSpDma(bool isReadFromDram)
         {
-            uint memAddr = ReadBigEndianWord(SP_MEM_ADDR_REG_RW) & 0x1FF8u;
-            uint dramAddr = ReadBigEndianWord(SP_DRAM_ADDR_REG_RW) & 0x00FFFFF8u;
-            uint lenReg = ReadBigEndianWord(isReadFromDram ? SP_RD_LEN_REG_RW : SP_WR_LEN_REG_RW);
+            SpDmaRequest request = new SpDmaRequest
+            {
+                IsReadFromDram = isReadFromDram,
+                MemAddr = ReadBigEndianWord(SP_MEM_ADDR_REG_RW),
+                DramAddr = ReadBigEndianWord(SP_DRAM_ADDR_REG_RW),
+                LengthReg = ReadBigEndianWord(isReadFromDram ? SP_RD_LEN_REG_RW : SP_WR_LEN_REG_RW)
+            };
+
+            if (_spDmaBusy)
+            {
+                if (!_spQueuedDmaValid)
+                {
+                    _spQueuedDma = request;
+                    _spQueuedDmaValid = true;
+                    _spDmaFull = true;
+                    WriteBigEndianWord(SP_DMA_FULL_REG_R, 1);
+                    uint fullStatus = ReadBigEndianWord(SP_STATUS_REG_R) | 0x00000008u;
+                    WriteBigEndianWord(SP_STATUS_REG_R, fullStatus);
+                }
+
+                return;
+            }
+
+            ExecuteSpDma(request);
+        }
+
+        private void ExecuteSpDma(SpDmaRequest request)
+        {
+            bool isReadFromDram = request.IsReadFromDram;
+            uint memAddr = request.MemAddr & 0x1FF8u;
+            uint dramAddr = request.DramAddr & 0x00FFFFF8u;
+            uint lenReg = request.LengthReg;
 
             int transferLength = (int)(((lenReg & 0xFFFu) | 7u) + 1u);
             int count = (int)(((lenReg >> 12) & 0xFFu) + 1u);
@@ -1293,6 +1369,7 @@ namespace Ryu64.MIPS
             if (transferLength <= 0 || count <= 0)
                 return;
 
+            _spDmaBusy = true;
             WriteBigEndianWord(SP_DMA_BUSY_REG_R, 1);
             uint status = ReadBigEndianWord(SP_STATUS_REG_R) | SpStatusDmaBusy;
             WriteBigEndianWord(SP_STATUS_REG_R, status);
@@ -1328,9 +1405,8 @@ namespace Ryu64.MIPS
             else
                 WriteBigEndianWord(SP_WR_LEN_REG_RW, 0x00000FF8u);
 
-            WriteBigEndianWord(SP_DMA_BUSY_REG_R, 0);
-            status = ReadBigEndianWord(SP_STATUS_REG_R) & ~SpStatusDmaBusy;
-            WriteBigEndianWord(SP_STATUS_REG_R, status);
+            _spDmaDelayArmed = true;
+            _spDmaDelayRemaining = Math.Max(1u, (uint)((count * transferLength) / 8));
         }
 
         private byte ReadSpMemoryByte(uint spAddress)
@@ -1507,6 +1583,14 @@ namespace Ryu64.MIPS
             public uint YieldDataSize;
         }
 
+        private struct SpDmaRequest
+        {
+            public bool IsReadFromDram;
+            public uint MemAddr;
+            public uint DramAddr;
+            public uint LengthReg;
+        }
+
         private void TryDispatchRspTaskHle(ref uint status)
         {
             if (!TryReadRspTaskFromDmem(out RspTask task))
@@ -1564,6 +1648,9 @@ namespace Ryu64.MIPS
             uint executedInstructions;
             string stopReason;
             bool completed = _rspInterpreter.ExecuteTask(out executedInstructions, out stopReason);
+
+            if (!completed && string.IsNullOrEmpty(stopReason))
+                stopReason = $"unknown-incomplete executed={executedInstructions} rspPc=0x{ReadRspPc():x3}";
 
             if (TraceN64Io || TraceRspTaskDmem)
             {
@@ -2380,7 +2467,8 @@ namespace Ryu64.MIPS
                         entry = new MemEntry(wordBase, wordBase + 3, SP_DMA_BUSY_REG_R, SP_DMA_BUSY_REG_W, "SP_DMA_BUSY_REG_MIRROR");
                         return true;
                     case 0x1C:
-                        entry = new MemEntry(wordBase, wordBase + 3, SP_SEMAPHORE_REG_R, SP_SEMAPHORE_REG_W, "SP_SEMAPHORE_REG_MIRROR");
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_SEMAPHORE_REG_R, SP_SEMAPHORE_REG_W, "SP_SEMAPHORE_REG_MIRROR",
+                            SP_SEMAPHORE_READ_EVENT, null);
                         return true;
                 }
             }

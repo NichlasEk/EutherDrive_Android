@@ -74,6 +74,22 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaDispatchWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH_LIMIT", 160);
         private static int _traceMegaDispatchWindowCount = 0;
+        private static readonly bool TraceMegaInitWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_INIT_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaInitWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_INIT_WINDOW_LIMIT", 256);
+        private static int _traceMegaInitWindowCount = 0;
+        private static readonly bool TraceMegaLateWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_LATE_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaLateWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_LATE_WINDOW_LIMIT", 256);
+        private static int _traceMegaLateWindowCount = 0;
+        private static readonly bool TraceMegaFatalWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_FATAL_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaFatalWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_FATAL_WINDOW_LIMIT", 256);
+        private static int _traceMegaFatalWindowCount = 0;
+        private static readonly bool TraceMegaStatusCall =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_STATUS_CALL"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaStatusCallLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_STATUS_CALL_LIMIT", 96);
+        private static int _traceMegaStatusCallCount = 0;
         private const ulong StatusExlBit = 1UL << 1;
         private const ulong StatusErlBit = 1UL << 2;
         private const ulong StatusIeBit = 1UL << 0;
@@ -459,6 +475,12 @@ namespace Ryu64.MIPS
             return compare > previousCount || compare <= newCount;
         }
 
+        internal static void SyncCountRegisterWrite(uint countValue)
+        {
+            Count = ((ulong)countValue) << 1;
+            Registers.COP0.Reg[Registers.COP0.COUNT_REG] = countValue;
+        }
+
         private static uint CRC32(uint StartAddress, uint Length)
         {
             uint[] Table = new uint[256];
@@ -683,6 +705,8 @@ namespace Ryu64.MIPS
             _traceSm64QueueWindowCount = 0;
             _traceSm64DispatchWindowCount = 0;
             _traceMegaDispatchWindowCount = 0;
+            _traceMegaInitWindowCount = 0;
+            _traceMegaLateWindowCount = 0;
             ClearLoadLinkedReservation();
 
             OpcodeTable.Init();
@@ -1008,6 +1032,199 @@ namespace Ryu64.MIPS
                                     $"d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} dfd88=0x{dfd88:x8} dfd90=0x{dfd90:x8} cb=0x{cb:x8} " +
                                     $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
                                     $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
+                            if (TraceMegaInitWindow
+                                && _traceMegaInitWindowCount < TraceMegaInitWindowLimit
+                                && pc >= 0x80025C10u
+                                && pc <= 0x80025E10u)
+                            {
+                                ulong t1 = Registers.R4300.Reg[9];
+                                bool shouldLog =
+                                    pc < 0x80025C24u
+                                    ? (_traceMegaInitWindowCount < 24 || t1 <= 0x80u)
+                                    : true;
+
+                                if (shouldLog)
+                                {
+                                    _traceMegaInitWindowCount++;
+                                    OpcodeTable.OpcodeDesc megaDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                    int rs = megaDesc.op1;
+                                    int rt = megaDesc.op2;
+                                    ulong rsValue = Registers.R4300.Reg[rs];
+                                    ulong rtValue = Registers.R4300.Reg[rt];
+                                    ulong a0 = Registers.R4300.Reg[4];
+                                    ulong a1 = Registers.R4300.Reg[5];
+                                    ulong a2 = Registers.R4300.Reg[6];
+                                    ulong a3 = Registers.R4300.Reg[7];
+                                    ulong v0 = Registers.R4300.Reg[2];
+                                    ulong v1 = Registers.R4300.Reg[3];
+                                    ulong t0 = Registers.R4300.Reg[8];
+                                    ulong ra = Registers.R4300.Reg[31];
+                                    ulong effAddr = rsValue + (ulong)(int)(short)megaDesc.Imm;
+                                    uint rsw = TraceReadWordOrZero(rsValue);
+                                    uint rsw4 = TraceReadWordOrZero(rsValue + 4u);
+                                    uint effw = TraceReadWordOrZero(effAddr);
+                                    uint effw4 = TraceReadWordOrZero(effAddr + 4u);
+                                    uint v0w = TraceReadWordOrZero(v0);
+                                    uint v0w4 = TraceReadWordOrZero(v0 + 4u);
+                                    uint dfd88 = TraceReadWordOrZero(0x800DFD88u);
+                                    uint dfd8c = TraceReadWordOrZero(0x800DFD8Cu);
+                                    uint dfd90 = TraceReadWordOrZero(0x800DFD90u);
+                                    uint d0f90 = TraceReadWordOrZero(0x800D0F90u);
+                                    uint d0fb8 = TraceReadWordOrZero(0x800D0FB8u);
+                                    uint cb = TraceReadWordOrZero(0x80204984u);
+                                    Console.WriteLine(
+                                        $"[N64MEGAINIT] #{_traceMegaInitWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                        $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
+                                        $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} v0=0x{v0:x16} v1=0x{v1:x16} " +
+                                        $"t0=0x{t0:x16} t1=0x{t1:x16} ra=0x{ra:x16} " +
+                                        $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
+                                        $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} " +
+                                        $"dfd88=0x{dfd88:x8} dfd8c=0x{dfd8c:x8} dfd90=0x{dfd90:x8} d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} cb=0x{cb:x8} " +
+                                        $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                        $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                                }
+                            }
+
+                            if (TraceMegaLateWindow
+                                && _traceMegaLateWindowCount < TraceMegaLateWindowLimit
+                                && ((pc >= 0x80089E80u && pc <= 0x80089EF0u)
+                                    || (pc >= 0x80093A00u && pc <= 0x80093B20u)
+                                    || (pc >= 0x80092A90u && pc <= 0x80092EC0u)
+                                    || (pc >= 0x80094440u && pc <= 0x800944C0u)
+                                    || (pc >= 0x80092EA0u && pc <= 0x80092EC0u)
+                                    || (pc >= 0x800269F0u && pc <= 0x80026A30u)
+                                    || (pc >= 0x80027540u && pc <= 0x80027580u)))
+                            {
+                                _traceMegaLateWindowCount++;
+                                OpcodeTable.OpcodeDesc megaLateDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = megaLateDesc.op1;
+                                int rt = megaLateDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong ra = Registers.R4300.Reg[31];
+                                ulong effAddr = rsValue + (ulong)(int)(short)megaLateDesc.Imm;
+                                uint rsw = TraceReadWordOrZero(rsValue);
+                                uint rsw4 = TraceReadWordOrZero(rsValue + 4u);
+                                uint effw = TraceReadWordOrZero(effAddr);
+                                uint effw4 = TraceReadWordOrZero(effAddr + 4u);
+                                uint v0w = TraceReadWordOrZero(v0);
+                                uint v0w4 = TraceReadWordOrZero(v0 + 4u);
+                                uint v1w = TraceReadWordOrZero(v1);
+                                uint v1w4 = TraceReadWordOrZero(v1 + 4u);
+                                uint cb = TraceReadWordOrZero(0x80204984u);
+                                uint late30 = TraceReadWordOrZero(0x80204830u);
+                                uint late78 = TraceReadWordOrZero(0x80204978u);
+                                uint lateB0 = TraceReadWordOrZero(0x801FFBB0u);
+                                uint lateB4 = TraceReadWordOrZero(0x801FFBB4u);
+                                Console.WriteLine(
+                                    $"[N64MEGALATE] #{_traceMegaLateWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} s0=0x{s0:x16} s1=0x{s1:x16} ra=0x{ra:x16} " +
+                                    $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
+                                    $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} [v1]=0x{v1w:x8} [v1+4]=0x{v1w4:x8} " +
+                                    $"m204830=0x{late30:x8} m204978=0x{late78:x8} m1ffbb0=0x{lateB0:x8} m1ffbb4=0x{lateB4:x8} cb=0x{cb:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"sp=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
+                            if (TraceMegaFatalWindow
+                                && _traceMegaFatalWindowCount < TraceMegaFatalWindowLimit
+                                && ((pc >= 0x80089EA0u && pc <= 0x80089EF0u)
+                                    || (pc >= 0x80092A90u && pc <= 0x80092EC0u)
+                                    || (pc >= 0x80093A20u && pc <= 0x80093B20u)
+                                    || (pc >= 0x800269F0u && pc <= 0x80026A30u)))
+                            {
+                                _traceMegaFatalWindowCount++;
+                                OpcodeTable.OpcodeDesc megaFatalDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = megaFatalDesc.op1;
+                                int rt = megaFatalDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t6 = Registers.R4300.Reg[14];
+                                ulong t7 = Registers.R4300.Reg[15];
+                                ulong ra = Registers.R4300.Reg[31];
+                                ulong effAddr = rsValue + (ulong)(int)(short)megaFatalDesc.Imm;
+                                uint rsw = TraceReadWordOrZero(rsValue);
+                                uint rsw4 = TraceReadWordOrZero(rsValue + 4u);
+                                uint effw = TraceReadWordOrZero(effAddr);
+                                uint effw4 = TraceReadWordOrZero(effAddr + 4u);
+                                uint v0w = TraceReadWordOrZero(v0);
+                                uint v0w4 = TraceReadWordOrZero(v0 + 4u);
+                                uint late30 = TraceReadWordOrZero(0x80204830u);
+                                uint late78 = TraceReadWordOrZero(0x80204978u);
+                                uint lateB0 = TraceReadWordOrZero(0x801FFBB0u);
+                                uint lateB4 = TraceReadWordOrZero(0x801FFBB4u);
+                                uint late2be8 = TraceReadWordOrZero(0x80182BE8u);
+                                uint latec3c4 = TraceReadWordOrZero(0x801CC3C4u);
+                                uint latec3c8 = TraceReadWordOrZero(0x801CC3C8u);
+                                uint cb = TraceReadWordOrZero(0x80204984u);
+                                Console.WriteLine(
+                                    $"[N64MEGAFATAL] #{_traceMegaFatalWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} ra=0x{ra:x16} " +
+                                    $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
+                                    $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} " +
+                                    $"m204830=0x{late30:x8} m204978=0x{late78:x8} m1ffbb0=0x{lateB0:x8} m1ffbb4=0x{lateB4:x8} " +
+                                    $"m182be8=0x{late2be8:x8} mc3c4=0x{latec3c4:x8} mc3c8=0x{latec3c8:x8} cb=0x{cb:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"sp=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
+                            if (TraceMegaStatusCall
+                                && _traceMegaStatusCallCount < TraceMegaStatusCallLimit
+                                && ((pc >= 0x80089EA0u && pc <= 0x80089EF0u)
+                                    || (pc >= 0x80093A20u && pc <= 0x80093B20u)))
+                            {
+                                _traceMegaStatusCallCount++;
+                                OpcodeTable.OpcodeDesc statusDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = statusDesc.op1;
+                                int rt = statusDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong ra = Registers.R4300.Reg[31];
+                                uint status2be8 = TraceReadWordOrZero(0x80182BE8u);
+                                uint statusc3c4 = TraceReadWordOrZero(0x801CC3C4u);
+                                uint statusc3c8 = TraceReadWordOrZero(0x801CC3C8u);
+                                Common.Logger.PrintWarningLine(
+                                    $"[N64MEGASTATUS] #{_traceMegaStatusCallCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} s0=0x{s0:x16} s1=0x{s1:x16} ra=0x{ra:x16} " +
+                                    $"m182be8=0x{status2be8:x8} mc3c4=0x{statusc3c4:x8} mc3c8=0x{statusc3c8:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"sp=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8}");
                             }
 
                             if (TraceSm64QueueWindow

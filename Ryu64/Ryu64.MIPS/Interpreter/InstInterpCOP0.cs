@@ -42,6 +42,7 @@ namespace Ryu64.MIPS
         {
             const ulong CauseIp7Bit = 1UL << 15;
             ulong value = NormalizeCop0WriteValue(reg, rawValue);
+            ulong previous = Registers.COP0.Reg[reg];
 
             switch (reg)
             {
@@ -82,10 +83,22 @@ namespace Ryu64.MIPS
                     break;
             }
 
+            if (reg == Registers.COP0.STATUS_REG
+                && Registers.R4300.PC >= 0x80093000u
+                && Registers.R4300.PC <= 0x80094500u)
+            {
+                Console.WriteLine(
+                    $"[N64COP0STATUS] pc=0x{Registers.R4300.PC:x8} old=0x{previous:x8} raw=0x{rawValue:x8} new=0x{Registers.COP0.Reg[reg]:x8}");
+            }
+
             if (reg == Registers.COP0.WIRED_REG)
             {
                 // VR4300: RANDOM is reset when WIRED changes.
                 Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = 0x1Fu;
+            }
+            else if (reg == Registers.COP0.COUNT_REG)
+            {
+                R4300.SyncCountRegisterWrite((uint)value);
             }
             else if (reg == Registers.COP0.COMPARE_REG)
             {

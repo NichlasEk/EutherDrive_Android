@@ -24,6 +24,24 @@ namespace Ryu64.MIPS
             WriteFcr31(fcr31);
         }
 
+        private static int RoundToWord(float value) => (int)Math.Round(value, MidpointRounding.ToEven);
+        private static int RoundToWord(double value) => (int)Math.Round(value, MidpointRounding.ToEven);
+        private static int TruncToWord(float value) => (int)Math.Truncate(value);
+        private static int TruncToWord(double value) => (int)Math.Truncate(value);
+        private static int CeilToWord(float value) => (int)Math.Ceiling(value);
+        private static int CeilToWord(double value) => (int)Math.Ceiling(value);
+        private static int FloorToWord(float value) => (int)Math.Floor(value);
+        private static int FloorToWord(double value) => (int)Math.Floor(value);
+
+        private static long RoundToLong(float value) => (long)Math.Round(value, MidpointRounding.ToEven);
+        private static long RoundToLong(double value) => (long)Math.Round(value, MidpointRounding.ToEven);
+        private static long TruncToLong(float value) => (long)Math.Truncate(value);
+        private static long TruncToLong(double value) => (long)Math.Truncate(value);
+        private static long CeilToLong(float value) => (long)Math.Ceiling(value);
+        private static long CeilToLong(double value) => (long)Math.Ceiling(value);
+        private static long FloorToLong(float value) => (long)Math.Floor(value);
+        private static long FloorToLong(double value) => (long)Math.Floor(value);
+
         private static uint BranchAdjust(ushort imm)
         {
             return unchecked((uint)((((int)(short)imm) << 2) - 4));
@@ -207,6 +225,102 @@ namespace Ryu64.MIPS
         public static void CVT_D_S(OpcodeTable.OpcodeDesc Desc)
         {
             SetFprDouble(Desc.op4, GetFprSingle(Desc.op3));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void ROUND_L_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)RoundToLong(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void TRUNC_L_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)TruncToLong(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void CEIL_L_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)CeilToLong(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void FLOOR_L_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)FloorToLong(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void ROUND_W_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)RoundToWord(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void TRUNC_W_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)TruncToWord(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void CEIL_W_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)CeilToWord(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void FLOOR_W_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)FloorToWord(GetFprSingle(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void ROUND_L_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)RoundToLong(GetFprDouble(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void TRUNC_L_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)TruncToLong(GetFprDouble(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void CEIL_L_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)CeilToLong(GetFprDouble(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void FLOOR_L_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw64(Desc.op4, unchecked((ulong)FloorToLong(GetFprDouble(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void ROUND_W_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)RoundToWord(GetFprDouble(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void TRUNC_W_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)TruncToWord(GetFprDouble(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void CEIL_W_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)CeilToWord(GetFprDouble(Desc.op3))));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void FLOOR_W_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprRaw32(Desc.op4, unchecked((uint)FloorToWord(GetFprDouble(Desc.op3))));
             Registers.R4300.PC += 4;
         }
 

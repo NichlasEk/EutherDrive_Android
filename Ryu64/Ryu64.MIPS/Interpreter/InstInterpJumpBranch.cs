@@ -213,8 +213,28 @@ namespace Ryu64.MIPS
             uint link = branchPc + 8;
             Registers.R4300.PC += 4;
             Registers.R4300.Reg[31] = SignExtendPcToReg(link);
+            if (TraceBranchWindow
+                && ((branchPc >= 0x80089EA0u && branchPc <= 0x80089EB0u)
+                    || (branchPc >= 0x80093A3Cu && branchPc <= 0x80093A90u)))
+            {
+                Console.WriteLine(
+                    $"[N64JAL] pre pc=0x{branchPc:x8} next=0x{Registers.R4300.PC:x8} target=0x{((branchPc & 0xF0000000) | (Desc.Target << 2)):x8} ra=0x{Registers.R4300.Reg[31]:x16}");
+            }
             R4300.ExecuteDelaySlot();
+            if (TraceBranchWindow
+                && ((branchPc >= 0x80089EA0u && branchPc <= 0x80089EB0u)
+                    || (branchPc >= 0x80093A3Cu && branchPc <= 0x80093A90u)))
+            {
+                Console.WriteLine(
+                    $"[N64JAL] post-delay pc=0x{Registers.R4300.PC:x8} target=0x{((branchPc & 0xF0000000) | (Desc.Target << 2)):x8} cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8} epc=0x{Registers.COP0.Reg[Registers.COP0.EPC_REG]:x8}");
+            }
             Registers.R4300.PC = (branchPc & 0xF0000000) | (Desc.Target << 2);
+            if (TraceBranchWindow
+                && ((branchPc >= 0x80089EA0u && branchPc <= 0x80089EB0u)
+                    || (branchPc >= 0x80093A3Cu && branchPc <= 0x80093A90u)))
+            {
+                Console.WriteLine($"[N64JAL] final pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         public static void JR(OpcodeTable.OpcodeDesc Desc)

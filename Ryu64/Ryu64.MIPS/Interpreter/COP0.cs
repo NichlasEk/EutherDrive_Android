@@ -11,7 +11,14 @@
 
             Registers.COP0.Reg[Registers.COP0.COMPARE_REG] = 0xFFFFFFFF;
             Registers.COP0.Reg[Registers.COP0.STATUS_REG]  = 0x34000000;
-            Registers.COP0.Reg[Registers.COP0.CONFIG_REG]  = 0x7006E463;
+            Registers.COP0.Reg[Registers.COP0.CONFIG_REG]  = 0x0006E463;
+            Registers.COP0.Reg[Registers.COP0.PREVID_REG]  = 0x00000B10;
+            Registers.COP0.Reg[Registers.COP0.COUNT_REG]   = 0x00005000;
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG]   = 0x0000005C;
+            Registers.COP0.Reg[Registers.COP0.CONTEXT_REG] = 0x007FFFF0;
+            Registers.COP0.Reg[Registers.COP0.EPC_REG]     = 0xFFFFFFFF;
+            Registers.COP0.Reg[Registers.COP0.BADVADDR_REG]= 0xFFFFFFFF;
+            Registers.COP0.Reg[Registers.COP0.ERROREPC_REG]= 0xFFFFFFFF;
             Registers.COP0.Reg[Registers.COP0.RANDOM_REG]  = 0x0000001F;
 
             COP0_ON = true;
