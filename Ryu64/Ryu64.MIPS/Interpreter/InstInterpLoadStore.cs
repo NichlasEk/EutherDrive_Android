@@ -180,8 +180,12 @@ namespace Ryu64.MIPS
 
         public static void LL(OpcodeTable.OpcodeDesc Desc)
         {
-            // Treat LL as LW for now.
-            LW(Desc);
+            uint addr = EffectiveAddress(Desc);
+            RequireAlignment(addr, 4, isStore: false);
+            uint value = R4300.memory.ReadUInt32(addr);
+            WriteRegisterWordSignExtended(Desc.op2, value);
+            R4300.SetLoadLinkedReservation(addr);
+            Registers.R4300.PC += 4;
         }
 
         public static void SB(OpcodeTable.OpcodeDesc Desc)
@@ -305,11 +309,14 @@ namespace Ryu64.MIPS
 
         public static void SC(OpcodeTable.OpcodeDesc Desc)
         {
-            // Treat SC as SW and report success in rt.
             uint addr = EffectiveAddress(Desc);
             RequireAlignment(addr, 4, isStore: true);
-            R4300.memory.WriteUInt32(addr, (uint)Registers.R4300.Reg[Desc.op2]);
-            Registers.R4300.Reg[Desc.op2] = 1;
+            uint value = (uint)Registers.R4300.Reg[Desc.op2];
+            bool success = R4300.TryStoreConditional(addr);
+            if (success)
+                R4300.memory.WriteUInt32(addr, value);
+
+            Registers.R4300.Reg[Desc.op2] = success ? 1UL : 0UL;
             Registers.R4300.PC += 4;
         }
 

@@ -22,6 +22,8 @@ namespace Ryu64.MIPS
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
         private static readonly uint? TraceWatchRangeStart = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_START");
         private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
+        private static readonly bool TraceMegaCallbackBlock =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_CALLBACKS"), "1", StringComparison.Ordinal);
         private static readonly bool MirrorPiRdLenAsCartToDram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSm64SlotWrites =
@@ -105,11 +107,14 @@ namespace Ryu64.MIPS
         public readonly byte[] SP_WR_LEN_REG_RW   = new byte[4];
         public readonly byte[] SP_STATUS_REG_R    = new byte[4];
         public readonly byte[] SP_STATUS_REG_W    = new byte[4];
+        public readonly byte[] SP_DMA_FULL_REG_R  = new byte[4];
+        public readonly byte[] SP_DMA_FULL_REG_W  = new byte[4];
         public readonly byte[] SP_DMA_BUSY_REG_R  = new byte[4];
         public readonly byte[] SP_DMA_BUSY_REG_W  = new byte[4];
         public readonly byte[] SP_SEMAPHORE_REG_R = new byte[4];
         public readonly byte[] SP_SEMAPHORE_REG_W = new byte[4];
         public readonly byte[] SP_PC_REG_RW       = new byte[4];
+        public readonly byte[] SP_IBIST_REG_RW    = new byte[4];
 
         public readonly byte[] DPC_START_REG_RW    = new byte[4];
         public readonly byte[] DPC_END_REG_RW      = new byte[4];
@@ -120,6 +125,10 @@ namespace Ryu64.MIPS
         public readonly byte[] DPC_BUFBUSY_REG_RW  = new byte[4];
         public readonly byte[] DPC_PIPEBUSY_REG_RW = new byte[4];
         public readonly byte[] DPC_TMEM_REG_RW     = new byte[4];
+        public readonly byte[] DPS_TBIST_REG_RW        = new byte[4];
+        public readonly byte[] DPS_TEST_MODE_REG_RW    = new byte[4];
+        public readonly byte[] DPS_BUFTEST_ADDR_REG_RW = new byte[4];
+        public readonly byte[] DPS_BUFTEST_DATA_REG_RW = new byte[4];
 
         public readonly byte[] MI_INIT_MODE_REG_R = new byte[4];
         public readonly byte[] MI_INIT_MODE_REG_W = new byte[4];
@@ -173,7 +182,14 @@ namespace Ryu64.MIPS
         public readonly byte[] SI_STATUS_REG_W          = new byte[4];
         private readonly byte[] SI_MIRROR_RAM           = new byte[0x20000];
 
-        public readonly byte[] RI_SELECT_REG_RW = new byte[4];
+        public readonly byte[] RI_MODE_REG_RW         = new byte[4];
+        public readonly byte[] RI_CONFIG_REG_RW       = new byte[4];
+        public readonly byte[] RI_CURRENT_LOAD_REG_RW = new byte[4];
+        public readonly byte[] RI_SELECT_REG_RW       = new byte[4];
+        public readonly byte[] RI_REFRESH_REG_RW      = new byte[4];
+        public readonly byte[] RI_LATENCY_REG_RW      = new byte[4];
+        public readonly byte[] RI_ERROR_REG_RW        = new byte[4];
+        public readonly byte[] RI_WERROR_REG_RW       = new byte[4];
 
         public readonly byte[] RDRAM     = new byte[8388608];
         public readonly byte[] RDRAMReg  = new byte[1048576];
@@ -235,10 +251,12 @@ namespace Ryu64.MIPS
                 null, SP_WR_LEN_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04040010, 0x04040013, SP_STATUS_REG_R,    SP_STATUS_REG_W,     "SP_STATUS_REG",
                 null, SP_STATUS_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04040014, 0x04040017, SP_DMA_FULL_REG_R,  SP_DMA_FULL_REG_W,   "SP_DMA_FULL_REG"));
             MemoryMapList.Add(new MemEntry(0x04040018, 0x0404001B, SP_DMA_BUSY_REG_R,  SP_DMA_BUSY_REG_W,   "SP_DMA_BUSY_REG"));
             MemoryMapList.Add(new MemEntry(0x0404001C, 0x0404001F, SP_SEMAPHORE_REG_R, SP_SEMAPHORE_REG_W,  "SP_SEMAPHORE_REG"));
             MemoryMapList.Add(new MemEntry(0x04080000, 0x04080003, SP_PC_REG_RW,       SP_PC_REG_RW,        "SP_PC_REG",
                 null, SP_PC_WRITE_EVENT));
+            MemoryMapList.Add(new MemEntry(0x04080004, 0x04080007, SP_IBIST_REG_RW,    SP_IBIST_REG_RW,     "SP_IBIST_REG"));
 
             // DPC Registers
             MemoryMapList.Add(new MemEntry(0x04100000, 0x04100003, DPC_START_REG_RW, DPC_START_REG_RW, "DPC_START_REG",
@@ -252,6 +270,10 @@ namespace Ryu64.MIPS
             MemoryMapList.Add(new MemEntry(0x04100014, 0x04100017, DPC_BUFBUSY_REG_RW, DPC_BUFBUSY_REG_RW, "DPC_BUFBUSY_REG"));
             MemoryMapList.Add(new MemEntry(0x04100018, 0x0410001B, DPC_PIPEBUSY_REG_RW, DPC_PIPEBUSY_REG_RW, "DPC_PIPEBUSY_REG"));
             MemoryMapList.Add(new MemEntry(0x0410001C, 0x0410001F, DPC_TMEM_REG_RW, DPC_TMEM_REG_RW, "DPC_TMEM_REG"));
+            MemoryMapList.Add(new MemEntry(0x04200000, 0x04200003, DPS_TBIST_REG_RW, DPS_TBIST_REG_RW, "DPS_TBIST_REG"));
+            MemoryMapList.Add(new MemEntry(0x04200004, 0x04200007, DPS_TEST_MODE_REG_RW, DPS_TEST_MODE_REG_RW, "DPS_TEST_MODE_REG"));
+            MemoryMapList.Add(new MemEntry(0x04200008, 0x0420000B, DPS_BUFTEST_ADDR_REG_RW, DPS_BUFTEST_ADDR_REG_RW, "DPS_BUFTEST_ADDR_REG"));
+            MemoryMapList.Add(new MemEntry(0x0420000C, 0x0420000F, DPS_BUFTEST_DATA_REG_RW, DPS_BUFTEST_DATA_REG_RW, "DPS_BUFTEST_DATA_REG"));
 
             // MI Registers
             MemoryMapList.Add(new MemEntry(0x04300000, 0x04300003, MI_INIT_MODE_REG_R, MI_INIT_MODE_REG_W, "MI_INIT_MODE_REG",
@@ -327,7 +349,14 @@ namespace Ryu64.MIPS
                 null, SI_STATUS_WRITE_EVENT));
 
             // RI Registers
+            MemoryMapList.Add(new MemEntry(0x04700000, 0x04700003, RI_MODE_REG_RW, RI_MODE_REG_RW, "RI_MODE_REG"));
+            MemoryMapList.Add(new MemEntry(0x04700004, 0x04700007, RI_CONFIG_REG_RW, RI_CONFIG_REG_RW, "RI_CONFIG_REG"));
+            MemoryMapList.Add(new MemEntry(0x04700008, 0x0470000B, RI_CURRENT_LOAD_REG_RW, RI_CURRENT_LOAD_REG_RW, "RI_CURRENT_LOAD_REG"));
             MemoryMapList.Add(new MemEntry(0x0470000C, 0x0470000F, RI_SELECT_REG_RW, RI_SELECT_REG_RW, "RI_SELECT_REG"));
+            MemoryMapList.Add(new MemEntry(0x04700010, 0x04700013, RI_REFRESH_REG_RW, RI_REFRESH_REG_RW, "RI_REFRESH_REG"));
+            MemoryMapList.Add(new MemEntry(0x04700014, 0x04700017, RI_LATENCY_REG_RW, RI_LATENCY_REG_RW, "RI_LATENCY_REG"));
+            MemoryMapList.Add(new MemEntry(0x04700018, 0x0470001B, RI_ERROR_REG_RW, RI_ERROR_REG_RW, "RI_ERROR_REG"));
+            MemoryMapList.Add(new MemEntry(0x0470001C, 0x0470001F, RI_WERROR_REG_RW, RI_WERROR_REG_RW, "RI_WERROR_REG"));
 
             // Cartridge domains on PI bus.
             // For bring-up compatibility, map all domains to ROM data with mirroring.
@@ -1768,6 +1797,9 @@ namespace Ryu64.MIPS
             if (TryGetSiAliasedEntry(index, out MemEntry siEntry))
                 return siEntry;
 
+            if (TryGetRcpRegisterAliasedEntry(index, out MemEntry rcpEntry))
+                return rcpEntry;
+
             if (TryGetSpMirroredEntry(index, out MemEntry spEntry))
                 return spEntry;
 
@@ -1805,6 +1837,46 @@ namespace Ryu64.MIPS
             return Result;
         }
 
+        private bool TryGetRcpRegisterAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+
+            if (TryGetSpRegisterAliasedEntry(index, out entry))
+                return true;
+
+            if (TryGetDpcAliasedEntry(index, out entry))
+                return true;
+
+            if (TryGetDpsAliasedEntry(index, out entry))
+                return true;
+
+            if (TryGetMiAliasedEntry(index, out entry))
+                return true;
+
+            if (TryGetViAliasedEntry(index, out entry))
+                return true;
+
+            if (TryGetAiAliasedEntry(index, out entry))
+                return true;
+
+            if (TryGetPiAliasedEntry(index, out entry))
+                return true;
+
+            if (TryGetRiAliasedEntry(index, out entry))
+                return true;
+
+            return false;
+        }
+
+        private static bool IsMegaCallbackTraceAddress(uint address)
+        {
+            return address == 0x800D0F90u
+                || address == 0x800D0FB8u
+                || address == 0x800DFD88u
+                || address == 0x800DFD90u
+                || address == 0x80204984u;
+        }
+
         private bool TryGetSpMirroredEntry(uint index, out MemEntry entry)
         {
             entry = new MemEntry();
@@ -1835,6 +1907,281 @@ namespace Ryu64.MIPS
                 SP_IMEM_RW,
                 "SP_IMEM_MIRROR");
             return true;
+        }
+
+        private bool TryGetSpRegisterAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+
+            if (index >= 0x04040000 && index <= 0x0407FFFF)
+            {
+                uint aliasBase = index & 0xFFFFFFE0u;
+                uint regOffset = index & 0x1Fu;
+                uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+                switch (regOffset & 0x1Cu)
+                {
+                    case 0x00:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_MEM_ADDR_REG_RW, SP_MEM_ADDR_REG_RW, "SP_MEM_ADDR_REG_MIRROR",
+                            null, SP_MEM_ADDR_WRITE_EVENT);
+                        return true;
+                    case 0x04:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_DRAM_ADDR_REG_RW, SP_DRAM_ADDR_REG_RW, "SP_DRAM_ADDR_REG_MIRROR",
+                            null, SP_DRAM_ADDR_WRITE_EVENT);
+                        return true;
+                    case 0x08:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_RD_LEN_REG_RW, SP_RD_LEN_REG_RW, "SP_RD_LEN_REG_MIRROR",
+                            null, SP_RD_LEN_WRITE_EVENT);
+                        return true;
+                    case 0x0C:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_WR_LEN_REG_RW, SP_WR_LEN_REG_RW, "SP_WR_LEN_REG_MIRROR",
+                            null, SP_WR_LEN_WRITE_EVENT);
+                        return true;
+                    case 0x10:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_STATUS_REG_R, SP_STATUS_REG_W, "SP_STATUS_REG_MIRROR",
+                            null, SP_STATUS_WRITE_EVENT);
+                        return true;
+                    case 0x14:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_DMA_FULL_REG_R, SP_DMA_FULL_REG_W, "SP_DMA_FULL_REG_MIRROR");
+                        return true;
+                    case 0x18:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_DMA_BUSY_REG_R, SP_DMA_BUSY_REG_W, "SP_DMA_BUSY_REG_MIRROR");
+                        return true;
+                    case 0x1C:
+                        entry = new MemEntry(wordBase, wordBase + 3, SP_SEMAPHORE_REG_R, SP_SEMAPHORE_REG_W, "SP_SEMAPHORE_REG_MIRROR");
+                        return true;
+                }
+            }
+
+            if (index >= 0x04080000 && index <= 0x040FFFFF)
+            {
+                uint aliasBase = index & 0xFFFFFFE0u;
+                uint regOffset = index & 0x1Fu;
+                uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+                if ((regOffset & 0x1Cu) == 0x00)
+                {
+                    entry = new MemEntry(wordBase, wordBase + 3, SP_PC_REG_RW, SP_PC_REG_RW, "SP_PC_REG_MIRROR",
+                        null, SP_PC_WRITE_EVENT);
+                    return true;
+                }
+
+                if ((regOffset & 0x1Cu) == 0x04)
+                {
+                    entry = new MemEntry(wordBase, wordBase + 3, SP_IBIST_REG_RW, SP_IBIST_REG_RW, "SP_IBIST_REG_MIRROR");
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool TryGetDpcAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+            if (index < 0x04100000 || index > 0x041FFFFF)
+                return false;
+
+            uint aliasBase = index & 0xFFFFFFE0u;
+            uint regOffset = index & 0x1Fu;
+            uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+            switch (regOffset & 0x1Cu)
+            {
+                case 0x00:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_START_REG_RW, DPC_START_REG_RW, "DPC_START_REG_MIRROR", null, DPC_START_WRITE_EVENT);
+                    return true;
+                case 0x04:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_END_REG_RW, DPC_END_REG_RW, "DPC_END_REG_MIRROR", null, DPC_END_WRITE_EVENT);
+                    return true;
+                case 0x08:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_CURRENT_REG_RW, DPC_CURRENT_REG_RW, "DPC_CURRENT_REG_MIRROR");
+                    return true;
+                case 0x0C:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_STATUS_REG_R, DPC_STATUS_REG_W, "DPC_STATUS_REG_MIRROR", null, DPC_STATUS_WRITE_EVENT);
+                    return true;
+                case 0x10:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_CLOCK_REG_RW, DPC_CLOCK_REG_RW, "DPC_CLOCK_REG_MIRROR");
+                    return true;
+                case 0x14:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_BUFBUSY_REG_RW, DPC_BUFBUSY_REG_RW, "DPC_BUFBUSY_REG_MIRROR");
+                    return true;
+                case 0x18:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_PIPEBUSY_REG_RW, DPC_PIPEBUSY_REG_RW, "DPC_PIPEBUSY_REG_MIRROR");
+                    return true;
+                case 0x1C:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPC_TMEM_REG_RW, DPC_TMEM_REG_RW, "DPC_TMEM_REG_MIRROR");
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool TryGetDpsAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+            if (index < 0x04200000 || index > 0x042FFFFF)
+                return false;
+
+            uint aliasBase = index & 0xFFFFFFE0u;
+            uint regOffset = index & 0x1Fu;
+            uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+            switch (regOffset & 0x0Cu)
+            {
+                case 0x00:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPS_TBIST_REG_RW, DPS_TBIST_REG_RW, "DPS_TBIST_REG_MIRROR");
+                    return true;
+                case 0x04:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPS_TEST_MODE_REG_RW, DPS_TEST_MODE_REG_RW, "DPS_TEST_MODE_REG_MIRROR");
+                    return true;
+                case 0x08:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPS_BUFTEST_ADDR_REG_RW, DPS_BUFTEST_ADDR_REG_RW, "DPS_BUFTEST_ADDR_REG_MIRROR");
+                    return true;
+                case 0x0C:
+                    entry = new MemEntry(wordBase, wordBase + 3, DPS_BUFTEST_DATA_REG_RW, DPS_BUFTEST_DATA_REG_RW, "DPS_BUFTEST_DATA_REG_MIRROR");
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool TryGetMiAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+            if (index < 0x04300000 || index > 0x043FFFFF)
+                return false;
+
+            uint aliasBase = index & 0xFFFFFFF0u;
+            uint regOffset = index & 0x0Fu;
+            uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+            switch (regOffset & 0x0Cu)
+            {
+                case 0x00:
+                    entry = new MemEntry(wordBase, wordBase + 3, MI_INIT_MODE_REG_R, MI_INIT_MODE_REG_W, "MI_INIT_MODE_REG_MIRROR", null, MI_INIT_MODE_WRITE_EVENT);
+                    return true;
+                case 0x04:
+                    entry = new MemEntry(wordBase, wordBase + 3, MI_VERSION_REG_RW, MI_VERSION_REG_RW, "MI_VERSION_REG_MIRROR");
+                    return true;
+                case 0x08:
+                    entry = new MemEntry(wordBase, wordBase + 3, MI_INTR_REG_R, null, "MI_INTR_REG_MIRROR");
+                    return true;
+                case 0x0C:
+                    entry = new MemEntry(wordBase, wordBase + 3, MI_INTR_MASK_REG_R, MI_INTR_MASK_REG_W, "MI_INTR_MASK_REG_MIRROR", null, MI_INTR_MASK_WRITE_EVENT);
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool TryGetViAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+            if (index < 0x04400000 || index > 0x044FFFFF)
+                return false;
+
+            uint aliasBase = index & 0xFFFFFFC0u;
+            uint regOffset = index & 0x3Fu;
+            uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+            switch (regOffset & 0x3Cu)
+            {
+                case 0x00: entry = new MemEntry(wordBase, wordBase + 3, VI_STATUS_REG_RW, VI_STATUS_REG_RW, "VI_STATUS_REG_MIRROR", null, VI_STATUS_WRITE_EVENT); return true;
+                case 0x04: entry = new MemEntry(wordBase, wordBase + 3, VI_ORIGIN_REG_RW, VI_ORIGIN_REG_RW, "VI_ORIGIN_REG_MIRROR", null, VI_ORIGIN_WRITE_EVENT); return true;
+                case 0x08: entry = new MemEntry(wordBase, wordBase + 3, VI_WIDTH_REG_RW, VI_WIDTH_REG_RW, "VI_WIDTH_REG_MIRROR", null, VI_WIDTH_WRITE_EVENT); return true;
+                case 0x0C: entry = new MemEntry(wordBase, wordBase + 3, VI_INTR_REG_RW, VI_INTR_REG_RW, "VI_INTR_REG_MIRROR", null, VI_INTR_WRITE_EVENT); return true;
+                case 0x10: entry = new MemEntry(wordBase, wordBase + 3, VI_CURRENT_REG_RW, VI_CURRENT_REG_RW, "VI_CURRENT_REG_MIRROR", null, VI_CURRENT_WRITE_EVENT); return true;
+                case 0x14: entry = new MemEntry(wordBase, wordBase + 3, VI_BURST_REG_RW, VI_BURST_REG_RW, "VI_BURST_REG_MIRROR"); return true;
+                case 0x18: entry = new MemEntry(wordBase, wordBase + 3, VI_V_SYNC_REG_RW, VI_V_SYNC_REG_RW, "VI_V_SYNC_REG_MIRROR", null, VI_V_SYNC_WRITE_EVENT); return true;
+                case 0x1C: entry = new MemEntry(wordBase, wordBase + 3, VI_H_SYNC_REG_RW, VI_H_SYNC_REG_RW, "VI_H_SYNC_REG_MIRROR"); return true;
+                case 0x20: entry = new MemEntry(wordBase, wordBase + 3, VI_LEAP_REG_RW, VI_LEAP_REG_RW, "VI_LEAP_REG_MIRROR"); return true;
+                case 0x24: entry = new MemEntry(wordBase, wordBase + 3, VI_H_START_REG_RW, VI_H_START_REG_RW, "VI_H_START_REG_MIRROR"); return true;
+                case 0x28: entry = new MemEntry(wordBase, wordBase + 3, VI_V_START_REG_RW, VI_V_START_REG_RW, "VI_V_START_REG_MIRROR"); return true;
+                case 0x2C: entry = new MemEntry(wordBase, wordBase + 3, VI_V_BURST_REG_RW, VI_V_BURST_REG_RW, "VI_V_BURST_REG_MIRROR"); return true;
+                case 0x30: entry = new MemEntry(wordBase, wordBase + 3, VI_X_SCALE_REG_RW, VI_X_SCALE_REG_RW, "VI_X_SCALE_REG_MIRROR"); return true;
+                case 0x34: entry = new MemEntry(wordBase, wordBase + 3, VI_Y_SCALE_REG_RW, VI_Y_SCALE_REG_RW, "VI_Y_SCALE_REG_MIRROR"); return true;
+            }
+
+            return false;
+        }
+
+        private bool TryGetAiAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+            if (index < 0x04500000 || index > 0x045FFFFF)
+                return false;
+
+            uint aliasBase = index & 0xFFFFFFE0u;
+            uint regOffset = index & 0x1Fu;
+            uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+            switch (regOffset & 0x1Cu)
+            {
+                case 0x00: entry = new MemEntry(wordBase, wordBase + 3, AI_DRAM_ADDR_REG_W, AI_DRAM_ADDR_REG_W, "AI_DRAM_ADDR_REG_MIRROR"); return true;
+                case 0x04: entry = new MemEntry(wordBase, wordBase + 3, AI_LEN_REG_RW, AI_LEN_REG_RW, "AI_LEN_REG_MIRROR"); return true;
+                case 0x08: entry = new MemEntry(wordBase, wordBase + 3, AI_CONTROL_REG_W, AI_CONTROL_REG_W, "AI_CONTROL_REG_MIRROR"); return true;
+                case 0x0C: entry = new MemEntry(wordBase, wordBase + 3, AI_STATUS_REG_R, AI_STATUS_REG_W, "AI_STATUS_REG_MIRROR"); return true;
+                case 0x10: entry = new MemEntry(wordBase, wordBase + 3, AI_DACRATE_REG_W, AI_DACRATE_REG_W, "AI_DACRATE_REG_MIRROR"); return true;
+                case 0x14: entry = new MemEntry(wordBase, wordBase + 3, AI_BITRATE_REG_W, AI_BITRATE_REG_W, "AI_BITRATE_REG_MIRROR"); return true;
+            }
+
+            return false;
+        }
+
+        private bool TryGetPiAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+            if (index < 0x04600000 || index > 0x046FFFFF)
+                return false;
+
+            uint aliasBase = index & 0xFFFFFFC0u;
+            uint regOffset = index & 0x3Fu;
+            uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+            switch (regOffset & 0x3Cu)
+            {
+                case 0x00: entry = new MemEntry(wordBase, wordBase + 3, PI_DRAM_ADDR_REG_RW, PI_DRAM_ADDR_REG_RW, "PI_DRAM_ADDR_REG_MIRROR"); return true;
+                case 0x04: entry = new MemEntry(wordBase, wordBase + 3, PI_CART_ADDR_REG_RW, PI_CART_ADDR_REG_RW, "PI_CART_ADDR_REG_MIRROR"); return true;
+                case 0x08: entry = new MemEntry(wordBase, wordBase + 3, PI_RD_LEN_REG_RW, PI_RD_LEN_REG_RW, "PI_RD_LEN_REG_MIRROR", null, PI_RD_LEN_WRITE_EVENT); return true;
+                case 0x0C: entry = new MemEntry(wordBase, wordBase + 3, PI_WR_LEN_REG_RW, PI_WR_LEN_REG_RW, "PI_WR_LEN_REG_MIRROR", null, PI_WR_LEN_WRITE_EVENT); return true;
+                case 0x10: entry = new MemEntry(wordBase, wordBase + 3, PI_STATUS_REG_R, PI_STATUS_REG_W, "PI_STATUS_REG_MIRROR", PI_STATUS_READ_EVENT, PI_STATUS_WRITE_EVENT); return true;
+                case 0x14: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM1_LAT_REG_RW, PI_BSD_DOM1_LAT_REG_RW, "PI_BSD_DOM1_LAT_REG_MIRROR"); return true;
+                case 0x18: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM1_PWD_REG_RW, PI_BSD_DOM1_PWD_REG_RW, "PI_BSD_DOM1_PWD_REG_MIRROR"); return true;
+                case 0x1C: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM1_PGS_REG_RW, PI_BSD_DOM1_PGS_REG_RW, "PI_BSD_DOM1_PGS_REG_MIRROR"); return true;
+                case 0x20: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM1_RLS_REG_RW, PI_BSD_DOM1_RLS_REG_RW, "PI_BSD_DOM1_RLS_REG_MIRROR"); return true;
+                case 0x24: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM2_LAT_REG_RW, PI_BSD_DOM2_LAT_REG_RW, "PI_BSD_DOM2_LAT_REG_MIRROR"); return true;
+                case 0x28: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM2_PWD_REG_RW, PI_BSD_DOM2_PWD_REG_RW, "PI_BSD_DOM2_PWD_REG_MIRROR"); return true;
+                case 0x2C: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM2_PGS_REG_RW, PI_BSD_DOM2_PGS_REG_RW, "PI_BSD_DOM2_PGS_REG_MIRROR"); return true;
+                case 0x30: entry = new MemEntry(wordBase, wordBase + 3, PI_BSD_DOM2_RLS_REG_RW, PI_BSD_DOM2_RLS_REG_RW, "PI_BSD_DOM2_RLS_REG_MIRROR"); return true;
+            }
+
+            return false;
+        }
+
+        private bool TryGetRiAliasedEntry(uint index, out MemEntry entry)
+        {
+            entry = new MemEntry();
+            if (index < 0x04700000 || index > 0x047FFFFF)
+                return false;
+
+            uint aliasBase = index & 0xFFFFFFE0u;
+            uint regOffset = index & 0x1Fu;
+            uint wordBase = aliasBase + (regOffset & 0xFFFFFFFCu);
+
+            switch (regOffset & 0x1Cu)
+            {
+                case 0x00: entry = new MemEntry(wordBase, wordBase + 3, RI_MODE_REG_RW, RI_MODE_REG_RW, "RI_MODE_REG_MIRROR"); return true;
+                case 0x04: entry = new MemEntry(wordBase, wordBase + 3, RI_CONFIG_REG_RW, RI_CONFIG_REG_RW, "RI_CONFIG_REG_MIRROR"); return true;
+                case 0x08: entry = new MemEntry(wordBase, wordBase + 3, RI_CURRENT_LOAD_REG_RW, RI_CURRENT_LOAD_REG_RW, "RI_CURRENT_LOAD_REG_MIRROR"); return true;
+                case 0x0C: entry = new MemEntry(wordBase, wordBase + 3, RI_SELECT_REG_RW, RI_SELECT_REG_RW, "RI_SELECT_REG_MIRROR"); return true;
+                case 0x10: entry = new MemEntry(wordBase, wordBase + 3, RI_REFRESH_REG_RW, RI_REFRESH_REG_RW, "RI_REFRESH_REG_MIRROR"); return true;
+                case 0x14: entry = new MemEntry(wordBase, wordBase + 3, RI_LATENCY_REG_RW, RI_LATENCY_REG_RW, "RI_LATENCY_REG_MIRROR"); return true;
+                case 0x18: entry = new MemEntry(wordBase, wordBase + 3, RI_ERROR_REG_RW, RI_ERROR_REG_RW, "RI_ERROR_REG_MIRROR"); return true;
+                case 0x1C: entry = new MemEntry(wordBase, wordBase + 3, RI_WERROR_REG_RW, RI_WERROR_REG_RW, "RI_WERROR_REG_MIRROR"); return true;
+            }
+
+            return false;
         }
 
         private bool TryGetSiAliasedEntry(uint index, out MemEntry entry)
@@ -2163,6 +2510,21 @@ namespace Ryu64.MIPS
 
             if (havePhysical && ShouldTraceWatchRange(index, physical))
                 TraceWatchRangeAccess("write32", index, physical, value);
+
+            if (TraceMegaCallbackBlock)
+            {
+                bool traceVirtual = IsMegaCallbackTraceAddress(index);
+                bool tracePhysical = havePhysical && IsMegaCallbackTraceAddress(physical);
+                if (traceVirtual || tracePhysical)
+                {
+                    uint oldValue = 0;
+                    try { oldValue = ReadUInt32(index); } catch { }
+                    Common.Logger.PrintWarningLine(
+                        $"[N64MEGACB] write32 addr=0x{index:x8}" +
+                        (havePhysical ? $" phys=0x{physical:x8}" : string.Empty) +
+                        $" old=0x{oldValue:x8} new=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
 
             if (TraceSm64SlotWrites)
             {

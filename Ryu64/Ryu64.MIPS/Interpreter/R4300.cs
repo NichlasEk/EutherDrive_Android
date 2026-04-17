@@ -70,6 +70,10 @@ namespace Ryu64.MIPS
         private static int _traceViCalcWindowCount = 0;
         private static readonly bool TraceStuckPcDetails =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_STUCK_PC"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceMegaDispatchWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaDispatchWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH_LIMIT", 160);
+        private static int _traceMegaDispatchWindowCount = 0;
         private const ulong StatusExlBit = 1UL << 1;
         private const ulong StatusErlBit = 1UL << 2;
         private const ulong StatusIeBit = 1UL << 0;
@@ -109,6 +113,8 @@ namespace Ryu64.MIPS
         private static bool _loggedFirstBfcEntry;
         private static ulong _tlbRefillLogCount;
         private static ulong _addressErrorLogCount;
+        private static bool _loadLinkedActive;
+        private static uint _loadLinkedAddress;
 
         private static int ParseTraceLimit(string name, int fallback)
         {
@@ -238,6 +244,8 @@ namespace Ryu64.MIPS
             {
                 Registers.R4300.PC = bevSet ? 0xBFC00380u : 0x80000180u;
             }
+
+            ClearLoadLinkedReservation();
         }
 
         internal static void RaiseSyscallException(uint faultingPc)
@@ -380,6 +388,27 @@ namespace Ryu64.MIPS
         internal static bool CheckPendingInterruptsNow(uint pc)
         {
             return ServiceInterrupts(pc);
+        }
+
+        internal static void SetLoadLinkedReservation(uint address)
+        {
+            uint aligned = address & 0xFFFFFFFCu;
+            _loadLinkedActive = true;
+            _loadLinkedAddress = aligned;
+            Registers.COP0.Reg[Registers.COP0.LLADDR_REG] = aligned;
+        }
+
+        internal static bool TryStoreConditional(uint address)
+        {
+            uint aligned = address & 0xFFFFFFFCu;
+            bool success = _loadLinkedActive && _loadLinkedAddress == aligned;
+            _loadLinkedActive = false;
+            return success;
+        }
+
+        internal static void ClearLoadLinkedReservation()
+        {
+            _loadLinkedActive = false;
         }
 
         public static void ExecuteDelaySlot()
@@ -653,6 +682,8 @@ namespace Ryu64.MIPS
             _traceSm64WalkWindowCount = 0;
             _traceSm64QueueWindowCount = 0;
             _traceSm64DispatchWindowCount = 0;
+            _traceMegaDispatchWindowCount = 0;
+            ClearLoadLinkedReservation();
 
             OpcodeTable.Init();
 
@@ -936,6 +967,47 @@ namespace Ryu64.MIPS
                                     $"[a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [a0+8]=0x{a0w8:x8} [a0+c]=0x{a0wc:x8} " +
                                     $"[t8]=0x{t8w:x8} [t8+4]=0x{t8w4:x8} [t8+8]=0x{t8w8:x8} [t8+c]=0x{t8wc:x8} " +
                                     $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} op@80327d64=0x{opD64:x8}");
+                            }
+
+                            if (TraceMegaDispatchWindow
+                                && _traceMegaDispatchWindowCount < TraceMegaDispatchWindowLimit
+                                && ((pc >= 0x8009FA60u && pc <= 0x8009FD80u)
+                                    || (pc >= 0x800A0170u && pc <= 0x800A0310u)))
+                            {
+                                _traceMegaDispatchWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                uint d0f80 = 0, d0f84 = 0, d0f88 = 0, d0f8c = 0, d0f90 = 0, d0fb8 = 0, dfd88 = 0, dfd90 = 0, cb = 0;
+                                try
+                                {
+                                    d0f80 = memory.ReadUInt32(0x800D0F80u);
+                                    d0f84 = memory.ReadUInt32(0x800D0F84u);
+                                    d0f88 = memory.ReadUInt32(0x800D0F88u);
+                                    d0f8c = memory.ReadUInt32(0x800D0F8Cu);
+                                    d0f90 = memory.ReadUInt32(0x800D0F90u);
+                                    d0fb8 = memory.ReadUInt32(0x800D0FB8u);
+                                    dfd88 = memory.ReadUInt32(0x800DFD88u);
+                                    dfd90 = memory.ReadUInt32(0x800DFD90u);
+                                    cb = memory.ReadUInt32(0x80204984u);
+                                }
+                                catch
+                                {
+                                }
+
+                                Console.WriteLine(
+                                    $"[N64MEGA] #{_traceMegaDispatchWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} " +
+                                    $"d0f80=0x{d0f80:x8} d0f84=0x{d0f84:x8} d0f88=0x{d0f88:x8} d0f8c=0x{d0f8c:x8} " +
+                                    $"d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} dfd88=0x{dfd88:x8} dfd90=0x{dfd90:x8} cb=0x{cb:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
                             }
 
                             if (TraceSm64QueueWindow

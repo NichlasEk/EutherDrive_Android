@@ -107,6 +107,14 @@ namespace Ryu64.MIPS
                 || reg == Registers.COP0.ERROREPC_REG;
         }
 
+        private static bool AffectsInterruptDelivery(int reg)
+        {
+            return reg == Registers.COP0.STATUS_REG
+                || reg == Registers.COP0.CAUSE_REG
+                || reg == Registers.COP0.COMPARE_REG
+                || reg == Registers.COP0.COUNT_REG;
+        }
+
         public static void MFC0(OpcodeTable.OpcodeDesc Desc)
         {
             uint value = (uint)Registers.COP0.Reg[Desc.op3];
@@ -124,6 +132,8 @@ namespace Ryu64.MIPS
                     $"[COP0] MTC0 reg={Desc.op3} value=0x{value:x16} pc=0x{Registers.R4300.PC:x8}");
             }
             Registers.R4300.PC += 4;
+            if (AffectsInterruptDelivery(Desc.op3))
+                R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         public static void DMFC0(OpcodeTable.OpcodeDesc Desc)
@@ -144,6 +154,8 @@ namespace Ryu64.MIPS
                     $"[COP0] DMTC0 reg={Desc.op3} value=0x{value:x16} pc=0x{Registers.R4300.PC:x8}");
             }
             Registers.R4300.PC += 4;
+            if (AffectsInterruptDelivery(Desc.op3))
+                R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         public static void CFC0(OpcodeTable.OpcodeDesc Desc)
@@ -163,6 +175,8 @@ namespace Ryu64.MIPS
                     $"[COP0] CTC0 reg={Desc.op3} value=0x{value:x16} pc=0x{Registers.R4300.PC:x8}");
             }
             Registers.R4300.PC += 4;
+            if (AffectsInterruptDelivery(Desc.op3))
+                R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         public static void CACHE(OpcodeTable.OpcodeDesc Desc)
@@ -229,6 +243,7 @@ namespace Ryu64.MIPS
             }
 
             Registers.R4300.PC = targetPc;
+            R4300.ClearLoadLinkedReservation();
 
             // Mupen rechecks pending interrupts immediately after ERET once EXL/ERL has been
             // cleared. Without that, guest scheduler code can run past a point where hardware
