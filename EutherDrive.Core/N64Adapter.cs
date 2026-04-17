@@ -204,6 +204,14 @@ public sealed class N64Adapter : IEmulatorCore
             Console.WriteLine(
                 $"[N64Adapter] Framebuffer ready (runFrame={_runFrameCount}) " +
                 $"(w={width} h={height} bpp={bytesPerPixel}) status={_core.LastFramebufferStatus}");
+            Console.WriteLine($"[N64Adapter] Exec: {_core.LastExecutionStatus}");
+        }
+        else if ((_runFrameCount % 60) == 0)
+        {
+            Console.WriteLine(
+                $"[N64Adapter] Framebuffer steady (runFrame={_runFrameCount}) " +
+                $"(w={width} h={height} bpp={bytesPerPixel}) status={_core.LastFramebufferStatus}");
+            Console.WriteLine($"[N64Adapter] Exec: {_core.LastExecutionStatus}");
         }
 
         EnsureFrameBuffer(width, height);

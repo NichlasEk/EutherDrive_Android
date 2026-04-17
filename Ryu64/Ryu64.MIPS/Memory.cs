@@ -191,6 +191,9 @@ namespace Ryu64.MIPS
         private uint _siInterruptDelayRemaining;
         private uint _viCurrentLine;
         private uint _viLineCycleAccum;
+        private uint _viFrameDelayCycles;
+        private uint _viInterruptCyclesRemaining;
+        private uint _viField;
         private bool _warnedRspTaskHle;
         private bool _rspTaskActive;
         private uint _rspTaskCyclesRemaining;
@@ -261,11 +264,13 @@ namespace Ryu64.MIPS
                 null, VI_ORIGIN_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04400008, 0x0440000B, VI_WIDTH_REG_RW,   VI_WIDTH_REG_RW,   "VI_WIDTH_REG",
                 null, VI_WIDTH_WRITE_EVENT));
-            MemoryMapList.Add(new MemEntry(0x0440000C, 0x0440000F, VI_INTR_REG_RW,    VI_INTR_REG_RW,    "VI_INTR_REG"));
+            MemoryMapList.Add(new MemEntry(0x0440000C, 0x0440000F, VI_INTR_REG_RW,    VI_INTR_REG_RW,    "VI_INTR_REG",
+                null, VI_INTR_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04400010, 0x04400013, VI_CURRENT_REG_RW, VI_CURRENT_REG_RW, "VI_CURRENT_REG",
                 null, VI_CURRENT_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04400014, 0x04400017, VI_BURST_REG_RW,   VI_BURST_REG_RW,   "VI_BURST_REG"));
-            MemoryMapList.Add(new MemEntry(0x04400018, 0x0440001B, VI_V_SYNC_REG_RW,  VI_V_SYNC_REG_RW,  "VI_V_SYNC_REG"));
+            MemoryMapList.Add(new MemEntry(0x04400018, 0x0440001B, VI_V_SYNC_REG_RW,  VI_V_SYNC_REG_RW,  "VI_V_SYNC_REG",
+                null, VI_V_SYNC_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x0440001C, 0x0440001F, VI_H_SYNC_REG_RW,  VI_H_SYNC_REG_RW,  "VI_H_SYNC_REG"));
             MemoryMapList.Add(new MemEntry(0x04400020, 0x04400023, VI_LEAP_REG_RW,    VI_LEAP_REG_RW,    "VI_LEAP_REG"));
             MemoryMapList.Add(new MemEntry(0x04400024, 0x04400027, VI_H_START_REG_RW, VI_H_START_REG_RW, "VI_H_START_REG"));
@@ -393,6 +398,8 @@ namespace Ryu64.MIPS
             {
                 _viCurrentLine = 0;
                 _viLineCycleAccum = 0;
+                _viFrameDelayCycles = 0;
+                _viInterruptCyclesRemaining = 0;
                 WriteBigEndianWord(VI_CURRENT_REG_RW, 0u);
                 return;
             }
@@ -401,6 +408,16 @@ namespace Ryu64.MIPS
             uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
             if (cpuCyclesPerViLine == 0)
                 cpuCyclesPerViLine = 1;
+            uint viFrameDelayCycles = cpuCyclesPerViLine * viLinesPerFrame;
+            if (viFrameDelayCycles == 0)
+                viFrameDelayCycles = CpuCyclesPerViFrame;
+
+            if (_viFrameDelayCycles != viFrameDelayCycles)
+            {
+                _viFrameDelayCycles = viFrameDelayCycles;
+                if (_viInterruptCyclesRemaining == 0 || _viInterruptCyclesRemaining > viFrameDelayCycles)
+                    _viInterruptCyclesRemaining = viFrameDelayCycles;
+            }
 
             _viLineCycleAccum += cpuCycles;
             while (_viLineCycleAccum >= cpuCyclesPerViLine)
@@ -411,10 +428,30 @@ namespace Ryu64.MIPS
                     _viCurrentLine = 0;
 
                 WriteBigEndianWord(VI_CURRENT_REG_RW, _viCurrentLine);
+            }
 
-                uint viIntrLine = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
-                if (viIntrLine < viLinesPerFrame && _viCurrentLine == viIntrLine)
+            uint viIntrLine = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
+            if (viIntrLine >= viLinesPerFrame || _viFrameDelayCycles == 0)
+                return;
+
+            if (cpuCycles >= _viInterruptCyclesRemaining)
+            {
+                uint remaining = cpuCycles;
+                while (remaining >= _viInterruptCyclesRemaining)
+                {
+                    remaining -= _viInterruptCyclesRemaining;
+                    _viInterruptCyclesRemaining = _viFrameDelayCycles;
+                    _viField ^= (ReadBigEndianWord(VI_STATUS_REG_RW) >> 6) & 0x1u;
+                    WriteBigEndianWord(VI_CURRENT_REG_RW, (_viCurrentLine & ~1u) | (_viField & 1u));
                     SetMiViInterrupt();
+                }
+
+                if (remaining != 0)
+                    _viInterruptCyclesRemaining -= remaining;
+            }
+            else
+            {
+                _viInterruptCyclesRemaining -= cpuCycles;
             }
         }
 
@@ -1352,15 +1389,30 @@ namespace Ryu64.MIPS
         private void SetMiViInterrupt()
         {
             const byte MiViIntrBit = 0x08; // MI_INTR_REG bit for VI
+            bool wasSet = (MI_INTR_REG_R[3] & MiViIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiViIntrBit;
             R4300.RefreshRcpInterruptPending();
+
+            if (TraceN64Io && !wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] VI interrupt raised current={_viCurrentLine} intr={(ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu)} " +
+                    $"vsync={(ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x03FFu)} pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         private void ClearMiViInterrupt()
         {
             const byte MiViIntrBit = 0x08; // MI_INTR_REG bit for VI
+            bool wasSet = (MI_INTR_REG_R[3] & MiViIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiViIntrBit);
             R4300.RefreshRcpInterruptPending();
+
+            if (TraceN64Io && wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] VI interrupt cleared current={_viCurrentLine} pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
+            }
         }
 
         private void SetMiDpInterrupt()
@@ -1379,7 +1431,9 @@ namespace Ryu64.MIPS
 
         public void VI_CURRENT_WRITE_EVENT()
         {
-            // Writing VI_CURRENT acknowledges/clears VI interrupt on real hardware.
+            // VI_CURRENT is write-to-ack, not a normal writable latch.
+            // Keep the register reflecting the current scanline after the write side effect.
+            WriteBigEndianWord(VI_CURRENT_REG_RW, (_viCurrentLine & ~1u) | (_viField & 1u));
             ClearMiViInterrupt();
         }
 
@@ -1399,6 +1453,54 @@ namespace Ryu64.MIPS
             Common.Logger.PrintWarningLine(
                 $"[N64IO] VI_STATUS write value=0x{value:x8} pc=0x{Registers.R4300.PC:x8} " +
                 $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} v0=0x{v0:x16} v1=0x{v1:x16} {storeCtx}");
+        }
+
+        public void VI_INTR_WRITE_EVENT()
+        {
+            uint viVSync = ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x03FFu;
+            uint viIntr = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
+            if (viVSync != 0 && viIntr < viVSync && _viFrameDelayCycles != 0 && _viInterruptCyclesRemaining == 0)
+                _viInterruptCyclesRemaining = _viFrameDelayCycles;
+
+            if (!TraceN64Io)
+                return;
+
+            Common.Logger.PrintWarningLine(
+                $"[N64IO] VI_INTR write value=0x{viIntr:x8} pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
+        }
+
+        public void VI_V_SYNC_WRITE_EVENT()
+        {
+            uint viVSync = ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x03FFu;
+            if (viVSync == 0)
+            {
+                _viFrameDelayCycles = 0;
+                _viInterruptCyclesRemaining = 0;
+                _viCurrentLine = 0;
+                _viLineCycleAccum = 0;
+                _viField = 0;
+                WriteBigEndianWord(VI_CURRENT_REG_RW, 0u);
+            }
+            else
+            {
+                uint viLinesPerFrame = viVSync + 1u;
+                uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
+                if (cpuCyclesPerViLine == 0)
+                    cpuCyclesPerViLine = 1;
+
+                _viFrameDelayCycles = cpuCyclesPerViLine * viLinesPerFrame;
+                if (_viFrameDelayCycles == 0)
+                    _viFrameDelayCycles = CpuCyclesPerViFrame;
+
+                if (_viInterruptCyclesRemaining == 0 || _viInterruptCyclesRemaining > _viFrameDelayCycles)
+                    _viInterruptCyclesRemaining = _viFrameDelayCycles;
+            }
+
+            if (!TraceN64Io)
+                return;
+
+            Common.Logger.PrintWarningLine(
+                $"[N64IO] VI_V_SYNC write value=0x{viVSync:x8} pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
         }
 
         public void VI_ORIGIN_WRITE_EVENT()
