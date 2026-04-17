@@ -24,6 +24,10 @@ namespace Ryu64.MIPS
         private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
         private static readonly bool TraceMegaCallbackBlock =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_CALLBACKS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceMegaFatalBlock =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_FATAL_BLOCK"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceMegaStatusBlock =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_STATUS_CALL"), "1", StringComparison.Ordinal);
         private static readonly bool MirrorPiRdLenAsCartToDram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSm64SlotWrites =
@@ -32,6 +36,8 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_SP_AUTOCOMPLETE"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRspTaskHleDispatcher =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_RSP_TASK_HLE"), "1", StringComparison.Ordinal);
+        private static readonly bool EnableRspInterpreter =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INTERPRETER"), "1", StringComparison.Ordinal);
         private static ulong _rspKickCount;
         private static int _traceWatchRangeLogCount;
         private const int TraceWatchRangeLogLimit = 512;
@@ -206,33 +212,50 @@ namespace Ryu64.MIPS
         private bool _siDirectPifWriteActive;
         private bool _siInterruptDelayArmed;
         private uint _siInterruptDelayRemaining;
+        private uint _aiFifo0Address;
+        private uint _aiFifo0Length;
+        private uint _aiFifo0Duration;
+        private uint _aiFifo1Address;
+        private uint _aiFifo1Length;
+        private uint _aiFifo1Duration;
+        private bool _aiInterruptDelayArmed;
+        private uint _aiInterruptDelayRemaining;
+        private bool _aiDelayedCarry;
         private uint _viCurrentLine;
         private uint _viLineCycleAccum;
         private uint _viFrameDelayCycles;
         private uint _viInterruptCyclesRemaining;
         private uint _viField;
         private bool _warnedRspTaskHle;
+        private bool _warnedRspInterpreterFallback;
         private bool _rspTaskActive;
         private uint _rspTaskCyclesRemaining;
         private uint _rspInterruptDelayRemaining;
         private bool _rspInterruptDelayArmed;
+        private bool _rspTaskLocked;
         private uint _dpInterruptDelayRemaining;
         private bool _dpInterruptDelayArmed;
         private RspTask _activeRspTask;
+        private readonly RspInterpreter _rspInterpreter;
 
         private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
+        private const uint CpuCyclesPerSecond = CpuCyclesPerViFrame * 60u;
         private const uint DefaultViLinesPerFrame = 1024;
         private const uint DefaultCpuCyclesPerViLine = CpuCyclesPerViFrame / DefaultViLinesPerFrame;
         private const uint SiStatusDmaBusy = 0x00000001u;
         private const uint SiStatusIoBusy = 0x00000002u;
         private const uint SiStatusInterrupt = 0x00001000u;
         private const uint SiDmaDurationCycles = 0x900;
+        private const uint AiStatusBusy = 0x40000000u;
+        private const uint AiStatusFull = 0x80000000u;
 
         private List<MemEntry> MemoryMapList = new List<MemEntry>();
         private MemEntry[]     MemoryMap;
 
         public Memory(byte[] Rom)
         {
+            _rspInterpreter = new RspInterpreter(this);
+
             // RDRAM (base + expansion/mirror window).
             // Keep backing array at 8 MiB for now; accesses beyond that window mirror via ResolveArrayOffset().
             MemoryMapList.Add(new MemEntry(0x00000000, 0x03EFFFFF, RDRAM, RDRAM,       "RDRAM"));
@@ -307,9 +330,11 @@ namespace Ryu64.MIPS
 
             // AI Registers
             MemoryMapList.Add(new MemEntry(0x04500000, 0x04500003, AI_DRAM_ADDR_REG_W, AI_DRAM_ADDR_REG_W, "AI_DRAM_ADDR_REG"));
-            MemoryMapList.Add(new MemEntry(0x04500004, 0x04500007, AI_LEN_REG_RW,   AI_LEN_REG_RW,    "AI_LEN_REG"));
+            MemoryMapList.Add(new MemEntry(0x04500004, 0x04500007, AI_LEN_REG_RW,   AI_LEN_REG_RW,    "AI_LEN_REG",
+                AI_LEN_READ_EVENT, AI_LEN_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04500008, 0x0450000B, AI_CONTROL_REG_W, AI_CONTROL_REG_W, "AI_CONTROL_REG"));
-            MemoryMapList.Add(new MemEntry(0x0450000C, 0x0450000F, AI_STATUS_REG_R, AI_STATUS_REG_W,  "AI_STATUS_REG"));
+            MemoryMapList.Add(new MemEntry(0x0450000C, 0x0450000F, AI_STATUS_REG_R, AI_STATUS_REG_W,  "AI_STATUS_REG",
+                null, AI_STATUS_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04500010, 0x04500013, AI_DACRATE_REG_W, AI_DACRATE_REG_W, "AI_DACRATE_REG"));
             MemoryMapList.Add(new MemEntry(0x04500014, 0x04500017, AI_BITRATE_REG_W, AI_BITRATE_REG_W, "AI_BITRATE_REG"));
 
@@ -426,6 +451,7 @@ namespace Ryu64.MIPS
             AdvanceRspDpLifecycle(cpuCycles);
             AdvancePiLifecycle(cpuCycles);
             AdvanceSiLifecycle(cpuCycles);
+            AdvanceAiLifecycle(cpuCycles);
 
             uint viVSync = ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x03FFu;
             if (viVSync == 0)
@@ -646,10 +672,6 @@ namespace Ryu64.MIPS
             _rspTaskActive = false;
 
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
-            status |= SpStatusTaskDone | SpStatusBroke | SpStatusHalt;
-            WriteBigEndianWord(SP_STATUS_REG_R, status);
-
-            // Match a more realistic lifecycle than "instant interrupt on HALT clear".
             _rspInterruptDelayArmed = true;
             _rspInterruptDelayRemaining = GetRspInterruptDelayCycles(_activeRspTask.Type);
 
@@ -659,6 +681,12 @@ namespace Ryu64.MIPS
                 _dpInterruptDelayArmed = true;
                 _dpInterruptDelayRemaining = 4000;
             }
+
+            // Match mupen's SP task lifecycle more closely: completion bits become
+            // visible on the delayed SP interrupt path, not immediately on task exit.
+            _rspTaskLocked = false;
+            status &= ~(SpStatusTaskDone | SpStatusBroke | SpStatusHalt);
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
 
             if (TraceN64Io)
             {
@@ -671,6 +699,12 @@ namespace Ryu64.MIPS
         private void FinalizeRspInterrupt()
         {
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
+            if (!_rspTaskLocked)
+            {
+                status |= SpStatusTaskDone | SpStatusBroke | SpStatusHalt;
+                WriteBigEndianWord(SP_STATUS_REG_R, status);
+            }
+
             if ((status & SpStatusIntrBreak) != 0)
                 SetMiSpInterrupt();
         }
@@ -693,11 +727,28 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(DPC_BUFBUSY_REG_RW, 0);
             WriteBigEndianWord(DPC_PIPEBUSY_REG_RW, 0);
 
+            // A completed task should not leave stale yield data behind.
+            // Real microcode may populate this buffer only on yielded/incomplete tasks,
+            // so for a successful HLE completion we conservatively clear it.
+            if (_activeRspTask.YieldDataPtr != 0 && _activeRspTask.YieldDataSize != 0)
+            {
+                uint clearLength = Math.Min(_activeRspTask.YieldDataSize, 0x1000u);
+                ClearPhysicalRange(_activeRspTask.YieldDataPtr, clearLength);
+            }
+
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] Graphics task finalized dpcStart=0x{start:x8} dpcEnd=0x{end:x8} pc=0x{Registers.R4300.PC:x8}");
+                    $"[N64IO] Graphics task finalized dpcStart=0x{start:x8} dpcEnd=0x{end:x8} " +
+                    $"yield=0x{_activeRspTask.YieldDataPtr:x8}/0x{_activeRspTask.YieldDataSize:x} pc=0x{Registers.R4300.PC:x8}");
             }
+        }
+
+        private void ClearPhysicalRange(uint physicalAddress, uint length)
+        {
+            uint baseAddress = physicalAddress & 0x1FFFFFFFu;
+            for (uint i = 0; i < length; i++)
+                WriteUInt8(PhysicalToKseg1(baseAddress + i), 0);
         }
 
         private static uint GetRspExecutionCycles(uint taskType)
@@ -716,6 +767,173 @@ namespace Ryu64.MIPS
             if (taskType == 2)
                 return 4000;
             return 0;
+        }
+
+        private uint GetAiSampleRate()
+        {
+            uint dacRate = ReadBigEndianWord(AI_DACRATE_REG_W) & 0x3FFFu;
+            if (dacRate == 0)
+                return 44_100u;
+
+            const double N64NtscClock = 48_681_812.0;
+            uint rate = (uint)Math.Round(N64NtscClock / (dacRate + 1.0));
+            if (rate < 4_000u) rate = 4_000u;
+            if (rate > 96_000u) rate = 96_000u;
+            return rate;
+        }
+
+        private uint GetAiDmaDuration(uint length)
+        {
+            if (length == 0)
+                return 0;
+
+            uint sampleRate = GetAiSampleRate();
+            if (sampleRate == 0)
+                sampleRate = 44_100u;
+
+            uint cpuCountsPerSecond = CpuCyclesPerSecond;
+            uint viDelay = _viFrameDelayCycles;
+            if (viDelay != 0)
+                cpuCountsPerSecond = viDelay * 60u;
+
+            ulong duration = ((ulong)length * cpuCountsPerSecond) / (4UL * sampleRate);
+            if (duration == 0)
+                duration = 1;
+
+            return (uint)Math.Min(duration, uint.MaxValue);
+        }
+
+        private void StartAiFifo0()
+        {
+            if (_aiFifo0Length == 0)
+                return;
+
+            uint status = ReadBigEndianWord(AI_STATUS_REG_R) | AiStatusBusy;
+            WriteBigEndianWord(AI_STATUS_REG_R, status);
+            _aiInterruptDelayArmed = true;
+            _aiInterruptDelayRemaining = _aiFifo0Duration != 0 ? _aiFifo0Duration : 1u;
+        }
+
+        private void PushAiFifo(uint address, uint length)
+        {
+            uint duration = GetAiDmaDuration(length);
+            uint status = ReadBigEndianWord(AI_STATUS_REG_R);
+            address &= 0x00FFFFF8u;
+            length &= ~7u;
+
+            if (length == 0)
+                return;
+
+            if ((status & AiStatusBusy) != 0)
+            {
+                _aiFifo1Address = address;
+                _aiFifo1Length = length;
+                _aiFifo1Duration = duration;
+                status |= AiStatusFull;
+                WriteBigEndianWord(AI_STATUS_REG_R, status);
+            }
+            else
+            {
+                _aiFifo0Address = address;
+                _aiFifo0Length = length;
+                _aiFifo0Duration = duration;
+                _aiDelayedCarry = false;
+                WriteBigEndianWord(AI_DRAM_ADDR_REG_W, address);
+                WriteBigEndianWord(AI_LEN_REG_RW, length);
+                WriteBigEndianWord(AI_STATUS_REG_R, status & ~AiStatusFull);
+                StartAiFifo0();
+            }
+        }
+
+        private uint GetAiRemainingLength()
+        {
+            uint status = ReadBigEndianWord(AI_STATUS_REG_R);
+            if ((status & AiStatusBusy) == 0 || _aiFifo0Length == 0 || _aiFifo0Duration == 0)
+                return 0;
+
+            uint remaining = _aiInterruptDelayRemaining;
+            if (remaining >= _aiFifo0Duration)
+                return _aiFifo0Length & ~7u;
+
+            ulong length = ((ulong)remaining * _aiFifo0Length) / _aiFifo0Duration;
+            return (uint)length & ~7u;
+        }
+
+        private static bool AiNeedsDelayedCarry(uint address, uint length)
+        {
+            return (((address + length) & 0x1FFFu) == 0);
+        }
+
+        private void AdvanceAiLifecycle(uint cpuCycles)
+        {
+            if (!_aiInterruptDelayArmed)
+                return;
+
+            if (cpuCycles >= _aiInterruptDelayRemaining)
+            {
+                _aiInterruptDelayRemaining = 0;
+                _aiInterruptDelayArmed = false;
+                FinalizeAiDmaCompletion();
+            }
+            else
+            {
+                _aiInterruptDelayRemaining -= cpuCycles;
+            }
+        }
+
+        private void FinalizeAiDmaCompletion()
+        {
+            uint status = ReadBigEndianWord(AI_STATUS_REG_R);
+            _aiDelayedCarry = AiNeedsDelayedCarry(_aiFifo0Address, _aiFifo0Length);
+
+            if (_aiFifo1Length != 0)
+            {
+                _aiFifo0Address = _aiFifo1Address;
+                if (_aiDelayedCarry)
+                    _aiFifo0Address = (_aiFifo0Address + 0x2000u) & 0x00FFFFF8u;
+                _aiFifo0Length = _aiFifo1Length;
+                _aiFifo0Duration = _aiFifo1Duration;
+                _aiFifo1Address = 0;
+                _aiFifo1Length = 0;
+                _aiFifo1Duration = 0;
+                status &= ~AiStatusFull;
+                WriteBigEndianWord(AI_STATUS_REG_R, status);
+                WriteBigEndianWord(AI_DRAM_ADDR_REG_W, _aiFifo0Address);
+                WriteBigEndianWord(AI_LEN_REG_RW, _aiFifo0Length);
+                StartAiFifo0();
+            }
+            else
+            {
+                _aiFifo0Address = 0;
+                _aiFifo0Length = 0;
+                _aiFifo0Duration = 0;
+                _aiDelayedCarry = false;
+                status &= ~(AiStatusBusy | AiStatusFull);
+                WriteBigEndianWord(AI_STATUS_REG_R, status);
+                WriteBigEndianWord(AI_LEN_REG_RW, 0);
+            }
+
+            SetMiAiInterrupt();
+        }
+
+        public void AI_LEN_READ_EVENT()
+        {
+            WriteBigEndianWord(AI_LEN_REG_RW, GetAiRemainingLength());
+        }
+
+        public void AI_LEN_WRITE_EVENT()
+        {
+            uint length = ReadBigEndianWord(AI_LEN_REG_RW) & ~7u;
+            uint address = ReadBigEndianWord(AI_DRAM_ADDR_REG_W) & 0x00FFFFFFu;
+            if (length == 0)
+                return;
+
+            PushAiFifo(address, length);
+        }
+
+        public void AI_STATUS_WRITE_EVENT()
+        {
+            ClearMiAiInterrupt();
         }
 
         public void PI_WR_LEN_WRITE_EVENT()
@@ -854,12 +1072,14 @@ namespace Ryu64.MIPS
                     $"[N64IO] PI_STATUS write value=0x{value:x8} old=0x{piStatus:x8} pc=0x{Registers.R4300.PC:x8}");
             }
 
-            // PI status write behavior (bring-up subset):
-            // bit0: reset/clear DMA+IO busy, bit1: clear PI interrupt.
+            // Match mupen:
+            // bit0 resets PI status, bit1 clears PI interrupt.
             if ((value & 0x00000001) != 0)
             {
-                // Clear DMA/IO busy style flags used by boot polling loops.
-                piStatus &= ~0x00000003u;
+                piStatus = 0;
+                _piDmaBusy = false;
+                _piInterruptDelayArmed = false;
+                _piInterruptDelayRemaining = 0;
             }
 
             if ((value & 0x00000002) != 0)
@@ -880,7 +1100,11 @@ namespace Ryu64.MIPS
             // PIF RAM -> RDRAM (64 bytes)
             uint dramAddr = ReadUInt32Physical(0x04800000) & 0x00FFFFF8;
             if (_siDmaActive)
+            {
+                uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R) | 0x00000008u;
+                WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
                 return;
+            }
 
             ArmSiDmaCompletion(readToDram: true, dramAddr);
         }
@@ -892,7 +1116,11 @@ namespace Ryu64.MIPS
             uint dramKseg1 = PhysicalToKseg1(dramAddr);
             const int size = 64;
             if (_siDmaActive)
+            {
+                uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R) | 0x00000008u;
+                WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
                 return;
+            }
 
             for (uint i = 0; i < size; i++)
                 PIFRAM[i] = ReadUInt8(dramKseg1 + i);
@@ -937,7 +1165,7 @@ namespace Ryu64.MIPS
             // pairs of bits clear/set individual masks.
             uint value = ReadBigEndianWord(MI_INTR_MASK_REG_W);
             uint mask = ReadBigEndianWord(MI_INTR_MASK_REG_R) & 0x3Fu;
-            if (TraceN64Io)
+            if (TraceN64Io || (Registers.R4300.PC >= 0x80093000u && Registers.R4300.PC <= 0x80094500u))
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] MI_INTR_MASK write value=0x{value:x8} oldMask=0x{mask:x8} miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} " +
@@ -955,7 +1183,7 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(MI_INTR_MASK_REG_R, mask);
             R4300.RefreshRcpInterruptPending();
             R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
-            if (TraceN64Io)
+            if (TraceN64Io || (Registers.R4300.PC >= 0x80093000u && Registers.R4300.PC <= 0x80094500u))
             {
                 Common.Logger.PrintWarningLine($"[N64IO] MI_INTR_MASK new=0x{mask:x8}");
             }
@@ -1124,7 +1352,7 @@ namespace Ryu64.MIPS
         {
             uint writeValue = ReadBigEndianWord(SP_STATUS_REG_W);
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
-            bool rspTaskLocked = _rspTaskActive || _rspInterruptDelayArmed;
+            bool rspEventPending = _rspInterruptDelayArmed;
             if (TraceN64Io)
             {
                 string storeCtx = BuildStoreContext();
@@ -1162,14 +1390,27 @@ namespace Ryu64.MIPS
             if ((writeValue & 0x00800000u) != 0) status &= ~0x00004000u; // CLR_SIG7
             if ((writeValue & 0x01000000u) != 0) status |= 0x00004000u;  // SET_SIG7
 
-            bool rspShouldStart = !rspTaskLocked
-                && (clearHalt || clearBroke)
+            if (_rspTaskLocked && rspEventPending)
+            {
+                WriteBigEndianWord(SP_STATUS_REG_R, status);
+                if (TraceN64Io)
+                    Common.Logger.PrintWarningLine($"[N64IO] SP_STATUS new=0x{status:x8} (task locked)");
+                return;
+            }
+
+            bool rspShouldStart = !_rspTaskActive
+                && (_rspTaskLocked || clearHalt || clearBroke)
                 && (status & SpStatusHalt) == 0;
 
             if (rspShouldStart && (TraceN64Io || TraceRspTaskDmem))
                 TraceRspTaskHeaderWords(0x0FC0u, "sp-kick");
-            if (rspShouldStart && EnableRspTaskHleDispatcher)
-                TryDispatchRspTaskHle(ref status);
+            if (rspShouldStart)
+            {
+                if (EnableRspInterpreter)
+                    TryDispatchRspTaskInterpreter(ref status);
+                else if (EnableRspTaskHleDispatcher)
+                    TryDispatchRspTaskHle(ref status);
+            }
 
             // Optional bring-up behavior: when CPU clears HALT to kick RSP, complete task immediately.
             // Disabled by default because it can distort scheduler/task-queue flow.
@@ -1294,6 +1535,7 @@ namespace Ryu64.MIPS
 
             _activeRspTask = task;
             _rspTaskActive = true;
+            _rspTaskLocked = false;
             _rspTaskCyclesRemaining = GetRspExecutionCycles(task.Type);
             _rspInterruptDelayArmed = false;
             _dpInterruptDelayArmed = false;
@@ -1309,6 +1551,51 @@ namespace Ryu64.MIPS
                 WriteBigEndianWord(DPC_BUFBUSY_REG_RW, 1);
                 WriteBigEndianWord(DPC_PIPEBUSY_REG_RW, 1);
             }
+        }
+
+        private void TryDispatchRspTaskInterpreter(ref uint status)
+        {
+            if (!TryReadRspTaskFromDmem(out RspTask task))
+                return;
+
+            _rspKickCount++;
+            _activeRspTask = task;
+
+            uint executedInstructions;
+            string stopReason;
+            bool completed = _rspInterpreter.ExecuteTask(out executedInstructions, out stopReason);
+
+            if (TraceN64Io || TraceRspTaskDmem)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] RSP interpreter task type={task.Type} executed={executedInstructions} completed={completed} stop='{stopReason}' pc=0x{Registers.R4300.PC:x8}");
+            }
+
+            if (!completed)
+            {
+                if (EnableRspTaskHleDispatcher)
+                {
+                    if (!_warnedRspInterpreterFallback)
+                    {
+                        _warnedRspInterpreterFallback = true;
+                        Common.Logger.PrintWarningLine(
+                            $"[N64] RSP interpreter hit an unimplemented path ({stopReason}); falling back to task HLE.");
+                    }
+
+                    TryDispatchRspTaskHle(ref status);
+                }
+
+                return;
+            }
+
+            _rspTaskActive = true;
+            _rspTaskLocked = false;
+            _rspTaskCyclesRemaining = GetRspExecutionCycles(task.Type);
+            _rspInterruptDelayArmed = false;
+            _dpInterruptDelayArmed = false;
+
+            status &= ~(SpStatusHalt | SpStatusBroke | SpStatusTaskDone);
+            ClearMiSpInterrupt();
         }
 
         private bool TryReadRspTaskFromDmem(out RspTask task)
@@ -1365,13 +1652,106 @@ namespace Ryu64.MIPS
                 $"wC=0x{wC:x8} wD=0x{wD:x8} pc=0x{Registers.R4300.PC:x8}");
         }
 
-        private uint ReadSpDmemWord(uint dmemOffset)
+        internal uint ReadSpDmemWord(uint dmemOffset)
         {
             uint index = dmemOffset & 0x0FFFu;
             return ((uint)SP_DMEM_RW[index] << 24)
                  | ((uint)SP_DMEM_RW[(index + 1) & 0x0FFFu] << 16)
                  | ((uint)SP_DMEM_RW[(index + 2) & 0x0FFFu] << 8)
                  | SP_DMEM_RW[(index + 3) & 0x0FFFu];
+        }
+
+        internal uint ReadSpImemWord(uint imemOffset)
+        {
+            uint index = imemOffset & 0x0FFFu;
+            return ((uint)SP_IMEM_RW[index] << 24)
+                 | ((uint)SP_IMEM_RW[(index + 1) & 0x0FFFu] << 16)
+                 | ((uint)SP_IMEM_RW[(index + 2) & 0x0FFFu] << 8)
+                 | SP_IMEM_RW[(index + 3) & 0x0FFFu];
+        }
+
+        internal void WriteSpDmemWord(uint dmemOffset, uint value)
+        {
+            uint index = dmemOffset & 0x0FFFu;
+            SP_DMEM_RW[index] = (byte)(value >> 24);
+            SP_DMEM_RW[(index + 1) & 0x0FFFu] = (byte)(value >> 16);
+            SP_DMEM_RW[(index + 2) & 0x0FFFu] = (byte)(value >> 8);
+            SP_DMEM_RW[(index + 3) & 0x0FFFu] = (byte)value;
+        }
+
+        internal uint ReadRspPc()
+        {
+            return ReadBigEndianWord(SP_PC_REG_RW) & 0x0FFCu;
+        }
+
+        internal void WriteRspPc(uint value)
+        {
+            WriteBigEndianWord(SP_PC_REG_RW, value & 0x0FFCu);
+        }
+
+        internal uint ReadRspCp0(int reg)
+        {
+            switch (reg & 0x1F)
+            {
+                case 0: return ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
+                case 1: return ReadBigEndianWord(SP_DRAM_ADDR_REG_RW);
+                case 2: return ReadBigEndianWord(SP_RD_LEN_REG_RW);
+                case 3: return ReadBigEndianWord(SP_WR_LEN_REG_RW);
+                case 4: return ReadBigEndianWord(SP_STATUS_REG_R);
+                case 5: return ReadBigEndianWord(SP_DMA_FULL_REG_R);
+                case 6: return ReadBigEndianWord(SP_DMA_BUSY_REG_R);
+                case 7: return ReadBigEndianWord(SP_SEMAPHORE_REG_R);
+                case 8: return ReadBigEndianWord(DPC_START_REG_RW);
+                case 9: return ReadBigEndianWord(DPC_END_REG_RW);
+                case 10: return ReadBigEndianWord(DPC_CURRENT_REG_RW);
+                case 11: return ReadBigEndianWord(DPC_STATUS_REG_R);
+                case 12: return ReadBigEndianWord(DPC_CLOCK_REG_RW);
+                case 13: return ReadBigEndianWord(DPC_BUFBUSY_REG_RW);
+                case 14: return ReadBigEndianWord(DPC_PIPEBUSY_REG_RW);
+                case 15: return ReadBigEndianWord(DPC_TMEM_REG_RW);
+                default: return 0;
+            }
+        }
+
+        internal void WriteRspCp0(int reg, uint value)
+        {
+            switch (reg & 0x1F)
+            {
+                case 0:
+                    WriteBigEndianWord(SP_MEM_ADDR_REG_RW, value);
+                    break;
+                case 1:
+                    WriteBigEndianWord(SP_DRAM_ADDR_REG_RW, value);
+                    break;
+                case 2:
+                    WriteBigEndianWord(SP_RD_LEN_REG_RW, value);
+                    SP_RD_LEN_WRITE_EVENT();
+                    break;
+                case 3:
+                    WriteBigEndianWord(SP_WR_LEN_REG_RW, value);
+                    SP_WR_LEN_WRITE_EVENT();
+                    break;
+                case 4:
+                    WriteBigEndianWord(SP_STATUS_REG_W, value);
+                    SP_STATUS_WRITE_EVENT();
+                    break;
+                case 7:
+                    WriteBigEndianWord(SP_SEMAPHORE_REG_W, value);
+                    WriteBigEndianWord(SP_SEMAPHORE_REG_R, 0);
+                    break;
+                case 8:
+                    WriteBigEndianWord(DPC_START_REG_RW, value);
+                    DPC_START_WRITE_EVENT();
+                    break;
+                case 9:
+                    WriteBigEndianWord(DPC_END_REG_RW, value);
+                    DPC_END_WRITE_EVENT();
+                    break;
+                case 11:
+                    WriteBigEndianWord(DPC_STATUS_REG_W, value);
+                    DPC_STATUS_WRITE_EVENT();
+                    break;
+            }
         }
 
         private static uint ReadBigEndianWord(byte[] arr)
@@ -1410,6 +1790,7 @@ namespace Ryu64.MIPS
             const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
             MI_INTR_REG_R[3] |= MiSpIntrBit;
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         private void ClearMiSpInterrupt()
@@ -1417,6 +1798,7 @@ namespace Ryu64.MIPS
             const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSpIntrBit);
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         private void SetMiPiInterrupt()
@@ -1429,6 +1811,7 @@ namespace Ryu64.MIPS
             piStatus |= 0x00000008u; // PI interrupt pending
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
 
             if (TraceN64Io && !wasSet)
             {
@@ -1444,6 +1827,7 @@ namespace Ryu64.MIPS
             bool wasSet = (MI_INTR_REG_R[3] & MiPiIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiPiIntrBit);
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
 
             if (TraceN64Io && wasSet)
             {
@@ -1463,6 +1847,7 @@ namespace Ryu64.MIPS
             siStatus |= SiStatusInterrupt;
             WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
 
             if (TraceN64Io && !wasSet)
             {
@@ -1478,6 +1863,7 @@ namespace Ryu64.MIPS
             bool wasSet = (MI_INTR_REG_R[3] & MiSiIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSiIntrBit);
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
 
             if (TraceN64Io && wasSet)
             {
@@ -1493,6 +1879,7 @@ namespace Ryu64.MIPS
             bool wasSet = (MI_INTR_REG_R[3] & MiViIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiViIntrBit;
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
 
             if (TraceN64Io && !wasSet)
             {
@@ -1508,6 +1895,7 @@ namespace Ryu64.MIPS
             bool wasSet = (MI_INTR_REG_R[3] & MiViIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiViIntrBit);
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
 
             if (TraceN64Io && wasSet)
             {
@@ -1516,11 +1904,28 @@ namespace Ryu64.MIPS
             }
         }
 
+        private void SetMiAiInterrupt()
+        {
+            const byte MiAiIntrBit = 0x04; // MI_INTR_REG bit for AI
+            MI_INTR_REG_R[3] |= MiAiIntrBit;
+            R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+        }
+
+        private void ClearMiAiInterrupt()
+        {
+            const byte MiAiIntrBit = 0x04; // MI_INTR_REG bit for AI
+            MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiAiIntrBit);
+            R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+        }
+
         private void SetMiDpInterrupt()
         {
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
             MI_INTR_REG_R[3] |= MiDpIntrBit;
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         private void ClearMiDpInterrupt()
@@ -1528,6 +1933,7 @@ namespace Ryu64.MIPS
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiDpIntrBit);
             R4300.RefreshRcpInterruptPending();
+            R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
         }
 
         public void VI_CURRENT_WRITE_EVENT()
@@ -1877,6 +2283,32 @@ namespace Ryu64.MIPS
                 || address == 0x80204984u;
         }
 
+        private static bool IsMegaFatalTraceAddress(uint address)
+        {
+            return address == 0x801FFBB0u
+                || address == 0x801FFBB4u
+                || address == 0x80204830u
+                || address == 0x80204978u
+                || address == 0x801FFBB0u - 0x80000000u
+                || address == 0x801FFBB4u - 0x80000000u
+                || address == 0x80204830u - 0x80000000u
+                || address == 0x80204978u - 0x80000000u;
+        }
+
+        private static bool IsMegaStatusTraceAddress(uint address)
+        {
+            return address == 0x80182BE8u
+                || address == 0x801CC3C4u
+                || address == 0x801CC3C8u
+                || address == 0x801CC3C7u
+                || address == 0x801CC3C9u
+                || address == 0x00182BE8u
+                || address == 0x001CC3C4u
+                || address == 0x001CC3C8u
+                || address == 0x001CC3C7u
+                || address == 0x001CC3C9u;
+        }
+
         private bool TryGetSpMirroredEntry(uint index, out MemEntry entry)
         {
             entry = new MemEntry();
@@ -2119,9 +2551,9 @@ namespace Ryu64.MIPS
             switch (regOffset & 0x1Cu)
             {
                 case 0x00: entry = new MemEntry(wordBase, wordBase + 3, AI_DRAM_ADDR_REG_W, AI_DRAM_ADDR_REG_W, "AI_DRAM_ADDR_REG_MIRROR"); return true;
-                case 0x04: entry = new MemEntry(wordBase, wordBase + 3, AI_LEN_REG_RW, AI_LEN_REG_RW, "AI_LEN_REG_MIRROR"); return true;
+                case 0x04: entry = new MemEntry(wordBase, wordBase + 3, AI_LEN_REG_RW, AI_LEN_REG_RW, "AI_LEN_REG_MIRROR", AI_LEN_READ_EVENT, AI_LEN_WRITE_EVENT); return true;
                 case 0x08: entry = new MemEntry(wordBase, wordBase + 3, AI_CONTROL_REG_W, AI_CONTROL_REG_W, "AI_CONTROL_REG_MIRROR"); return true;
-                case 0x0C: entry = new MemEntry(wordBase, wordBase + 3, AI_STATUS_REG_R, AI_STATUS_REG_W, "AI_STATUS_REG_MIRROR"); return true;
+                case 0x0C: entry = new MemEntry(wordBase, wordBase + 3, AI_STATUS_REG_R, AI_STATUS_REG_W, "AI_STATUS_REG_MIRROR", null, AI_STATUS_WRITE_EVENT); return true;
                 case 0x10: entry = new MemEntry(wordBase, wordBase + 3, AI_DACRATE_REG_W, AI_DACRATE_REG_W, "AI_DACRATE_REG_MIRROR"); return true;
                 case 0x14: entry = new MemEntry(wordBase, wordBase + 3, AI_BITRATE_REG_W, AI_BITRATE_REG_W, "AI_BITRATE_REG_MIRROR"); return true;
             }
@@ -2521,6 +2953,36 @@ namespace Ryu64.MIPS
                     try { oldValue = ReadUInt32(index); } catch { }
                     Common.Logger.PrintWarningLine(
                         $"[N64MEGACB] write32 addr=0x{index:x8}" +
+                        (havePhysical ? $" phys=0x{physical:x8}" : string.Empty) +
+                        $" old=0x{oldValue:x8} new=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
+
+            if (TraceMegaFatalBlock)
+            {
+                bool traceVirtual = IsMegaFatalTraceAddress(index);
+                bool tracePhysical = havePhysical && IsMegaFatalTraceAddress(physical);
+                if (traceVirtual || tracePhysical)
+                {
+                    uint oldValue = 0;
+                    try { oldValue = ReadUInt32(index); } catch { }
+                    Common.Logger.PrintWarningLine(
+                        $"[N64MEGAFB] write32 addr=0x{index:x8}" +
+                        (havePhysical ? $" phys=0x{physical:x8}" : string.Empty) +
+                        $" old=0x{oldValue:x8} new=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
+
+            if (TraceMegaStatusBlock)
+            {
+                bool traceVirtual = IsMegaStatusTraceAddress(index);
+                bool tracePhysical = havePhysical && IsMegaStatusTraceAddress(physical);
+                if (traceVirtual || tracePhysical)
+                {
+                    uint oldValue = 0;
+                    try { oldValue = ReadUInt32(index); } catch { }
+                    Common.Logger.PrintWarningLine(
+                        $"[N64MEGASTATUSW] write32 addr=0x{index:x8}" +
                         (havePhysical ? $" phys=0x{physical:x8}" : string.Empty) +
                         $" old=0x{oldValue:x8} new=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
                 }
