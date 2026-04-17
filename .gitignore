@@ -27,6 +27,7 @@ eutherdrive_last_rom.txt
 eutherdrive_region.txt
 eutherdrive_settings.json
 eutherdrive_settings.toml
+trusted_exceptions.toml
 memcard.mcr
 savestates/
 roms/

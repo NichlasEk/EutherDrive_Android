@@ -1,7 +1,6 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using Avalonia.Platform;
 using System;
 using System.Linq;
 using System.Net.Http;
@@ -34,10 +33,7 @@ public partial class App : Application
             };
             IMarsTelemetryProvider marsTelemetryProvider = new MarsWeatherService(marsTelemetryHttpClient);
             var offworldMonitorViewModel = new OffworldMonitorViewModel(marsTelemetryProvider);
-            var mainWindow = new MainWindow(romArg, offworldMonitorViewModel);
-            using var iconStream = AssetLoader.Open(new Uri("avares://EutherDrive.UI/Assets/eutherdrive.ico"));
-            mainWindow.Icon = new WindowIcon(iconStream);
-            desktop.MainWindow = mainWindow;
+            desktop.MainWindow = new MainWindow(romArg, offworldMonitorViewModel);
         }
 
         base.OnFrameworkInitializationCompleted();
