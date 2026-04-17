@@ -1,31 +1,73 @@
 [[titles]]
 key = "knuckles' chaotix"
 display_title = "Knuckles' Chaotix"
-launch_count = 191
-total_play_seconds = 6193.2
-last_started_utc = "2026-04-11T08:08:41.8549840Z"
-last_played_utc = "2026-04-11T08:08:51.5791811Z"
+launch_count = 205
+total_play_seconds = 6542.3
+last_started_utc = "2026-04-14T18:56:35.9868834Z"
+last_played_utc = "2026-04-14T18:57:08.9148586Z"
+[[titles]]
+key = "kaze kiri ninja action 1"
+display_title = "Kaze Kiri Ninja Action 1"
+launch_count = 76
+total_play_seconds = 5562.6
+last_started_utc = "2026-04-16T04:23:38.6735819Z"
+last_played_utc = "2026-04-16T04:23:44.4190697Z"
 [[titles]]
 key = "virtua fighter"
 display_title = "Virtua Fighter"
-launch_count = 167
-total_play_seconds = 5195.6
-last_started_utc = "2026-04-11T10:39:53.9096338Z"
-last_played_utc = "2026-04-11T10:40:41.3731963Z"
+launch_count = 176
+total_play_seconds = 5399.7
+last_started_utc = "2026-04-11T17:47:59.7256699Z"
+last_played_utc = "2026-04-11T17:48:37.2153127Z"
+[[titles]]
+key = "batman returns"
+display_title = "Batman Returns"
+launch_count = 21
+total_play_seconds = 5323.0
+last_started_utc = "2026-04-13T15:43:38.9160242Z"
+last_played_utc = "2026-04-13T16:48:16.3604270Z"
 [[titles]]
 key = "cosmic carnage"
 display_title = "Cosmic Carnage"
-launch_count = 62
-total_play_seconds = 3940.0
-last_started_utc = "2026-04-11T11:21:02.1047924Z"
-last_played_utc = "2026-04-11T11:23:46.0435183Z"
+launch_count = 64
+total_play_seconds = 3964.2
+last_started_utc = "2026-04-11T17:47:36.9124653Z"
+last_played_utc = "2026-04-11T17:47:59.5879612Z"
+[[titles]]
+key = "aladdin"
+display_title = "Aladdin"
+launch_count = 74
+total_play_seconds = 3353.7
+last_started_utc = "2026-04-17T15:14:49.1647413Z"
+last_played_utc = "2026-04-17T15:15:20.8238660Z"
 [[titles]]
 key = "doom"
 display_title = "Doom"
-launch_count = 40
-total_play_seconds = 2355.3
-last_started_utc = "2026-04-11T10:42:21.2172865Z"
-last_played_utc = "2026-04-11T10:47:24.3623842Z"
+launch_count = 46
+total_play_seconds = 2669.7
+last_started_utc = "2026-04-16T05:10:12.8756625Z"
+last_played_utc = "2026-04-16T05:10:20.7765055Z"
+[[titles]]
+key = "super castlevania iv"
+display_title = "Super Castlevania IV"
+launch_count = 28
+total_play_seconds = 2604.0
+last_started_utc = "2026-04-13T15:36:00.6938443Z"
+last_played_utc = "2026-04-13T15:42:42.9315235Z"
+[[titles]]
+key = "earthwormjim2"
+display_title = "EarthwormJim2"
+launch_count = 25
+total_play_seconds = 2325.8
+last_started_utc = "2026-04-12T13:39:35.0837257Z"
+last_played_utc = "2026-04-12T13:40:22.6715370Z"
+[[titles]]
+key = "cosmic spacehead"
+display_title = "Cosmic Spacehead"
+launch_count = 80
+total_play_seconds = 2149.5
+last_started_utc = "2026-04-14T19:02:06.0820069Z"
+last_played_utc = "2026-04-14T19:02:12.7537269Z"
 [[titles]]
 key = "master of darkness"
 display_title = "Master of Darkness"
@@ -34,26 +76,40 @@ total_play_seconds = 2069.5
 last_started_utc = "2026-04-06T09:11:03.9996289Z"
 last_played_utc = "2026-04-06T09:12:51.4938942Z"
 [[titles]]
-key = "cosmic spacehead"
-display_title = "Cosmic Spacehead"
-launch_count = 74
-total_play_seconds = 1951.5
-last_started_utc = "2026-04-08T04:56:29.3274891Z"
-last_played_utc = "2026-04-08T04:57:49.0277791Z"
-[[titles]]
 key = "star trek starfleet academy bridge simulator"
 display_title = "Star Trek Starfleet Academy Bridge Simulator"
-launch_count = 39
-total_play_seconds = 1947.3
-last_started_utc = "2026-04-11T11:51:52.1584370Z"
-last_played_utc = "2026-04-11T11:52:24.2006140Z"
+launch_count = 43
+total_play_seconds = 1968.4
+last_started_utc = "2026-04-11T12:19:12.9254492Z"
+last_played_utc = "2026-04-11T12:19:24.9853775Z"
 [[titles]]
 key = "terminator, the"
 display_title = "Terminator, The"
-launch_count = 46
-total_play_seconds = 1586.6
-last_started_utc = "2026-04-08T15:15:18.6853951Z"
-last_played_utc = "2026-04-08T15:16:09.6054933Z"
+launch_count = 48
+total_play_seconds = 1609.3
+last_started_utc = "2026-04-11T18:03:14.1982175Z"
+last_played_utc = "2026-04-11T18:03:36.9277716Z"
+[[titles]]
+key = "sonicspinball"
+display_title = "sonicspinball"
+launch_count = 28
+total_play_seconds = 1503.8
+last_started_utc = "2026-04-12T09:07:14.4420358Z"
+last_played_utc = "2026-04-12T09:07:20.8747784Z"
+[[titles]]
+key = "spider man web of fire"
+display_title = "Spider Man Web of Fire"
+launch_count = 15
+total_play_seconds = 1475.9
+last_started_utc = "2026-04-11T13:29:46.3288147Z"
+last_played_utc = "2026-04-11T13:29:53.7379257Z"
+[[titles]]
+key = "kolibri"
+display_title = "Kolibri"
+launch_count = 48
+total_play_seconds = 1468.9
+last_started_utc = "2026-04-11T12:37:36.6969615Z"
+last_played_utc = "2026-04-11T12:37:50.3266583Z"
 [[titles]]
 key = "mortal kombat ii"
 display_title = "Mortal Kombat II"
@@ -62,20 +118,6 @@ total_play_seconds = 1441.7
 last_started_utc = "2026-04-11T07:56:41.7708432Z"
 last_played_utc = "2026-04-11T07:57:05.9620462Z"
 [[titles]]
-key = "kolibri"
-display_title = "Kolibri"
-launch_count = 46
-total_play_seconds = 1438.8
-last_started_utc = "2026-04-11T11:52:24.3965323Z"
-last_played_utc = "2026-04-11T06:20:22.6070479Z"
-[[titles]]
-key = "spider man web of fire"
-display_title = "Spider Man Web of Fire"
-launch_count = 11
-total_play_seconds = 1325.5
-last_started_utc = "2026-04-10T11:51:50.6460981Z"
-last_played_utc = "2026-04-10T11:56:36.1121216Z"
-[[titles]]
 key = "ecco the dolphin cinepak demo"
 display_title = "ECCO the Dolphin CinePak Demo"
 launch_count = 45
@@ -83,19 +125,40 @@ total_play_seconds = 1240.1
 last_started_utc = "2026-04-11T08:11:53.5852854Z"
 last_played_utc = "2026-04-11T08:12:11.8234152Z"
 [[titles]]
+key = "castlevania symphony of the night"
+display_title = "Castlevania Symphony of the Night"
+launch_count = 10
+total_play_seconds = 1150.0
+last_started_utc = "2026-04-12T18:17:12.2046912Z"
+last_played_utc = "2026-04-12T18:18:04.0883440Z"
+[[titles]]
 key = "castlevania circle of the moon"
 display_title = "Castlevania Circle of the Moon"
-launch_count = 13
-total_play_seconds = 1105.9
-last_started_utc = "2026-04-05T15:44:44.1864529Z"
-last_played_utc = "2026-04-05T15:45:04.0566058Z"
+launch_count = 14
+total_play_seconds = 1124.3
+last_started_utc = "2026-04-12T09:09:05.4597826Z"
+last_played_utc = "2026-04-12T09:09:23.8670791Z"
 [[titles]]
 key = "primal rage"
 display_title = "Primal Rage"
-launch_count = 26
-total_play_seconds = 1088.4
-last_started_utc = "2026-04-10T14:24:06.9429266Z"
-last_played_utc = "2026-04-10T14:26:06.8726629Z"
+launch_count = 28
+total_play_seconds = 1102.5
+last_started_utc = "2026-04-11T12:39:13.8036726Z"
+last_played_utc = "2026-04-11T12:39:27.8766442Z"
+[[titles]]
+key = "brutal unleashed above the claw"
+display_title = "Brutal Unleashed Above the Claw"
+launch_count = 37
+total_play_seconds = 1077.2
+last_started_utc = "2026-04-11T13:25:00.7915086Z"
+last_played_utc = "2026-04-11T13:25:59.2707463Z"
+[[titles]]
+key = "secret of evermore"
+display_title = "Secret of Evermore"
+launch_count = 32
+total_play_seconds = 1062.4
+last_started_utc = "2026-04-17T07:09:59.1988645Z"
+last_played_utc = "2026-04-17T07:10:02.8650797Z"
 [[titles]]
 key = "toughman contest"
 display_title = "Toughman Contest"
@@ -103,13 +166,6 @@ launch_count = 11
 total_play_seconds = 1042.7
 last_started_utc = "2026-04-10T13:42:27.9230866Z"
 last_played_utc = "2026-04-10T13:43:54.5321353Z"
-[[titles]]
-key = "kaze kiri ninja action 1"
-display_title = "Kaze Kiri Ninja Action 1"
-launch_count = 16
-total_play_seconds = 1000.6
-last_started_utc = "2026-04-05T16:26:25.6646142Z"
-last_played_utc = "2026-04-05T16:27:11.1002120Z"
 [[titles]]
 key = "virtua racing deluxe"
 display_title = "Virtua Racing Deluxe"
@@ -132,12 +188,19 @@ total_play_seconds = 862.8
 last_started_utc = "2026-04-10T15:20:06.0274883Z"
 last_played_utc = "2026-04-10T15:32:24.3436122Z"
 [[titles]]
-key = "aladdin"
-display_title = "Aladdin"
-launch_count = 16
-total_play_seconds = 861.9
-last_started_utc = "2026-04-07T07:23:08.4447052Z"
-last_played_utc = "2026-04-07T07:23:14.4581379Z"
+key = "sonic1"
+display_title = "sonic1"
+launch_count = 6
+total_play_seconds = 854.2
+last_started_utc = "2026-04-12T13:46:01.1516698Z"
+last_played_utc = "2026-04-12T13:46:51.9323652Z"
+[[titles]]
+key = "shantae"
+display_title = "shantae"
+launch_count = 6
+total_play_seconds = 835.1
+last_started_utc = "2026-04-12T09:10:20.4548839Z"
+last_played_utc = "2026-04-12T09:10:26.4015521Z"
 [[titles]]
 key = "castlevania harmony of dissonance"
 display_title = "Castlevania Harmony of Dissonance"
@@ -146,6 +209,13 @@ total_play_seconds = 810.5
 last_started_utc = "2026-04-08T05:12:15.4506105Z"
 last_played_utc = "2026-04-08T05:25:45.9579841Z"
 [[titles]]
+key = "castlevania rondo of blood"
+display_title = "Castlevania Rondo of Blood"
+launch_count = 13
+total_play_seconds = 793.2
+last_started_utc = "2026-04-13T05:54:30.1712298Z"
+last_played_utc = "2026-04-13T05:55:34.2363285Z"
+[[titles]]
 key = "zaxxon's motherbase 2000"
 display_title = "Zaxxon's Motherbase 2000"
 launch_count = 31
@@ -153,12 +223,26 @@ total_play_seconds = 788.0
 last_started_utc = "2026-04-10T15:49:52.4287829Z"
 last_played_utc = "2026-04-10T15:51:06.0431219Z"
 [[titles]]
-key = "sonicspinball"
-display_title = "sonicspinball"
-launch_count = 1
-total_play_seconds = 719.4
-last_started_utc = "2026-04-06T09:48:05.5223763Z"
-last_played_utc = "2026-04-06T10:00:04.9188352Z"
+key = "mega man 64"
+display_title = "Mega Man 64"
+launch_count = 30
+total_play_seconds = 781.4
+last_started_utc = "2026-04-17T15:14:36.4777783Z"
+last_played_utc = "2026-04-17T15:14:44.8000950Z"
+[[titles]]
+key = "super mario kart"
+display_title = "Super Mario Kart"
+launch_count = 8
+total_play_seconds = 742.8
+last_started_utc = "2026-04-16T04:35:26.4128606Z"
+last_played_utc = "2026-04-16T04:35:31.6850980Z"
+[[titles]]
+key = "heavynova"
+display_title = "heavynova"
+launch_count = 3
+total_play_seconds = 691.3
+last_started_utc = "2026-04-11T14:51:48.7849738Z"
+last_played_utc = "2026-04-11T14:52:25.3470254Z"
 [[titles]]
 key = "metal head"
 display_title = "Metal Head"
@@ -167,27 +251,6 @@ total_play_seconds = 690.7
 last_started_utc = "2026-04-10T15:33:05.2127460Z"
 last_played_utc = "2026-04-10T15:33:13.6893622Z"
 [[titles]]
-key = "shantae"
-display_title = "shantae"
-launch_count = 4
-total_play_seconds = 689.8
-last_started_utc = "2026-04-06T13:23:20.3806827Z"
-last_played_utc = "2026-04-06T13:23:26.7161825Z"
-[[titles]]
-key = "heavynova"
-display_title = "heavynova"
-launch_count = 1
-total_play_seconds = 639.3
-last_started_utc = "2026-04-06T09:12:51.7105909Z"
-last_played_utc = "2026-04-06T09:23:30.9804485Z"
-[[titles]]
-key = "brutal unleashed above the claw"
-display_title = "Brutal Unleashed Above the Claw"
-launch_count = 13
-total_play_seconds = 620.8
-last_started_utc = "2026-04-11T11:49:13.6322316Z"
-last_played_utc = "2026-04-11T11:49:38.0651034Z"
-[[titles]]
 key = "tempo"
 display_title = "Tempo"
 launch_count = 5
@@ -195,19 +258,54 @@ total_play_seconds = 595.4
 last_started_utc = "2026-04-10T11:56:36.3437218Z"
 last_played_utc = "2026-04-10T11:58:29.6163850Z"
 [[titles]]
+key = "mega man zero 3"
+display_title = "Mega Man Zero 3"
+launch_count = 2
+total_play_seconds = 589.7
+last_started_utc = "2026-04-12T12:18:15.3636304Z"
+last_played_utc = "2026-04-12T12:23:38.5346480Z"
+[[titles]]
 key = "ducktales"
 display_title = "DuckTales"
-launch_count = 14
-total_play_seconds = 564.0
-last_started_utc = "2026-04-06T13:38:08.0916677Z"
-last_played_utc = "2026-04-06T13:38:15.2877811Z"
+launch_count = 15
+total_play_seconds = 582.7
+last_started_utc = "2026-04-12T09:10:27.8604319Z"
+last_played_utc = "2026-04-12T09:10:46.5728933Z"
+[[titles]]
+key = "rampage world tour"
+display_title = "Rampage World Tour"
+launch_count = 3
+total_play_seconds = 581.9
+last_started_utc = "2026-04-11T18:21:41.0084234Z"
+last_played_utc = "2026-04-11T18:23:03.0580615Z"
 [[titles]]
 key = "motocross championship"
 display_title = "Motocross Championship"
-launch_count = 10
-total_play_seconds = 562.9
-last_started_utc = "2026-04-10T14:58:25.4729449Z"
-last_played_utc = "2026-04-10T14:58:49.4105321Z"
+launch_count = 12
+total_play_seconds = 569.6
+last_started_utc = "2026-04-11T13:29:39.3381147Z"
+last_played_utc = "2026-04-11T13:29:46.0166172Z"
+[[titles]]
+key = "dragon ball z hyper dimension"
+display_title = "Dragon Ball Z Hyper Dimension"
+launch_count = 3
+total_play_seconds = 559.2
+last_started_utc = "2026-04-12T14:57:07.7414160Z"
+last_played_utc = "2026-04-12T14:58:24.1171637Z"
+[[titles]]
+key = "gauntlet dark legacy"
+display_title = "Gauntlet Dark Legacy"
+launch_count = 12
+total_play_seconds = 552.3
+last_started_utc = "2026-04-12T13:38:20.9185695Z"
+last_played_utc = "2026-04-12T13:38:37.0092132Z"
+[[titles]]
+key = "super mario 64"
+display_title = "Super Mario 64"
+launch_count = 14
+total_play_seconds = 515.5
+last_started_utc = "2026-04-17T12:44:36.4066155Z"
+last_played_utc = "2026-04-17T12:45:30.2322473Z"
 [[titles]]
 key = "bc racers"
 display_title = "BC Racers"
@@ -216,6 +314,13 @@ total_play_seconds = 505.0
 last_started_utc = "2026-04-10T17:37:49.9974530Z"
 last_played_utc = "2026-04-10T17:38:09.0199467Z"
 [[titles]]
+key = "vigilante"
+display_title = "Vigilante"
+launch_count = 3
+total_play_seconds = 488.2
+last_started_utc = "2026-04-12T11:39:58.7692037Z"
+last_played_utc = "2026-04-12T11:47:54.7110698Z"
+[[titles]]
 key = "darxide"
 display_title = "Darxide"
 launch_count = 27
@@ -223,19 +328,19 @@ total_play_seconds = 481.2
 last_started_utc = "2026-04-10T17:37:15.1947202Z"
 last_played_utc = "2026-04-10T17:37:49.7733235Z"
 [[titles]]
+key = "battletoads"
+display_title = "Battletoads"
+launch_count = 8
+total_play_seconds = 436.3
+last_started_utc = "2026-04-11T13:54:14.2442345Z"
+last_played_utc = "2026-04-11T13:55:00.3286569Z"
+[[titles]]
 key = "blackthorne"
 display_title = "Blackthorne"
 launch_count = 2
 total_play_seconds = 413.1
 last_started_utc = "2026-04-10T11:25:29.7715766Z"
 last_played_utc = "2026-04-10T11:31:31.5570282Z"
-[[titles]]
-key = "battletoads"
-display_title = "Battletoads"
-launch_count = 7
-total_play_seconds = 390.2
-last_started_utc = "2026-04-05T18:14:59.7596864Z"
-last_played_utc = "2026-04-05T18:15:28.5092358Z"
 [[titles]]
 key = "james pond 3 operation starfish"
 display_title = "James Pond 3 Operation Starfish"
@@ -251,12 +356,26 @@ total_play_seconds = 367.1
 last_started_utc = "2026-04-05T17:33:58.3566548Z"
 last_played_utc = "2026-04-05T17:34:16.9668668Z"
 [[titles]]
+key = "castlevania"
+display_title = "castlevania"
+launch_count = 11
+total_play_seconds = 361.4
+last_started_utc = "2026-04-12T07:24:55.2484533Z"
+last_played_utc = "2026-04-12T07:26:06.0500779Z"
+[[titles]]
 key = "asterix and the secret mission"
 display_title = "Asterix and the Secret Mission"
 launch_count = 6
 total_play_seconds = 352.7
 last_started_utc = "2026-04-05T17:48:51.3235531Z"
 last_played_utc = "2026-04-05T17:50:24.4411812Z"
+[[titles]]
+key = "sonic2"
+display_title = "sonic2"
+launch_count = 13
+total_play_seconds = 352.5
+last_started_utc = "2026-04-11T17:45:45.4362336Z"
+last_played_utc = "2026-04-11T17:46:19.5287539Z"
 [[titles]]
 key = "shadow squadron"
 display_title = "Shadow Squadron"
@@ -271,13 +390,6 @@ launch_count = 9
 total_play_seconds = 323.4
 last_started_utc = "2026-04-10T17:38:09.4381455Z"
 last_played_utc = "2026-04-10T17:38:45.5475068Z"
-[[titles]]
-key = "batman returns"
-display_title = "Batman Returns"
-launch_count = 2
-total_play_seconds = 322.0
-last_started_utc = "2026-04-08T05:26:54.0123120Z"
-last_played_utc = "2026-04-08T05:30:16.8615905Z"
 [[titles]]
 key = "addams family, the"
 display_title = "Addams Family, The"
@@ -307,6 +419,13 @@ total_play_seconds = 284.0
 last_started_utc = "2026-04-10T13:36:14.2162245Z"
 last_played_utc = "2026-04-10T13:36:22.4670072Z"
 [[titles]]
+key = "contra iii the alien wars"
+display_title = "Contra III The Alien Wars"
+launch_count = 5
+total_play_seconds = 280.6
+last_started_utc = "2026-04-11T18:31:26.8565584Z"
+last_played_utc = "2026-04-11T18:32:39.2253263Z"
+[[titles]]
 key = "hot chick in vdp mode 2 by devster"
 display_title = "Hot Chick in VDP Mode 2 by DevSter"
 launch_count = 16
@@ -321,12 +440,12 @@ total_play_seconds = 274.9
 last_started_utc = "2026-04-05T18:15:28.7597653Z"
 last_played_utc = "2026-04-05T18:17:10.3734999Z"
 [[titles]]
-key = "mega man zero 3"
-display_title = "Mega Man Zero 3"
-launch_count = 1
-total_play_seconds = 266.5
-last_started_utc = "2026-04-06T13:44:02.8918147Z"
-last_played_utc = "2026-04-06T13:48:29.3821941Z"
+key = "kirby's dream land 3"
+display_title = "Kirby's Dream Land 3"
+launch_count = 6
+total_play_seconds = 271.4
+last_started_utc = "2026-04-16T04:28:17.7170470Z"
+last_played_utc = "2026-04-16T04:28:24.9964206Z"
 [[titles]]
 key = "devilish"
 display_title = "Devilish"
@@ -342,6 +461,13 @@ total_play_seconds = 256.0
 last_started_utc = "2026-04-10T17:38:45.7099231Z"
 last_played_utc = "2026-04-10T17:39:37.4624689Z"
 [[titles]]
+key = "spriggan2"
+display_title = "spriggan2"
+launch_count = 3
+total_play_seconds = 253.0
+last_started_utc = "2026-04-13T16:48:17.5475201Z"
+last_played_utc = "2026-04-13T16:49:48.9455812Z"
+[[titles]]
 key = "pitfall"
 display_title = "Pitfall"
 launch_count = 8
@@ -356,19 +482,19 @@ total_play_seconds = 212.6
 last_started_utc = "2026-04-10T12:44:54.3456634Z"
 last_played_utc = "2026-04-10T12:45:16.3964491Z"
 [[titles]]
-key = "contra iii the alien wars"
-display_title = "Contra III The Alien Wars"
-launch_count = 3
-total_play_seconds = 206.6
-last_started_utc = "2026-04-06T09:39:29.5512310Z"
-last_played_utc = "2026-04-06T09:42:56.1963827Z"
-[[titles]]
 key = "wwf raw"
 display_title = "WWF RAW"
 launch_count = 3
 total_play_seconds = 206.4
 last_started_utc = "2026-04-10T09:10:43.3453475Z"
 last_played_utc = "2026-04-10T09:12:08.8957844Z"
+[[titles]]
+key = "wolfenstein 3 d"
+display_title = "Wolfenstein 3 D"
+launch_count = 1
+total_play_seconds = 193.9
+last_started_utc = "2026-04-14T18:35:45.7692641Z"
+last_played_utc = "2026-04-14T18:38:59.6216739Z"
 [[titles]]
 key = "after burner complete"
 display_title = "After Burner Complete"
@@ -377,19 +503,19 @@ total_play_seconds = 189.7
 last_started_utc = "2026-04-10T14:28:46.0857917Z"
 last_played_utc = "2026-04-10T14:28:57.5499163Z"
 [[titles]]
+key = "perfect dark"
+display_title = "Perfect Dark"
+launch_count = 10
+total_play_seconds = 187.9
+last_started_utc = "2026-04-17T12:49:48.7865782Z"
+last_played_utc = "2026-04-17T12:49:57.5995514Z"
+[[titles]]
 key = "t mek"
 display_title = "T MEK"
 launch_count = 6
 total_play_seconds = 178.0
 last_started_utc = "2026-04-11T06:07:21.8156325Z"
 last_played_utc = "2026-04-11T06:07:42.9866277Z"
-[[titles]]
-key = "gauntlet dark legacy"
-display_title = "Gauntlet Dark Legacy"
-launch_count = 2
-total_play_seconds = 170.6
-last_started_utc = "2026-04-08T05:47:52.1376824Z"
-last_played_utc = "2026-04-08T05:47:58.3546972Z"
 [[titles]]
 key = "arena maze of death"
 display_title = "Arena Maze of Death"
@@ -405,12 +531,40 @@ total_play_seconds = 161.4
 last_started_utc = "2026-04-05T18:32:24.8299348Z"
 last_played_utc = "2026-04-05T18:32:55.7541698Z"
 [[titles]]
+key = "skuljagger revolt of the westicans"
+display_title = "Skuljagger Revolt of the Westicans"
+launch_count = 1
+total_play_seconds = 154.6
+last_started_utc = "2026-04-14T18:43:05.9241370Z"
+last_played_utc = "2026-04-14T18:45:40.4789728Z"
+[[titles]]
 key = "fifa international soccer 96"
 display_title = "FIFA International Soccer 96"
 launch_count = 2
 total_play_seconds = 152.5
 last_started_utc = "2026-04-10T11:31:31.8367056Z"
 last_played_utc = "2026-04-10T11:33:33.9506917Z"
+[[titles]]
+key = "toy story"
+display_title = "Toy Story"
+launch_count = 1
+total_play_seconds = 148.4
+last_started_utc = "2026-04-14T18:33:15.9609359Z"
+last_played_utc = "2026-04-14T18:35:44.3337665Z"
+[[titles]]
+key = "legend of zelda, the ocarina of time"
+display_title = "Legend of Zelda, The Ocarina of Time"
+launch_count = 10
+total_play_seconds = 144.7
+last_started_utc = "2026-04-17T11:16:19.8847388Z"
+last_played_utc = "2026-04-17T11:16:43.0709111Z"
+[[titles]]
+key = "top gear 3000"
+display_title = "Top Gear 3000"
+launch_count = 1
+total_play_seconds = 142.2
+last_started_utc = "2026-04-14T18:57:10.5071581Z"
+last_played_utc = "2026-04-14T18:59:32.6731917Z"
 [[titles]]
 key = "sangokushi iv"
 display_title = "Sangokushi IV"
@@ -419,12 +573,26 @@ total_play_seconds = 141.1
 last_started_utc = "2026-04-10T09:24:52.4230789Z"
 last_played_utc = "2026-04-10T09:25:27.9893676Z"
 [[titles]]
+key = "super mario world 2 yoshi's island"
+display_title = "Super Mario World 2 Yoshi's Island"
+launch_count = 7
+total_play_seconds = 140.4
+last_started_utc = "2026-04-16T05:01:22.8286408Z"
+last_played_utc = "2026-04-16T05:02:19.2029359Z"
+[[titles]]
 key = "cool spot"
 display_title = "Cool Spot"
 launch_count = 2
 total_play_seconds = 139.0
 last_started_utc = "2026-04-05T17:47:01.6842572Z"
 last_played_utc = "2026-04-05T17:48:33.8860402Z"
+[[titles]]
+key = "quackshot"
+display_title = "quackshot"
+launch_count = 4
+total_play_seconds = 138.0
+last_started_utc = "2026-04-14T18:59:34.2019621Z"
+last_played_utc = "2026-04-14T19:00:36.3468056Z"
 [[titles]]
 key = "earthworm jim special edition"
 display_title = "Earthworm Jim Special Edition"
@@ -447,12 +615,40 @@ total_play_seconds = 121.2
 last_started_utc = "2026-04-10T12:44:34.6129907Z"
 last_played_utc = "2026-04-10T12:44:54.1538048Z"
 [[titles]]
+key = "contra"
+display_title = "contra"
+launch_count = 3
+total_play_seconds = 119.7
+last_started_utc = "2026-04-11T17:42:25.9649663Z"
+last_played_utc = "2026-04-11T17:42:35.6341586Z"
+[[titles]]
+key = "sonic the hedgehog 2"
+display_title = "Sonic The Hedgehog 2"
+launch_count = 7
+total_play_seconds = 119.4
+last_started_utc = "2026-04-11T14:35:08.4677628Z"
+last_played_utc = "2026-04-11T14:35:39.3828910Z"
+[[titles]]
 key = "defenders of oasis"
 display_title = "Defenders of Oasis"
 launch_count = 1
 total_play_seconds = 107.9
 last_started_utc = "2026-04-05T18:19:09.0721881Z"
 last_played_utc = "2026-04-05T18:20:56.9601761Z"
+[[titles]]
+key = "super pinball behind the mask"
+display_title = "Super Pinball Behind the Mask"
+launch_count = 1
+total_play_seconds = 100.0
+last_started_utc = "2026-04-14T18:41:24.5384522Z"
+last_played_utc = "2026-04-14T18:43:04.5529631Z"
+[[titles]]
+key = "super alfred chicken"
+display_title = "Super Alfred Chicken"
+launch_count = 1
+total_play_seconds = 99.0
+last_started_utc = "2026-04-14T18:39:00.8419301Z"
+last_played_utc = "2026-04-14T18:40:39.8666434Z"
 [[titles]]
 key = "sonic cd"
 display_title = "Sonic CD"
@@ -461,12 +657,26 @@ total_play_seconds = 98.40000000000001
 last_started_utc = "2026-04-06T16:23:54.8892931Z"
 last_played_utc = "2026-04-06T16:25:00.0318394Z"
 [[titles]]
+key = "mortal kombat trilogy"
+display_title = "Mortal Kombat Trilogy"
+launch_count = 7
+total_play_seconds = 95.8
+last_started_utc = "2026-04-17T13:02:41.5055834Z"
+last_played_utc = "2026-04-17T13:03:07.8582048Z"
+[[titles]]
 key = "wwf wrestlemania steel cage challenge"
 display_title = "WWF WrestleMania Steel Cage Challenge"
 launch_count = 2
 total_play_seconds = 94.7
 last_started_utc = "2026-04-05T18:31:32.5807831Z"
 last_played_utc = "2026-04-05T18:32:24.6372785Z"
+[[titles]]
+key = "seaquest dsv"
+display_title = "SeaQuest DSV"
+launch_count = 1
+total_play_seconds = 94.3
+last_started_utc = "2026-04-14T18:30:27.2193799Z"
+last_played_utc = "2026-04-14T18:32:01.4794252Z"
 [[titles]]
 key = "zool ninja of the ''nth'' dimension"
 display_title = "Zool Ninja of the ''Nth'' Dimension"
@@ -475,19 +685,26 @@ total_play_seconds = 91.8
 last_started_utc = "2026-04-08T05:31:42.6663376Z"
 last_played_utc = "2026-04-08T05:33:14.5018157Z"
 [[titles]]
+key = "spectre"
+display_title = "Spectre"
+launch_count = 1
+total_play_seconds = 87.90000000000001
+last_started_utc = "2026-04-14T18:45:42.0067713Z"
+last_played_utc = "2026-04-14T18:47:09.8965125Z"
+[[titles]]
+key = "king arthur's world"
+display_title = "King Arthur's World"
+launch_count = 2
+total_play_seconds = 86.8
+last_started_utc = "2026-04-13T15:32:32.3784435Z"
+last_played_utc = "2026-04-13T15:33:59.1872610Z"
+[[titles]]
 key = "36 great holes starring fred couples"
 display_title = "36 Great Holes Starring Fred Couples"
 launch_count = 4
 total_play_seconds = 86.59999999999999
 last_started_utc = "2026-04-10T13:41:53.1071217Z"
 last_played_utc = "2026-04-10T13:42:27.5955589Z"
-[[titles]]
-key = "sonic1"
-display_title = "sonic1"
-launch_count = 2
-total_play_seconds = 86.3
-last_started_utc = "2026-04-06T10:59:52.0441848Z"
-last_played_utc = "2026-04-06T11:01:00.6722001Z"
 [[titles]]
 key = "alien 3"
 display_title = "Alien 3"
@@ -510,19 +727,19 @@ total_play_seconds = 83.0
 last_started_utc = "2026-04-05T17:36:20.8352822Z"
 last_played_utc = "2026-04-05T17:37:08.4800177Z"
 [[titles]]
-key = "castlevania symphony of the night"
-display_title = "Castlevania Symphony of the Night"
-launch_count = 1
-total_play_seconds = 80.2
-last_started_utc = "2026-04-06T11:06:36.4923537Z"
-last_played_utc = "2026-04-06T11:07:56.7404585Z"
-[[titles]]
 key = "hot chick with genesis vdp overlay by devster"
 display_title = "Hot Chick with Genesis VDP Overlay by DevSter"
 launch_count = 2
 total_play_seconds = 72.3
 last_started_utc = "2026-04-08T16:24:26.4220884Z"
 last_played_utc = "2026-04-08T16:24:58.0358078Z"
+[[titles]]
+key = "star trek the next generation future's past"
+display_title = "Star Trek The Next Generation Future's Past"
+launch_count = 1
+total_play_seconds = 72.0
+last_started_utc = "2026-04-14T18:32:02.6623534Z"
+last_played_utc = "2026-04-14T18:33:14.6279067Z"
 [[titles]]
 key = "nba jam tournament edition"
 display_title = "NBA Jam Tournament Edition"
@@ -566,6 +783,13 @@ total_play_seconds = 62.0
 last_started_utc = "2026-04-06T13:54:33.7689064Z"
 last_played_utc = "2026-04-06T13:54:49.1921007Z"
 [[titles]]
+key = "psychic storm"
+display_title = "Psychic Storm"
+launch_count = 2
+total_play_seconds = 60.9
+last_started_utc = "2026-04-13T17:29:14.2287248Z"
+last_played_utc = "2026-04-13T17:29:22.4012071Z"
+[[titles]]
 key = "super mario bros deluxe"
 display_title = "Super Mario Bros Deluxe"
 launch_count = 1
@@ -580,12 +804,40 @@ total_play_seconds = 56.3
 last_started_utc = "2026-04-05T17:20:58.0502768Z"
 last_played_utc = "2026-04-05T17:21:00.5058623Z"
 [[titles]]
-key = "sonic2"
-display_title = "sonic2"
+key = "spawn"
+display_title = "Spawn"
 launch_count = 1
-total_play_seconds = 44.4
-last_started_utc = "2026-04-05T18:26:19.8700946Z"
-last_played_utc = "2026-04-05T18:27:04.2496252Z"
+total_play_seconds = 53.7
+last_started_utc = "2026-04-14T18:47:11.0399221Z"
+last_played_utc = "2026-04-14T18:48:04.7529447Z"
+[[titles]]
+key = "bubble bobble"
+display_title = "Bubble Bobble"
+launch_count = 4
+total_play_seconds = 50.5
+last_started_utc = "2026-04-11T13:56:42.9403791Z"
+last_played_utc = "2026-04-11T13:57:02.7924710Z"
+[[titles]]
+key = "star ocean"
+display_title = "Star Ocean"
+launch_count = 1
+total_play_seconds = 50.4
+last_started_utc = "2026-04-12T13:43:53.1953364Z"
+last_played_utc = "2026-04-12T13:44:43.5917373Z"
+[[titles]]
+key = "jang pung ii"
+display_title = "Jang Pung II"
+launch_count = 3
+total_play_seconds = 47.5
+last_started_utc = "2026-04-12T09:22:30.2428028Z"
+last_played_utc = "2026-04-12T09:22:38.0572704Z"
+[[titles]]
+key = "sink or swim"
+display_title = "Sink or Swim"
+launch_count = 1
+total_play_seconds = 42.1
+last_started_utc = "2026-04-14T18:40:40.9836864Z"
+last_played_utc = "2026-04-14T18:41:23.0345388Z"
 [[titles]]
 key = "baku baku animal"
 display_title = "Baku Baku Animal"
@@ -593,13 +845,6 @@ launch_count = 2
 total_play_seconds = 39.5
 last_started_utc = "2026-04-08T05:35:53.4420163Z"
 last_played_utc = "2026-04-08T05:36:12.9822115Z"
-[[titles]]
-key = "sonic the hedgehog 2"
-display_title = "Sonic the Hedgehog 2"
-launch_count = 3
-total_play_seconds = 38.0
-last_started_utc = "2026-04-05T18:25:21.9446518Z"
-last_played_utc = "2026-04-05T18:25:59.9603451Z"
 [[titles]]
 key = "lemmings"
 display_title = "Lemmings"
@@ -621,6 +866,13 @@ launch_count = 1
 total_play_seconds = 35.0
 last_started_utc = "2026-04-10T12:45:16.6050096Z"
 last_played_utc = "2026-04-10T12:45:51.6135908Z"
+[[titles]]
+key = "popful mail"
+display_title = "Popful Mail"
+launch_count = 1
+total_play_seconds = 33.4
+last_started_utc = "2026-04-12T09:10:47.9250931Z"
+last_played_utc = "2026-04-12T09:11:21.3177777Z"
 [[titles]]
 key = "super mario land"
 display_title = "Super Mario Land"
@@ -685,6 +937,13 @@ total_play_seconds = 23.8
 last_started_utc = "2026-04-08T17:13:13.2534881Z"
 last_played_utc = "2026-04-08T17:13:27.7287903Z"
 [[titles]]
+key = "crash bandicoot"
+display_title = "Crash Bandicoot"
+launch_count = 1
+total_play_seconds = 22.6
+last_started_utc = "2026-04-12T09:09:42.9135915Z"
+last_played_utc = "2026-04-12T09:10:05.4888704Z"
+[[titles]]
 key = "crystal warriors"
 display_title = "Crystal Warriors"
 launch_count = 2
@@ -719,6 +978,13 @@ launch_count = 1
 total_play_seconds = 18.4
 last_started_utc = "2026-04-08T05:56:18.5117001Z"
 last_played_utc = "2026-04-08T05:56:36.9159349Z"
+[[titles]]
+key = "strike gunner s t g"
+display_title = "Strike Gunner S T G"
+launch_count = 2
+total_play_seconds = 16.8
+last_started_utc = "2026-04-14T18:50:10.4488580Z"
+last_played_utc = "2026-04-14T18:50:27.2491918Z"
 [[titles]]
 key = "iron man and x o manowar in heavy metal"
 display_title = "Iron Man and X O Manowar in Heavy Metal"
@@ -776,12 +1042,12 @@ total_play_seconds = 13.0
 last_started_utc = "2026-04-10T11:25:16.5776310Z"
 last_played_utc = "2026-04-10T11:25:29.5548708Z"
 [[titles]]
-key = "bubble bobble"
-display_title = "Bubble Bobble"
+key = "akumajou dracula x chi no rondo"
+display_title = "Akumajou Dracula X Chi no Rondo"
 launch_count = 1
-total_play_seconds = 11.2
-last_started_utc = "2026-04-05T16:47:05.2048420Z"
-last_played_utc = "2026-04-05T16:47:16.4419121Z"
+total_play_seconds = 12.3
+last_started_utc = "2026-04-12T19:04:32.8714522Z"
+last_played_utc = "2026-04-12T19:04:45.1748853Z"
 [[titles]]
 key = "captain america and the avengers"
 display_title = "Captain America and the Avengers"
@@ -790,6 +1056,20 @@ total_play_seconds = 10.9
 last_started_utc = "2026-04-05T16:48:46.8846905Z"
 last_played_utc = "2026-04-05T16:48:57.7891044Z"
 [[titles]]
+key = "kirby super star"
+display_title = "Kirby Super Star"
+launch_count = 1
+total_play_seconds = 7.8
+last_started_utc = "2026-04-12T13:44:46.1322834Z"
+last_played_utc = "2026-04-12T13:44:53.9797005Z"
+[[titles]]
+key = "hagane the final conflict"
+display_title = "Hagane The Final Conflict"
+launch_count = 2
+total_play_seconds = 7.7
+last_started_utc = "2026-04-11T15:07:44.6183376Z"
+last_played_utc = "2026-04-11T15:07:52.3489180Z"
+[[titles]]
 key = "picture magic boot cart"
 display_title = "Picture Magic Boot Cart"
 launch_count = 1
@@ -797,12 +1077,12 @@ total_play_seconds = 7.5
 last_started_utc = "2026-04-10T14:27:47.7199561Z"
 last_played_utc = "2026-04-10T14:27:55.2145223Z"
 [[titles]]
-key = "castlevania"
-display_title = "castlevania"
+key = "bios"
+display_title = "bios"
 launch_count = 2
-total_play_seconds = 5.7
-last_started_utc = "2026-04-05T16:48:25.9314804Z"
-last_played_utc = "2026-04-05T16:48:31.6165541Z"
+total_play_seconds = 7.4
+last_started_utc = "2026-04-15T17:12:22.5406661Z"
+last_played_utc = "2026-04-15T17:12:29.9226574Z"
 [[titles]]
 key = "nhl 98"
 display_title = "NHL 98"

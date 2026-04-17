@@ -121,6 +121,18 @@ if (ppuMwrOverride.HasValue)
 }
 Console.WriteLine($"PPU render={ppu.PeekRenderLine()} display={ppu.PeekDisplayCounter()} frame={ppu.PeekFrameCounter()} regsel=0x{ppu.PeekSelectedVdcRegister():X2}");
 Console.WriteLine($"PPU mwr=0x{GetFieldTyped<int>(ppu, "m_VDC_MWR"):X4} latched_mwr=0x{GetFieldTyped<int>(ppu, "m_LatchedMWR"):X4} bxr_latched=0x{GetFieldTyped<int>(ppu, "m_LatchedBxr"):X4} bg_counter_y=0x{GetFieldTyped<int>(ppu, "m_BgCounterY"):X4} bg_offset_y=0x{GetFieldTyped<int>(ppu, "m_BgOffsetY"):X4} latched_vds={GetFieldTyped<int>(ppu, "m_LatchedVDS")} latched_vdw={GetFieldTyped<int>(ppu, "m_LatchedVDW")} byr_offset=0x{GetFieldTyped<int>(ppu, "m_VDC_BYR_Offset"):X4}");
+Console.WriteLine(
+    $"PPU status busy={(GetFieldTyped<bool>(ppu, "m_VDC_BSY") ? 1 : 0)} vblank={(GetFieldTyped<bool>(ppu, "m_VDC_VD") ? 1 : 0)} " +
+    $"vram_dma={(GetFieldTyped<bool>(ppu, "m_VDC_DV") ? 1 : 0)} sat_dma={(GetFieldTyped<bool>(ppu, "m_VDC_DS") ? 1 : 0)} " +
+    $"rr={(GetFieldTyped<bool>(ppu, "m_VDC_RR") ? 1 : 0)} ov={(GetFieldTyped<bool>(ppu, "m_VDC_OR") ? 1 : 0)} col={(GetFieldTyped<bool>(ppu, "m_VDC_CR") ? 1 : 0)} wait_irq={(GetFieldTyped<bool>(ppu, "m_WaitingIRQ") ? 1 : 0)}");
+Console.WriteLine(
+    $"PPU ctrl bg={(GetFieldTyped<bool>(ppu, "m_VDC_EnableBackground") ? 1 : 0)} spr={(GetFieldTyped<bool>(ppu, "m_VDC_EnableSprites") ? 1 : 0)} " +
+    $"vbkirq={(GetFieldTyped<bool>(ppu, "m_VDC_VBKIRQ") ? 1 : 0)} rcrirq={(GetFieldTyped<bool>(ppu, "m_VDC_RCRIRQ") ? 1 : 0)} " +
+    $"sat_irq={(GetFieldTyped<bool>(ppu, "m_VDC_SATBDMA_IRQ") ? 1 : 0)} vram_irq={(GetFieldTyped<bool>(ppu, "m_VDC_VRAMDMA_IRQ") ? 1 : 0)} inc=0x{GetFieldTyped<int>(ppu, "m_VDC_Increment"):X2}");
+Console.WriteLine(
+    $"PPU dma do_sat={(GetFieldTyped<bool>(ppu, "m_DoSAT_DMA") ? 1 : 0)} trigger_sat={(GetFieldTyped<bool>(ppu, "m_TriggerSAT_DMA") ? 1 : 0)} " +
+    $"vram_enable={(GetFieldTyped<bool>(ppu, "m_VDC_DMA_Enable") ? 1 : 0)} sat_enable={(GetFieldTyped<bool>(ppu, "m_VDC_SATB_ENA") ? 1 : 0)} " +
+    $"src_dec={(GetFieldTyped<bool>(ppu, "m_VDC_SRCDECR") ? 1 : 0)} dst_dec={(GetFieldTyped<bool>(ppu, "m_VDC_DSTDECR") ? 1 : 0)}");
 string probeDir = Path.Combine(Path.GetTempPath(), "kaze_slot_probe");
 pceBus.DumpDebugSnapshot(probeDir, $"slot{slotIndex}");
 Console.WriteLine($"PPU snapshot dir={probeDir}");
@@ -235,6 +247,21 @@ Console.WriteLine($"RAM[read..]   {DumpSlice(ram, (int)readAddr, 32)}");
 Console.WriteLine($"RAM[write..]  {DumpSlice(ram, (int)writeAddr, 32)}");
 DumpSegmentMap(ram, 0x1000);
 Console.WriteLine($"CPU PC=0x{pceBus.CPU.PeekProgramCounter():X4} MPR7=0x{pceBus.CPU.PeekMpr(7):X2}");
+ushort currentPc = pceBus.CPU.PeekProgramCounter();
+byte[] zp = new byte[16];
+for (int i = 0; i < zp.Length; i++)
+    zp[i] = pceBus.CPU.HleReadZeroPage((byte)(0x20 + i));
+Console.WriteLine($"CPU ZP[0x20..0x2F] {BitConverter.ToString(zp)}");
+int pcWindowStart = Math.Max(0, currentPc - 0x10);
+DumpCpuWindow(pceBus, (ushort)pcWindowStart, 0x40);
+int? extraCpuWindowStart = ParseOptionalHexEnv("STATEPROBE_CPU_WINDOW_START");
+int extraCpuWindowSize = ParseOptionalHexEnv("STATEPROBE_CPU_WINDOW_SIZE") ?? 0x40;
+if (extraCpuWindowStart.HasValue)
+{
+    int clampedStart = Math.Clamp(extraCpuWindowStart.Value, 0, 0xFFFF);
+    int clampedSize = Math.Clamp(extraCpuWindowSize, 1, 0x1000);
+    DumpCpuWindow(pceBus, (ushort)clampedStart, clampedSize);
+}
 DumpCpuWindow(pceBus, 0xF3D0, 64);
 DumpCpuWindow(pceBus, 0xF3F0, 32);
 DumpCpuWindow(pceBus, 0xF400, 128);

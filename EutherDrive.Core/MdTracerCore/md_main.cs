@@ -128,7 +128,7 @@ namespace EutherDrive.Core.MdTracerCore
         private static bool _sonic2RamInit;
         private static readonly byte[] _sonic2RamLast = new byte[0x80];
         private static readonly bool UseM68kEmuMain =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_USE_M68KEMU"), "0", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MD_USE_M68KEMU"), "1", StringComparison.Ordinal);
         private static M68000? _m68kEmu;
         private static IBusInterface? _m68kEmuBus;
         private static int _m68kWaitCycles;

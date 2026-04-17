@@ -25,11 +25,46 @@ namespace ePceCD
             ParseOptionalHexEnv("EUTHERDRIVE_PCE_CPU_WRITE_MIN", -1);
         private static readonly int TraceCpuWriteMax =
             ParseOptionalHexEnv("EUTHERDRIVE_PCE_CPU_WRITE_MAX", -1);
+        private static readonly int TraceFrameStart =
+            ParseOptionalIntEnv("EUTHERDRIVE_PCE_TRACE_FRAME_START", -1);
+        private static readonly int TraceFrameEnd =
+            ParseOptionalIntEnv("EUTHERDRIVE_PCE_TRACE_FRAME_END", -1);
         private static readonly string? TraceCpuWriteFile =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_WRITE_TRACE_FILE");
         private static readonly bool TraceCpuWriteStdout =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_WRITE_TRACE_STDOUT"), "1", StringComparison.Ordinal);
         private static readonly object TraceCpuWriteFileLock = new object();
+        private static readonly bool TraceIndirectYReads =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_INY_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceIndirectYLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_INY_TRACE_LIMIT"), out int iyLim) && iyLim > 0 ? iyLim : 2048;
+        private static readonly string? TraceIndirectYFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_INY_TRACE_FILE");
+        private static readonly bool TraceIndirectYStdout =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_INY_TRACE_STDOUT"), "1", StringComparison.Ordinal);
+        private static readonly object TraceIndirectYFileLock = new object();
+        private static readonly bool TraceStackOps =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_STACK_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceStackLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_STACK_TRACE_LIMIT"), out int stackLim) && stackLim > 0 ? stackLim : 1024;
+        private static readonly string? TraceStackFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_STACK_TRACE_FILE");
+        private static readonly bool TraceStackStdout =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_STACK_TRACE_STDOUT"), "1", StringComparison.Ordinal);
+        private static readonly object TraceStackFileLock = new object();
+        private static readonly bool TraceCpuState =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_STATE_TRACE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceCpuStateLimit =
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_STATE_TRACE_LIMIT"), out int csLim) && csLim > 0 ? csLim : 4096;
+        private static readonly int TraceCpuStatePcMin =
+            ParseOptionalHexEnv("EUTHERDRIVE_PCE_CPU_STATE_PC_MIN", -1);
+        private static readonly int TraceCpuStatePcMax =
+            ParseOptionalHexEnv("EUTHERDRIVE_PCE_CPU_STATE_PC_MAX", -1);
+        private static readonly string? TraceCpuStateFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_STATE_TRACE_FILE");
+        private static readonly bool TraceCpuStateStdout =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_PCE_CPU_STATE_TRACE_STDOUT"), "1", StringComparison.Ordinal);
+        private static readonly object TraceCpuStateFileLock = new object();
         [NonSerialized]
         private int _traceOpCount;
         public enum InstructionOpcode : byte
@@ -359,6 +394,12 @@ namespace ePceCD
         private int _traceBlockTransferCount;
         [NonSerialized]
         private int _traceCpuWriteCount;
+        [NonSerialized]
+        private int _traceIndirectYCount;
+        [NonSerialized]
+        private int _traceStackCount;
+        [NonSerialized]
+        private int _traceCpuStateCount;
 
         // Status Flags
         private bool m_NFlag;
@@ -455,6 +496,21 @@ namespace ePceCD
             return int.TryParse(value, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int parsed)
                 ? parsed
                 : fallback;
+        }
+
+        private static int ParseOptionalIntEnv(string name, int fallback)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(value, out int parsed) ? parsed : fallback;
+        }
+
+        private static bool TraceFrameSelected(int frame)
+        {
+            if (TraceFrameStart >= 0 && frame < TraceFrameStart)
+                return false;
+            if (TraceFrameEnd >= 0 && frame > TraceFrameEnd)
+                return false;
+            return true;
         }
 
         public void RebindBanks()
@@ -679,8 +735,11 @@ namespace ePceCD
             if (TraceCpuWriteMax >= 0 && address > TraceCpuWriteMax)
                 return;
 
-            _traceCpuWriteCount++;
             int frame = BUS?.PPU?.PeekFrameCounter() ?? -1;
+            if (!TraceFrameSelected(frame))
+                return;
+
+            _traceCpuWriteCount++;
             int render = BUS?.PPU?.PeekRenderLine() ?? -1;
             int dispctr = BUS?.PPU?.PeekDisplayCounter() ?? -1;
             WriteCpuWriteTrace(
@@ -700,6 +759,42 @@ namespace ePceCD
             }
 
             if (!wroteFile || TraceCpuWriteStdout)
+                Console.WriteLine(line);
+        }
+
+        private void TraceCpuStateIfNeeded(byte op)
+        {
+            if (!TraceCpuState || _traceCpuStateCount >= TraceCpuStateLimit)
+                return;
+
+            int frame = BUS?.PPU?.PeekFrameCounter() ?? -1;
+            if (!TraceFrameSelected(frame))
+                return;
+
+            if (TraceCpuStatePcMin >= 0 && CurrentPC < TraceCpuStatePcMin)
+                return;
+            if (TraceCpuStatePcMax >= 0 && CurrentPC > TraceCpuStatePcMax)
+                return;
+
+            _traceCpuStateCount++;
+            int render = BUS?.PPU?.PeekRenderLine() ?? -1;
+            int dispctr = BUS?.PPU?.PeekDisplayCounter() ?? -1;
+            string flags =
+                $"{(m_NFlag ? 'N' : 'n')}{(m_VFlag ? 'V' : 'v')}{(m_TFlag ? 'T' : 't')}{(m_DFlag ? 'D' : 'd')}{(m_IFlag ? 'I' : 'i')}{(m_ZFlag ? 'Z' : 'z')}{(m_CFlag ? 'C' : 'c')}";
+            string line =
+                $"[PCE-CPUSTATE] frame={frame} render={render} dispctr={dispctr} pc=0x{CurrentPC:X4} op=0x{op:X2} a=0x{m_A:X2} x=0x{m_X:X2} y=0x{m_Y:X2} s=0x{m_S:X2} flags={flags} zp20=0x{Peek_ZP8(0x20):X2} zp21=0x{Peek_ZP8(0x21):X2} zp22=0x{Peek_ZP8(0x22):X2} zp24=0x{Peek_ZP8(0x24):X2} zp27=0x{Peek_ZP8(0x27):X2} zp28=0x{Peek_ZP8(0x28):X2}";
+
+            bool wroteFile = false;
+            if (!string.IsNullOrWhiteSpace(TraceCpuStateFile))
+            {
+                lock (TraceCpuStateFileLock)
+                {
+                    File.AppendAllText(TraceCpuStateFile!, line + Environment.NewLine);
+                }
+                wroteFile = true;
+            }
+
+            if (!wroteFile || TraceCpuStateStdout)
                 Console.WriteLine(line);
         }
 
@@ -723,12 +818,20 @@ namespace ePceCD
 
         private void Push8(byte value)
         {
-            m_ZeroPage.WriteAt((ushort)(0x100 | (m_S--)), value);
+            byte spBefore = m_S;
+            m_ZeroPage.WriteAt((ushort)(0x0100 | spBefore), value);
+            m_S--;
+            TraceStackIfNeeded("push", value, spBefore, m_S);
         }
 
         private byte Pop8()
         {
-            return m_ZeroPage.ReadAt((ushort)(0x100 | (++m_S)));
+            byte spBefore = m_S;
+            byte spAfter = (byte)(spBefore + 1);
+            byte value = m_ZeroPage.ReadAt((ushort)(0x0100 | spAfter));
+            m_S = spAfter;
+            TraceStackIfNeeded("pop", value, spBefore, spAfter);
+            return value;
         }
 
         private void Push16(ushort value)
@@ -765,6 +868,7 @@ namespace ePceCD
 
         private void Poke_ZP8(byte address, byte data)
         {
+            TraceCpuWriteIfNeeded(address, data);
             m_ZeroPage.WriteAt(address, data);
         }
 
@@ -815,7 +919,11 @@ namespace ePceCD
         }
         private byte Read_IND()
         {
-            return Read8(Eff_IND(ReadImmediate8()));
+            byte index = ReadImmediate8();
+            ushort effectiveAddress = Eff_IND(index);
+            byte value = Read8(effectiveAddress);
+            TraceIndirectReadIfNeeded("IND", index, effectiveAddress, effectiveAddress, value);
+            return value;
         }
         private byte Read_INX()
         {
@@ -823,7 +931,12 @@ namespace ePceCD
         }
         private byte Read_INY()
         {
-            return Read8(Eff_INY(ReadImmediate8()));
+            byte index = ReadImmediate8();
+            ushort baseAddress = Peek_ZP16(index);
+            ushort effectiveAddress = (ushort)(baseAddress + m_Y);
+            byte value = Read8(effectiveAddress);
+            TraceIndirectReadIfNeeded("INY", index, baseAddress, effectiveAddress, value);
+            return value;
         }
         private byte Read_ABS()
         {
@@ -843,6 +956,74 @@ namespace ePceCD
         private void Write_ZP(byte data)
         {
             Poke_ZP8(ReadImmediate8(), data);
+        }
+
+        private void TraceIndirectReadIfNeeded(string mode, byte index, ushort baseAddress, ushort effectiveAddress, byte value)
+        {
+            if (!TraceIndirectYReads || _traceIndirectYCount >= TraceIndirectYLimit)
+                return;
+
+            int frame = BUS?.PPU?.PeekFrameCounter() ?? -1;
+            if (!TraceFrameSelected(frame))
+                return;
+            if (TraceCpuStatePcMin >= 0 && CurrentPC < TraceCpuStatePcMin)
+                return;
+            if (TraceCpuStatePcMax >= 0 && CurrentPC > TraceCpuStatePcMax)
+                return;
+
+            _traceIndirectYCount++;
+            int render = BUS?.PPU?.PeekRenderLine() ?? -1;
+            int dispctr = BUS?.PPU?.PeekDisplayCounter() ?? -1;
+            string line =
+                $"[PCE-{mode}] frame={frame} render={render} dispctr={dispctr} pc=0x{CurrentPC:X4} idx=0x{index:X2} base=0x{baseAddress:X4} y=0x{m_Y:X2} eff=0x{effectiveAddress:X4} value=0x{value:X2} x=0x{m_X:X2} a=0x{m_A:X2}";
+
+            bool wroteFile = false;
+            if (!string.IsNullOrWhiteSpace(TraceIndirectYFile))
+            {
+                lock (TraceIndirectYFileLock)
+                {
+                    File.AppendAllText(TraceIndirectYFile!, line + Environment.NewLine);
+                }
+                wroteFile = true;
+            }
+
+            if (!wroteFile || TraceIndirectYStdout)
+                Console.WriteLine(line);
+        }
+
+        private void TraceStackIfNeeded(string action, byte value, byte spBefore, byte spAfter)
+        {
+            if (!TraceStackOps || _traceStackCount >= TraceStackLimit)
+                return;
+
+            int frame = BUS?.PPU?.PeekFrameCounter() ?? -1;
+            if (!TraceFrameSelected(frame))
+                return;
+
+            if (TraceCpuStatePcMin >= 0 && CurrentPC < TraceCpuStatePcMin)
+                return;
+            if (TraceCpuStatePcMax >= 0 && CurrentPC > TraceCpuStatePcMax)
+                return;
+
+            _traceStackCount++;
+            int render = BUS?.PPU?.PeekRenderLine() ?? -1;
+            int dispctr = BUS?.PPU?.PeekDisplayCounter() ?? -1;
+            ushort address = (ushort)(0x0100 | (action == "push" ? spBefore : spAfter));
+            string line =
+                $"[PCE-STACK] frame={frame} render={render} dispctr={dispctr} pc=0x{CurrentPC:X4} op={action} addr=0x{address:X4} value=0x{value:X2} sp_before=0x{spBefore:X2} sp_after=0x{spAfter:X2}";
+
+            bool wroteFile = false;
+            if (!string.IsNullOrWhiteSpace(TraceStackFile))
+            {
+                lock (TraceStackFileLock)
+                {
+                    File.AppendAllText(TraceStackFile!, line + Environment.NewLine);
+                }
+                wroteFile = true;
+            }
+
+            if (!wroteFile || TraceStackStdout)
+                Console.WriteLine(line);
         }
         private void Write_ZPX(byte data)
         {
@@ -939,6 +1120,7 @@ namespace ePceCD
             if (m_TFlag)
             {
                 Poke_ZP8(m_X, data);
+                m_TFlag = false;
                 m_AdvanceClock += 2;
             }
             else
@@ -1103,6 +1285,10 @@ namespace ePceCD
             if (!TraceBlockTransfers || _traceBlockTransferCount >= TraceBlockTransferLimit)
                 return;
 
+            int frame = BUS?.PPU?.PeekFrameCounter() ?? -1;
+            if (!TraceFrameSelected(frame))
+                return;
+
             int destBankSlot = dest >> 13;
             int destWindow = dest & 0x1FFF;
             bool ioMapped = (uint)destBankSlot < 8u && m_MPR[destBankSlot] == 0xFF && destWindow <= 0x03FF;
@@ -1115,7 +1301,6 @@ namespace ePceCD
                 preview.Append(Read8((ushort)(src + i)).ToString("X2"));
             }
             _traceBlockTransferCount++;
-            int frame = BUS?.PPU?.PeekFrameCounter() ?? -1;
             int render = BUS?.PPU?.PeekRenderLine() ?? -1;
             int dispctr = BUS?.PPU?.PeekDisplayCounter() ?? -1;
             WriteBlockTransferTrace(
@@ -1142,6 +1327,7 @@ namespace ePceCD
         {
             CurrentPC = m_PC;
             byte op = ReadImmediate8();
+            TraceCpuStateIfNeeded(op);
 
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PCE_PC") == "1")
             {
@@ -1775,7 +1961,6 @@ namespace ePceCD
 
                 // --- STACK OPERATIONS ---
                 case InstructionOpcode.INS_PHP:
-                    m_TFlag = false;
                     Push8(GetP(true));
                     break;
                 case InstructionOpcode.INS_PHA:
@@ -2091,8 +2276,6 @@ namespace ePceCD
                 default:
                     break;
             }
-
-            m_TFlag = false;
         }
     }
 }

@@ -445,6 +445,14 @@ class Program
                 var snesInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_INPUT_SCRIPT"));
                 int[] snesPeekAddrs = ParseOptionalHexAddrEnv("EUTHERDRIVE_TRACE_SNES_PEEK_ADDRS");
                 int? sa1SnapshotFrameSavestate = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_FRAME");
+                HashSet<int> snesDumpFrames = ParseFrameSetEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                int? snesDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (snesDumpFrameSingle.HasValue && snesDumpFrameSingle.Value >= 0)
+                    snesDumpFrames.Add(snesDumpFrameSingle.Value);
+                HashSet<int> snesRawDumpFrames = ParseFrameSetEnv("EUTHERDRIVE_HEADLESS_SNES_RAW_DUMP_FRAMES");
+                int? snesRawDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_SNES_RAW_DUMP_FRAME");
+                if (snesRawDumpFrameSingle.HasValue && snesRawDumpFrameSingle.Value >= 0)
+                    snesRawDumpFrames.Add(snesRawDumpFrameSingle.Value);
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
@@ -557,9 +565,13 @@ class Program
                             snesAudioSink.Submit(audio);
                     }
 
-                    if (frame == 0 || frame == 5 || frame == 10)
+                    if (frame == 0 || frame == 5 || frame == 10 || snesDumpFrames.Contains(frame))
                     {
                         DumpSnesFrame(snes, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"), traceSnesFrames);
+                    }
+                    if (snesRawDumpFrames.Contains(frame))
+                    {
+                        DumpSnesPpuRaw(snes, Path.Combine(dumpDir, $"snes_ppu_frame{frame}"));
                     }
                     if (snes.System.CPU is KSNES.CPU.CPU cpu)
                     {
@@ -2360,6 +2372,14 @@ class Program
                 var snesInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_INPUT_SCRIPT"));
                 int? sa1SnapshotFrame = ParseOptionalIntEnv("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_FRAME");
                 int[] snesPeekAddrs = ParseOptionalHexAddrEnv("EUTHERDRIVE_TRACE_SNES_PEEK_ADDRS");
+                HashSet<int> snesDumpFrames = ParseFrameSetEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                int? snesDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (snesDumpFrameSingle.HasValue && snesDumpFrameSingle.Value >= 0)
+                    snesDumpFrames.Add(snesDumpFrameSingle.Value);
+                HashSet<int> snesRawDumpFrames = ParseFrameSetEnv("EUTHERDRIVE_HEADLESS_SNES_RAW_DUMP_FRAMES");
+                int? snesRawDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_SNES_RAW_DUMP_FRAME");
+                if (snesRawDumpFrameSingle.HasValue && snesRawDumpFrameSingle.Value >= 0)
+                    snesRawDumpFrames.Add(snesRawDumpFrameSingle.Value);
 
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
@@ -2467,8 +2487,10 @@ class Program
                             snesAudioSink.Submit(audio);
                     }
 
-                    if (frame == 0 || frame == 5 || frame == 10)
+                    if (frame == 0 || frame == 5 || frame == 10 || snesDumpFrames.Contains(frame))
                         DumpSnesFrame(snes, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"), traceSnesFrames);
+                    if (snesRawDumpFrames.Contains(frame))
+                        DumpSnesPpuRaw(snes, Path.Combine(dumpDir, $"snes_ppu_frame{frame}"));
 
                     if (snes.System.CPU is KSNES.CPU.CPU cpu)
                     {
@@ -3581,6 +3603,25 @@ class Program
             "NTSC" => PsxVideoStandardMode.NTSC,
             _ => PsxVideoStandardMode.Auto,
         };
+    }
+
+    private static HashSet<int> ParseFrameSetEnv(params string[] names)
+    {
+        var result = new HashSet<int>();
+        foreach (string name in names)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+
+            foreach (string token in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out int frame) && frame >= 0)
+                    result.Add(frame);
+            }
+        }
+
+        return result;
     }
 
     private static int? ParseOptionalIntEnv(string name)

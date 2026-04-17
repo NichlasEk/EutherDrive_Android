@@ -28,7 +28,9 @@ namespace EutherDrive.Core.MdTracerCore
         }
 
         private static WaveOutput Invert(WaveOutput value) => value == WaveOutput.Negative ? WaveOutput.Positive : WaveOutput.Negative;
-        private static double ToSampleAmplitude(WaveOutput value) => value == WaveOutput.Positive ? 1.0 : 0.0;
+        // SN76489 tone/noise output is bipolar around zero. Using 0/1 injects a large DC
+        // offset that gets perceived as muddy/farty distortion after downstream filtering.
+        private static double ToSampleAmplitude(WaveOutput value) => value == WaveOutput.Positive ? 1.0 : -1.0;
 
         private sealed class SquareWaveGenerator
         {

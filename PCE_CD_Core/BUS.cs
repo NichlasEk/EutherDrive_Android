@@ -843,7 +843,7 @@ namespace ePceCD
 
             _traceVdcBusCount++;
             WriteVdcBusTrace(
-                $"[PCE-VDCBUS] frame={PPU.PeekFrameCounter()} render={PPU.PeekRenderLine()} pc=0x{CPU.PeekProgramCounter():X4} io=0x{ioAddress:X1} reg=0x{reg:X2} data=0x{data:X2}");
+                $"[PCE-VDCBUS] frame={PPU.PeekFrameCounter()} render={PPU.PeekRenderLine()} pc=0x{CPU.PeekProgramCounter():X4} io=0x{ioAddress:X1} reg=0x{reg:X2} data=0x{data:X2} mawr=0x{PPU.PeekMawr():X4} marr=0x{PPU.PeekMarr():X4}");
         }
 
         private static void WriteVdcBusTrace(string line)

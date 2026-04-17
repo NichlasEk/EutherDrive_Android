@@ -437,6 +437,8 @@ namespace ePceCD
         public int m_VDC_HDE;
         public int m_VDC_HDW;
         public int m_VDC_VDW;
+        public int PeekMawr() => m_VDC_MAWR;
+        public int PeekMarr() => m_VDC_MARR;
         private int m_VDC_VCR;
         private int m_LatchedVDS;
         private int m_LatchedVDW;
