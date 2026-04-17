@@ -4,11 +4,15 @@ namespace Ryu64.MIPS
 {
     internal sealed class RspInterpreter
     {
+        private const uint LoopReportThreshold = 2048;
         private readonly Memory _memory;
         private readonly uint[] _gpr = new uint[32];
         private readonly byte[,] _vr = new byte[32, 16];
         private readonly ushort[] _vcc = new ushort[2];
         private readonly ushort[] _vco = new ushort[2];
+        private readonly ushort[] _accHi = new ushort[8];
+        private readonly ushort[] _accMd = new ushort[8];
+        private readonly ushort[] _accLo = new ushort[8];
         private byte _vce;
         private uint _pc;
         private bool _branchPending;
@@ -30,6 +34,9 @@ namespace Ryu64.MIPS
             Array.Clear(_vr, 0, _vr.Length);
             Array.Clear(_vcc, 0, _vcc.Length);
             Array.Clear(_vco, 0, _vco.Length);
+            Array.Clear(_accHi, 0, _accHi.Length);
+            Array.Clear(_accMd, 0, _accMd.Length);
+            Array.Clear(_accLo, 0, _accLo.Length);
             _vce = 0;
             _hi = 0;
             _lo = 0;
@@ -48,7 +55,7 @@ namespace Ryu64.MIPS
                 if (pc == _lastPc && instr == _lastInstr)
                 {
                     _samePcRunLength++;
-                    if (_samePcRunLength >= 65536)
+                    if (_samePcRunLength >= LoopReportThreshold)
                     {
                         stopReason = $"loop pc=0x{pc:x3} op=0x{instr:x8} repeats={_samePcRunLength}";
                         _memory.WriteRspPc(_pc);
@@ -78,6 +85,7 @@ namespace Ryu64.MIPS
 
                 _gpr[0] = 0;
 
+                _memory.TickRspInterpreter(1);
                 _pc = branchDue ? (dueTarget & 0x0FFCu) : sequentialPc;
             }
 
@@ -263,6 +271,9 @@ namespace Ryu64.MIPS
         private bool ExecuteCop2(uint pc, uint rs, uint rt, uint rd, uint instr, out string stopReason)
         {
             stopReason = string.Empty;
+            if ((instr >> 25) == 0x25)
+                return ExecuteVectorCompute(pc, instr, out stopReason);
+
             uint element = (instr >> 7) & 0xF;
             switch (rs)
             {
@@ -280,6 +291,308 @@ namespace Ryu64.MIPS
                     return true;
                 default:
                     stopReason = $"unsupported-cop2 pc=0x{pc:x3} rs=0x{rs:x2} op=0x{instr:x8}";
+                    return false;
+            }
+        }
+
+        private bool ExecuteVectorCompute(uint pc, uint instr, out string stopReason)
+        {
+            stopReason = string.Empty;
+            int op = (int)(instr & 0x3F);
+            int vd = (int)((instr >> 6) & 0x1F);
+            int vs = (int)((instr >> 11) & 0x1F);
+            int vt = (int)((instr >> 16) & 0x1F);
+            int element = (int)((instr >> 21) & 0xF);
+
+            ushort[] lhs = new ushort[8];
+            ushort[] rhs = new ushort[8];
+            ushort[] result = new ushort[8];
+            LoadVectorUnshuffled(vs, lhs);
+            LoadVectorShuffled(vt, element, rhs);
+
+            switch (op)
+            {
+                case 0x00: // VMULF
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        int lhsSigned = (short)lhs[lane];
+                        int rhsSigned = (short)rhs[lane];
+                        int prod = (lhsSigned * rhsSigned << 1) + 0x8000;
+                        ushort accLo = unchecked((ushort)prod);
+                        short accMd = unchecked((short)(prod >> 16));
+                        bool negative = accMd < 0;
+                        bool equal = lhs[lane] == rhs[lane];
+
+                        _accLo[lane] = accLo;
+                        _accMd[lane] = unchecked((ushort)accMd);
+                        _accHi[lane] = (ushort)(negative && !equal ? 0xffff : 0x0000);
+
+                        short laneResult = accMd;
+                        if (negative && equal)
+                            laneResult--;
+
+                        result[lane] = unchecked((ushort)laneResult);
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x01: // VMULU
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        int lhsSigned = (short)lhs[lane];
+                        int rhsSigned = (short)rhs[lane];
+                        int prod = (lhsSigned * rhsSigned << 1) + 0x8000;
+                        ushort accLo = unchecked((ushort)prod);
+                        short accMd = unchecked((short)(prod >> 16));
+                        bool negative = accMd < 0;
+
+                        _accLo[lane] = accLo;
+                        _accMd[lane] = unchecked((ushort)accMd);
+                        _accHi[lane] = (ushort)(negative ? 0xffff : 0x0000);
+
+                        int laneValue = _accHi[lane] != 0
+                            ? 0
+                            : (ushort)(_accMd[lane] | _accHi[lane]);
+                        result[lane] = unchecked((ushort)laneValue);
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x08: // VMACF
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        long acc = ReadAccumulator(lane);
+                        int lhsSigned = (short)lhs[lane];
+                        int rhsSigned = (short)rhs[lane];
+                        long prod = ((long)lhsSigned * rhsSigned) << 1;
+                        acc += prod;
+                        WriteAccumulator(lane, acc);
+                        result[lane] = unchecked((ushort)SaturateAccumulatorToSignedMd(lane));
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x10: // VADD
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        int carry = GetMaskBit(_vco[1], lane) ? 1 : 0;
+                        int sum = (short)lhs[lane] + (short)rhs[lane] + carry;
+                        _accLo[lane] = unchecked((ushort)sum);
+                        result[lane] = unchecked((ushort)ClampSigned16(sum));
+                    }
+                    _vco[0] = 0;
+                    _vco[1] = 0;
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x11: // VSUB
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        int carry = GetMaskBit(_vco[1], lane) ? 1 : 0;
+                        int diff = (short)lhs[lane] - (short)rhs[lane] - carry;
+                        _accLo[lane] = unchecked((ushort)diff);
+                        result[lane] = unchecked((ushort)ClampSigned16(diff));
+                    }
+                    _vco[0] = 0;
+                    _vco[1] = 0;
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x14: // VADDC
+                    {
+                        ushort carryMask = 0;
+                        for (int lane = 0; lane < 8; lane++)
+                        {
+                            uint sum = (uint)lhs[lane] + rhs[lane];
+                            if (sum > 0xFFFFu)
+                                carryMask |= (ushort)(1u << lane);
+                            ushort laneResult = unchecked((ushort)sum);
+                            _accLo[lane] = laneResult;
+                            result[lane] = laneResult;
+                        }
+                        _vco[0] = 0;
+                        _vco[1] = carryMask;
+                        StoreVector(vd, result);
+                        return true;
+                    }
+
+                case 0x15: // VSUBC
+                    {
+                        ushort neMask = 0;
+                        ushort ltMask = 0;
+                        for (int lane = 0; lane < 8; lane++)
+                        {
+                            ushort laneResult = unchecked((ushort)(lhs[lane] - rhs[lane]));
+                            _accLo[lane] = laneResult;
+                            result[lane] = laneResult;
+                            if (lhs[lane] != rhs[lane])
+                                neMask |= (ushort)(1u << lane);
+                            if (lhs[lane] < rhs[lane])
+                                ltMask |= (ushort)(1u << lane);
+                        }
+                        _vco[0] = neMask;
+                        _vco[1] = ltMask;
+                        StoreVector(vd, result);
+                        return true;
+                    }
+
+                case 0x20: // VLT
+                    {
+                        ushort vccLo = 0;
+                        for (int lane = 0; lane < 8; lane++)
+                        {
+                            bool equal = lhs[lane] == rhs[lane];
+                            bool select = (short)lhs[lane] < (short)rhs[lane]
+                                || (equal && GetMaskBit(_vco[0], lane) && GetMaskBit(_vco[1], lane));
+                            if (select)
+                                vccLo |= (ushort)(1u << lane);
+                            result[lane] = select ? lhs[lane] : rhs[lane];
+                            _accLo[lane] = result[lane];
+                        }
+                        _vcc[0] = 0;
+                        _vcc[1] = vccLo;
+                        _vco[0] = 0;
+                        _vco[1] = 0;
+                        StoreVector(vd, result);
+                        return true;
+                    }
+
+                case 0x21: // VEQ
+                    {
+                        ushort vccLo = 0;
+                        for (int lane = 0; lane < 8; lane++)
+                        {
+                            bool select = lhs[lane] == rhs[lane] && !GetMaskBit(_vco[0], lane);
+                            if (select)
+                                vccLo |= (ushort)(1u << lane);
+                            result[lane] = select ? lhs[lane] : rhs[lane];
+                            _accLo[lane] = result[lane];
+                        }
+                        _vcc[0] = 0;
+                        _vcc[1] = vccLo;
+                        _vco[0] = 0;
+                        _vco[1] = 0;
+                        StoreVector(vd, result);
+                        return true;
+                    }
+
+                case 0x22: // VNE
+                    {
+                        ushort vccLo = 0;
+                        for (int lane = 0; lane < 8; lane++)
+                        {
+                            bool equal = lhs[lane] == rhs[lane];
+                            bool select = (GetMaskBit(_vco[0], lane) && equal) || !equal;
+                            if (select)
+                                vccLo |= (ushort)(1u << lane);
+                            result[lane] = select ? lhs[lane] : rhs[lane];
+                            _accLo[lane] = result[lane];
+                        }
+                        _vcc[0] = 0;
+                        _vcc[1] = vccLo;
+                        _vco[0] = 0;
+                        _vco[1] = 0;
+                        StoreVector(vd, result);
+                        return true;
+                    }
+
+                case 0x23: // VGE
+                    {
+                        ushort vccLo = 0;
+                        for (int lane = 0; lane < 8; lane++)
+                        {
+                            bool equal = lhs[lane] == rhs[lane];
+                            bool select = (short)lhs[lane] > (short)rhs[lane]
+                                || (equal && !(GetMaskBit(_vco[0], lane) && GetMaskBit(_vco[1], lane)));
+                            if (select)
+                                vccLo |= (ushort)(1u << lane);
+                            result[lane] = select ? lhs[lane] : rhs[lane];
+                            _accLo[lane] = result[lane];
+                        }
+                        _vcc[0] = 0;
+                        _vcc[1] = vccLo;
+                        _vco[0] = 0;
+                        _vco[1] = 0;
+                        StoreVector(vd, result);
+                        return true;
+                    }
+
+                case 0x27: // VMRG
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        result[lane] = GetMaskBit(_vcc[1], lane) ? lhs[lane] : rhs[lane];
+                        _accLo[lane] = result[lane];
+                    }
+                    _vco[0] = 0;
+                    _vco[1] = 0;
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x28: // VAND
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        result[lane] = (ushort)(lhs[lane] & rhs[lane]);
+                        _accLo[lane] = result[lane];
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x29: // VNAND
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        result[lane] = (ushort)~(lhs[lane] & rhs[lane]);
+                        _accLo[lane] = result[lane];
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x2A: // VOR
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        result[lane] = (ushort)(lhs[lane] | rhs[lane]);
+                        _accLo[lane] = result[lane];
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x2B: // VNOR
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        result[lane] = (ushort)~(lhs[lane] | rhs[lane]);
+                        _accLo[lane] = result[lane];
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x2C: // VXOR
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        result[lane] = (ushort)(lhs[lane] ^ rhs[lane]);
+                        _accLo[lane] = result[lane];
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x2D: // VNXOR
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        result[lane] = (ushort)~(lhs[lane] ^ rhs[lane]);
+                        _accLo[lane] = result[lane];
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
+                case 0x33: // VMOV
+                    for (int lane = 0; lane < 8; lane++)
+                        _accLo[lane] = rhs[lane];
+                    WriteVectorLane16(vd, vs & 7, _accLo[vs & 7]);
+                    return true;
+
+                case 0x37: // VNOP
+                    return true;
+
+                default:
+                    stopReason = $"unsupported-vector-op pc=0x{pc:x3} op=0x{instr:x8}";
                     return false;
             }
         }
@@ -343,15 +656,73 @@ namespace Ryu64.MIPS
             _vr[vt, (lane + 1) & 0xF] = (byte)value;
         }
 
+        private ushort ReadVectorLane16(int vt, int lane)
+        {
+            int byteIndex = (lane & 7) * 2;
+            return (ushort)((_vr[vt, byteIndex] << 8) | _vr[vt, byteIndex + 1]);
+        }
+
+        private void WriteVectorLane16(int vt, int lane, ushort value)
+        {
+            int byteIndex = (lane & 7) * 2;
+            _vr[vt, byteIndex] = (byte)(value >> 8);
+            _vr[vt, byteIndex + 1] = (byte)value;
+        }
+
+        private void LoadVectorUnshuffled(int vt, ushort[] dest)
+        {
+            for (int lane = 0; lane < 8; lane++)
+                dest[lane] = ReadVectorLane16(vt, lane);
+        }
+
+        private void LoadVectorShuffled(int vt, int element, ushort[] dest)
+        {
+            for (int lane = 0; lane < 8; lane++)
+            {
+                int sourceLane;
+                switch (element & 0xF)
+                {
+                    case 0:
+                    case 1:
+                        sourceLane = lane;
+                        break;
+                    case 2:
+                        sourceLane = (lane & ~1) & 7;
+                        break;
+                    case 3:
+                        sourceLane = ((lane & ~1) | 1) & 7;
+                        break;
+                    case 4:
+                    case 5:
+                    case 6:
+                    case 7:
+                        sourceLane = ((lane & 2) != 0 ? element : element - 4) & 7;
+                        break;
+                    default:
+                        sourceLane = (element - 8) & 7;
+                        break;
+                }
+
+                dest[lane] = ReadVectorLane16(vt, sourceLane);
+            }
+        }
+
+        private void StoreVector(int vt, ushort[] src)
+        {
+            for (int lane = 0; lane < 8; lane++)
+                WriteVectorLane16(vt, lane, src[lane]);
+        }
+
         private uint ReadVectorControl(int rd)
         {
             switch (rd & 3)
             {
-                case 0: return _vco[0];
-                case 1: return _vco[1];
-                case 2: return _vcc[0];
-                case 3: return _vcc[1];
-                default: return _vce;
+                case 0:
+                    return (uint)((_vco[0] << 8) | _vco[1]);
+                case 1:
+                    return (uint)((_vcc[0] << 8) | _vcc[1]);
+                default:
+                    return _vce;
             }
         }
 
@@ -359,11 +730,17 @@ namespace Ryu64.MIPS
         {
             switch (rd & 3)
             {
-                case 0: _vco[0] = value; break;
-                case 1: _vco[1] = value; break;
-                case 2: _vcc[0] = value; break;
-                case 3: _vcc[1] = value; break;
-                default: _vce = (byte)value; break;
+                case 0:
+                    _vco[0] = (ushort)((value >> 8) & 0xFF);
+                    _vco[1] = (ushort)(value & 0xFF);
+                    break;
+                case 1:
+                    _vcc[0] = (ushort)((value >> 8) & 0xFF);
+                    _vcc[1] = (ushort)(value & 0xFF);
+                    break;
+                default:
+                    _vce = (byte)value;
+                    break;
             }
         }
 
@@ -430,6 +807,44 @@ namespace Ryu64.MIPS
         private static uint BranchTarget(uint pc, short imm)
         {
             return unchecked((uint)((int)(pc + 4) + (imm << 2)));
+        }
+
+        private static int ClampSigned16(int value)
+        {
+            if (value > short.MaxValue)
+                return short.MaxValue;
+            if (value < short.MinValue)
+                return short.MinValue;
+            return value;
+        }
+
+        private long ReadAccumulator(int lane)
+        {
+            return ((long)(short)_accHi[lane] << 32)
+                 | ((long)_accMd[lane] << 16)
+                 | _accLo[lane];
+        }
+
+        private void WriteAccumulator(int lane, long value)
+        {
+            _accLo[lane] = unchecked((ushort)value);
+            _accMd[lane] = unchecked((ushort)(value >> 16));
+            _accHi[lane] = unchecked((ushort)(value >> 32));
+        }
+
+        private short SaturateAccumulatorToSignedMd(int lane)
+        {
+            int top = ((short)_accHi[lane] << 16) | _accMd[lane];
+            if (top > short.MaxValue)
+                return short.MaxValue;
+            if (top < short.MinValue)
+                return short.MinValue;
+            return unchecked((short)top);
+        }
+
+        private static bool GetMaskBit(ushort mask, int lane)
+        {
+            return ((mask >> lane) & 1) != 0;
         }
     }
 }

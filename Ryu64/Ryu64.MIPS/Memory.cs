@@ -733,7 +733,9 @@ namespace Ryu64.MIPS
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] RSP task completed type={_activeRspTask.Type} pc=0x{Registers.R4300.PC:x8} " +
-                    $"spStatus=0x{status:x8} rspIntDelay={_rspInterruptDelayRemaining} dpDelay={_dpInterruptDelayRemaining}");
+                    $"spStatus=0x{status:x8} rspIntDelay={_rspInterruptDelayRemaining} dpDelay={_dpInterruptDelayRemaining} " +
+                    $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} " +
+                    $"dpcStatus=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8}");
             }
         }
 
@@ -746,12 +748,27 @@ namespace Ryu64.MIPS
                 WriteBigEndianWord(SP_STATUS_REG_R, status);
             }
 
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] FinalizeRspInterrupt preRaise type={_activeRspTask.Type} pc=0x{Registers.R4300.PC:x8} " +
+                    $"spStatus=0x{status:x8} intrBreak={(status & SpStatusIntrBreak) != 0} " +
+                    $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8}");
+            }
+
             if ((status & SpStatusIntrBreak) != 0)
                 SetMiSpInterrupt();
         }
 
         private void FinalizeDpInterrupt()
         {
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] FinalizeDpInterrupt preRaise type={_activeRspTask.Type} pc=0x{Registers.R4300.PC:x8} " +
+                    $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} " +
+                    $"dpcStatus=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8}");
+            }
             SetMiDpInterrupt();
         }
 
@@ -1359,6 +1376,7 @@ namespace Ryu64.MIPS
         {
             bool isReadFromDram = request.IsReadFromDram;
             uint memAddr = request.MemAddr & 0x1FF8u;
+            uint startMemAddr = memAddr;
             uint dramAddr = request.DramAddr & 0x00FFFFF8u;
             uint lenReg = request.LengthReg;
 
@@ -1399,6 +1417,9 @@ namespace Ryu64.MIPS
 
             WriteBigEndianWord(SP_MEM_ADDR_REG_RW, memAddr & 0x1FFFu);
             WriteBigEndianWord(SP_DRAM_ADDR_REG_RW, dramAddr & 0x00FFFFFFu);
+
+            if (isReadFromDram && (TraceN64Io || TraceRspTaskDmem))
+                TraceRspImemWindowAfterDma(startMemAddr, request.DramAddr & 0x00FFFFF8u, transferLength, count, skip);
 
             if (isReadFromDram)
                 WriteBigEndianWord(SP_RD_LEN_REG_RW, 0x00000FF8u);
@@ -1757,6 +1778,52 @@ namespace Ryu64.MIPS
                  | SP_IMEM_RW[(index + 3) & 0x0FFFu];
         }
 
+        private void TraceRspImemWindowAfterDma(uint startMemAddr, uint dramAddr, int transferLength, int count, int skip)
+        {
+            uint windowStart = 0x0B0u;
+            uint windowEndInclusive = 0x0C8u;
+            bool touchedImem = false;
+
+            for (int block = 0; block < count && !touchedImem; block++)
+            {
+                uint blockStart = (startMemAddr + (uint)(block * transferLength)) & 0x1FFFu;
+                uint blockEnd = blockStart + (uint)Math.Max(transferLength - 1, 0);
+                if ((blockStart & 0x1000u) == 0 && (blockEnd & 0x1000u) == 0)
+                    continue;
+
+                for (int i = 0; i < transferLength; i++)
+                {
+                    uint spAddress = (blockStart + (uint)i) & 0x1FFFu;
+                    if ((spAddress & 0x1000u) == 0)
+                        continue;
+
+                    uint imemOffset = spAddress & 0x0FFFu;
+                    if (imemOffset >= windowStart && imemOffset <= windowEndInclusive)
+                    {
+                        touchedImem = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!touchedImem)
+                return;
+
+            Common.Logger.PrintWarningLine(
+                $"[N64IO] RSP IMEM DMA window startMem=0x{startMemAddr:x4} dram=0x{dramAddr:x8} len={transferLength} count={count} skip={skip} " +
+                $"w0b0=0x{ReadSpImemWord(0x0B0):x8} w0b4=0x{ReadSpImemWord(0x0B4):x8} w0b8=0x{ReadSpImemWord(0x0B8):x8} " +
+                $"w0bc=0x{ReadSpImemWord(0x0BC):x8} w0c0=0x{ReadSpImemWord(0x0C0):x8} w0c4=0x{ReadSpImemWord(0x0C4):x8} w0c8=0x{ReadSpImemWord(0x0C8):x8} " +
+                $"pc=0x{Registers.R4300.PC:x8}");
+        }
+
+        internal void TickRspInterpreter(uint rspCycles)
+        {
+            if (rspCycles == 0)
+                return;
+
+            AdvanceRspDpLifecycle(rspCycles);
+        }
+
         internal void WriteSpDmemWord(uint dmemOffset, uint value)
         {
             uint index = dmemOffset & 0x0FFFu;
@@ -1875,9 +1942,16 @@ namespace Ryu64.MIPS
         private void SetMiSpInterrupt()
         {
             const byte MiSpIntrBit = 0x01; // MI_INTR_REG bit for SP
+            bool wasSet = (MI_INTR_REG_R[3] & MiSpIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiSpIntrBit;
             R4300.RefreshRcpInterruptPending();
             R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (TraceN64Io && !wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SP interrupt raised miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} " +
+                    $"miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         private void ClearMiSpInterrupt()
@@ -1886,6 +1960,12 @@ namespace Ryu64.MIPS
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSpIntrBit);
             R4300.RefreshRcpInterruptPending();
             R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SP interrupt cleared miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} " +
+                    $"miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         private void SetMiPiInterrupt()
@@ -2010,9 +2090,16 @@ namespace Ryu64.MIPS
         private void SetMiDpInterrupt()
         {
             const byte MiDpIntrBit = 0x20; // MI_INTR_REG bit for DP
+            bool wasSet = (MI_INTR_REG_R[3] & MiDpIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiDpIntrBit;
             R4300.RefreshRcpInterruptPending();
             R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (TraceN64Io && !wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] DP interrupt raised miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} " +
+                    $"miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         private void ClearMiDpInterrupt()
@@ -2021,6 +2108,12 @@ namespace Ryu64.MIPS
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiDpIntrBit);
             R4300.RefreshRcpInterruptPending();
             R4300.CheckPendingInterruptsNow(Registers.R4300.PC);
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] DP interrupt cleared miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} " +
+                    $"miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         public void VI_CURRENT_WRITE_EVENT()
