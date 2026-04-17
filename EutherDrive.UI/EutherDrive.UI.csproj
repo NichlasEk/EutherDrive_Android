@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\eutherdrive.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
@@ -37,6 +38,7 @@
     <AvaloniaResource Include="..\Icons\logo_crop.jpeg">
       <Link>Assets/logo_crop.jpeg</Link>
     </AvaloniaResource>
+    <AvaloniaResource Include="Assets\eutherdrive.ico" />
     <AvaloniaResource Include="Assets\eutherdrive_rune_top.png" />
     <AvaloniaResource Include="Assets\zuul_demo.jox" />
     <AvaloniaResource Include="Assets\zuul_svg.jox" />
