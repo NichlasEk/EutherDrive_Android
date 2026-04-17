@@ -38,7 +38,7 @@ public sealed class RomPickerDialog : Window
     private static readonly HashSet<string> s_supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".32x", ".bin", ".md", ".gen", ".smd", ".sms", ".sg", ".gg", ".nes", ".smc", ".sfc", ".gb", ".gbc",
-        ".pce", ".gba", ".agb", ".cue", ".zip", ".7z", ".iso", ".img", ".chd", ".pbp", ".exe"
+        ".pce", ".gba", ".agb", ".z64", ".n64", ".v64", ".cue", ".zip", ".7z", ".iso", ".img", ".chd", ".pbp", ".exe"
     };
 
     private readonly Func<string, RomPickerStats> _statsProvider;
@@ -2102,8 +2102,11 @@ public sealed class RomPickerDialog : Window
             ".gba" => 14,
             ".agb" => 15,
             ".pce" => 16,
-            ".cue" => 17,
-            ".chd" => 18,
+            ".z64" => 17,
+            ".n64" => 18,
+            ".v64" => 19,
+            ".cue" => 20,
+            ".chd" => 21,
             _ => int.MaxValue
         };
 

@@ -7,7 +7,7 @@ namespace Ryu64.MIPS
         private static readonly bool TraceCop0 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_COP0"), "1", StringComparison.Ordinal);
         private static readonly bool CanonicalizeLowEretTargets =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CANONICALIZE_ERET"), "0", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CANONICALIZE_ERET"), "1", StringComparison.Ordinal);
 
         private static ulong NormalizeCop0WriteValue(int reg, ulong rawValue)
         {
@@ -30,6 +30,9 @@ namespace Ryu64.MIPS
                 case Registers.COP0.ENTRYHI_REG:
                     // Keep VPN2 + ASID fields.
                     return value & 0xFFFFE0FFu;
+                case Registers.COP0.STATUS_REG:
+                    // Bit 19 is not writable on VR4300.
+                    return value & ~0x00080000u;
                 default:
                     return value;
             }
@@ -39,7 +42,45 @@ namespace Ryu64.MIPS
         {
             const ulong CauseIp7Bit = 1UL << 15;
             ulong value = NormalizeCop0WriteValue(reg, rawValue);
-            Registers.COP0.Reg[reg] = value;
+
+            switch (reg)
+            {
+                case Registers.COP0.RANDOM_REG:
+                case Registers.COP0.BADVADDR_REG:
+                case Registers.COP0.XCONTEXT_REG:
+                case Registers.COP0.CACHERR_REG:
+                    return;
+                case Registers.COP0.CONTEXT_REG:
+                    Registers.COP0.Reg[reg] =
+                        (value & 0xFF800000u) |
+                        (Registers.COP0.Reg[reg] & 0x007FFFF0u);
+                    return;
+                case Registers.COP0.CAUSE_REG:
+                    // Only software interrupt pending bits are writable.
+                    Registers.COP0.Reg[reg] =
+                        (Registers.COP0.Reg[reg] & ~0x00000300u) |
+                        (value & 0x00000300u);
+                    return;
+                case Registers.COP0.CONFIG_REG:
+                    // Match mupen's limited writable subset.
+                    Registers.COP0.Reg[reg] =
+                        (value & 0x0000000Fu) |
+                        (Registers.COP0.Reg[reg] & 0x00008000u) |
+                        (Registers.COP0.Reg[reg] & 0x7FFFFFF0u);
+                    return;
+                case Registers.COP0.PERR_REG:
+                    Registers.COP0.Reg[reg] = value & 0xFFu;
+                    return;
+                case Registers.COP0.TAGLO_REG:
+                    Registers.COP0.Reg[reg] = value & 0x0FFFFFC0u;
+                    return;
+                case Registers.COP0.TAGHI_REG:
+                    Registers.COP0.Reg[reg] = 0;
+                    return;
+                default:
+                    Registers.COP0.Reg[reg] = value;
+                    break;
+            }
 
             if (reg == Registers.COP0.WIRED_REG)
             {
@@ -161,9 +202,8 @@ namespace Ryu64.MIPS
                 Registers.COP0.Reg[Registers.COP0.STATUS_REG] = status & ~StatusExlBit;
             }
 
-            // Bring-up compatibility:
-            // some early paths appear to save low physical-style EPC values.
-            // Canonicalize them to kseg0 to avoid trapping in refill/address-error loops.
+            // This is a bring-up-only escape hatch.
+            // Real VR4300 semantics return to EPC directly.
             if (CanonicalizeLowEretTargets && targetPc < 0x20000000u)
                 targetPc |= 0x80000000u;
 

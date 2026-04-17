@@ -9,7 +9,7 @@ public static class RomArchiveExtractor
 {
     private static readonly string[] RomExtensions =
     {
-        ".32x", ".md", ".bin", ".gen", ".smd", ".sms", ".sg", ".gg", ".iso"
+        ".32x", ".md", ".bin", ".gen", ".smd", ".sms", ".sg", ".gg", ".iso", ".z64", ".n64", ".v64"
     };
 
     private static readonly HashSet<string> SmsExtensions = new(StringComparer.OrdinalIgnoreCase)
