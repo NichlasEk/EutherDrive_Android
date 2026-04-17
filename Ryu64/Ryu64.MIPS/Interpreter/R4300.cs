@@ -48,6 +48,10 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_WALK_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceSm64WalkWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_SM64_WALK_WINDOW_LIMIT", 2000);
         private static int _traceSm64WalkWindowCount = 0;
+        private static readonly bool TraceSm64QueueWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_QUEUE_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceSm64QueueWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_SM64_QUEUE_WINDOW_LIMIT", 400);
+        private static int _traceSm64QueueWindowCount = 0;
         private static readonly bool TraceViInitWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_INIT_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceViInitWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_INIT_WINDOW_LIMIT", 600);
@@ -76,6 +80,8 @@ namespace Ryu64.MIPS
         private const ulong CauseExcCodeTlbStore = 3UL << 2;
         private const ulong CauseExcCodeAddressErrorLoad = 4UL << 2;
         private const ulong CauseExcCodeAddressErrorStore = 5UL << 2;
+        private const ulong CauseExcCodeSyscall = 8UL << 2;
+        private const ulong CauseExcCodeBreak = 9UL << 2;
         private const ulong CauseExcCodeInterrupt = 0UL << 2;
         private const ulong CauseExcCodeRi = 10UL << 2;
         private static readonly bool UnknownOpcodeAsNop =
@@ -202,7 +208,7 @@ namespace Ryu64.MIPS
             }
         }
 
-        private static void RaiseCpuException(ulong exceptionCode, uint faultingPc)
+        internal static void RaiseCpuException(ulong exceptionCode, uint faultingPc)
         {
             ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
             ulong cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
@@ -228,6 +234,16 @@ namespace Ryu64.MIPS
             {
                 Registers.R4300.PC = bevSet ? 0xBFC00380u : 0x80000180u;
             }
+        }
+
+        internal static void RaiseSyscallException(uint faultingPc)
+        {
+            RaiseCpuException(CauseExcCodeSyscall, faultingPc);
+        }
+
+        internal static void RaiseBreakException(uint faultingPc)
+        {
+            RaiseCpuException(CauseExcCodeBreak, faultingPc);
         }
 
         private static void RaiseAddressErrorException(uint badAddress, bool isStore, uint faultingPc)
@@ -325,6 +341,11 @@ namespace Ryu64.MIPS
 
             RaiseCpuException(CauseExcCodeInterrupt, pc);
             return true;
+        }
+
+        internal static bool CheckPendingInterruptsNow(uint pc)
+        {
+            return ServiceInterrupts(pc);
         }
 
         public static void ExecuteDelaySlot()
@@ -868,6 +889,40 @@ namespace Ryu64.MIPS
                                     $"[a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [a0+8]=0x{a0w8:x8} [a0+c]=0x{a0wc:x8} " +
                                     $"[t8]=0x{t8w:x8} [t8+4]=0x{t8w4:x8} [t8+8]=0x{t8w8:x8} [t8+c]=0x{t8wc:x8} " +
                                     $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} op@80327d64=0x{opD64:x8}");
+                            }
+
+                            if (TraceSm64QueueWindow
+                                && _traceSm64QueueWindowCount < TraceSm64QueueWindowLimit
+                                && ((pc >= 0x803227B0 && pc <= 0x80322810)
+                                    || (pc >= 0x803274C0 && pc <= 0x80327530)
+                                    || (pc >= 0x80322DA0 && pc <= 0x80322F20)))
+                            {
+                                _traceSm64QueueWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong ra = Registers.R4300.Reg[31];
+                                uint q0 = 0, q4 = 0, q8 = 0, qc = 0;
+                                uint a0w = 0, a0w4 = 0;
+                                try { q0 = memory.ReadUInt32(0x803359A0u); } catch { }
+                                try { q4 = memory.ReadUInt32(0x803359A4u); } catch { }
+                                try { q8 = memory.ReadUInt32(0x803359A8u); } catch { }
+                                try { qc = memory.ReadUInt32(0x803359ACu); } catch { }
+                                try { a0w = memory.ReadUInt32((uint)a0); } catch { }
+                                try { a0w4 = memory.ReadUInt32((uint)a0 + 4u); } catch { }
+
+                                Console.WriteLine(
+                                    $"[N64SM64QUEUE] #{_traceSm64QueueWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} v0=0x{v0:x16} v1=0x{v1:x16} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} ra=0x{ra:x16} " +
+                                    $"q[a0]=0x{q0:x8} q[a4]=0x{q4:x8} q[a8]=0x{q8:x8} q[ac]=0x{qc:x8} " +
+                                    $"[a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8}");
                             }
 
                             if (TraceViInitWindow

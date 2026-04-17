@@ -20,6 +20,8 @@ namespace Ryu64.MIPS
         private static readonly bool TraceRspTaskDmem =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_TASK_DMEM"), "1", StringComparison.Ordinal);
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
+        private static readonly uint? TraceWatchRangeStart = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_START");
+        private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
         private static readonly bool MirrorPiRdLenAsCartToDram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSm64SlotWrites =
@@ -29,6 +31,8 @@ namespace Ryu64.MIPS
         private static readonly bool EnableRspTaskHleDispatcher =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_RSP_TASK_HLE"), "1", StringComparison.Ordinal);
         private static ulong _rspKickCount;
+        private static int _traceWatchRangeLogCount;
+        private const int TraceWatchRangeLogLimit = 512;
         private static bool _warnedRspTaskStub;
         private const uint SpStatusHalt = 0x00000001u;
         private const uint SpStatusBroke = 0x00000002u;
@@ -63,6 +67,34 @@ namespace Ryu64.MIPS
                 return parsed;
 
             return null;
+        }
+
+        private static bool ShouldTraceWatchRange(uint virtualAddress, uint physicalAddress)
+        {
+            if (!TraceWatchRangeStart.HasValue || !TraceWatchRangeEnd.HasValue)
+                return false;
+
+            uint start = TraceWatchRangeStart.Value;
+            uint end = TraceWatchRangeEnd.Value;
+            if (start > end)
+            {
+                uint tmp = start;
+                start = end;
+                end = tmp;
+            }
+
+            return (virtualAddress >= start && virtualAddress <= end)
+                || (physicalAddress >= start && physicalAddress <= end);
+        }
+
+        private static void TraceWatchRangeAccess(string op, uint virtualAddress, uint physicalAddress, uint value)
+        {
+            if (_traceWatchRangeLogCount >= TraceWatchRangeLogLimit)
+                return;
+
+            _traceWatchRangeLogCount++;
+            Common.Logger.PrintWarningLine(
+                $"[N64WATCH] {op} addr=0x{virtualAddress:x8} phys=0x{physicalAddress:x8} value=0x{value:x8} pc=0x{Registers.R4300.PC:x8}");
         }
 
         public readonly byte[] SP_DMEM_RW         = new byte[0x1000];
@@ -152,6 +184,11 @@ namespace Ryu64.MIPS
         private bool _piDmaBusy;
         private bool _piInterruptDelayArmed;
         private uint _piInterruptDelayRemaining;
+        private bool _siDmaActive;
+        private bool _siDmaReadToDram;
+        private uint _siDramAddr;
+        private bool _siInterruptDelayArmed;
+        private uint _siInterruptDelayRemaining;
         private uint _viCurrentLine;
         private uint _viLineCycleAccum;
         private bool _warnedRspTaskHle;
@@ -167,6 +204,7 @@ namespace Ryu64.MIPS
         private const uint ViLinesPerFrame = 1024;
         private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
         private const uint CpuCyclesPerViLine = CpuCyclesPerViFrame / ViLinesPerFrame;
+        private const uint SiDmaDurationCycles = 512;
 
         private List<MemEntry> MemoryMapList = new List<MemEntry>();
         private MemEntry[]     MemoryMap;
@@ -352,6 +390,7 @@ namespace Ryu64.MIPS
 
             AdvanceRspDpLifecycle(cpuCycles);
             AdvancePiLifecycle(cpuCycles);
+            AdvanceSiLifecycle(cpuCycles);
 
             _viLineCycleAccum += cpuCycles;
             while (_viLineCycleAccum >= CpuCyclesPerViLine)
@@ -407,6 +446,58 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
 
             SetMiPiInterrupt();
+        }
+
+        private void AdvanceSiLifecycle(uint cpuCycles)
+        {
+            if (!_siInterruptDelayArmed)
+                return;
+
+            if (cpuCycles >= _siInterruptDelayRemaining)
+            {
+                _siInterruptDelayRemaining = 0;
+                _siInterruptDelayArmed = false;
+                FinalizeSiDmaCompletion();
+            }
+            else
+            {
+                _siInterruptDelayRemaining -= cpuCycles;
+            }
+        }
+
+        private void ArmSiDmaCompletion(bool readToDram, uint dramAddr)
+        {
+            _siDmaActive = true;
+            _siDmaReadToDram = readToDram;
+            _siDramAddr = dramAddr & 0x00FFFFF8u;
+            SetSiBusy(true);
+            _siInterruptDelayArmed = true;
+            _siInterruptDelayRemaining = SiDmaDurationCycles;
+        }
+
+        private void FinalizeSiDmaCompletion()
+        {
+            if (!_siDmaActive)
+                return;
+
+            if (_siDmaReadToDram)
+            {
+                uint dramKseg1 = PhysicalToKseg1(_siDramAddr);
+                const int size = 64;
+                for (uint i = 0; i < size; i++)
+                    WriteUInt8(dramKseg1 + i, PIFRAM[i]);
+            }
+            else
+            {
+                ProcessPifJoybusCommands();
+            }
+
+            _siDmaActive = false;
+            SetSiBusy(false);
+            WriteBigEndianWord(SI_PIF_ADDR_RD64B_REG_RW, 0);
+            WriteBigEndianWord(SI_PIF_ADDR_WR64B_REG_RW, 0);
+            WriteBigEndianWord(SI_DRAM_ADDR_REG_RW, 0);
+            SetMiSiInterrupt();
         }
 
         private void AdvanceRspDpLifecycle(uint cpuCycles)
@@ -535,17 +626,19 @@ namespace Ryu64.MIPS
             uint WriteLength = ReadUInt32Physical(0x0460000C) & 0x00FFFFFF; // PI_WR_LEN_REG
             uint CartAddr    = ReadUInt32Physical(0x04600004) & 0x1FFFFFFE; // PI_CART_ADDR_REG
             uint DramAddr    = ReadUInt32Physical(0x04600000) & 0x00FFFFFE; // PI_DRAM_ADDR_REG
+            uint normalizedLength = NormalizePiTransferLength(WriteLength, DramAddr, isWriteToDram: true);
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] PI_WR_LEN write len=0x{WriteLength:x6} cart=0x{CartAddr:x8} dram=0x{DramAddr:x8} pc=0x{Registers.R4300.PC:x8}");
+                    $"[N64IO] PI_WR_LEN write len=0x{WriteLength:x6} normalized=0x{normalizedLength:x6} " +
+                    $"cart=0x{CartAddr:x8} dram=0x{DramAddr:x8} pc=0x{Registers.R4300.PC:x8}");
             }
 
-            int transferSize = ComputePiTransferSize(WriteLength, DramAddr, CartAddr);
+            int transferSize = ComputePiTransferSize(normalizedLength, DramAddr, CartAddr);
             if (transferSize > 0)
                 DmaCopyPhysical(DramAddr, CartAddr, transferSize);
 
-            FinalizePiWriteTransfer(WriteLength, DramAddr, CartAddr, transferSize);
+            FinalizePiWriteTransfer(normalizedLength, DramAddr, CartAddr, transferSize);
             ArmPiDmaCompletion((WriteLength & 0x00FFFFFFu) + 1u);
         }
 
@@ -557,20 +650,22 @@ namespace Ryu64.MIPS
             uint ReadLength = ReadUInt32Physical(0x04600008) & 0x00FFFFFF; // PI_RD_LEN_REG
             uint CartAddr   = ReadUInt32Physical(0x04600004) & 0x1FFFFFFE; // PI_CART_ADDR_REG
             uint DramAddr   = ReadUInt32Physical(0x04600000) & 0x00FFFFFE; // PI_DRAM_ADDR_REG
+            uint normalizedLength = NormalizePiTransferLength(ReadLength, DramAddr, isWriteToDram: false);
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] PI_RD_LEN write len=0x{ReadLength:x6} cart=0x{CartAddr:x8} dram=0x{DramAddr:x8} pc=0x{Registers.R4300.PC:x8}");
+                    $"[N64IO] PI_RD_LEN write len=0x{ReadLength:x6} normalized=0x{normalizedLength:x6} " +
+                    $"cart=0x{CartAddr:x8} dram=0x{DramAddr:x8} pc=0x{Registers.R4300.PC:x8}");
             }
 
             if (MirrorPiRdLenAsCartToDram)
             {
-                int transferSize = ComputePiTransferSize(ReadLength, DramAddr, CartAddr);
+                int transferSize = ComputePiTransferSize(normalizedLength, DramAddr, CartAddr);
                 if (transferSize > 0)
                     DmaCopyPhysical(DramAddr, CartAddr, transferSize);
             }
 
-            FinalizePiReadTransfer(ReadLength, DramAddr, CartAddr);
+            FinalizePiReadTransfer(normalizedLength, DramAddr, CartAddr);
             ArmPiDmaCompletion((ReadLength & 0x00FFFFFFu) + 1u);
         }
 
@@ -584,10 +679,26 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
         }
 
-        private int ComputePiTransferSize(uint lengthReg, uint dramAddr, uint cartAddr)
+        private static uint NormalizePiTransferLength(uint lengthReg, uint dramAddr, bool isWriteToDram)
         {
-            // Hardware uses (length + 1); keep bring-up robust by clamping.
-            long requested = (long)lengthReg + 1L;
+            uint length = (lengthReg & 0x00FFFFFFu) + 1u;
+
+            // Match mupen/cen64's early PI unaligned-transfer behavior closely enough for boot code.
+            if (length >= 0x7Fu && (length & 1u) != 0)
+                length++;
+
+            if (isWriteToDram && length <= 0x80u)
+            {
+                uint trim = dramAddr & 0x7u;
+                length = (length > trim) ? (length - trim) : 0u;
+            }
+
+            return length;
+        }
+
+        private int ComputePiTransferSize(uint normalizedLength, uint dramAddr, uint cartAddr)
+        {
+            long requested = normalizedLength;
             if (requested <= 0)
                 return 0;
 
@@ -607,7 +718,7 @@ namespace Ryu64.MIPS
             return (int)maxSafe;
         }
 
-        private void FinalizePiWriteTransfer(uint writeLengthReg, uint dramAddr, uint cartAddr, int transferSize)
+        private void FinalizePiWriteTransfer(uint normalizedLength, uint dramAddr, uint cartAddr, int transferSize)
         {
             // Match the common readback quirk from hardware/cen64 closely enough for boot code.
             uint writeback = 0x7Fu;
@@ -616,22 +727,22 @@ namespace Ryu64.MIPS
 
             WriteBigEndianWord(PI_WR_LEN_REG_RW, writeback);
 
-            uint advancedDram = (dramAddr + (uint)Math.Max(transferSize, 0) + 7u) & ~7u;
-            uint advancedCart = (cartAddr + (uint)Math.Max(transferSize, 0) + 1u) & ~1u;
+            uint transferred = (uint)Math.Max(transferSize, 0);
+            if (transferred == 0)
+                transferred = normalizedLength;
+
+            uint advancedDram = (dramAddr + transferred + 7u) & ~7u;
+            uint advancedCart = (cartAddr + transferred + 1u) & ~1u;
             WriteBigEndianWord(PI_DRAM_ADDR_REG_RW, advancedDram & 0x00FFFFFEu);
             WriteBigEndianWord(PI_CART_ADDR_REG_RW, advancedCart & 0x1FFFFFFEu);
         }
 
-        private void FinalizePiReadTransfer(uint readLengthReg, uint dramAddr, uint cartAddr)
+        private void FinalizePiReadTransfer(uint normalizedLength, uint dramAddr, uint cartAddr)
         {
-            uint requested = readLengthReg + 1u;
-            if ((dramAddr & 7u) != 0 && requested > (dramAddr & 7u))
-                requested -= dramAddr & 7u;
-
             WriteBigEndianWord(PI_RD_LEN_REG_RW, 0x7Fu);
 
-            uint advancedDram = (dramAddr + requested + 7u) & ~7u;
-            uint advancedCart = (cartAddr + requested + 1u) & ~1u;
+            uint advancedDram = (dramAddr + normalizedLength + 7u) & ~7u;
+            uint advancedCart = (cartAddr + normalizedLength + 1u) & ~1u;
             WriteBigEndianWord(PI_DRAM_ADDR_REG_RW, advancedDram & 0x00FFFFFEu);
             WriteBigEndianWord(PI_CART_ADDR_REG_RW, advancedCart & 0x1FFFFFFEu);
         }
@@ -671,16 +782,10 @@ namespace Ryu64.MIPS
         {
             // PIF RAM -> RDRAM (64 bytes)
             uint dramAddr = ReadUInt32Physical(0x04800000) & 0x00FFFFF8;
-            uint dramKseg1 = PhysicalToKseg1(dramAddr);
-            const int size = 64;
+            if (_siDmaActive)
+                return;
 
-            SetSiBusy(true);
-            for (uint i = 0; i < size; i++)
-                WriteUInt8(dramKseg1 + i, PIFRAM[i]);
-            SetSiBusy(false);
-            WriteBigEndianWord(SI_PIF_ADDR_RD64B_REG_RW, 0);
-            WriteBigEndianWord(SI_DRAM_ADDR_REG_RW, 0);
-            SetMiSiInterrupt();
+            ArmSiDmaCompletion(readToDram: true, dramAddr);
         }
 
         public void SI_PIF_ADDR_WR64B_WRITE_EVENT()
@@ -689,15 +794,12 @@ namespace Ryu64.MIPS
             uint dramAddr = ReadUInt32Physical(0x04800000) & 0x00FFFFF8;
             uint dramKseg1 = PhysicalToKseg1(dramAddr);
             const int size = 64;
+            if (_siDmaActive)
+                return;
 
-            SetSiBusy(true);
             for (uint i = 0; i < size; i++)
                 PIFRAM[i] = ReadUInt8(dramKseg1 + i);
-            ProcessPifJoybusCommands();
-            SetSiBusy(false);
-            WriteBigEndianWord(SI_PIF_ADDR_WR64B_REG_RW, 0);
-            WriteBigEndianWord(SI_DRAM_ADDR_REG_RW, 0);
-            SetMiSiInterrupt();
+            ArmSiDmaCompletion(readToDram: false, dramAddr);
         }
 
         public void SI_STATUS_WRITE_EVENT()
@@ -1798,6 +1900,18 @@ namespace Ryu64.MIPS
 
         public uint ReadUInt32(uint index)
         {
+            uint physical = 0;
+            bool havePhysical = false;
+            try
+            {
+                physical = ToPhysicalAddress(index, isWrite: false);
+                havePhysical = true;
+            }
+            catch
+            {
+                // Preserve existing exception behavior below.
+            }
+
             byte[] Res = this[index, 4];
             Array.Reverse(Res);
             unsafe
@@ -1805,22 +1919,38 @@ namespace Ryu64.MIPS
                 fixed (byte* point = &Res[0])
                 {
                     uint* intPoint = (uint*)point;
-                    return *intPoint;
+                    uint value = *intPoint;
+                    if (havePhysical && ShouldTraceWatchRange(index, physical))
+                        TraceWatchRangeAccess("read32", index, physical, value);
+                    return value;
                 }
             }
         }
 
         public void WriteUInt32(uint index, uint value)
         {
+            uint physical = 0;
+            bool havePhysical = false;
+            try
+            {
+                physical = ToPhysicalAddress(index, isWrite: true);
+                havePhysical = true;
+            }
+            catch
+            {
+                // Preserve existing exception behavior below.
+            }
+
             if (TraceWatchAddress.HasValue)
             {
                 uint watched = TraceWatchAddress.Value;
-                uint physical = 0;
-                bool havePhysical = false;
                 try
                 {
-                    physical = ToPhysicalAddress(index, isWrite: true);
-                    havePhysical = true;
+                    if (!havePhysical)
+                    {
+                        physical = ToPhysicalAddress(index, isWrite: true);
+                        havePhysical = true;
+                    }
                 }
                 catch
                 {
@@ -1838,9 +1968,12 @@ namespace Ryu64.MIPS
                 }
             }
 
+            if (havePhysical && ShouldTraceWatchRange(index, physical))
+                TraceWatchRangeAccess("write32", index, physical, value);
+
             if (TraceSm64SlotWrites)
             {
-                uint nonCachedIndex = ToPhysicalAddress(index, isWrite: true);
+                uint nonCachedIndex = havePhysical ? physical : ToPhysicalAddress(index, isWrite: true);
                 if (nonCachedIndex == 0x003359A8u)
                 {
                     uint oldValue = 0;

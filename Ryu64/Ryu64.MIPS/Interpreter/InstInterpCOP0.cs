@@ -229,6 +229,11 @@ namespace Ryu64.MIPS
             }
 
             Registers.R4300.PC = targetPc;
+
+            // Mupen rechecks pending interrupts immediately after ERET once EXL/ERL has been
+            // cleared. Without that, guest scheduler code can run past a point where hardware
+            // should have vectored straight back into the general exception handler.
+            R4300.CheckPendingInterruptsNow(targetPc);
         }
     }
 }

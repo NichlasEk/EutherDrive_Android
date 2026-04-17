@@ -21,8 +21,9 @@ namespace Ryu64.MIPS
             }
             else
             {
-                // Regular SYSCALL behavior
-                throw new NotImplementedException("Regular SYSCALL behavior is not implemented.");
+                // Regular VR4300 SYSCALL raises a general exception.
+                R4300.RaiseSyscallException(Registers.R4300.PC);
+                return;
             }
 
             Registers.R4300.PC += 4;
@@ -31,8 +32,7 @@ namespace Ryu64.MIPS
         public static void BREAK(OpcodeTable.OpcodeDesc Desc)
         {
             _ = Desc;
-            // Bring-up behavior: do not halt the whole emulation on guest BREAK.
-            Registers.R4300.PC += 4;
+            R4300.RaiseBreakException(Registers.R4300.PC);
         }
     }
 }
