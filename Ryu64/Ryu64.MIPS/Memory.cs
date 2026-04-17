@@ -187,6 +187,7 @@ namespace Ryu64.MIPS
         private bool _siDmaActive;
         private bool _siDmaReadToDram;
         private uint _siDramAddr;
+        private bool _siDirectPifWriteActive;
         private bool _siInterruptDelayArmed;
         private uint _siInterruptDelayRemaining;
         private uint _viCurrentLine;
@@ -206,7 +207,10 @@ namespace Ryu64.MIPS
         private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
         private const uint DefaultViLinesPerFrame = 1024;
         private const uint DefaultCpuCyclesPerViLine = CpuCyclesPerViFrame / DefaultViLinesPerFrame;
-        private const uint SiDmaDurationCycles = 512;
+        private const uint SiStatusDmaBusy = 0x00000001u;
+        private const uint SiStatusIoBusy = 0x00000002u;
+        private const uint SiStatusInterrupt = 0x00001000u;
+        private const uint SiDmaDurationCycles = 0x900;
 
         private List<MemEntry> MemoryMapList = new List<MemEntry>();
         private MemEntry[]     MemoryMap;
@@ -336,7 +340,8 @@ namespace Ryu64.MIPS
 
             // PIF
             MemoryMapList.Add(new MemEntry(0x1FC00000, 0x1FC007BF, PIFROM, PIFROM, "PIF Rom"));
-            MemoryMapList.Add(new MemEntry(0x1FC007C0, 0x1FC007FF, PIFRAM, PIFRAM, "PIF Ram"));
+            MemoryMapList.Add(new MemEntry(0x1FC007C0, 0x1FC007FF, PIFRAM, PIFRAM, "PIF Ram",
+                null, PIF_RAM_WRITE_EVENT));
 
             MemoryMap = MemoryMapList.ToArray();
             MemoryMapList.Clear();
@@ -517,17 +522,24 @@ namespace Ryu64.MIPS
             _siDmaActive = true;
             _siDmaReadToDram = readToDram;
             _siDramAddr = dramAddr & 0x00FFFFF8u;
-            SetSiBusy(true);
+            SetSiBusy(SiStatusDmaBusy);
             _siInterruptDelayArmed = true;
             _siInterruptDelayRemaining = SiDmaDurationCycles;
         }
 
         private void FinalizeSiDmaCompletion()
         {
-            if (!_siDmaActive)
+            if (!_siDmaActive && !_siDirectPifWriteActive)
                 return;
 
-            if (_siDmaReadToDram)
+            bool directPifWrite = _siDirectPifWriteActive;
+            bool readToDram = _siDmaReadToDram;
+
+            if (_siDirectPifWriteActive)
+            {
+                ProcessPifControlFlags();
+            }
+            else if (_siDmaReadToDram)
             {
                 uint dramKseg1 = PhysicalToKseg1(_siDramAddr);
                 const int size = 64;
@@ -540,10 +552,19 @@ namespace Ryu64.MIPS
             }
 
             _siDmaActive = false;
-            SetSiBusy(false);
+            _siDirectPifWriteActive = false;
+            SetSiBusy(0);
             WriteBigEndianWord(SI_PIF_ADDR_RD64B_REG_RW, 0);
             WriteBigEndianWord(SI_PIF_ADDR_WR64B_REG_RW, 0);
             WriteBigEndianWord(SI_DRAM_ADDR_REG_RW, 0);
+
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SI DMA completion directPif={directPifWrite} readToDram={readToDram} " +
+                    $"siStatus=0x{ReadBigEndianWord(SI_STATUS_REG_R):x8} pifCtl=0x{PIFRAM[63]:x2} pc=0x{Registers.R4300.PC:x8}");
+            }
+
             SetMiSiInterrupt();
         }
 
@@ -851,16 +872,33 @@ namespace Ryu64.MIPS
 
         public void SI_STATUS_WRITE_EVENT()
         {
-            uint value = ReadBigEndianWord(SI_STATUS_REG_W);
+            // Mupen clears the SI interrupt on any write to SI_STATUS.
+            uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R);
+            siStatus &= ~SiStatusInterrupt;
+            WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
+            ClearMiSiInterrupt();
+        }
 
-            // SI status write behavior (bring-up subset):
-            // bit0: clear SI interrupt.
-            if ((value & 0x00000001) != 0)
+        public void PIF_RAM_WRITE_EVENT()
+        {
+            // Match mupen's write_pif_mem() bring-up behavior:
+            // direct writes to PIF RAM kick a short SI busy/interrupt cycle.
+            // Ignore emulator-owned boot/reset seeding before the CPU thread is live.
+            if (!R4300.R4300_ON)
+                return;
+
+            if (_siDmaActive || _siDirectPifWriteActive)
+                return;
+
+            _siDirectPifWriteActive = true;
+            SetSiBusy(SiStatusDmaBusy | SiStatusIoBusy);
+            _siInterruptDelayArmed = true;
+            _siInterruptDelayRemaining = SiDmaDurationCycles;
+
+            if (TraceN64Io)
             {
-                uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R);
-                siStatus &= ~0x00001000u; // clear SI interrupt pending
-                WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
-                ClearMiSiInterrupt();
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] PIF RAM write scheduled SI completion pifCtl=0x{PIFRAM[63]:x2} pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
             }
         }
 
@@ -873,7 +911,9 @@ namespace Ryu64.MIPS
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] MI_INTR_MASK write value=0x{value:x8} oldMask=0x{mask:x8} pc=0x{Registers.R4300.PC:x8}");
+                    $"[N64IO] MI_INTR_MASK write value=0x{value:x8} oldMask=0x{mask:x8} miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} " +
+                    $"pc=0x{Registers.R4300.PC:x8} cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} " +
+                    $"cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
             }
 
             ApplyMiMaskPair(ref mask, value, 0, 1, 0); // SP
@@ -1353,37 +1393,69 @@ namespace Ryu64.MIPS
         private void SetMiPiInterrupt()
         {
             const byte MiPiIntrBit = 0x10; // MI_INTR_REG bit for PI
+            bool wasSet = (MI_INTR_REG_R[3] & MiPiIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiPiIntrBit;
 
             uint piStatus = ReadBigEndianWord(PI_STATUS_REG_R);
             piStatus |= 0x00000008u; // PI interrupt pending
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
             R4300.RefreshRcpInterruptPending();
+
+            if (TraceN64Io && !wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] PI interrupt raised dram=0x{ReadBigEndianWord(PI_DRAM_ADDR_REG_RW):x8} " +
+                    $"cart=0x{ReadBigEndianWord(PI_CART_ADDR_REG_RW):x8} status=0x{piStatus:x8} pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         private void ClearMiPiInterrupt()
         {
             const byte MiPiIntrBit = 0x10; // MI_INTR_REG bit for PI
+            bool wasSet = (MI_INTR_REG_R[3] & MiPiIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiPiIntrBit);
             R4300.RefreshRcpInterruptPending();
+
+            if (TraceN64Io && wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] PI interrupt cleared status=0x{ReadBigEndianWord(PI_STATUS_REG_R):x8} " +
+                    $"pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
+            }
         }
 
         private void SetMiSiInterrupt()
         {
             const byte MiSiIntrBit = 0x02; // MI_INTR_REG bit for SI
+            bool wasSet = (MI_INTR_REG_R[3] & MiSiIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiSiIntrBit;
 
             uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R);
-            siStatus |= 0x00001000u; // SI interrupt pending
+            siStatus |= SiStatusInterrupt;
             WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
             R4300.RefreshRcpInterruptPending();
+
+            if (TraceN64Io && !wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SI interrupt raised status=0x{siStatus:x8} pifCtl=0x{PIFRAM[63]:x2} " +
+                    $"pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         private void ClearMiSiInterrupt()
         {
             const byte MiSiIntrBit = 0x02; // MI_INTR_REG bit for SI
+            bool wasSet = (MI_INTR_REG_R[3] & MiSiIntrBit) != 0;
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiSiIntrBit);
             R4300.RefreshRcpInterruptPending();
+
+            if (TraceN64Io && wasSet)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SI interrupt cleared status=0x{ReadBigEndianWord(SI_STATUS_REG_R):x8} pifCtl=0x{PIFRAM[63]:x2} " +
+                    $"pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
+            }
         }
 
         private void SetMiViInterrupt()
@@ -1564,14 +1636,11 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void SetSiBusy(bool busy)
+        private void SetSiBusy(uint busyMask)
         {
             uint siStatus = ReadBigEndianWord(SI_STATUS_REG_R);
-            const uint SiBusyBits = 0x00000003u; // DMA_BUSY | IO_BUSY
-            if (busy)
-                siStatus |= SiBusyBits;
-            else
-                siStatus &= ~SiBusyBits;
+            siStatus &= ~(SiStatusDmaBusy | SiStatusIoBusy);
+            siStatus |= busyMask & (SiStatusDmaBusy | SiStatusIoBusy);
             WriteBigEndianWord(SI_STATUS_REG_R, siStatus);
         }
 
