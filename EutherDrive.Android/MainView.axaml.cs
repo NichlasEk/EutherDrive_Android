@@ -22,6 +22,7 @@ using EutherDrive.Audio;
 using EutherDrive.Core;
 using EutherDrive.Core.Savestates;
 using EutherDrive.Rendering;
+using EutherDrive.UI.Skins;
 using ProjectPSX.IO;
 using Tomlyn;
 
@@ -132,6 +133,7 @@ public partial class MainView : UserControl
         try
         {
             LoadSettings();
+            ApplySelectedSkin();
             ApplySettings();
             UpdateAndroidRenderBackendStatus();
             DataContext = _viewModel;
@@ -2628,6 +2630,8 @@ public partial class MainView : UserControl
     private void OnClearSt011(object? sender, RoutedEventArgs e) => ClearSystemFile("ST011");
     private async void OnPickSt018(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("ST018", "Select ST018 ROM", new[] { "*.bin", "*.rom", "*.*" });
     private void OnClearSt018(object? sender, RoutedEventArgs e) => ClearSystemFile("ST018");
+    private async void OnPickSkin(object? sender, RoutedEventArgs e) => await PickSkinAsync();
+    private void OnClearSkin(object? sender, RoutedEventArgs e) => ClearSkin();
 
     private void ApplySettings()
     {
@@ -2650,6 +2654,99 @@ public partial class MainView : UserControl
         SetEnv("EUTHERDRIVE_ST010_ROM", _viewModel.St010Path);
         SetEnv("EUTHERDRIVE_ST011_ROM", _viewModel.St011Path);
         SetEnv("EUTHERDRIVE_ST018_ROM", _viewModel.St018Path);
+    }
+
+    private async Task PickSkinAsync()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.StorageProvider is not { } storageProvider)
+        {
+            _viewModel.FooterStatus = "Skin picker is unavailable on this surface.";
+            return;
+        }
+
+        var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Select .apa skin",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("APA skin")
+                {
+                    Patterns = new[] { "*.apa", "*.*" }
+                }
+            }
+        });
+
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            string importedPath = await ImportRomAsync(storageProvider, files[0], isSystemFile: true);
+            _viewModel.SkinPath = importedPath;
+            _viewModel.SkinDisplay = files[0].Name;
+
+            if (!ApplySelectedSkin())
+            {
+                _viewModel.FooterStatus = "Skin import worked, but the .apa file could not be applied.";
+                return;
+            }
+
+            SaveSettings();
+            _viewModel.FooterStatus = $"Skin applied: {_viewModel.SkinDisplay}.";
+        }
+        catch (Exception ex)
+        {
+            _viewModel.FooterStatus = $"Skin import failed: {ex.Message}";
+        }
+    }
+
+    private void ClearSkin()
+    {
+        _viewModel.SkinPath = null;
+        _viewModel.SkinDisplay = "(default)";
+        ApplySelectedSkin();
+        SaveSettings();
+        _viewModel.FooterStatus = "Reverted to the built-in skin.";
+    }
+
+    private bool ApplySelectedSkin()
+    {
+        if (string.IsNullOrWhiteSpace(_viewModel.SkinPath))
+        {
+            SkinManager.Instance.ApplySkin(SkinManager.CreateDefaultSkin());
+            _viewModel.SkinDisplay = "(default)";
+            return true;
+        }
+
+        if (!File.Exists(_viewModel.SkinPath))
+        {
+            SkinManager.Instance.ApplySkin(SkinManager.CreateDefaultSkin());
+            _viewModel.SkinPath = null;
+            _viewModel.SkinDisplay = "(default)";
+            _viewModel.SettingsHint = "Saved skin file was missing, so Android fell back to the built-in skin.";
+            return false;
+        }
+
+        bool applied = SkinManager.Instance.LoadSkin(_viewModel.SkinPath);
+        if (!applied)
+        {
+            SkinManager.Instance.ApplySkin(SkinManager.CreateDefaultSkin());
+            _viewModel.SkinPath = null;
+            _viewModel.SkinDisplay = "(default)";
+            _viewModel.SettingsHint = "Saved skin file was invalid, so Android fell back to the built-in skin.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_viewModel.SkinDisplay))
+        {
+            _viewModel.SkinDisplay = Path.GetFileName(_viewModel.SkinPath);
+        }
+
+        return true;
     }
 
     private void UpdateAndroidRenderBackendStatus()
@@ -2813,6 +2910,8 @@ public partial class MainView : UserControl
             AndroidRenderBackendMode = GetAndroidRenderBackendModeFromIndex(_viewModel.AndroidRenderBackendIndex).ToString(),
             SharpPixelsEnabled = _viewModel.SharpPixelsEnabled,
             ScanlineStrengthPercent = _viewModel.ScanlineStrengthPercent,
+            SkinPath = _viewModel.SkinPath,
+            SkinDisplay = _viewModel.SkinDisplay,
             Dsp1Path = _viewModel.Dsp1Path,
             Dsp1Display = _viewModel.Dsp1Display,
             Dsp2Path = _viewModel.Dsp2Path,
@@ -2918,6 +3017,8 @@ public partial class MainView : UserControl
         _viewModel.AndroidRenderBackendIndex = GetAndroidRenderBackendIndex(backendMode);
         _viewModel.SharpPixelsEnabled = settings.SharpPixelsEnabled;
         _viewModel.ScanlineStrengthPercent = ClampPercent(settings.ScanlineStrengthPercent);
+        _viewModel.SkinPath = settings.SkinPath;
+        _viewModel.SkinDisplay = settings.SkinDisplay ?? "(default)";
         _viewModel.Dsp1Path = settings.Dsp1Path;
         _viewModel.Dsp1Display = settings.Dsp1Display ?? "(none)";
         _viewModel.Dsp2Path = settings.Dsp2Path;
@@ -3914,6 +4015,7 @@ public partial class MainView : UserControl
         private string _androidRenderBackendStatus = $"Active on this boot: {AndroidRenderBackendConfig.GetDisplayName(AndroidRenderBackendConfig.StartupMode)}";
         private bool _sharpPixelsEnabled = true;
         private int _scanlineStrengthPercent = DefaultScanlineStrengthPercent;
+        private string _skinDisplay = "(default)";
         private string _dsp1Display = "(none)";
         private string _dsp2Display = "(none)";
         private string _dsp3Display = "(none)";
@@ -3928,6 +4030,7 @@ public partial class MainView : UserControl
         private string? _gbaBiosPath;
         private string? _segaCdBiosPath;
         private string? _psxBiosPath;
+        private string? _skinPath;
         private string? _dsp1Path;
         private string? _dsp2Path;
         private string? _dsp3Path;
@@ -4208,6 +4311,7 @@ public partial class MainView : UserControl
         public int AndroidRenderBackendIndex { get => _androidRenderBackendIndex; set => SetField(ref _androidRenderBackendIndex, Math.Clamp(value, 0, 2)); }
         public string AndroidRenderBackendStatus { get => _androidRenderBackendStatus; set => SetField(ref _androidRenderBackendStatus, value); }
         public bool SharpPixelsEnabled { get => _sharpPixelsEnabled; set => SetField(ref _sharpPixelsEnabled, value); }
+        public string SkinDisplay { get => _skinDisplay; set => SetField(ref _skinDisplay, value); }
         public int ScanlineStrengthPercent
         {
             get => _scanlineStrengthPercent;
@@ -4248,6 +4352,7 @@ public partial class MainView : UserControl
         public string? GbaBiosPath { get => _gbaBiosPath; set => SetField(ref _gbaBiosPath, value); }
         public string? SegaCdBiosPath { get => _segaCdBiosPath; set => SetField(ref _segaCdBiosPath, value); }
         public string? PsxBiosPath { get => _psxBiosPath; set => SetField(ref _psxBiosPath, value); }
+        public string? SkinPath { get => _skinPath; set => SetField(ref _skinPath, value); }
         public string? Dsp1Path { get => _dsp1Path; set => SetField(ref _dsp1Path, value); }
         public string? Dsp2Path { get => _dsp2Path; set => SetField(ref _dsp2Path, value); }
         public string? Dsp3Path { get => _dsp3Path; set => SetField(ref _dsp3Path, value); }
@@ -4400,6 +4505,8 @@ public partial class MainView : UserControl
         public string? AndroidRenderBackendMode { get; set; }
         public bool SharpPixelsEnabled { get; set; } = true;
         public int ScanlineStrengthPercent { get; set; } = DefaultScanlineStrengthPercent;
+        public string? SkinPath { get; set; }
+        public string? SkinDisplay { get; set; }
         public string? Dsp1Path { get; set; }
         public string? Dsp1Display { get; set; }
         public string? Dsp2Path { get; set; }

@@ -4,16 +4,16 @@
              x:Class="EutherDrive.Android.MainView">
   <UserControl.Styles>
     <Style Selector="Border.surface">
-      <Setter Property="Background" Value="#C8141C27" />
-      <Setter Property="BorderBrush" Value="#324356" />
+      <Setter Property="Background" Value="{DynamicResource EdPanelBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="22" />
     </Style>
 
     <Style Selector="Button.chrome">
-      <Setter Property="Background" Value="#182736" />
-      <Setter Property="Foreground" Value="#EEF6FF" />
-      <Setter Property="BorderBrush" Value="#36506B" />
+      <Setter Property="Background" Value="{DynamicResource EdButtonBgBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdButtonBorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="14" />
       <Setter Property="Padding" Value="14,10" />
@@ -21,45 +21,47 @@
     </Style>
 
     <Style Selector="Button.chrome:pressed">
-      <Setter Property="Background" Value="#0F1B27" />
+      <Setter Property="Background" Value="{DynamicResource EdButtonBgPressedBrush}" />
     </Style>
 
     <Style Selector="Button.action">
-      <Setter Property="Background" Value="#173E43" />
-      <Setter Property="BorderBrush" Value="#5EEAD4" />
+      <Setter Property="Background" Value="{DynamicResource EdButtonActionBgBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdAccentBrush}" />
     </Style>
 
     <Style Selector="Button.warn">
-      <Setter Property="Background" Value="#3A2318" />
-      <Setter Property="BorderBrush" Value="#F59E0B" />
+      <Setter Property="Background" Value="{DynamicResource EdButtonBgPressedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdAccentWarmBrush}" />
     </Style>
 
     <Style Selector="Button.landscapeOverlay">
-      <Setter Property="Background" Value="#8C142534" />
-      <Setter Property="Foreground" Value="#EEF6FF" />
-      <Setter Property="BorderBrush" Value="#5C7895" />
+      <Setter Property="Background" Value="{DynamicResource EdToggleBgBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrightBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="14" />
       <Setter Property="Padding" Value="12,8" />
       <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Opacity" Value="0.9" />
     </Style>
 
     <Style Selector="Button.landscapeOverlay:pressed">
-      <Setter Property="Background" Value="#CC173E43" />
-      <Setter Property="BorderBrush" Value="#5EEAD4" />
+      <Setter Property="Background" Value="{DynamicResource EdToggleCheckedBgBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdAccentBrush}" />
     </Style>
 
     <Style Selector="Border.touchOverlay">
-      <Setter Property="Background" Value="#8C142534" />
-      <Setter Property="BorderBrush" Value="#5C7895" />
+      <Setter Property="Background" Value="{DynamicResource EdToggleBgBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrightBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="14" />
       <Setter Property="Padding" Value="12,8" />
+      <Setter Property="Opacity" Value="0.9" />
     </Style>
 
     <Style Selector="Border.touchOverlay.padPressed">
-      <Setter Property="Background" Value="#CC173E43" />
-      <Setter Property="BorderBrush" Value="#5EEAD4" />
+      <Setter Property="Background" Value="{DynamicResource EdToggleCheckedBgBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdAccentBrush}" />
     </Style>
 
     <Style Selector="Border.landscapePad">
@@ -175,20 +177,20 @@
     </Style>
 
     <Style Selector="TextBlock.hudLabel">
-      <Setter Property="Foreground" Value="#91A8BD" />
+      <Setter Property="Foreground" Value="{DynamicResource EdTextMutedBrush}" />
       <Setter Property="FontSize" Value="12" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
     <Style Selector="CheckBox.settingsToggle">
-      <Setter Property="Foreground" Value="#EEF6FF" />
+      <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Margin" Value="0,2,0,0" />
     </Style>
 
     <Style Selector="Border.debugShell">
-      <Setter Property="Background" Value="#E1070D13" />
-      <Setter Property="BorderBrush" Value="#4B6A7E" />
+      <Setter Property="Background" Value="{DynamicResource EdScreenShellBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrightBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="24" />
     </Style>
@@ -201,27 +203,27 @@
     </Style>
 
     <Style Selector="TextBlock.debugEyebrow">
-      <Setter Property="Foreground" Value="#5EEAD4" />
+      <Setter Property="Foreground" Value="{DynamicResource EdAccentBrush}" />
       <Setter Property="FontSize" Value="12" />
       <Setter Property="FontWeight" Value="Bold" />
     </Style>
 
     <Style Selector="TextBlock.debugTitle">
-      <Setter Property="Foreground" Value="#EEF6FF" />
+      <Setter Property="Foreground" Value="{DynamicResource EdTextBrush}" />
       <Setter Property="FontSize" Value="26" />
       <Setter Property="FontWeight" Value="Black" />
       <Setter Property="FontStyle" Value="Italic" />
     </Style>
   </UserControl.Styles>
 
-  <Grid Background="#091119">
+  <Grid Background="{DynamicResource EdBgBrush}">
     <Border Margin="-120,-70,0,0"
             Width="340"
             Height="340"
             HorizontalAlignment="Left"
             VerticalAlignment="Top"
             CornerRadius="170"
-            Background="#173149"
+            Background="{DynamicResource EdAccentBrush}"
             Opacity="0.24" />
     <Border Margin="0,180,-120,0"
             Width="300"
@@ -229,7 +231,7 @@
             HorizontalAlignment="Right"
             VerticalAlignment="Top"
             CornerRadius="150"
-            Background="#2A1A29"
+            Background="{DynamicResource EdAccentWarmBrush}"
             Opacity="0.18" />
 
     <Grid RowDefinitions="Auto,*,Auto"
@@ -252,7 +254,7 @@
                          FontSize="24"
                          FontWeight="Black"
                          FontStyle="Italic"
-                         Foreground="#EEF6FF" />
+                         Foreground="{DynamicResource EdTextBrush}" />
             </StackPanel>
 
             <Button Grid.Column="2"
@@ -299,7 +301,7 @@
                        FontSize="22"
                        FontWeight="Black"
                        FontStyle="Italic"
-                       Foreground="#EEF6FF" />
+                       Foreground="{DynamicResource EdTextBrush}" />
 
             <Button Grid.Column="3"
                     Classes="chrome"
@@ -319,59 +321,63 @@
         <Border Grid.Row="0" Classes="surface" Padding="{Binding ScreenSurfacePadding}">
           <Grid>
             <Border CornerRadius="18"
-                    Background="#060A0E"
-                    BorderBrush="#3A4A59"
+                    Background="{DynamicResource EdScreenShellBrush}"
+                    BorderBrush="{DynamicResource EdStrokeBrush}"
                     BorderThickness="1" />
 
             <Grid Margin="{Binding ScreenFrameMargin}">
               <Border HorizontalAlignment="Stretch"
                       VerticalAlignment="Stretch"
                       CornerRadius="16"
-                      Background="#0D131A" />
+                      Background="{DynamicResource EdBgSoftBrush}" />
 
               <Grid Margin="{Binding ScreenContentMargin}" RowDefinitions="Auto,Auto,*,Auto">
                 <Grid IsVisible="{Binding ScreenHudVisible}">
                   <Border HorizontalAlignment="Left"
-                          Background="#A0121923"
+                          Background="{DynamicResource EdToggleBgBrush}"
                           CornerRadius="999"
-                          Padding="10,6">
+                          Padding="10,6"
+                          Opacity="0.9">
                     <TextBlock Text="{Binding StatusPill}"
                                FontSize="12"
                                FontWeight="Bold"
-                               Foreground="#5EEAD4" />
+                               Foreground="{DynamicResource EdAccentBrush}" />
                   </Border>
 
                   <Border HorizontalAlignment="Center"
-                          Background="#A0121923"
+                          Background="{DynamicResource EdToggleBgBrush}"
                           CornerRadius="999"
-                          Padding="10,6">
+                          Padding="10,6"
+                          Opacity="0.9">
                     <TextBlock Text="{Binding PerfHeadline}"
                                FontSize="12"
                                FontWeight="Bold"
-                               Foreground="#93C5FD" />
+                               Foreground="{DynamicResource EdStrokeBrightBrush}" />
                   </Border>
 
                   <Border HorizontalAlignment="Right"
-                          Background="#A0121923"
+                          Background="{DynamicResource EdToggleBgBrush}"
                           CornerRadius="999"
-                          Padding="10,6">
+                          Padding="10,6"
+                          Opacity="0.9">
                     <TextBlock Text="{Binding SelectedConsoleLabel}"
                                FontSize="12"
                                FontWeight="Bold"
-                               Foreground="#F59E0B" />
+                               Foreground="{DynamicResource EdAccentWarmBrush}" />
                   </Border>
                 </Grid>
 
                 <Border Grid.Row="1"
                         HorizontalAlignment="Center"
-                        Background="#8C101820"
+                        Background="{DynamicResource EdToggleBgBrush}"
                         CornerRadius="999"
                         Padding="10,4"
-                        Margin="0,8,0,6">
+                        Margin="0,8,0,6"
+                        Opacity="0.85">
                   <TextBlock Text="{Binding ActiveRenderModeLabel}"
                              FontSize="11"
                              FontWeight="Bold"
-                             Foreground="#93C5FD" />
+                             Foreground="{DynamicResource EdStrokeBrightBrush}" />
                 </Border>
 
                 <Grid Grid.Row="2"
@@ -385,19 +391,20 @@
                           MaxWidth="360"
                           Padding="18"
                           CornerRadius="18"
-                          Background="#A00B1219"
+                          Background="{DynamicResource EdPanelGlassBrush}"
+                          Opacity="0.92"
                           IsVisible="{Binding ScreenOverlayVisible}">
                     <StackPanel Spacing="10">
                       <TextBlock Text="{Binding ScreenTitle}"
                                  FontSize="28"
                                  FontWeight="Black"
                                  TextAlignment="Center"
-                                 Foreground="#EEF6FF" />
+                                 Foreground="{DynamicResource EdTextBrush}" />
                       <TextBlock Text="{Binding ScreenDescription}"
                                  FontSize="14"
                                  TextWrapping="Wrap"
                                  TextAlignment="Center"
-                                 Foreground="#91A8BD" />
+                                 Foreground="{DynamicResource EdTextMutedBrush}" />
                     </StackPanel>
                   </Border>
                 </Grid>
@@ -405,20 +412,21 @@
                 <Border Grid.Row="3"
                         IsVisible="{Binding ScreenHudVisible}"
                         HorizontalAlignment="Stretch"
-                        Background="#7A101820"
+                        Background="{DynamicResource EdSubPanelBrush}"
                         CornerRadius="16"
-                        Padding="12">
+                        Padding="12"
+                        Opacity="0.9">
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
                     <StackPanel Spacing="4">
                       <TextBlock Classes="hudLabel" Text="Current ROM" />
                       <TextBlock Text="{Binding CurrentRomDisplay}"
-                                 Foreground="#EEF6FF"
+                                 Foreground="{DynamicResource EdTextBrush}"
                                  TextWrapping="Wrap" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="4">
                       <TextBlock Classes="hudLabel" Text="Input" />
                       <TextBlock Text="{Binding LastPressedDisplay}"
-                                 Foreground="#FB7185"
+                                 Foreground="{DynamicResource EdAccentHotBrush}"
                                  FontWeight="Bold"
                                  HorizontalAlignment="Right" />
                     </StackPanel>
@@ -599,16 +607,16 @@
                   CornerRadius="18"
                   Background="#A00B1219">
             <StackPanel Spacing="10">
-              <TextBlock Text="{Binding ScreenTitle}"
-                         FontSize="28"
-                         FontWeight="Black"
-                         TextAlignment="Center"
-                         Foreground="#EEF6FF" />
+                <TextBlock Text="{Binding ScreenTitle}"
+                           FontSize="28"
+                           FontWeight="Black"
+                           TextAlignment="Center"
+                           Foreground="{DynamicResource EdTextBrush}" />
               <TextBlock Text="{Binding ScreenDescription}"
                          FontSize="14"
                          TextWrapping="Wrap"
                          TextAlignment="Center"
-                         Foreground="#91A8BD" />
+                         Foreground="{DynamicResource EdTextMutedBrush}" />
             </StackPanel>
           </Border>
 
@@ -625,7 +633,7 @@
                        Text="{Binding StatusPill}"
                        FontSize="12"
                        FontWeight="Bold"
-                       Foreground="#5EEAD4"
+                       Foreground="{DynamicResource EdAccentBrush}"
                        Margin="6,0,0,2" />
             <Border Grid.Row="1"
                     Classes="touchOverlay"
@@ -696,7 +704,7 @@
                        Text="{Binding SelectedConsoleLabel}"
                        FontSize="12"
                        FontWeight="Bold"
-                       Foreground="#F59E0B"
+                       Foreground="{DynamicResource EdAccentWarmBrush}"
                        HorizontalAlignment="Right"
                        Margin="0,0,6,2" />
             <Border Grid.Row="1"
@@ -877,13 +885,13 @@
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
           <StackPanel Spacing="4">
             <TextBlock Classes="hudLabel" Text="Session" />
-            <TextBlock Text="{Binding FooterStatus}" Foreground="#EEF6FF" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding FooterStatus}" Foreground="{DynamicResource EdTextBrush}" TextWrapping="Wrap" />
           </StackPanel>
           <StackPanel Grid.Column="1" Spacing="4" HorizontalAlignment="Right">
             <TextBlock Classes="hudLabel" Text="Overlay" HorizontalAlignment="Right" />
             <TextBlock Text="{Binding OverlaySummary}"
                        HorizontalAlignment="Right"
-                       Foreground="#5EEAD4" />
+                       Foreground="{DynamicResource EdAccentBrush}" />
           </StackPanel>
         </Grid>
       </Border>
@@ -893,18 +901,19 @@
             HorizontalAlignment="Center"
             VerticalAlignment="Top"
             Margin="18"
-            Background="#DE050B10"
-            BorderBrush="#32516A"
+            Background="{DynamicResource EdPanelGlassBrush}"
+            BorderBrush="{DynamicResource EdStrokeBrush}"
             BorderThickness="1"
             CornerRadius="18"
-            Padding="10">
+            Padding="10"
+            Opacity="0.94">
       <Grid ColumnDefinitions="Auto,Auto,Auto"
             ColumnSpacing="8">
-        <Border Background="#163243"
+        <Border Background="{DynamicResource EdButtonActionBgBrush}"
                 CornerRadius="999"
                 Padding="12,6">
           <TextBlock Text="Game"
-                     Foreground="#5EEAD4"
+                     Foreground="{DynamicResource EdAccentBrush}"
                      FontWeight="Bold" />
         </Border>
         <Button Grid.Column="1"
@@ -921,7 +930,8 @@
     </Border>
 
     <Border IsVisible="{Binding SettingsVisible}"
-            Background="#CC091119">
+            Background="{DynamicResource EdBgBrush}"
+            Opacity="0.97">
       <Grid Margin="18">
         <Border Classes="surface"
                 HorizontalAlignment="Stretch"
@@ -931,12 +941,13 @@
           <Grid RowDefinitions="Auto,*" RowSpacing="14">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
               <StackPanel Spacing="4">
-                <TextBlock Text="System Files"
+                <TextBlock Text="System Files & Skin"
                            FontSize="22"
                            FontWeight="Black"
-                           FontStyle="Italic" />
-                <TextBlock Text="Pick BIOS and coprocessor files once and keep them in app storage."
-                           Foreground="#91A8BD"
+                           FontStyle="Italic"
+                           Foreground="{DynamicResource EdTextBrush}" />
+                <TextBlock Text="Pick BIOS, coprocessor files and one optional .apa skin to keep in app storage."
+                           Foreground="{DynamicResource EdTextMutedBrush}"
                            TextWrapping="Wrap" />
               </StackPanel>
               <Button Grid.Column="1"
@@ -949,8 +960,17 @@
               <StackPanel Spacing="12">
                 <Border Classes="surface" Padding="12">
                   <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
-                    <TextBlock Text="PCE BIOS" FontWeight="Bold" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="1" Text="{Binding PceBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <TextBlock Text="Skin" FontWeight="Bold" VerticalAlignment="Center" Foreground="{DynamicResource EdTextBrush}" />
+                    <TextBlock Grid.Column="1" Text="{Binding SkinDisplay}" Foreground="{DynamicResource EdTextMutedBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickSkin" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearSkin" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="PCE BIOS" FontWeight="Bold" VerticalAlignment="Center" Foreground="{DynamicResource EdTextBrush}" />
+                    <TextBlock Grid.Column="1" Text="{Binding PceBiosDisplay}" Foreground="{DynamicResource EdTextMutedBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
                     <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickPceBios" />
                     <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearPceBios" />
                   </Grid>
