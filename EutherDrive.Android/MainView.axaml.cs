@@ -1496,8 +1496,8 @@ public partial class MainView : UserControl
                     _presentFrameBuffer = Array.Empty<byte>();
             }
 
-            _ = glOwnedSurface.PresentOwnedBuffer(
-                frameBuffer,
+            _ = glOwnedSurface.Present(
+                frameBuffer.AsSpan(),
                 width,
                 height,
                 srcStride,

@@ -25,7 +25,7 @@ public class SkinManager
     private readonly ApaSkinLoader _loader = new();
     private readonly List<ApaSkin> _loadedSkins = new();
     private ApaSkin _currentSkin = new();
-    private Application? _application;
+    private Avalonia.Application? _application;
     private ResourceDictionary? _dynamicResources;
     
     public event EventHandler<SkinChangedEventArgs>? SkinChanged;
@@ -39,7 +39,7 @@ public class SkinManager
     /// Initialize the skin manager with the application instance.
     /// Call this in App.axaml.cs OnFrameworkInitializationCompleted.
     /// </summary>
-    public void Initialize(Application application)
+    public void Initialize(Avalonia.Application application)
     {
         _application = application;
         
@@ -484,7 +484,7 @@ public class SkinManager
     private void RefreshStyles()
     {
         // Trigger style refresh by notifying of theme change
-        if (_application is App app)
+        if (_application is { } app)
         {
             // Force resource reload
             var currentTheme = app.RequestedThemeVariant;

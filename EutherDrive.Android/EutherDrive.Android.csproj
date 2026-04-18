@@ -39,6 +39,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\EutherDrive.UI\Skins\ApaSkin.cs">
+      <Link>Skins\ApaSkin.cs</Link>
+    </Compile>
+    <Compile Include="..\EutherDrive.UI\Skins\ApaSkinLoader.cs">
+      <Link>Skins\ApaSkinLoader.cs</Link>
+    </Compile>
+    <Compile Include="..\EutherDrive.UI\Skins\SkinManager.cs">
+      <Link>Skins\SkinManager.cs</Link>
+    </Compile>
     <Compile Include="..\EutherDrive.UI\Zuul\JoxFile.cs">
       <Link>Zuul\JoxFile.cs</Link>
     </Compile>

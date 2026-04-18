@@ -1634,7 +1634,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 }
             }
 
-            public void SurfaceCreated(ISurfaceHolder holder)
+            public override void SurfaceCreated(ISurfaceHolder? holder)
             {
                 base.SurfaceCreated(holder);
 
@@ -1651,7 +1651,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 RequestRenderSafe();
             }
 
-            public void SurfaceDestroyed(ISurfaceHolder holder)
+            public override void SurfaceDestroyed(ISurfaceHolder? holder)
             {
                 base.SurfaceDestroyed(holder);
                 StopContinuousRendering();
@@ -1673,7 +1673,7 @@ public sealed class AndroidNativeGlRenderSurface : IGameRenderSurface, IDisposab
                 }
             }
 
-            public void SurfaceChanged(ISurfaceHolder holder, Format format, int width, int height)
+            public override void SurfaceChanged(ISurfaceHolder? holder, Format format, int width, int height)
             {
                 base.SurfaceChanged(holder, format, width, height);
 
