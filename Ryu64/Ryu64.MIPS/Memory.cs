@@ -59,7 +59,7 @@ namespace Ryu64.MIPS
         private const uint DpcStatusFreeze = 0x00000002u;
         private const uint DpcStatusFlush = 0x00000004u;
         private const uint DpcStatusStartGclk = 0x00000008u;
-        private const uint DpcStatusBufBusy = 0x00000100u;
+        private const uint DpcStatusCbufReady = 0x00000080u;
         private const uint DpcStatusEndValid = 0x00000200u;
         private const uint DpcStatusStartValid = 0x00000400u;
         private const uint DpcClrXbusDmemDma = 0x00000001u;
@@ -1063,8 +1063,7 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(DPC_CURRENT_REG_RW, end);
 
             uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
-            status &= ~0x00000600u; // clear pipe/buf busy flags used by existing bring-up code
-            status &= ~(DpcStatusBufBusy | DpcStatusStartValid | DpcStatusEndValid);
+            status &= ~(DpcStatusCbufReady | DpcStatusStartValid | DpcStatusEndValid);
             WriteBigEndianWord(DPC_STATUS_REG_R, status);
             WriteBigEndianWord(DPC_BUFBUSY_REG_RW, 0);
             WriteBigEndianWord(DPC_PIPEBUSY_REG_RW, 0);
@@ -1949,9 +1948,12 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(DPC_START_REG_RW, value);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
 
-            uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
-            status |= DpcStatusStartValid;
-            WriteBigEndianWord(DPC_STATUS_REG_R, status);
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] DPC_START write start=0x{value:x8} current=0x{ReadBigEndianWord(DPC_CURRENT_REG_RW):x8} " +
+                    $"status=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
+            }
         }
 
         public void DPC_END_WRITE_EVENT()
@@ -1959,17 +1961,11 @@ namespace Ryu64.MIPS
             uint value = ReadBigEndianWord(DPC_END_REG_RW);
             WriteBigEndianWord(DPC_END_REG_RW, value);
 
-            uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
-            status |= DpcStatusEndValid | DpcStatusBufBusy;
-            WriteBigEndianWord(DPC_STATUS_REG_R, status);
-            WriteBigEndianWord(DPC_BUFBUSY_REG_RW, 1);
-            WriteBigEndianWord(DPC_PIPEBUSY_REG_RW, 1);
-
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] DPC_END queued start=0x{ReadBigEndianWord(DPC_START_REG_RW):x8} end=0x{value:x8} " +
-                    $"status=0x{status:x8} pc=0x{Registers.R4300.PC:x8}");
+                    $"status=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
             }
         }
 
@@ -2053,14 +2049,6 @@ namespace Ryu64.MIPS
             status &= ~(SpStatusHalt | SpStatusBroke | SpStatusTaskDone);
             ClearMiSpInterrupt();
 
-            if (task.Type == 1)
-            {
-                uint dpcStatus = ReadBigEndianWord(DPC_STATUS_REG_R);
-                dpcStatus |= DpcStatusBufBusy | DpcStatusStartValid | DpcStatusEndValid;
-                WriteBigEndianWord(DPC_STATUS_REG_R, dpcStatus);
-                WriteBigEndianWord(DPC_BUFBUSY_REG_RW, 1);
-                WriteBigEndianWord(DPC_PIPEBUSY_REG_RW, 1);
-            }
         }
 
         private void TryDispatchRspTaskInterpreter(ref uint status)
