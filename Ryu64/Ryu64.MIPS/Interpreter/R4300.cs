@@ -84,6 +84,14 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_LATE_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaLateWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_LATE_WINDOW_LIMIT", 256);
         private static int _traceMegaLateWindowCount = 0;
+        private static readonly bool TraceMegaRspBufferWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_RSPBUF_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaRspBufferWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_RSPBUF_WINDOW_LIMIT", 256);
+        private static int _traceMegaRspBufferWindowCount = 0;
+        private static readonly bool TraceMegaWaitWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_LATE_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaWaitWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_WAIT_WINDOW_LIMIT", 256);
+        private static int _traceMegaWaitWindowCount = 0;
         private static readonly bool TraceMegaFatalWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_FATAL_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaFatalWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_FATAL_WINDOW_LIMIT", 256);
@@ -272,12 +280,19 @@ namespace Ryu64.MIPS
                 uint vec4 = TraceReadWordOrZero(vectorPc + 4u);
                 uint vec8 = TraceReadWordOrZero(vectorPc + 8u);
                 uint vecC = TraceReadWordOrZero(vectorPc + 12u);
+                uint miIntr = memory.ReadUInt32(0xA4300008u);
+                uint miMask = memory.ReadUInt32(0xA430000Cu);
+                uint viCurrent = memory.ReadUInt32(0xA4400010u);
+                uint piStatus = memory.ReadUInt32(0xA4600010u);
+                uint siStatus = memory.ReadUInt32(0xA4800018u);
                 Common.Logger.PrintWarningLine(
                     $"CPU exception entry (count={_cpuExceptionLogCount}) faultPc=0x{faultingPc:x8} vector=0x{vectorPc:x8} " +
                     $"exc=0x{exceptionCode:x8} exlWasSet={exlAlreadySet} bev={bevSet} delay={inDelaySlot} " +
                     $"epc=0x{Registers.COP0.Reg[Registers.COP0.EPC_REG]:x8} cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8} " +
                     $"status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} badv=0x{Registers.COP0.Reg[Registers.COP0.BADVADDR_REG]:x8} " +
-                    $"vec[0]=0x{vec0:x8} vec[4]=0x{vec4:x8} vec[8]=0x{vec8:x8} vec[c]=0x{vecC:x8}");
+                    $"vec[0]=0x{vec0:x8} vec[4]=0x{vec4:x8} vec[8]=0x{vec8:x8} vec[c]=0x{vecC:x8} " +
+                    $"miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} viCurrent=0x{viCurrent:x8} " +
+                    $"piStatus=0x{piStatus:x8} siStatus=0x{siStatus:x8}");
 
                 if (_cpuExceptionLogCount <= 16)
                 {
@@ -739,6 +754,9 @@ namespace Ryu64.MIPS
             _traceMegaDispatchWindowCount = 0;
             _traceMegaInitWindowCount = 0;
             _traceMegaLateWindowCount = 0;
+            _traceMegaWaitWindowCount = 0;
+            _traceMegaFatalWindowCount = 0;
+            _traceMegaStatusCallCount = 0;
             ClearLoadLinkedReservation();
 
             OpcodeTable.Init();
@@ -1145,6 +1163,9 @@ namespace Ryu64.MIPS
                                 ulong t1 = Registers.R4300.Reg[9];
                                 ulong s0 = Registers.R4300.Reg[16];
                                 ulong s1 = Registers.R4300.Reg[17];
+                                ulong s2 = Registers.R4300.Reg[18];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong sp = Registers.R4300.Reg[29];
                                 ulong ra = Registers.R4300.Reg[31];
                                 ulong effAddr = rsValue + (ulong)(int)(short)megaLateDesc.Imm;
                                 uint rsw = TraceReadWordOrZero(rsValue);
@@ -1155,22 +1176,155 @@ namespace Ryu64.MIPS
                                 uint v0w4 = TraceReadWordOrZero(v0 + 4u);
                                 uint v1w = TraceReadWordOrZero(v1);
                                 uint v1w4 = TraceReadWordOrZero(v1 + 4u);
+                                uint s0w = TraceReadWordOrZero(s0);
+                                uint s0w4 = TraceReadWordOrZero(s0 + 4u);
+                                uint s1w = TraceReadWordOrZero(s1);
+                                uint s1w4 = TraceReadWordOrZero(s1 + 4u);
+                                uint s2w = TraceReadWordOrZero(s2);
+                                uint s2w4 = TraceReadWordOrZero(s2 + 4u);
+                                uint s3w = TraceReadWordOrZero(s3);
+                                uint s3w4 = TraceReadWordOrZero(s3 + 4u);
                                 uint cb = TraceReadWordOrZero(0x80204984u);
                                 uint late30 = TraceReadWordOrZero(0x80204830u);
                                 uint late78 = TraceReadWordOrZero(0x80204978u);
                                 uint lateB0 = TraceReadWordOrZero(0x801FFBB0u);
                                 uint lateB4 = TraceReadWordOrZero(0x801FFBB4u);
+                                uint piStatus = memory.ReadUInt32(0x04600010u);
+                                uint viCurrent = memory.ReadUInt32(0x04400010u);
+                                uint piDram = memory.ReadUInt32(0x04600000u);
+                                uint piCart = memory.ReadUInt32(0x04600004u);
                                 Console.WriteLine(
                                     $"[N64MEGALATE] #{_traceMegaLateWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
                                     $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
-                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} s0=0x{s0:x16} s1=0x{s1:x16} ra=0x{ra:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} " +
+                                    $"s0=0x{s0:x16} s1=0x{s1:x16} s2=0x{s2:x16} s3=0x{s3:x16} sp=0x{sp:x16} ra=0x{ra:x16} " +
                                     $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
                                     $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} [v1]=0x{v1w:x8} [v1+4]=0x{v1w4:x8} " +
+                                    $"[s0]=0x{s0w:x8} [s0+4]=0x{s0w4:x8} [s1]=0x{s1w:x8} [s1+4]=0x{s1w4:x8} " +
+                                    $"[s2]=0x{s2w:x8} [s2+4]=0x{s2w4:x8} [s3]=0x{s3w:x8} [s3+4]=0x{s3w4:x8} " +
                                     $"m204830=0x{late30:x8} m204978=0x{late78:x8} m1ffbb0=0x{lateB0:x8} m1ffbb4=0x{lateB4:x8} cb=0x{cb:x8} " +
                                     $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
-                                    $"sp=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8} " +
+                                    $"spStatus=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8} " +
+                                    $"piStatus=0x{piStatus:x8} viCurrent=0x{viCurrent:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} " +
                                     $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
+                            if (TraceMegaWaitWindow
+                                && _traceMegaWaitWindowCount < TraceMegaWaitWindowLimit
+                                && (pc >= 0x8008A0D0u && pc <= 0x8008A100u))
+                            {
+                                _traceMegaWaitWindowCount++;
+                                OpcodeTable.OpcodeDesc megaWaitDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = megaWaitDesc.op1;
+                                int rt = megaWaitDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong s2 = Registers.R4300.Reg[18];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                ulong effAddr = rsValue + (ulong)(int)(short)megaWaitDesc.Imm;
+                                uint rsw = TraceReadWordOrZero(rsValue);
+                                uint effw = TraceReadWordOrZero(effAddr);
+                                uint v0w = TraceReadWordOrZero(v0);
+                                uint s0w = TraceReadWordOrZero(s0);
+                                uint s1w = TraceReadWordOrZero(s1);
+                                uint s2w = TraceReadWordOrZero(s2);
+                                uint s3w = TraceReadWordOrZero(s3);
+                                Console.WriteLine(
+                                    $"[N64MEGAWAIT] #{_traceMegaWaitWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} v0=0x{v0:x16} v1=0x{v1:x16} " +
+                                    $"s0=0x{s0:x16} s1=0x{s1:x16} s2=0x{s2:x16} s3=0x{s3:x16} sp=0x{sp:x16} ra=0x{ra:x16} " +
+                                    $"[rs]=0x{rsw:x8} [eff]=0x{effw:x8} [v0]=0x{v0w:x8} [s0]=0x{s0w:x8} [s1]=0x{s1w:x8} [s2]=0x{s2w:x8} [s3]=0x{s3w:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"viCurrent=0x{memory.ReadUInt32(0x04400010):x8} piStatus=0x{memory.ReadUInt32(0x04600010):x8} " +
+                                    $"piDram=0x{memory.ReadUInt32(0x04600000):x8} piCart=0x{memory.ReadUInt32(0x04600004):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
+                            if (TraceMegaRspBufferWindow
+                                && _traceMegaRspBufferWindowCount < TraceMegaRspBufferWindowLimit
+                                && ((pc >= 0x8008EFE0u && pc <= 0x8008F030u)
+                                    || (pc >= 0x800908D0u && pc <= 0x80090930u)
+                                    || (pc >= 0x80091170u && pc <= 0x80091198u)
+                                    || (pc >= 0x80091EA0u && pc <= 0x80091EC8u)))
+                            {
+                                _traceMegaRspBufferWindowCount++;
+                                OpcodeTable.OpcodeDesc rspBufDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = rspBufDesc.op1;
+                                int rt = rspBufDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong t4 = Registers.R4300.Reg[12];
+                                ulong t5 = Registers.R4300.Reg[13];
+                                ulong t6 = Registers.R4300.Reg[14];
+                                ulong t7 = Registers.R4300.Reg[15];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong s2 = Registers.R4300.Reg[18];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                ulong effAddr = rsValue + (ulong)(int)(short)rspBufDesc.Imm;
+                                uint rsw = TraceReadWordOrZero(rsValue);
+                                uint rsw4 = TraceReadWordOrZero(rsValue + 4u);
+                                uint effw = TraceReadWordOrZero(effAddr);
+                                uint effw4 = TraceReadWordOrZero(effAddr + 4u);
+                                uint a0w = TraceReadWordOrZero(a0);
+                                uint a1w = TraceReadWordOrZero(a1);
+                                uint a2w = TraceReadWordOrZero(a2);
+                                uint a3w = TraceReadWordOrZero(a3);
+                                uint v0w = TraceReadWordOrZero(v0);
+                                uint v1w = TraceReadWordOrZero(v1);
+                                uint t0w = TraceReadWordOrZero(t0);
+                                uint t1w = TraceReadWordOrZero(t1);
+                                uint t2w = TraceReadWordOrZero(t2);
+                                uint t3w = TraceReadWordOrZero(t3);
+                                uint s0w = TraceReadWordOrZero(s0);
+                                uint s1w = TraceReadWordOrZero(s1);
+                                uint s2w = TraceReadWordOrZero(s2);
+                                uint s3w = TraceReadWordOrZero(s3);
+                                uint bufB0 = TraceReadWordOrZero(0x802747B0u);
+                                uint bufB4 = TraceReadWordOrZero(0x802747B4u);
+                                uint bufB8 = TraceReadWordOrZero(0x802747B8u);
+                                uint bufBC = TraceReadWordOrZero(0x802747BCu);
+                                uint bufD8 = TraceReadWordOrZero(0x802747D8u);
+                                uint bufDC = TraceReadWordOrZero(0x802747DCu);
+                                Console.WriteLine(
+                                    $"[N64MEGARSPBUF] #{_traceMegaRspBufferWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} t4=0x{t4:x16} t5=0x{t5:x16} t6=0x{t6:x16} t7=0x{t7:x16} " +
+                                    $"s0=0x{s0:x16} s1=0x{s1:x16} s2=0x{s2:x16} s3=0x{s3:x16} sp=0x{sp:x16} ra=0x{ra:x16} " +
+                                    $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
+                                    $"[a0]=0x{a0w:x8} [a1]=0x{a1w:x8} [a2]=0x{a2w:x8} [a3]=0x{a3w:x8} " +
+                                    $"[v0]=0x{v0w:x8} [v1]=0x{v1w:x8} [t0]=0x{t0w:x8} [t1]=0x{t1w:x8} [t2]=0x{t2w:x8} [t3]=0x{t3w:x8} " +
+                                    $"[s0]=0x{s0w:x8} [s1]=0x{s1w:x8} [s2]=0x{s2w:x8} [s3]=0x{s3w:x8} " +
+                                    $"bufB0=0x{bufB0:x8} bufB4=0x{bufB4:x8} bufB8=0x{bufB8:x8} bufBC=0x{bufBC:x8} bufD8=0x{bufD8:x8} bufDC=0x{bufDC:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"spStatus=0x{memory.ReadUInt32(0x04040010):x8} spMem=0x{memory.ReadUInt32(0x04040000):x8} spDram=0x{memory.ReadUInt32(0x04040004):x8} " +
+                                    $"piStatus=0x{memory.ReadUInt32(0x04600010):x8} piDram=0x{memory.ReadUInt32(0x04600000):x8} piCart=0x{memory.ReadUInt32(0x04600004):x8}");
                             }
 
                             if (TraceMegaFatalWindow

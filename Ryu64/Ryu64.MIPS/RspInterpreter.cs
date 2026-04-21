@@ -6,6 +6,12 @@ namespace Ryu64.MIPS
     {
         private const uint LoopReportThreshold = 2048;
         private const uint MaxInstructionsPerTask = 2_000_000;
+        private static readonly bool TraceRspCp0 =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_DMA"), "1", StringComparison.Ordinal)
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_MMIO"), "1", StringComparison.Ordinal)
+            || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_IO"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRspFlow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_FLOW"), "1", StringComparison.Ordinal);
         private static readonly ushort[] ReciprocalRom =
         {
             0xFFFF, 0xFF00, 0xFE01, 0xFD04, 0xFC07, 0xFB0C, 0xFA11, 0xF918, 0xF81F, 0xF727, 0xF631, 0xF53B, 0xF446, 0xF352, 0xF25F, 0xF16D,
@@ -135,6 +141,7 @@ namespace Ryu64.MIPS
                 _recentPcs[_recentIndex] = pc;
                 _recentInstrs[_recentIndex] = instr;
                 _recentIndex = (_recentIndex + 1) % _recentPcs.Length;
+                TraceRspWindow(pc, instr);
                 if (pc == _lastPc && instr == _lastInstr)
                 {
                     _samePcRunLength++;
@@ -156,9 +163,11 @@ namespace Ryu64.MIPS
                 bool branchDue = _branchPending;
                 uint dueTarget = _branchTarget;
                 _branchPending = false;
+                _memory.SetActiveRspTracePc(pc);
 
                 if (!Step(pc, instr, out stopReason))
                 {
+                    _memory.ClearActiveRspTracePc();
                     if (string.IsNullOrEmpty(stopReason))
                         stopReason = $"unknown-stop pc=0x{pc:x3} op=0x{instr:x8}";
                     _memory.WriteRspPc(_pc);
@@ -166,6 +175,7 @@ namespace Ryu64.MIPS
                     return stopReason == "break";
                 }
 
+                _memory.ClearActiveRspTracePc();
                 _gpr[0] = 0;
 
                 _memory.TickRspInterpreter(1);
@@ -173,6 +183,7 @@ namespace Ryu64.MIPS
             }
 
             _memory.WriteRspPc(_pc);
+            _memory.ClearActiveRspTracePc();
             stopReason = $"max-instructions rspPc=0x{_pc:x3} current=0x{_memory.ReadSpImemWord(_pc & 0x0FFCu):x8} tail={FormatRecentTrace()}";
             return false;
         }
@@ -276,6 +287,27 @@ namespace Ryu64.MIPS
             }
         }
 
+        private void TraceRspWindow(uint pc, uint instr)
+        {
+            if (!TraceRspFlow || !IsTraceRspWindow(pc))
+                return;
+
+            Common.Logger.PrintWarningLine(
+                $"[N64RSPFLOW] pc=0x{pc:x3} op=0x{instr:x8} " +
+                $"r1=0x{_gpr[1]:x8} r2=0x{_gpr[2]:x8} r3=0x{_gpr[3]:x8} " +
+                $"r24=0x{_gpr[24]:x8} r25=0x{_gpr[25]:x8} r26=0x{_gpr[26]:x8} r27=0x{_gpr[27]:x8} " +
+                $"r28=0x{_gpr[28]:x8} r29=0x{_gpr[29]:x8} ra=0x{_gpr[31]:x8}");
+        }
+
+        private static bool IsTraceRspWindow(uint pc)
+        {
+            return (pc >= 0x0C0 && pc <= 0x0E0)
+                || (pc >= 0x140 && pc <= 0x198)
+                || (pc >= 0x820 && pc <= 0x850)
+                || (pc >= 0xA40 && pc <= 0xAB0)
+                || (pc >= 0xC40 && pc <= 0xC80);
+        }
+
         private bool ExecuteSpecial(uint pc, uint funct, uint rs, uint rt, uint rd, uint sa, out string stopReason)
         {
             stopReason = string.Empty;
@@ -329,6 +361,14 @@ namespace Ryu64.MIPS
             {
                 case 0x00: if ((int)_gpr[rs] < 0) SetBranch(BranchTarget(pc, imm)); return true;
                 case 0x01: if ((int)_gpr[rs] >= 0) SetBranch(BranchTarget(pc, imm)); return true;
+                case 0x10:
+                    WriteGpr(31, pc + 8);
+                    if ((int)_gpr[rs] < 0) SetBranch(BranchTarget(pc, imm));
+                    return true;
+                case 0x11:
+                    WriteGpr(31, pc + 8);
+                    if ((int)_gpr[rs] >= 0) SetBranch(BranchTarget(pc, imm));
+                    return true;
                 default:
                     stopReason = $"unsupported-regimm pc=0x{pc:x3} rt=0x{rt:x2}";
                     return false;
@@ -344,6 +384,11 @@ namespace Ryu64.MIPS
                     WriteGpr(rt, _memory.ReadRspCp0((int)rd));
                     return true;
                 case 0x04:
+                    if (TraceRspCp0)
+                    {
+                        Common.Logger.PrintWarningLine(
+                            $"[N64RSPMTC0] rspPc=0x{pc:x3} rt=r{rt} value=0x{_gpr[rt]:x8} rd={rd}");
+                    }
                     _memory.WriteRspCp0((int)rd, _gpr[rt]);
                     return true;
                 default:
@@ -1329,13 +1374,16 @@ namespace Ryu64.MIPS
 
         private uint ReadWord(uint address)
         {
-            return _memory.ReadSpDmemWord(address & 0x0FFFu);
+            uint aligned = address & 0x0FFFu;
+            uint value = _memory.ReadSpDmemWord(aligned);
+            TraceRspStackWordAccess(isWrite: false, aligned, value);
+            return value;
         }
 
         private ushort ReadHalf(uint address)
         {
             uint word = ReadWord(address & ~3u);
-            int shift = (int)((2 - ((address & 2u) >> 1)) * 16);
+            int shift = (int)((1 - ((address & 2u) >> 1)) * 16);
             return (ushort)((word >> shift) & 0xFFFFu);
         }
 
@@ -1348,14 +1396,29 @@ namespace Ryu64.MIPS
 
         private void WriteWord(uint address, uint value)
         {
-            _memory.WriteSpDmemWord(address & 0x0FFFu, value);
+            uint aligned = address & 0x0FFFu;
+            TraceRspStackWordAccess(isWrite: true, aligned, value);
+            _memory.WriteSpDmemWord(aligned, value);
+        }
+
+        private void TraceRspStackWordAccess(bool isWrite, uint address, uint value)
+        {
+            if (!TraceRspFlow)
+                return;
+
+            if (address < 0x02B0u || address > 0x02D8u)
+                return;
+
+            Common.Logger.PrintWarningLine(
+                $"[N64RSPSTACK] {(isWrite ? "write" : "read")} pc=0x{(_pc & 0x0ffcu):x3} op=0x{_memory.ReadSpImemWord(_pc & 0x0ffcu):x8} " +
+                $"addr=0x{address:x3} value=0x{value:x8} r25=0x{_gpr[25]:x8} r26=0x{_gpr[26]:x8} r27=0x{_gpr[27]:x8} r28=0x{_gpr[28]:x8} r29=0x{_gpr[29]:x8} ra=0x{_gpr[31]:x8}");
         }
 
         private void WriteHalf(uint address, ushort value)
         {
             uint aligned = address & ~3u;
             uint word = ReadWord(aligned);
-            int shift = (int)((2 - ((address & 2u) >> 1)) * 16);
+            int shift = (int)((1 - ((address & 2u) >> 1)) * 16);
             uint mask = 0xFFFFu << shift;
             WriteWord(aligned, (word & ~mask) | ((uint)value << shift));
         }
@@ -1372,7 +1435,15 @@ namespace Ryu64.MIPS
         private void WriteGpr(uint reg, uint value)
         {
             if (reg != 0)
+            {
+                if (TraceRspFlow && (reg == 2 || reg == 25 || reg == 26 || reg == 27))
+                {
+                    Common.Logger.PrintWarningLine(
+                        $"[N64RSPGPR] pc=0x{(_pc & 0x0ffcu):x3} r{reg} old=0x{_gpr[reg]:x8} new=0x{value:x8} " +
+                        $"ra=0x{_gpr[31]:x8} r24=0x{_gpr[24]:x8} r25=0x{_gpr[25]:x8} r26=0x{_gpr[26]:x8} r27=0x{_gpr[27]:x8} r28=0x{_gpr[28]:x8} r29=0x{_gpr[29]:x8}");
+                }
                 _gpr[reg] = value;
+            }
         }
 
         private void SetBranch(uint target)
