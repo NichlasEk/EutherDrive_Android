@@ -12,8 +12,10 @@ namespace Ryu64Core
         private const uint ViWidthReg = 0xA4400008;
         private const uint ViVStartReg = 0xA4400028;
         private const int RdramSizeBytes = 8 * 1024 * 1024;
+        // Mupen's core does not scan arbitrary RDRAM looking for a "best" framebuffer.
+        // Keep this heuristic opt-in for bring-up experiments instead of default behavior.
         private static readonly bool EnableFramebufferOriginScanFallback =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "0", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "1", StringComparison.Ordinal);
 
         private const uint AiDramAddrReg = 0xA4500000;
         private const uint AiLenReg = 0xA4500004;
@@ -217,7 +219,8 @@ namespace Ryu64Core
             try
             {
                 uint status = R4300.memory.ReadUInt32(ViStatusReg);
-                uint origin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
+                uint rawOrigin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
+                uint origin = rawOrigin;
 
                 width = (int)(R4300.memory.ReadUInt32(ViWidthReg) & 0x0FFF);
                 if (width <= 0)
@@ -247,6 +250,32 @@ namespace Ryu64Core
                     return false;
                 }
 
+                // Prefer a previously written plausible VI origin over arbitrary RDRAM scans.
+                uint lastPlausibleOrigin = R4300.memory.LastPlausibleViOriginWriteValue;
+                if (origin < 0x00001000u
+                    && lastPlausibleOrigin >= 0x00001000u
+                    && lastPlausibleOrigin < RdramSizeBytes)
+                {
+                    origin = lastPlausibleOrigin;
+                    _lastFramebufferStatus =
+                        $"Last plausible VI origin used (vi=0x{rawOrigin:x8} -> last=0x{origin:x8}, pc=0x{R4300.memory.LastPlausibleViOriginWritePc:x8})";
+                }
+
+                if (origin < 0x00001000u && bytesPerPixel > 0)
+                {
+                    uint bufferSizeHint = (uint)(width * height * bytesPerPixel);
+                    uint recent = R4300.memory.FindRecentFramebufferOriginCandidate(bufferSizeHint, origin, out ulong recentBestScore, out ulong recentViScore);
+                    if (recent >= 0x00001000u
+                        && recent < RdramSizeBytes
+                        && recent != origin
+                        && recentBestScore > recentViScore + 4096UL)
+                    {
+                        origin = recent;
+                        _lastFramebufferStatus =
+                            $"Recent RDRAM framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, recentScore={recentBestScore}, viScore={recentViScore})";
+                    }
+                }
+
                 // Bring-up fallback: some paths still produce obviously invalid VI origins
                 // (for example 0x0000027f). Scan RDRAM for a stronger framebuffer candidate.
                 if (EnableFramebufferOriginScanFallback
@@ -259,7 +288,7 @@ namespace Ryu64Core
                         _lastFallbackFramebufferOrigin = best;
                         origin = best;
                         _lastFramebufferStatus =
-                            $"Fallback VI origin used (vi=0x{(R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF):x8} -> fb=0x{origin:x8}, score={bestScore}, viScore={viScore})";
+                            $"Fallback VI origin used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, score={bestScore}, viScore={viScore})";
                     }
                 }
 
@@ -282,7 +311,12 @@ namespace Ryu64Core
                 }
 
                 FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
-                if (string.IsNullOrEmpty(_lastFramebufferStatus) || !_lastFramebufferStatus.StartsWith("Fallback VI origin used", StringComparison.Ordinal))
+                bool keepDetailedStatus =
+                    !string.IsNullOrEmpty(_lastFramebufferStatus)
+                    && (_lastFramebufferStatus.StartsWith("Fallback VI origin used", StringComparison.Ordinal)
+                        || _lastFramebufferStatus.StartsWith("Recent RDRAM framebuffer used", StringComparison.Ordinal)
+                        || _lastFramebufferStatus.StartsWith("Last plausible VI origin used", StringComparison.Ordinal));
+                if (!keepDetailedStatus)
                     _lastFramebufferStatus = $"OK viType={viType} origin=0x{origin:x8} size={width}x{height} bpp={bytesPerPixel}";
                 return true;
             }

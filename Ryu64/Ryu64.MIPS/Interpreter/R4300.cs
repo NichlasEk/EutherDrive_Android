@@ -69,6 +69,22 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_CALC_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceViCalcWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_CALC_WINDOW_LIMIT", 200);
         private static int _traceViCalcWindowCount = 0;
+        private static readonly bool TraceViSwapWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_SWAP_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceViSwapWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_SWAP_WINDOW_LIMIT", 400);
+        private static int _traceViSwapWindowCount = 0;
+        private static readonly bool TraceViProducerWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_PRODUCER_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceViProducerWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_VI_PRODUCER_WINDOW_LIMIT", 200);
+        private static readonly uint TraceViProducerWindowStart = ParseTracePc("EUTHERDRIVE_TRACE_N64_VI_PRODUCER_WINDOW_START", 0x80000740u);
+        private static readonly uint TraceViProducerWindowEnd = ParseTracePc("EUTHERDRIVE_TRACE_N64_VI_PRODUCER_WINDOW_END", 0x80000790u);
+        private static int _traceViProducerWindowCount = 0;
+        private static readonly bool TracePcWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PC_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TracePcWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_PC_WINDOW_LIMIT", 256);
+        private static readonly uint TracePcWindowStart = ParseTracePc("EUTHERDRIVE_TRACE_N64_PC_WINDOW_START", 0x80000000u);
+        private static readonly uint TracePcWindowEnd = ParseTracePc("EUTHERDRIVE_TRACE_N64_PC_WINDOW_END", 0x80000000u);
+        private static int _tracePcWindowCount = 0;
         private static readonly bool TraceStuckPcDetails =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_STUCK_PC"), "1", StringComparison.Ordinal);
         private static readonly bool TraceExceptionEntry =
@@ -163,6 +179,22 @@ namespace Ryu64.MIPS
                 return fallback;
 
             if (int.TryParse(raw, out int parsed) && parsed > 0)
+                return parsed;
+
+            return fallback;
+        }
+
+        private static uint ParseTracePc(string name, uint fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Substring(2);
+
+            if (uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint parsed))
                 return parsed;
 
             return fallback;
@@ -841,6 +873,7 @@ namespace Ryu64.MIPS
             _traceMegaStatusCallCount = 0;
             _traceMegaPiCallbackWindowCount = 0;
             _traceMegaLowRamWindowCount = 0;
+            _tracePcWindowCount = 0;
             ClearLoadLinkedReservation();
 
             OpcodeTable.Init();
@@ -1763,6 +1796,112 @@ namespace Ryu64.MIPS
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} v0=0x{v0:x16} " +
                                     $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} " +
                                     $"s0=0x{s0:x16} s1=0x{s1:x16}");
+                            }
+
+                            if (TraceViSwapWindow
+                                && _traceViSwapWindowCount < TraceViSwapWindowLimit
+                                && ((pc >= 0x80003D20u && pc <= 0x80003FD0u)
+                                    || (pc >= 0x80005520u && pc <= 0x800057C0u)))
+                            {
+                                _traceViSwapWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong t9 = Registers.R4300.Reg[25];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                uint sp24 = TraceReadWordOrZero(sp + 0x24u);
+                                uint sp38 = TraceReadWordOrZero(sp + 0x38u);
+                                uint sp44 = TraceReadWordOrZero(sp + 0x44u);
+                                Console.WriteLine(
+                                    $"[N64VISWAP] #{_traceViSwapWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} " +
+                                    $"t2=0x{t2:x16} t3=0x{t3:x16} t9=0x{t9:x16} s0=0x{s0:x16} " +
+                                    $"sp=0x{sp:x16} ra=0x{ra:x16} [sp+24]=0x{sp24:x8} [sp+38]=0x{sp38:x8} [sp+44]=0x{sp44:x8}");
+                            }
+
+                            if (TraceViProducerWindow
+                                && _traceViProducerWindowCount < TraceViProducerWindowLimit
+                                && (pc >= TraceViProducerWindowStart && pc <= TraceViProducerWindowEnd))
+                            {
+                                _traceViProducerWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong t4 = Registers.R4300.Reg[12];
+                                ulong t5 = Registers.R4300.Reg[13];
+                                ulong t6 = Registers.R4300.Reg[14];
+                                ulong t7 = Registers.R4300.Reg[15];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong s2 = Registers.R4300.Reg[18];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong s4 = Registers.R4300.Reg[20];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                uint sp20 = TraceReadWordOrZero(sp + 0x20u);
+                                uint sp24 = TraceReadWordOrZero(sp + 0x24u);
+                                uint sp28 = TraceReadWordOrZero(sp + 0x28u);
+                                uint sp2c = TraceReadWordOrZero(sp + 0x2Cu);
+                                uint t70 = TraceReadWordOrZero(t7 + 0x0u);
+                                uint t74 = TraceReadWordOrZero(t7 + 0x4u);
+                                uint t78 = TraceReadWordOrZero(t7 + 0x8u);
+                                uint t7c = TraceReadWordOrZero(t7 + 0xCu);
+                                Console.WriteLine(
+                                    $"[N64VIPROD] #{_traceViProducerWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} " +
+                                    $"t2=0x{t2:x16} t3=0x{t3:x16} t4=0x{t4:x16} t5=0x{t5:x16} " +
+                                    $"t6=0x{t6:x16} t7=0x{t7:x16} s0=0x{s0:x16} s1=0x{s1:x16} s2=0x{s2:x16} s3=0x{s3:x16} s4=0x{s4:x16} " +
+                                    $"sp=0x{sp:x16} ra=0x{ra:x16} " +
+                                    $"[sp+20]=0x{sp20:x8} [sp+24]=0x{sp24:x8} [sp+28]=0x{sp28:x8} [sp+2c]=0x{sp2c:x8} " +
+                                    $"[t7+0]=0x{t70:x8} [t7+4]=0x{t74:x8} [t7+8]=0x{t78:x8} [t7+c]=0x{t7c:x8}");
+                            }
+
+                            if (TracePcWindow
+                                && _tracePcWindowCount < TracePcWindowLimit
+                                && pc >= TracePcWindowStart
+                                && pc <= TracePcWindowEnd)
+                            {
+                                _tracePcWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                ulong cop0Status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
+                                ulong cop0Cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
+                                uint miIntr = TraceReadWordOrZero(0xA4300008u);
+                                uint miMask = TraceReadWordOrZero(0xA430000Cu);
+                                uint viCurrent = TraceReadWordOrZero(0xA4400010u);
+                                Console.WriteLine(
+                                    $"[N64PCWIN] #{_tracePcWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} s0=0x{s0:x16} s1=0x{s1:x16} " +
+                                    $"sp=0x{sp:x16} ra=0x{ra:x16} " +
+                                    $"cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} " +
+                                    $"miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} viCurrent=0x{viCurrent:x8}");
                             }
 
                             if (TraceMegaLowRamWindow
