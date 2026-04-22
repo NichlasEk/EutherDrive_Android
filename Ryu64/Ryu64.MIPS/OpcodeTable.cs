@@ -144,6 +144,7 @@ namespace Ryu64.MIPS
             SetOpcode("00000000000XXXXXXXXXXXXXXX000011", InstInterp.SRA,    "SRA R[{2}], R[{1}], 0x{3:x2}");
             SetOpcode("00000000000XXXXXXXXXXXXXXX000010", InstInterp.SRL,    "SRL R[{2}], R[{1}], 0x{3:x2}");
             SetOpcode("000000XXXXXXXXXXXXXXX00000000110", InstInterp.SRLV,   "SRLV R[{2}], R[{1}], R[{0}]");
+            SetOpcode("000000XXXXXXXXXXXXXXX00000000111", InstInterp.SRAV,   "SRAV R[{2}], R[{1}], R[{0}]");
             SetOpcode("00000000000XXXXXXXXXXXXXXX111000", InstInterp.DSLL,   "DSLL R[{2}], R[{1}], 0x{3:x2}");
             SetOpcode("00000000000XXXXXXXXXXXXXXX111010", InstInterp.DSRL,   "DSRL R[{2}], R[{1}], 0x{3:x2}");
             SetOpcode("00000000000XXXXXXXXXXXXXXX111011", InstInterp.DSRA,   "DSRA R[{2}], R[{1}], 0x{3:x2}");

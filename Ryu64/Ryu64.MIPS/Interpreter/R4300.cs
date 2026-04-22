@@ -36,6 +36,7 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EARLY_LOOP"), "1", StringComparison.Ordinal);
         private static readonly int TraceEarlyLoopWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_EARLY_LOOP_LIMIT", 6000);
         private static int _traceEarlyLoopWindowCount = 0;
+        private static int _traceBootFatalWindowCount = 0;
         private static readonly bool TraceEretWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_ERET_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceEretWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_ERET_WINDOW_LIMIT", 200);
@@ -89,9 +90,13 @@ namespace Ryu64.MIPS
         private static readonly int TraceMegaRspBufferWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_RSPBUF_WINDOW_LIMIT", 256);
         private static int _traceMegaRspBufferWindowCount = 0;
         private static readonly bool TraceMegaWaitWindow =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_LATE_WINDOW"), "1", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_WAIT_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaWaitWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_WAIT_WINDOW_LIMIT", 256);
         private static int _traceMegaWaitWindowCount = 0;
+        private static readonly bool TraceMegaIdleWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_IDLE_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaIdleWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_IDLE_WINDOW_LIMIT", 256);
+        private static int _traceMegaIdleWindowCount = 0;
         private static readonly bool TraceMegaFatalWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_FATAL_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaFatalWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_FATAL_WINDOW_LIMIT", 256);
@@ -100,6 +105,14 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_STATUS_CALL"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaStatusCallLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_STATUS_CALL_LIMIT", 96);
         private static int _traceMegaStatusCallCount = 0;
+        private static readonly bool TraceMegaPiCallbackWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_PI_CALLBACK"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaPiCallbackWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_PI_CALLBACK_LIMIT", 192);
+        private static int _traceMegaPiCallbackWindowCount = 0;
+        private static readonly bool TraceMegaLowRamWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_LOWRAM_WINDOW"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMegaLowRamWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_LOWRAM_WINDOW_LIMIT", 192);
+        private static int _traceMegaLowRamWindowCount = 0;
         private const ulong StatusExlBit = 1UL << 1;
         private const ulong StatusErlBit = 1UL << 2;
         private const ulong StatusIeBit = 1UL << 0;
@@ -580,12 +593,64 @@ namespace Ryu64.MIPS
         private const uint CRC_iQue_2   = 0xB98CED9A;
         private const uint CRC_iQue_3   = 0xE71C2766;
 
+        private const ulong IPL3_SUM_NUS_5101 = 0x000000A5F80BF620UL;
+        private const ulong IPL3_SUM_NUS_6101 = 0x000000D0027FDF31UL;
+        private const ulong IPL3_SUM_NUS_6101_ALT = 0x000000CFFB631223UL;
+        private const ulong IPL3_SUM_NUS_6102 = 0x000000D057C85244UL;
+        private const ulong IPL3_SUM_NUS_6103 = 0x000000D6497E414BUL;
+        private const ulong IPL3_SUM_NUS_6105 = 0x0000011A49F60E96UL;
+        private const ulong IPL3_SUM_NUS_6106 = 0x000000D6D5BE5580UL;
+        private const ulong IPL3_SUM_NUS_5167 = 0x000001053BC19870UL;
+        private const ulong IPL3_SUM_NUS_8303 = 0x000000D2E53EF008UL;
+        private const ulong IPL3_SUM_NUS_8401 = 0x000000D2E53EF39FUL;
+        private const ulong IPL3_SUM_NUS_8501 = 0x000000D2E53E5DDAUL;
+
+        private static ulong SumIpl3Words(uint startAddress, int length)
+        {
+            ulong sum = 0;
+            int wordCount = length >> 2;
+
+            for (int i = 0; i < wordCount; ++i)
+                sum += memory.ReadUInt32(startAddress + ((uint)i << 2));
+
+            return sum;
+        }
 
         private static uint GetCICSeed()
         {
             // Use kseg1 alias for cart ROM reads during early boot.
             // Data-side TLB may not be initialized yet.
             const uint cartBootBaseKseg1 = 0xB0000040u;
+            ulong ipl3Sum = SumIpl3Words(cartBootBaseKseg1, 0xFC0);
+
+            switch (ipl3Sum)
+            {
+                case IPL3_SUM_NUS_5101:
+                    return CIC_SEED_NUS_5101;
+
+                case IPL3_SUM_NUS_6101:
+                case IPL3_SUM_NUS_6101_ALT:
+                    return CIC_SEED_NUS_6101;
+
+                case IPL3_SUM_NUS_6102:
+                    return CIC_SEED_NUS_6102;
+
+                case IPL3_SUM_NUS_6103:
+                    return CIC_SEED_NUS_6103;
+
+                case IPL3_SUM_NUS_6105:
+                    return CIC_SEED_NUS_6105;
+
+                case IPL3_SUM_NUS_6106:
+                    return CIC_SEED_NUS_6106;
+
+                case IPL3_SUM_NUS_5167:
+                case IPL3_SUM_NUS_8303:
+                case IPL3_SUM_NUS_8401:
+                case IPL3_SUM_NUS_8501:
+                    return CIC_SEED_NUS_8303;
+            }
+
             uint CRC        = CRC32(cartBootBaseKseg1, 0xFC0);
             uint Aleck64CRC = CRC32(cartBootBaseKseg1, 0xBC0);
 
@@ -593,7 +658,8 @@ namespace Ryu64.MIPS
             switch (CRC)
             {
                 default:
-                    Common.Logger.PrintWarningLine("Unknown CIC, defaulting to seed CIC-6101.");
+                    Common.Logger.PrintWarningLine(
+                        $"Unknown CIC (ipl3sum=0x{ipl3Sum:x16}, crc=0x{CRC:x8}), defaulting to seed CIC-6101.");
                     return CIC_SEED_NUS_6101;
 
                 case CRC_NUS_6101:
@@ -618,6 +684,11 @@ namespace Ryu64.MIPS
                 case CRC_NUS_8303:
                     return CIC_SEED_NUS_8303;
             }
+        }
+
+        private static uint GetBootSeedByte(uint cicSeed)
+        {
+            return (cicSeed >> 8) & 0xFFu;
         }
 
         public static void InterpretOpcode(uint Opcode)
@@ -688,42 +759,53 @@ namespace Ryu64.MIPS
             uint osVersion = 0; // 00 = 1.0, 15 = 2.5, etc.
             uint TVType    = 1; // 0 = PAL, 1 = NTSC, 2 = MPAL
 
-            Registers.R4300.Reg[1]  = 0x0000000000000001;
-            Registers.R4300.Reg[2]  = 0x000000000EBDA536;
-            Registers.R4300.Reg[3]  = 0x000000000EBDA536;
-            Registers.R4300.Reg[4]  = 0x000000000000A536;
-            Registers.R4300.Reg[5]  = 0xFFFFFFFFC0F1D859;
-            Registers.R4300.Reg[6]  = 0xFFFFFFFFA4001F0C;
-            Registers.R4300.Reg[7]  = 0xFFFFFFFFA4001F08;
-            Registers.R4300.Reg[8]  = 0x00000000000000C0;
-            Registers.R4300.Reg[10] = 0x0000000000000040;
-            Registers.R4300.Reg[11] = 0xFFFFFFFFA4000040;
-            Registers.R4300.Reg[12] = 0xFFFFFFFFED10D0B3;
-            Registers.R4300.Reg[13] = 0x000000001402A4CC;
-            Registers.R4300.Reg[14] = 0x000000002DE108EA;
-            Registers.R4300.Reg[15] = 0x000000003103E121;
-            Registers.R4300.Reg[19] = RomType;
-            Registers.R4300.Reg[20] = TVType;
-            Registers.R4300.Reg[21] = ResetType;
             uint cicSeed = GetCICSeed();
-            Registers.R4300.Reg[22] = cicSeed & 0xFF;
-            Registers.R4300.Reg[23] = 0;
-            Registers.R4300.Reg[25] = 0xFFFFFFFF9DEBB54F;
-            Registers.R4300.Reg[29] = 0xFFFFFFFFA4001FF0;
-            Registers.R4300.Reg[31] = 0xFFFFFFFFA4001550;
-            Registers.R4300.HI      = 0x000000003FC18657;
-            Registers.R4300.LO      = 0x000000003103E121;
-            Registers.R4300.PC      = 0xA4000040;
+
+            if (UseBootRomHleStartup)
+            {
+                // Match Mupen/CEN64-style boot HLE bring-up: start from a clean CPU state
+                // and let the HLE path seed only the registers IPL3 is documented to need.
+                Registers.R4300.HI = 0;
+                Registers.R4300.LO = 0;
+                Registers.R4300.PC = 0xA4000040;
+            }
+            else
+            {
+                Registers.R4300.Reg[1]  = 0x0000000000000001;
+                Registers.R4300.Reg[2]  = 0x000000000EBDA536;
+                Registers.R4300.Reg[3]  = 0x000000000EBDA536;
+                Registers.R4300.Reg[4]  = 0x000000000000A536;
+                Registers.R4300.Reg[5]  = 0xFFFFFFFFC0F1D859;
+                Registers.R4300.Reg[6]  = 0xFFFFFFFFA4001F0C;
+                Registers.R4300.Reg[7]  = 0xFFFFFFFFA4001F08;
+                Registers.R4300.Reg[8]  = 0x00000000000000C0;
+                Registers.R4300.Reg[10] = 0x0000000000000040;
+                Registers.R4300.Reg[11] = 0xFFFFFFFFA4000040;
+                Registers.R4300.Reg[12] = 0xFFFFFFFFED10D0B3;
+                Registers.R4300.Reg[13] = 0x000000001402A4CC;
+                Registers.R4300.Reg[14] = 0x000000002DE108EA;
+                Registers.R4300.Reg[15] = 0x000000003103E121;
+                Registers.R4300.Reg[19] = RomType;
+                Registers.R4300.Reg[20] = TVType;
+                Registers.R4300.Reg[21] = ResetType;
+                Registers.R4300.Reg[22] = GetBootSeedByte(cicSeed);
+                Registers.R4300.Reg[23] = 0;
+                Registers.R4300.Reg[25] = 0xFFFFFFFF9DEBB54F;
+                Registers.R4300.Reg[29] = 0xFFFFFFFFA4001FF0;
+                Registers.R4300.Reg[31] = 0xFFFFFFFFA4001550;
+                Registers.R4300.HI      = 0x000000003FC18657;
+                Registers.R4300.LO      = 0x000000003103E121;
+                Registers.R4300.PC      = 0xA4000040;
+            }
 
             memory.FastMemoryCopy(0xA4000000, 0xB0000000, 0x1000); // Load the 4 KiB IPL3 boot code into SP memory.
 
-            // Match mupen's reset_pif()/bootrom_hle expectations:
             // PIF RAM[0x24] carries reset metadata and control flags start cleared.
             uint pif24 =
                 (((RomType & 0x1u) << 19)
                 | ((0u & 0x1u) << 18) // s7
                 | ((ResetType & 0x1u) << 17)
-                | ((cicSeed & 0xFFu) << 8)
+                | (GetBootSeedByte(cicSeed) << 8)
                 | 0x3Fu);
             memory.WriteUInt32(0xBFC007E4u, pif24);
             memory.WriteUInt8(0xBFC007FFu, 0x00);
@@ -757,6 +839,8 @@ namespace Ryu64.MIPS
             _traceMegaWaitWindowCount = 0;
             _traceMegaFatalWindowCount = 0;
             _traceMegaStatusCallCount = 0;
+            _traceMegaPiCallbackWindowCount = 0;
+            _traceMegaLowRamWindowCount = 0;
             ClearLoadLinkedReservation();
 
             OpcodeTable.Init();
@@ -957,6 +1041,50 @@ namespace Ryu64.MIPS
                                     $"piStatus=0x{memory.ReadUInt32(0x04600010):x8}");
                             }
 
+                            if (_traceBootFatalWindowCount < 160
+                                && pc >= 0x800001C0
+                                && pc <= 0x80000250)
+                            {
+                                _traceBootFatalWindowCount++;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong s4 = Registers.R4300.Reg[20];
+                                ulong s5 = Registers.R4300.Reg[21];
+                                ulong s6 = Registers.R4300.Reg[22];
+                                ulong s7 = Registers.R4300.Reg[23];
+                                uint bootPif24 = TraceReadWordOrZero(0xBFC007E4u);
+                                uint low300 = TraceReadWordOrZero(0x80000300u);
+                                uint low304 = TraceReadWordOrZero(0x80000304u);
+                                uint low30c = TraceReadWordOrZero(0x8000030Cu);
+                                uint low314 = TraceReadWordOrZero(0x80000314u);
+                                uint low318 = TraceReadWordOrZero(0x80000318u);
+                                uint t0w = TraceReadWordOrZero(t0);
+                                uint t1w = TraceReadWordOrZero(t1);
+                                uint a0w = TraceReadWordOrZero(a0);
+                                uint v0w = TraceReadWordOrZero(v0);
+
+                                Console.WriteLine(
+                                    $"[N64BOOTFATAL] #{_traceBootFatalWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} " +
+                                    $"s3=0x{s3:x16} s4=0x{s4:x16} s5=0x{s5:x16} s6=0x{s6:x16} s7=0x{s7:x16} " +
+                                    $"[a0]=0x{a0w:x8} [v0]=0x{v0w:x8} [t0]=0x{t0w:x8} [t1]=0x{t1w:x8} " +
+                                    $"pif24=0x{bootPif24:x8} low300=0x{low300:x8} low304=0x{low304:x8} low30c=0x{low30c:x8} " +
+                                    $"low314=0x{low314:x8} low318=0x{low318:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"piStatus=0x{memory.ReadUInt32(0x04600010):x8} siStatus=0x{memory.ReadUInt32(0x04800018):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
                             if (TraceEretWindow
                                 && _traceEretWindowCount < TraceEretWindowLimit
                                 && pc >= 0x80327de0
@@ -1057,7 +1185,7 @@ namespace Ryu64.MIPS
                                 ulong v1 = Registers.R4300.Reg[3];
                                 ulong t0 = Registers.R4300.Reg[8];
                                 ulong t1 = Registers.R4300.Reg[9];
-                                uint d0f80 = 0, d0f84 = 0, d0f88 = 0, d0f8c = 0, d0f90 = 0, d0fb8 = 0, dfd88 = 0, dfd90 = 0, cb = 0;
+                                uint d0f80 = 0, d0f84 = 0, d0f88 = 0, d0f8c = 0, d0f90 = 0, d0fb8 = 0, cfd88 = 0, cfd90 = 0, cb = 0;
                                 try
                                 {
                                     d0f80 = memory.ReadUInt32(0x800D0F80u);
@@ -1066,8 +1194,8 @@ namespace Ryu64.MIPS
                                     d0f8c = memory.ReadUInt32(0x800D0F8Cu);
                                     d0f90 = memory.ReadUInt32(0x800D0F90u);
                                     d0fb8 = memory.ReadUInt32(0x800D0FB8u);
-                                    dfd88 = memory.ReadUInt32(0x800DFD88u);
-                                    dfd90 = memory.ReadUInt32(0x800DFD90u);
+                                    cfd88 = memory.ReadUInt32(0x800CFD88u);
+                                    cfd90 = memory.ReadUInt32(0x800CFD90u);
                                     cb = memory.ReadUInt32(0x80204984u);
                                 }
                                 catch
@@ -1079,7 +1207,7 @@ namespace Ryu64.MIPS
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
                                     $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} " +
                                     $"d0f80=0x{d0f80:x8} d0f84=0x{d0f84:x8} d0f88=0x{d0f88:x8} d0f8c=0x{d0f8c:x8} " +
-                                    $"d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} dfd88=0x{dfd88:x8} dfd90=0x{dfd90:x8} cb=0x{cb:x8} " +
+                                    $"d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} cfd88=0x{cfd88:x8} cfd90=0x{cfd90:x8} cb=0x{cb:x8} " +
                                     $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
                                     $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
                             }
@@ -1118,9 +1246,9 @@ namespace Ryu64.MIPS
                                     uint effw4 = TraceReadWordOrZero(effAddr + 4u);
                                     uint v0w = TraceReadWordOrZero(v0);
                                     uint v0w4 = TraceReadWordOrZero(v0 + 4u);
-                                    uint dfd88 = TraceReadWordOrZero(0x800DFD88u);
+                                    uint cfd88 = TraceReadWordOrZero(0x800CFD88u);
                                     uint dfd8c = TraceReadWordOrZero(0x800DFD8Cu);
-                                    uint dfd90 = TraceReadWordOrZero(0x800DFD90u);
+                                    uint cfd90 = TraceReadWordOrZero(0x800CFD90u);
                                     uint d0f90 = TraceReadWordOrZero(0x800D0F90u);
                                     uint d0fb8 = TraceReadWordOrZero(0x800D0FB8u);
                                     uint cb = TraceReadWordOrZero(0x80204984u);
@@ -1131,7 +1259,7 @@ namespace Ryu64.MIPS
                                         $"t0=0x{t0:x16} t1=0x{t1:x16} ra=0x{ra:x16} " +
                                         $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
                                         $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} " +
-                                        $"dfd88=0x{dfd88:x8} dfd8c=0x{dfd8c:x8} dfd90=0x{dfd90:x8} d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} cb=0x{cb:x8} " +
+                                        $"cfd88=0x{cfd88:x8} dfd8c=0x{dfd8c:x8} cfd90=0x{cfd90:x8} d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} cb=0x{cb:x8} " +
                                         $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
                                         $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
                                 }
@@ -1142,6 +1270,7 @@ namespace Ryu64.MIPS
                                 && ((pc >= 0x80089E80u && pc <= 0x80089EF0u)
                                     || (pc >= 0x80093A00u && pc <= 0x80093B20u)
                                     || (pc >= 0x80092A90u && pc <= 0x80092EC0u)
+                                    || (pc >= 0x8009B900u && pc <= 0x8009B980u)
                                     || (pc >= 0x80094440u && pc <= 0x800944C0u)
                                     || (pc >= 0x80092EA0u && pc <= 0x80092EC0u)
                                     || (pc >= 0x800269F0u && pc <= 0x80026A30u)
@@ -1187,8 +1316,12 @@ namespace Ryu64.MIPS
                                 uint cb = TraceReadWordOrZero(0x80204984u);
                                 uint late30 = TraceReadWordOrZero(0x80204830u);
                                 uint late78 = TraceReadWordOrZero(0x80204978u);
-                                uint lateB0 = TraceReadWordOrZero(0x801FFBB0u);
-                                uint lateB4 = TraceReadWordOrZero(0x801FFBB4u);
+                                uint cb90 = TraceReadWordOrZero(0x800D0F90u);
+                                uint cbb8 = TraceReadWordOrZero(0x800D0FB8u);
+                                uint cbfd88 = TraceReadWordOrZero(0x800CFD88u);
+                                uint cbfd90 = TraceReadWordOrZero(0x800CFD90u);
+                                uint lateB0 = TraceReadWordOrZero(0x8020FBB0u);
+                                uint lateB4 = TraceReadWordOrZero(0x8020FBB4u);
                                 uint piStatus = memory.ReadUInt32(0x04600010u);
                                 uint viCurrent = memory.ReadUInt32(0x04400010u);
                                 uint piDram = memory.ReadUInt32(0x04600000u);
@@ -1203,7 +1336,8 @@ namespace Ryu64.MIPS
                                     $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} [v1]=0x{v1w:x8} [v1+4]=0x{v1w4:x8} " +
                                     $"[s0]=0x{s0w:x8} [s0+4]=0x{s0w4:x8} [s1]=0x{s1w:x8} [s1+4]=0x{s1w4:x8} " +
                                     $"[s2]=0x{s2w:x8} [s2+4]=0x{s2w4:x8} [s3]=0x{s3w:x8} [s3+4]=0x{s3w4:x8} " +
-                                    $"m204830=0x{late30:x8} m204978=0x{late78:x8} m1ffbb0=0x{lateB0:x8} m1ffbb4=0x{lateB4:x8} cb=0x{cb:x8} " +
+                                    $"m204830=0x{late30:x8} m204978=0x{late78:x8} d0f90=0x{cb90:x8} d0fb8=0x{cbb8:x8} cfd88=0x{cbfd88:x8} cfd90=0x{cbfd90:x8} " +
+                                    $"m20fbb0=0x{lateB0:x8} m20fbb4=0x{lateB4:x8} cb=0x{cb:x8} " +
                                     $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
                                     $"spStatus=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8} " +
                                     $"piStatus=0x{piStatus:x8} viCurrent=0x{viCurrent:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} " +
@@ -1249,6 +1383,57 @@ namespace Ryu64.MIPS
                                     $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
                                     $"viCurrent=0x{memory.ReadUInt32(0x04400010):x8} piStatus=0x{memory.ReadUInt32(0x04600010):x8} " +
                                     $"piDram=0x{memory.ReadUInt32(0x04600000):x8} piCart=0x{memory.ReadUInt32(0x04600004):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
+                            if (TraceMegaIdleWindow
+                                && _traceMegaIdleWindowCount < TraceMegaIdleWindowLimit
+                                && ((pc >= 0x80026A18u && pc <= 0x80026A24u)
+                                    || (pc >= 0x8009AAB8u && pc <= 0x8009AAC4u)
+                                    || (pc >= 0x800A1690u && pc <= 0x800A16A8u)))
+                            {
+                                _traceMegaIdleWindowCount++;
+                                OpcodeTable.OpcodeDesc idleDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = idleDesc.op1;
+                                int rt = idleDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong s2 = Registers.R4300.Reg[18];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                ulong effAddr = rsValue + (ulong)(int)(short)idleDesc.Imm;
+                                uint rsw = TraceReadWordOrZero(rsValue);
+                                uint effw = TraceReadWordOrZero(effAddr);
+                                uint v0w = TraceReadWordOrZero(v0);
+                                uint v1w = TraceReadWordOrZero(v1);
+                                uint idle30 = TraceReadWordOrZero(0x80204830u);
+                                uint idle78 = TraceReadWordOrZero(0x80204978u);
+                                uint idle84 = TraceReadWordOrZero(0x80204984u);
+                                uint idleCfd88 = TraceReadWordOrZero(0x800CFD88u);
+                                uint idleCfd90 = TraceReadWordOrZero(0x800CFD90u);
+                                uint idle2bf0 = TraceReadWordOrZero(0x80182BF0u);
+                                uint idle2bf4 = TraceReadWordOrZero(0x80182BF4u);
+                                Common.Logger.PrintWarningLine(
+                                    $"[N64MEGAIDLE] #{_traceMegaIdleWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} s0=0x{s0:x16} s1=0x{s1:x16} s2=0x{s2:x16} s3=0x{s3:x16} sp=0x{sp:x16} ra=0x{ra:x16} " +
+                                    $"[rs]=0x{rsw:x8} [eff]=0x{effw:x8} [v0]=0x{v0w:x8} [v1]=0x{v1w:x8} " +
+                                    $"m204830=0x{idle30:x8} m204978=0x{idle78:x8} m204984=0x{idle84:x8} " +
+                                    $"cfd88=0x{idleCfd88:x8} cfd90=0x{idleCfd90:x8} m182bf0=0x{idle2bf0:x8} m182bf4=0x{idle2bf4:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"spStatus=0x{memory.ReadUInt32(0x04040010):x8} spMem=0x{memory.ReadUInt32(0x04040000):x8} spDram=0x{memory.ReadUInt32(0x04040004):x8} " +
+                                    $"spRdLen=0x{memory.ReadUInt32(0x04040008):x8} spWrLen=0x{memory.ReadUInt32(0x0404000C):x8} aiLen=0x{memory.ReadUInt32(0x04500004):x8} " +
+                                    $"piStatus=0x{memory.ReadUInt32(0x04600010):x8} viCurrent=0x{memory.ReadUInt32(0x04400010):x8} " +
                                     $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
                             }
 
@@ -1360,8 +1545,8 @@ namespace Ryu64.MIPS
                                 uint v0w4 = TraceReadWordOrZero(v0 + 4u);
                                 uint late30 = TraceReadWordOrZero(0x80204830u);
                                 uint late78 = TraceReadWordOrZero(0x80204978u);
-                                uint lateB0 = TraceReadWordOrZero(0x801FFBB0u);
-                                uint lateB4 = TraceReadWordOrZero(0x801FFBB4u);
+                                uint lateB0 = TraceReadWordOrZero(0x8020FBB0u);
+                                uint lateB4 = TraceReadWordOrZero(0x8020FBB4u);
                                 uint late2be8 = TraceReadWordOrZero(0x80182BE8u);
                                 uint latec3c4 = TraceReadWordOrZero(0x801CC3C4u);
                                 uint latec3c8 = TraceReadWordOrZero(0x801CC3C8u);
@@ -1373,7 +1558,7 @@ namespace Ryu64.MIPS
                                     $"v0=0x{v0:x16} v1=0x{v1:x16} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} ra=0x{ra:x16} " +
                                     $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
                                     $"[v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} " +
-                                    $"m204830=0x{late30:x8} m204978=0x{late78:x8} m1ffbb0=0x{lateB0:x8} m1ffbb4=0x{lateB4:x8} " +
+                                    $"m204830=0x{late30:x8} m204978=0x{late78:x8} m20fbb0=0x{lateB0:x8} m20fbb4=0x{lateB4:x8} " +
                                     $"m182be8=0x{late2be8:x8} mc3c4=0x{latec3c4:x8} mc3c8=0x{latec3c8:x8} cb=0x{cb:x8} " +
                                     $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
                                     $"sp=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8} " +
@@ -1411,6 +1596,52 @@ namespace Ryu64.MIPS
                                     $"m182be8=0x{status2be8:x8} mc3c4=0x{statusc3c4:x8} mc3c8=0x{statusc3c8:x8} " +
                                     $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
                                     $"sp=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8}");
+                            }
+
+                            if (TraceMegaPiCallbackWindow
+                                && _traceMegaPiCallbackWindowCount < TraceMegaPiCallbackWindowLimit
+                                && ((pc >= 0x80025DF0u && pc <= 0x80025E20u)
+                                    || (pc >= 0x8008A020u && pc <= 0x8008A0F0u)
+                                    || (pc >= 0x80091FD0u && pc <= 0x80092010u)
+                                    || (pc >= 0x80092EA8u && pc <= 0x80092EC4u)
+                                    || (pc >= 0x8009A460u && pc <= 0x8009A490u)
+                                    || (pc >= 0x8009B900u && pc <= 0x8009B980u)))
+                            {
+                                _traceMegaPiCallbackWindowCount++;
+                                OpcodeTable.OpcodeDesc piCbDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = piCbDesc.op1;
+                                int rt = piCbDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                ulong effAddr = rsValue + (ulong)(int)(short)piCbDesc.Imm;
+                                uint rsw = TraceReadWordOrZero(rsValue);
+                                uint effw = TraceReadWordOrZero(effAddr);
+                                uint cb = TraceReadWordOrZero(0x80204984u);
+                                uint cb78 = TraceReadWordOrZero(0x80204978u);
+                                uint d0f90 = TraceReadWordOrZero(0x800D0F90u);
+                                uint d0fb8 = TraceReadWordOrZero(0x800D0FB8u);
+                                uint cfd88 = TraceReadWordOrZero(0x800CFD88u);
+                                uint cfd90 = TraceReadWordOrZero(0x800CFD90u);
+                                Common.Logger.PrintWarningLine(
+                                    $"[N64MEGAPICB] #{_traceMegaPiCallbackWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} eff=0x{effAddr:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} s0=0x{s0:x16} s1=0x{s1:x16} sp=0x{sp:x16} ra=0x{ra:x16} " +
+                                    $"[rs]=0x{rsw:x8} [eff]=0x{effw:x8} cb=0x{cb:x8} cb78=0x{cb78:x8} " +
+                                    $"d0f90=0x{d0f90:x8} d0fb8=0x{d0fb8:x8} cfd88=0x{cfd88:x8} cfd90=0x{cfd90:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"piStatus=0x{memory.ReadUInt32(0x04600010):x8} piDram=0x{memory.ReadUInt32(0x04600000):x8} piCart=0x{memory.ReadUInt32(0x04600004):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
                             }
 
                             if (TraceSm64QueueWindow
@@ -1534,6 +1765,58 @@ namespace Ryu64.MIPS
                                     $"s0=0x{s0:x16} s1=0x{s1:x16}");
                             }
 
+                            if (TraceMegaLowRamWindow
+                                && _traceMegaLowRamWindowCount < TraceMegaLowRamWindowLimit
+                                && pc >= 0x800A1680u
+                                && pc <= 0x800A16F0u)
+                            {
+                                _traceMegaLowRamWindowCount++;
+                                OpcodeTable.OpcodeDesc lowRamDesc = new OpcodeTable.OpcodeDesc(Opcode);
+                                int rs = lowRamDesc.op1;
+                                int rt = lowRamDesc.op2;
+                                ulong rsValue = Registers.R4300.Reg[rs];
+                                ulong rtValue = Registers.R4300.Reg[rt];
+                                short imm = (short)lowRamDesc.Imm;
+                                ulong effAddr = rsValue + (ulong)(long)imm;
+                                ulong a0 = Registers.R4300.Reg[4];
+                                ulong a1 = Registers.R4300.Reg[5];
+                                ulong a2 = Registers.R4300.Reg[6];
+                                ulong a3 = Registers.R4300.Reg[7];
+                                ulong v0 = Registers.R4300.Reg[2];
+                                ulong v1 = Registers.R4300.Reg[3];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
+                                ulong t3 = Registers.R4300.Reg[11];
+                                ulong s0 = Registers.R4300.Reg[16];
+                                ulong s1 = Registers.R4300.Reg[17];
+                                ulong s2 = Registers.R4300.Reg[18];
+                                ulong s3 = Registers.R4300.Reg[19];
+                                ulong sp = Registers.R4300.Reg[29];
+                                ulong ra = Registers.R4300.Reg[31];
+                                uint rsw = TraceReadWordOrZero(rsValue);
+                                uint rsw4 = TraceReadWordOrZero(rsValue + 4u);
+                                uint effw = TraceReadWordOrZero(effAddr);
+                                uint effw4 = TraceReadWordOrZero(effAddr + 4u);
+                                uint low100 = TraceReadWordOrZero(0x80000100u);
+                                uint low180 = TraceReadWordOrZero(0x80000180u);
+                                uint low184 = TraceReadWordOrZero(0x80000184u);
+                                uint low300 = TraceReadWordOrZero(0x80000300u);
+                                uint cb = TraceReadWordOrZero(0x80204984u);
+                                Console.WriteLine(
+                                    $"[N64MEGALOWRAM] #{_traceMegaLowRamWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
+                                    $"rs=r{rs}=0x{rsValue:x16} rt=r{rt}=0x{rtValue:x16} imm={imm} eff=0x{effAddr:x16} " +
+                                    $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} v0=0x{v0:x16} v1=0x{v1:x16} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} t3=0x{t3:x16} " +
+                                    $"s0=0x{s0:x16} s1=0x{s1:x16} s2=0x{s2:x16} s3=0x{s3:x16} sp=0x{sp:x16} ra=0x{ra:x16} " +
+                                    $"[rs]=0x{rsw:x8} [rs+4]=0x{rsw4:x8} [eff]=0x{effw:x8} [eff+4]=0x{effw4:x8} " +
+                                    $"m100=0x{low100:x8} m180=0x{low180:x8} m184=0x{low184:x8} m300=0x{low300:x8} cb=0x{cb:x8} " +
+                                    $"miIntr=0x{memory.ReadUInt32(0x04300008):x8} miMask=0x{memory.ReadUInt32(0x0430000C):x8} " +
+                                    $"spStatus=0x{memory.ReadUInt32(0x04040010):x8} dpc=0x{memory.ReadUInt32(0x0410000c):x8} " +
+                                    $"piStatus=0x{memory.ReadUInt32(0x04600010):x8} viCurrent=0x{memory.ReadUInt32(0x04400010):x8} " +
+                                    $"cop0Status=0x{Registers.COP0.Reg[Registers.COP0.STATUS_REG]:x8} cop0Cause=0x{Registers.COP0.Reg[Registers.COP0.CAUSE_REG]:x8}");
+                            }
+
                             InterpretOpcode(Opcode);
                         }
                         catch (NotImplementedException ex)
@@ -1624,8 +1907,16 @@ namespace Ryu64.MIPS
         {
             Registers.COP0.Reg[Registers.COP0.STATUS_REG] = 0x34000000;
             Registers.COP0.Reg[Registers.COP0.CONFIG_REG] = 0x7006E463;
+            // The HLE fast path skips portions of the real boot ROM that would normally
+            // scrub transient exception state before IPL3 runs. Leaving power-on values
+            // like Cause=0x5c and EPC/BadVAddr=-1 visible here can send some games into
+            // the low-RAM fatal loop immediately during early boot.
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = 0x00000000;
+            Registers.COP0.Reg[Registers.COP0.EPC_REG] = 0x00000000;
+            Registers.COP0.Reg[Registers.COP0.BADVADDR_REG] = 0x00000000;
+            Registers.COP0.Reg[Registers.COP0.ERROREPC_REG] = 0x00000000;
 
-            // Mirror mupen's pif_bootrom_hle_execute() startup subset:
+            // Seed the minimal boot HLE startup subset:
             // stop SP/PI, blank VI, mute AI, and seed IPL3 execution state.
             memory.WriteUInt32(0xA4040010u, 0x0000000Au); // SP_STATUS: halt + clear intr
             memory.WriteUInt32(0xA4600010u, 0x00000003u); // PI_STATUS: reset + clear intr

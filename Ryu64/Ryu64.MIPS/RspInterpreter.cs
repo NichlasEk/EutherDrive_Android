@@ -301,7 +301,7 @@ namespace Ryu64.MIPS
 
         private static bool IsTraceRspWindow(uint pc)
         {
-            return (pc >= 0x0C0 && pc <= 0x0E0)
+            return (pc >= 0x0B0 && pc <= 0x0E0)
                 || (pc >= 0x140 && pc <= 0x198)
                 || (pc >= 0x820 && pc <= 0x850)
                 || (pc >= 0xA40 && pc <= 0xAB0)

@@ -306,6 +306,13 @@
             Registers.R4300.PC += 4;
         }
 
+        public static void SRAV(OpcodeTable.OpcodeDesc Desc)
+        {
+            int shift = (int)(Registers.R4300.Reg[Desc.op1] & 0x1F);
+            SetReg32(Desc.op3, (uint)((int)Reg32(Desc.op2) >> shift));
+            Registers.R4300.PC += 4;
+        }
+
         public static void DSLL(OpcodeTable.OpcodeDesc Desc)
         {
             Registers.R4300.Reg[Desc.op3] = Registers.R4300.Reg[Desc.op2] << Desc.op4;

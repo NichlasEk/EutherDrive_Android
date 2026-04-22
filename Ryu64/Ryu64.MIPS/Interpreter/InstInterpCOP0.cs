@@ -63,7 +63,7 @@ namespace Ryu64.MIPS
                         (value & 0x00000300u);
                     return;
                 case Registers.COP0.CONFIG_REG:
-                    // Match mupen's limited writable subset.
+                    // Keep CONFIG writes to the limited writable subset.
                     Registers.COP0.Reg[reg] =
                         (value & 0x0000000Fu) |
                         (Registers.COP0.Reg[reg] & 0x00008000u) |
@@ -222,8 +222,8 @@ namespace Ryu64.MIPS
             string eretPath;
             if ((status & StatusErlBit) != 0)
             {
-                // Match mupen/N64 bring-up behavior more closely when software restores
-                // ERL without ever seeding ErrorEPC: prefer EPC over the power-on sentinel.
+                // When software restores ERL without ever seeding ErrorEPC,
+                // prefer EPC over the power-on sentinel.
                 if ((uint)errorEpc == (uint)SentinelErrorEpc && (uint)epc != (uint)SentinelErrorEpc)
                 {
                     targetPc = (uint)epc & 0xFFFFFFFCu;
@@ -258,9 +258,9 @@ namespace Ryu64.MIPS
             Registers.R4300.PC = targetPc;
             R4300.ClearLoadLinkedReservation();
 
-            // Mupen rechecks pending interrupts immediately after ERET once EXL/ERL has been
-            // cleared. Without that, guest scheduler code can run past a point where hardware
-            // should have vectored straight back into the general exception handler.
+            // Recheck pending interrupts immediately after ERET once EXL/ERL has been
+            // cleared. Without that, guest scheduler code can run past a point where
+            // hardware should have vectored straight back into the general exception handler.
             R4300.CheckPendingInterruptsNow(targetPc);
         }
     }

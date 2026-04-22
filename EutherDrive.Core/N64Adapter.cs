@@ -35,7 +35,8 @@ public sealed class N64Adapter : IEmulatorCore
     private readonly ulong _targetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_TARGET_CYCLES_PER_RUNFRAME", 300_000);
     private readonly int _runFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_RUNFRAME_WAIT_MS", 12);
     private readonly ulong _bringupTargetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_BRINGUP_TARGET_CYCLES_PER_RUNFRAME", 8_000_000);
-    private readonly int _bringupRunFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_BRINGUP_RUNFRAME_WAIT_MS", 20000);
+    // Keep N64 bringup responsive in the UI; long bootstraps can still opt in to a larger wait via env.
+    private readonly int _bringupRunFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_BRINGUP_RUNFRAME_WAIT_MS", 2000);
     private readonly long _bringupFrameLimit = ReadLongEnv("EUTHERDRIVE_N64_BRINGUP_FRAME_LIMIT", 120);
 
     ~N64Adapter()

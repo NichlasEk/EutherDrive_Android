@@ -191,6 +191,16 @@ namespace Ryu64.MIPS
         public static void SB(OpcodeTable.OpcodeDesc Desc)
         {
             uint addr = EffectiveAddress(Desc);
+            uint pc = Registers.R4300.PC;
+            if (pc >= 0x800A16C0u && pc <= 0x800A16E0u
+                && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            {
+                ulong baseValue = Registers.R4300.Reg[Desc.op1];
+                ulong storeValue = Registers.R4300.Reg[Desc.op2];
+                Common.Logger.PrintWarningLine(
+                    $"[N64SBTRACE] pc=0x{pc:x8} op=0x{Desc.Opcode:x8} rs={Desc.op1} rt={Desc.op2} imm=0x{Desc.Imm:x4} " +
+                    $"base=0x{baseValue:x16} value=0x{storeValue:x16} eff=0x{addr:x8}");
+            }
             R4300.memory.WriteUInt8(addr, (byte)Registers.R4300.Reg[Desc.op2]);
             Registers.R4300.PC += 4;
         }
