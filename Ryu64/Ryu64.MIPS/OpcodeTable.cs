@@ -203,6 +203,8 @@ namespace Ryu64.MIPS
             SetOpcode("01000110000XXXXXXXXXXXXXXX000001", InstInterp.SUB_S, "SUB.S F[{3}], F[{2}], F[{1}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX000010", InstInterp.MUL_S, "MUL.S F[{3}], F[{2}], F[{1}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX000011", InstInterp.DIV_S, "DIV.S F[{3}], F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX000100", InstInterp.SQRT_S, "SQRT.S F[{3}], F[{2}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX000101", InstInterp.ABS_S, "ABS.S F[{3}], F[{2}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX000110", InstInterp.MOV_S, "MOV.S F[{3}], F[{2}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX000111", InstInterp.NEG_S, "NEG.S F[{3}], F[{2}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX001000", InstInterp.ROUND_L_S, "ROUND.L.S F[{3}], F[{2}]");
@@ -220,6 +222,8 @@ namespace Ryu64.MIPS
             SetOpcode("01000110001XXXXXXXXXXXXXXX000001", InstInterp.SUB_D, "SUB.D F[{3}], F[{2}], F[{1}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX000010", InstInterp.MUL_D, "MUL.D F[{3}], F[{2}], F[{1}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX000011", InstInterp.DIV_D, "DIV.D F[{3}], F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX000100", InstInterp.SQRT_D, "SQRT.D F[{3}], F[{2}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX000101", InstInterp.ABS_D, "ABS.D F[{3}], F[{2}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX000110", InstInterp.MOV_D, "MOV.D F[{3}], F[{2}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX000111", InstInterp.NEG_D, "NEG.D F[{3}], F[{2}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX001000", InstInterp.ROUND_L_D, "ROUND.L.D F[{3}], F[{2}]");
@@ -237,12 +241,38 @@ namespace Ryu64.MIPS
             SetOpcode("01000110100XXXXXXXXXXXXXXX100001", InstInterp.CVT_D_W, "CVT.D.W F[{3}], F[{2}]");
             SetOpcode("01000110101XXXXXXXXXXXXXXX100000", InstInterp.CVT_S_L, "CVT.S.L F[{3}], F[{2}]");
             SetOpcode("01000110101XXXXXXXXXXXXXXX100001", InstInterp.CVT_D_L, "CVT.D.L F[{3}], F[{2}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX110000", InstInterp.C_F_S, "C.F.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX110001", InstInterp.C_UN_S, "C.UN.S F[{2}], F[{1}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX110010", InstInterp.C_EQ_S, "C.EQ.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX110011", InstInterp.C_UEQ_S, "C.UEQ.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX110100", InstInterp.C_OLT_S, "C.OLT.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX110101", InstInterp.C_ULT_S, "C.ULT.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX110110", InstInterp.C_OLE_S, "C.OLE.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX110111", InstInterp.C_ULE_S, "C.ULE.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX111000", InstInterp.C_SF_S, "C.SF.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX111001", InstInterp.C_NGLE_S, "C.NGLE.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX111010", InstInterp.C_SEQ_S, "C.SEQ.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX111011", InstInterp.C_NGL_S, "C.NGL.S F[{2}], F[{1}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX111100", InstInterp.C_LT_S, "C.LT.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX111101", InstInterp.C_NGE_S, "C.NGE.S F[{2}], F[{1}]");
             SetOpcode("01000110000XXXXXXXXXXXXXXX111110", InstInterp.C_LE_S, "C.LE.S F[{2}], F[{1}]");
+            SetOpcode("01000110000XXXXXXXXXXXXXXX111111", InstInterp.C_NGT_S, "C.NGT.S F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX110000", InstInterp.C_F_D, "C.F.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX110001", InstInterp.C_UN_D, "C.UN.D F[{2}], F[{1}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX110010", InstInterp.C_EQ_D, "C.EQ.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX110011", InstInterp.C_UEQ_D, "C.UEQ.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX110100", InstInterp.C_OLT_D, "C.OLT.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX110101", InstInterp.C_ULT_D, "C.ULT.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX110110", InstInterp.C_OLE_D, "C.OLE.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX110111", InstInterp.C_ULE_D, "C.ULE.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX111000", InstInterp.C_SF_D, "C.SF.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX111001", InstInterp.C_NGLE_D, "C.NGLE.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX111010", InstInterp.C_SEQ_D, "C.SEQ.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX111011", InstInterp.C_NGL_D, "C.NGL.D F[{2}], F[{1}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX111100", InstInterp.C_LT_D, "C.LT.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX111101", InstInterp.C_NGE_D, "C.NGE.D F[{2}], F[{1}]");
             SetOpcode("01000110001XXXXXXXXXXXXXXX111110", InstInterp.C_LE_D, "C.LE.D F[{2}], F[{1}]");
+            SetOpcode("01000110001XXXXXXXXXXXXXXX111111", InstInterp.C_NGT_D, "C.NGT.D F[{2}], F[{1}]");
 
             // SPECIAL Instructions
             SetOpcode("000000XXXXXXXXXXXXXXXXXXXX001100", InstInterp.SYSCALL, "SYSCALL");

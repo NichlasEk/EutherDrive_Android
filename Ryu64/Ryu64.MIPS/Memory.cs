@@ -27,6 +27,8 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_IRQ"), "1", StringComparison.Ordinal);
         private static readonly bool TraceViRegisterLifecycle =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_REGS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceFramebufferLifecycle =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_FB"), "1", StringComparison.Ordinal);
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
         private static readonly uint? TraceWatchRangeStart = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_START");
         private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
@@ -52,6 +54,8 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INTERPRETER"), "0", StringComparison.Ordinal);
         private static readonly bool EnableRspInterpreterGraphicsOnly =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INTERPRETER_GRAPHICS_ONLY"), "1", StringComparison.Ordinal);
+        private static readonly bool AllowGraphicsRspHleFallback =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_GRAPHICS_HLE_FALLBACK"), "1", StringComparison.Ordinal);
         private static ulong _rspKickCount;
         private static int _traceWatchRangeLogCount;
         private static int _traceExceptionVectorWriteCount;
@@ -85,6 +89,7 @@ namespace Ryu64.MIPS
         private const uint PiStatusError = 0x00000004u;
         private const uint PiStatusInterrupt = 0x00000008u;
         private const uint PiDmaCyclesMinimum = 0x00001000u;
+        private const int FbInfosCount = 6;
 
         private static uint? ParseOptionalHexEnv(string name)
         {
@@ -100,6 +105,17 @@ namespace Ryu64.MIPS
                 return parsed;
 
             return null;
+        }
+
+        private struct TrackedFramebufferInfo
+        {
+            public uint Addr;
+            public uint Size;
+            public uint Width;
+            public uint Height;
+            public uint SetEpoch;
+            public uint WriteEpoch;
+            public uint LastReadEpoch;
         }
 
         private static bool TryGetNormalizedWatchRange(out uint start, out uint end)
@@ -467,6 +483,7 @@ namespace Ryu64.MIPS
         private uint _viFrameDelayCycles;
         private uint _viInterruptCyclesRemaining;
         private uint _viField;
+        private uint _fbInfoEpoch;
         private uint _rdramWriteEpoch;
         private uint _lastViOriginWriteValue;
         private uint _lastViOriginWritePc;
@@ -474,6 +491,7 @@ namespace Ryu64.MIPS
         private uint _lastPlausibleViOriginWritePc;
         private bool _warnedRspTaskHle;
         private bool _warnedRspInterpreterFallback;
+        private bool _warnedRspGraphicsFailLoud;
         private bool _spDmaBusy;
         private bool _spDmaFull;
         private bool _spDmaDelayArmed;
@@ -510,6 +528,8 @@ namespace Ryu64.MIPS
 
         private List<MemEntry> MemoryMapList = new List<MemEntry>();
         private MemEntry[]     MemoryMap;
+        private readonly byte[] _fbDirtyPage = new byte[RdramPageCount];
+        private readonly TrackedFramebufferInfo[] _fbInfos = new TrackedFramebufferInfo[FbInfosCount];
         private readonly uint[] _rdramPageLastWriteEpoch = new uint[RdramPageCount];
 
         public uint LastViOriginWriteValue => _lastViOriginWriteValue;
@@ -538,6 +558,321 @@ namespace Ryu64.MIPS
 
             for (int page = startPage; page <= endPage; page++)
                 _rdramPageLastWriteEpoch[page] = epoch;
+
+            PostFramebufferWrite(baseAddress, size, epoch);
+        }
+
+        private static uint GetFramebufferBufferSize(TrackedFramebufferInfo info)
+        {
+            if (info.Addr == 0 || info.Size == 0 || info.Width == 0 || info.Height == 0)
+                return 0;
+
+            ulong bufferSize = (ulong)info.Size * info.Width * info.Height;
+            return bufferSize > uint.MaxValue ? 0u : (uint)bufferSize;
+        }
+
+        private uint GetFramebufferHeightHint()
+        {
+            uint vStart = ReadBigEndianWord(VI_V_START_REG_RW);
+            uint start = (vStart >> 16) & 0x03FFu;
+            uint end = vStart & 0x03FFu;
+            uint height = (end > start) ? ((end - start) >> 1) : 0u;
+            if (height == 0 || height > 480)
+                height = 240;
+            return height;
+        }
+
+        private uint GetFramebufferBytesPerPixelHint()
+        {
+            uint viStatus = ReadBigEndianWord(VI_STATUS_REG_RW) & 0x3u;
+            if (viStatus == 2u)
+                return 2u;
+            if (viStatus == 3u)
+                return 4u;
+            return 0u;
+        }
+
+        private void RegisterFramebufferInfoFromViRegisters(uint address)
+        {
+            uint width = ReadBigEndianWord(VI_WIDTH_REG_RW) & 0x0FFFu;
+            if (width == 0)
+                width = 320u;
+
+            uint height = GetFramebufferHeightHint();
+            uint bytesPerPixel = GetFramebufferBytesPerPixelHint();
+            if (bytesPerPixel == 0)
+                return;
+
+            RegisterFramebufferInfo(address, bytesPerPixel, width, height);
+        }
+
+        private void MarkFramebufferPagesDirty(uint address, uint length)
+        {
+            if (length == 0)
+                return;
+
+            uint begin = address & 0x1FFFFFFFu;
+            if (begin >= RDRAM.Length)
+                return;
+
+            uint end = begin + length - 1u;
+            if (end >= RDRAM.Length)
+                end = (uint)RDRAM.Length - 1u;
+
+            int startPage = (int)(begin / RdramPageSize);
+            int endPage = (int)(end / RdramPageSize);
+            for (int page = startPage; page <= endPage; page++)
+                _fbDirtyPage[page] = 1;
+        }
+
+        private void RegisterFramebufferInfo(uint address, uint bytesPerPixel, uint width, uint height)
+        {
+            address &= 0x00FFFFFFu;
+            if (address < PlausibleFramebufferOriginFloor
+                || address >= RDRAM.Length
+                || bytesPerPixel == 0
+                || width == 0
+                || height == 0)
+                return;
+
+            ulong requested = (ulong)bytesPerPixel * width * height;
+            if (requested == 0)
+                return;
+
+            if (address + requested > (ulong)RDRAM.Length)
+            {
+                ulong remaining = (ulong)RDRAM.Length - address;
+                ulong rowSize = (ulong)bytesPerPixel * width;
+                if (rowSize == 0)
+                    return;
+
+                height = (uint)Math.Max(1UL, remaining / rowSize);
+                requested = (ulong)bytesPerPixel * width * height;
+                if (requested == 0 || address + requested > (ulong)RDRAM.Length)
+                    return;
+            }
+
+            uint epoch = ++_fbInfoEpoch;
+            int slot = -1;
+            uint oldestEpoch = uint.MaxValue;
+            int oldestSlot = 0;
+
+            for (int i = 0; i < _fbInfos.Length; i++)
+            {
+                ref TrackedFramebufferInfo info = ref _fbInfos[i];
+                if (info.Addr == address && info.Size == bytesPerPixel && info.Width == width)
+                {
+                    slot = i;
+                    break;
+                }
+
+                if (info.Addr == 0 && slot < 0)
+                    slot = i;
+
+                if (info.SetEpoch < oldestEpoch)
+                {
+                    oldestEpoch = info.SetEpoch;
+                    oldestSlot = i;
+                }
+            }
+
+            if (slot < 0)
+                slot = oldestSlot;
+
+            _fbInfos[slot] = new TrackedFramebufferInfo
+            {
+                Addr = address,
+                Size = bytesPerPixel,
+                Width = width,
+                Height = height,
+                SetEpoch = epoch,
+                WriteEpoch = epoch,
+                LastReadEpoch = 0
+            };
+
+            MarkFramebufferPagesDirty(address, (uint)requested);
+
+            if (TraceFramebufferLifecycle)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64FB] register slot={slot} addr=0x{address:x8} size={bytesPerPixel} width={width} height={height} " +
+                    $"setEpoch={epoch} pc=0x{Registers.R4300.PC:x8}");
+            }
+        }
+
+        private void TrackFramebufferInfosFromDpcBuffer(uint start, uint end)
+        {
+            uint baseAddress = start & 0x00FFFFF8u;
+            uint endAddress = end & 0x00FFFFF8u;
+            if (baseAddress >= RDRAM.Length || endAddress > RDRAM.Length || endAddress <= baseAddress)
+                return;
+
+            uint length = endAddress - baseAddress;
+            if (length < 8)
+                return;
+
+            if (length > 0x20000u)
+                length = 0x20000u;
+
+            uint heightHint = GetFramebufferHeightHint();
+            for (uint offset = 0; offset + 8u <= length; offset += 8u)
+            {
+                uint word0 = ReadUInt32Physical(baseAddress + offset);
+                if ((word0 >> 24) != 0xFFu)
+                    continue;
+
+                uint bytesPerPixel;
+                switch ((word0 >> 19) & 0x3u)
+                {
+                    case 0u:
+                    case 1u:
+                        bytesPerPixel = 1u;
+                        break;
+                    case 2u:
+                        bytesPerPixel = 2u;
+                        break;
+                    case 3u:
+                        bytesPerPixel = 4u;
+                        break;
+                    default:
+                        bytesPerPixel = 0u;
+                        break;
+                }
+
+                uint width = (word0 & 0x0FFFu) + 1u;
+                uint address = ReadUInt32Physical(baseAddress + offset + 4u) & 0x00FFFFFFu;
+                if (TraceFramebufferLifecycle)
+                {
+                    Common.Logger.PrintWarningLine(
+                        $"[N64FB] dpc-setcolor start=0x{baseAddress:x8} end=0x{endAddress:x8} off=0x{offset:x} " +
+                        $"w0=0x{word0:x8} addr=0x{address:x8} size={bytesPerPixel} width={width} heightHint={heightHint}");
+                }
+                RegisterFramebufferInfo(address, bytesPerPixel, width, heightHint);
+            }
+        }
+
+        private void PostFramebufferWrite(uint address, uint length, uint epoch)
+        {
+            if (length == 0 || _fbInfos[0].Addr == 0)
+                return;
+
+            uint begin = address & 0x1FFFFFFFu;
+            uint end = begin + length - 1u;
+            if (end >= RDRAM.Length)
+                end = (uint)RDRAM.Length - 1u;
+
+            for (int i = 0; i < _fbInfos.Length; i++)
+            {
+                ref TrackedFramebufferInfo info = ref _fbInfos[i];
+                uint bufferSize = GetFramebufferBufferSize(info);
+                if (bufferSize == 0)
+                    continue;
+
+                uint fbBegin = info.Addr;
+                uint fbEnd = fbBegin + bufferSize - 1u;
+                if (begin > fbEnd || end < fbBegin)
+                    continue;
+
+                info.WriteEpoch = epoch;
+                uint overlapBegin = begin > fbBegin ? begin : fbBegin;
+                uint overlapEnd = end < fbEnd ? end : fbEnd;
+                MarkFramebufferPagesDirty(overlapBegin, overlapEnd - overlapBegin + 1u);
+            }
+        }
+
+        public void NotifyFramebufferConsumerRead(uint address, uint length)
+        {
+            if (length == 0 || _fbInfos[0].Addr == 0)
+                return;
+
+            uint begin = address & 0x1FFFFFFFu;
+            if (begin >= RDRAM.Length)
+                return;
+
+            uint end = begin + length - 1u;
+            if (end >= RDRAM.Length)
+                end = (uint)RDRAM.Length - 1u;
+
+            uint epoch = ++_fbInfoEpoch;
+            for (int i = 0; i < _fbInfos.Length; i++)
+            {
+                ref TrackedFramebufferInfo info = ref _fbInfos[i];
+                uint bufferSize = GetFramebufferBufferSize(info);
+                if (bufferSize == 0)
+                    continue;
+
+                uint fbBegin = info.Addr;
+                uint fbEnd = fbBegin + bufferSize - 1u;
+                if (begin > fbEnd || end < fbBegin)
+                    continue;
+
+                info.LastReadEpoch = epoch;
+
+                uint overlapBegin = begin > fbBegin ? begin : fbBegin;
+                uint overlapEnd = end < fbEnd ? end : fbEnd;
+                int startPage = (int)(overlapBegin / RdramPageSize);
+                int endPage = (int)(overlapEnd / RdramPageSize);
+                for (int page = startPage; page <= endPage; page++)
+                    _fbDirtyPage[page] = 0;
+
+                if (TraceFramebufferLifecycle)
+                {
+                    Common.Logger.PrintWarningLine(
+                        $"[N64FB] read slot={i} addr=0x{info.Addr:x8} read=0x{begin:x8}-0x{end:x8} " +
+                        $"overlap=0x{overlapBegin:x8}-0x{overlapEnd:x8} readEpoch={epoch} pc=0x{Registers.R4300.PC:x8}");
+                }
+            }
+        }
+
+        public uint FindTrackedFramebufferOriginCandidate(uint width, uint height, uint bytesPerPixel, uint viOrigin, out ulong bestScore, out uint bestDirtyPages)
+        {
+            bestScore = 0;
+            bestDirtyPages = 0;
+
+            uint bestOrigin = viOrigin;
+            for (int i = 0; i < _fbInfos.Length; i++)
+            {
+                TrackedFramebufferInfo info = _fbInfos[i];
+                uint bufferSize = GetFramebufferBufferSize(info);
+                if (bufferSize == 0)
+                    continue;
+                if (info.Size != bytesPerPixel)
+                    continue;
+                if (width != 0 && info.Width != 0 && Math.Abs((int)info.Width - (int)width) > 16)
+                    continue;
+                if (height != 0 && info.Height != 0 && Math.Abs((int)info.Height - (int)height) > 48)
+                    continue;
+
+                uint fbBegin = info.Addr;
+                uint fbEnd = fbBegin + bufferSize - 1u;
+                uint dirtyPages = 0;
+                int startPage = (int)(fbBegin / RdramPageSize);
+                int endPage = (int)(fbEnd / RdramPageSize);
+                for (int page = startPage; page <= endPage && page < _fbDirtyPage.Length; page++)
+                {
+                    if (_fbDirtyPage[page] != 0)
+                        dirtyPages++;
+                }
+
+                ulong score = ((ulong)dirtyPages << 48)
+                    | ((ulong)info.WriteEpoch << 16)
+                    | info.SetEpoch;
+
+                if (info.LastReadEpoch != 0 && info.WriteEpoch <= info.LastReadEpoch)
+                    score >>= 4;
+
+                if (viOrigin >= fbBegin && viOrigin <= fbEnd)
+                    score |= 1UL << 60;
+
+                if (score <= bestScore)
+                    continue;
+
+                bestScore = score;
+                bestDirtyPages = dirtyPages;
+                bestOrigin = info.Addr;
+            }
+
+            return bestOrigin;
         }
 
         public uint FindRecentFramebufferOriginCandidate(uint bufferSize, uint viOrigin, out ulong bestScore, out ulong viScore)
@@ -1283,6 +1618,7 @@ namespace Ryu64.MIPS
         {
             uint start = ReadBigEndianWord(DPC_START_REG_RW);
             uint end = ReadBigEndianWord(DPC_END_REG_RW);
+            TrackFramebufferInfosFromDpcBuffer(start, end);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, end);
 
             uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
@@ -1912,6 +2248,11 @@ namespace Ryu64.MIPS
 
         public void SP_SEMAPHORE_READ_EVENT()
         {
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] SP_SEMAPHORE read old=0x{ReadBigEndianWord(SP_SEMAPHORE_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
+            }
             WriteBigEndianWord(SP_SEMAPHORE_REG_R, 1);
         }
 
@@ -2293,6 +2634,7 @@ namespace Ryu64.MIPS
         {
             uint value = ReadBigEndianWord(DPC_END_REG_RW);
             WriteBigEndianWord(DPC_END_REG_RW, value);
+            TrackFramebufferInfosFromDpcBuffer(ReadBigEndianWord(DPC_START_REG_RW), value);
 
             if (TraceN64Io)
             {
@@ -2386,10 +2728,9 @@ namespace Ryu64.MIPS
 
         private void TryDispatchRspTaskInterpreter(ref uint status)
         {
-            if (!TryReadRspTaskFromDmem(out RspTask task))
-                return;
+            bool hasTask = TryReadRspTaskFromDmem(out RspTask task);
 
-            if (EnableRspInterpreterGraphicsOnly && task.Type != 1)
+            if (hasTask && EnableRspInterpreterGraphicsOnly && task.Type != 1)
             {
                 if (EnableRspTaskHleDispatcher)
                     TryDispatchRspTaskHle(ref status);
@@ -2397,9 +2738,9 @@ namespace Ryu64.MIPS
             }
 
             _rspKickCount++;
-            _activeRspTask = task;
+            _activeRspTask = hasTask ? task : default;
 
-            if (TraceN64Io || TraceRspTaskDmem)
+            if (hasTask && (TraceN64Io || TraceRspTaskDmem))
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] RSP interpreter dispatch type={task.Type} flags=0x{task.Flags:x8} " +
@@ -2408,6 +2749,12 @@ namespace Ryu64.MIPS
                     $"data=0x{task.DataPtr:x8}/0x{task.DataSize:x} " +
                     $"yield=0x{task.YieldDataPtr:x8}/0x{task.YieldDataSize:x} " +
                     $"pc=0x{Registers.R4300.PC:x8}");
+            }
+            else if (TraceN64Io || TraceRspTaskDmem)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] RSP interpreter raw dispatch pc=0x{Registers.R4300.PC:x8} rspPc=0x{ReadRspPc():x3} " +
+                    $"spStatus=0x{status:x8} (no valid OSTask at DMEM+0xFC0)");
             }
 
             uint executedInstructions;
@@ -2429,12 +2776,14 @@ namespace Ryu64.MIPS
             if (TraceN64Io || TraceRspTaskDmem)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] RSP interpreter task type={task.Type} executed={executedInstructions} completed={completed} stop='{stopReason}' pc=0x{Registers.R4300.PC:x8}");
+                    $"[N64IO] RSP interpreter task type={(hasTask ? task.Type : 0u)} validTask={hasTask} " +
+                    $"executed={executedInstructions} completed={completed} stop='{stopReason}' pc=0x{Registers.R4300.PC:x8}");
             }
 
             if (!completed)
             {
-                if (EnableRspTaskHleDispatcher)
+                bool allowHleFallback = hasTask && EnableRspTaskHleDispatcher && (task.Type != 1 || AllowGraphicsRspHleFallback);
+                if (allowHleFallback)
                 {
                     if (!_warnedRspInterpreterFallback)
                     {
@@ -2444,6 +2793,26 @@ namespace Ryu64.MIPS
                     }
 
                     TryDispatchRspTaskHle(ref status);
+                    return;
+                }
+
+                if (hasTask && task.Type == 1)
+                {
+                    if (!_warnedRspGraphicsFailLoud)
+                    {
+                        _warnedRspGraphicsFailLoud = true;
+                        Common.Logger.PrintWarningLine(
+                            $"[N64] Graphics RSP task failed in interpreter ({stopReason}); not falling back to fake HLE. " +
+                            "A real producer-side fix is required before framebuffer selection can be correct.");
+                    }
+
+                    status |= SpStatusHalt | SpStatusBroke;
+                    WriteBigEndianWord(SP_STATUS_REG_R, status);
+                    _rspTaskActive = false;
+                    _rspTaskLocked = false;
+                    _rspInterruptDelayArmed = false;
+                    _dpInterruptDelayArmed = false;
+                    SetMiSpInterrupt(immediate: true);
                 }
 
                 return;
@@ -2451,7 +2820,7 @@ namespace Ryu64.MIPS
 
             _rspTaskActive = true;
             _rspTaskLocked = false;
-            _rspTaskCyclesRemaining = GetRspExecutionCycles(task.Type);
+            _rspTaskCyclesRemaining = GetRspExecutionCycles(hasTask ? task.Type : 0u);
             _rspInterruptDelayArmed = false;
             _dpInterruptDelayArmed = false;
 
@@ -2481,14 +2850,6 @@ namespace Ryu64.MIPS
             {
                 if (TraceRspTaskDmem || TraceN64Io)
                     TraceRspTaskHeaderWords(taskBase, $"reject:type=0x{task.Type:x8}");
-                return false;
-            }
-
-            // Keep validation intentionally permissive for bring-up.
-            if (task.Ucode == 0 || task.DataPtr == 0)
-            {
-                if (TraceRspTaskDmem || TraceN64Io)
-                    TraceRspTaskHeaderWords(taskBase, $"reject:ucode=0x{task.Ucode:x8} data=0x{task.DataPtr:x8}");
                 return false;
             }
 
@@ -2673,7 +3034,11 @@ namespace Ryu64.MIPS
                 case 7:
                     {
                         uint value = ReadBigEndianWord(SP_SEMAPHORE_REG_R);
-                        WriteBigEndianWord(SP_SEMAPHORE_REG_R, 1);
+                        if (TraceN64Io)
+                        {
+                            Common.Logger.PrintWarningLine(
+                                $"[N64RSPCP0] reg=7(SP_SEMAPHORE) read=0x{value:x8} rspPc=0x{ReadRspPc():x3} cpuPc=0x{Registers.R4300.PC:x8}");
+                        }
                         return value;
                     }
                 case 8: return ReadBigEndianWord(DPC_START_REG_RW);
@@ -3128,6 +3493,7 @@ namespace Ryu64.MIPS
             {
                 _lastPlausibleViOriginWriteValue = value;
                 _lastPlausibleViOriginWritePc = Registers.R4300.PC;
+                RegisterFramebufferInfoFromViRegisters(value);
             }
 
             if (TraceViRegisterLifecycle)

@@ -37,6 +37,7 @@ namespace Ryu64Core
         private uint _lastAudioDacrate;
         private string _lastFramebufferStatus = "Not started";
         private uint _lastFallbackFramebufferOrigin;
+        private uint _lastTrackedFramebufferOrigin;
 
         public event EventHandler<FramebufferUpdatedEventArgs> FramebufferUpdated;
         public event EventHandler<AudioBufferEventArgs> AudioBufferReady;
@@ -221,6 +222,7 @@ namespace Ryu64Core
                 uint status = R4300.memory.ReadUInt32(ViStatusReg);
                 uint rawOrigin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
                 uint origin = rawOrigin;
+                bool suspiciousViOrigin = rawOrigin < 0x00001000u;
 
                 width = (int)(R4300.memory.ReadUInt32(ViWidthReg) & 0x0FFF);
                 if (width <= 0)
@@ -252,7 +254,7 @@ namespace Ryu64Core
 
                 // Prefer a previously written plausible VI origin over arbitrary RDRAM scans.
                 uint lastPlausibleOrigin = R4300.memory.LastPlausibleViOriginWriteValue;
-                if (origin < 0x00001000u
+                if (suspiciousViOrigin
                     && lastPlausibleOrigin >= 0x00001000u
                     && lastPlausibleOrigin < RdramSizeBytes)
                 {
@@ -261,7 +263,28 @@ namespace Ryu64Core
                         $"Last plausible VI origin used (vi=0x{rawOrigin:x8} -> last=0x{origin:x8}, pc=0x{R4300.memory.LastPlausibleViOriginWritePc:x8})";
                 }
 
-                if (origin < 0x00001000u && bytesPerPixel > 0)
+                if (suspiciousViOrigin && bytesPerPixel > 0)
+                {
+                    uint tracked = R4300.memory.FindTrackedFramebufferOriginCandidate((uint)width, (uint)height, (uint)bytesPerPixel, origin, out ulong trackedScore, out uint trackedDirtyPages);
+                    if (tracked >= 0x00001000u
+                        && tracked < RdramSizeBytes
+                        && tracked != origin
+                        && trackedScore != 0)
+                    {
+                        origin = tracked;
+                        _lastTrackedFramebufferOrigin = tracked;
+                        _lastFramebufferStatus =
+                            $"Tracked framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, trackedScore={trackedScore}, dirtyPages={trackedDirtyPages})";
+                    }
+                }
+
+                bool recentFramebufferSelected = false;
+                uint recentFramebufferOrigin = origin;
+                ulong recentFramebufferRecencyScore = 0;
+                ulong recentFramebufferViRecencyScore = 0;
+                int recentFramebufferVisualScore = int.MinValue;
+
+                if (suspiciousViOrigin && bytesPerPixel > 0)
                 {
                     uint bufferSizeHint = (uint)(width * height * bytesPerPixel);
                     uint recent = R4300.memory.FindRecentFramebufferOriginCandidate(bufferSizeHint, origin, out ulong recentBestScore, out ulong recentViScore);
@@ -270,16 +293,58 @@ namespace Ryu64Core
                         && recent != origin
                         && recentBestScore > recentViScore + 4096UL)
                     {
-                        origin = recent;
+                        uint refined = RefineFramebufferOriginNearHint(recent, width, height, bytesPerPixel, 0x10000u, 0x200u, out int refinedScore);
+                        int recentScore = ScoreFramebufferCandidate(refined, width, height, bytesPerPixel);
+                        if (recentScore == int.MinValue)
+                        {
+                            refined = recent;
+                            recentScore = refinedScore;
+                        }
+
+                        if (_lastTrackedFramebufferOrigin != 0)
+                        {
+                            int trackedScore = ScoreFramebufferCandidate(_lastTrackedFramebufferOrigin, width, height, bytesPerPixel);
+                            if (trackedScore != int.MinValue && trackedScore + 96 >= recentScore)
+                            {
+                                refined = _lastTrackedFramebufferOrigin;
+                                recentScore = trackedScore;
+                            }
+                        }
+
+                        origin = refined;
+                        _lastTrackedFramebufferOrigin = origin;
+                        recentFramebufferSelected = true;
+                        recentFramebufferOrigin = origin;
+                        recentFramebufferRecencyScore = recentBestScore;
+                        recentFramebufferViRecencyScore = recentViScore;
+                        recentFramebufferVisualScore = recentScore;
                         _lastFramebufferStatus =
-                            $"Recent RDRAM framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, recentScore={recentBestScore}, viScore={recentViScore})";
+                            $"Recent RDRAM framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, recentScore={recentBestScore}, viScore={recentViScore}, visualScore={recentScore})";
+                    }
+                }
+
+                // If a low bogus VI origin forced us onto a recency-picked candidate, let a
+                // more image-like full scan override it when the chosen buffer still looks weak.
+                if (recentFramebufferSelected
+                    && suspiciousViOrigin
+                    && recentFramebufferVisualScore < 22000)
+                {
+                    uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int currentScore);
+                    if (best != origin && bestScore > currentScore + 256)
+                    {
+                        _lastFallbackFramebufferOrigin = best;
+                        origin = best;
+                        _lastTrackedFramebufferOrigin = best;
+                        _lastFramebufferStatus =
+                            $"Visual framebuffer override used (vi=0x{rawOrigin:x8}, recent=0x{recentFramebufferOrigin:x8} -> fb=0x{origin:x8}, " +
+                            $"scanScore={bestScore}, recentVisual={currentScore}, recentScore={recentFramebufferRecencyScore}, viScore={recentFramebufferViRecencyScore})";
                     }
                 }
 
                 // Bring-up fallback: some paths still produce obviously invalid VI origins
                 // (for example 0x0000027f). Scan RDRAM for a stronger framebuffer candidate.
                 if (EnableFramebufferOriginScanFallback
-                    && origin < 0x00001000u
+                    && suspiciousViOrigin
                     && bytesPerPixel > 0)
                 {
                     uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int viScore);
@@ -309,13 +374,16 @@ namespace Ryu64Core
                 {
                     framebuffer[i] = R4300.memory.ReadUInt8PhysicalUncached(origin + (uint)i);
                 }
+                R4300.memory.NotifyFramebufferConsumerRead(origin, (uint)bufferSize);
 
                 FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
                 bool keepDetailedStatus =
                     !string.IsNullOrEmpty(_lastFramebufferStatus)
                     && (_lastFramebufferStatus.StartsWith("Fallback VI origin used", StringComparison.Ordinal)
                         || _lastFramebufferStatus.StartsWith("Recent RDRAM framebuffer used", StringComparison.Ordinal)
-                        || _lastFramebufferStatus.StartsWith("Last plausible VI origin used", StringComparison.Ordinal));
+                        || _lastFramebufferStatus.StartsWith("Last plausible VI origin used", StringComparison.Ordinal)
+                        || _lastFramebufferStatus.StartsWith("Tracked framebuffer used", StringComparison.Ordinal)
+                        || _lastFramebufferStatus.StartsWith("Visual framebuffer override used", StringComparison.Ordinal));
                 if (!keepDetailedStatus)
                     _lastFramebufferStatus = $"OK viType={viType} origin=0x{origin:x8} size={width}x{height} bpp={bytesPerPixel}";
                 return true;
@@ -535,6 +603,39 @@ namespace Ryu64Core
             int requiredMargin = viOrigin < 0x00001000u ? 256 : 80;
             if (bestOrigin != viOrigin && bestScore < viScore + requiredMargin)
                 return viOrigin;
+
+            return bestOrigin;
+        }
+
+        private uint RefineFramebufferOriginNearHint(uint hint, int width, int height, int bytesPerPixel, uint radius, uint step, out int bestScore)
+        {
+            bestScore = ScoreFramebufferCandidate(hint, width, height, bytesPerPixel);
+            uint bestOrigin = hint;
+
+            int bufferSize = checked(width * height * bytesPerPixel);
+            if (bufferSize <= 0)
+                return hint;
+
+            uint maxOrigin = (uint)Math.Max(0, RdramSizeBytes - bufferSize);
+            uint start = hint > radius ? hint - radius : 0u;
+            uint end = Math.Min(maxOrigin, hint + radius);
+            start &= ~0x1FFu;
+            end &= ~0x1FFu;
+            if (step == 0)
+                step = 0x200u;
+
+            for (uint candidate = start; candidate <= end; candidate += step)
+            {
+                int score = ScoreFramebufferCandidate(candidate, width, height, bytesPerPixel);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestOrigin = candidate;
+                }
+
+                if (candidate > end - step)
+                    break;
+            }
 
             return bestOrigin;
         }

@@ -47,6 +47,54 @@ namespace Ryu64.MIPS
             return unchecked((uint)((((int)(short)imm) << 2) - 4));
         }
 
+        private static void SetCop1CompareSingle(OpcodeTable.OpcodeDesc Desc, bool ordered, bool equalAllowed, bool lessAllowed, bool falseIfOrdered)
+        {
+            float a = GetFprSingle(Desc.op3);
+            float b = GetFprSingle(Desc.op2);
+            bool unordered = float.IsNaN(a) || float.IsNaN(b);
+            bool result;
+
+            if (unordered)
+            {
+                result = !ordered;
+            }
+            else if (falseIfOrdered)
+            {
+                result = false;
+            }
+            else
+            {
+                result = (equalAllowed && a == b) || (lessAllowed && a < b);
+            }
+
+            WriteCop1Condition(result);
+            Registers.R4300.PC += 4;
+        }
+
+        private static void SetCop1CompareDouble(OpcodeTable.OpcodeDesc Desc, bool ordered, bool equalAllowed, bool lessAllowed, bool falseIfOrdered)
+        {
+            double a = GetFprDouble(Desc.op3);
+            double b = GetFprDouble(Desc.op2);
+            bool unordered = double.IsNaN(a) || double.IsNaN(b);
+            bool result;
+
+            if (unordered)
+            {
+                result = !ordered;
+            }
+            else if (falseIfOrdered)
+            {
+                result = false;
+            }
+            else
+            {
+                result = (equalAllowed && a == b) || (lessAllowed && a < b);
+            }
+
+            WriteCop1Condition(result);
+            Registers.R4300.PC += 4;
+        }
+
         private static float GetFprSingle(int index) => (float)Registers.COP1.Reg[index];
         private static void SetFprSingle(int index, float value) => Registers.COP1.Reg[index] = value;
         private static double GetFprDouble(int index) => Registers.COP1.Reg[index];
@@ -168,6 +216,18 @@ namespace Ryu64.MIPS
             Registers.R4300.PC += 4;
         }
 
+        public static void SQRT_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprSingle(Desc.op4, (float)Math.Sqrt(GetFprSingle(Desc.op3)));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void ABS_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprSingle(Desc.op4, Math.Abs(GetFprSingle(Desc.op3)));
+            Registers.R4300.PC += 4;
+        }
+
         public static void MOV_S(OpcodeTable.OpcodeDesc Desc)
         {
             SetFprSingle(Desc.op4, GetFprSingle(Desc.op3));
@@ -201,6 +261,18 @@ namespace Ryu64.MIPS
         public static void DIV_D(OpcodeTable.OpcodeDesc Desc)
         {
             SetFprDouble(Desc.op4, GetFprDouble(Desc.op3) / GetFprDouble(Desc.op2));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void SQRT_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprDouble(Desc.op4, Math.Sqrt(GetFprDouble(Desc.op3)));
+            Registers.R4300.PC += 4;
+        }
+
+        public static void ABS_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetFprDouble(Desc.op4, Math.Abs(GetFprDouble(Desc.op3)));
             Registers.R4300.PC += 4;
         }
 
@@ -382,50 +454,162 @@ namespace Ryu64.MIPS
 
         public static void C_EQ_S(OpcodeTable.OpcodeDesc Desc)
         {
-            float a = GetFprSingle(Desc.op3);
-            float b = GetFprSingle(Desc.op2);
-            WriteCop1Condition(!float.IsNaN(a) && !float.IsNaN(b) && a == b);
-            Registers.R4300.PC += 4;
+            SetCop1CompareSingle(Desc, ordered: true, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_F_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: false, lessAllowed: false, falseIfOrdered: true);
+        }
+
+        public static void C_UN_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: false, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_UEQ_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_OLT_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: true, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_ULT_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_OLE_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: true, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_ULE_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_SF_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: true, equalAllowed: false, lessAllowed: false, falseIfOrdered: true);
+        }
+
+        public static void C_NGLE_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: false, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_SEQ_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: true, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_NGL_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
         }
 
         public static void C_LT_S(OpcodeTable.OpcodeDesc Desc)
         {
-            float a = GetFprSingle(Desc.op3);
-            float b = GetFprSingle(Desc.op2);
-            WriteCop1Condition(!float.IsNaN(a) && !float.IsNaN(b) && a < b);
-            Registers.R4300.PC += 4;
+            SetCop1CompareSingle(Desc, ordered: true, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_NGE_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
         }
 
         public static void C_LE_S(OpcodeTable.OpcodeDesc Desc)
         {
-            float a = GetFprSingle(Desc.op3);
-            float b = GetFprSingle(Desc.op2);
-            WriteCop1Condition(!float.IsNaN(a) && !float.IsNaN(b) && a <= b);
-            Registers.R4300.PC += 4;
+            SetCop1CompareSingle(Desc, ordered: true, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_NGT_S(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareSingle(Desc, ordered: false, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
         }
 
         public static void C_EQ_D(OpcodeTable.OpcodeDesc Desc)
         {
-            double a = GetFprDouble(Desc.op3);
-            double b = GetFprDouble(Desc.op2);
-            WriteCop1Condition(!double.IsNaN(a) && !double.IsNaN(b) && a == b);
-            Registers.R4300.PC += 4;
+            SetCop1CompareDouble(Desc, ordered: true, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_F_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: false, lessAllowed: false, falseIfOrdered: true);
+        }
+
+        public static void C_UN_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: false, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_UEQ_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_OLT_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: true, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_ULT_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_OLE_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: true, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_ULE_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_SF_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: true, equalAllowed: false, lessAllowed: false, falseIfOrdered: true);
+        }
+
+        public static void C_NGLE_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: false, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_SEQ_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: true, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
+        }
+
+        public static void C_NGL_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: true, lessAllowed: false, falseIfOrdered: false);
         }
 
         public static void C_LT_D(OpcodeTable.OpcodeDesc Desc)
         {
-            double a = GetFprDouble(Desc.op3);
-            double b = GetFprDouble(Desc.op2);
-            WriteCop1Condition(!double.IsNaN(a) && !double.IsNaN(b) && a < b);
-            Registers.R4300.PC += 4;
+            SetCop1CompareDouble(Desc, ordered: true, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_NGE_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: false, lessAllowed: true, falseIfOrdered: false);
         }
 
         public static void C_LE_D(OpcodeTable.OpcodeDesc Desc)
         {
-            double a = GetFprDouble(Desc.op3);
-            double b = GetFprDouble(Desc.op2);
-            WriteCop1Condition(!double.IsNaN(a) && !double.IsNaN(b) && a <= b);
-            Registers.R4300.PC += 4;
+            SetCop1CompareDouble(Desc, ordered: true, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
+        }
+
+        public static void C_NGT_D(OpcodeTable.OpcodeDesc Desc)
+        {
+            SetCop1CompareDouble(Desc, ordered: false, equalAllowed: true, lessAllowed: true, falseIfOrdered: false);
         }
     }
 }
