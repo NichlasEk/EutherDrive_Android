@@ -12,8 +12,8 @@ namespace Ryu64Core
         private const uint ViWidthReg = 0xA4400008;
         private const uint ViVStartReg = 0xA4400028;
         private const int RdramSizeBytes = 8 * 1024 * 1024;
-        // Mupen's core does not scan arbitrary RDRAM looking for a "best" framebuffer.
-        // Keep this heuristic opt-in for bring-up experiments instead of default behavior.
+        private const uint HeuristicFramebufferOriginFloor = 0x00010000u;
+        // Keep broad framebuffer scans opt-in; prefer explicit producer hints first.
         private static readonly bool EnableFramebufferOriginScanFallback =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "1", StringComparison.Ordinal);
 
@@ -267,6 +267,7 @@ namespace Ryu64Core
                 {
                     uint tracked = R4300.memory.FindTrackedFramebufferOriginCandidate((uint)width, (uint)height, (uint)bytesPerPixel, origin, out ulong trackedScore, out uint trackedDirtyPages);
                     if (tracked >= 0x00001000u
+                        && tracked >= HeuristicFramebufferOriginFloor
                         && tracked < RdramSizeBytes
                         && tracked != origin
                         && trackedScore != 0)
@@ -289,6 +290,7 @@ namespace Ryu64Core
                     uint bufferSizeHint = (uint)(width * height * bytesPerPixel);
                     uint recent = R4300.memory.FindRecentFramebufferOriginCandidate(bufferSizeHint, origin, out ulong recentBestScore, out ulong recentViScore);
                     if (recent >= 0x00001000u
+                        && recent >= HeuristicFramebufferOriginFloor
                         && recent < RdramSizeBytes
                         && recent != origin
                         && recentBestScore > recentViScore + 4096UL)
@@ -330,7 +332,10 @@ namespace Ryu64Core
                     && recentFramebufferVisualScore < 22000)
                 {
                     uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int currentScore);
-                    if (best != origin && bestScore > currentScore + 256)
+                    int requiredOverrideMargin = recentFramebufferVisualScore < 12000 ? 32 : 128;
+                    if (best != origin
+                        && best >= HeuristicFramebufferOriginFloor
+                        && bestScore > currentScore + requiredOverrideMargin)
                     {
                         _lastFallbackFramebufferOrigin = best;
                         origin = best;
@@ -348,7 +353,7 @@ namespace Ryu64Core
                     && bytesPerPixel > 0)
                 {
                     uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int viScore);
-                    if (best != origin)
+                    if (best != origin && best >= HeuristicFramebufferOriginFloor)
                     {
                         _lastFallbackFramebufferOrigin = best;
                         origin = best;
@@ -495,9 +500,13 @@ namespace Ryu64Core
             int stepY = Math.Max(1, height / sampleRows);
 
             int nonZero = 0;
+            int zeroCount = 0;
             int sameLeft = 0;
             int sameUp = 0;
             int hugeDiff = 0;
+            ushort firstPixel = 0;
+            bool firstPixelSet = false;
+            bool allSame = true;
             ushort[] prevRow = new ushort[sampleCols];
             bool prevRowValid = false;
 
@@ -524,8 +533,20 @@ namespace Ryu64Core
                         pixel = (ushort)(value << 8);
                     }
 
+                    if (!firstPixelSet)
+                    {
+                        firstPixel = pixel;
+                        firstPixelSet = true;
+                    }
+                    else if (pixel != firstPixel)
+                    {
+                        allSame = false;
+                    }
+
                     if (pixel != 0)
                         nonZero++;
+                    else
+                        zeroCount++;
 
                     if (leftValid)
                     {
@@ -552,8 +573,19 @@ namespace Ryu64Core
                 prevRowValid = true;
             }
 
+            if (nonZero == 0 || (allSame && firstPixel == 0))
+                return int.MinValue;
+
+            int sampleCount = sampleCols * sampleRows;
+            int sparsePenalty = zeroCount * 8;
+
             // Favor coherent images and penalize noisy/high-frequency regions.
-            return (nonZero * 5) + (sameLeft * 3) + (sameUp * 3) - (hugeDiff * 2);
+            return (nonZero * 5)
+                + (sameLeft * 3)
+                + (sameUp * 3)
+                - (hugeDiff * 2)
+                - sparsePenalty
+                + (sampleCount - zeroCount);
         }
 
         private uint FindBestFramebufferOrigin(int width, int height, int bytesPerPixel, uint viOrigin, out int bestScore, out int viScore)
@@ -574,7 +606,7 @@ namespace Ryu64Core
                 }
             }
 
-            for (uint candidate = 0x001000u; (long)candidate + bufferSize <= RdramSizeBytes; candidate += 0x2000u)
+            for (uint candidate = HeuristicFramebufferOriginFloor; (long)candidate + bufferSize <= RdramSizeBytes; candidate += 0x2000u)
             {
                 int score = ScoreFramebufferCandidate(candidate, width, height, bytesPerPixel);
                 if (score > bestScore)
@@ -585,7 +617,9 @@ namespace Ryu64Core
             }
 
             // Refine around the strongest coarse hit with smaller alignment steps.
-            uint refineStart = bestOrigin >= 0x4000u ? bestOrigin - 0x4000u : 0x001000u;
+            uint refineStart = bestOrigin >= 0x4000u ? bestOrigin - 0x4000u : HeuristicFramebufferOriginFloor;
+            if (refineStart < HeuristicFramebufferOriginFloor)
+                refineStart = HeuristicFramebufferOriginFloor;
             uint refineEnd = Math.Min((uint)(RdramSizeBytes - bufferSize), bestOrigin + 0x4000u);
             for (uint candidate = refineStart; candidate <= refineEnd; candidate += 0x200u)
             {
