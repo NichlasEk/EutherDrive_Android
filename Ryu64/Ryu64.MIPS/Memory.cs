@@ -2583,9 +2583,14 @@ namespace Ryu64.MIPS
             if ((writeValue & 0x00800000u) != 0) status &= ~0x00004000u; // CLR_SIG7
             if ((writeValue & 0x01000000u) != 0) status |= 0x00004000u;  // SET_SIG7
 
+            // Mirror the control-bit effects into the visible status register before dispatching RSP work.
+            // The interpreter polls SP_STATUS via mfc0 c4 while a task is live; if we leave the old HALT/BROKE
+            // bits latched until after dispatch returns, the microcode sees a stale status image and can loop
+            // on conditions which Mupen clears immediately.
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
+
             if (_rspTaskLocked && rspEventPending)
             {
-                WriteBigEndianWord(SP_STATUS_REG_R, status);
                 if (TraceN64Io || traceLateSpStatus)
                     Common.Logger.PrintWarningLine($"[N64IO] SP_STATUS new=0x{status:x8} (task locked)");
                 return;
@@ -2847,6 +2852,12 @@ namespace Ryu64.MIPS
                 }
 
                 return;
+            }
+
+            if (string.Equals(stopReason, "break", StringComparison.Ordinal))
+            {
+                status |= SpStatusHalt | SpStatusBroke;
+                WriteBigEndianWord(SP_STATUS_REG_R, status);
             }
 
             _rspTaskLocked = false;
@@ -3127,6 +3138,16 @@ namespace Ryu64.MIPS
             signature = (signature * 1099511628211ul) ^ _spDmaDelayRemaining;
             signature = (signature * 1099511628211ul) ^ (_spQueuedDmaValid ? 1ul : 0ul);
             return signature;
+        }
+
+        internal bool HasActiveRspTask()
+        {
+            return _activeRspTask.Type >= 1 && _activeRspTask.Type <= 4;
+        }
+
+        internal uint GetActiveRspTaskType()
+        {
+            return _activeRspTask.Type;
         }
 
         internal void WriteSpDmemWord(uint dmemOffset, uint value)

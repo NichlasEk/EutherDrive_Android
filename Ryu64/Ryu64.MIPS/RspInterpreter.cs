@@ -5,8 +5,10 @@ namespace Ryu64.MIPS
     internal sealed class RspInterpreter
     {
         private const uint LoopReportThreshold = 2048;
-        private const uint NoProgressInstructionLimit = 2_000_000;
-        private const uint AbsoluteMaxInstructionsPerTask = 100_000_000;
+        private const uint NoProgressInstructionLimitRaw = 2_000_000;
+        private const uint AbsoluteMaxInstructionsRaw = 100_000_000;
+        private const uint NoProgressInstructionLimitTask = 20_000_000;
+        private const uint AbsoluteMaxInstructionsTask = 500_000_000;
         private static readonly bool TraceRspCp0 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_DMA"), "1", StringComparison.Ordinal)
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_MMIO"), "1", StringComparison.Ordinal)
@@ -114,6 +116,12 @@ namespace Ryu64.MIPS
 
         public bool ExecuteTask(out uint executedInstructions, out string stopReason)
         {
+            bool hasValidTask = _memory.HasActiveRspTask();
+            uint activeTaskType = _memory.GetActiveRspTaskType();
+            bool enforceWatchdog = !hasValidTask;
+            uint noProgressInstructionLimit = enforceWatchdog ? NoProgressInstructionLimitRaw : NoProgressInstructionLimitTask;
+            uint absoluteMaxInstructions = enforceWatchdog ? AbsoluteMaxInstructionsRaw : uint.MaxValue;
+
             _pc = _memory.ReadRspPc();
             _branchPending = false;
             _branchTarget = 0;
@@ -121,16 +129,16 @@ namespace Ryu64.MIPS
             _lastPc = 0xffffffffu;
             _lastInstr = 0;
             _samePcRunLength = 0;
-            _lastProgressSignature = _memory.GetRspProgressSignature();
+            _lastProgressSignature = ComputeProgressSignature(hasValidTask);
             _stagnantInstructionCount = 0;
             _recentIndex = 0;
             Array.Clear(_recentPcs, 0, _recentPcs.Length);
             Array.Clear(_recentInstrs, 0, _recentInstrs.Length);
             stopReason = "no-progress";
 
-            for (executedInstructions = 0; executedInstructions < AbsoluteMaxInstructionsPerTask; executedInstructions++)
+            for (executedInstructions = 0; executedInstructions < absoluteMaxInstructions; executedInstructions++)
             {
-                if (_stagnantInstructionCount >= NoProgressInstructionLimit)
+                if (enforceWatchdog && _stagnantInstructionCount >= noProgressInstructionLimit)
                 {
                     stopReason = $"no-progress stagnant={_stagnantInstructionCount}";
                     break;
@@ -145,7 +153,7 @@ namespace Ryu64.MIPS
                 if (pc == _lastPc && instr == _lastInstr)
                 {
                     _samePcRunLength++;
-                    if (_samePcRunLength >= LoopReportThreshold)
+                    if (enforceWatchdog && _samePcRunLength >= LoopReportThreshold)
                     {
                         stopReason = $"loop pc=0x{pc:x3} op=0x{instr:x8} repeats={_samePcRunLength}";
                         _memory.WriteRspPc(_pc);
@@ -192,7 +200,7 @@ namespace Ryu64.MIPS
                     }
                 }
 
-                ulong progressSignature = _memory.GetRspProgressSignature();
+                ulong progressSignature = ComputeProgressSignature(hasValidTask);
                 if (progressSignature != _lastProgressSignature)
                 {
                     _lastProgressSignature = progressSignature;
@@ -219,9 +227,13 @@ namespace Ryu64.MIPS
                 }
             }
 
+            if (executedInstructions >= absoluteMaxInstructions)
+                stopReason = $"max-instructions executed={executedInstructions}";
+
             _memory.WriteRspPc(_pc);
             _memory.ClearActiveRspTracePc();
             stopReason =
+                $"{(hasValidTask ? $"taskType={activeTaskType} " : "rawRsp ")}" +
                 $"{stopReason} rspPc=0x{_pc:x3} current=0x{_memory.ReadSpImemWord(_pc & 0x0FFCu):x8} " +
                 $"t3=0x{_gpr[11]:x8} t4=0x{_gpr[12]:x8} s3=0x{_gpr[19]:x8} s4=0x{_gpr[20]:x8} t8=0x{_gpr[24]:x8} ra=0x{_gpr[31]:x8} " +
                 $"spStatus=0x{_memory.ReadRspCp0(4):x8} dmaFull=0x{_memory.ReadRspCp0(5):x8} dmaBusy=0x{_memory.ReadRspCp0(6):x8} " +
@@ -229,6 +241,22 @@ namespace Ryu64.MIPS
                 $"dmaDelayArmed={_memory.IsRspDmaDelayArmed()} dmaDelayRemaining=0x{_memory.GetRspDmaDelayRemaining():x8} queuedDma={_memory.HasQueuedRspDma()} " +
                 $"tail={FormatRecentTrace()}";
             return false;
+        }
+
+        private ulong ComputeProgressSignature(bool hasValidTask)
+        {
+            ulong signature = _memory.GetRspProgressSignature();
+            if (!hasValidTask)
+                return signature;
+
+            signature = (signature * 1099511628211ul) ^ _gpr[1];
+            signature = (signature * 1099511628211ul) ^ _gpr[16];
+            signature = (signature * 1099511628211ul) ^ _gpr[17];
+            signature = (signature * 1099511628211ul) ^ _gpr[24];
+            signature = (signature * 1099511628211ul) ^ _gpr[25];
+            signature = (signature * 1099511628211ul) ^ _gpr[26];
+            signature = (signature * 1099511628211ul) ^ _gpr[31];
+            return signature;
         }
 
         private bool Step(uint pc, uint instr, out string stopReason)
@@ -1483,8 +1511,9 @@ namespace Ryu64.MIPS
 
         private uint ReadWord(uint address)
         {
-            uint aligned = address & 0x1FFFu;
-            uint value = _memory.ReadSpMemoryWord(aligned);
+            // Scalar RSP loads/stores address DMEM; only instruction fetch uses IMEM.
+            uint aligned = address & 0x0FFFu;
+            uint value = _memory.ReadSpDmemWord(aligned);
             TraceRspStackWordAccess(isWrite: false, aligned, value);
             TraceRspScalarRead("word", aligned, value);
             return value;
@@ -1510,9 +1539,9 @@ namespace Ryu64.MIPS
 
         private void WriteWord(uint address, uint value)
         {
-            uint aligned = address & 0x1FFFu;
+            uint aligned = address & 0x0FFFu;
             TraceRspStackWordAccess(isWrite: true, aligned, value);
-            _memory.WriteSpMemoryWord(aligned, value);
+            _memory.WriteSpDmemWord(aligned, value);
         }
 
         private void TraceRspStackWordAccess(bool isWrite, uint address, uint value)
