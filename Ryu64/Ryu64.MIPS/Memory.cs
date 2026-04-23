@@ -61,10 +61,12 @@ namespace Ryu64.MIPS
         private static int _traceExceptionVectorWriteCount;
         private static int _traceLowRamMutationWriteCount;
         private static int _traceRspDmaWindowLogCount;
+        private static int _traceRspDescriptorWriteLogCount;
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
         private const int TraceLowRamMutationWriteLimit = 1024;
         private const int TraceRspDmaWindowLogLimit = 128;
+        private const int TraceRspDescriptorWriteLogLimit = 512;
         private static bool _warnedRspTaskStub;
         private const uint SpStatusHalt = 0x00000001u;
         private const uint SpStatusBroke = 0x00000002u;
@@ -89,6 +91,8 @@ namespace Ryu64.MIPS
         private const uint PiStatusError = 0x00000004u;
         private const uint PiStatusInterrupt = 0x00000008u;
         private const uint PiDmaCyclesMinimum = 0x00001000u;
+        private const uint RspDescriptorDmemStart = 0x00000410u;
+        private const uint RspDescriptorDmemEnd = 0x00000428u;
         private const int FbInfosCount = 6;
 
         private static uint? ParseOptionalHexEnv(string name)
@@ -105,6 +109,12 @@ namespace Ryu64.MIPS
                 return parsed;
 
             return null;
+        }
+
+        private bool IsLateRspKickCpuPc()
+        {
+            uint pc = Registers.R4300.PC;
+            return pc >= 0x800D6000u && pc <= 0x800D6200u;
         }
 
         private struct TrackedFramebufferInfo
@@ -228,6 +238,50 @@ namespace Ryu64.MIPS
             Common.Logger.PrintWarningLine(
                 $"[N64LOWRAMMUT] {op} addr=0x{virtualAddress:x8} phys=0x{physicalAddress:x8} size={size} " +
                 $"old=0x{oldValue:x16} new=0x{newValue:x16} {BuildLowRamStoreContext(virtualAddress, physicalAddress, size)}");
+        }
+
+        private static bool IsRspDescriptorDmemAddress(uint spAddress, uint size = 1)
+        {
+            if ((spAddress & 0x1000u) != 0)
+                return false;
+
+            return RangeOverlaps(spAddress & 0x0FFFu, size, RspDescriptorDmemStart, RspDescriptorDmemEnd);
+        }
+
+        private void TraceRspDescriptorDmemWrite(uint spAddress, byte oldValue, byte newValue, string origin)
+        {
+            if (oldValue == newValue || _traceRspDescriptorWriteLogCount >= TraceRspDescriptorWriteLogLimit)
+                return;
+
+            _traceRspDescriptorWriteLogCount++;
+            Common.Logger.PrintWarningLine(
+                $"[N64RSPDMEMWRITE] origin={origin} pc=0x{Registers.R4300.PC:x8} rspPc=0x{ReadRspPc():x3} " +
+                $"addr=0x{(spAddress & 0x0FFFu):x3} old=0x{oldValue:x2} new=0x{newValue:x2} " +
+                $"spStatus=0x{ReadBigEndianWord(SP_STATUS_REG_R):x8} spMem=0x{ReadBigEndianWord(SP_MEM_ADDR_REG_RW):x8} " +
+                $"spDram=0x{ReadBigEndianWord(SP_DRAM_ADDR_REG_RW):x8} rdLen=0x{ReadBigEndianWord(SP_RD_LEN_REG_RW):x8}");
+        }
+
+        private void TraceRspDescriptorDmemSnapshot(string tag)
+        {
+            if (_traceRspDescriptorWriteLogCount >= TraceRspDescriptorWriteLogLimit)
+                return;
+
+            _traceRspDescriptorWriteLogCount++;
+            Common.Logger.PrintWarningLine(
+                $"[N64RSPDMEMDESC] tag={tag} pc=0x{Registers.R4300.PC:x8} rspPc=0x{ReadRspPc():x3} " +
+                $"d410=0x{ReadSpMemoryWordBigEndian(0x410):x8} d414=0x{ReadSpMemoryWordBigEndian(0x414):x8} " +
+                $"d418=0x{ReadSpMemoryWordBigEndian(0x418):x8} d41c=0x{ReadSpMemoryWordBigEndian(0x41c):x8} " +
+                $"d420=0x{ReadSpMemoryWordBigEndian(0x420):x8} d424=0x{ReadSpMemoryWordBigEndian(0x424):x8} " +
+                $"d428=0x{ReadSpMemoryWordBigEndian(0x428):x8}");
+        }
+
+        private uint ReadSpMemoryWordBigEndian(uint spAddress)
+        {
+            uint aligned = spAddress & 0x1FFCu;
+            return (uint)((ReadSpMemoryByte(aligned) << 24)
+                | (ReadSpMemoryByte(aligned + 1) << 16)
+                | (ReadSpMemoryByte(aligned + 2) << 8)
+                | ReadSpMemoryByte(aligned + 3));
         }
 
         private static bool IsTraceN64PiDmaEnabled()
@@ -359,8 +413,7 @@ namespace Ryu64.MIPS
             R4300.RefreshRcpInterruptPending();
         }
 
-        public readonly byte[] SP_DMEM_RW         = new byte[0x1000];
-        public readonly byte[] SP_IMEM_RW         = new byte[0x1000];
+        public readonly byte[] SP_MEM_RW          = new byte[0x2000];
         public readonly byte[] SP_MEM_ADDR_REG_RW = new byte[4];
         public readonly byte[] SP_DRAM_ADDR_REG_RW = new byte[4];
         public readonly byte[] SP_RD_LEN_REG_RW   = new byte[4];
@@ -1015,8 +1068,10 @@ namespace Ryu64.MIPS
             MemoryMapList.Add(new MemEntry(0x03F00000, 0x03FFFFFF, RDRAMReg, RDRAMReg, "RDRAM Registers"));
 
             // SP Registers
-            MemoryMapList.Add(new MemEntry(0x04000000, 0x04000FFF, SP_DMEM_RW,         SP_DMEM_RW,          "SP_DMEM"));
-            MemoryMapList.Add(new MemEntry(0x04001000, 0x04001FFF, SP_IMEM_RW,         SP_IMEM_RW,          "SP_IMEM"));
+            MemoryMapList.Add(new MemEntry(0x04000000, 0x04000FFF, SP_MEM_RW,          SP_MEM_RW,           "SP_DMEM",
+                null, null, 0x0000, 0x0000));
+            MemoryMapList.Add(new MemEntry(0x04001000, 0x04001FFF, SP_MEM_RW,          SP_MEM_RW,           "SP_IMEM",
+                null, null, 0x1000, 0x1000));
             MemoryMapList.Add(new MemEntry(0x04040000, 0x04040003, SP_MEM_ADDR_REG_RW, SP_MEM_ADDR_REG_RW,  "SP_MEM_ADDR_REG",
                 null, SP_MEM_ADDR_WRITE_EVENT));
             MemoryMapList.Add(new MemEntry(0x04040004, 0x04040007, SP_DRAM_ADDR_REG_RW, SP_DRAM_ADDR_REG_RW, "SP_DRAM_ADDR_REG",
@@ -1556,8 +1611,9 @@ namespace Ryu64.MIPS
             _rspTaskActive = false;
 
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
-            _rspInterruptDelayArmed = true;
-            _rspInterruptDelayRemaining = GetRspInterruptDelayCycles(_activeRspTask.Type);
+            bool taskLocked = (status & (SpStatusHalt | SpStatusBroke)) == 0;
+            bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
+            bool scheduleRspInterrupt = rspInterruptPending || taskLocked;
 
             if (_activeRspTask.Type == 1)
             {
@@ -1566,28 +1622,70 @@ namespace Ryu64.MIPS
                 _dpInterruptDelayRemaining = 4000;
             }
 
-            // Mupen's synchronous RSP/plugin completion path exposes HALT/BROKE/TASKDONE
-            // immediately and does not keep rsp_task_locked asserted while waiting for
-            // the delayed SP interrupt delivery. Match that behavior here so the guest
-            // can observe completion and queue follow-up work without waiting for MI.
-            _rspTaskLocked = false;
-            status |= SpStatusTaskDone | SpStatusBroke | SpStatusHalt;
+            _rspTaskLocked = taskLocked;
+            _rspInterruptDelayArmed = scheduleRspInterrupt;
+            _rspInterruptDelayRemaining = scheduleRspInterrupt
+                ? GetRspInterruptDelayCycles(_activeRspTask.Type)
+                : 0;
+            if (scheduleRspInterrupt)
+                ClearMiSpInterrupt();
+
+            status &= ~(SpStatusTaskDone | SpStatusBroke | SpStatusHalt);
             WriteBigEndianWord(SP_STATUS_REG_R, status);
 
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] RSP task completed type={_activeRspTask.Type} pc=0x{Registers.R4300.PC:x8} " +
-                    $"spStatus=0x{status:x8} rspIntDelay={_rspInterruptDelayRemaining} dpDelay={_dpInterruptDelayRemaining} " +
+                    $"spStatus=0x{status:x8} locked={_rspTaskLocked} scheduleRspInt={scheduleRspInterrupt} " +
+                    $"rspIntDelay={_rspInterruptDelayRemaining} dpDelay={_dpInterruptDelayRemaining} " +
                     $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} " +
                     $"dpcStatus=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8}");
+            }
+        }
+
+        private void ArmSynchronousRspCompletion(ref uint status)
+        {
+            _rspTaskActive = false;
+            _rspTaskCyclesRemaining = 0;
+
+            uint postStatus = ReadBigEndianWord(SP_STATUS_REG_R);
+            bool taskLocked = (postStatus & (SpStatusHalt | SpStatusBroke)) == 0;
+            bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
+            bool scheduleRspInterrupt = rspInterruptPending || taskLocked;
+
+            if (_activeRspTask.Type == 1)
+            {
+                FinalizeGraphicsTask();
+                _dpInterruptDelayArmed = true;
+                _dpInterruptDelayRemaining = 4000;
+            }
+
+            _rspTaskLocked = taskLocked;
+            _rspInterruptDelayArmed = scheduleRspInterrupt;
+            _rspInterruptDelayRemaining = scheduleRspInterrupt
+                ? GetRspInterruptDelayCycles(_activeRspTask.Type)
+                : 0;
+            status = postStatus & ~(SpStatusTaskDone | SpStatusBroke | SpStatusHalt);
+            if (scheduleRspInterrupt)
+                ClearMiSpInterrupt();
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
+
+            if (TraceN64Io)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64IO] ArmSynchronousRspCompletion type={_activeRspTask.Type} pc=0x{Registers.R4300.PC:x8} " +
+                    $"postStatus=0x{postStatus:x8} newStatus=0x{status:x8} locked={_rspTaskLocked} " +
+                    $"scheduleRspInt={scheduleRspInterrupt} " +
+                    $"rspIntDelay={_rspInterruptDelayRemaining} dpDelay={_dpInterruptDelayRemaining}");
             }
         }
 
         private void FinalizeRspInterrupt()
         {
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
-            _rspTaskLocked = false;
+            if (!_rspTaskLocked)
+                status |= SpStatusTaskDone | SpStatusBroke | SpStatusHalt;
             WriteBigEndianWord(SP_STATUS_REG_R, status);
 
             if (TraceN64Io)
@@ -2203,13 +2301,14 @@ namespace Ryu64.MIPS
 
         public void SP_RD_LEN_WRITE_EVENT()
         {
-            if (TraceN64Io)
+            bool traceLateSpRegs = IsTraceN64SpDmaEnabled() && IsLateRspKickCpuPc();
+            if (TraceN64Io || traceLateSpRegs)
             {
                 uint len = ReadBigEndianWord(SP_RD_LEN_REG_RW);
                 uint mem = ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
                 uint dram = ReadBigEndianWord(SP_DRAM_ADDR_REG_RW);
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] SP_RD_LEN write len=0x{len:x8} spMem=0x{mem:x8} dram=0x{dram:x8} pc=0x{Registers.R4300.PC:x8}");
+                    $"[N64SPREG] SP_RD_LEN write len=0x{len:x8} spMem=0x{mem:x8} dram=0x{dram:x8} pc=0x{Registers.R4300.PC:x8} {BuildStoreContext()}");
             }
             ExecuteSpDma(isReadFromDram: true);
         }
@@ -2219,7 +2318,7 @@ namespace Ryu64.MIPS
             uint value = ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
             bool traceLateSpRegs =
                 IsTraceN64SpDmaEnabled() &&
-                Registers.R4300.PC >= 0x800A0000u && Registers.R4300.PC <= 0x800A2000u;
+                (IsLateRspKickCpuPc() || (Registers.R4300.PC >= 0x800A0000u && Registers.R4300.PC <= 0x800A2000u));
 
             if (!TraceN64Io && !traceLateSpRegs)
                 return;
@@ -2234,7 +2333,7 @@ namespace Ryu64.MIPS
             bool suspiciousLowDram = (value & 0x00FFFFFFu) < 0x00001000u;
             bool traceLateSpRegs =
                 IsTraceN64SpDmaEnabled() &&
-                (suspiciousLowDram || (Registers.R4300.PC >= 0x800A0000u && Registers.R4300.PC <= 0x800A2000u));
+                (suspiciousLowDram || IsLateRspKickCpuPc() || (Registers.R4300.PC >= 0x800A0000u && Registers.R4300.PC <= 0x800A2000u));
 
             // Always log SP_DRAM_ADDR writes when debugging Mega Man 64
             bool forceTraceSpDram = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_DRAM"), "1", StringComparison.Ordinal);
@@ -2275,7 +2374,7 @@ namespace Ryu64.MIPS
             bool suspiciousLowDram = (dram & 0x00FFFFFFu) < 0x00001000u;
             bool traceLateSpRegs =
                 IsTraceN64SpDmaEnabled() &&
-                (suspiciousLowDram || (Registers.R4300.PC >= 0x800A0000u && Registers.R4300.PC <= 0x800A2000u));
+                (suspiciousLowDram || IsLateRspKickCpuPc() || (Registers.R4300.PC >= 0x800A0000u && Registers.R4300.PC <= 0x800A2000u));
 
             if (TraceN64Io || traceLateSpRegs)
             {
@@ -2336,43 +2435,18 @@ namespace Ryu64.MIPS
             uint dramAddr = request.DramAddr & 0x00FFFFF8u;
             uint lenReg = request.LengthReg;
             uint startDramAddr = dramAddr;
-            uint rdramSize = (uint)RDRAM.Length;
 
-	            int transferLength = (int)(((lenReg & 0xFFFu) | 7u) + 1u);
-	            int count = (int)(((lenReg >> 12) & 0xFFu) + 1u);
-	            int skip = (int)((lenReg >> 20) & 0xFFFu);
-	            const uint lowRamProtectEnd = 0x00000400u;
+            int transferLength = (int)(((lenReg & 0xFFFu) | 7u) + 1u);
+            int count = (int)(((lenReg >> 12) & 0xFFu) + 1u);
+            int skip = (int)((lenReg >> 20) & 0xFFFu);
 
-	            if (transferLength <= 0 || count <= 0)
-	                return;
-
-            // Bring-up guard: reject any RSP write-DMA touching low RDRAM. The current
-            // bad path wipes the boot/exception area and leads to the late 0x80000300
-            // trap once the vectors are gone.
-	            if (!isReadFromDram)
-	            {
-	                uint checkMemAddr = memAddr;
-	                uint checkDramAddr = dramAddr;
-                for (int block = 0; block < count; block++)
-                {
-                    uint blockStart = checkDramAddr & 0x00FFFFFFu;
-                    uint blockEnd = (blockStart + (uint)transferLength) & 0x00FFFFFFu;
-                    if (blockStart < lowRamProtectEnd)
-                    {
-                        Common.Logger.PrintWarningLine(
-                            $"[N64SPDMA] protected low RAM window in write-DMA pc=0x{Registers.R4300.PC:x8} " +
-                            $"block={block} dram=0x{blockStart:x8}->0x{blockEnd:x8} spMem=0x{(memBank | checkMemAddr):x8} " +
-                            $"lenReg=0x{lenReg:x8} transferLength=0x{transferLength:x} count=0x{count:x} skip=0x{skip:x}");
-                        break;
-                    }
-
-                    checkMemAddr = (checkMemAddr + (uint)transferLength) & 0x0FFFu;
-                    checkDramAddr = (checkDramAddr + (uint)(transferLength + skip)) & 0x00FFFFFFu;
-                }
-            }
+            if (transferLength <= 0 || count <= 0)
+                return;
 
             bool traceSpDma = IsTraceN64SpDmaEnabled();
             bool traceDetailedSpWriteDma = traceSpDma && !isReadFromDram;
+            bool traceDescriptorOverlap = isReadFromDram
+                && IsRspDescriptorDmemAddress(startMemAddr, (uint)Math.Max(1, transferLength));
 
             if (traceSpDma)
             {
@@ -2383,13 +2457,13 @@ namespace Ryu64.MIPS
                     $"lenReg=0x{lenReg:x8} transferLength=0x{transferLength:x} count=0x{count:x} skip=0x{skip:x}");
             }
 
+            if (traceDescriptorOverlap)
+                TraceRspDescriptorDmemSnapshot("pre-dma");
+
             _spDmaBusy = true;
             WriteBigEndianWord(SP_DMA_BUSY_REG_R, 1);
             uint status = ReadBigEndianWord(SP_STATUS_REG_R) | SpStatusDmaBusy;
             WriteBigEndianWord(SP_STATUS_REG_R, status);
-
-            bool skippedProtectedLowRamWrite = false;
-            bool skippedOutOfRangeRdram = false;
 
             for (int block = 0; block < count; block++)
             {
@@ -2397,59 +2471,19 @@ namespace Ryu64.MIPS
                 {
                     uint spAddress = memBank | ((memAddr + (uint)i) & 0x0FFFu);
                     uint rawRdAddress = dramAddr + (uint)i;
-                    bool rdAddressInRange = rawRdAddress < rdramSize;
                     uint rdAddress = rawRdAddress & 0x007FFFFFu;
 
                     if (isReadFromDram)
                     {
-                        byte value = 0;
-                        if (rdAddressInRange)
-                        {
-                            value = ReadUInt8(PhysicalToKseg1(rdAddress));
-                        }
-                        else
-                        {
-                            if (!skippedOutOfRangeRdram && (traceSpDma || TraceRspTaskDmem))
-                            {
-                                Common.Logger.PrintWarningLine(
-                                    $"[N64SPDMA] SKIP out-of-range RDRAM byte in read-DMA pc=0x{Registers.R4300.PC:x8} " +
-                                    $"block={block} i=0x{i:x} rawRdAddr=0x{rawRdAddress:x8} spAddr=0x{spAddress:x4} " +
-                                    $"lenReg=0x{lenReg:x8}");
-                            }
-                            skippedOutOfRangeRdram = true;
-                        }
+                        byte value = ReadUInt8(PhysicalToKseg1(rdAddress));
                         WriteSpMemoryByte(spAddress, value);
                     }
-	                    else
-	                    {
-	                        byte value = ReadSpMemoryByte(spAddress);
-	                        if (!rdAddressInRange)
-	                        {
-	                            if (!skippedOutOfRangeRdram && (traceSpDma || TraceRspTaskDmem))
-	                            {
-	                                Common.Logger.PrintWarningLine(
-	                                    $"[N64SPDMA] SKIP out-of-range RDRAM byte in write-DMA pc=0x{Registers.R4300.PC:x8} " +
-	                                    $"block={block} i=0x{i:x} rawRdAddr=0x{rawRdAddress:x8} spAddr=0x{spAddress:x4} value=0x{value:x2} " +
-	                                    $"lenReg=0x{lenReg:x8}");
-	                            }
-	                            skippedOutOfRangeRdram = true;
-	                            continue;
-	                        }
-	                        if (rdAddress < lowRamProtectEnd)
-	                        {
-	                            if (!skippedProtectedLowRamWrite)
-	                            {
-	                                Common.Logger.PrintWarningLine(
-	                                    $"[N64SPDMA] SKIP protected low RAM byte in write-DMA pc=0x{Registers.R4300.PC:x8} " +
-	                                    $"block={block} i=0x{i:x} rdAddr=0x{rdAddress:x8} spAddr=0x{spAddress:x4} value=0x{value:x2} " +
-	                                    $"lenReg=0x{lenReg:x8}");
-	                            }
-	                            skippedProtectedLowRamWrite = true;
-	                            continue;
-	                        }
-	                        if (traceDetailedSpWriteDma && (block == 0 || rdAddress < 0x400u))
-	                        {
-	                            Common.Logger.PrintWarningLine(
+                    else
+                    {
+                        byte value = ReadSpMemoryByte(spAddress);
+                        if (traceDetailedSpWriteDma && (block == 0 || rdAddress < 0x400u))
+                        {
+                            Common.Logger.PrintWarningLine(
                                 $"[N64SPDMA] write block={block} i=0x{i:x} spAddr=0x{spAddress:x4} rdAddr=0x{rdAddress:x8} value=0x{value:x2} " +
                                 $"pc=0x{Registers.R4300.PC:x8}");
                         }
@@ -2460,6 +2494,9 @@ namespace Ryu64.MIPS
                     }
                 }
 
+                if (traceDescriptorOverlap && IsRspDescriptorDmemAddress(memBank | memAddr, (uint)Math.Max(1, transferLength)))
+                    TraceRspDescriptorDmemSnapshot($"post-block{block}");
+
                 memAddr = (memAddr + (uint)transferLength) & 0x0FFFu;
                 dramAddr = (dramAddr + (uint)(transferLength + skip)) & 0x00FFFFFFu;
             }
@@ -2469,8 +2506,7 @@ namespace Ryu64.MIPS
                 Common.Logger.PrintWarningLine(
                     $"[N64SPDMA] end pc=0x{Registers.R4300.PC:x8} " +
                     $"read={isReadFromDram} " +
-                    $"startMem=0x{startMemAddr:x4} endMem=0x{memAddr:x4} startDram=0x{startDramAddr:x8} endDram=0x{dramAddr:x8} " +
-                    $"skippedProtectedLowRam={skippedProtectedLowRamWrite} skippedOutOfRangeRdram={skippedOutOfRangeRdram}");
+                    $"startMem=0x{startMemAddr:x4} endMem=0x{memAddr:x4} startDram=0x{startDramAddr:x8} endDram=0x{dramAddr:x8}");
             }
 
             WriteBigEndianWord(SP_MEM_ADDR_REG_RW, memAddr & 0x0FFFu);
@@ -2482,10 +2518,9 @@ namespace Ryu64.MIPS
                 TraceRspImemWindowAfterDma(startMemAddr, request.DramAddr & 0x00FFFFF8u, transferLength, count, skip);
             }
 
-            if (isReadFromDram)
-                WriteBigEndianWord(SP_RD_LEN_REG_RW, 0x00000FF8u);
-            else
-                WriteBigEndianWord(SP_WR_LEN_REG_RW, 0x00000FF8u);
+            // Mupen resets SP_RD_LEN_REG after either DMA direction completes.
+            // Some microcode polls mfc0 $2 regardless of which DMA path was used.
+            WriteBigEndianWord(SP_RD_LEN_REG_RW, 0x00000FF8u);
 
             _spDmaDelayArmed = true;
             _spDmaDelayRemaining = Math.Max(1u, (uint)((count * transferLength) / 8));
@@ -2493,17 +2528,16 @@ namespace Ryu64.MIPS
 
         private byte ReadSpMemoryByte(uint spAddress)
         {
-            if ((spAddress & 0x1000u) != 0)
-                return SP_IMEM_RW[spAddress & 0x0FFFu];
-            return SP_DMEM_RW[spAddress & 0x0FFFu];
+            return SP_MEM_RW[spAddress & 0x1FFFu];
         }
 
         private void WriteSpMemoryByte(uint spAddress, byte value)
         {
-            if ((spAddress & 0x1000u) != 0)
-                SP_IMEM_RW[spAddress & 0x0FFFu] = value;
-            else
-                SP_DMEM_RW[spAddress & 0x0FFFu] = value;
+            uint masked = spAddress & 0x1FFFu;
+            byte oldValue = SP_MEM_RW[masked];
+            SP_MEM_RW[masked] = value;
+            if (IsRspDescriptorDmemAddress(spAddress))
+                TraceRspDescriptorDmemWrite(spAddress & 0x0FFFu, oldValue, value, "direct");
         }
 
         public void SP_STATUS_WRITE_EVENT()
@@ -2511,7 +2545,8 @@ namespace Ryu64.MIPS
             uint writeValue = ReadBigEndianWord(SP_STATUS_REG_W);
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
             bool rspEventPending = _rspInterruptDelayArmed;
-            if (TraceN64Io)
+            bool traceLateSpStatus = IsTraceN64SpDmaEnabled() && IsLateRspKickCpuPc();
+            if (TraceN64Io || traceLateSpStatus)
             {
                 string storeCtx = BuildStoreContext();
                 Common.Logger.PrintWarningLine(
@@ -2551,7 +2586,7 @@ namespace Ryu64.MIPS
             if (_rspTaskLocked && rspEventPending)
             {
                 WriteBigEndianWord(SP_STATUS_REG_R, status);
-                if (TraceN64Io)
+                if (TraceN64Io || traceLateSpStatus)
                     Common.Logger.PrintWarningLine($"[N64IO] SP_STATUS new=0x{status:x8} (task locked)");
                 return;
             }
@@ -2561,7 +2596,7 @@ namespace Ryu64.MIPS
                 && (_rspTaskLocked || clearHalt || clearBroke)
                 && (status & SpStatusHalt) == 0;
 
-            if (TraceN64Io && (clearHalt || clearBroke || (writeValue & 0x00000118u) != 0))
+            if ((TraceN64Io || traceLateSpStatus) && (clearHalt || clearBroke || (writeValue & 0x00000118u) != 0))
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] SP_STATUS gate clearHalt={clearHalt} setHalt={setHalt} clearBroke={clearBroke} " +
@@ -2570,9 +2605,9 @@ namespace Ryu64.MIPS
                     $"statusAfterCtrl=0x{status:x8} pc=0x{Registers.R4300.PC:x8}");
             }
 
-            if (rspShouldStart && (TraceN64Io || TraceRspTaskDmem))
+            if (rspShouldStart && (TraceN64Io || TraceRspTaskDmem || traceLateSpStatus))
                 TraceRspTaskHeaderWords(0x0FC0u, "sp-kick");
-            else if (TraceN64Io && (clearHalt || clearBroke))
+            else if ((TraceN64Io || traceLateSpStatus) && (clearHalt || clearBroke))
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] SP_STATUS no-start reason halt={(status & SpStatusHalt) != 0} " +
@@ -2715,15 +2750,11 @@ namespace Ryu64.MIPS
             }
 
             _activeRspTask = task;
-            _rspTaskActive = true;
             _rspTaskLocked = false;
-            _rspTaskCyclesRemaining = GetRspExecutionCycles(task.Type);
             _rspInterruptDelayArmed = false;
             _dpInterruptDelayArmed = false;
 
-            status &= ~(SpStatusHalt | SpStatusBroke | SpStatusTaskDone);
-            ClearMiSpInterrupt();
-
+            ArmSynchronousRspCompletion(ref status);
         }
 
         private void TryDispatchRspTaskInterpreter(ref uint status)
@@ -2818,14 +2849,11 @@ namespace Ryu64.MIPS
                 return;
             }
 
-            _rspTaskActive = true;
             _rspTaskLocked = false;
-            _rspTaskCyclesRemaining = GetRspExecutionCycles(hasTask ? task.Type : 0u);
             _rspInterruptDelayArmed = false;
             _dpInterruptDelayArmed = false;
 
-            status &= ~(SpStatusHalt | SpStatusBroke | SpStatusTaskDone);
-            ClearMiSpInterrupt();
+            ArmSynchronousRspCompletion(ref status);
         }
 
         private bool TryReadRspTaskFromDmem(out RspTask task)
@@ -2877,19 +2905,27 @@ namespace Ryu64.MIPS
         internal uint ReadSpDmemWord(uint dmemOffset)
         {
             uint index = dmemOffset & 0x0FFFu;
-            return ((uint)SP_DMEM_RW[index] << 24)
-                 | ((uint)SP_DMEM_RW[(index + 1) & 0x0FFFu] << 16)
-                 | ((uint)SP_DMEM_RW[(index + 2) & 0x0FFFu] << 8)
-                 | SP_DMEM_RW[(index + 3) & 0x0FFFu];
+            return ((uint)SP_MEM_RW[index] << 24)
+                 | ((uint)SP_MEM_RW[(index + 1) & 0x0FFFu] << 16)
+                 | ((uint)SP_MEM_RW[(index + 2) & 0x0FFFu] << 8)
+                 | SP_MEM_RW[(index + 3) & 0x0FFFu];
         }
 
         internal uint ReadSpImemWord(uint imemOffset)
         {
-            uint index = imemOffset & 0x0FFFu;
-            return ((uint)SP_IMEM_RW[index] << 24)
-                 | ((uint)SP_IMEM_RW[(index + 1) & 0x0FFFu] << 16)
-                 | ((uint)SP_IMEM_RW[(index + 2) & 0x0FFFu] << 8)
-                 | SP_IMEM_RW[(index + 3) & 0x0FFFu];
+            uint index = 0x1000u | (imemOffset & 0x0FFFu);
+            return ((uint)SP_MEM_RW[index] << 24)
+                 | ((uint)SP_MEM_RW[(index + 1) & 0x1FFFu] << 16)
+                 | ((uint)SP_MEM_RW[(index + 2) & 0x1FFFu] << 8)
+                 | SP_MEM_RW[(index + 3) & 0x1FFFu];
+        }
+
+        internal uint ReadSpMemoryWord(uint spAddress)
+        {
+            uint offset = spAddress & 0x0FFFu;
+            return (spAddress & 0x1000u) != 0
+                ? ReadSpImemWord(offset)
+                : ReadSpDmemWord(offset);
         }
 
         private void TraceRspImemWindowAfterDma(uint startMemAddr, uint dramAddr, int transferLength, int count, int skip)
@@ -2945,28 +2981,90 @@ namespace Ryu64.MIPS
                 return;
             }
 
-            const uint windowStart = 0x02B0u;
-            const uint windowEndInclusive = 0x02D8u;
-            bool touchedWindow = false;
+            const uint stackWindowStart = 0x02B0u;
+            const uint stackWindowEndInclusive = 0x02D8u;
+            const uint descriptorWindowStart = 0x0410u;
+            const uint descriptorWindowEndInclusive = 0x0428u;
+            bool touchedStackWindow = false;
+            bool touchedDescriptorWindow = false;
 
-            for (int block = 0; block < count && !touchedWindow; block++)
+            for (int block = 0; block < count && !(touchedStackWindow && touchedDescriptorWindow); block++)
             {
                 uint blockStart = (startMemAddr + (uint)(block * transferLength)) & 0x1FFFu;
                 uint blockEnd = blockStart + (uint)Math.Max(transferLength - 1, 0);
-                if (blockStart <= windowEndInclusive && blockEnd >= windowStart)
-                    touchedWindow = true;
+                if (blockStart <= stackWindowEndInclusive && blockEnd >= stackWindowStart)
+                    touchedStackWindow = true;
+                if (blockStart <= descriptorWindowEndInclusive && blockEnd >= descriptorWindowStart)
+                    touchedDescriptorWindow = true;
             }
 
-            if (!touchedWindow)
+            if (!touchedStackWindow && !touchedDescriptorWindow)
                 return;
 
             _traceRspDmaWindowLogCount++;
             uint src = dramAddr & 0x00FFFFF8u;
+            string descriptorSources = touchedDescriptorWindow
+                ? BuildRspDmaSourceMappingSummary(startMemAddr, src, transferLength, count, skip,
+                    0x0410u, 0x0414u, 0x0418u, 0x041Cu, 0x0420u, 0x0424u, 0x0428u)
+                : string.Empty;
             Common.Logger.PrintWarningLine(
                 $"[N64RSPDMEMDMA] startMem=0x{startMemAddr:x4} dram=0x{src:x8} len=0x{transferLength:x} count=0x{count:x} skip=0x{skip:x} " +
                 $"srcBytes={FormatPhysicalByteSpan(src, 16)} " +
                 $"srcW0=0x{ReadUInt32Physical(src + 0x00):x8} srcW4=0x{ReadUInt32Physical(src + 0x04):x8} srcW8=0x{ReadUInt32Physical(src + 0x08):x8} srcWc=0x{ReadUInt32Physical(src + 0x0c):x8} " +
-                $"dmem2b0=0x{ReadSpDmemWord(0x02B0):x8} dmem2b4=0x{ReadSpDmemWord(0x02B4):x8} dmem2b8=0x{ReadSpDmemWord(0x02B8):x8} dmem2bc=0x{ReadSpDmemWord(0x02BC):x8}");
+                descriptorSources +
+                $"dmem2b0=0x{ReadSpDmemWord(0x02B0):x8} dmem2b4=0x{ReadSpDmemWord(0x02B4):x8} dmem2b8=0x{ReadSpDmemWord(0x02B8):x8} dmem2bc=0x{ReadSpDmemWord(0x02BC):x8} " +
+                $"dmem410=0x{ReadSpDmemWord(0x0410):x8} dmem414=0x{ReadSpDmemWord(0x0414):x8} dmem418=0x{ReadSpDmemWord(0x0418):x8} " +
+                $"dmem41c=0x{ReadSpDmemWord(0x041C):x8} dmem420=0x{ReadSpDmemWord(0x0420):x8} dmem424=0x{ReadSpDmemWord(0x0424):x8} dmem428=0x{ReadSpDmemWord(0x0428):x8}");
+        }
+
+        private string BuildRspDmaSourceMappingSummary(uint startMemAddr, uint startDramAddr, int transferLength, int count, int skip, params uint[] dmemWords)
+        {
+            if (dmemWords == null || dmemWords.Length == 0)
+                return string.Empty;
+
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (uint dmemWord in dmemWords)
+            {
+                if (!TryMapRspDmaSourceForDmemAddress(startMemAddr, startDramAddr, transferLength, count, skip, dmemWord, out uint sourcePhysical))
+                    continue;
+
+                sb.Append($"src{dmemWord:x3}=0x{sourcePhysical:x8} ");
+                sb.Append($"src{dmemWord:x3}Bytes={FormatPhysicalByteSpan(sourcePhysical, 4)} ");
+                sb.Append($"src{dmemWord:x3}W=0x{ReadUInt32Physical(sourcePhysical):x8} ");
+            }
+
+            return sb.ToString();
+        }
+
+        private static bool TryMapRspDmaSourceForDmemAddress(uint startMemAddr, uint startDramAddr, int transferLength, int count, int skip, uint targetDmemAddress, out uint sourcePhysical)
+        {
+            sourcePhysical = 0;
+
+            uint target = targetDmemAddress & 0x0FFFu;
+            uint memBase = startMemAddr & 0x0FFFu;
+            uint dramBase = startDramAddr & 0x00FFFFF8u;
+            if (transferLength <= 0 || count <= 0)
+                return false;
+
+            for (int block = 0; block < count; block++)
+            {
+                uint blockMem = memBase;
+                uint blockDram = dramBase;
+                for (int i = 0; i < transferLength; i++)
+                {
+                    uint spAddress = (blockMem + (uint)i) & 0x0FFFu;
+                    if (spAddress == target)
+                    {
+                        sourcePhysical = (blockDram + (uint)i) & 0x00FFFFFFu;
+                        return true;
+                    }
+                }
+
+                memBase = (memBase + (uint)transferLength) & 0x0FFFu;
+                dramBase = (dramBase + (uint)(transferLength + skip)) & 0x00FFFFFFu;
+            }
+
+            return false;
         }
 
         private string FormatPhysicalByteSpan(uint physicalAddress, int count)
@@ -3001,13 +3099,80 @@ namespace Ryu64.MIPS
             AdvanceRspDpLifecycle(rspCycles);
         }
 
+        internal bool IsRspDmaDelayArmed()
+        {
+            return _spDmaDelayArmed;
+        }
+
+        internal uint GetRspDmaDelayRemaining()
+        {
+            return _spDmaDelayRemaining;
+        }
+
+        internal bool HasQueuedRspDma()
+        {
+            return _spQueuedDmaValid;
+        }
+
+        internal ulong GetRspProgressSignature()
+        {
+            ulong signature = ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
+            signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_DRAM_ADDR_REG_RW);
+            signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_RD_LEN_REG_RW);
+            signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_WR_LEN_REG_RW);
+            signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_STATUS_REG_R);
+            signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_DMA_FULL_REG_R);
+            signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_DMA_BUSY_REG_R);
+            signature = (signature * 1099511628211ul) ^ (_spDmaDelayArmed ? 1ul : 0ul);
+            signature = (signature * 1099511628211ul) ^ _spDmaDelayRemaining;
+            signature = (signature * 1099511628211ul) ^ (_spQueuedDmaValid ? 1ul : 0ul);
+            return signature;
+        }
+
         internal void WriteSpDmemWord(uint dmemOffset, uint value)
         {
             uint index = dmemOffset & 0x0FFFu;
-            SP_DMEM_RW[index] = (byte)(value >> 24);
-            SP_DMEM_RW[(index + 1) & 0x0FFFu] = (byte)(value >> 16);
-            SP_DMEM_RW[(index + 2) & 0x0FFFu] = (byte)(value >> 8);
-            SP_DMEM_RW[(index + 3) & 0x0FFFu] = (byte)value;
+            byte b0 = (byte)(value >> 24);
+            byte b1 = (byte)(value >> 16);
+            byte b2 = (byte)(value >> 8);
+            byte b3 = (byte)value;
+
+            byte old0 = SP_MEM_RW[index];
+            byte old1 = SP_MEM_RW[(index + 1) & 0x0FFFu];
+            byte old2 = SP_MEM_RW[(index + 2) & 0x0FFFu];
+            byte old3 = SP_MEM_RW[(index + 3) & 0x0FFFu];
+
+            SP_MEM_RW[index] = b0;
+            SP_MEM_RW[(index + 1) & 0x0FFFu] = b1;
+            SP_MEM_RW[(index + 2) & 0x0FFFu] = b2;
+            SP_MEM_RW[(index + 3) & 0x0FFFu] = b3;
+
+            if (IsRspDescriptorDmemAddress(index, 4))
+            {
+                TraceRspDescriptorDmemWrite(index, old0, b0, "word");
+                TraceRspDescriptorDmemWrite((index + 1) & 0x0FFFu, old1, b1, "word");
+                TraceRspDescriptorDmemWrite((index + 2) & 0x0FFFu, old2, b2, "word");
+                TraceRspDescriptorDmemWrite((index + 3) & 0x0FFFu, old3, b3, "word");
+                TraceRspDescriptorDmemSnapshot("post-word");
+            }
+        }
+
+        internal void WriteSpImemWord(uint imemOffset, uint value)
+        {
+            uint index = 0x1000u | (imemOffset & 0x0FFFu);
+            SP_MEM_RW[index] = (byte)(value >> 24);
+            SP_MEM_RW[(index + 1) & 0x1FFFu] = (byte)(value >> 16);
+            SP_MEM_RW[(index + 2) & 0x1FFFu] = (byte)(value >> 8);
+            SP_MEM_RW[(index + 3) & 0x1FFFu] = (byte)value;
+        }
+
+        internal void WriteSpMemoryWord(uint spAddress, uint value)
+        {
+            uint offset = spAddress & 0x0FFFu;
+            if ((spAddress & 0x1000u) != 0)
+                WriteSpImemWord(offset, value);
+            else
+                WriteSpDmemWord(offset, value);
         }
 
         internal uint ReadRspPc()
@@ -3022,35 +3187,41 @@ namespace Ryu64.MIPS
 
         internal uint ReadRspCp0(int reg)
         {
+            uint value;
             switch (reg & 0x1F)
             {
-                case 0: return ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
-                case 1: return ReadBigEndianWord(SP_DRAM_ADDR_REG_RW);
-                case 2: return ReadBigEndianWord(SP_RD_LEN_REG_RW);
-                case 3: return ReadBigEndianWord(SP_WR_LEN_REG_RW);
-                case 4: return ReadBigEndianWord(SP_STATUS_REG_R);
-                case 5: return ReadBigEndianWord(SP_DMA_FULL_REG_R);
-                case 6: return ReadBigEndianWord(SP_DMA_BUSY_REG_R);
+                case 0: value = ReadBigEndianWord(SP_MEM_ADDR_REG_RW); break;
+                case 1: value = ReadBigEndianWord(SP_DRAM_ADDR_REG_RW); break;
+                case 2: value = ReadBigEndianWord(SP_RD_LEN_REG_RW); break;
+                case 3: value = ReadBigEndianWord(SP_WR_LEN_REG_RW); break;
+                case 4: value = ReadBigEndianWord(SP_STATUS_REG_R); break;
+                case 5: value = ReadBigEndianWord(SP_DMA_FULL_REG_R); break;
+                case 6: value = ReadBigEndianWord(SP_DMA_BUSY_REG_R); break;
                 case 7:
-                    {
-                        uint value = ReadBigEndianWord(SP_SEMAPHORE_REG_R);
-                        if (TraceN64Io)
-                        {
-                            Common.Logger.PrintWarningLine(
-                                $"[N64RSPCP0] reg=7(SP_SEMAPHORE) read=0x{value:x8} rspPc=0x{ReadRspPc():x3} cpuPc=0x{Registers.R4300.PC:x8}");
-                        }
-                        return value;
-                    }
-                case 8: return ReadBigEndianWord(DPC_START_REG_RW);
-                case 9: return ReadBigEndianWord(DPC_END_REG_RW);
-                case 10: return ReadBigEndianWord(DPC_CURRENT_REG_RW);
-                case 11: return ReadBigEndianWord(DPC_STATUS_REG_R);
-                case 12: return ReadBigEndianWord(DPC_CLOCK_REG_RW);
-                case 13: return ReadBigEndianWord(DPC_BUFBUSY_REG_RW);
-                case 14: return ReadBigEndianWord(DPC_PIPEBUSY_REG_RW);
-                case 15: return ReadBigEndianWord(DPC_TMEM_REG_RW);
-                default: return 0;
+                    value = ReadBigEndianWord(SP_SEMAPHORE_REG_R);
+                    break;
+                case 8: value = ReadBigEndianWord(DPC_START_REG_RW); break;
+                case 9: value = ReadBigEndianWord(DPC_END_REG_RW); break;
+                case 10: value = ReadBigEndianWord(DPC_CURRENT_REG_RW); break;
+                case 11: value = ReadBigEndianWord(DPC_STATUS_REG_R); break;
+                case 12: value = ReadBigEndianWord(DPC_CLOCK_REG_RW); break;
+                case 13: value = ReadBigEndianWord(DPC_BUFBUSY_REG_RW); break;
+                case 14: value = ReadBigEndianWord(DPC_PIPEBUSY_REG_RW); break;
+                case 15: value = ReadBigEndianWord(DPC_TMEM_REG_RW); break;
+                default: value = 0; break;
             }
+
+            if (TraceN64Io || IsTraceN64SpDmaEnabled())
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64RSPCP0R] reg={(reg & 0x1F)} value=0x{value:x8} rspPc=0x{ReadRspPc():x3} cpuPc=0x{Registers.R4300.PC:x8} " +
+                    $"spMem=0x{ReadBigEndianWord(SP_MEM_ADDR_REG_RW):x8} spDram=0x{ReadBigEndianWord(SP_DRAM_ADDR_REG_RW):x8} " +
+                    $"rdLen=0x{ReadBigEndianWord(SP_RD_LEN_REG_RW):x8} wrLen=0x{ReadBigEndianWord(SP_WR_LEN_REG_RW):x8} " +
+                    $"dmaFull=0x{ReadBigEndianWord(SP_DMA_FULL_REG_R):x8} dmaBusy=0x{ReadBigEndianWord(SP_DMA_BUSY_REG_R):x8} " +
+                    $"dpcCur=0x{ReadBigEndianWord(DPC_CURRENT_REG_RW):x8} dpcEnd=0x{ReadBigEndianWord(DPC_END_REG_RW):x8}");
+            }
+
+            return value;
         }
 
         internal void WriteRspCp0(int reg, uint value)
@@ -3832,17 +4003,21 @@ namespace Ryu64.MIPS
             public byte[] ReadArray;
             public byte[] WriteArray;
             public string Name;
+            public int ReadBaseOffset;
+            public int WriteBaseOffset;
 
             public MemoryEvent ReadEvent;
             public MemoryEvent WriteEvent;
 
-            public MemEntry(uint StartAddress, uint EndAddress, byte[] ReadArray, byte[] WriteArray, string Name, MemoryEvent ReadEvent = null, MemoryEvent WriteEvent = null)
+            public MemEntry(uint StartAddress, uint EndAddress, byte[] ReadArray, byte[] WriteArray, string Name, MemoryEvent ReadEvent = null, MemoryEvent WriteEvent = null, int ReadBaseOffset = 0, int WriteBaseOffset = 0)
             {
                 this.StartAddress = StartAddress;
                 this.EndAddress   = EndAddress;
                 this.ReadArray    = ReadArray;
                 this.WriteArray   = WriteArray;
                 this.Name         = Name;
+                this.ReadBaseOffset = ReadBaseOffset;
+                this.WriteBaseOffset = WriteBaseOffset;
                 this.ReadEvent    = ReadEvent;
                 this.WriteEvent   = WriteEvent;
             }
@@ -3994,18 +4169,26 @@ namespace Ryu64.MIPS
                 entry = new MemEntry(
                     mirrorBase,
                     mirrorBase + 0x0FFFu,
-                    SP_DMEM_RW,
-                    SP_DMEM_RW,
-                    "SP_DMEM_MIRROR");
+                    SP_MEM_RW,
+                    SP_MEM_RW,
+                    "SP_DMEM_MIRROR",
+                    null,
+                    null,
+                    0x0000,
+                    0x0000);
                 return true;
             }
 
             entry = new MemEntry(
                 mirrorBase,
                 mirrorBase + 0x0FFFu,
-                SP_IMEM_RW,
-                SP_IMEM_RW,
-                "SP_IMEM_MIRROR");
+                SP_MEM_RW,
+                SP_MEM_RW,
+                "SP_IMEM_MIRROR",
+                null,
+                null,
+                0x1000,
+                0x1000);
             return true;
         }
 
@@ -4353,9 +4536,9 @@ namespace Ryu64.MIPS
                     Entry.ReadEvent();
                 }
 
-                int offset = ResolveArrayOffset(Entry.ReadArray, nonCachedIndex - Entry.StartAddress);
-                byte value = Entry.ReadArray[offset];
                 uint regOffset = nonCachedIndex - Entry.StartAddress;
+                int offset = ResolveArrayOffset(Entry.ReadArray, regOffset, Entry.ReadBaseOffset);
+                byte value = Entry.ReadArray[offset];
                 if ((regOffset & 0x3) == 0x3
                     && Entry.ReadEvent != null
                     && Entry.ReadEvent != AI_LEN_READ_EVENT
@@ -4372,9 +4555,17 @@ namespace Ryu64.MIPS
                 if (Entry.WriteArray == null)
                     throw new Common.Exceptions.MemoryProtectionViolation($"Memory at \"0x{index:x8}\" is not writable.");
 
-                int offset = ResolveArrayOffset(Entry.WriteArray, nonCachedIndex - Entry.StartAddress);
-                Entry.WriteArray[offset] = value;
                 uint regOffset = nonCachedIndex - Entry.StartAddress;
+                int offset = ResolveArrayOffset(Entry.WriteArray, regOffset, Entry.WriteBaseOffset);
+                byte oldValue = Entry.WriteArray[offset];
+                Entry.WriteArray[offset] = value;
+
+                if (ReferenceEquals(Entry.WriteArray, SP_MEM_RW)
+                    && IsRspDescriptorDmemAddress((uint)Entry.WriteBaseOffset | (regOffset & 0x0FFFu)))
+                {
+                    TraceRspDescriptorDmemWrite((uint)Entry.WriteBaseOffset | (regOffset & 0x0FFFu), oldValue, value, "direct");
+                }
+
                 if ((regOffset & 0x3) == 0x3)
                     Entry.WriteEvent?.Invoke();
             }
@@ -4873,16 +5064,17 @@ namespace Ryu64.MIPS
             WriteUInt64(index, (ulong)value);
         }
 
-        private static int ResolveArrayOffset(byte[] array, uint logicalOffset)
+        private static int ResolveArrayOffset(byte[] array, uint logicalOffset, int baseOffset = 0)
         {
             if (array.Length == 0)
                 throw new IndexOutOfRangeException("Mapped memory region has zero length.");
 
-            if (logicalOffset < (uint)array.Length)
-                return (int)logicalOffset;
+            uint absoluteOffset = (uint)baseOffset + logicalOffset;
+            if (absoluteOffset < (uint)array.Length)
+                return (int)absoluteOffset;
 
             // Cartridge and some register regions are mirrored over larger address windows.
-            return (int)(logicalOffset % (uint)array.Length);
+            return (int)(absoluteOffset % (uint)array.Length);
         }
 
         private bool TryGetCartridgeRomDmaSource(uint sourcePhysical, MemEntry srcEntry, out int romOffset, out int romContig)
@@ -4994,7 +5186,7 @@ namespace Ryu64.MIPS
                 if (dstEntry.WriteArray == null)
                     throw new Common.Exceptions.MemoryProtectionViolation($"DMA destination 0x{dest:x8} not writable.");
 
-                int dstOff = ResolveArrayOffset(dstEntry.WriteArray, dest - dstEntry.StartAddress);
+                int dstOff = ResolveArrayOffset(dstEntry.WriteArray, dest - dstEntry.StartAddress, dstEntry.WriteBaseOffset);
                 int dstContig = dstEntry.WriteArray.Length - dstOff;
                 int chunk = Math.Min(remaining, dstContig);
                 int srcOff;
@@ -5010,7 +5202,7 @@ namespace Ryu64.MIPS
                 }
                 else
                 {
-                    srcOff = ResolveArrayOffset(srcEntry.ReadArray, src - srcEntry.StartAddress);
+                    srcOff = ResolveArrayOffset(srcEntry.ReadArray, src - srcEntry.StartAddress, srcEntry.ReadBaseOffset);
                     int srcContig = srcEntry.ReadArray.Length - srcOff;
                     chunk = Math.Min(chunk, srcContig);
                     copyCount = chunk;
@@ -5039,12 +5231,72 @@ namespace Ryu64.MIPS
                     }
                 }
 
+                bool touchesSpDescriptorViaBulkCopy =
+                    ReferenceEquals(dstEntry.WriteArray, SP_MEM_RW)
+                    && dstEntry.WriteBaseOffset == 0
+                    && RangeOverlaps(dest, (uint)Math.Max(1, chunk), 0x04000410u, 0x04000428u);
+
+                if (touchesSpDescriptorViaBulkCopy)
+                    TraceRspDescriptorDmemSnapshot("bulk-pre");
+
                 if (copyCount > 0)
-                    Buffer.BlockCopy(srcArray, srcOff, dstEntry.WriteArray, dstOff, copyCount);
+                {
+                    bool srcIsSpDmem = ReferenceEquals(srcEntry.ReadArray, SP_MEM_RW) && srcEntry.ReadBaseOffset == 0;
+                    bool srcIsSpImem = ReferenceEquals(srcEntry.ReadArray, SP_MEM_RW) && srcEntry.ReadBaseOffset == 0x1000;
+                    bool dstIsSpDmem = ReferenceEquals(dstEntry.WriteArray, SP_MEM_RW) && dstEntry.WriteBaseOffset == 0;
+                    bool dstIsSpImem = ReferenceEquals(dstEntry.WriteArray, SP_MEM_RW) && dstEntry.WriteBaseOffset == 0x1000;
+
+                    // Keep SP memory accesses on the same byte-addressed helper path used by
+                    // CPU/RSP MMIO instead of raw BlockCopy. This matches the rest of the SP
+                    // memory model and avoids bulk copies bypassing SP-specific semantics.
+                    if (srcIsSpDmem || srcIsSpImem || dstIsSpDmem || dstIsSpImem)
+                    {
+                        uint srcStart = src - srcEntry.StartAddress;
+                        uint dstStart = dest - dstEntry.StartAddress;
+
+                        for (int i = 0; i < copyCount; i++)
+                        {
+                            byte value;
+                            if (srcIsSpDmem)
+                                value = ReadSpMemoryByte((srcStart + (uint)i) & 0x0FFFu);
+                            else if (srcIsSpImem)
+                                value = ReadSpMemoryByte(0x1000u | ((srcStart + (uint)i) & 0x0FFFu));
+                            else
+                                value = srcArray[srcOff + i];
+
+                            if (dstIsSpDmem)
+                                WriteSpMemoryByte((dstStart + (uint)i) & 0x0FFFu, value);
+                            else if (dstIsSpImem)
+                                WriteSpMemoryByte(0x1000u | ((dstStart + (uint)i) & 0x0FFFu), value);
+                            else
+                                dstEntry.WriteArray[dstOff + i] = value;
+                        }
+                    }
+                    else
+                    {
+                        Buffer.BlockCopy(srcArray, srcOff, dstEntry.WriteArray, dstOff, copyCount);
+                    }
+                }
 
                 if (zeroFillFromRom)
                 {
-                    Array.Clear(dstEntry.WriteArray, dstOff + copyCount, chunk - copyCount);
+                    bool dstIsSpDmem = ReferenceEquals(dstEntry.WriteArray, SP_MEM_RW) && dstEntry.WriteBaseOffset == 0;
+                    bool dstIsSpImem = ReferenceEquals(dstEntry.WriteArray, SP_MEM_RW) && dstEntry.WriteBaseOffset == 0x1000;
+                    if (dstIsSpDmem || dstIsSpImem)
+                    {
+                        uint dstStart = dest - dstEntry.StartAddress;
+                        for (int i = copyCount; i < chunk; i++)
+                        {
+                            if (dstIsSpDmem)
+                                WriteSpMemoryByte((dstStart + (uint)i) & 0x0FFFu, 0);
+                            else
+                                WriteSpMemoryByte(0x1000u | ((dstStart + (uint)i) & 0x0FFFu), 0);
+                        }
+                    }
+                    else
+                    {
+                        Array.Clear(dstEntry.WriteArray, dstOff + copyCount, chunk - copyCount);
+                    }
 
                     if (TracePiInterruptLifecycle
                         || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
@@ -5054,6 +5306,14 @@ namespace Ryu64.MIPS
                             $"src=0x{src:x8} dest=0x{dest:x8} chunk=0x{chunk:x} copied=0x{copyCount:x} " +
                             $"cartWindow={srcEntry.Name} romSize=0x{_rom.Length:x}");
                     }
+                }
+
+                if (touchesSpDescriptorViaBulkCopy)
+                {
+                    Common.Logger.PrintWarningLine(
+                        $"[N64RSPDMEMBULK] pc=0x{Registers.R4300.PC:x8} dest=0x{dest:x8} src=0x{src:x8} " +
+                        $"chunk=0x{chunk:x} copied=0x{copyCount:x} zeroFill={zeroFillFromRom}");
+                    TraceRspDescriptorDmemSnapshot("bulk-post");
                 }
 
                 if (dest < RDRAM.Length)

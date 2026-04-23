@@ -166,6 +166,7 @@ namespace Ryu64.MIPS
             SetOpcode("000001XXXXX00011XXXXXXXXXXXXXXXX", InstInterp.BGEZL,  "BGEZL R[{0}], 0x{4:x4}");
             SetOpcode("000001XXXXX10011XXXXXXXXXXXXXXXX", InstInterp.BGEZALL,"BGEZALL R[{0}], 0x{4:x4}");
             SetOpcode("000111XXXXX00000XXXXXXXXXXXXXXXX", InstInterp.BGTZ,   "BGTZ R[{0}], 0x{4:x4}");
+            SetOpcode("010111XXXXX00000XXXXXXXXXXXXXXXX", InstInterp.BGTZL,  "BGTZL R[{0}], 0x{4:x4}");
             SetOpcode("000110XXXXX00000XXXXXXXXXXXXXXXX", InstInterp.BLEZ,   "BLEZ R[{0}], 0x{4:x4}");
             SetOpcode("010110XXXXX00000XXXXXXXXXXXXXXXX", InstInterp.BLEZL,  "BLEZL R[{0}], 0x{4:x4}");
             SetOpcode("000001XXXXX00000XXXXXXXXXXXXXXXX", InstInterp.BLTZ,   "BLTZ R[{0}], 0x{4:x4}");

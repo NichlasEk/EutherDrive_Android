@@ -105,6 +105,21 @@ namespace Ryu64.MIPS
                 Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
         }
 
+        public static void BGTZL(OpcodeTable.OpcodeDesc Desc)
+        {
+            bool take = (long)Registers.R4300.Reg[Desc.op1] > 0;
+            Registers.R4300.PC += 4;
+            if (take)
+            {
+                R4300.ExecuteDelaySlot();
+                Registers.R4300.PC += BranchAdjustJ(Desc.Imm);
+            }
+            else
+            {
+                Registers.R4300.PC += 4;
+            }
+        }
+
         public static void BLEZ(OpcodeTable.OpcodeDesc Desc)
         {
             bool take = (long)Registers.R4300.Reg[Desc.op1] <= 0;
