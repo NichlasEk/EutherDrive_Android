@@ -1717,10 +1717,13 @@ namespace Ryu64.MIPS
             _rspTaskActive = false;
 
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
-            bool taskLocked = (status & (SpStatusHalt | SpStatusBroke)) == 0;
+            bool rspStoppedOnBreak = (status & (SpStatusHalt | SpStatusBroke)) != 0;
+            bool taskLocked = !rspStoppedOnBreak;
             bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
             bool dpInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000020u) != 0;
-            bool scheduleRspInterrupt = rspInterruptPending || taskLocked;
+            bool scheduleRspInterrupt = rspInterruptPending
+                || taskLocked
+                || (rspStoppedOnBreak && (status & SpStatusIntrBreak) != 0);
 
             if (_activeRspTask.Type == 1 && dpInterruptPending)
             {
@@ -1758,10 +1761,13 @@ namespace Ryu64.MIPS
             _rspTaskCyclesRemaining = 0;
 
             uint postStatus = ReadBigEndianWord(SP_STATUS_REG_R);
-            bool taskLocked = (postStatus & (SpStatusHalt | SpStatusBroke)) == 0;
+            bool rspStoppedOnBreak = (postStatus & (SpStatusHalt | SpStatusBroke)) != 0;
+            bool taskLocked = !rspStoppedOnBreak;
             bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
             bool dpInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000020u) != 0;
-            bool scheduleRspInterrupt = rspInterruptPending || taskLocked;
+            bool scheduleRspInterrupt = rspInterruptPending
+                || taskLocked
+                || (rspStoppedOnBreak && (postStatus & SpStatusIntrBreak) != 0);
 
             if (_activeRspTask.Type == 1 && dpInterruptPending)
             {
@@ -2865,6 +2871,11 @@ namespace Ryu64.MIPS
             _rspInterruptDelayArmed = false;
             _dpInterruptDelayArmed = false;
 
+            if (task.Type == 1)
+                SetMiDpInterrupt();
+
+            status |= SpStatusHalt | SpStatusBroke;
+            WriteBigEndianWord(SP_STATUS_REG_R, status);
             ArmSynchronousRspCompletion(ref status);
         }
 
@@ -2960,7 +2971,7 @@ namespace Ryu64.MIPS
                 return;
             }
 
-            if (string.Equals(stopReason, "break", StringComparison.Ordinal) && !hasTask)
+            if (string.Equals(stopReason, "break", StringComparison.Ordinal))
             {
                 status = ReadBigEndianWord(SP_STATUS_REG_R) | SpStatusHalt | SpStatusBroke;
                 WriteBigEndianWord(SP_STATUS_REG_R, status);
