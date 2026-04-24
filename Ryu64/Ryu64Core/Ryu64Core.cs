@@ -13,6 +13,9 @@ namespace Ryu64Core
         private const uint ViVStartReg = 0xA4400028;
         private const int RdramSizeBytes = 8 * 1024 * 1024;
         private const uint HeuristicFramebufferOriginFloor = 0x00010000u;
+        private const uint UntrackedFramebufferOriginFloor = 0x00020000u;
+        private const int MinimumUntrackedFramebufferScore = 12000;
+        private const int MinimumTrackedFramebufferScore = 2500;
         // Keep broad framebuffer scans opt-in; prefer explicit producer hints first.
         private static readonly bool EnableFramebufferOriginScanFallback =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "1", StringComparison.Ordinal);
@@ -252,6 +255,8 @@ namespace Ryu64Core
                     return false;
                 }
 
+                bool producerBackedFramebufferSelected = false;
+
                 // Prefer a previously written plausible VI origin over arbitrary RDRAM scans.
                 uint lastPlausibleOrigin = R4300.memory.LastPlausibleViOriginWriteValue;
                 if (suspiciousViOrigin
@@ -259,6 +264,7 @@ namespace Ryu64Core
                     && lastPlausibleOrigin < RdramSizeBytes)
                 {
                     origin = lastPlausibleOrigin;
+                    producerBackedFramebufferSelected = true;
                     _lastFramebufferStatus =
                         $"Last plausible VI origin used (vi=0x{rawOrigin:x8} -> last=0x{origin:x8}, pc=0x{R4300.memory.LastPlausibleViOriginWritePc:x8})";
                 }
@@ -274,6 +280,7 @@ namespace Ryu64Core
                     {
                         origin = tracked;
                         _lastTrackedFramebufferOrigin = tracked;
+                        producerBackedFramebufferSelected = true;
                         _lastFramebufferStatus =
                             $"Tracked framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, trackedScore={trackedScore}, dirtyPages={trackedDirtyPages})";
                     }
@@ -303,6 +310,7 @@ namespace Ryu64Core
                             recentScore = refinedScore;
                         }
 
+                        bool refinedProducerBacked = false;
                         if (_lastTrackedFramebufferOrigin != 0)
                         {
                             int trackedScore = ScoreFramebufferCandidate(_lastTrackedFramebufferOrigin, width, height, bytesPerPixel);
@@ -310,18 +318,31 @@ namespace Ryu64Core
                             {
                                 refined = _lastTrackedFramebufferOrigin;
                                 recentScore = trackedScore;
+                                refinedProducerBacked = true;
                             }
                         }
 
-                        origin = refined;
-                        _lastTrackedFramebufferOrigin = origin;
-                        recentFramebufferSelected = true;
-                        recentFramebufferOrigin = origin;
-                        recentFramebufferRecencyScore = recentBestScore;
-                        recentFramebufferViRecencyScore = recentViScore;
-                        recentFramebufferVisualScore = recentScore;
-                        _lastFramebufferStatus =
-                            $"Recent RDRAM framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, recentScore={recentBestScore}, viScore={recentViScore}, visualScore={recentScore})";
+                        if (IsRecoveredFramebufferCandidateAcceptable(refined, recentScore, refinedProducerBacked))
+                        {
+                            origin = refined;
+                            if (refinedProducerBacked)
+                                _lastTrackedFramebufferOrigin = origin;
+                            else
+                                _lastFallbackFramebufferOrigin = origin;
+                            recentFramebufferSelected = true;
+                            recentFramebufferOrigin = origin;
+                            recentFramebufferRecencyScore = recentBestScore;
+                            recentFramebufferViRecencyScore = recentViScore;
+                            recentFramebufferVisualScore = recentScore;
+                            producerBackedFramebufferSelected = refinedProducerBacked;
+                            _lastFramebufferStatus =
+                                $"Recent RDRAM framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, recentScore={recentBestScore}, viScore={recentViScore}, visualScore={recentScore})";
+                        }
+                        else if (!producerBackedFramebufferSelected)
+                        {
+                            _lastFramebufferStatus =
+                                $"No credible framebuffer yet (vi=0x{rawOrigin:x8}, rejectedRecent=0x{refined:x8}, visualScore={recentScore}, recentScore={recentBestScore}, viScore={recentViScore})";
+                        }
                     }
                 }
 
@@ -335,11 +356,12 @@ namespace Ryu64Core
                     int requiredOverrideMargin = recentFramebufferVisualScore < 12000 ? 32 : 128;
                     if (best != origin
                         && best >= HeuristicFramebufferOriginFloor
+                        && IsRecoveredFramebufferCandidateAcceptable(best, bestScore, producerBacked: false)
                         && bestScore > currentScore + requiredOverrideMargin)
                     {
                         _lastFallbackFramebufferOrigin = best;
                         origin = best;
-                        _lastTrackedFramebufferOrigin = best;
+                        producerBackedFramebufferSelected = false;
                         _lastFramebufferStatus =
                             $"Visual framebuffer override used (vi=0x{rawOrigin:x8}, recent=0x{recentFramebufferOrigin:x8} -> fb=0x{origin:x8}, " +
                             $"scanScore={bestScore}, recentVisual={currentScore}, recentScore={recentFramebufferRecencyScore}, viScore={recentFramebufferViRecencyScore})";
@@ -353,13 +375,25 @@ namespace Ryu64Core
                     && bytesPerPixel > 0)
                 {
                     uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int viScore);
-                    if (best != origin && best >= HeuristicFramebufferOriginFloor)
+                    if (best != origin
+                        && best >= HeuristicFramebufferOriginFloor
+                        && IsRecoveredFramebufferCandidateAcceptable(best, bestScore, producerBacked: false))
                     {
                         _lastFallbackFramebufferOrigin = best;
                         origin = best;
+                        producerBackedFramebufferSelected = false;
                         _lastFramebufferStatus =
                             $"Fallback VI origin used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, score={bestScore}, viScore={viScore})";
                     }
+                }
+
+                if (suspiciousViOrigin
+                    && !producerBackedFramebufferSelected
+                    && !IsRecoveredFramebufferCandidateAcceptable(origin, ScoreFramebufferCandidate(origin, width, height, bytesPerPixel), producerBacked: false))
+                {
+                    if (!_lastFramebufferStatus.StartsWith("No credible framebuffer yet", StringComparison.Ordinal))
+                        _lastFramebufferStatus = $"No credible framebuffer yet (vi=0x{rawOrigin:x8}, candidate=0x{origin:x8})";
+                    return false;
                 }
 
                 int bufferSize = checked(width * height * bytesPerPixel);
@@ -577,6 +611,10 @@ namespace Ryu64Core
                 return int.MinValue;
 
             int sampleCount = sampleCols * sampleRows;
+            int coherentEdges = sameLeft + sameUp;
+            if (hugeDiff > sampleCount && coherentEdges < sampleCount / 3)
+                return int.MinValue;
+
             int sparsePenalty = zeroCount * 8;
 
             // Favor coherent images and penalize noisy/high-frequency regions.
@@ -639,6 +677,20 @@ namespace Ryu64Core
                 return viOrigin;
 
             return bestOrigin;
+        }
+
+        private static bool IsRecoveredFramebufferCandidateAcceptable(uint origin, int visualScore, bool producerBacked)
+        {
+            if (visualScore == int.MinValue)
+                return false;
+
+            if (producerBacked)
+                return visualScore >= MinimumTrackedFramebufferScore;
+
+            if (origin < UntrackedFramebufferOriginFloor)
+                return false;
+
+            return visualScore >= MinimumUntrackedFramebufferScore;
         }
 
         private uint RefineFramebufferOriginNearHint(uint hint, int width, int height, int bytesPerPixel, uint radius, uint step, out int bestScore)

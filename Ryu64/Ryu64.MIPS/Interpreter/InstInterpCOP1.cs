@@ -24,6 +24,40 @@ namespace Ryu64.MIPS
             WriteFcr31(fcr31);
         }
 
+        private static bool IsFpr64Mode()
+        {
+            const ulong cp0StatusFr = 0x04000000UL;
+            return (Registers.COP0.Reg[Registers.COP0.STATUS_REG] & cp0StatusFr) != 0;
+        }
+
+        private static int FprDoubleIndex(int index) => IsFpr64Mode() ? index : (index & ~1);
+
+        private static uint GetFprRaw32Mapped(int index)
+        {
+            if (IsFpr64Mode())
+                return (uint)Registers.COP1.Reg[index];
+
+            ulong raw = Registers.COP1.Reg[index & ~1];
+            return (index & 1) == 0
+                ? (uint)raw
+                : (uint)(raw >> 32);
+        }
+
+        private static void SetFprRaw32Mapped(int index, uint value)
+        {
+            if (IsFpr64Mode())
+            {
+                Registers.COP1.Reg[index] = (Registers.COP1.Reg[index] & 0xFFFFFFFF00000000UL) | value;
+                return;
+            }
+
+            int pairIndex = index & ~1;
+            ulong raw = Registers.COP1.Reg[pairIndex];
+            Registers.COP1.Reg[pairIndex] = (index & 1) == 0
+                ? (raw & 0xFFFFFFFF00000000UL) | value
+                : (raw & 0x00000000FFFFFFFFUL) | ((ulong)value << 32);
+        }
+
         private static int RoundToWord(float value) => (int)Math.Round(value, MidpointRounding.ToEven);
         private static int RoundToWord(double value) => (int)Math.Round(value, MidpointRounding.ToEven);
         private static int TruncToWord(float value) => (int)Math.Truncate(value);
@@ -95,14 +129,19 @@ namespace Ryu64.MIPS
             Registers.R4300.PC += 4;
         }
 
-        private static float GetFprSingle(int index) => (float)Registers.COP1.Reg[index];
-        private static void SetFprSingle(int index, float value) => Registers.COP1.Reg[index] = value;
-        private static double GetFprDouble(int index) => Registers.COP1.Reg[index];
-        private static void SetFprDouble(int index, double value) => Registers.COP1.Reg[index] = value;
-        private static uint GetFprRaw32(int index) => Common.Util.FloatToUInt32((float)Registers.COP1.Reg[index]);
-        private static void SetFprRaw32(int index, uint value) => Registers.COP1.Reg[index] = Common.Util.UInt32ToFloat(value);
-        private static ulong GetFprRaw64(int index) => Common.Util.DoubleToUInt64(Registers.COP1.Reg[index]);
-        private static void SetFprRaw64(int index, ulong value) => Registers.COP1.Reg[index] = Common.Util.UInt64ToDouble(value);
+        internal static uint GetFprRaw32ForLoadStore(int index) => GetFprRaw32Mapped(index);
+        internal static void SetFprRaw32ForLoadStore(int index, uint value) => SetFprRaw32Mapped(index, value);
+        internal static ulong GetFprRaw64ForLoadStore(int index) => Registers.COP1.Reg[FprDoubleIndex(index)];
+        internal static void SetFprRaw64ForLoadStore(int index, ulong value) => Registers.COP1.Reg[FprDoubleIndex(index)] = value;
+
+        private static float GetFprSingle(int index) => Common.Util.UInt32ToFloat(GetFprRaw32Mapped(index));
+        private static void SetFprSingle(int index, float value) => SetFprRaw32(index, Common.Util.FloatToUInt32(value));
+        private static double GetFprDouble(int index) => Common.Util.UInt64ToDouble(GetFprRaw64(index));
+        private static void SetFprDouble(int index, double value) => SetFprRaw64(index, Common.Util.DoubleToUInt64(value));
+        private static uint GetFprRaw32(int index) => GetFprRaw32Mapped(index);
+        private static void SetFprRaw32(int index, uint value) => SetFprRaw32Mapped(index, value);
+        private static ulong GetFprRaw64(int index) => GetFprRaw64ForLoadStore(index);
+        private static void SetFprRaw64(int index, ulong value) => SetFprRaw64ForLoadStore(index, value);
 
         public static void CFC1(OpcodeTable.OpcodeDesc Desc)
         {

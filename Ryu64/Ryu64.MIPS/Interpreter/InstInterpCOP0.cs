@@ -116,6 +116,8 @@ namespace Ryu64.MIPS
         {
             return reg == Registers.COP0.STATUS_REG
                 || reg == Registers.COP0.CAUSE_REG
+                || reg == Registers.COP0.COUNT_REG
+                || reg == Registers.COP0.COMPARE_REG
                 || reg == Registers.COP0.EPC_REG
                 || reg == Registers.COP0.ERROREPC_REG;
         }

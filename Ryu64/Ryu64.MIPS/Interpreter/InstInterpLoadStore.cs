@@ -59,18 +59,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x7u);
             ulong mem = R4300.memory.ReadUInt64(aligned);
             ulong oldRt = Registers.R4300.Reg[Desc.op2];
-            ulong result;
-            switch (n)
-            {
-                case 0: result = (oldRt & 0x00FFFFFFFFFFFFFFUL) | (mem & 0xFF00000000000000UL); break;
-                case 1: result = (oldRt & 0x0000FFFFFFFFFFFFUL) | (mem & 0xFFFF000000000000UL); break;
-                case 2: result = (oldRt & 0x000000FFFFFFFFFFUL) | (mem & 0xFFFFFF0000000000UL); break;
-                case 3: result = (oldRt & 0x00000000FFFFFFFFUL) | (mem & 0xFFFFFFFF00000000UL); break;
-                case 4: result = (oldRt & 0x0000000000FFFFFFUL) | (mem & 0xFFFFFFFFFF000000UL); break;
-                case 5: result = (oldRt & 0x000000000000FFFFUL) | (mem & 0xFFFFFFFFFFFF0000UL); break;
-                case 6: result = (oldRt & 0x00000000000000FFUL) | (mem & 0xFFFFFFFFFFFFFF00UL); break;
-                default: result = mem; break;
-            }
+            int shift = 8 * n;
+            ulong mask = shift == 0 ? 0UL : ((1UL << shift) - 1UL);
+            ulong result = (oldRt & mask) | (mem << shift);
 
             Registers.R4300.Reg[Desc.op2] = result;
             Registers.R4300.PC += 4;
@@ -83,18 +74,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x7u);
             ulong mem = R4300.memory.ReadUInt64(aligned);
             ulong oldRt = Registers.R4300.Reg[Desc.op2];
-            ulong result;
-            switch (n)
-            {
-                case 0: result = mem; break;
-                case 1: result = (oldRt & 0xFF00000000000000UL) | (mem & 0x00FFFFFFFFFFFFFFUL); break;
-                case 2: result = (oldRt & 0xFFFF000000000000UL) | (mem & 0x0000FFFFFFFFFFFFUL); break;
-                case 3: result = (oldRt & 0xFFFFFF0000000000UL) | (mem & 0x000000FFFFFFFFFFUL); break;
-                case 4: result = (oldRt & 0xFFFFFFFF00000000UL) | (mem & 0x00000000FFFFFFFFUL); break;
-                case 5: result = (oldRt & 0xFFFFFFFFFF000000UL) | (mem & 0x0000000000FFFFFFUL); break;
-                case 6: result = (oldRt & 0xFFFFFFFFFFFF0000UL) | (mem & 0x000000000000FFFFUL); break;
-                default: result = (oldRt & 0xFFFFFFFFFFFFFF00UL) | (mem & 0x00000000000000FFUL); break;
-            }
+            int shift = 8 * (7 - n);
+            ulong mask = n == 7 ? 0UL : ulong.MaxValue << (8 * (n + 1));
+            ulong result = (oldRt & mask) | (mem >> shift);
 
             Registers.R4300.Reg[Desc.op2] = result;
             Registers.R4300.PC += 4;
@@ -137,14 +119,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x3u);
             uint mem = R4300.memory.ReadUInt32(aligned);
             uint oldRt = ReadRegisterWord(Desc.op2);
-            uint result;
-            switch (n)
-            {
-                case 0: result = (oldRt & 0x00FFFFFFu) | (mem & 0xFF000000u); break;
-                case 1: result = (oldRt & 0x0000FFFFu) | (mem & 0xFFFF0000u); break;
-                case 2: result = (oldRt & 0x000000FFu) | (mem & 0xFFFFFF00u); break;
-                default: result = mem; break;
-            }
+            int shift = 8 * n;
+            uint mask = shift == 0 ? 0u : ((1u << shift) - 1u);
+            uint result = (oldRt & mask) | (mem << shift);
 
             WriteRegisterWordSignExtended(Desc.op2, result);
             Registers.R4300.PC += 4;
@@ -157,14 +134,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x3u);
             uint mem = R4300.memory.ReadUInt32(aligned);
             uint oldRt = ReadRegisterWord(Desc.op2);
-            uint result;
-            switch (n)
-            {
-                case 0: result = mem; break;
-                case 1: result = (oldRt & 0xFF000000u) | (mem & 0x00FFFFFFu); break;
-                case 2: result = (oldRt & 0xFFFF0000u) | (mem & 0x0000FFFFu); break;
-                default: result = (oldRt & 0xFFFFFF00u) | (mem & 0x000000FFu); break;
-            }
+            int shift = 8 * (3 - n);
+            uint mask = n == 3 ? 0u : uint.MaxValue << (8 * (n + 1));
+            uint result = (oldRt & mask) | (mem >> shift);
 
             WriteRegisterWordSignExtended(Desc.op2, result);
             Registers.R4300.PC += 4;
@@ -220,18 +192,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x7u);
             ulong oldMem = R4300.memory.ReadUInt64(aligned);
             ulong value = Registers.R4300.Reg[Desc.op2];
-            ulong merged;
-            switch (n)
-            {
-                case 0: merged = (oldMem & 0x00FFFFFFFFFFFFFFUL) | (value & 0xFF00000000000000UL); break;
-                case 1: merged = (oldMem & 0x0000FFFFFFFFFFFFUL) | (value & 0xFFFF000000000000UL); break;
-                case 2: merged = (oldMem & 0x000000FFFFFFFFFFUL) | (value & 0xFFFFFF0000000000UL); break;
-                case 3: merged = (oldMem & 0x00000000FFFFFFFFUL) | (value & 0xFFFFFFFF00000000UL); break;
-                case 4: merged = (oldMem & 0x0000000000FFFFFFUL) | (value & 0xFFFFFFFFFF000000UL); break;
-                case 5: merged = (oldMem & 0x000000000000FFFFUL) | (value & 0xFFFFFFFFFFFF0000UL); break;
-                case 6: merged = (oldMem & 0x00000000000000FFUL) | (value & 0xFFFFFFFFFFFFFF00UL); break;
-                default: merged = value; break;
-            }
+            int shift = 8 * n;
+            ulong mask = n == 0 ? ulong.MaxValue : ((1UL << (8 * (8 - n))) - 1UL);
+            ulong merged = (oldMem & ~mask) | ((value >> shift) & mask);
             R4300.memory.WriteUInt64(aligned, merged);
 
             Registers.R4300.PC += 4;
@@ -244,18 +207,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x7u);
             ulong oldMem = R4300.memory.ReadUInt64(aligned);
             ulong value = Registers.R4300.Reg[Desc.op2];
-            ulong merged;
-            switch (n)
-            {
-                case 0: merged = value; break;
-                case 1: merged = (oldMem & 0xFF00000000000000UL) | (value & 0x00FFFFFFFFFFFFFFUL); break;
-                case 2: merged = (oldMem & 0xFFFF000000000000UL) | (value & 0x0000FFFFFFFFFFFFUL); break;
-                case 3: merged = (oldMem & 0xFFFFFF0000000000UL) | (value & 0x000000FFFFFFFFFFUL); break;
-                case 4: merged = (oldMem & 0xFFFFFFFF00000000UL) | (value & 0x00000000FFFFFFFFUL); break;
-                case 5: merged = (oldMem & 0xFFFFFFFFFF000000UL) | (value & 0x0000000000FFFFFFUL); break;
-                case 6: merged = (oldMem & 0xFFFFFFFFFFFF0000UL) | (value & 0x000000000000FFFFUL); break;
-                default: merged = (oldMem & 0xFFFFFFFFFFFFFF00UL) | (value & 0x00000000000000FFUL); break;
-            }
+            int shift = 8 * (7 - n);
+            ulong mask = ulong.MaxValue << shift;
+            ulong merged = (oldMem & ~mask) | ((value << shift) & mask);
             R4300.memory.WriteUInt64(aligned, merged);
 
             Registers.R4300.PC += 4;
@@ -284,14 +238,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x3u);
             uint oldMem = R4300.memory.ReadUInt32(aligned);
             uint value = (uint)Registers.R4300.Reg[Desc.op2];
-            uint merged;
-            switch (n)
-            {
-                case 0: merged = (oldMem & 0x00FFFFFFu) | (value & 0xFF000000u); break;
-                case 1: merged = (oldMem & 0x0000FFFFu) | (value & 0xFFFF0000u); break;
-                case 2: merged = (oldMem & 0x000000FFu) | (value & 0xFFFFFF00u); break;
-                default: merged = value; break;
-            }
+            int shift = 8 * n;
+            uint mask = n == 0 ? uint.MaxValue : ((1u << (8 * (4 - n))) - 1u);
+            uint merged = (oldMem & ~mask) | ((value >> shift) & mask);
             R4300.memory.WriteUInt32(aligned, merged);
 
             Registers.R4300.PC += 4;
@@ -304,14 +253,9 @@ namespace Ryu64.MIPS
             int n = (int)(addr & 0x3u);
             uint oldMem = R4300.memory.ReadUInt32(aligned);
             uint value = (uint)Registers.R4300.Reg[Desc.op2];
-            uint merged;
-            switch (n)
-            {
-                case 0: merged = value; break;
-                case 1: merged = (oldMem & 0xFF000000u) | (value & 0x00FFFFFFu); break;
-                case 2: merged = (oldMem & 0xFFFF0000u) | (value & 0x0000FFFFu); break;
-                default: merged = (oldMem & 0xFFFFFF00u) | (value & 0x000000FFu); break;
-            }
+            int shift = 8 * (3 - n);
+            uint mask = uint.MaxValue << shift;
+            uint merged = (oldMem & ~mask) | ((value << shift) & mask);
             R4300.memory.WriteUInt32(aligned, merged);
 
             Registers.R4300.PC += 4;
@@ -335,7 +279,7 @@ namespace Ryu64.MIPS
             uint addr = EffectiveAddress(Desc);
             RequireAlignment(addr, 4, isStore: false);
             uint bits = R4300.memory.ReadUInt32(addr);
-            Registers.COP1.Reg[Desc.op2] = Common.Util.UInt32ToFloat(bits);
+            SetFprRaw32ForLoadStore(Desc.op2, bits);
             Registers.R4300.PC += 4;
         }
 
@@ -343,7 +287,7 @@ namespace Ryu64.MIPS
         {
             uint addr = EffectiveAddress(Desc);
             RequireAlignment(addr, 4, isStore: true);
-            uint bits = Common.Util.FloatToUInt32((float)Registers.COP1.Reg[Desc.op2]);
+            uint bits = GetFprRaw32ForLoadStore(Desc.op2);
             R4300.memory.WriteUInt32(addr, bits);
             Registers.R4300.PC += 4;
         }
@@ -353,7 +297,7 @@ namespace Ryu64.MIPS
             uint addr = EffectiveAddress(Desc);
             RequireAlignment(addr, 8, isStore: false);
             ulong bits = R4300.memory.ReadUInt64(addr);
-            Registers.COP1.Reg[Desc.op2] = Common.Util.UInt64ToDouble(bits);
+            SetFprRaw64ForLoadStore(Desc.op2, bits);
             Registers.R4300.PC += 4;
         }
 
@@ -361,7 +305,7 @@ namespace Ryu64.MIPS
         {
             uint addr = EffectiveAddress(Desc);
             RequireAlignment(addr, 8, isStore: true);
-            ulong bits = Common.Util.DoubleToUInt64(Registers.COP1.Reg[Desc.op2]);
+            ulong bits = GetFprRaw64ForLoadStore(Desc.op2);
             R4300.memory.WriteUInt64(addr, bits);
             Registers.R4300.PC += 4;
         }

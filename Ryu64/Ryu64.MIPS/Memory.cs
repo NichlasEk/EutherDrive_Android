@@ -39,9 +39,9 @@ namespace Ryu64.MIPS
         private static readonly bool TraceMegaStatusBlock =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_STATUS_CALL"), "1", StringComparison.Ordinal);
         private static readonly bool TraceExceptionVectorWrites =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EXCEPTION_VECTOR_WRITES"), "0", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EXCEPTION_VECTOR_WRITES"), "1", StringComparison.Ordinal);
         private static readonly bool TraceLowRamMutationWrites =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_LOW_RAM_MUTATIONS"), "0", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_LOW_RAM_MUTATIONS"), "1", StringComparison.Ordinal);
         private static readonly bool MirrorPiRdLenAsCartToDram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSm64SlotWrites =
@@ -250,7 +250,9 @@ namespace Ryu64.MIPS
 
         private void TraceRspDescriptorDmemWrite(uint spAddress, byte oldValue, byte newValue, string origin)
         {
-            if (oldValue == newValue || _traceRspDescriptorWriteLogCount >= TraceRspDescriptorWriteLogLimit)
+            if ((!TraceN64Io && !TraceRspTaskDmem)
+                || oldValue == newValue
+                || _traceRspDescriptorWriteLogCount >= TraceRspDescriptorWriteLogLimit)
                 return;
 
             _traceRspDescriptorWriteLogCount++;
@@ -263,7 +265,8 @@ namespace Ryu64.MIPS
 
         private void TraceRspDescriptorDmemSnapshot(string tag)
         {
-            if (_traceRspDescriptorWriteLogCount >= TraceRspDescriptorWriteLogLimit)
+            if ((!TraceN64Io && !TraceRspTaskDmem)
+                || _traceRspDescriptorWriteLogCount >= TraceRspDescriptorWriteLogLimit)
                 return;
 
             _traceRspDescriptorWriteLogCount++;
@@ -516,6 +519,7 @@ namespace Ryu64.MIPS
         private uint _piInterruptDelayRemaining;
         private uint _piIrqRaiseCount;
         private uint _piIrqClearCount;
+        private uint _cartridgeBusLastWriteWord;
         private bool _siDmaActive;
         private bool _siDmaReadToDram;
         private uint _siDramAddr;
@@ -1035,26 +1039,16 @@ namespace Ryu64.MIPS
                 _viFrameDelayCycles = CpuCyclesPerViFrame;
 
             uint viIntrLine = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
-            // VI only schedules a vertical interrupt when VI_INTR is strictly below
-            // VI_V_SYNC. VI_INTR == VI_V_SYNC does not fire.
+            // VI_INTR gates vertical interrupts, but the interrupt event itself is
+            // frame-paced. Scheduling directly to VI_INTR line makes the first OoT
+            // VI fire almost immediately after register setup.
             if (viIntrLine >= viVSync)
             {
                 _viInterruptCyclesRemaining = 0;
                 return;
             }
 
-            uint currentLine = _viCurrentLine % viLinesPerFrame;
-            uint currentOffset = _viLineCycleAccum % cpuCyclesPerViLine;
-            uint currentPos = currentLine * cpuCyclesPerViLine + currentOffset;
-            uint targetPos = viIntrLine * cpuCyclesPerViLine;
-
-            uint remaining = (targetPos > currentPos)
-                ? (targetPos - currentPos)
-                : (_viFrameDelayCycles - currentPos + targetPos);
-
-            // Match edge-triggered "next event" behavior: if we're exactly on the target,
-            // schedule the next frame's interrupt instead of firing continuously.
-            _viInterruptCyclesRemaining = (remaining == 0) ? _viFrameDelayCycles : remaining;
+            _viInterruptCyclesRemaining = _viFrameDelayCycles;
         }
 
         public Memory(byte[] Rom)
@@ -1343,7 +1337,7 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void ArmPiDmaCompletion(uint transferBytes)
+        private void ArmPiDmaCompletion(uint transferBytes, uint minimumDelayCycles)
         {
             if (_piDmaBusy || _piInterruptDelayArmed)
             {
@@ -1375,7 +1369,9 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
 
             _piInterruptDelayArmed = true;
-            _piInterruptDelayRemaining = Math.Max(PiDmaCyclesMinimum, transferBytes / 8u);
+            _piInterruptDelayRemaining = Math.Max(minimumDelayCycles, transferBytes / 8u);
+            if (_piInterruptDelayRemaining == 0)
+                _piInterruptDelayRemaining = 1;
         }
 
         private void FinalizePiDmaCompletion()
@@ -1404,6 +1400,100 @@ namespace Ryu64.MIPS
                     $"busyAfter={_piDmaBusy} piStatusAfter=0x{ReadBigEndianWord(PI_STATUS_REG_R):x8} " +
                     $"miIntrAfter=0x{ReadBigEndianWord(MI_INTR_REG_R):x8}");
             }
+        }
+
+        private static bool IsCartridgeBusPhysicalAddress(uint physical)
+        {
+            return (physical >= 0x05000000u && physical <= 0x1FBFFFFFu)
+                || (physical >= 0x1FC00800u && physical <= 0x1FFFFFFFu);
+        }
+
+        private byte ReadCartridgeBusByte(uint physical)
+        {
+            uint piStatus = ReadBigEndianWord(PI_STATUS_REG_R);
+            if ((piStatus & PiStatusIoBusy) != 0)
+            {
+                int shift = (int)((3u - (physical & 0x3u)) * 8u);
+                return (byte)((_cartridgeBusLastWriteWord >> shift) & 0xFFu);
+            }
+
+            MemEntry entry = GetEntry(physical);
+            if (entry.ReadArray == null)
+                return 0;
+
+            uint regOffset = physical - entry.StartAddress;
+            int offset = ResolveArrayOffset(entry.ReadArray, regOffset, entry.ReadBaseOffset);
+            return entry.ReadArray[offset];
+        }
+
+        private ushort ReadCartridgeBusUInt16(uint physical)
+        {
+            return (ushort)((ReadCartridgeBusByte(physical) << 8) | ReadCartridgeBusByte(physical + 1u));
+        }
+
+        private uint ReadCartridgeBusUInt32(uint physical)
+        {
+            return ((uint)ReadCartridgeBusByte(physical) << 24)
+                | ((uint)ReadCartridgeBusByte(physical + 1u) << 16)
+                | ((uint)ReadCartridgeBusByte(physical + 2u) << 8)
+                | ReadCartridgeBusByte(physical + 3u);
+        }
+
+        private void UpdateCartridgeBusLastWrite(uint physical, uint value, int size)
+        {
+            switch (size)
+            {
+                case 1:
+                {
+                    int shift = (int)((3u - (physical & 0x3u)) * 8u);
+                    uint mask = 0xFFu << shift;
+                    _cartridgeBusLastWriteWord = (_cartridgeBusLastWriteWord & ~mask) | ((value & 0xFFu) << shift);
+                    break;
+                }
+
+                case 2:
+                {
+                    int shift = (int)((2u - (physical & 0x2u)) * 8u);
+                    uint mask = 0xFFFFu << shift;
+                    _cartridgeBusLastWriteWord = (_cartridgeBusLastWriteWord & ~mask) | ((value & 0xFFFFu) << shift);
+                    break;
+                }
+
+                default:
+                    _cartridgeBusLastWriteWord = value;
+                    break;
+            }
+        }
+
+        private void ArmPiIoCompletion()
+        {
+            if (_piDmaBusy || _piInterruptDelayArmed)
+                return;
+
+            uint piStatus = ReadBigEndianWord(PI_STATUS_REG_R);
+            piStatus |= PiStatusIoBusy;
+            WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
+
+            _piInterruptDelayArmed = true;
+            _piInterruptDelayRemaining = PiDmaCyclesMinimum;
+        }
+
+        private void HandleCartridgeBusWrite(uint physical, uint value, int size)
+        {
+            UpdateCartridgeBusLastWrite(physical, value, size);
+
+            if (!ValidatePiRequest("cart-io", 0u, 0u, physical))
+                return;
+
+            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64PIDMA] cart-io-start pc=0x{Registers.R4300.PC:x8} " +
+                    $"addr=0x{physical:x8} size={size} value=0x{value:x8} " +
+                    $"piStatus=0x{ReadBigEndianWord(PI_STATUS_REG_R):x8} miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8}");
+            }
+
+            ArmPiIoCompletion();
         }
 
         private bool ValidatePiRequest(string source, uint rawLength, uint dramAddr, uint cartAddr)
@@ -1466,6 +1556,25 @@ namespace Ryu64.MIPS
             }
         }
 
+        private void ArmDirectPifWriteCompletion()
+        {
+            if (_siDmaActive || _siDirectPifWriteActive || _siInterruptDelayArmed)
+                return;
+
+            _siDirectPifWriteActive = true;
+            SetSiBusy(SiStatusDmaBusy | SiStatusIoBusy);
+            _siInterruptDelayArmed = true;
+            _siInterruptDelayRemaining = SiDmaDurationCycles;
+
+            if (TraceSiInterruptLifecycle)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64SIIRQ] arm-direct-pif pc=0x{Registers.R4300.PC:x8} " +
+                    $"siStatus=0x{ReadBigEndianWord(SI_STATUS_REG_R):x8} pifCtl=0x{PIFRAM[63]:x2} " +
+                    $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} delay=0x{_siInterruptDelayRemaining:x}");
+            }
+        }
+
         private void FinalizeSiDmaCompletion()
         {
             if (!_siDmaActive && !_siDirectPifWriteActive)
@@ -1490,15 +1599,12 @@ namespace Ryu64.MIPS
             }
             else
             {
-                ProcessPifJoybusCommands();
+                ProcessPifControlFlags();
             }
 
             _siDmaActive = false;
             _siDirectPifWriteActive = false;
             SetSiBusy(0);
-            WriteBigEndianWord(SI_PIF_ADDR_RD64B_REG_RW, 0);
-            WriteBigEndianWord(SI_PIF_ADDR_WR64B_REG_RW, 0);
-            WriteBigEndianWord(SI_DRAM_ADDR_REG_RW, 0);
 
             if (TraceSiInterruptLifecycle)
             {
@@ -1613,13 +1719,15 @@ namespace Ryu64.MIPS
             uint status = ReadBigEndianWord(SP_STATUS_REG_R);
             bool taskLocked = (status & (SpStatusHalt | SpStatusBroke)) == 0;
             bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
+            bool dpInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000020u) != 0;
             bool scheduleRspInterrupt = rspInterruptPending || taskLocked;
 
-            if (_activeRspTask.Type == 1)
+            if (_activeRspTask.Type == 1 && dpInterruptPending)
             {
                 FinalizeGraphicsTask();
                 _dpInterruptDelayArmed = true;
                 _dpInterruptDelayRemaining = 4000;
+                ClearMiDpInterrupt();
             }
 
             _rspTaskLocked = taskLocked;
@@ -1638,7 +1746,7 @@ namespace Ryu64.MIPS
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] RSP task completed type={_activeRspTask.Type} pc=0x{Registers.R4300.PC:x8} " +
                     $"spStatus=0x{status:x8} locked={_rspTaskLocked} scheduleRspInt={scheduleRspInterrupt} " +
-                    $"rspIntDelay={_rspInterruptDelayRemaining} dpDelay={_dpInterruptDelayRemaining} " +
+                    $"rspIntDelay={_rspInterruptDelayRemaining} dpPending={dpInterruptPending} dpDelay={_dpInterruptDelayRemaining} " +
                     $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} " +
                     $"dpcStatus=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8}");
             }
@@ -1652,13 +1760,15 @@ namespace Ryu64.MIPS
             uint postStatus = ReadBigEndianWord(SP_STATUS_REG_R);
             bool taskLocked = (postStatus & (SpStatusHalt | SpStatusBroke)) == 0;
             bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
+            bool dpInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000020u) != 0;
             bool scheduleRspInterrupt = rspInterruptPending || taskLocked;
 
-            if (_activeRspTask.Type == 1)
+            if (_activeRspTask.Type == 1 && dpInterruptPending)
             {
                 FinalizeGraphicsTask();
                 _dpInterruptDelayArmed = true;
                 _dpInterruptDelayRemaining = 4000;
+                ClearMiDpInterrupt();
             }
 
             _rspTaskLocked = taskLocked;
@@ -1676,7 +1786,7 @@ namespace Ryu64.MIPS
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] ArmSynchronousRspCompletion type={_activeRspTask.Type} pc=0x{Registers.R4300.PC:x8} " +
                     $"postStatus=0x{postStatus:x8} newStatus=0x{status:x8} locked={_rspTaskLocked} " +
-                    $"scheduleRspInt={scheduleRspInterrupt} " +
+                    $"scheduleRspInt={scheduleRspInterrupt} dpPending={dpInterruptPending} " +
                     $"rspIntDelay={_rspInterruptDelayRemaining} dpDelay={_dpInterruptDelayRemaining}");
             }
         }
@@ -1968,12 +2078,14 @@ namespace Ryu64.MIPS
                 DmaCopyPhysical(DramAddr, CartAddr, transferSize);
 
             FinalizePiWriteTransfer(normalizedLength, DramAddr, CartAddr, transferSize);
-            ArmPiDmaCompletion((WriteLength & 0x00FFFFFFu) + 1u);
+            // Mupen's cart ROM DMA write path schedules roughly length/8 cycles.
+            // Do not apply the 0x1000 cart-I/O minimum here; OoT streams many small ROM chunks.
+            ArmPiDmaCompletion(normalizedLength, minimumDelayCycles: 1u);
         }
 
         public void PI_RD_LEN_WRITE_EVENT()
         {
-            // PI_RD_LEN is RDRAM -> cart/peripheral on hardware and in Mupen.
+            // PI_RD_LEN is the RDRAM -> cart/peripheral direction.
             // Most cart-side writeback paths are not implemented here yet, so default behavior stays
             // non-destructive while still honoring timing/IRQ semantics. The mirror mode remains
             // available as a bring-up knob when a title expects permissive cart->dram behavior.
@@ -2013,7 +2125,9 @@ namespace Ryu64.MIPS
             }
 
             FinalizePiReadTransfer(normalizedLength, DramAddr, CartAddr);
-            ArmPiDmaCompletion((ReadLength & 0x00FFFFFFu) + 1u);
+            // Cart/peripheral writeback is mostly unimplemented here and Mupen's cart ROM
+            // read handler uses a fixed 0x1000-cycle completion.
+            ArmPiDmaCompletion(normalizedLength, minimumDelayCycles: PiDmaCyclesMinimum);
         }
 
         public void PI_STATUS_READ_EVENT()
@@ -2127,7 +2241,7 @@ namespace Ryu64.MIPS
                     $"piDram=0x{ReadBigEndianWord(PI_DRAM_ADDR_REG_RW):x8} piCart=0x{ReadBigEndianWord(PI_CART_ADDR_REG_RW):x8}");
             }
 
-            // Mupen behavior: bit1 clears PI interrupt, bit0 resets PI status.
+            // Bit1 clears the PI interrupt latch, bit0 resets PI status.
             if ((value & 0x00000002) != 0)
             {
                 _piIrqClearCount++;
@@ -2184,6 +2298,7 @@ namespace Ryu64.MIPS
                 return;
             }
 
+            ProcessPifJoybusCommands();
             ArmSiDmaCompletion(readToDram: true, dramAddr);
         }
 
@@ -2216,16 +2331,16 @@ namespace Ryu64.MIPS
 
         public void PIF_RAM_WRITE_EVENT()
         {
-            // Direct CPU writes to PIF RAM are not SI DMA transactions.
-            // Keep the write visible immediately and only process control flags in-place.
+            // Direct CPU writes to PIF RAM go through the SI completion path.
+            // The write is visible immediately; processing and interrupt happen on SI_INT.
             // Ignore emulator-owned boot/reset seeding before the CPU thread is live.
             if (!R4300.R4300_ON)
                 return;
 
-            if (_siDmaActive)
+            if (_siDmaActive || _siDirectPifWriteActive || _siInterruptDelayArmed)
                 return;
 
-            ProcessPifControlFlags();
+            ArmDirectPifWriteCompletion();
 
             if (TraceSiInterruptLifecycle || TraceN64Io)
             {
@@ -2560,28 +2675,18 @@ namespace Ryu64.MIPS
             if (clearHalt) status &= ~SpStatusHalt;
             if (setHalt) status |= SpStatusHalt;
             if (clearBroke) status &= ~SpStatusBroke;
-            if ((writeValue & 0x00000008u) != 0) ClearMiSpInterrupt();    // CLR_INTR
-            if ((writeValue & 0x00000010u) != 0) SetMiSpInterrupt();      // SET_INTR
-            if ((writeValue & 0x00000020u) != 0) status &= ~0x00000020u; // CLR_SSTEP
-            if ((writeValue & 0x00000040u) != 0) status |= 0x00000020u;  // SET_SSTEP
-            if ((writeValue & 0x00000080u) != 0) status &= ~SpStatusIntrBreak; // CLR_INTR_BREAK
-            if ((writeValue & 0x00000100u) != 0) status |= SpStatusIntrBreak;  // SET_INTR_BREAK
-            if ((writeValue & 0x00000200u) != 0) status &= ~0x00000080u; // CLR_SIG0
-            if ((writeValue & 0x00000400u) != 0) status |= 0x00000080u;  // SET_SIG0
-            if ((writeValue & 0x00000800u) != 0) status &= ~0x00000100u; // CLR_SIG1
-            if ((writeValue & 0x00001000u) != 0) status |= 0x00000100u;  // SET_SIG1
-            if ((writeValue & 0x00002000u) != 0) status &= ~0x00000200u; // CLR_SIG2
-            if ((writeValue & 0x00004000u) != 0) status |= 0x00000200u;  // SET_SIG2
-            if ((writeValue & 0x00008000u) != 0) status &= ~0x00000400u; // CLR_SIG3
-            if ((writeValue & 0x00010000u) != 0) status |= 0x00000400u;  // SET_SIG3
-            if ((writeValue & 0x00020000u) != 0) status &= ~0x00000800u; // CLR_SIG4
-            if ((writeValue & 0x00040000u) != 0) status |= 0x00000800u;  // SET_SIG4
-            if ((writeValue & 0x00080000u) != 0) status &= ~0x00001000u; // CLR_SIG5
-            if ((writeValue & 0x00100000u) != 0) status |= 0x00001000u;  // SET_SIG5
-            if ((writeValue & 0x00200000u) != 0) status &= ~0x00002000u; // CLR_SIG6
-            if ((writeValue & 0x00400000u) != 0) status |= 0x00002000u;  // SET_SIG6
-            if ((writeValue & 0x00800000u) != 0) status &= ~0x00004000u; // CLR_SIG7
-            if ((writeValue & 0x01000000u) != 0) status |= 0x00004000u;  // SET_SIG7
+            if ((writeValue & 0x00000018u) == 0x00000008u) ClearMiSpInterrupt(); // CLR_INTR
+            if ((writeValue & 0x00000018u) == 0x00000010u) SetMiSpInterrupt();   // SET_INTR
+            ApplySpStatusPair(ref status, writeValue, 0x00000060u, 0x00000020u, 0x00000040u, 0x00000020u); // SSTEP
+            ApplySpStatusPair(ref status, writeValue, 0x00000180u, 0x00000080u, 0x00000100u, SpStatusIntrBreak);
+            ApplySpStatusPair(ref status, writeValue, 0x00000600u, 0x00000200u, 0x00000400u, 0x00000080u); // SIG0
+            ApplySpStatusPair(ref status, writeValue, 0x00001800u, 0x00000800u, 0x00001000u, 0x00000100u); // SIG1
+            ApplySpStatusPair(ref status, writeValue, 0x00006000u, 0x00002000u, 0x00004000u, 0x00000200u); // SIG2
+            ApplySpStatusPair(ref status, writeValue, 0x00018000u, 0x00008000u, 0x00010000u, 0x00000400u); // SIG3
+            ApplySpStatusPair(ref status, writeValue, 0x00060000u, 0x00020000u, 0x00040000u, 0x00000800u); // SIG4
+            ApplySpStatusPair(ref status, writeValue, 0x00180000u, 0x00080000u, 0x00100000u, 0x00001000u); // SIG5
+            ApplySpStatusPair(ref status, writeValue, 0x00600000u, 0x00200000u, 0x00400000u, 0x00002000u); // SIG6
+            ApplySpStatusPair(ref status, writeValue, 0x01800000u, 0x00800000u, 0x01000000u, 0x00004000u); // SIG7
 
             // Mirror the control-bit effects into the visible status register before dispatching RSP work.
             // The interpreter polls SP_STATUS via mfc0 c4 while a task is live; if we leave the old HALT/BROKE
@@ -2675,6 +2780,7 @@ namespace Ryu64.MIPS
             uint value = ReadBigEndianWord(DPC_END_REG_RW);
             WriteBigEndianWord(DPC_END_REG_RW, value);
             TrackFramebufferInfosFromDpcBuffer(ReadBigEndianWord(DPC_START_REG_RW), value);
+            SetMiDpInterrupt();
 
             if (TraceN64Io)
             {
@@ -2854,9 +2960,9 @@ namespace Ryu64.MIPS
                 return;
             }
 
-            if (string.Equals(stopReason, "break", StringComparison.Ordinal))
+            if (string.Equals(stopReason, "break", StringComparison.Ordinal) && !hasTask)
             {
-                status |= SpStatusHalt | SpStatusBroke;
+                status = ReadBigEndianWord(SP_STATUS_REG_R) | SpStatusHalt | SpStatusBroke;
                 WriteBigEndianWord(SP_STATUS_REG_R, status);
             }
 
@@ -3350,6 +3456,15 @@ namespace Ryu64.MIPS
                 mask &= ~targetMask;
             if ((value & (1u << setBit)) != 0)
                 mask |= targetMask;
+        }
+
+        private static void ApplySpStatusPair(ref uint status, uint value, uint pairMask, uint clearValue, uint setValue, uint statusBit)
+        {
+            uint pair = value & pairMask;
+            if (pair == clearValue)
+                status &= ~statusBit;
+            else if (pair == setValue)
+                status |= statusBit;
         }
 
         private void SetMiSpInterrupt(bool immediate = false)
@@ -4658,6 +4773,17 @@ namespace Ryu64.MIPS
 
         public byte ReadUInt8(uint index)
         {
+            try
+            {
+                uint physical = ToPhysicalAddress(index, isWrite: false);
+                if (IsCartridgeBusPhysicalAddress(physical))
+                    return ReadCartridgeBusByte(physical);
+            }
+            catch
+            {
+                // Preserve existing exception behavior below.
+            }
+
             return this[index];
         }
 
@@ -4700,6 +4826,12 @@ namespace Ryu64.MIPS
             {
                 physical = ToPhysicalAddress(index, isWrite: true);
                 havePhysical = true;
+                if (IsCartridgeBusPhysicalAddress(physical))
+                {
+                    HandleCartridgeBusWrite(physical, value, 1);
+                    return;
+                }
+
                 if ((TraceExceptionVectorWrites && IsExceptionVectorPhysicalAddress(physical, 1))
                     || (TraceLowRamMutationWrites && IsLowRamDiagnosticPhysicalAddress(physical, 1)))
                     oldValue = ReadUInt8(index);
@@ -4767,6 +4899,17 @@ namespace Ryu64.MIPS
 
         public ushort ReadUInt16(uint index)
         {
+            try
+            {
+                uint physical = ToPhysicalAddress(index, isWrite: false);
+                if (IsCartridgeBusPhysicalAddress(physical))
+                    return ReadCartridgeBusUInt16(physical);
+            }
+            catch
+            {
+                // Preserve existing exception behavior below.
+            }
+
             byte[] Res = this[index, 2];
             Array.Reverse(Res);
             unsafe
@@ -4788,6 +4931,12 @@ namespace Ryu64.MIPS
             {
                 physical = ToPhysicalAddress(index, isWrite: true);
                 havePhysical = true;
+                if (IsCartridgeBusPhysicalAddress(physical))
+                {
+                    HandleCartridgeBusWrite(physical, value, 2);
+                    return;
+                }
+
                 if ((TraceExceptionVectorWrites && IsExceptionVectorPhysicalAddress(physical, 2))
                     || (TraceLowRamMutationWrites && IsLowRamDiagnosticPhysicalAddress(physical, 2)))
                     oldValue = ReadUInt16(index);
@@ -4871,6 +5020,8 @@ namespace Ryu64.MIPS
             {
                 physical = ToPhysicalAddress(index, isWrite: false);
                 havePhysical = true;
+                if (IsCartridgeBusPhysicalAddress(physical))
+                    return ReadCartridgeBusUInt32(physical);
             }
             catch
             {
@@ -4901,6 +5052,12 @@ namespace Ryu64.MIPS
             {
                 physical = ToPhysicalAddress(index, isWrite: true);
                 havePhysical = true;
+                if (IsCartridgeBusPhysicalAddress(physical))
+                {
+                    HandleCartridgeBusWrite(physical, value, 4);
+                    return;
+                }
+
                 if ((TraceExceptionVectorWrites && IsExceptionVectorPhysicalAddress(physical, 4))
                     || (TraceLowRamMutationWrites && IsLowRamDiagnosticPhysicalAddress(physical, 4)))
                     oldValue = ReadUInt32(index);
@@ -5329,7 +5486,7 @@ namespace Ryu64.MIPS
                     }
                 }
 
-                if (touchesSpDescriptorViaBulkCopy)
+                if (touchesSpDescriptorViaBulkCopy && (TraceN64Io || TraceRspTaskDmem))
                 {
                     Common.Logger.PrintWarningLine(
                         $"[N64RSPDMEMBULK] pc=0x{Registers.R4300.PC:x8} dest=0x{dest:x8} src=0x{src:x8} " +

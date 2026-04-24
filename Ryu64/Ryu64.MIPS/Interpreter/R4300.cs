@@ -36,6 +36,8 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EARLY_LOOP"), "1", StringComparison.Ordinal);
         private static readonly int TraceEarlyLoopWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_EARLY_LOOP_LIMIT", 6000);
         private static int _traceEarlyLoopWindowCount = 0;
+        private static readonly bool TraceBootFatalWindow =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_BOOT_FATAL_WINDOW"), "1", StringComparison.Ordinal);
         private static int _traceBootFatalWindowCount = 0;
         private static readonly bool TraceEretWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_ERET_WINDOW"), "1", StringComparison.Ordinal);
@@ -88,7 +90,7 @@ namespace Ryu64.MIPS
         private static readonly bool TraceStuckPcDetails =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_STUCK_PC"), "1", StringComparison.Ordinal);
         private static readonly bool TraceExceptionEntry =
-            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EXCEPTION_ENTRY"), "0", StringComparison.Ordinal);
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_EXCEPTION_ENTRY"), "1", StringComparison.Ordinal);
         private static readonly bool TraceMegaDispatchWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH"), "1", StringComparison.Ordinal);
         private static readonly int TraceMegaDispatchWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_MEGA_DISPATCH_LIMIT", 160);
@@ -170,7 +172,6 @@ namespace Ryu64.MIPS
         private static ulong _tlbRefillLogCount;
         private static ulong _addressErrorLogCount;
         private static bool _loadLinkedActive;
-        private static uint _loadLinkedAddress;
 
         private static int ParseTraceLimit(string name, int fallback)
         {
@@ -464,7 +465,11 @@ namespace Ryu64.MIPS
             bool rcpPending = (miIntr & miMask & 0x3Fu) != 0;
 
             // Only control IP2 from MI; preserve all other pending IP bits (timer/SW/etc).
-            cause = rcpPending ? (cause | CauseIp2Bit) : (cause & ~CauseIp2Bit);
+            // Mupen clears ExcCode when an interrupt is made pending, so guest code which
+            // reads Cause while EXL/IE temporarily blocks delivery still sees Int semantics.
+            cause = rcpPending
+                ? ((cause | CauseIp2Bit) & ~CauseExcCodeMask)
+                : (cause & ~CauseIp2Bit);
             Registers.COP0.Reg[Registers.COP0.CAUSE_REG] = cause;
             return cause;
         }
@@ -502,14 +507,13 @@ namespace Ryu64.MIPS
         {
             uint aligned = address & 0xFFFFFFFCu;
             _loadLinkedActive = true;
-            _loadLinkedAddress = aligned;
             Registers.COP0.Reg[Registers.COP0.LLADDR_REG] = aligned;
         }
 
         internal static bool TryStoreConditional(uint address)
         {
-            uint aligned = address & 0xFFFFFFFCu;
-            bool success = _loadLinkedActive && _loadLinkedAddress == aligned;
+            _ = address;
+            bool success = _loadLinkedActive;
             _loadLinkedActive = false;
             return success;
         }
@@ -844,6 +848,7 @@ namespace Ryu64.MIPS
 
             TLB.Reset();
             COP0.PowerOnCOP0();
+            SyncCountRegisterWrite((uint)Registers.COP0.Reg[Registers.COP0.COUNT_REG]);
             COP1.PowerOnCOP1();
             if (UseBootRomHleStartup)
                 ApplyBootRomHleStartup(RomType, ResetType, TVType, cicSeed);
@@ -1074,7 +1079,8 @@ namespace Ryu64.MIPS
                                     $"piStatus=0x{memory.ReadUInt32(0x04600010):x8}");
                             }
 
-                            if (_traceBootFatalWindowCount < 160
+                            if (TraceBootFatalWindow
+                                && _traceBootFatalWindowCount < 160
                                 && pc >= 0x800001C0
                                 && pc <= 0x80000250)
                             {
@@ -1886,8 +1892,10 @@ namespace Ryu64.MIPS
                                 ulong a3 = Registers.R4300.Reg[7];
                                 ulong v0 = Registers.R4300.Reg[2];
                                 ulong v1 = Registers.R4300.Reg[3];
+                                ulong t5 = Registers.R4300.Reg[13];
                                 ulong s0 = Registers.R4300.Reg[16];
                                 ulong s1 = Registers.R4300.Reg[17];
+                                ulong s4 = Registers.R4300.Reg[20];
                                 ulong sp = Registers.R4300.Reg[29];
                                 ulong ra = Registers.R4300.Reg[31];
                                 ulong cop0Status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
@@ -1898,7 +1906,7 @@ namespace Ryu64.MIPS
                                 Console.WriteLine(
                                     $"[N64PCWIN] #{_tracePcWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
-                                    $"v0=0x{v0:x16} v1=0x{v1:x16} s0=0x{s0:x16} s1=0x{s1:x16} " +
+                                    $"v0=0x{v0:x16} v1=0x{v1:x16} t5=0x{t5:x16} s0=0x{s0:x16} s1=0x{s1:x16} s4=0x{s4:x16} " +
                                     $"sp=0x{sp:x16} ra=0x{ra:x16} " +
                                     $"cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} " +
                                     $"miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} viCurrent=0x{viCurrent:x8}");

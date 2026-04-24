@@ -199,15 +199,15 @@
 
         public static void MULT(OpcodeTable.OpcodeDesc Desc)
         {
-            ulong Res = (ulong)((int)Registers.R4300.Reg[Desc.op1] * (int)Registers.R4300.Reg[Desc.op2]);
-            SetLoHiFrom32((uint)(Res & 0x00000000FFFFFFFF), (uint)(Res >> 32));
+            long res = (long)(int)Reg32(Desc.op1) * (long)(int)Reg32(Desc.op2);
+            SetLoHiFrom32((uint)res, (uint)(res >> 32));
             Registers.R4300.PC += 4;
         }
 
         public static void MULTU(OpcodeTable.OpcodeDesc Desc)
         {
-            ulong Res = (uint)Registers.R4300.Reg[Desc.op1] * (uint)Registers.R4300.Reg[Desc.op2];
-            SetLoHiFrom32((uint)(Res & 0x00000000FFFFFFFF), (uint)(Res >> 32));
+            ulong res = (ulong)Reg32(Desc.op1) * (ulong)Reg32(Desc.op2);
+            SetLoHiFrom32((uint)res, (uint)(res >> 32));
             Registers.R4300.PC += 4;
         }
 

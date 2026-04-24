@@ -62,13 +62,13 @@
 
         public class COP1
         {
-            public static double[] Reg = new double[32];
+            public static ulong[] Reg = new ulong[32];
             public static uint[] Control = new uint[32];
 
             public static void PrintRegisterInfo()
             {
                 for (int i = 0; i < Reg.Length; ++i)
-                    Common.Logger.PrintInfoLine($"CP1R[{i}]: {Reg[i]}");
+                    Common.Logger.PrintInfoLine($"CP1R[{i}]: 0x{Reg[i]:x16}");
 
                 for (int i = 0; i < Control.Length; ++i)
                     Common.Logger.PrintInfoLine($"CP1C[{i}]: 0x{Control[i]:x8}");
