@@ -7,8 +7,8 @@ internal sealed class Sega32XScaffoldCore
     private const int CommWriteFifoSize = 8;
     private const ulong DefaultNominalSh2CyclesPerFrame = 400_000;
     private static readonly bool ExperimentalSharedTimebaseEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_EXPERIMENTAL_SHARED_TIMEBASE");
-    private static readonly bool ExperimentalCommPollEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_EXPERIMENTAL_COMM_POLL");
     private static readonly bool BrutalLoopWatchEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_BRUTAL_WATCH");
+    private static readonly bool SlaveFirstSh2Scheduling = ParseBoolEnv("EUTHERDRIVE_S32X_SH2_SLAVE_FIRST");
     private static readonly ulong DefaultSh2InstructionsPerFrame = ParseInstructionBudget();
     private static readonly ulong DefaultM68kCyclesPerFrame = ParseM68kCycleBudget();
     private const ulong NativeM68kDivider = 7;
@@ -77,7 +77,6 @@ internal sealed class Sega32XScaffoldCore
     public ReadOnlySpan<byte> MasterBootRom => _masterBootRom;
     public ReadOnlySpan<byte> SlaveBootRom => _slaveBootRom;
     public bool UseExperimentalSharedTimebase => ExperimentalSharedTimebaseEnabled;
-    public bool UseExperimentalCommPollModel => ExperimentalCommPollEnabled;
     public ulong Sh2InstructionsPerFrame => DefaultSh2InstructionsPerFrame;
     public ulong Sh2ExecutionSliceLength => DefaultSh2ExecutionSliceLength;
     public string? BuildAndResetPerfPcSummary()
@@ -163,13 +162,7 @@ internal sealed class Sega32XScaffoldCore
             _slaveBus.CycleLimit = _globalSh2Cycles;
             _masterBus.CycleLimit = _globalSh2Cycles;
 
-            // Kör master först i varje slice för att säkerställa att master har skrivit
-            // till kommunikationsportarna innan slave läser dem (viktigt för Star Trek-boot)
-            while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
-                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
-
-            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
-                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+            RunSh2sToGlobalCycle();
 
             ObserveBrutalLoopState(slice);
             _masterBus.TickPeripherals(slice);
@@ -195,13 +188,7 @@ internal sealed class Sega32XScaffoldCore
             _slaveBus.CycleLimit = _globalSh2Cycles;
             _masterBus.CycleLimit = _globalSh2Cycles;
 
-            // Kör master först i varje slice för att säkerställa att master har skrivit
-            // till kommunikationsportarna innan slave läser dem (viktigt för Star Trek-boot)
-            while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
-                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
-
-            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
-                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+            RunSh2sToGlobalCycle();
 
             ObserveBrutalLoopState(elapsedSh2Cycles);
             _masterBus.TickPeripherals(elapsedSh2Cycles);
@@ -226,6 +213,26 @@ internal sealed class Sega32XScaffoldCore
         TraceFrameState();
 
         FrameCounter++;
+    }
+
+    private void RunSh2sToGlobalCycle()
+    {
+        if (SlaveFirstSh2Scheduling)
+        {
+            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
+                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+
+            while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
+                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+
+            return;
+        }
+
+        while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
+            MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+
+        while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
+            SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
     }
 
     public bool BeginCommPortSync()
@@ -329,13 +336,47 @@ internal sealed class Sega32XScaffoldCore
         Bus.LoadState(reader);
         MasterSh2.LoadState(reader);
         SlaveSh2.LoadState(reader);
-        _masterBus.LoadState(reader);
-        _slaveBus.LoadState(reader);
+        bool sh2BusStateLoaded = TryLoadSh2BusState(reader);
         _commPortSyncInProgress = false;
+        if (!sh2BusStateLoaded)
+        {
+            _masterBus.ResetState();
+            _slaveBus.ResetState();
+            _masterBus.ResyncTimingFromCpu();
+            _slaveBus.ResyncTimingFromCpu();
+        }
+
         _globalSh2Cycles = Math.Max(_globalSh2Cycles, Math.Max(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter));
         _masterBus.CycleLimit = _globalSh2Cycles;
         _slaveBus.CycleLimit = _globalSh2Cycles;
         Registers.UpdateInterruptLevels();
+    }
+
+    private bool TryLoadSh2BusState(BinaryReader reader)
+    {
+        try
+        {
+            _masterBus.LoadState(reader);
+            _slaveBus.LoadState(reader);
+            return true;
+        }
+        catch (Exception ex) when (IsLenientSavestateLoad())
+        {
+            Console.WriteLine($"[S32X-SAVESTATE] Legacy SH-2 bus state skipped: {ex.Message}");
+            if (reader.BaseStream.CanSeek)
+                reader.BaseStream.Position = reader.BaseStream.Length;
+            return false;
+        }
+    }
+
+    private static bool IsLenientSavestateLoad()
+    {
+        string? value = Environment.GetEnvironmentVariable("EUTHERDRIVE_SAVESTATE_LENIENT");
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+        return value == "1"
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnCommunicationPortWritten(Sega32XCommSource source, uint address, ushort value)
@@ -356,17 +397,6 @@ internal sealed class Sega32XScaffoldCore
         _commWriteValid[index] = true;
         _commWriteNextIndex = (_commWriteNextIndex + 1) % CommWriteFifoSize;
 
-        if (ExperimentalCommPollEnabled)
-            WakeCommPollers(source, address);
-    }
-
-    private void WakeCommPollers(Sega32XCommSource source, uint address)
-    {
-        if (source != Sega32XCommSource.MasterSh2 && MasterSh2.ShouldWakeOnCommWrite(address))
-            MasterSh2.ExitCommPoll();
-
-        if (source != Sega32XCommSource.SlaveSh2 && SlaveSh2.ShouldWakeOnCommWrite(address))
-            SlaveSh2.ExitCommPoll();
     }
 
     private static Sega32XCommSource ToCommSource(Sega32XCpu whichCpu) =>

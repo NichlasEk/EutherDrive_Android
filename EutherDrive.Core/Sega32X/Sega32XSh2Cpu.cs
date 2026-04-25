@@ -4,13 +4,6 @@ namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Cpu
 {
-    [Flags]
-    private enum IdleState : byte
-    {
-        None = 0,
-        CommPoll = 1 << 0,
-    }
-
     private const int MaxUnsupportedLogs = 100_000;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
@@ -18,10 +11,7 @@ internal sealed class Sega32XSh2Cpu
     public ulong CycleCounter { get; private set; }
     public bool ResetPending { get; set; } = true;
     private int _unsupportedLogCount;
-    private IdleState _idleState;
-    private uint _commPollAddress;
-    private ushort _commPollValue;
-    private readonly Dictionary<uint, ulong> _pcSampleTicks = new();
+    [NonSerialized] private readonly Dictionary<uint, ulong> _pcSampleTicks = new();
 
     private static readonly byte ResetInterruptMask = 0x0F;
     private static readonly bool TraceBootLoop =
@@ -33,10 +23,6 @@ internal sealed class Sega32XSh2Cpu
     private static readonly uint? TraceInstructionStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_INST_START");
     private static readonly uint? TraceInstructionEnd = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_INST_END");
     private static readonly int TraceInstructionMaxLogs = ParseTraceInstructionMaxLogs();
-    private static readonly ulong DispatchLoopBatchLimit = ParseDispatchLoopBatchLimit();
-    private const ulong EmptyDispatchLoopInstructionCycles = 28;
-    private const ulong EmptyDispatchLoopExtraDetailCycles = 44;
-    private const ulong EmptyDispatchLoopFirstIterationSkippedDetailCycles = 22;
     private int _traceInstructionLogs;
 
     public Sega32XSh2Cpu(string name)
@@ -52,41 +38,14 @@ internal sealed class Sega32XSh2Cpu
     public void RequestReset()
     {
         ResetPending = true;
-        _idleState = IdleState.None;
         Registers.StatusRegister = new Sega32XSh2StatusRegister { InterruptMask = ResetInterruptMask };
     }
 
     public void ResetTimingState()
     {
         CycleCounter = 0;
-        _idleState = IdleState.None;
-        _commPollAddress = 0;
-        _commPollValue = 0;
         _traceInstructionLogs = 0;
         _pcSampleTicks.Clear();
-    }
-
-    public bool IsCommPolling => (_idleState & IdleState.CommPoll) != 0;
-
-    public void EnterCommPoll(uint address, ushort value)
-    {
-        _idleState |= IdleState.CommPoll;
-        _commPollAddress = address & ~1u;
-        _commPollValue = value;
-    }
-
-    public void ExitCommPoll()
-    {
-        _idleState &= ~IdleState.CommPoll;
-    }
-
-    public bool ShouldWakeOnCommWrite(uint address)
-    {
-        if (!IsCommPolling)
-            return false;
-
-        uint maskedAddress = address & ~1u;
-        return maskedAddress >= _commPollAddress && maskedAddress - _commPollAddress <= 3;
     }
 
     public string? BuildAndResetPerfPcSummary(int maxEntries = 4)
@@ -174,301 +133,25 @@ internal sealed class Sega32XSh2Cpu
                 && externalInterruptLevel >= internalInterruptLevel)
             {
                 uint vectorNumber = 64u + (uint)(externalInterruptLevel >> 1);
-                _idleState = IdleState.None;
                 HandleException(externalInterruptLevel, vectorNumber, bus);
                 return;
             }
 
             if (internalInterruptLevel > Registers.StatusRegister.InterruptMask)
             {
-                _idleState = IdleState.None;
                 HandleException(internalInterruptLevel, bus.InternalInterruptVectorNumber, bus);
                 return;
             }
         }
 
-        if (_idleState != IdleState.None)
-        {
-            bus.IncrementCycleCounter(ticks);
-            CycleCounter += ticks;
-            return;
-        }
-
         ulong remainingInstructions = ticks;
         while (remainingInstructions > 0)
         {
-            if (TryExecuteEmptyDispatchLoop(bus, remainingInstructions, out ulong consumedDispatchInstructions))
-            {
-                remainingInstructions -= consumedDispatchInstructions;
-                if (bus.ShouldStopExecution)
-                    return;
-                continue;
-            }
-
-            if (TryExecuteTightDelayLoop(bus, remainingInstructions, out ulong consumedInstructions))
-            {
-                remainingInstructions -= consumedInstructions;
-                if (bus.ShouldStopExecution)
-                    return;
-                continue;
-            }
-
             ExecuteSingleInstruction(bus);
             remainingInstructions--;
             if (bus.ShouldStopExecution)
                 return;
         }
-    }
-
-    private bool TryExecuteTightDelayLoop(ISega32XSh2Bus bus, ulong remainingInstructions, out ulong consumedInstructions)
-    {
-        consumedInstructions = 0;
-
-        if (remainingInstructions < 2 || bus.CycleLimit == ulong.MaxValue)
-            return false;
-
-        uint loopStartPc = Registers.ProgramCounter;
-        int instructionsPerIteration;
-        uint exitPc;
-        int registerIndex;
-
-        if (!TryMatchDelayLoop(bus, loopStartPc, out instructionsPerIteration, out exitPc, out registerIndex))
-            return false;
-
-        uint counter = Registers.GeneralPurposeRegisters[registerIndex];
-        if (counter == 0)
-            return false;
-
-        ulong maxIterationsByInstructions = remainingInstructions / (ulong)instructionsPerIteration;
-        if (maxIterationsByInstructions == 0)
-            return false;
-
-        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
-            ? bus.CycleLimit - bus.SchedulerCycleCounter
-            : 0;
-        ulong maxIterationsByCycles = remainingCycles / (ulong)instructionsPerIteration;
-        if (maxIterationsByCycles == 0)
-            return false;
-
-        ulong iterations = Math.Min(maxIterationsByInstructions, maxIterationsByCycles);
-        iterations = Math.Min(iterations, counter);
-        if (iterations == 0)
-            return false;
-
-        Registers.GeneralPurposeRegisters[registerIndex] -= (uint)iterations;
-        bool loopFinished = Registers.GeneralPurposeRegisters[registerIndex] == 0;
-        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
-        sr.T = loopFinished;
-        Registers.StatusRegister = sr;
-
-        ulong schedulerCycles = iterations * (ulong)instructionsPerIteration;
-        bus.IncrementCycleCounter(schedulerCycles);
-        // Tight cached delay loops still pay instruction fetch cost even though they do no data bus work.
-        bus.IncrementDetailCycleCounter(schedulerCycles);
-        CycleCounter += schedulerCycles;
-        AccumulatePcSample(loopStartPc, schedulerCycles);
-
-        if (loopFinished)
-        {
-            Registers.ProgramCounter = exitPc;
-            Registers.NextProgramCounter = exitPc + 2;
-        }
-        else
-        {
-            Registers.ProgramCounter = loopStartPc;
-            Registers.NextProgramCounter = loopStartPc + 2;
-        }
-
-        Registers.NextInstructionInDelaySlot = false;
-        consumedInstructions = schedulerCycles;
-        return true;
-    }
-
-    private bool TryExecuteEmptyDispatchLoop(ISega32XSh2Bus bus, ulong remainingInstructions, out ulong consumedInstructions)
-    {
-        consumedInstructions = 0;
-
-        if (remainingInstructions < EmptyDispatchLoopInstructionCycles || DispatchLoopBatchLimit == 0 || bus.CycleLimit == ulong.MaxValue)
-            return false;
-
-        uint loopStartPc = Registers.ProgramCounter;
-        if (!TryMatchEmptyDispatchLoop(bus, loopStartPc, out uint queueAddress, out uint counterAddress, out uint stackSaveAddress, out uint tableBaseAddress))
-            return false;
-
-        if (!bus.TryPeekInstructionWord(queueAddress, out ushort queueWord) || queueWord != 0)
-            return false;
-
-        if (!TryPeekLongword(bus, tableBaseAddress, out uint handlerAddress))
-            return false;
-
-        if (!TryMatchEmptyStub(bus, handlerAddress))
-            return false;
-
-        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
-            ? bus.CycleLimit - bus.SchedulerCycleCounter
-            : 0;
-        ulong maxIterationsByInstructions = remainingInstructions / EmptyDispatchLoopInstructionCycles;
-        ulong maxIterationsByCycles = remainingCycles / EmptyDispatchLoopInstructionCycles;
-        ulong iterations = Math.Min(maxIterationsByInstructions, maxIterationsByCycles);
-        iterations = Math.Min(iterations, DispatchLoopBatchLimit);
-        if (iterations == 0)
-            return false;
-
-        uint counter = bus.ReadLongword(counterAddress, Sega32XSh2AccessContext.Data);
-        bus.WriteLongword(counterAddress, unchecked(counter + (uint)iterations), Sega32XSh2AccessContext.Data);
-        bus.WriteLongword(stackSaveAddress, Registers.StackPointer, Sega32XSh2AccessContext.Data);
-        _ = bus.ReadLongword(stackSaveAddress, Sega32XSh2AccessContext.Data);
-
-        ulong skippedDetailCycles = EmptyDispatchLoopFirstIterationSkippedDetailCycles +
-                                    (EmptyDispatchLoopExtraDetailCycles * (iterations - 1));
-        bus.IncrementDetailCycleCounter(skippedDetailCycles);
-
-        ulong schedulerCycles = iterations * EmptyDispatchLoopInstructionCycles;
-        bus.IncrementCycleCounter(schedulerCycles);
-        CycleCounter += schedulerCycles;
-        AccumulatePcSample(loopStartPc, schedulerCycles);
-
-        Registers.GeneralPurposeRegisters[0] = 0;
-        Registers.GeneralPurposeRegisters[1] = tableBaseAddress;
-        Registers.GeneralPurposeRegisters[2] = Registers.StackPointer;
-        Registers.GeneralPurposeRegisters[8] = queueAddress;
-        Registers.ProcedureRegister = loopStartPc + 0x24;
-        Registers.ProgramCounter = loopStartPc;
-        Registers.NextProgramCounter = loopStartPc + 2;
-        Registers.NextInstructionInDelaySlot = false;
-        consumedInstructions = schedulerCycles;
-        return true;
-    }
-
-    private static bool TryMatchDelayLoop(ISega32XSh2Bus bus, uint loopStartPc, out int instructionsPerIteration, out uint exitPc, out int registerIndex)
-    {
-        instructionsPerIteration = 0;
-        exitPc = 0;
-        registerIndex = 0;
-
-        if (!bus.TryPeekInstructionWord(loopStartPc, out ushort firstOpcode))
-            return false;
-
-        if (firstOpcode == 0x0009)
-        {
-            if (!TryMatchDtBfBackLoop(bus, loopStartPc + 2, loopStartPc + 4, loopStartPc, out registerIndex))
-                return false;
-
-            instructionsPerIteration = 3;
-            exitPc = loopStartPc + 6;
-            return true;
-        }
-
-        if (!TryMatchDtBfBackLoop(bus, loopStartPc, loopStartPc + 2, loopStartPc, out registerIndex))
-            return false;
-
-        instructionsPerIteration = 2;
-        exitPc = loopStartPc + 4;
-        return true;
-    }
-
-    private static bool TryMatchDtBfBackLoop(ISega32XSh2Bus bus, uint dtPc, uint branchPc, uint branchTargetPc, out int registerIndex)
-    {
-        registerIndex = 0;
-
-        if (!bus.TryPeekInstructionWord(dtPc, out ushort dtOpcode) ||
-            !bus.TryPeekInstructionWord(branchPc, out ushort branchOpcode))
-            return false;
-
-        if ((dtOpcode & 0xF0FF) != 0x4010)
-            return false;
-
-        if ((branchOpcode & 0xFF00) != 0x8B00)
-            return false;
-
-        int displacement = (sbyte)(branchOpcode & 0xFF) << 1;
-        uint target = unchecked(branchPc + 4 + (uint)displacement);
-        if (target != branchTargetPc)
-            return false;
-
-        registerIndex = (dtOpcode >> 8) & 0xF;
-        return true;
-    }
-
-    private static bool TryMatchEmptyDispatchLoop(
-        ISega32XSh2Bus bus,
-        uint loopStartPc,
-        out uint queueAddress,
-        out uint counterAddress,
-        out uint stackSaveAddress,
-        out uint tableBaseAddress)
-    {
-        queueAddress = 0;
-        counterAddress = 0;
-        stackSaveAddress = 0;
-        tableBaseAddress = 0;
-
-        ReadOnlySpan<ushort> pattern =
-        [
-            0xD80D, 0x6081, 0x600D, 0x2F06,
-            0xD20C, 0x6122, 0x7101, 0x2212,
-            0xE180, 0x611C, 0x3017, 0x8917,
-            0xD209, 0x22F2, 0xD109, 0x001E,
-            0x400B, 0x0009, 0xD206, 0x6222,
-            0x3F20, 0x8B0F, 0x60F6, 0x8800,
-            0x89E6, 0xA1D1, 0x0009,
-        ];
-
-        for (int i = 0; i < pattern.Length; i++)
-        {
-            if (!bus.TryPeekInstructionWord(loopStartPc + (uint)(i * 2), out ushort opcode) || opcode != pattern[i])
-                return false;
-        }
-
-        if (!TryReadPcRelativeLongLiteral(bus, loopStartPc, out queueAddress) ||
-            !TryReadPcRelativeLongLiteral(bus, loopStartPc + 0x08, out counterAddress) ||
-            !TryReadPcRelativeLongLiteral(bus, loopStartPc + 0x18, out stackSaveAddress) ||
-            !TryReadPcRelativeLongLiteral(bus, loopStartPc + 0x1C, out tableBaseAddress))
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    private static bool TryReadPcRelativeLongLiteral(ISega32XSh2Bus bus, uint instructionPc, out uint value)
-    {
-        value = 0;
-
-        if (!bus.TryPeekInstructionWord(instructionPc, out ushort opcode) || (opcode & 0xF000) != 0xD000)
-            return false;
-
-        uint disp = (uint)((opcode & 0xFF) << 2);
-        uint literalAddress = ((instructionPc + 4) & ~3u) + disp;
-        if (!bus.TryPeekInstructionWord(literalAddress, out ushort highWord) ||
-            !bus.TryPeekInstructionWord(literalAddress + 2, out ushort lowWord))
-        {
-            return false;
-        }
-
-        value = ((uint)highWord << 16) | lowWord;
-        return true;
-    }
-
-    private static bool TryPeekLongword(ISega32XSh2Bus bus, uint address, out uint value)
-    {
-        value = 0;
-        if (!bus.TryPeekInstructionWord(address, out ushort highWord) ||
-            !bus.TryPeekInstructionWord(address + 2, out ushort lowWord))
-        {
-            return false;
-        }
-
-        value = ((uint)highWord << 16) | lowWord;
-        return true;
-    }
-
-    private static bool TryMatchEmptyStub(ISega32XSh2Bus bus, uint handlerAddress)
-    {
-        return bus.TryPeekInstructionWord(handlerAddress, out ushort firstOpcode) &&
-               bus.TryPeekInstructionWord(handlerAddress + 2, out ushort secondOpcode) &&
-               firstOpcode == 0x000B &&
-               secondOpcode == 0x0009;
     }
 
     private void ExecuteSingleInstruction(ISega32XSh2Bus bus)
@@ -583,14 +266,6 @@ internal sealed class Sega32XSh2Cpu
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_INST_MAX");
         return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : 256;
-    }
-
-    private static ulong ParseDispatchLoopBatchLimit()
-    {
-        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_EMPTY_DISPATCH_BATCH");
-        // 32 iterations keeps VF's empty dispatch poll responsive while preserving
-        // nearly all of the interpreter-overhead win from the batched fast path.
-        return ulong.TryParse(raw, out ulong parsed) && parsed > 0 ? parsed : 32;
     }
 
     private void MaybeTraceInstruction(uint pc, ushort opcode)

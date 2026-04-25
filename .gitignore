@@ -35,6 +35,7 @@ logs/
 bios/
 saves/
 .ambient-music-cache/
+.machine-room-cover-cache/
 
 # Local notes
 MEMO.md
@@ -109,3 +110,14 @@ madou_debug.md
 GEMS_fix.md
 controllers.md
 toagent.md
+ALADDIN_DEBUG.md
+KAZE_BUG_FULL_ANALYSIS.md
+KAZE_COUNTDOWN_BUG_ANALYSIS.md
+docs/snes_soe_fastpath_reenable.md
+notes/n64_bringup_status_2026-04-17.md
+notes/snes_secret_of_evermore_debug_2026-04-15.md
+notes/snes_secret_of_evermore_debug_2026-04-16.md
+notes/snes_secret_of_evermore_debug_2026-04-17.md
+sh2dis
+sh2dis/
+star_trek_trace.txt

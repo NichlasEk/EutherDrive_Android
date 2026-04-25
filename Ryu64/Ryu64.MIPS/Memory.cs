@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace Ryu64.MIPS
 {
@@ -29,6 +30,10 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_VI_REGS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceFramebufferLifecycle =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_FB"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRdpCommands =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_COMMANDS"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRdpTextureRectangles =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_TEXRECT"), "1", StringComparison.Ordinal);
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
         private static readonly uint? TraceWatchRangeStart = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_START");
         private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
@@ -62,11 +67,17 @@ namespace Ryu64.MIPS
         private static int _traceLowRamMutationWriteCount;
         private static int _traceRspDmaWindowLogCount;
         private static int _traceRspDescriptorWriteLogCount;
+        private static int _traceRdpSummaryCount;
+        private static int _traceRdpTexRectCount;
+        private static int _traceRdpTextureLoadCount;
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
         private const int TraceLowRamMutationWriteLimit = 1024;
         private const int TraceRspDmaWindowLogLimit = 128;
         private const int TraceRspDescriptorWriteLogLimit = 512;
+        private const int TraceRdpSummaryLimit = 64;
+        private const int TraceRdpTexRectLimit = 128;
+        private const int TraceRdpTextureLoadLimit = 128;
         private static bool _warnedRspTaskStub;
         private const uint SpStatusHalt = 0x00000001u;
         private const uint SpStatusBroke = 0x00000002u;
@@ -572,6 +583,38 @@ namespace Ryu64.MIPS
         private uint _rdpColorImageWidth;
         private uint _rdpColorImageSize;
         private uint _rdpFillColor;
+        private uint _rdpPrimColor = 0xFFFFFFFFu;
+        private uint _rdpEnvColor = 0xFFFFFFFFu;
+        private uint _rdpBlendColor = 0xFFFFFFFFu;
+        private uint _rdpTextureImageAddress;
+        private uint _rdpTextureImageWidth;
+        private uint _rdpTextureImageSize;
+        private uint _rdpTextureImageFormat;
+        private readonly RdpTileState[] _rdpTiles = new RdpTileState[8];
+        private readonly byte[] _rdpTmem = new byte[4096];
+        private readonly ushort[] _rdpTlut = new ushort[256];
+        private uint _lastRdpColorImageAddress;
+        private uint _lastRdpColorImageWidth;
+        private uint _lastRdpColorImageBytesPerPixel;
+        private uint _lastRdpColorImageWriteEpoch;
+
+        private struct RdpTileState
+        {
+            public uint Format;
+            public uint Size;
+            public uint Line;
+            public uint Tmem;
+            public uint Palette;
+            public uint MaskS;
+            public uint MaskT;
+            public uint ShiftS;
+            public uint ShiftT;
+            public uint Uls;
+            public uint Ult;
+            public uint Lrs;
+            public uint Lrt;
+            public bool TileSizeSet;
+        }
 
         private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
         private const uint CpuCyclesPerSecond = CpuCyclesPerViFrame * 60u;
@@ -597,6 +640,10 @@ namespace Ryu64.MIPS
         public uint LastViOriginWritePc => _lastViOriginWritePc;
         public uint LastPlausibleViOriginWriteValue => _lastPlausibleViOriginWriteValue;
         public uint LastPlausibleViOriginWritePc => _lastPlausibleViOriginWritePc;
+        public uint LastRdpColorImageAddress => Volatile.Read(ref _lastRdpColorImageAddress);
+        public uint LastRdpColorImageWidth => Volatile.Read(ref _lastRdpColorImageWidth);
+        public uint LastRdpColorImageBytesPerPixel => Volatile.Read(ref _lastRdpColorImageBytesPerPixel);
+        public uint LastRdpColorImageWriteEpoch => Volatile.Read(ref _lastRdpColorImageWriteEpoch);
 
         private void NoteRdramWriteRange(uint physicalAddress, uint size)
         {
@@ -821,6 +868,13 @@ namespace Ryu64.MIPS
 
             uint maxEnd = current + Math.Min(endAddress - current, 0x20000u);
             bool xbusDmem = (ReadBigEndianWord(DPC_STATUS_REG_R) & DpcStatusXbusDmemDma) != 0;
+            int[] commandCounts = TraceRdpCommands && _traceRdpSummaryCount < TraceRdpSummaryLimit ? new int[64] : null;
+            uint firstUnhandledAddress = 0;
+            uint firstUnhandledW0 = 0;
+            uint firstUnhandledW1 = 0;
+            int firstUnhandledCommand = -1;
+            int commandCount = 0;
+            int handledCount = 0;
             while (current + 8u <= maxEnd)
             {
                 uint w0 = ReadRdpCommandWord(current, xbusDmem);
@@ -830,13 +884,61 @@ namespace Ryu64.MIPS
                 if (words < 2 || current + (uint)(words * 4) > maxEnd)
                     break;
 
+                commandCount++;
+                if (commandCounts != null)
+                    commandCounts[command]++;
+
+                bool handled = true;
                 switch (command)
                 {
+                    case 0x24: // TextureRectangle
+                    case 0x25: // TextureRectangleFlip
+                        ExecuteRdpTextureRectangle(w0, w1, ReadRdpCommandWord(current + 8u, xbusDmem), ReadRdpCommandWord(current + 12u, xbusDmem));
+                        break;
+                    case 0x26: // SyncLoad
+                    case 0x27: // SyncPipe
+                    case 0x28: // SyncTile
+                    case 0x29: // SyncFull
+                    case 0x2D: // SetScissor
+                    case 0x2F: // SetOtherModes
+                    case 0x3C: // SetCombineMode
+                    case 0x3E: // SetMaskImage
+                        break;
+                    case 0x30: // LoadTLut
+                        ExecuteRdpLoadTlut(w0, w1);
+                        break;
+                    case 0x32: // SetTileSize
+                        ExecuteRdpSetTileSize(w0, w1);
+                        break;
+                    case 0x33: // LoadBlock
+                        ExecuteRdpLoadBlock(w0, w1);
+                        break;
+                    case 0x34: // LoadTile
+                        ExecuteRdpLoadTile(w0, w1);
+                        break;
+                    case 0x35: // SetTile
+                        ExecuteRdpSetTile(w0, w1);
+                        break;
                     case 0x36: // FillRectangle
                         ExecuteRdpFillRectangle(w0, w1);
                         break;
                     case 0x37: // SetFillColor
                         _rdpFillColor = w1;
+                        break;
+                    case 0x39: // SetBlendColor
+                        _rdpBlendColor = w1;
+                        break;
+                    case 0x3A: // SetPrimColor
+                        _rdpPrimColor = w1;
+                        break;
+                    case 0x3B: // SetEnvColor
+                        _rdpEnvColor = w1;
+                        break;
+                    case 0x3D: // SetTextureImage
+                        _rdpTextureImageFormat = (w0 >> 21) & 0x7u;
+                        _rdpTextureImageSize = (w0 >> 19) & 0x3u;
+                        _rdpTextureImageWidth = (w0 & 0x03FFu) + 1u;
+                        _rdpTextureImageAddress = w1 & 0x00FFFFFFu;
                         break;
                     case 0x3F: // SetColorImage
                         _rdpColorImageSize = (w0 >> 19) & 0x3u;
@@ -844,9 +946,41 @@ namespace Ryu64.MIPS
                         _rdpColorImageAddress = w1 & 0x00FFFFFFu;
                         RegisterFramebufferInfo(_rdpColorImageAddress, RdpBytesPerPixel(_rdpColorImageSize), _rdpColorImageWidth, GetFramebufferHeightHint());
                         break;
+                    default:
+                        handled = false;
+                        if (firstUnhandledCommand < 0)
+                        {
+                            firstUnhandledCommand = command;
+                            firstUnhandledAddress = current;
+                            firstUnhandledW0 = w0;
+                            firstUnhandledW1 = w1;
+                        }
+                        break;
                 }
 
+                if (handled)
+                    handledCount++;
+
                 current += (uint)(words * 4);
+            }
+
+            if (commandCounts != null && commandCount > 0)
+            {
+                string summary = "";
+                for (int i = 0; i < commandCounts.Length; i++)
+                {
+                    if (commandCounts[i] == 0)
+                        continue;
+
+                    if (summary.Length > 0)
+                        summary += " ";
+                    summary += $"{i:x2}:{commandCounts[i]}";
+                }
+
+                Common.Logger.PrintWarningLine(
+                    $"[N64RDP] list start=0x{start:x8} end=0x{end:x8} xbus={xbusDmem} cmds={commandCount} handled={handledCount} " +
+                    $"hist={summary} firstUnhandled=0x{firstUnhandledCommand:x2}@0x{firstUnhandledAddress:x8} w0=0x{firstUnhandledW0:x8} w1=0x{firstUnhandledW1:x8}");
+                _traceRdpSummaryCount++;
             }
         }
 
@@ -897,6 +1031,178 @@ namespace Ryu64.MIPS
             }
         }
 
+        private static uint RdpPackedBytesForTexels(uint texels, uint rdpSize)
+        {
+            switch (rdpSize & 0x3u)
+            {
+                case 0u:
+                    return (texels + 1u) >> 1;
+                case 1u:
+                    return texels;
+                case 2u:
+                    return texels * 2u;
+                case 3u:
+                    return texels * 4u;
+                default:
+                    return 0u;
+            }
+        }
+
+        private void ExecuteRdpSetTile(uint w0, uint w1)
+        {
+            int tileIndex = (int)((w1 >> 24) & 0x7u);
+            _rdpTiles[tileIndex].Format = (w0 >> 21) & 0x7u;
+            _rdpTiles[tileIndex].Size = (w0 >> 19) & 0x3u;
+            _rdpTiles[tileIndex].Line = (w0 >> 9) & 0x1FFu;
+            _rdpTiles[tileIndex].Tmem = w0 & 0x1FFu;
+            _rdpTiles[tileIndex].Palette = (w1 >> 20) & 0xFu;
+            _rdpTiles[tileIndex].MaskT = (w1 >> 14) & 0xFu;
+            _rdpTiles[tileIndex].ShiftT = (w1 >> 10) & 0xFu;
+            _rdpTiles[tileIndex].MaskS = (w1 >> 4) & 0xFu;
+            _rdpTiles[tileIndex].ShiftS = w1 & 0xFu;
+        }
+
+        private void ExecuteRdpSetTileSize(uint w0, uint w1)
+        {
+            int tileIndex = (int)((w1 >> 24) & 0x7u);
+            _rdpTiles[tileIndex].Uls = (w0 >> 12) & 0x0FFFu;
+            _rdpTiles[tileIndex].Ult = w0 & 0x0FFFu;
+            _rdpTiles[tileIndex].Lrs = (w1 >> 12) & 0x0FFFu;
+            _rdpTiles[tileIndex].Lrt = w1 & 0x0FFFu;
+            _rdpTiles[tileIndex].TileSizeSet = true;
+        }
+
+        private void ExecuteRdpLoadTlut(uint w0, uint w1)
+        {
+            if (_rdpTextureImageAddress >= RDRAM.Length)
+                return;
+
+            int tileIndex = (int)((w1 >> 24) & 0x7u);
+            uint paletteOffset = Math.Min(255u, _rdpTiles[tileIndex].Palette * 16u);
+            uint entries = Math.Min(256u - paletteOffset, Math.Min(256u, (uint)((RDRAM.Length - _rdpTextureImageAddress) / 2u)));
+            for (uint i = 0; i < entries; i++)
+            {
+                uint address = _rdpTextureImageAddress + i * 2u;
+                _rdpTlut[paletteOffset + i] = (ushort)((RDRAM[address] << 8) | RDRAM[address + 1u]);
+            }
+        }
+
+        private void ExecuteRdpLoadBlock(uint w0, uint w1)
+        {
+            if (_rdpTextureImageAddress >= RDRAM.Length)
+                return;
+
+            int tileIndex = (int)((w1 >> 24) & 0x7u);
+            uint texels = ((w1 >> 12) & 0x0FFFu) + 1u;
+            uint byteCount = RdpPackedBytesForTexels(texels, _rdpTextureImageSize);
+            CopyTextureImageToTmem(tileIndex, 0u, byteCount);
+            TraceRdpTextureLoad("loadblock", tileIndex, w0, w1, byteCount);
+        }
+
+        private void ExecuteRdpLoadTile(uint w0, uint w1)
+        {
+            if (_rdpTextureImageAddress >= RDRAM.Length || _rdpTextureImageWidth == 0)
+                return;
+
+            int tileIndex = (int)((w1 >> 24) & 0x7u);
+            uint uls = ((w0 >> 12) & 0x0FFFu) >> 2;
+            uint ult = (w0 & 0x0FFFu) >> 2;
+            uint lrs = ((w1 >> 12) & 0x0FFFu) >> 2;
+            uint lrt = (w1 & 0x0FFFu) >> 2;
+            if (lrs < uls || lrt < ult)
+                return;
+
+            uint width = lrs - uls + 1u;
+            uint height = lrt - ult + 1u;
+            uint sourceRowBytes = RdpPackedBytesForTexels(_rdpTextureImageWidth, _rdpTextureImageSize);
+            uint destinationStride = GetTileStrideBytes(_rdpTiles[tileIndex], width);
+            uint destinationBase = Math.Min(4095u, _rdpTiles[tileIndex].Tmem * 8u);
+            for (uint y = 0; y < height; y++)
+            {
+                uint sourceOffset = ((ult + y) * sourceRowBytes) + RdpPackedBytesForTexels(uls, _rdpTextureImageSize);
+                uint sourceAddress = _rdpTextureImageAddress + sourceOffset;
+                uint rowBytes = RdpPackedBytesForTexels(width, _rdpTextureImageSize);
+                uint destinationOffset = destinationBase + y * destinationStride;
+                CopyRdramToTmem(sourceAddress, destinationOffset, rowBytes);
+            }
+            TraceRdpTextureLoad("loadtile", tileIndex, w0, w1, height * RdpPackedBytesForTexels(width, _rdpTextureImageSize));
+        }
+
+        private void CopyTextureImageToTmem(int tileIndex, uint sourceOffset, uint byteCount)
+        {
+            uint sourceAddress = _rdpTextureImageAddress + sourceOffset;
+            uint destinationOffset = Math.Min(4095u, _rdpTiles[tileIndex].Tmem * 8u);
+            CopyRdramToTmem(sourceAddress, destinationOffset, byteCount);
+        }
+
+        private void CopyRdramToTmem(uint sourceAddress, uint destinationOffset, uint byteCount)
+        {
+            if (sourceAddress >= RDRAM.Length || destinationOffset >= _rdpTmem.Length || byteCount == 0)
+                return;
+
+            uint availableSource = (uint)RDRAM.Length - sourceAddress;
+            uint availableDestination = (uint)_rdpTmem.Length - destinationOffset;
+            uint count = Math.Min(byteCount, Math.Min(availableSource, availableDestination));
+            Array.Copy(RDRAM, (int)sourceAddress, _rdpTmem, (int)destinationOffset, (int)count);
+        }
+
+        private void TraceRdpTextureLoad(string op, int tileIndex, uint w0, uint w1, uint byteCount)
+        {
+            if (!TraceRdpTextureRectangles || _traceRdpTextureLoadCount >= TraceRdpTextureLoadLimit)
+                return;
+
+            uint tmemOffset = Math.Min(4095u, _rdpTiles[tileIndex].Tmem * 8u);
+            byte b0 = tmemOffset + 0u < _rdpTmem.Length ? _rdpTmem[tmemOffset + 0u] : (byte)0;
+            byte b1 = tmemOffset + 1u < _rdpTmem.Length ? _rdpTmem[tmemOffset + 1u] : (byte)0;
+            byte b2 = tmemOffset + 2u < _rdpTmem.Length ? _rdpTmem[tmemOffset + 2u] : (byte)0;
+            byte b3 = tmemOffset + 3u < _rdpTmem.Length ? _rdpTmem[tmemOffset + 3u] : (byte)0;
+            Common.Logger.PrintWarningLine(
+                $"[N64RDP] {op} tile={tileIndex} ti=0x{_rdpTextureImageAddress:x8}/{_rdpTextureImageFormat}:{_rdpTextureImageSize}x{_rdpTextureImageWidth} " +
+                $"tmem=0x{_rdpTiles[tileIndex].Tmem:x} line={_rdpTiles[tileIndex].Line} bytes={byteCount} first={b0:x2}{b1:x2}{b2:x2}{b3:x2} w0=0x{w0:x8} w1=0x{w1:x8}");
+            _traceRdpTextureLoadCount++;
+        }
+
+        private void ExecuteRdpTextureRectangle(uint w0, uint w1, uint w2, uint w3)
+        {
+            uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0)
+                return;
+
+            uint x1 = ((w0 >> 12) & 0x0FFFu) >> 2;
+            uint y1 = (w0 & 0x0FFFu) >> 2;
+            uint x0 = ((w1 >> 12) & 0x0FFFu) >> 2;
+            uint y0 = (w1 & 0x0FFFu) >> 2;
+            if (x1 < x0)
+            {
+                uint temp = x0;
+                x0 = x1;
+                x1 = temp;
+            }
+            if (y1 < y0)
+            {
+                uint temp = y0;
+                y0 = y1;
+                y1 = temp;
+            }
+
+            if (TraceRdpTextureRectangles && _traceRdpTexRectCount < TraceRdpTexRectLimit)
+            {
+                int tileIndex = (int)((w1 >> 24) & 0x7u);
+                Common.Logger.PrintWarningLine(
+                    $"[N64RDP] texrect ci=0x{_rdpColorImageAddress:x8} size={_rdpColorImageSize} width={_rdpColorImageWidth} " +
+                    $"rect=({x0},{y0})-({x1},{y1}) tile={tileIndex} ti=0x{_rdpTextureImageAddress:x8}/{_rdpTextureImageFormat}:{_rdpTextureImageSize}x{_rdpTextureImageWidth} " +
+                    $"tmem=0x{_rdpTiles[tileIndex].Tmem:x} line={_rdpTiles[tileIndex].Line} fmt={_rdpTiles[tileIndex].Format}:{_rdpTiles[tileIndex].Size} " +
+                    $"w0=0x{w0:x8} w1=0x{w1:x8} w2=0x{w2:x8} w3=0x{w3:x8}");
+                _traceRdpTexRectCount++;
+            }
+
+            if (!DrawRdpTexturedRectangle(x0, y0, x1, y1, (int)((w1 >> 24) & 0x7u), w2, w3, bytesPerPixel))
+                DrawRdpSolidRectangle(x0, y0, x1, y1, SelectRdpSolidColor(), bytesPerPixel);
+        }
+
         private void ExecuteRdpFillRectangle(uint w0, uint w1)
         {
             uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
@@ -923,6 +1229,11 @@ namespace Ryu64.MIPS
                 y1 = temp;
             }
 
+            DrawRdpFillRectangle(x0, y0, x1, y1, bytesPerPixel);
+        }
+
+        private void DrawRdpFillRectangle(uint x0, uint y0, uint x1, uint y1, uint bytesPerPixel)
+        {
             if (x0 >= _rdpColorImageWidth)
                 return;
             if (x1 >= _rdpColorImageWidth)
@@ -946,6 +1257,319 @@ namespace Ryu64.MIPS
                 }
                 NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
             }
+
+            MarkRdpColorImageWritten(bytesPerPixel);
+        }
+
+        private bool DrawRdpTexturedRectangle(uint x0, uint y0, uint x1, uint y1, int tileIndex, uint w2, uint w3, uint bytesPerPixel)
+        {
+            if ((uint)tileIndex >= _rdpTiles.Length || x0 >= _rdpColorImageWidth)
+                return false;
+            if (x1 >= _rdpColorImageWidth)
+                x1 = _rdpColorImageWidth - 1u;
+
+            uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
+            if (maxRows == 0 || y0 >= maxRows)
+                return false;
+            if (y1 >= maxRows)
+                y1 = maxRows - 1u;
+
+            RdpTileState tile = _rdpTiles[tileIndex];
+            int sFixed = (short)(w2 >> 16);
+            int tFixed = (short)w2;
+            int dsdxFixed = (short)(w3 >> 16);
+            int dtdyFixed = (short)w3;
+            double startS = sFixed / 32.0;
+            double startT = tFixed / 32.0;
+            double stepS = dsdxFixed == 0 ? 1.0 : dsdxFixed / 1024.0;
+            double stepT = dtdyFixed == 0 ? 1.0 : dtdyFixed / 1024.0;
+            bool wroteAny = false;
+
+            for (uint y = y0; y <= y1; y++)
+            {
+                uint rowStart = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0) * bytesPerPixel);
+                uint rowPixels = x1 - x0 + 1u;
+                for (uint x = 0; x < rowPixels; x++)
+                {
+                    int sampleS = (int)Math.Floor(startS + x * stepS);
+                    int sampleT = (int)Math.Floor(startT + (y - y0) * stepT);
+                    if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
+                        continue;
+
+                    uint address = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0 + x) * bytesPerPixel);
+                    WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
+                    wroteAny = true;
+                }
+
+                if (wroteAny)
+                    NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
+            }
+
+            if (wroteAny)
+                MarkRdpColorImageWritten(bytesPerPixel);
+            return wroteAny;
+        }
+
+        private bool SampleRdpTexture(RdpTileState tile, int s, int t, out uint rgba)
+        {
+            rgba = 0;
+            uint width = GetTileWidth(tile);
+            if (width == 0)
+                return false;
+
+            uint baseOffset = Math.Min(4095u, tile.Tmem * 8u);
+            uint stride = GetTileStrideBytes(tile, width);
+            uint height = GetTileHeight(tile, baseOffset, stride);
+            if (height == 0)
+                return false;
+
+            int u = ApplyRdpTextureCoordinate(s, width, tile.MaskS);
+            int v = ApplyRdpTextureCoordinate(t, height, tile.MaskT);
+            if (u < 0 || v < 0)
+                return false;
+
+            uint pixelOffset = GetPackedTexelOffset((uint)u, (uint)v, tile.Size, stride);
+            uint tmemOffset = baseOffset + pixelOffset;
+            if (tmemOffset >= _rdpTmem.Length)
+                return false;
+
+            return DecodeRdpTextureColor(tile, tmemOffset, (uint)u, out rgba);
+        }
+
+        private static int ApplyRdpTextureCoordinate(int value, uint extent, uint mask)
+        {
+            if (extent == 0)
+                return -1;
+            if (mask != 0 && mask < 31)
+                return value & ((1 << (int)mask) - 1);
+            if (value < 0)
+                return 0;
+            if ((uint)value >= extent)
+                return (int)extent - 1;
+            return value;
+        }
+
+        private static uint GetTileWidth(RdpTileState tile)
+        {
+            if (tile.TileSizeSet && tile.Lrs >= tile.Uls)
+            {
+                uint width = ((tile.Lrs - tile.Uls) >> 2) + 1u;
+                if (width != 0)
+                    return width;
+            }
+
+            if (tile.Line == 0)
+                return 1u;
+
+            uint stride = tile.Line * 8u;
+            switch (tile.Size & 0x3u)
+            {
+                case 0u: return Math.Max(1u, stride * 2u);
+                case 1u: return Math.Max(1u, stride);
+                case 2u: return Math.Max(1u, stride / 2u);
+                case 3u: return Math.Max(1u, stride / 4u);
+                default: return 1u;
+            }
+        }
+
+        private static uint GetTileHeight(RdpTileState tile)
+        {
+            if (tile.TileSizeSet && tile.Lrt >= tile.Ult)
+                return ((tile.Lrt - tile.Ult) >> 2) + 1u;
+            return 1u;
+        }
+
+        private static uint GetTileHeight(RdpTileState tile, uint baseOffset, uint stride)
+        {
+            uint explicitHeight = GetTileHeight(tile);
+            if (tile.TileSizeSet || stride == 0 || baseOffset >= 4096u)
+                return explicitHeight;
+
+            // Many sprite-style texrects set only tile line/tmem. Treat the available
+            // TMEM rows as the tile extent instead of clamping every sample to row 0.
+            return Math.Max(1u, (4096u - baseOffset) / stride);
+        }
+
+        private static uint GetTileStrideBytes(RdpTileState tile, uint width)
+        {
+            if (tile.Line != 0)
+                return tile.Line * 8u;
+            return Math.Max(1u, RdpPackedBytesForTexels(width, tile.Size));
+        }
+
+        private static uint GetPackedTexelOffset(uint x, uint y, uint size, uint stride)
+        {
+            switch (size & 0x3u)
+            {
+                case 0u:
+                    return y * stride + (x >> 1);
+                case 1u:
+                    return y * stride + x;
+                case 2u:
+                    return y * stride + x * 2u;
+                case 3u:
+                    return y * stride + x * 4u;
+                default:
+                    return y * stride + x;
+            }
+        }
+
+        private bool DecodeRdpTextureColor(RdpTileState tile, uint tmemOffset, uint x, out uint rgba)
+        {
+            rgba = 0;
+            switch (tile.Format & 0x7u)
+            {
+                case 0u: // RGBA
+                    if ((tile.Size & 0x3u) == 2u)
+                    {
+                        if (tmemOffset + 1u >= _rdpTmem.Length)
+                            return false;
+                        rgba = Rgba5551ToRgba8888((ushort)((_rdpTmem[tmemOffset] << 8) | _rdpTmem[tmemOffset + 1u]));
+                        return true;
+                    }
+                    if ((tile.Size & 0x3u) == 3u)
+                    {
+                        if (tmemOffset + 3u >= _rdpTmem.Length)
+                            return false;
+                        rgba = ((uint)_rdpTmem[tmemOffset] << 24)
+                            | ((uint)_rdpTmem[tmemOffset + 1u] << 16)
+                            | ((uint)_rdpTmem[tmemOffset + 2u] << 8)
+                            | _rdpTmem[tmemOffset + 3u];
+                        return true;
+                    }
+                    return false;
+                case 2u: // CI
+                {
+                    uint index;
+                    if ((tile.Size & 0x3u) == 0u)
+                    {
+                        byte packed = _rdpTmem[tmemOffset];
+                        index = (x & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
+                        index += tile.Palette * 16u;
+                    }
+                    else
+                    {
+                        index = _rdpTmem[tmemOffset];
+                    }
+
+                    if (index < _rdpTlut.Length && _rdpTlut[index] != 0)
+                        rgba = Rgba5551ToRgba8888(_rdpTlut[index]);
+                    else
+                        rgba = (index << 24) | (index << 16) | (index << 8) | 0xFFu;
+                    return true;
+                }
+                case 3u: // IA
+                    return DecodeRdpIaTexture(tile, tmemOffset, x, out rgba);
+                case 4u: // I
+                    return DecodeRdpIntensityTexture(tile, tmemOffset, x, out rgba);
+                default:
+                    return false;
+            }
+        }
+
+        private bool DecodeRdpIaTexture(RdpTileState tile, uint tmemOffset, uint x, out uint rgba)
+        {
+            rgba = 0;
+            switch (tile.Size & 0x3u)
+            {
+                case 0u:
+                {
+                    byte packed = _rdpTmem[tmemOffset];
+                    uint value = (x & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
+                    uint intensity = ((value >> 1) & 0x7u) * 255u / 7u;
+                    uint alpha = (value & 1u) != 0 ? 0xFFu : 0u;
+                    rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | alpha;
+                    return true;
+                }
+                case 1u:
+                {
+                    uint value = _rdpTmem[tmemOffset];
+                    uint intensity = ((value >> 4) & 0xFu) * 17u;
+                    uint alpha = (value & 0xFu) * 17u;
+                    rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | alpha;
+                    return true;
+                }
+                case 2u:
+                    if (tmemOffset + 1u >= _rdpTmem.Length)
+                        return false;
+                    rgba = ((uint)_rdpTmem[tmemOffset] << 24)
+                        | ((uint)_rdpTmem[tmemOffset] << 16)
+                        | ((uint)_rdpTmem[tmemOffset] << 8)
+                        | _rdpTmem[tmemOffset + 1u];
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private bool DecodeRdpIntensityTexture(RdpTileState tile, uint tmemOffset, uint x, out uint rgba)
+        {
+            rgba = 0;
+            uint intensity;
+            if ((tile.Size & 0x3u) == 0u)
+            {
+                byte packed = _rdpTmem[tmemOffset];
+                intensity = ((x & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F)) * 17u;
+            }
+            else
+            {
+                intensity = _rdpTmem[tmemOffset];
+            }
+
+            rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | 0xFFu;
+            return true;
+        }
+
+        private void DrawRdpSolidRectangle(uint x0, uint y0, uint x1, uint y1, uint rgba, uint bytesPerPixel)
+        {
+            if (x0 >= _rdpColorImageWidth)
+                return;
+            if (x1 >= _rdpColorImageWidth)
+                x1 = _rdpColorImageWidth - 1u;
+
+            uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
+            if (maxRows == 0 || y0 >= maxRows)
+                return;
+            if (y1 >= maxRows)
+                y1 = maxRows - 1u;
+
+            for (uint y = y0; y <= y1; y++)
+            {
+                uint rowStart = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0) * bytesPerPixel);
+                uint rowPixels = x1 - x0 + 1u;
+                for (uint x = 0; x < rowPixels; x++)
+                {
+                    uint address = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0 + x) * bytesPerPixel);
+                    WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
+                }
+                NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
+            }
+
+            MarkRdpColorImageWritten(bytesPerPixel);
+        }
+
+        private void MarkRdpColorImageWritten(uint bytesPerPixel)
+        {
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0)
+                return;
+
+            Volatile.Write(ref _lastRdpColorImageAddress, _rdpColorImageAddress);
+            Volatile.Write(ref _lastRdpColorImageWidth, _rdpColorImageWidth);
+            Volatile.Write(ref _lastRdpColorImageBytesPerPixel, bytesPerPixel);
+            Volatile.Write(ref _lastRdpColorImageWriteEpoch, _rdramWriteEpoch);
+        }
+
+        private uint SelectRdpSolidColor()
+        {
+            uint color = _rdpPrimColor;
+            if ((color & 0xFFFFFF00u) == 0)
+                color = _rdpEnvColor;
+            if ((color & 0xFFFFFF00u) == 0)
+                color = _rdpBlendColor;
+            return color;
         }
 
         private void WriteRdpFillPixel(uint address, uint pixelIndex, uint bytesPerPixel)
@@ -976,6 +1600,55 @@ namespace Ryu64.MIPS
                     RDRAM[address + 3u] = (byte)_rdpFillColor;
                     break;
             }
+        }
+
+        private void WriteRdpRgbaPixel(uint address, uint rgba, uint bytesPerPixel)
+        {
+            if (address >= RDRAM.Length)
+                return;
+
+            switch (bytesPerPixel)
+            {
+                case 1u:
+                    RDRAM[address] = (byte)((((rgba >> 24) & 0xFFu) + ((rgba >> 16) & 0xFFu) + ((rgba >> 8) & 0xFFu)) / 3u);
+                    break;
+                case 2u:
+                    if (address + 1u >= RDRAM.Length)
+                        return;
+                    ushort color16 = Rgba8888ToRgba5551(rgba);
+                    RDRAM[address] = (byte)(color16 >> 8);
+                    RDRAM[address + 1u] = (byte)color16;
+                    break;
+                case 4u:
+                    if (address + 3u >= RDRAM.Length)
+                        return;
+                    RDRAM[address] = (byte)(rgba >> 24);
+                    RDRAM[address + 1u] = (byte)(rgba >> 16);
+                    RDRAM[address + 2u] = (byte)(rgba >> 8);
+                    RDRAM[address + 3u] = (byte)rgba;
+                    break;
+            }
+        }
+
+        private static ushort Rgba8888ToRgba5551(uint rgba)
+        {
+            uint r = (rgba >> 24) & 0xFFu;
+            uint g = (rgba >> 16) & 0xFFu;
+            uint b = (rgba >> 8) & 0xFFu;
+            uint a = rgba & 0xFFu;
+            return (ushort)(((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (a >= 0x80u ? 1u : 0u));
+        }
+
+        private static uint Rgba5551ToRgba8888(ushort color)
+        {
+            uint r = (uint)((color >> 11) & 0x1F);
+            uint g = (uint)((color >> 6) & 0x1F);
+            uint b = (uint)((color >> 1) & 0x1F);
+            uint a = (color & 1u) != 0 ? 0xFFu : 0u;
+            r = (r << 3) | (r >> 2);
+            g = (g << 3) | (g >> 2);
+            b = (b << 3) | (b >> 2);
+            return (r << 24) | (g << 16) | (b << 8) | a;
         }
 
         private void PostFramebufferWrite(uint address, uint length, uint epoch)

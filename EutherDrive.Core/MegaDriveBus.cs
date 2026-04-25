@@ -13,8 +13,6 @@ namespace EutherDrive.Core;
 /// </summary>
 public sealed class MegaDriveBus
 {
-    private const int M68kCommPollThreshold = 11;
-    private const int M68kCommPollCycleWindow = 64;
     private readonly byte[] _rom;
     private Sega32XBus? _s32xBus;
     private Action<uint, int, bool>? _beforeM68k32XAccess;
@@ -40,10 +38,6 @@ public sealed class MegaDriveBus
     private bool _vdpNormalizeLogged;
     private bool _vdpNotRoutedDataLogged;
     private bool _vdpNotRoutedCtrlLogged;
-    private uint _m68kCommPollAddr1;
-    private uint _m68kCommPollAddr2;
-    private int _m68kCommPollCycles = -1;
-    private int _m68kCommPollCount;
     private static readonly bool TraceBusAccess =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_BUS"), "1", StringComparison.Ordinal);
     private static readonly bool TraceZ80Win =
@@ -54,10 +48,6 @@ public sealed class MegaDriveBus
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_Z80_RESET"), "1", StringComparison.Ordinal);
     private static readonly bool Trace32XComm68k =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_M68K_COMM"), "1", StringComparison.Ordinal);
-    private static readonly bool Trace32XCommPoll68k =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_M68K_COMM_POLL"), "1", StringComparison.Ordinal);
-    private static readonly bool ExperimentalM68kCommPollEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_EXPERIMENTAL_M68K_COMM_POLL"), "1", StringComparison.Ordinal);
     private static bool TraceZ80Sig => MdTracerCore.MdLog.TraceZ80Sig;
     private static bool MapZ80OddReadToNext => ReadEnvDefaultOn("EUTHERDRIVE_Z80_ODD_READ_TO_NEXT");
 
@@ -140,7 +130,6 @@ public sealed class MegaDriveBus
         _vdpNormalizeLogged = false;
         _vdpNotRoutedDataLogged = false;
         _vdpNotRoutedCtrlLogged = false;
-        ResetM68kCommPollState();
     }
 
     private static bool IsVdpPort(uint addr) => (addr & 0xFFFFE0) == 0xC00000;
@@ -180,78 +169,6 @@ public sealed class MegaDriveBus
             $"byte=0x{regByte:X2} {stateName}={(state ? 1 : 0)}");
     }
 
-    internal void Notify32XCommWrite(uint addr)
-    {
-        if (!ExperimentalM68kCommPollEnabled)
-            return;
-
-        uint aligned = addr & 0xFFFFFEu;
-        bool match = aligned - _m68kCommPollAddr1 <= 3 || aligned - _m68kCommPollAddr2 <= 3;
-        if (!match)
-            return;
-
-        if (Trace32XCommPoll68k)
-        {
-            Console.WriteLine(
-                $"[S32X-M68K-POLL] wake addr=0x{aligned:X8} pc=0x{md_m68k.g_reg_PC:X6} " +
-                $"stopped={(md_m68k.g_68k_stop ? 1 : 0)} cnt={_m68kCommPollCount}");
-        }
-
-        md_m68k.g_68k_stop = false;
-        ResetM68kCommPollState();
-    }
-
-    private void TrackM68kCommPollRead(uint addr)
-    {
-        if (!ExperimentalM68kCommPollEnabled)
-            return;
-
-        uint aligned = addr & 0xFFFFFEu;
-        int cycles = md_m68k.g_clock_now;
-        bool match = aligned - _m68kCommPollAddr1 <= 3 || aligned - _m68kCommPollAddr2 <= 3;
-        bool validCycleDelta = _m68kCommPollCycles >= 0
-            && cycles >= _m68kCommPollCycles
-            && cycles - _m68kCommPollCycles <= M68kCommPollCycleWindow;
-
-        if (match && validCycleDelta)
-        {
-            if (cycles != _m68kCommPollCycles && !md_m68k.g_68k_stop)
-            {
-                _m68kCommPollCount++;
-                if (_m68kCommPollCount >= M68kCommPollThreshold)
-                {
-                    md_m68k.g_68k_stop = true;
-                    if (Trace32XCommPoll68k)
-                    {
-                        Console.WriteLine(
-                            $"[S32X-M68K-POLL] stop addr=0x{aligned:X8} pc=0x{md_m68k.g_reg_PC:X6} " +
-                            $"cycles={cycles} delta={cycles - _m68kCommPollCycles} cnt={_m68kCommPollCount}");
-                    }
-                }
-            }
-        }
-        else
-        {
-            md_m68k.g_68k_stop = false;
-            _m68kCommPollCount = 0;
-            if (!match)
-            {
-                _m68kCommPollAddr2 = _m68kCommPollAddr1;
-                _m68kCommPollAddr1 = aligned;
-            }
-        }
-
-        _m68kCommPollCycles = cycles;
-    }
-
-    private void ResetM68kCommPollState()
-    {
-        _m68kCommPollAddr1 = 0;
-        _m68kCommPollAddr2 = 0;
-        _m68kCommPollCycles = -1;
-        _m68kCommPollCount = 0;
-    }
-
     // 68k ROM space: 0x000000..0x3FFFFF
     // 68k WRAM:      0xFF0000..0xFFFFFF
     public byte Read8(uint addr)
@@ -276,8 +193,6 @@ public sealed class MegaDriveBus
         {
             OnBeforeM68k32XAccess(addr, 1, write: false);
             byte result = _s32xBus.ReadM68kByte(addr);
-            if (Is32XCommPort(addr))
-                TrackM68kCommPollRead(addr);
             if (Is32XCommPort(addr))
                 Log32XComm68k("read8", addr, _s32xBus.ReadM68kWord(addr & 0xFFFFFEu));
             return result;
@@ -349,8 +264,6 @@ public sealed class MegaDriveBus
         {
             OnBeforeM68k32XAccess(addr, 2, write: false);
             ushort s32xValue = _s32xBus.ReadM68kWord(addr & 0xFFFFFEu);
-            if (Is32XCommPort(addr))
-                TrackM68kCommPollRead(addr);
             if (Is32XCommPort(addr))
                 Log32XComm68k("read16", addr, s32xValue);
             md_m68k.RecordBusAccess(addr, 2, false, s32xValue);
@@ -450,8 +363,6 @@ public sealed class MegaDriveBus
             uint hi = _s32xBus.ReadM68kWord(addr & 0xFFFFFEu);
             uint lo = _s32xBus.ReadM68kWord((addr + 2) & 0xFFFFFEu);
             uint s32xValue = (hi << 16) | lo;
-            if (Is32XCommPort(addr) || Is32XCommPort(addr + 2))
-                TrackM68kCommPollRead(addr);
             md_m68k.RecordBusAccess(addr, 4, false, s32xValue);
             return s32xValue;
         }

@@ -9,6 +9,12 @@ internal sealed class Sega32XBus
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CART_WRITES"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TraceCramWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_CRAM_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly int TraceCramWriteLimit = ParseTraceCramWriteLimit();
     public const uint M68kVectorsStart = 0x000000;
     public const uint M68kVectorsEnd = 0x0000FF;
     public const uint M68kCartridgeStart = 0x000000;
@@ -57,6 +63,7 @@ internal sealed class Sega32XBus
     public ushort[] Sdram { get; }
     public ushort[] Sh2FrameBuffer { get; }
     public ushort[] Sh2Cram { get; }
+    private int _cramWriteTraceCount;
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
 
@@ -233,12 +240,16 @@ internal sealed class Sega32XBus
         if (address >= M68kCramStart && address <= M68kCramEnd)
         {
             if (Registers.VdpAccess != Sega32XAccess.M68k)
+            {
+                TraceM68kCramWrite("write8-denied", address, value, 0);
                 return;
+            }
             ushort current = Vdp.ReadCramWord(address - M68kCramStart);
             ushort merged = (address & 1) == 0
                 ? (ushort)((current & 0x00FF) | (value << 8))
                 : (ushort)((current & 0xFF00) | value);
             Vdp.WriteCramWord(address - M68kCramStart, merged);
+            TraceM68kCramWrite("write8", address, value, merged);
         }
     }
 
@@ -284,9 +295,30 @@ internal sealed class Sega32XBus
         if (address >= M68kCramStart && address <= M68kCramEnd)
         {
             if (Registers.VdpAccess != Sega32XAccess.M68k)
+            {
+                TraceM68kCramWrite("write16-denied", aligned, value, 0);
                 return;
+            }
             Vdp.WriteCramWord(address - M68kCramStart, value);
+            TraceM68kCramWrite("write16", aligned, value, value);
         }
+    }
+
+    private void TraceM68kCramWrite(string op, uint address, uint value, ushort stored)
+    {
+        if (!TraceCramWrites || _cramWriteTraceCount >= TraceCramWriteLimit)
+            return;
+
+        _cramWriteTraceCount++;
+        Console.WriteLine(
+            $"[S32X-CRAM-M68K] op={op} addr=0x{address:X6} offset=0x{address - M68kCramStart:X3} " +
+            $"value=0x{value:X4} stored=0x{stored:X4} fm={(Registers.VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)}");
+    }
+
+    private static int ParseTraceCramWriteLimit()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_CRAM_WRITES_MAX");
+        return int.TryParse(raw, out int value) && value > 0 ? value : 512;
     }
 
     private byte ReadCartridgeByte(uint romAddress)

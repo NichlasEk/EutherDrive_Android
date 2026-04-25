@@ -26,6 +26,9 @@ namespace EutherDrive.UI;
 
 public sealed class RomPickerDialog : Window
 {
+    private const uint N64HeaderZ64 = 0x80371240;
+    private const uint N64HeaderN64 = 0x40123780;
+    private const uint N64HeaderV64 = 0x37804012;
     private static readonly uint[] s_crc32Table = BuildCrc32Table();
     private static readonly HttpClient s_httpClient = new()
     {
@@ -1170,6 +1173,13 @@ public sealed class RomPickerDialog : Window
                 Add("NEC - PC Engine - TurboGrafx 16");
                 Add("PC Engine");
                 break;
+            case ".z64":
+            case ".n64":
+            case ".v64":
+                Add("Nintendo - Nintendo 64");
+                Add("Nintendo 64");
+                Add("N64");
+                break;
             case ".cue":
             case ".chd":
             case ".iso":
@@ -1228,6 +1238,8 @@ public sealed class RomPickerDialog : Window
             Add("Sony - PlayStation");
         if (directoryHint.Contains("NES", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Nintendo Entertainment System", StringComparison.OrdinalIgnoreCase))
             Add("Nintendo - Nintendo Entertainment System");
+        if (directoryHint.Contains("N64", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Nintendo 64", StringComparison.OrdinalIgnoreCase))
+            Add("Nintendo - Nintendo 64");
         if (directoryHint.Contains("SNES", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Super Nintendo", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("Super Famicom", StringComparison.OrdinalIgnoreCase))
             Add("Nintendo - Super Nintendo Entertainment System");
         if (directoryHint.Contains("PCE", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("PC Engine", StringComparison.OrdinalIgnoreCase) || directoryHint.Contains("TurboGrafx", StringComparison.OrdinalIgnoreCase))
@@ -2022,7 +2034,8 @@ public sealed class RomPickerDialog : Window
             byte[] romBytes;
             string extension = Path.GetExtension(romPath);
             if ((extension.Equals(".zip", StringComparison.OrdinalIgnoreCase) || extension.Equals(".7z", StringComparison.OrdinalIgnoreCase)) &&
-                TryExtractArchiveRomBytes(romPath, out byte[]? data))
+                TryExtractArchiveRomBytes(romPath, out byte[]? data) &&
+                data is { Length: > 0 })
             {
                 romBytes = data;
             }
@@ -2031,6 +2044,7 @@ public sealed class RomPickerDialog : Window
                 romBytes = await File.ReadAllBytesAsync(romPath, cancellationToken);
             }
 
+            romBytes = NormalizeRomBytesForCoverCrc(romBytes, GetEffectiveCoverRomExtension(romPath, extension));
             return ComputeCrc32Hex(romBytes);
         }
         catch
@@ -2109,6 +2123,55 @@ public sealed class RomPickerDialog : Window
             ".chd" => 21,
             _ => int.MaxValue
         };
+
+    private static byte[] NormalizeRomBytesForCoverCrc(byte[] romBytes, string effectiveExtension)
+    {
+        if (romBytes.Length < 4 || effectiveExtension is not (".z64" or ".n64" or ".v64"))
+            return romBytes;
+
+        uint header = ((uint)romBytes[0] << 24)
+            | ((uint)romBytes[1] << 16)
+            | ((uint)romBytes[2] << 8)
+            | romBytes[3];
+
+        if (header == N64HeaderZ64)
+            return romBytes;
+
+        byte[] normalized = new byte[romBytes.Length];
+        if (header == N64HeaderN64)
+        {
+            int i = 0;
+            for (; i + 3 < romBytes.Length; i += 4)
+            {
+                normalized[i + 0] = romBytes[i + 3];
+                normalized[i + 1] = romBytes[i + 2];
+                normalized[i + 2] = romBytes[i + 1];
+                normalized[i + 3] = romBytes[i + 0];
+            }
+
+            for (; i < romBytes.Length; i++)
+                normalized[i] = romBytes[i];
+
+            return normalized;
+        }
+
+        if (header == N64HeaderV64)
+        {
+            int i = 0;
+            for (; i + 1 < romBytes.Length; i += 2)
+            {
+                normalized[i + 0] = romBytes[i + 1];
+                normalized[i + 1] = romBytes[i + 0];
+            }
+
+            if (i < romBytes.Length)
+                normalized[i] = romBytes[i];
+
+            return normalized;
+        }
+
+        return romBytes;
+    }
 
     private static string ComputeCrc32Hex(byte[] data)
     {
@@ -2321,6 +2384,8 @@ public sealed class RomPickerDialog : Window
                 => "Sega - Mega Drive - Genesis",
             "Nintendo - Nintendo Entertainment System" or "Nintendo Entertainment System" or "NES"
                 => "Nintendo - Nintendo Entertainment System",
+            "Nintendo - Nintendo 64" or "Nintendo 64" or "N64"
+                => "Nintendo - Nintendo 64",
             "Nintendo - Super Nintendo Entertainment System" or "Super Nintendo Entertainment System" or "SNES"
                 => "Nintendo - Super Nintendo Entertainment System",
             _ => null

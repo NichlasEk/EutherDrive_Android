@@ -28,7 +28,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private const ulong Sh2SdramReadCycles = 9;
     private const ulong Sh2SdramWriteCycles = 0;
     private static readonly ulong CommPortSyncChunkSize = ParseCommPortSyncChunkSize();
-    private static readonly int StableRegisterPollThreshold = ParseStableCommPollThreshold();
+    private static readonly bool AggressiveCommReadSyncEnabled = ParseAggressiveCommReadSyncEnabled();
     private static readonly uint? TracePcWatchStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_PCWATCH_START");
     private static readonly uint? TracePcWatchEnd = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_PCWATCH_END");
     private static readonly uint? TraceAddressWatchStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_ADDRWATCH_START");
@@ -38,6 +38,12 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_CACHE_CTRL"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TraceCramWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_CRAM_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly int TraceCramWriteLimit = ParseTraceCramWriteLimit();
     private const int CacheEntries = 64;
     private static readonly bool TraceBootRegisterReads =
         string.Equals(
@@ -79,10 +85,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private uint _dmaVector0;
     private uint _dmaVector1;
     [NonSerialized] private ulong _schedulerCycleCounter;
-    [NonSerialized] private uint _lastStablePollPc;
-    [NonSerialized] private uint _lastStablePollAddress;
-    [NonSerialized] private ushort _lastStablePollValue;
-    [NonSerialized] private int _stablePollCount;
+    [NonSerialized] private int _cramWriteTraceCount;
 
     public Sega32XSh2Bus(Sega32XScaffoldCore core, Sega32XCpu whichCpu)
     {
@@ -92,6 +95,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     public ulong CycleCounter { get; private set; }
     public ulong SchedulerCycleCounter => _schedulerCycleCounter;
+    [field: NonSerialized]
     public ulong CycleLimit { get; set; } = ulong.MaxValue;
     public bool ShouldStopExecution => _schedulerCycleCounter >= CycleLimit;
     public ulong M68kReferenceCyclesDone => (_schedulerCycleCounter + (NativeSh2CyclesPerM68kCycle - 1)) / NativeSh2CyclesPerM68kCycle;
@@ -109,7 +113,6 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     {
         StateBinarySerializer.ReadInto(reader, this);
         _schedulerCycleCounter = CurrentCpu.CycleCounter;
-        ResetStablePollTracking();
     }
 
     public void ResetTimingState()
@@ -117,7 +120,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         CycleCounter = 0;
         _schedulerCycleCounter = 0;
         CycleLimit = ulong.MaxValue;
-        ResetStablePollTracking();
+    }
+
+    public void ResyncTimingFromCpu()
+    {
+        CycleCounter = CurrentCpu.CycleCounter;
+        _schedulerCycleCounter = CurrentCpu.CycleCounter;
+        CycleLimit = ulong.MaxValue;
     }
 
     public void ResetState()
@@ -149,6 +158,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         _dmaOperation = 0;
         _dmaVector0 = 0;
         _dmaVector1 = 0;
+        _cramWriteTraceCount = 0;
         ResetTimingState();
     }
 
@@ -209,12 +219,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             Sega32XSh2Cpu otherCpu = _core.GetOtherCpu(_whichCpu);
             Sega32XSh2Bus otherBus = _core.GetOtherBus(_whichCpu);
             
-            // För läsningar från comm-portar: Synka den andra CPUn hela vägen till CycleLimit.
-            // Detta är kritiskt för boot-sekvenser där en CPU väntar på att den andra ska skriva
-            // till kommunikationsportarna. Genom att synka hela vägen till CycleLimit säkerställer
-            // vi att den andra CPUn har fått chansen att köra och eventuellt skriva sina värden.
-            // För skrivningar: Använd gamla beteendet (synka bara till nuvarande cykel).
-            ulong limit = isRead ? CycleLimit : Math.Min(CycleLimit, _schedulerCycleCounter);
+            // Match jgenesis by only catching the peer SH-2 up to this CPU's current scheduler
+            // time. Syncing reads all the way to CycleLimit is useful for debugging a few tight
+            // boot loops, but it is very expensive and lets one CPU run too far ahead of the
+            // hardware timebase.
+            ulong limit = AggressiveCommReadSyncEnabled && isRead
+                ? CycleLimit
+                : Math.Min(CycleLimit, _schedulerCycleCounter);
             
             if (otherBus.SchedulerCycleCounter >= limit)
                 return;
@@ -254,13 +265,16 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         return 50;
     }
 
-    private static int ParseStableCommPollThreshold()
+    private static bool ParseAggressiveCommReadSyncEnabled()
     {
-        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_STABLE_COMM_POLL_THRESHOLD");
-        if (int.TryParse(raw, out int parsed) && parsed > 0)
-            return parsed;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_AGGRESSIVE_COMM_READ_SYNC");
+        return raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
+    }
 
-        return 32;
+    private static int ParseTraceCramWriteLimit()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_CRAM_WRITES_MAX");
+        return int.TryParse(raw, out int value) && value > 0 ? value : 512;
     }
 
     private static uint? ParseOptionalHex(string name)
@@ -351,75 +365,6 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             $"addr=0x{address:X8} value=0x{value:X8} ctx={context} cyc={CycleCounter}");
     }
 
-    private void MaybeShortCircuitStableRegisterPoll(uint maskedAddress, ushort value, Sega32XSh2AccessContext context)
-    {
-        if (context != Sega32XSh2AccessContext.Data)
-            return;
-
-        if (StableRegisterPollThreshold <= 0 || CycleLimit == ulong.MaxValue || _schedulerCycleCounter >= CycleLimit)
-            return;
-
-        uint pc = CurrentCpu.CurrentInstructionPc;
-        if (pc < 0x06000000 || pc >= 0x06040000)
-        {
-            ResetStablePollTracking();
-            return;
-        }
-
-        if (!IsStablePollCandidate(maskedAddress, value))
-        {
-            ResetStablePollTracking();
-            return;
-        }
-
-        if (pc == _lastStablePollPc && maskedAddress == _lastStablePollAddress && value == _lastStablePollValue)
-            _stablePollCount++;
-        else
-            _stablePollCount = 1;
-
-        _lastStablePollPc = pc;
-        _lastStablePollAddress = maskedAddress;
-        _lastStablePollValue = value;
-
-        if (_stablePollCount < StableRegisterPollThreshold)
-            return;
-
-        if (_core.UseExperimentalCommPollModel && IsCommPortRegister(maskedAddress))
-        {
-            CurrentCpu.EnterCommPoll(maskedAddress, value);
-            _schedulerCycleCounter = CycleLimit;
-            return;
-        }
-
-        SkipToCycleLimit();
-    }
-
-    private void SkipToCycleLimit()
-    {
-        if (_schedulerCycleCounter >= CycleLimit)
-            return;
-
-        ulong skippedCycles = CycleLimit - _schedulerCycleCounter;
-        _schedulerCycleCounter = CycleLimit;
-        CycleCounter += skippedCycles;
-    }
-
-    private void ResetStablePollTracking()
-    {
-        _lastStablePollPc = 0;
-        _lastStablePollAddress = 0;
-        _lastStablePollValue = 0;
-        _stablePollCount = 0;
-    }
-
-    private static bool IsStablePollCandidate(uint maskedAddress, ushort value)
-    {
-        if (IsCommPortRegister(maskedAddress))
-            return true;
-
-        return (maskedAddress & ~1u) == 0x0000410A && (value & 0x0002) != 0;
-    }
-
     public byte ReadByte(uint address, Sega32XSh2AccessContext context)
     {
         uint addressSpace = address >> 29;
@@ -450,10 +395,16 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             return cachedByte;
         }
 
+        if (addressSpace == 0 && TryReplaceCache(address, context, out uint cacheLineLongword))
+        {
+            byte cacheLineValue = (byte)(cacheLineLongword >> (24 - (int)((address & 3) * 8)));
+            TracePcWatch("read8", address & 0x1FFFFFFF, cacheLineValue, context);
+            TraceAddressWatch("read8", address & 0x1FFFFFFF, cacheLineValue, context);
+            return cacheLineValue;
+        }
+
         uint masked = address & 0x1FFFFFFF;
         byte value = ReadBackingByte(masked, context);
-        if (addressSpace == 0)
-            MaybeReplaceCache(address, context);
         TracePcWatch("read8", masked, value, context);
         TraceAddressWatch("read8", masked, value, context);
         return value;
@@ -489,10 +440,18 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             return cachedWord;
         }
 
+        if (addressSpace == 0 && TryReplaceCache(address, context, out uint cacheLineLongword))
+        {
+            ushort cacheLineValue = ((address >> 1) & 1) == 0
+                ? (ushort)(cacheLineLongword >> 16)
+                : (ushort)cacheLineLongword;
+            TracePcWatch("read16", address & 0x1FFFFFFF, cacheLineValue, context);
+            TraceAddressWatch("read16", address & 0x1FFFFFFF, cacheLineValue, context);
+            return cacheLineValue;
+        }
+
         uint masked = address & 0x1FFFFFFF;
         ushort value = ReadBackingWord(masked, context);
-        if (addressSpace == 0)
-            MaybeReplaceCache(address, context);
         TracePcWatch("read16", masked, value, context);
         TraceAddressWatch("read16", masked, value, context);
         return value;
@@ -528,10 +487,15 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             return cachedLong;
         }
 
+        if (addressSpace == 0 && TryReplaceCache(address, context, out uint cacheLineLongword))
+        {
+            TracePcWatch("read32", address & 0x1FFFFFFF, cacheLineLongword, context);
+            TraceAddressWatch("read32", address & 0x1FFFFFFF, cacheLineLongword, context);
+            return cacheLineLongword;
+        }
+
         uint masked = address & 0x1FFFFFFF;
         uint value = ReadBackingLongword(masked, context);
-        if (addressSpace == 0)
-            MaybeReplaceCache(address, context);
         TracePcWatch("read32", masked, value, context);
         TraceAddressWatch("read32", masked, value, context);
         return value;
@@ -591,7 +555,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
-            CycleCounter += 1 + Sh2SdramWriteCycles;
+            // Byte writes are read/modify/write on the 16-bit SDRAM bus; match jgenesis' timing.
+            CycleCounter += 1 + Sh2SdramReadCycles;
             int wordIndex = (int)((masked - 0x06000000) >> 1);
             if ((uint)wordIndex < _core.Bus.Sdram.Length)
             {
@@ -640,12 +605,16 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             CycleCounter += 1 + Sh2VdpCycles;
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+            {
+                TraceCramWrite("write8-denied", masked, value, 0, context);
                 return;
+            }
             ushort current = _core.Bus.Vdp.ReadCramWord(masked - 0x00004200);
             ushort merged = (masked & 1) == 0
                 ? (ushort)((current & 0x00FF) | (value << 8))
                 : (ushort)((current & 0xFF00) | value);
             _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, merged);
+            TraceCramWrite("write8", masked, value, merged, context);
         }
 
         TracePcWatch("write8", masked, value, context);
@@ -744,8 +713,12 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         {
             CycleCounter += 1 + Sh2VdpCycles;
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+            {
+                TraceCramWrite("write16-denied", masked, value, 0, context);
                 return;
+            }
             _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, value);
+            TraceCramWrite("write16", masked, value, value, context);
         }
 
         TracePcWatch("write16", masked, value, context);
@@ -1542,14 +1515,15 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         return false;
     }
 
-    private void MaybeReplaceCache(uint address, Sega32XSh2AccessContext context)
+    private bool TryReplaceCache(uint address, Sega32XSh2AccessContext context, out uint requestedLongword)
     {
+        requestedLongword = 0;
         if ((context == Sega32XSh2AccessContext.Fetch && DisableInstructionReplacement)
             || (context != Sega32XSh2AccessContext.Fetch && DisableDataReplacement)
             || !CacheEnabled
             || !IsCacheableAddress(address))
         {
-            return;
+            return false;
         }
 
         int entryIndex = CacheEntryIndex(address);
@@ -1560,17 +1534,24 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         uint lineBase = address & 0x1FFFFFF0;
         int ramIndex = ((way << 10) | (entryIndex << 4)) >> 1;
+        int requestedLongwordIndex = (int)((address >> 2) & 3);
         if (lineBase >= 0x06000000 && lineBase < 0x06040000)
         {
+            CycleCounter += 1 + Sh2SdramReadCycles;
             int wordIndex = (int)((lineBase - 0x06000000) >> 1);
             for (int i = 0; i < 8; i++)
             {
                 int sourceIndex = wordIndex + i;
-                _cacheDataArray[ramIndex++] = (uint)sourceIndex < _core.Bus.Sdram.Length
+                ushort word = (uint)sourceIndex < _core.Bus.Sdram.Length
                     ? _core.Bus.Sdram[sourceIndex]
                     : (ushort)0;
+                _cacheDataArray[ramIndex++] = word;
+                if ((i >> 1) == requestedLongwordIndex)
+                    requestedLongword = (i & 1) == 0
+                        ? (uint)word << 16
+                        : requestedLongword | word;
             }
-            return;
+            return true;
         }
 
         for (int i = 0; i < 4; i++)
@@ -1578,7 +1559,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             uint longword = ReadBackingLongword(lineBase + (uint)(i * 4), context);
             _cacheDataArray[ramIndex++] = (ushort)(longword >> 16);
             _cacheDataArray[ramIndex++] = (ushort)longword;
+            if (i == requestedLongwordIndex)
+                requestedLongword = longword;
         }
+
+        return true;
     }
 
     private int SelectReplacementWay(int entryIndex)
@@ -1651,13 +1636,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
     private static bool IsCacheableAddress(uint address)
     {
-        if ((address >> 29) != 0)
-            return false;
-
-        uint masked = address & 0x1FFFFFFF;
-        return masked <= 0x00003FFF
-            || (masked >= 0x02000000 && masked < 0x02400000)
-            || (masked >= 0x06000000 && masked < 0x06040000);
+        // The SH-2 cache is controlled by A29-A31 internally. Area 0 accesses can be cached even
+        // when the external address does not map to ROM/SDRAM; some 32X games use those cached
+        // aliases as scratch storage and expect write-through hits to be readable later.
+        return (address >> 29) == 0;
     }
 
     private byte ReadBackingByte(uint masked, Sega32XSh2AccessContext context)
@@ -1695,8 +1677,6 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 if (_core.TryConsumeRecentCommWrite(masked & ~1u, _whichCpu, M68kReferenceCyclesDone, out ushort queuedWord))
                     word = queuedWord;
             }
-
-            MaybeShortCircuitStableRegisterPoll(masked & ~1u, word, context);
 
             if (TraceBootRegisterReads && (masked & ~1u) == 0x00004000)
             {
@@ -1890,10 +1870,14 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x00004200 && masked <= 0x000043FF)
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+            {
+                TraceCramWrite("write32-denied", masked, value, 0, context);
                 return;
+            }
             CycleCounter += 2 * (1 + Sh2VdpCycles);
             _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, (ushort)(value >> 16));
             _core.Bus.Vdp.WriteCramWord((masked - 0x00004200) | 2, (ushort)value);
+            TraceCramWrite("write32", masked, value, (ushort)value, context);
             return;
         }
 
@@ -1947,10 +1931,27 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (masked >= 0x00004200 && masked <= 0x000043FF)
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+            {
+                TraceCramWrite("write16-denied", masked, value, 0, context);
                 return;
+            }
             CycleCounter += 1 + Sh2VdpCycles;
             _core.Bus.Vdp.WriteCramWord(masked - 0x00004200, value);
+            TraceCramWrite("write16", masked, value, value, context);
         }
+    }
+
+    private void TraceCramWrite(string op, uint address, uint value, ushort stored, Sega32XSh2AccessContext context)
+    {
+        if (!TraceCramWrites || _cramWriteTraceCount >= TraceCramWriteLimit)
+            return;
+
+        _cramWriteTraceCount++;
+        Console.WriteLine(
+            $"[S32X-CRAM-{_whichCpu}] pc=0x{CurrentCpu.CurrentInstructionPc:X8} op={op} " +
+            $"addr=0x{address:X8} offset=0x{address - 0x00004200:X3} value=0x{value:X8} " +
+            $"stored=0x{stored:X4} fm={(_core.Registers.VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)} " +
+            $"ctx={context} cyc={CycleCounter}");
     }
 
     private static bool IsSh2SystemRegister(uint masked) => masked >= 0x00004000 && masked <= 0x0000402F;

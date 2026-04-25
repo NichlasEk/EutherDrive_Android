@@ -2,6 +2,7 @@ using Ryu64.Formats;
 using Ryu64.MIPS;
 using Ryu64.Common;
 using System;
+using System.Threading;
 
 namespace Ryu64Core
 {
@@ -226,6 +227,24 @@ namespace Ryu64Core
                 uint rawOrigin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
                 uint origin = rawOrigin;
                 bool suspiciousViOrigin = rawOrigin < 0x00001000u;
+                if (suspiciousViOrigin)
+                {
+                    for (int attempt = 0; attempt < 4; attempt++)
+                    {
+                        if (!Thread.Yield())
+                            Thread.Sleep(1);
+                        uint retryStatus = R4300.memory.ReadUInt32(ViStatusReg);
+                        uint retryOrigin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
+                        if ((retryStatus & 0x3u) < 2u || retryOrigin < 0x00001000u || retryOrigin >= RdramSizeBytes)
+                            continue;
+
+                        status = retryStatus;
+                        rawOrigin = retryOrigin;
+                        origin = rawOrigin;
+                        suspiciousViOrigin = false;
+                        break;
+                    }
+                }
 
                 width = (int)(R4300.memory.ReadUInt32(ViWidthReg) & 0x0FFF);
                 if (width <= 0)
@@ -269,7 +288,32 @@ namespace Ryu64Core
                         $"Last plausible VI origin used (vi=0x{rawOrigin:x8} -> last=0x{origin:x8}, pc=0x{R4300.memory.LastPlausibleViOriginWritePc:x8})";
                 }
 
-                if (suspiciousViOrigin && bytesPerPixel > 0)
+                // If VI origin is still bogus, prefer the framebuffer the RDP most recently
+                // rendered into. This is a direct producer hint and avoids stale green clears
+                // winning over the active color image during early bring-up.
+                uint rdpColorImage = R4300.memory.LastRdpColorImageAddress;
+                uint rdpColorImageWidth = R4300.memory.LastRdpColorImageWidth;
+                uint rdpColorImageBytesPerPixel = R4300.memory.LastRdpColorImageBytesPerPixel;
+                uint rdpColorImageWriteEpoch = R4300.memory.LastRdpColorImageWriteEpoch;
+                bool rdpColorImageSelected = false;
+                if (rdpColorImageWriteEpoch != 0
+                    && rdpColorImage >= HeuristicFramebufferOriginFloor
+                    && rdpColorImage < RdramSizeBytes
+                    && rdpColorImageBytesPerPixel == bytesPerPixel
+                    && (rdpColorImageWidth == 0 || Math.Abs((int)rdpColorImageWidth - width) <= 16))
+                {
+                    uint rdpCandidate = suspiciousViOrigin ? rdpColorImage : origin;
+                    string rdpCandidateSource = suspiciousViOrigin ? "color" : "vi";
+                    int rdpScore = ScoreFramebufferCandidate(rdpCandidate, width, height, bytesPerPixel);
+                    origin = rdpCandidate;
+                    _lastTrackedFramebufferOrigin = origin;
+                    rdpColorImageSelected = true;
+                    producerBackedFramebufferSelected = true;
+                    _lastFramebufferStatus =
+                        $"RDP {rdpCandidateSource} framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, color=0x{rdpColorImage:x8}, width={rdpColorImageWidth}, writeEpoch={rdpColorImageWriteEpoch}, visualScore={rdpScore})";
+                }
+
+                if (suspiciousViOrigin && bytesPerPixel > 0 && !rdpColorImageSelected)
                 {
                     uint tracked = R4300.memory.FindTrackedFramebufferOriginCandidate((uint)width, (uint)height, (uint)bytesPerPixel, origin, out ulong trackedScore, out uint trackedDirtyPages);
                     if (tracked >= 0x00001000u
@@ -296,7 +340,7 @@ namespace Ryu64Core
                 ulong recentFramebufferViRecencyScore = 0;
                 int recentFramebufferVisualScore = int.MinValue;
 
-                if (suspiciousViOrigin && bytesPerPixel > 0)
+                if (suspiciousViOrigin && bytesPerPixel > 0 && !rdpColorImageSelected)
                 {
                     uint bufferSizeHint = (uint)(width * height * bytesPerPixel);
                     uint recent = R4300.memory.FindRecentFramebufferOriginCandidate(bufferSizeHint, origin, out ulong recentBestScore, out ulong recentViScore);
@@ -376,6 +420,7 @@ namespace Ryu64Core
                 // (for example 0x0000027f). Scan RDRAM for a stronger framebuffer candidate.
                 if (EnableFramebufferOriginScanFallback
                     && suspiciousViOrigin
+                    && !rdpColorImageSelected
                     && bytesPerPixel > 0)
                 {
                     uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int viScore);
@@ -425,6 +470,7 @@ namespace Ryu64Core
                     && (_lastFramebufferStatus.StartsWith("Fallback VI origin used", StringComparison.Ordinal)
                         || _lastFramebufferStatus.StartsWith("Recent RDRAM framebuffer used", StringComparison.Ordinal)
                         || _lastFramebufferStatus.StartsWith("Last plausible VI origin used", StringComparison.Ordinal)
+                        || _lastFramebufferStatus.StartsWith("RDP ", StringComparison.Ordinal)
                         || _lastFramebufferStatus.StartsWith("Tracked framebuffer used", StringComparison.Ordinal)
                         || _lastFramebufferStatus.StartsWith("Visual framebuffer override used", StringComparison.Ordinal));
                 if (!keepDetailedStatus)

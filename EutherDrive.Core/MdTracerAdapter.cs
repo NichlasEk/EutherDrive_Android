@@ -1511,8 +1511,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                     var shared32XRegisters = new Sega32XSystemRegisters();
                     _sega32XCore = new Sega32XScaffoldCore(_rom, shared32XRegisters);
                     _sega32XCore.Bus.Pwm.SetAudioOutputSampleRate(OutputSampleRate);
-                    if (_sega32XCore.UseExperimentalCommPollModel)
-                        shared32XRegisters.CommunicationPortWritten += On32XCommunicationPortWritten;
 
                     _bus.Attach32XBus(
                         _sega32XCore.Bus,
@@ -3178,11 +3176,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         _s32xAccessDrivenM68kCycles += accessCycles;
     }
 
-    private void On32XCommunicationPortWritten(Sega32XCommSource source, uint addr, ushort value)
-    {
-        _bus?.Notify32XCommWrite(addr);
-    }
-
     private static int EstimateS32xPeripheralAccessCycles(uint addr, int sizeBytes, bool write)
     {
         int words = sizeBytes >= 4 ? 2 : 1;
@@ -4183,6 +4176,24 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         catch (Exception ex)
         {
             Console.WriteLine($"[MdTracerAdapter] Failed to dump alternate 32X layer: {ex.Message}");
+            return false;
+        }
+    }
+
+    public bool Dump32XRawVdpState(string prefix)
+    {
+        if (_sega32XCore?.Bus?.Vdp == null)
+            return false;
+
+        try
+        {
+            _sega32XCore.Bus.Vdp.DumpRawMemory(prefix);
+            Console.WriteLine($"[MdTracerAdapter] Dumped raw 32X VDP state to {prefix}.*");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MdTracerAdapter] Failed to dump raw 32X VDP state: {ex.Message}");
             return false;
         }
     }

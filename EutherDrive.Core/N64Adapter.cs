@@ -38,6 +38,7 @@ public sealed class N64Adapter : IEmulatorCore
     // Keep N64 bringup responsive by default; slow diagnostic bootstraps can opt in to a larger wait via env.
     private readonly int _bringupRunFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_BRINGUP_RUNFRAME_WAIT_MS", 12);
     private readonly long _bringupFrameLimit = ReadLongEnv("EUTHERDRIVE_N64_BRINGUP_FRAME_LIMIT", 120);
+    private readonly bool _skipAudio = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_SKIP_AUDIO"), "1", StringComparison.Ordinal);
 
     ~N64Adapter()
     {
@@ -88,7 +89,8 @@ public sealed class N64Adapter : IEmulatorCore
         _runFrameCount++;
         WaitForCpuProgress();
         PullFrame();
-        PullAudio();
+        if (!_skipAudio)
+            PullAudio();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)

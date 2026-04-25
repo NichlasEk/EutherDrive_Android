@@ -758,6 +758,9 @@ class Program
                     int hostUnchangedFrames = 0;
                     bool hostTrace32XFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                     bool hostTrace32XWords = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_32X_WORDS") == "1";
+                    bool hostDump32XLayer = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_32X_LAYER") == "1";
+                    bool hostDump32XOtherLayer = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_32X_OTHER_LAYER") == "1";
+                    bool hostDump32XRaw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_32X_RAW") == "1";
 
                     Console.WriteLine(
                         $"[HEADLESS] 32X-host fb_has_content={hostStatsIn.HasContent} nonzero_pixels={hostStatsIn.NonZeroPixels} " +
@@ -776,6 +779,12 @@ class Program
                             $"[HEADLESS] 32X-host words m={md.Debug32XMasterWords ?? string.Empty} s={md.Debug32XSlaveWords ?? string.Empty} comm={md.Debug32XCommPorts ?? string.Empty}");
                     }
                     DumpBgraToPpm(hostFbIn, hostWIn, hostHIn, hostSIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+                    if (hostDump32XLayer)
+                        md.Dump32XLayerToPpm(Path.Combine(dumpDir, "headless_frame0_32x.ppm"));
+                    if (hostDump32XOtherLayer)
+                        md.Dump32XOtherLayerToPpm(Path.Combine(dumpDir, "headless_frame0_32x_other.ppm"));
+                    if (hostDump32XRaw)
+                        md.Dump32XRawVdpState(Path.Combine(dumpDir, "headless_frame0_32x_raw"));
 
                     for (int frame = 0; frame < framesToRun; frame++)
                     {
@@ -808,7 +817,15 @@ class Program
                         }
 
                         if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10)
+                        {
                             DumpBgraToPpm(hostFb, hostW, hostH, hostS, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                            if (hostDump32XLayer)
+                                md.Dump32XLayerToPpm(Path.Combine(dumpDir, $"headless_frame{frame}_32x.ppm"));
+                            if (hostDump32XOtherLayer)
+                                md.Dump32XOtherLayerToPpm(Path.Combine(dumpDir, $"headless_frame{frame}_32x_other.ppm"));
+                            if (hostDump32XRaw)
+                                md.Dump32XRawVdpState(Path.Combine(dumpDir, $"headless_frame{frame}_32x_raw"));
+                        }
                     }
 
                     ReadOnlySpan<byte> hostFbOut = md.GetFrameBuffer(out int hostWOut, out int hostHOut, out int hostSOut);
@@ -831,6 +848,12 @@ class Program
                             $"[HEADLESS] 32X-host final words m={md.Debug32XMasterWords ?? string.Empty} s={md.Debug32XSlaveWords ?? string.Empty} comm={md.Debug32XCommPorts ?? string.Empty}");
                     }
                     DumpBgraToPpm(hostFbOut, hostWOut, hostHOut, hostSOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                    if (hostDump32XLayer)
+                        md.Dump32XLayerToPpm(Path.Combine(dumpDir, "headless_output_32x.ppm"));
+                    if (hostDump32XOtherLayer)
+                        md.Dump32XOtherLayerToPpm(Path.Combine(dumpDir, "headless_output_32x_other.ppm"));
+                    if (hostDump32XRaw)
+                        md.Dump32XRawVdpState(Path.Combine(dumpDir, "headless_output_32x_raw"));
                     Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                     return 0;
                 }
@@ -975,6 +998,7 @@ class Program
             if (useN64)
             {
                 Console.WriteLine("[HEADLESS] Using N64 core");
+                SetEnvDefault("EUTHERDRIVE_N64_SKIP_AUDIO", "1");
                 var n64 = new N64Adapter();
                 n64.LoadRom(romPath);
 
@@ -989,9 +1013,16 @@ class Program
                 Console.WriteLine($"[HEADLESS] N64 fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
                 DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
 
+                bool stopOnFramebuffer = IsEnvEnabled("EUTHERDRIVE_N64_HEADLESS_STOP_ON_FRAMEBUFFER");
+                int stopMinFrame = ParseOptionalIntEnv("EUTHERDRIVE_N64_HEADLESS_STOP_MIN_FRAME") ?? 0;
+                int stopStableFrames = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_N64_HEADLESS_STOP_STABLE_FRAMES") ?? 1);
+                int framebufferStableCount = 0;
+                int completedFrames = 0;
+
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
                     n64.RunFrame();
+                    completedFrames = frame + 1;
 
                     if (n64AudioSink != null)
                     {
@@ -1011,6 +1042,20 @@ class Program
                         DumpBgraToPpm(fb, w, h, s, ppmPath);
                         Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
                     }
+
+                    if (stopOnFramebuffer && frame >= stopMinFrame)
+                    {
+                        ReadOnlySpan<byte> fb = n64.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        framebufferStableCount = stats.HasContent ? framebufferStableCount + 1 : 0;
+                        if (framebufferStableCount >= stopStableFrames)
+                        {
+                            Console.WriteLine(
+                                $"[HEADLESS] N64 early stop at frame {frame}: fb_has_content={stats.HasContent} " +
+                                $"nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) stable={framebufferStableCount}");
+                            break;
+                        }
+                    }
                 }
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
@@ -1021,7 +1066,7 @@ class Program
                 n64AudioSink?.Dispose();
                 // Stop R4300 thread before exit to avoid background runaway logs after frame loop.
                 n64.Reset();
-                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                Console.WriteLine($"[HEADLESS] Completed {completedFrames} frames");
                 return 0;
             }
 
@@ -3566,6 +3611,12 @@ class Program
             || value.Equals("true", StringComparison.OrdinalIgnoreCase)
             || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
             || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void SetEnvDefault(string key, string value)
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(key)))
+            Environment.SetEnvironmentVariable(key, value);
     }
 
     private static bool IsEnvDisabled(string key)

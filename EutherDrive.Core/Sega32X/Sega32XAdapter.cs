@@ -208,7 +208,7 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
     {
         for (int i = 0; i < _frameBuffer.Length; i += 4)
         {
-            if ((_frameBuffer[i] | _frameBuffer[i + 1] | _frameBuffer[i + 2]) != 0)
+            if ((_frameBuffer[i] | _frameBuffer[i + 1] | _frameBuffer[i + 2] | _frameBuffer[i + 3]) != 0)
                 return true;
         }
 

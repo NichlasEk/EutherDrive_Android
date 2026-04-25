@@ -91,6 +91,8 @@ public class SNESSystem : ISNESSystem
     private const int BusPageKindShift = 8;
     private const ulong ApuPeriodicCatchUpMask = 0x3F;
     private const int RenderLineMclk = 92;
+    private const int MemoryRefreshStartMclk = 536;
+    private const int MemoryRefreshEndMclk = 576;
 
     [JsonIgnore]
     private readonly int[] _dmaOffs = [
@@ -919,21 +921,24 @@ public class SNESSystem : ISNESSystem
             }
         }
 
-        if (_hdmaTimer > 0)
+        if (IsCpuBusAvailable())
         {
-            _hdmaTimer -= 2;
-        }
-        else if (_dmaTimer > 0)
-        {
-            _dmaTimer -= 2;
-        }
-        else if (_gpdmaState != GpDmaState.Idle)
-        {
-            HandleDma();
-        }
-        else if (XPos < 536 || XPos >= 576)
-        {
-            CpuCycle();
+            if (_hdmaTimer > 0)
+            {
+                _hdmaTimer -= 2;
+            }
+            else if (_dmaTimer > 0)
+            {
+                _dmaTimer -= 2;
+            }
+            else if (_gpdmaState != GpDmaState.Idle)
+            {
+                HandleDma();
+            }
+            else
+            {
+                CpuCycle();
+            }
         }
         UpdateIrqLine();
         if (queueNmiForNextCpuSlot)
@@ -1085,7 +1090,7 @@ public class SNESSystem : ISNESSystem
         if (endX <= XPos)
             return false;
 
-        bool cpuCanRun = XPos < 536 || XPos >= 576;
+        bool cpuCanRun = IsCpuBusAvailable();
         int chunkMclks = endX - XPos;
         int coprocessorChunkLimit = RomImpl.GetFastCpuWindowChunkLimit(Cycles);
         if (coprocessorChunkLimit <= 0)
@@ -1154,7 +1159,7 @@ public class SNESSystem : ISNESSystem
             return false;
         chunkMclks = Math.Min(chunkMclks, coprocessorChunkLimit);
 
-        bool cpuCanRun = XPos < 536 || XPos >= 576;
+        bool cpuCanRun = IsCpuBusAvailable();
         if (cpuCanRun)
         {
             int cpuWaitMclks = _cpuCyclesLeft & ~0x1;
@@ -1263,11 +1268,11 @@ public class SNESSystem : ISNESSystem
         if (!noPpu && XPos < RenderLineMclk)
             return RenderLineMclk;
 
-        if (XPos < 536)
-            return 536;
+        if (XPos < MemoryRefreshStartMclk)
+            return MemoryRefreshStartMclk;
 
-        if (XPos < 576)
-            return 576;
+        if (XPos < MemoryRefreshEndMclk)
+            return MemoryRefreshEndMclk;
 
         if (XPos < 1096)
             return 1096;
@@ -1285,6 +1290,12 @@ public class SNESSystem : ISNESSystem
     private void AdvanceBaseClocksForStep()
     {
         AdvanceBaseClocks(2);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsCpuBusAvailable()
+    {
+        return XPos < MemoryRefreshStartMclk || XPos >= MemoryRefreshEndMclk;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
