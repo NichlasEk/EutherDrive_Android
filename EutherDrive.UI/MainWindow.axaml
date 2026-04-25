@@ -252,6 +252,9 @@
                   <Grid>
                     <Image Name="AmbientMusicCoverImage" Stretch="UniformToFill"/>
                     <ambient:MachineRoomVideoHost Name="MachineRoomMiniVideoHost" IsVisible="False"/>
+                    <Grid Name="MachineRoomMiniEmulatorHost"
+                          IsVisible="False"
+                          ClipToBounds="True"/>
                   </Grid>
                 </Border>
                 <TextBlock Name="AmbientMusicTitleText"
@@ -1231,8 +1234,8 @@
               <Grid Name="ScreenGrid" Width="320" Height="224" ClipToBounds="True">
                 <Border Background="#000000"/>
                   <Grid Name="ScreenContentRoot"
-                      Width="320"
-                      Height="224"
+                        Width="320"
+                        Height="224"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Center"
                       RenderTransformOrigin="0.5,0.5">

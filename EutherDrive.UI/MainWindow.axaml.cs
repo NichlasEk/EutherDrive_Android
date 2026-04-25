@@ -63,6 +63,7 @@ public partial class MainWindow : Window
     private string _machineRoomMiniVideoHandleDescriptor = string.Empty;
     private IntPtr _machineRoomBigVideoHandle;
     private string _machineRoomBigVideoHandleDescriptor = string.Empty;
+    private WriteableBitmapRenderSurface? _machineRoomMiniEmulatorSurface;
     private readonly DispatcherTimer _deckMonitorTimer;
     private readonly Stopwatch _deckMonitorSessionStopwatch = Stopwatch.StartNew();
     private long _deckMonitorLastRefreshMs;
@@ -1060,6 +1061,8 @@ public partial class MainWindow : Window
         _machineRoomMiniPlayerController.Dispose();
         _offworldMonitorViewModel.Dispose();
         DisposeAmbientMusicCoverBitmap();
+        _machineRoomMiniEmulatorSurface?.Dispose();
+        _machineRoomMiniEmulatorSurface = null;
     }
 
     private void OnSpeedSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
@@ -3712,6 +3715,10 @@ public partial class MainWindow : Window
             MachineRoomBigVideoHost.IsVisible = showVideo && _machineRoomMediaOnMainScreen;
         if (AmbientMusicCoverImage != null)
             AmbientMusicCoverImage.IsVisible = !(showVideo && !_machineRoomMediaOnMainScreen);
+        if (MachineRoomMiniEmulatorHost != null)
+            MachineRoomMiniEmulatorHost.IsVisible = showVideo && _machineRoomMediaOnMainScreen;
+        if (ScreenContentRoot != null)
+            ScreenContentRoot.IsVisible = !(showVideo && _machineRoomMediaOnMainScreen);
         if (NativeScreenOverlayHost != null)
             NativeScreenOverlayHost.IsVisible = !(showVideo && _machineRoomMediaOnMainScreen);
         if (MachineRoomMediaSwapButton != null)
@@ -3726,6 +3733,34 @@ public partial class MainWindow : Window
         }
 
         RetargetMachineRoomVideo();
+    }
+
+    private void PresentMachineRoomMiniEmulatorFrame(
+        ReadOnlySpan<byte> source,
+        int width,
+        int height,
+        int stride,
+        in FrameBlitOptions options)
+    {
+        if (!_machineRoomMediaOnMainScreen
+            || source.IsEmpty
+            || width <= 0
+            || height <= 0
+            || stride <= 0
+            || MachineRoomMiniEmulatorHost == null)
+        {
+            return;
+        }
+
+        if (_machineRoomMiniEmulatorSurface == null)
+        {
+            _machineRoomMiniEmulatorSurface = new WriteableBitmapRenderSurface();
+            MachineRoomMiniEmulatorHost.Children.Clear();
+            MachineRoomMiniEmulatorHost.Children.Add(_machineRoomMiniEmulatorSurface.View);
+        }
+
+        _machineRoomMiniEmulatorSurface.Present(source, width, height, stride, options, measurePerf: false);
+        _machineRoomMiniEmulatorSurface.View.InvalidateVisual();
     }
 
     private void RetargetMachineRoomVideo()
@@ -8509,6 +8544,12 @@ public partial class MainWindow : Window
             presentStride,
             blitOptions,
             TracePerf);
+        PresentMachineRoomMiniEmulatorFrame(
+            presentSrc,
+            presentWidth,
+            presentHeight,
+            presentStride,
+            blitOptions);
 
         if (TracePerf)
         {
@@ -8597,6 +8638,12 @@ public partial class MainWindow : Window
             srcStride,
             presentOptions,
             TracePerf);
+        PresentMachineRoomMiniEmulatorFrame(
+            _glSwapPresentBuffer.AsSpan(0, Math.Min(_glSwapPresentBuffer.Length, srcStride * height)),
+            width,
+            height,
+            srcStride,
+            presentOptions);
 
         if (TracePerf)
         {
