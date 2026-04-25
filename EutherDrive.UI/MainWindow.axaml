@@ -243,7 +243,7 @@
             <TextBlock Classes="deck-label" Text="MACHINE ROOM"/>
             <Border Classes="panel" Padding="8">
               <StackPanel Spacing="6">
-                <Border Height="132"
+                <Border Height="140"
                         CornerRadius="10"
                         ClipToBounds="True"
                         Background="#0C1520"
@@ -259,6 +259,15 @@
                           ClipToBounds="True"/>
                   </Grid>
                 </Border>
+                <Slider Name="MachineRoomSeekSlider"
+                        Minimum="0"
+                        Maximum="1"
+                        Value="0"
+                        Height="14"
+                        Margin="2,-2,2,0"
+                        IsVisible="False"
+                        ToolTip.Tip="Seek media"
+                        ValueChanged="OnMachineRoomSeekChanged"/>
                 <TextBlock Name="AmbientMusicTitleText"
                            Text="Cyberpunk Ambient"
                            FontWeight="Bold"
@@ -347,7 +356,7 @@
                           Padding="4,0"
                           FontSize="10"
                           Content="Random"
-                          ToolTip.Tip="Random track from MP3 Dir and subfolders"
+                          ToolTip.Tip="Random media from Media Dir and subfolders"
                           Click="OnMachineRoomRandomClick"/>
                   <Button Name="MachineRoomMediaSwapButton"
                           Grid.Row="3"
@@ -370,8 +379,8 @@
                           Height="20"
                           Padding="4,0"
                           FontSize="10"
-                          Content="MP3 Dir"
-                          ToolTip.Tip="Set MP3 random folder"
+                          Content="Media Dir"
+                          ToolTip.Tip="Set media random folder"
                           Click="OnMachineRoomMp3FolderClick"/>
                   <Slider Name="MachineRoomMusicVolumeSlider"
                           Grid.Row="4"

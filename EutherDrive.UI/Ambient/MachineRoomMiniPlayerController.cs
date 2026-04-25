@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,6 +20,9 @@ internal readonly record struct MachineRoomMiniPlayerSnapshot(
     bool IsPlaying,
     bool IsPaused,
     bool IsVideo,
+    bool CanSeek,
+    double PositionSeconds,
+    double DurationSeconds,
     string TrackTitle,
     string StatusText,
     string? CoverPath);
@@ -68,6 +72,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private string _statusText = "Ambient off.";
     private string? _coverPath;
     private bool _isCurrentVideo;
+    private double _positionSeconds;
+    private double _durationSeconds;
 
     public MachineRoomMiniPlayerController(string coverCacheRoot)
     {
@@ -86,6 +92,9 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _isPlaying,
                 _isPaused,
                 _isCurrentVideo,
+                _durationSeconds > 0,
+                _positionSeconds,
+                _durationSeconds,
                 _trackTitle,
                 _statusText,
                 _coverPath);
@@ -111,6 +120,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _statusText = "No playable media selected.";
                 _coverPath = null;
                 _isCurrentVideo = false;
+                _positionSeconds = 0;
+                _durationSeconds = 0;
             }
             else
             {
@@ -165,6 +176,79 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         {
             // ffplay volume hotkeys are best effort; the next track starts with the exact requested volume.
         }
+    }
+
+    public Task RefreshPositionAsync()
+    {
+        return Task.Run(() =>
+        {
+            Process? process;
+            PlayerKind playerKind;
+            string? mpvSocketPath;
+            lock (_lock)
+            {
+                process = _process;
+                playerKind = _playerKind;
+                mpvSocketPath = _mpvSocketPath;
+            }
+
+            if (process == null || process.HasExited || playerKind != PlayerKind.Mpv || string.IsNullOrWhiteSpace(mpvSocketPath))
+                return;
+
+            double? position = SendMpvNumberRequest(mpvSocketPath, "{\"command\":[\"get_property\",\"time-pos\"]}");
+            double? duration = SendMpvNumberRequest(mpvSocketPath, "{\"command\":[\"get_property\",\"duration\"]}");
+            lock (_lock)
+            {
+                if (position.HasValue)
+                    _positionSeconds = Math.Max(0, position.Value);
+                if (duration.HasValue)
+                    _durationSeconds = Math.Max(0, duration.Value);
+            }
+        });
+    }
+
+    public Task SeekAsync(double positionSeconds)
+    {
+        string? path;
+        Process? process;
+        PlayerKind playerKind;
+        string? mpvSocketPath;
+        bool isVideo;
+        double seekSeconds;
+        lock (_lock)
+        {
+            seekSeconds = Math.Max(0, positionSeconds);
+            if (_durationSeconds > 0)
+                seekSeconds = Math.Min(seekSeconds, _durationSeconds);
+            _positionSeconds = seekSeconds;
+            path = _playlist.Count == 0 ? null : _playlist[Math.Clamp(_currentIndex, 0, _playlist.Count - 1)];
+            process = _process;
+            playerKind = _playerKind;
+            mpvSocketPath = _mpvSocketPath;
+            isVideo = _isCurrentVideo;
+        }
+
+        if (process == null || process.HasExited || string.IsNullOrWhiteSpace(path))
+            return Task.CompletedTask;
+
+        if (playerKind == PlayerKind.Mpv && !string.IsNullOrWhiteSpace(mpvSocketPath))
+        {
+            string seconds = seekSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+            SendMpvCommand(mpvSocketPath, $"{{\"command\":[\"seek\",{seconds},\"absolute\"]}}");
+        }
+        else
+        {
+            lock (_lock)
+                _statusText = "Seek needs mpv.";
+            NotifyStateChanged();
+            return Task.CompletedTask;
+        }
+
+        if (isVideo)
+            StartVideoDecoder(path, seekSeconds);
+
+        NotifyStateChanged();
+        return Task.CompletedTask;
     }
 
     public Task TogglePlayPauseAsync()
@@ -240,7 +324,7 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
         {
             lock (_lock)
-                _statusText = "Set MP3 Dir before random.";
+                _statusText = "Set Media Dir before random.";
             NotifyStateChanged();
             return Task.CompletedTask;
         }
@@ -302,6 +386,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _trackTitle = "Cyberpunk Ambient";
                 _statusText = "Ambient off.";
                 _coverPath = null;
+                _positionSeconds = 0;
+                _durationSeconds = 0;
             }
         }
 
@@ -396,6 +482,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _process = process;
                 _playerKind = player.Kind;
                 _mpvSocketPath = mpvSocketPath;
+                _positionSeconds = 0;
+                _durationSeconds = 0;
                 _isPlaying = true;
                 _isPaused = false;
                 _stopping = false;
@@ -406,7 +494,7 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             }
 
             if (IsVideoPath(path))
-                StartVideoDecoder(path);
+                StartVideoDecoder(path, 0);
         }
         catch (Exception ex)
         {
@@ -433,6 +521,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             advance = !_disposed && !_stopping && _isPlaying && _playlist.Count > 1;
             _isPlaying = false;
             _isPaused = false;
+            if (!advance)
+                _positionSeconds = 0;
             if (advance)
                 _currentIndex = (_currentIndex + 1) % _playlist.Count;
             else if (!_disposed && !_stopping)
@@ -505,7 +595,7 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         }
     }
 
-    private void StartVideoDecoder(string path)
+    private void StartVideoDecoder(string path, double startSeconds)
     {
         StopVideoDecoder();
 
@@ -515,10 +605,10 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             _videoDecodeCts = cts;
         }
 
-        _ = Task.Run(() => DecodeVideoFramesAsync(path, cts.Token));
+        _ = Task.Run(() => DecodeVideoFramesAsync(path, Math.Max(0, startSeconds), cts.Token));
     }
 
-    private async Task DecodeVideoFramesAsync(string path, CancellationToken cancellationToken)
+    private async Task DecodeVideoFramesAsync(string path, double startSeconds, CancellationToken cancellationToken)
     {
         string? ffmpegPath = FindExecutable(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "ffmpeg.exe" : "ffmpeg");
         string? ffprobePath = FindExecutable(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "ffprobe.exe" : "ffprobe");
@@ -543,6 +633,11 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         startInfo.ArgumentList.Add("-hide_banner");
         startInfo.ArgumentList.Add("-loglevel");
         startInfo.ArgumentList.Add("error");
+        if (startSeconds > 0)
+        {
+            startInfo.ArgumentList.Add("-ss");
+            startInfo.ArgumentList.Add(startSeconds.ToString("0.###", CultureInfo.InvariantCulture));
+        }
         startInfo.ArgumentList.Add("-i");
         startInfo.ArgumentList.Add(path);
         startInfo.ArgumentList.Add("-map");
@@ -1167,6 +1262,42 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         catch
         {
             // Runtime player control is best effort; the next track starts with the saved setting.
+        }
+    }
+
+    private static double? SendMpvNumberRequest(string socketPath, string json)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return null;
+
+        try
+        {
+            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            socket.Connect(new UnixDomainSocketEndPoint(socketPath));
+            using var stream = new NetworkStream(socket, ownsSocket: false);
+            stream.ReadTimeout = 250;
+            stream.WriteTimeout = 250;
+            byte[] bytes = Encoding.UTF8.GetBytes(json + "\n");
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush();
+
+            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+            string? response = reader.ReadLine();
+            if (string.IsNullOrWhiteSpace(response))
+                return null;
+
+            using JsonDocument document = JsonDocument.Parse(response);
+            if (!document.RootElement.TryGetProperty("data", out JsonElement data)
+                || data.ValueKind != JsonValueKind.Number)
+            {
+                return null;
+            }
+
+            return data.TryGetDouble(out double value) ? value : null;
+        }
+        catch
+        {
+            return null;
         }
     }
 

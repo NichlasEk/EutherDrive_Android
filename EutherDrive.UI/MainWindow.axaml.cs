@@ -69,6 +69,8 @@ public partial class MainWindow : Window
     private WriteableBitmapRenderSurface? _machineRoomBigMediaSurface;
     private WriteableBitmapRenderSurface? _machineRoomMiniEmulatorSurface;
     private readonly DispatcherTimer _deckMonitorTimer;
+    private readonly DispatcherTimer _machineRoomSeekTimer;
+    private readonly DispatcherTimer _machineRoomSeekCommitTimer;
     private readonly Stopwatch _deckMonitorSessionStopwatch = Stopwatch.StartNew();
     private long _deckMonitorLastRefreshMs;
 
@@ -167,6 +169,8 @@ public partial class MainWindow : Window
     private bool _updatingCrtScanlineUi;
     private RenderBackendMode _renderBackendMode = GetDefaultRenderBackendMode();
     private bool _updatingRenderBackendUi;
+    private bool _updatingMachineRoomSeekUi;
+    private double _pendingMachineRoomSeekSeconds;
     private string? _renderBackendFallbackReason;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
     private readonly Stopwatch _earlyMagentaTimer = new();
@@ -629,6 +633,15 @@ public partial class MainWindow : Window
         UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
         _deckMonitorTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (_, _) => MaybeUpdateDeckMonitorUi(force: true));
         _deckMonitorTimer.Start();
+        _machineRoomSeekTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(180), DispatcherPriority.Normal, async (_, _) => await RefreshMachineRoomSeekAsync());
+        _machineRoomSeekTimer.Start();
+        _machineRoomSeekCommitTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(45) };
+        _machineRoomSeekCommitTimer.Tick += async (_, _) =>
+        {
+            _machineRoomSeekCommitTimer.Stop();
+            await _machineRoomMiniPlayerController.SeekAsync(_pendingMachineRoomSeekSeconds);
+            UpdateMachineRoomSeekUi(_machineRoomMiniPlayerController.GetSnapshot());
+        };
         MaybeUpdateDeckMonitorUi(force: true);
         _ = _offworldMonitorViewModel.InitializeAsync();
 
@@ -1040,6 +1053,8 @@ public partial class MainWindow : Window
     {
         EndTrackedPlaySession();
         _deckMonitorTimer.Stop();
+        _machineRoomSeekTimer.Stop();
+        _machineRoomSeekCommitTimer.Stop();
         _ambientMusicController.StateChanged -= OnAmbientMusicStateChanged;
         _machineRoomMiniPlayerController.StateChanged -= OnMachineRoomMiniPlayerStateChanged;
         _machineRoomMiniPlayerController.VideoFrameReady -= OnMachineRoomVideoFrameReady;
@@ -3629,17 +3644,48 @@ public partial class MainWindow : Window
             MachineRoomMusicVolumeText.Text = $"{_machineRoomMusicVolumePercent}%";
     }
 
+    private async Task RefreshMachineRoomSeekAsync()
+    {
+        await _machineRoomMiniPlayerController.RefreshPositionAsync();
+        UpdateMachineRoomSeekUi(_machineRoomMiniPlayerController.GetSnapshot());
+    }
+
+    private void UpdateMachineRoomSeekUi(MachineRoomMiniPlayerSnapshot miniPlayer)
+    {
+        if (MachineRoomSeekSlider == null)
+            return;
+
+        bool canSeek = miniPlayer.HasSelection && miniPlayer.CanSeek && miniPlayer.DurationSeconds > 0;
+        MachineRoomSeekSlider.IsVisible = canSeek;
+        MachineRoomSeekSlider.IsEnabled = canSeek;
+        if (!canSeek || _machineRoomSeekCommitTimer.IsEnabled)
+            return;
+
+        double duration = Math.Max(1, miniPlayer.DurationSeconds);
+        double position = Math.Clamp(miniPlayer.PositionSeconds, 0, duration);
+        _updatingMachineRoomSeekUi = true;
+        try
+        {
+            MachineRoomSeekSlider.Maximum = duration;
+            MachineRoomSeekSlider.Value = position;
+        }
+        finally
+        {
+            _updatingMachineRoomSeekUi = false;
+        }
+    }
+
     private void UpdateMachineRoomMp3FolderUi()
     {
         if (MachineRoomMp3FolderButton == null)
             return;
 
-        MachineRoomMp3FolderButton.Content = "MP3 Dir";
+        MachineRoomMp3FolderButton.Content = "Media Dir";
         ToolTip.SetTip(
             MachineRoomMp3FolderButton,
             string.IsNullOrWhiteSpace(_machineRoomMp3FolderPath)
-                ? "Set MP3 random folder"
-                : $"MP3 random folder: {_machineRoomMp3FolderPath}");
+                ? "Set media random folder"
+                : $"Media random folder: {_machineRoomMp3FolderPath}");
     }
 
     private static string GetAmbientMusicCachePath()
@@ -3689,6 +3735,7 @@ public partial class MainWindow : Window
         if (AmbientMusicButton != null)
             AmbientMusicButton.IsEnabled = !ambient.IsBusy;
         UpdateAmbientMusicCover(showMiniPlayer ? miniPlayer.CoverPath : ambient.CoverPath);
+        UpdateMachineRoomSeekUi(showMiniPlayer ? miniPlayer : default);
         UpdateMachineRoomVideoPlacement(showMiniPlayer ? miniPlayer : default);
         MaybeUpdateDeckMonitorUi(force: true);
     }
@@ -3892,6 +3939,20 @@ public partial class MainWindow : Window
         _machineRoomMiniPlayerController.SetVolumePercent(_machineRoomMusicVolumePercent);
         UpdateMachineRoomMusicVolumeText();
         SaveSettings();
+    }
+
+    private void OnMachineRoomSeekChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_updatingMachineRoomSeekUi)
+            return;
+
+        MachineRoomMiniPlayerSnapshot miniPlayer = _machineRoomMiniPlayerController.GetSnapshot();
+        if (!miniPlayer.CanSeek || miniPlayer.DurationSeconds <= 0)
+            return;
+
+        _pendingMachineRoomSeekSeconds = Math.Clamp(e.NewValue, 0, miniPlayer.DurationSeconds);
+        _machineRoomSeekCommitTimer.Stop();
+        _machineRoomSeekCommitTimer.Start();
     }
 
     private void MaybeUpdateDeckMonitorUi(bool force = false)
@@ -7309,7 +7370,7 @@ public partial class MainWindow : Window
 
         var options = new FolderPickerOpenOptions
         {
-            Title = "Select Machine Room MP3 folder",
+            Title = "Select Machine Room media folder",
             AllowMultiple = false
         };
         if (startFolder != null)
