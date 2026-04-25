@@ -52,6 +52,60 @@ internal static class Instructions
 
     public static byte Execute(GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
+        if (!TraceCache
+            && !TraceExec
+            && !PerfOpcodeHistogram
+            && !gsu.State.JustJumped
+            && gsu.CodeCache.PcIsCacheable(gsu.R[15])
+            && gsu.CodeCache.TryGet(gsu.R[15], out byte fastCachedOpcode))
+        {
+            byte fastOpcode = gsu.State.OpcodeBuffer;
+            if ((gsu.RomAccess == BusAccess.Snes && IsRomAccessOpcode(fastOpcode))
+                || (gsu.RamAccess == BusAccess.Snes && IsRamAccessOpcode(fastOpcode, gsu.Alt1, gsu.Alt2)))
+            {
+                return 1;
+            }
+
+            FetchCachedOpcode(gsu, fastCachedOpcode);
+            byte fastCycles = ExecuteOpcode(fastOpcode, MemoryType.CodeCache, gsu, rom, ram);
+
+            if (gsu.State.RomPointerChanged)
+            {
+                gsu.State.RomPointerChanged = false;
+            }
+            else
+            {
+                gsu.State.RomBufferWaitCycles = SaturatingSub(gsu.State.RomBufferWaitCycles, fastCycles);
+            }
+
+            if (gsu.State.RamBufferWritten)
+            {
+                gsu.State.RamBufferWritten = false;
+            }
+            else
+            {
+                gsu.State.RamBufferWaitCycles = SaturatingSub(gsu.State.RamBufferWaitCycles, fastCycles);
+            }
+
+            gsu.PlotState.Tick(fastCycles);
+
+            if (gsu.StopState == StopState.StopPending)
+            {
+                gsu.StopState = StopState.None;
+                gsu.Go = false;
+                gsu.Irq = true;
+
+                gsu.State.OpcodeBuffer = NopOpcode;
+                gsu.R[15] = unchecked((ushort)(gsu.R[15] - 1));
+            }
+            else
+            {
+                gsu.StopState = gsu.StopState.Next();
+            }
+
+            return fastCycles;
+        }
+
         MemoryType memoryType = NextOpcodeMemoryType(gsu, out byte cachedOpcode);
         byte opcode = gsu.State.OpcodeBuffer;
         
@@ -167,12 +221,12 @@ internal static class Instructions
         if (bankMasked <= 0x3F)
         {
             uint romAddr = SuperFx.MapLoRomAddress(((uint)bank << 16) | address, (uint)rom.Length);
-            return (rom[romAddr % (uint)rom.Length], MemoryType.Rom);
+            return (rom[romAddr], MemoryType.Rom);
         }
         if (bankMasked <= 0x5F)
         {
             uint romAddr = SuperFx.MapHiRomAddress(((uint)bank << 16) | address, (uint)rom.Length);
-            return (rom[romAddr % (uint)rom.Length], MemoryType.Rom);
+            return (rom[romAddr], MemoryType.Rom);
         }
         if (bankMasked == 0x70 || bankMasked == 0x71)
         {

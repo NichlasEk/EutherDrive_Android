@@ -90,7 +90,7 @@ internal sealed class SuperFx
                     if (CanSnesReadRom(allowSnesRomReadWhileRunning))
                     {
                         uint romAddr = MapLoRomAddress(address, (uint)_rom.Length);
-                        value = _rom[romAddr % (uint)_rom.Length];
+                        value = _rom[romAddr];
                         return true;
                     }
                     if (FixedInterruptVector(address, out byte vec))
@@ -108,7 +108,7 @@ internal sealed class SuperFx
                     if (CanSnesReadRom(allowSnesRomReadWhileRunning))
                     {
                         uint romAddr = MapHiRomAddress(address, (uint)_rom.Length);
-                        value = _rom[romAddr % (uint)_rom.Length];
+                        value = _rom[romAddr];
                         return true;
                     }
                     if (FixedInterruptVector(address, out byte vec))
