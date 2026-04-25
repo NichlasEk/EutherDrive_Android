@@ -1929,6 +1929,7 @@ public class PPU : IPPU
             {
                 _oamAdr = _oamRegAdr;
                 _oamInHigh = _oamRegInHigh;
+                _oamSecond = false;
             }
             _evenFrame = !_evenFrame;
         }
