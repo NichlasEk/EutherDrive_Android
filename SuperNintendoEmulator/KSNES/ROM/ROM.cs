@@ -161,6 +161,8 @@ public class ROM : IROM
     private byte[] _fastReadPageNeedsChip = [];
     [NonSerialized]
     private byte[] _fastWritePageNeedsChip = [];
+    [NonSerialized]
+    private ulong _lastSuperFxDispatchCycles;
 
     [NonSerialized]
     private Timer? _sRAMTimer;
@@ -1470,6 +1472,7 @@ public class ROM : IROM
         _st011?.Reset();
         _st018?.Reset();
         _superFx?.Reset();
+        _lastSuperFxDispatchCycles = 0;
         _sa1?.Reset();
         _lastSa1DispatchCycles = 0;
         _sdd1?.Reset();
@@ -1537,7 +1540,7 @@ public class ROM : IROM
                 _st018!.RunTo(snesCycles);
                 return;
             case TimedCoprocessorDispatch.SuperFx:
-                _superFx!.Tick(snesCycles);
+                SyncSuperFxForDispatch(snesCycles);
                 return;
             case TimedCoprocessorDispatch.Sa1:
                 SyncSa1ForDispatch(snesCycles);
@@ -1548,7 +1551,7 @@ public class ROM : IROM
                 _st010?.RunTo(snesCycles);
                 _st011?.RunTo(snesCycles);
                 _st018?.RunTo(snesCycles);
-                _superFx?.Tick(snesCycles);
+                SyncSuperFxForDispatch(snesCycles);
                 SyncSa1ForDispatch(snesCycles);
                 return;
         }
@@ -1561,7 +1564,8 @@ public class ROM : IROM
             case TimedCoprocessorDispatch.None:
                 return false;
             case TimedCoprocessorDispatch.SuperFx:
-                return _superFx!.TickAndCheckIrq(snesCycles);
+                SyncSuperFxForDispatch(snesCycles);
+                return _superFx!.Irq;
             case TimedCoprocessorDispatch.Sa1:
                 SyncSa1ForDispatch(snesCycles);
                 return _sa1!.SnesIrq();
@@ -1598,6 +1602,7 @@ public class ROM : IROM
                 return;
             case TimedCoprocessorDispatch.SuperFx:
                 _superFx!.ResyncTo(snesCycles);
+                _lastSuperFxDispatchCycles = snesCycles;
                 return;
             case TimedCoprocessorDispatch.Sa1:
                 _sa1!.ResyncTo(snesCycles);
@@ -1608,7 +1613,11 @@ public class ROM : IROM
                 _st010?.ResyncTo(snesCycles);
                 _st011?.ResyncTo(snesCycles);
                 _st018?.ResyncTo(snesCycles);
-                _superFx?.ResyncTo(snesCycles);
+                if (_superFx != null)
+                {
+                    _superFx.ResyncTo(snesCycles);
+                    _lastSuperFxDispatchCycles = snesCycles;
+                }
                 _sa1?.ResyncTo(snesCycles);
                 _lastSa1DispatchCycles = snesCycles;
                 return;
@@ -2092,10 +2101,22 @@ public class ROM : IROM
 
     private void SyncSuperFxForSharedAccess()
     {
+        SyncSuperFxForDispatch(GetCurrentSnesCycles());
+    }
+
+    private void SyncSuperFxForDispatch(ulong snesCycles)
+    {
         if (_superFx == null)
             return;
 
-        _superFx.Tick(GetCurrentSnesCycles());
+        if (snesCycles == _lastSuperFxDispatchCycles)
+            return;
+
+        if (snesCycles < _lastSuperFxDispatchCycles)
+            _lastSuperFxDispatchCycles = snesCycles;
+
+        _superFx.Tick(snesCycles);
+        _lastSuperFxDispatchCycles = snesCycles;
     }
 
     private void SyncSa1ForDispatch(ulong snesCycles)
