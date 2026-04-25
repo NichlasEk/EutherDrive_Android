@@ -32,16 +32,22 @@ internal sealed class PixelBuffer
     private readonly byte[] _pixels = new byte[8];
     private byte _validBits;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WritePixel(byte i, byte color)
     {
         _pixels[i] = color;
         _validBits |= (byte)(1 << i);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsValid(byte i) => ((_validBits >> i) & 1) != 0;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool AnyValid() => _validBits != 0;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool AllValid() => _validBits == 0xFF;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ClearValid() => _validBits = 0;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte GetPixel(byte i) => _pixels[i];
 }

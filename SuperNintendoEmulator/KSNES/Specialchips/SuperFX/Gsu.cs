@@ -45,6 +45,7 @@ internal enum ColorGradientColors
 
 internal static class ColorGradientColorsExtensions
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ColorGradientColors FromByte(byte value)
     {
         return (value & 0x03) switch
@@ -55,6 +56,7 @@ internal static class ColorGradientColorsExtensions
         };
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint TileSize(this ColorGradientColors c) => c switch
     {
         ColorGradientColors.Four => 16,
@@ -62,6 +64,7 @@ internal static class ColorGradientColorsExtensions
         _ => 64
     };
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint Bitplanes(this ColorGradientColors c) => c switch
     {
         ColorGradientColors.Four => 2,
@@ -69,6 +72,7 @@ internal static class ColorGradientColorsExtensions
         _ => 8
     };
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte ColorMask(this ColorGradientColors c) => c switch
     {
         ColorGradientColors.Four => 0x03,
@@ -87,6 +91,7 @@ internal enum ScreenHeight
 
 internal static class ScreenHeightExtensions
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ScreenHeight FromByte(byte value)
     {
         return (value.Bit(5), value.Bit(2)) switch
@@ -301,6 +306,21 @@ internal sealed class GraphicsSupportUnit
         }
         WaitCycles -= (byte)gsuCycles;
         return executedInstructions;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryConsumePendingWait(ulong masterCyclesElapsed)
+    {
+        byte waitCycles = WaitCycles;
+        if (waitCycles == 0)
+            return false;
+
+        ulong gsuCycles = masterCyclesElapsed / ClockSpeed.MclkDivider();
+        if (gsuCycles >= waitCycles)
+            return false;
+
+        WaitCycles = (byte)(waitCycles - gsuCycles);
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

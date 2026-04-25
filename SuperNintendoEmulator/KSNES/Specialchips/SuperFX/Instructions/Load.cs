@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -12,13 +13,17 @@ internal static class Load
         ParseTraceAddresses(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_RAM_WATCH_ADDRS"));
     private static int _traceRamWatchCount;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Ldb(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         byte m = (byte)(opcode & 0x0F);
         int ramAddr = gsu.R[m] & (ram.Length - 1);
         byte value = ram[ramAddr];
-        TraceWatchedRamAccess(gsu, "LDB-RD", instructionPc, opcode, ramAddr, 1, value);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "LDB-RD", instructionPc, opcode, ramAddr, 1, value);
+        }
 
         byte cycles = Instructions.WriteRegister(gsu, gsu.DReg, value, rom, ram);
 
@@ -37,15 +42,19 @@ internal static class Load
         });
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Ldw(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         byte m = (byte)(opcode & 0x0F);
         int ramAddr = gsu.R[m] & (ram.Length - 1);
         byte valueLsb = ram[ramAddr];
         byte valueMsb = ram[ramAddr ^ 1];
         ushort value = (ushort)(valueLsb | (valueMsb << 8));
-        TraceWatchedRamAccess(gsu, "LDW-RD", instructionPc, opcode, ramAddr, 2, value);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "LDW-RD", instructionPc, opcode, ramAddr, 2, value);
+        }
 
         byte cycles = Instructions.WriteRegister(gsu, gsu.DReg, value, rom, ram);
 
@@ -64,15 +73,19 @@ internal static class Load
         });
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Stb(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         byte value = (byte)Instructions.ReadRegister(gsu, gsu.SReg);
 
         byte register = (byte)(opcode & 0x0F);
         int ramAddr = gsu.R[register] & (ram.Length - 1);
         ram[ramAddr] = value;
-        TraceWatchedRamAccess(gsu, "STB-WR", instructionPc, opcode, ramAddr, 1, value);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "STB-WR", instructionPc, opcode, ramAddr, 1, value);
+        }
 
         byte cycles = gsu.State.RamBufferWaitCycles;
         gsu.State.RamBufferWaitCycles = gsu.ClockSpeed.MemoryAccessCycles();
@@ -88,9 +101,9 @@ internal static class Load
         }));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Stw(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
         byte sourceLsb = (byte)(source & 0xFF);
         byte sourceMsb = (byte)(source >> 8);
@@ -99,7 +112,11 @@ internal static class Load
         int ramAddr = gsu.R[register] & (ram.Length - 1);
         ram[ramAddr] = sourceLsb;
         ram[ramAddr ^ 1] = sourceMsb;
-        TraceWatchedRamAccess(gsu, "STW-WR", instructionPc, opcode, ramAddr, 2, source);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "STW-WR", instructionPc, opcode, ramAddr, 2, source);
+        }
 
         byte cycles = gsu.State.RamBufferWaitCycles;
         gsu.State.RamBufferWaitCycles = (byte)(2 * gsu.ClockSpeed.MemoryAccessCycles());
@@ -114,6 +131,7 @@ internal static class Load
         };
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Ibt(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte pp = gsu.State.OpcodeBuffer;
@@ -127,6 +145,7 @@ internal static class Load
         return (byte)(writeCycles + 2 * memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Iwt(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte lsb = gsu.State.OpcodeBuffer;
@@ -142,9 +161,9 @@ internal static class Load
         return (byte)(cycles + 3 * memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Lm(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         byte ramAddrLsb = gsu.State.OpcodeBuffer;
         Instructions.FetchOpcode(gsu, rom, ram);
         byte ramAddrMsb = gsu.State.OpcodeBuffer;
@@ -154,7 +173,11 @@ internal static class Load
         byte valueLsb = ram[ramAddr];
         byte valueMsb = ram[ramAddr ^ 1];
         ushort value = (ushort)(valueLsb | (valueMsb << 8));
-        TraceWatchedRamAccess(gsu, "LM-RD", instructionPc, opcode, ramAddr, 2, value);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "LM-RD", instructionPc, opcode, ramAddr, 2, value);
+        }
 
         byte register = (byte)(opcode & 0x0F);
         byte cycles = Instructions.WriteRegister(gsu, register, value, rom, ram);
@@ -174,9 +197,9 @@ internal static class Load
         });
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Lms(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         byte kk = gsu.State.OpcodeBuffer;
         Instructions.FetchOpcode(gsu, rom, ram);
 
@@ -184,7 +207,11 @@ internal static class Load
         byte lsb = ram[ramAddr];
         byte msb = ram[ramAddr ^ 1];
         ushort value = (ushort)(lsb | (msb << 8));
-        TraceWatchedRamAccess(gsu, "LMS-RD", instructionPc, opcode, ramAddr, 2, value);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "LMS-RD", instructionPc, opcode, ramAddr, 2, value);
+        }
 
         byte register = (byte)(opcode & 0x0F);
         byte cycles = Instructions.WriteRegister(gsu, register, value, rom, ram);
@@ -204,9 +231,9 @@ internal static class Load
         });
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Sm(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         byte ramAddrLsb = gsu.State.OpcodeBuffer;
         Instructions.FetchOpcode(gsu, rom, ram);
         byte ramAddrMsb = gsu.State.OpcodeBuffer;
@@ -220,7 +247,11 @@ internal static class Load
         byte valueMsb = (byte)(value >> 8);
         ram[ramAddr] = valueLsb;
         ram[ramAddr ^ 1] = valueMsb;
-        TraceWatchedRamAccess(gsu, "SM-WR", instructionPc, opcode, ramAddr, 2, value);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "SM-WR", instructionPc, opcode, ramAddr, 2, value);
+        }
 
         byte cycles = gsu.State.RamBufferWaitCycles;
         gsu.State.RamBufferWaitCycles = (byte)(2 * gsu.ClockSpeed.MemoryAccessCycles());
@@ -236,9 +267,9 @@ internal static class Load
         }));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Sms(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         byte kk = gsu.State.OpcodeBuffer;
         Instructions.FetchOpcode(gsu, rom, ram);
 
@@ -250,7 +281,11 @@ internal static class Load
         byte msb = (byte)(value >> 8);
         ram[ramAddr] = lsb;
         ram[ramAddr ^ 1] = msb;
-        TraceWatchedRamAccess(gsu, "SMS-WR", instructionPc, opcode, ramAddr, 2, value);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "SMS-WR", instructionPc, opcode, ramAddr, 2, value);
+        }
 
         byte cycles = gsu.State.RamBufferWaitCycles;
         gsu.State.RamBufferWaitCycles = (byte)(2 * gsu.ClockSpeed.MemoryAccessCycles());
@@ -266,9 +301,9 @@ internal static class Load
         }));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Sbk(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] ram)
     {
-        ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
         byte sourceLsb = (byte)(source & 0xFF);
         byte sourceMsb = (byte)(source >> 8);
@@ -276,7 +311,11 @@ internal static class Load
         ushort ramAddr = gsu.State.RamAddressBuffer;
         ram[ramAddr] = sourceLsb;
         ram[ramAddr ^ 1] = sourceMsb;
-        TraceWatchedRamAccess(gsu, "SBK-WR", instructionPc, Instructions.NopOpcode, ramAddr, 2, source);
+        if (TraceRamWatch)
+        {
+            ushort instructionPc = unchecked((ushort)(gsu.R[15] - 1));
+            TraceWatchedRamAccess(gsu, "SBK-WR", instructionPc, Instructions.NopOpcode, ramAddr, 2, source);
+        }
 
         byte cycles = gsu.State.RamBufferWaitCycles;
         gsu.State.RamBufferWaitCycles = (byte)(2 * gsu.ClockSpeed.MemoryAccessCycles());
@@ -291,6 +330,7 @@ internal static class Load
         };
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Romb(MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         gsu.Rombr = (byte)Instructions.ReadRegister(gsu, gsu.SReg);
@@ -302,6 +342,7 @@ internal static class Load
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Getb(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte valueByte = gsu.State.RomBuffer;
@@ -324,6 +365,7 @@ internal static class Load
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Hib(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -337,6 +379,7 @@ internal static class Load
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Lob(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -350,6 +393,7 @@ internal static class Load
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Swap(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -363,6 +407,7 @@ internal static class Load
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Merge(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort merged = (ushort)((gsu.R[7] & 0xFF00) | (gsu.R[8] >> 8));

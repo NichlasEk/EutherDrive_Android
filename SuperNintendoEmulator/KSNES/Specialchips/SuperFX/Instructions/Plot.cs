@@ -5,6 +5,7 @@ namespace KSNES.Specialchips.SuperFX;
 
 internal static class Plot
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Cmode(MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -19,6 +20,7 @@ internal static class Plot
         return memoryType.AccessCycles(gsu.ClockSpeed);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Color(MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         ushort source = Instructions.ReadRegister(gsu, gsu.SReg);
@@ -28,6 +30,7 @@ internal static class Plot
         return memoryType.AccessCycles(gsu.ClockSpeed);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Getc(MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         byte value = gsu.State.RomBuffer;
@@ -84,6 +87,7 @@ internal static class Plot
         return (byte)Math.Max(access, cycles);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Rpix(MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         uint bitplanes = gsu.ColorGradient.Bitplanes();
@@ -211,6 +215,7 @@ internal static class Plot
         return (int)(tileAddr & (uint)(ramLen - 1));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte MaskColor(byte newColor, GraphicsSupportUnit gsu)
     {
         if (gsu.PorHighNibbleFlag)

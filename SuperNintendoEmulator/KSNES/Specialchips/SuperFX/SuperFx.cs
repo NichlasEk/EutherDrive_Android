@@ -221,6 +221,18 @@ internal sealed class SuperFx
         }
 
         ulong inputCycles = _overclockFactor * delta;
+        if (_gsu.TryConsumePendingWait(inputCycles))
+        {
+            if (PerfStatsEnabled)
+            {
+                _perfTickCalls++;
+                _perfActiveTickCalls++;
+                _perfMasterCycles += delta;
+                _perfInputCycles += inputCycles;
+            }
+            return;
+        }
+
         if (!PerfStatsEnabled)
         {
             _gsu.Tick(inputCycles, _rom, _ram);
