@@ -1246,6 +1246,10 @@
                 <ambient:MachineRoomVideoHost Name="MachineRoomBigVideoHost"
                                               IsVisible="False"
                                               ZIndex="50"/>
+                <Image Name="MachineRoomBigMediaImage"
+                       Stretch="Uniform"
+                       IsVisible="False"
+                       ZIndex="51"/>
                 <Image Name="SplashImage"
                        Source="avares://EutherDrive.UI/Assets/logo_crop.jpeg"
                        Stretch="Uniform"/>

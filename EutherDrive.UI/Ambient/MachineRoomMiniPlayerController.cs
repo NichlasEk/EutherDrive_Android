@@ -363,22 +363,12 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             if (player.Kind == PlayerKind.Mpv)
             {
                 mpvSocketPath = GetMpvSocketPath();
+                startInfo.ArgumentList.Add("--no-video");
                 startInfo.ArgumentList.Add("--really-quiet");
                 startInfo.ArgumentList.Add("--force-window=no");
                 startInfo.ArgumentList.Add("--input-terminal=no");
                 startInfo.ArgumentList.Add($"--input-ipc-server={mpvSocketPath}");
                 startInfo.ArgumentList.Add($"--volume={_volumePercent}");
-                if (IsVideoPath(path) && TryGetMpvWindowId(out string windowId))
-                {
-                    startInfo.ArgumentList.Add($"--wid={windowId}");
-                    startInfo.ArgumentList.Add("--no-osc");
-                    startInfo.ArgumentList.Add("--keep-open=no");
-                }
-                else
-                {
-                    startInfo.ArgumentList.Add("--no-video");
-                }
-
                 startInfo.ArgumentList.Add(path);
             }
             else
