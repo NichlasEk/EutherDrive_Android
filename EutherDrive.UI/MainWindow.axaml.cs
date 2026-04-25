@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private readonly SavestateViewModel _savestateViewModel;
     private readonly EffectManager _effectManager = new();
     private readonly AmbientMusicController _ambientMusicController;
+    private readonly MachineRoomMiniPlayerController _machineRoomMiniPlayerController = new();
     private readonly OffworldMonitorViewModel _offworldMonitorViewModel;
     private Bitmap? _ambientMusicCoverBitmap;
     private readonly DispatcherTimer _deckMonitorTimer;
@@ -391,12 +392,14 @@ public partial class MainWindow : Window
     private long _audioPullLastFrameCounter = -1;
     private long _audioPullLastFrameCounterTicks;
     private int _masterVolumePercent = DefaultMasterVolumePercent;
+    private int _machineRoomMusicVolumePercent = DefaultMachineRoomMusicVolumePercent;
     private int _psgMixPercent = DefaultPsgMixPercent;
     private int _ymMixPercent = DefaultYmMixPercent;
     private int _noiseMixPercent = DefaultNoiseMixPercent;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _defaultRegionOverride = ConsoleRegion.Auto;
     private ConsoleRegion _romRegionHint = ConsoleRegion.Auto;
+    private string? _machineRoomMp3FolderPath;
     private FrameRateMode _frameRateMode = FrameRateMode.Auto;
     private PsxVideoStandardMode _psxVideoStandardMode = PsxVideoStandardMode.Auto;
     private readonly Dictionary<string, ConsoleRegion> _romRegionOverrides = new(StringComparer.OrdinalIgnoreCase);
@@ -426,6 +429,7 @@ public partial class MainWindow : Window
     private const string LegacyRegionSettingsFileName = "eutherdrive_region.txt";
     private const string LegacyLastRomPathFileName = "eutherdrive_last_rom.txt";
     private const int DefaultMasterVolumePercent = 50;
+    private const int DefaultMachineRoomMusicVolumePercent = 60;
     private const int DefaultPsgMixPercent = 100;
     private const int DefaultYmMixPercent = 100;
     private const int DefaultNoiseMixPercent = 100;
@@ -536,6 +540,7 @@ public partial class MainWindow : Window
         LoadSettings();
         _ambientMusicController = new AmbientMusicController(GetAmbientMusicCachePath());
         _ambientMusicController.StateChanged += OnAmbientMusicStateChanged;
+        _machineRoomMiniPlayerController.StateChanged += OnMachineRoomMiniPlayerStateChanged;
         _offworldMonitorViewModel = offworldMonitorViewModel ?? OffworldMonitorViewModel.CreatePreview();
         if (OffworldMonitorPanel != null)
             OffworldMonitorPanel.DataContext = _offworldMonitorViewModel;
@@ -554,6 +559,10 @@ public partial class MainWindow : Window
         if (MasterVolumeSlider != null)
             MasterVolumeSlider.Value = _masterVolumePercent;
         UpdateMasterVolumeText();
+        if (MachineRoomMusicVolumeSlider != null)
+            MachineRoomMusicVolumeSlider.Value = _machineRoomMusicVolumePercent;
+        UpdateMachineRoomMusicVolumeText();
+        UpdateMachineRoomMp3FolderUi();
         if (PsgMixSlider != null)
             PsgMixSlider.Value = _psgMixPercent;
         UpdatePsgMixText();
@@ -602,8 +611,9 @@ public partial class MainWindow : Window
         UpdateCrtPowerIntroUi();
         UpdateDangerousSportTitlesUi();
         _ambientMusicController.SetMasterVolumePercent(_masterVolumePercent);
+        _machineRoomMiniPlayerController.SetVolumePercent(_machineRoomMusicVolumePercent);
         _ambientMusicController.SetAudioEnabled(AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled);
-        UpdateAmbientMusicUi(_ambientMusicController.GetSnapshot());
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
         _deckMonitorTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (_, _) => MaybeUpdateDeckMonitorUi(force: true));
         _deckMonitorTimer.Start();
         MaybeUpdateDeckMonitorUi(force: true);
@@ -1018,7 +1028,9 @@ public partial class MainWindow : Window
         EndTrackedPlaySession();
         _deckMonitorTimer.Stop();
         _ambientMusicController.StateChanged -= OnAmbientMusicStateChanged;
+        _machineRoomMiniPlayerController.StateChanged -= OnMachineRoomMiniPlayerStateChanged;
         _ambientMusicController.Dispose();
+        _machineRoomMiniPlayerController.Dispose();
         _offworldMonitorViewModel.Dispose();
         DisposeAmbientMusicCoverBitmap();
     }
@@ -3591,24 +3603,69 @@ public partial class MainWindow : Window
             MasterVolumeValueText.Text = $"{_masterVolumePercent}%";
     }
 
+    private void UpdateMachineRoomMusicVolumeText()
+    {
+        if (MachineRoomMusicVolumeText != null)
+            MachineRoomMusicVolumeText.Text = $"{_machineRoomMusicVolumePercent}%";
+    }
+
+    private void UpdateMachineRoomMp3FolderUi()
+    {
+        if (MachineRoomMp3FolderButton == null)
+            return;
+
+        MachineRoomMp3FolderButton.Content = "MP3 Dir";
+        ToolTip.SetTip(
+            MachineRoomMp3FolderButton,
+            string.IsNullOrWhiteSpace(_machineRoomMp3FolderPath)
+                ? "Set MP3 random folder"
+                : $"MP3 random folder: {_machineRoomMp3FolderPath}");
+    }
+
     private static string GetAmbientMusicCachePath()
         => Path.Combine(Directory.GetCurrentDirectory(), AmbientMusicCacheDirectoryName);
 
     private void OnAmbientMusicStateChanged(object? sender, EventArgs e)
     {
         AmbientMusicSnapshot snapshot = _ambientMusicController.GetSnapshot();
-        Dispatcher.UIThread.Post(() => UpdateAmbientMusicUi(snapshot), DispatcherPriority.Background);
+        MachineRoomMiniPlayerSnapshot miniPlayer = _machineRoomMiniPlayerController.GetSnapshot();
+        Dispatcher.UIThread.Post(() => UpdateMachineRoomUi(snapshot, miniPlayer), DispatcherPriority.Background);
+    }
+
+    private void OnMachineRoomMiniPlayerStateChanged(object? sender, EventArgs e)
+    {
+        AmbientMusicSnapshot ambient = _ambientMusicController.GetSnapshot();
+        MachineRoomMiniPlayerSnapshot miniPlayer = _machineRoomMiniPlayerController.GetSnapshot();
+        Dispatcher.UIThread.Post(() => UpdateMachineRoomUi(ambient, miniPlayer), DispatcherPriority.Background);
     }
 
     private void UpdateAmbientMusicUi(AmbientMusicSnapshot snapshot)
+        => UpdateMachineRoomUi(snapshot, _machineRoomMiniPlayerController.GetSnapshot());
+
+    private void UpdateMachineRoomUi(AmbientMusicSnapshot ambient, MachineRoomMiniPlayerSnapshot miniPlayer)
     {
+        bool showMiniPlayer = !ambient.IsActive && (miniPlayer.HasSelection || miniPlayer.IsPlaying);
+
         if (AmbientMusicTitleText != null)
-            AmbientMusicTitleText.Text = snapshot.TrackTitle;
+            AmbientMusicTitleText.Text = showMiniPlayer ? miniPlayer.TrackTitle : ambient.TrackTitle;
         if (AmbientMusicStatusText != null)
-            AmbientMusicStatusText.Text = snapshot.StatusText;
+            AmbientMusicStatusText.Text = showMiniPlayer ? miniPlayer.StatusText : ambient.StatusText;
+        if (MachineRoomPreviousButton != null)
+            MachineRoomPreviousButton.IsEnabled = miniPlayer.HasSelection;
+        if (MachineRoomPlayPauseButton != null)
+        {
+            MachineRoomPlayPauseButton.IsEnabled = miniPlayer.HasSelection;
+            MachineRoomPlayPauseButton.Content = miniPlayer.IsPlaying && !miniPlayer.IsPaused ? "Pause" : "Play";
+        }
+        if (MachineRoomNextButton != null)
+            MachineRoomNextButton.IsEnabled = miniPlayer.HasSelection;
+        if (MachineRoomRandomButton != null)
+            MachineRoomRandomButton.IsEnabled = !string.IsNullOrWhiteSpace(_machineRoomMp3FolderPath);
+        if (MachineRoomStopButton != null)
+            MachineRoomStopButton.IsEnabled = miniPlayer.HasSelection || miniPlayer.IsPlaying;
         if (AmbientMusicButton != null)
-            AmbientMusicButton.IsEnabled = !snapshot.IsBusy;
-        UpdateAmbientMusicCover(snapshot.CoverPath);
+            AmbientMusicButton.IsEnabled = !ambient.IsBusy;
+        UpdateAmbientMusicCover(showMiniPlayer ? null : ambient.CoverPath);
         MaybeUpdateDeckMonitorUi(force: true);
     }
 
@@ -3658,6 +3715,18 @@ public partial class MainWindow : Window
         UpdateMasterVolumeText();
         ApplyMasterVolumeToCore();
         MaybeUpdateDeckMonitorUi(force: true);
+        SaveSettings();
+    }
+
+    private void OnMachineRoomMusicVolumeChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        int percent = ClampPercent((int)Math.Round(e.NewValue));
+        if (percent == _machineRoomMusicVolumePercent)
+            return;
+
+        _machineRoomMusicVolumePercent = percent;
+        _machineRoomMiniPlayerController.SetVolumePercent(_machineRoomMusicVolumePercent);
+        UpdateMachineRoomMusicVolumeText();
         SaveSettings();
     }
 
@@ -3791,11 +3860,9 @@ public partial class MainWindow : Window
         string ambientText = ambient.IsBusy
             ? "ambient loading"
             : ambient.IsActive
-                ? romRunning
-                    ? "ambient parked"
-                    : audioEnabled && _masterVolumePercent > 0
-                        ? "ambient playing"
-                        : "ambient armed"
+                ? audioEnabled && _masterVolumePercent > 0
+                    ? "ambient playing"
+                    : "ambient armed"
                 : "ambient off";
         return $"Master {_masterVolumePercent}% / {audioText} / {ambientText}";
     }
@@ -3811,7 +3878,7 @@ public partial class MainWindow : Window
                 return "Silent run. The deck is hot, but the global audio gate is closed.";
 
             return ambient.IsActive
-                ? "Game audio owns the line. Ambient is parked and will return the instant the ROM stops."
+                ? "Game audio and ambient are both live in the machine room."
                 : "Signal locked. The deck is all game right now.";
         }
 
@@ -3827,7 +3894,7 @@ public partial class MainWindow : Window
                 return $"{ambient.TrackTitle} owns the room until you slot a ROM.";
             }
 
-            return "Machine room lounge is live. Slot a ROM and ambient yields automatically.";
+            return "Machine room lounge is live.";
         }
 
         if (!string.IsNullOrWhiteSpace(_romPath))
@@ -5243,6 +5310,7 @@ public partial class MainWindow : Window
         public string? LastRomPath { get; set; }
         public string? SelectedSkinPath { get; set; }
         public string? RomLibraryPath { get; set; }
+        public string? MachineRoomMp3FolderPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? GbaBiosPath { get; set; }
@@ -5255,6 +5323,7 @@ public partial class MainWindow : Window
         public bool PsxSuperFastBootEnabled { get; set; }
         public PsxVideoStandardMode PsxVideoStandardMode { get; set; } = PsxVideoStandardMode.Auto;
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
+        public int MachineRoomMusicVolumePercent { get; set; } = DefaultMachineRoomMusicVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
         public int NoiseMixPercent { get; set; } = DefaultNoiseMixPercent;
@@ -5292,6 +5361,7 @@ public partial class MainWindow : Window
         public string? LastRomPath { get; set; }
         public string? SelectedSkinPath { get; set; }
         public string? RomLibraryPath { get; set; }
+        public string? MachineRoomMp3FolderPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
         public string? GbaBiosPath { get; set; }
@@ -5304,6 +5374,7 @@ public partial class MainWindow : Window
         public bool PsxSuperFastBootEnabled { get; set; }
         public string? PsxVideoStandardMode { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
+        public int MachineRoomMusicVolumePercent { get; set; } = DefaultMachineRoomMusicVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
         public int NoiseMixPercent { get; set; } = DefaultNoiseMixPercent;
@@ -5425,6 +5496,9 @@ public partial class MainWindow : Window
         _romLibraryPath = !string.IsNullOrWhiteSpace(settings.RomLibraryPath)
             ? settings.RomLibraryPath
             : null;
+        _machineRoomMp3FolderPath = !string.IsNullOrWhiteSpace(settings.MachineRoomMp3FolderPath)
+            ? settings.MachineRoomMp3FolderPath
+            : null;
 
         if (!string.IsNullOrWhiteSpace(settings.LastRomPath))
         {
@@ -5511,6 +5585,7 @@ public partial class MainWindow : Window
         UpdateRecentRomCombo();
 
         _masterVolumePercent = ClampPercent(settings.MasterVolumePercent);
+        _machineRoomMusicVolumePercent = ClampPercent(settings.MachineRoomMusicVolumePercent);
         _psgMixPercent = ClampMixPercent(settings.PsgMixPercent);
         _ymMixPercent = ClampMixPercent(settings.YmMixPercent);
         _noiseMixPercent = ClampMixPercent(settings.NoiseMixPercent);
@@ -5676,6 +5751,7 @@ public partial class MainWindow : Window
                 ? null
                 : SkinManager.Instance.CurrentSkin.SourcePath,
             RomLibraryPath = _romLibraryPath,
+            MachineRoomMp3FolderPath = _machineRoomMp3FolderPath,
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
             GbaBiosPath = _gbaBiosPath,
@@ -5692,6 +5768,7 @@ public partial class MainWindow : Window
             PsxSuperFastBootEnabled = _psxSuperFastBootEnabled,
             PsxVideoStandardMode = _psxVideoStandardMode,
             MasterVolumePercent = _masterVolumePercent,
+            MachineRoomMusicVolumePercent = _machineRoomMusicVolumePercent,
             PsgMixPercent = _psgMixPercent,
             YmMixPercent = _ymMixPercent,
             NoiseMixPercent = _noiseMixPercent,
@@ -5829,6 +5906,7 @@ public partial class MainWindow : Window
             LastRomPath = settings.LastRomPath,
             SelectedSkinPath = settings.SelectedSkinPath,
             RomLibraryPath = settings.RomLibraryPath,
+            MachineRoomMp3FolderPath = settings.MachineRoomMp3FolderPath,
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
             GbaBiosPath = settings.GbaBiosPath,
@@ -5841,6 +5919,7 @@ public partial class MainWindow : Window
             PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled,
             PsxVideoStandardMode = settings.PsxVideoStandardMode.ToString(),
             MasterVolumePercent = settings.MasterVolumePercent,
+            MachineRoomMusicVolumePercent = settings.MachineRoomMusicVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
             YmMixPercent = settings.YmMixPercent,
             NoiseMixPercent = settings.NoiseMixPercent,
@@ -5938,6 +6017,7 @@ public partial class MainWindow : Window
             LastRomPath = raw.LastRomPath,
             SelectedSkinPath = raw.SelectedSkinPath,
             RomLibraryPath = raw.RomLibraryPath,
+            MachineRoomMp3FolderPath = raw.MachineRoomMp3FolderPath,
             RecentRomPaths = raw.RecentRomPaths,
             PceBiosPath = raw.PceBiosPath,
             GbaBiosPath = raw.GbaBiosPath,
@@ -5947,6 +6027,7 @@ public partial class MainWindow : Window
             PsxFastLoadEnabled = raw.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = raw.PsxSuperFastBootEnabled,
             MasterVolumePercent = raw.MasterVolumePercent,
+            MachineRoomMusicVolumePercent = raw.MachineRoomMusicVolumePercent,
             PsgMixPercent = raw.PsgMixPercent,
             YmMixPercent = raw.YmMixPercent,
             NoiseMixPercent = raw.NoiseMixPercent,
@@ -6984,8 +7065,110 @@ public partial class MainWindow : Window
 
     private async void OnAmbientMusicClick(object? sender, RoutedEventArgs e)
     {
+        _machineRoomMiniPlayerController.Stop();
         await _ambientMusicController.ToggleAsync();
-        UpdateAmbientMusicUi(_ambientMusicController.GetSnapshot());
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
+    }
+
+    private async void OnMachineRoomOpenClick(object? sender, RoutedEventArgs e)
+    {
+        var options = new FilePickerOpenOptions
+        {
+            Title = "Open Machine Room media or playlist",
+            AllowMultiple = true,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("Media and playlists")
+                {
+                    Patterns = new[]
+                    {
+                        "*.mp3", "*.mp4", "*.m4a", "*.aac", "*.flac", "*.ogg", "*.opus", "*.wav",
+                        "*.webm", "*.mkv", "*.mov", "*.m3u", "*.m3u8", "*.pls"
+                    }
+                },
+                FilePickerFileTypes.All
+            }
+        };
+
+        IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return;
+
+        string[] paths = files
+            .Select(static file => file.TryGetLocalPath())
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => path!)
+            .ToArray();
+
+        _machineRoomMiniPlayerController.LoadFiles(paths);
+        AmbientMusicSnapshot ambient = _ambientMusicController.GetSnapshot();
+        if (ambient.IsActive && !ambient.IsBusy)
+            await _ambientMusicController.ToggleAsync();
+
+        await _machineRoomMiniPlayerController.TogglePlayPauseAsync();
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
+    }
+
+    private async void OnMachineRoomPlayPauseClick(object? sender, RoutedEventArgs e)
+    {
+        AmbientMusicSnapshot ambient = _ambientMusicController.GetSnapshot();
+        if (ambient.IsActive && !ambient.IsBusy)
+            await _ambientMusicController.ToggleAsync();
+
+        await _machineRoomMiniPlayerController.TogglePlayPauseAsync();
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
+    }
+
+    private async void OnMachineRoomPreviousClick(object? sender, RoutedEventArgs e)
+    {
+        await _machineRoomMiniPlayerController.PreviousAsync();
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
+    }
+
+    private async void OnMachineRoomNextClick(object? sender, RoutedEventArgs e)
+    {
+        await _machineRoomMiniPlayerController.NextAsync();
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
+    }
+
+    private async void OnMachineRoomRandomClick(object? sender, RoutedEventArgs e)
+    {
+        await _machineRoomMiniPlayerController.RandomFromDirectoryAsync(_machineRoomMp3FolderPath);
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
+    }
+
+    private async void OnMachineRoomMp3FolderClick(object? sender, RoutedEventArgs e)
+    {
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(_machineRoomMp3FolderPath) && Directory.Exists(_machineRoomMp3FolderPath))
+            startFolder = await StorageProvider.TryGetFolderFromPathAsync(_machineRoomMp3FolderPath);
+
+        var options = new FolderPickerOpenOptions
+        {
+            Title = "Select Machine Room MP3 folder",
+            AllowMultiple = false
+        };
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+
+        IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(options);
+        if (folders.Count == 0)
+            return;
+
+        string? folderPath = folders[0].TryGetLocalPath();
+        if (string.IsNullOrWhiteSpace(folderPath))
+            return;
+
+        _machineRoomMp3FolderPath = folderPath;
+        UpdateMachineRoomMp3FolderUi();
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
+        SaveSettings();
+    }
+
+    private void OnMachineRoomStopClick(object? sender, RoutedEventArgs e)
+    {
+        _machineRoomMiniPlayerController.Stop();
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
     }
 
     private void OnMouseCaptureToggle(object? sender, RoutedEventArgs e)

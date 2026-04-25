@@ -259,7 +259,6 @@ internal sealed class AmbientMusicController : IDisposable
             shouldPlay = _isActive
                 && !_isBusy
                 && _audioEnabled
-                && !_romActive
                 && _playlist.Count > 0;
         }
 
@@ -299,7 +298,7 @@ internal sealed class AmbientMusicController : IDisposable
 
         lock (_lock)
         {
-            if (_disposed || !_isActive || _playlist.Count == 0 || _audioEnabled == false || _romActive)
+            if (_disposed || !_isActive || _playlist.Count == 0 || _audioEnabled == false)
             {
                 engine.Stop();
                 sink.Dispose();
@@ -519,12 +518,6 @@ internal sealed class AmbientMusicController : IDisposable
         if (!_audioEnabled)
         {
             _statusText = "Ambient armed, audio off.";
-            return;
-        }
-
-        if (_romActive)
-        {
-            _statusText = "Ambient armed, waiting for ROM stop.";
             return;
         }
 
