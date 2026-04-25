@@ -190,9 +190,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     {
         lock (_lock)
         {
-            if (_playlist.Count == 0)
+            if (!MoveWithinCurrentDirectoryLocked(-1))
                 return Task.CompletedTask;
-            _currentIndex = (_currentIndex - 1 + _playlist.Count) % _playlist.Count;
         }
 
         return StartCurrentAsync();
@@ -202,9 +201,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     {
         lock (_lock)
         {
-            if (_playlist.Count == 0)
+            if (!MoveWithinCurrentDirectoryLocked(1))
                 return Task.CompletedTask;
-            _currentIndex = (_currentIndex + 1) % _playlist.Count;
         }
 
         return StartCurrentAsync();
@@ -485,6 +483,46 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
         NotifyStateChanged();
         return Task.CompletedTask;
+    }
+
+    private bool MoveWithinCurrentDirectoryLocked(int direction)
+    {
+        if (_playlist.Count == 0)
+            return false;
+
+        string currentPath = _playlist[Math.Clamp(_currentIndex, 0, _playlist.Count - 1)];
+        List<string> directoryPlaylist = GetDirectoryPlaylist(currentPath);
+        if (directoryPlaylist.Count > 0)
+        {
+            _playlist = directoryPlaylist;
+            string fullCurrentPath = Path.GetFullPath(currentPath);
+            int directoryIndex = _playlist.FindIndex(path =>
+                string.Equals(Path.GetFullPath(path), fullCurrentPath, StringComparison.Ordinal));
+            _currentIndex = directoryIndex >= 0 ? directoryIndex : 0;
+        }
+
+        _currentIndex = (_currentIndex + direction + _playlist.Count) % _playlist.Count;
+        return true;
+    }
+
+    private static List<string> GetDirectoryPlaylist(string mediaPath)
+    {
+        string? directory = Path.GetDirectoryName(mediaPath);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            return [];
+
+        try
+        {
+            return Directory
+                .EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+                .Where(IsSupportedMediaPath)
+                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     private static IEnumerable<string> ReadPlaylist(string playlistPath)
