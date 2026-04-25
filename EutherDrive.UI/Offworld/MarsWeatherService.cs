@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
+using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -10,7 +14,13 @@ namespace EutherDrive.UI.Offworld;
 internal sealed class MarsWeatherService : IMarsTelemetryProvider
 {
     private const string DefaultEndpoint =
-        "https://api.nasa.gov/insight_weather/?api_key=DEMO_KEY&feedtype=json&ver=1.0";
+        "https://spaceinformer.com/mars-temperature-live/";
+    private const string ProviderName = "SpaceInformer Mars Weather";
+
+    private static readonly Regex s_scriptBlockRegex = new("<(script|style)[^>]*>.*?</\\1>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    private static readonly Regex s_tagRegex = new("<[^>]+>", RegexOptions.Singleline);
+    private static readonly Regex s_whitespaceRegex = new("\\s+", RegexOptions.Compiled);
+    private static readonly Regex s_numberRegex = new("-?\\d+(?:\\.\\d+)?", RegexOptions.Compiled);
 
     private static readonly JsonSerializerOptions s_jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -25,7 +35,7 @@ internal sealed class MarsWeatherService : IMarsTelemetryProvider
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _cachePath = string.IsNullOrWhiteSpace(cachePath) ? GetDefaultCachePath() : cachePath;
-        _refreshInterval = refreshInterval ?? TimeSpan.FromMinutes(45);
+        _refreshInterval = refreshInterval ?? TimeSpan.FromMinutes(20);
 
         if (_httpClient.Timeout == Timeout.InfiniteTimeSpan)
             _httpClient.Timeout = TimeSpan.FromSeconds(15);
@@ -34,7 +44,9 @@ internal sealed class MarsWeatherService : IMarsTelemetryProvider
     public async Task<MarsTelemetrySnapshot> GetLatestMarsTelemetryAsync(CancellationToken cancellationToken = default)
     {
         MarsTelemetrySnapshot? cached = await TryReadCacheAsync(cancellationToken).ConfigureAwait(false);
-        if (cached is not null && DateTimeOffset.UtcNow - cached.RetrievedAtUtc <= _refreshInterval)
+        if (cached is not null
+            && string.Equals(cached.ProviderName, ProviderName, StringComparison.Ordinal)
+            && DateTimeOffset.UtcNow - cached.RetrievedAtUtc <= _refreshInterval)
         {
             return cached with
             {
@@ -66,7 +78,7 @@ internal sealed class MarsWeatherService : IMarsTelemetryProvider
 
             return MarsTelemetrySnapshot.Unavailable(
                 DateTimeOffset.UtcNow,
-                $"NASA offworld link failed. {ex.Message}");
+                $"SpaceInformer offworld link failed. {ex.Message}");
         }
     }
 
@@ -82,68 +94,168 @@ internal sealed class MarsWeatherService : IMarsTelemetryProvider
     private async Task<MarsTelemetrySnapshot> FetchLiveAsync(CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, DefaultEndpoint);
-        request.Headers.TryAddWithoutValidation("User-Agent", "EutherDrive/1.0 (Offworld Monitor)");
-        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) EutherDrive/1.0 Safari/537.36");
+        request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml");
+        request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+        request.Headers.TryAddWithoutValidation("Cache-Control", "no-cache");
 
         using HttpResponseMessage response = await _httpClient
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        await using Stream contentStream = await response.Content
-            .ReadAsStreamAsync(cancellationToken)
+        string html = await response.Content
+            .ReadAsStringAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        InSightWeatherApiResponseDto? apiResponse = await JsonSerializer
-            .DeserializeAsync<InSightWeatherApiResponseDto>(contentStream, s_jsonOptions, cancellationToken)
-            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(html))
+            throw new InvalidOperationException("SpaceInformer returned an empty telemetry payload.");
+        if (html.Contains("Security Incident Detected", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("SpaceInformer blocked the offworld telemetry request.");
 
-        if (apiResponse == null)
-            throw new InvalidOperationException("NASA returned an empty telemetry payload.");
-
-        string? latestSolKey = apiResponse.GetLatestSolKey();
-        if (string.IsNullOrWhiteSpace(latestSolKey))
-            throw new InvalidOperationException("NASA telemetry payload did not include any usable sol keys.");
-
-        if (!apiResponse.TryGetSol(latestSolKey, s_jsonOptions, out InSightSolDto? latestSol) || latestSol == null)
-            throw new InvalidOperationException($"NASA telemetry payload did not include summary data for sol {latestSolKey}.");
-
-        int? solNumber = int.TryParse(latestSolKey, out int parsedSol) ? parsedSol : null;
-        return MapToSnapshot(solNumber, latestSol, DateTimeOffset.UtcNow);
+        return ParseSpaceInformerSnapshot(html, DateTimeOffset.UtcNow);
     }
 
-    private static MarsTelemetrySnapshot MapToSnapshot(int? solNumber, InSightSolDto sol, DateTimeOffset retrievedAtUtc)
+    private static MarsTelemetrySnapshot ParseSpaceInformerSnapshot(string html, DateTimeOffset retrievedAtUtc)
     {
-        // NASA omits whole sensor blocks when a sol does not pass validity checks,
-        // so every AT/PRE/HWS access must tolerate null sensor objects.
-        InSightSensorSummaryDto? temperature = sol.Temperature;
-        InSightSensorSummaryDto? pressure = sol.Pressure;
-        InSightSensorSummaryDto? wind = sol.HorizontalWindSpeed;
+        IReadOnlyList<string> lines = ExtractTextLines(html);
+        int surfaceTempIndex = IndexOfLine(lines, "Surface Temp");
+        int pressureIndex = IndexOfLine(lines, "Atmospheric Pressure");
+        int seasonIndex = IndexOfLine(lines, "Martian Season");
 
-        // WD.most_common is documented to exist but can explicitly be null.
-        string? windCompassPoint = sol.WindDirection?.MostCommon?.CompassPoint;
+        string? location = FindLineValue(lines, "LOCATION:");
+        string? solText = FindSolText(lines);
+        string? pressureStatus = pressureIndex >= 0 ? NextUsefulLine(lines, pressureIndex + 2) : null;
+        string? season = seasonIndex >= 0 ? NextUsefulLine(lines, seasonIndex + 1) : null;
+        string? observerNote = FindLineValue(lines, "Observer Note:");
 
         return new MarsTelemetrySnapshot
         {
-            Sol = solNumber,
-            TemperatureAverageC = temperature?.Average,
-            TemperatureMinimumC = temperature?.Minimum,
-            TemperatureMaximumC = temperature?.Maximum,
-            PressureAveragePa = pressure?.Average,
-            PressureMinimumPa = pressure?.Minimum,
-            PressureMaximumPa = pressure?.Maximum,
-            WindSpeedAverageMs = wind?.Average,
-            WindSpeedMinimumMs = wind?.Minimum,
-            WindSpeedMaximumMs = wind?.Maximum,
-            WindCompassPoint = string.IsNullOrWhiteSpace(windCompassPoint) ? null : windCompassPoint.Trim().ToUpperInvariant(),
-            Season = string.IsNullOrWhiteSpace(sol.Season) ? null : sol.Season.Trim(),
-            ObservationStartUtc = sol.FirstUtc,
-            ObservationEndUtc = sol.LastUtc,
+            Sol = ParseInt(solText),
+            Location = NormalizeOptional(location),
+            TemperatureAverageC = ParseDouble(surfaceTempIndex >= 0 ? NextUsefulLine(lines, surfaceTempIndex + 1) : null),
+            TemperatureMinimumC = ParseTaggedDouble(lines, "MIN:"),
+            TemperatureMaximumC = ParseTaggedDouble(lines, "MAX:"),
+            PressureAveragePa = ParseDouble(pressureIndex >= 0 ? NextUsefulLine(lines, pressureIndex + 1) : null),
+            PressureStatus = NormalizeOptional(pressureStatus),
+            Season = NormalizeOptional(season),
+            SolarLongitudeDeg = ParseTaggedDouble(lines, "Angle:"),
             RetrievedAtUtc = retrievedAtUtc,
             Origin = MarsTelemetryOrigin.Live,
-            ProviderName = "NASA InSight",
-            StatusDetail = "Live offworld telemetry received from NASA."
+            ProviderName = ProviderName,
+            StatusDetail = NormalizeOptional(observerNote) ?? "Live offworld telemetry received from SpaceInformer."
         };
+    }
+
+    private static IReadOnlyList<string> ExtractTextLines(string html)
+    {
+        string withoutScripts = s_scriptBlockRegex.Replace(html, "\n");
+        string text = s_tagRegex.Replace(withoutScripts, "\n");
+        text = WebUtility.HtmlDecode(text);
+
+        var lines = new List<string>();
+        foreach (string rawLine in text.Split('\n'))
+        {
+            string line = s_whitespaceRegex.Replace(rawLine, " ").Trim();
+            if (line.Length > 0)
+                lines.Add(line);
+        }
+
+        return lines;
+    }
+
+    private static int IndexOfLine(IReadOnlyList<string> lines, string expected)
+    {
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (string.Equals(lines[i], expected, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static string? FindLineValue(IReadOnlyList<string> lines, string prefix)
+    {
+        foreach (string line in lines)
+        {
+            if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return line[prefix.Length..].Trim();
+        }
+
+        return null;
+    }
+
+    private static string? FindSolText(IReadOnlyList<string> lines)
+    {
+        foreach (string line in lines)
+        {
+            if (line.StartsWith("SOL ", StringComparison.OrdinalIgnoreCase))
+                return line[4..].Trim();
+        }
+
+        return null;
+    }
+
+    private static string? NextUsefulLine(IReadOnlyList<string> lines, int startIndex)
+    {
+        for (int i = startIndex; i < lines.Count; i++)
+        {
+            string line = lines[i];
+            if (!line.Equals("Loading...", StringComparison.OrdinalIgnoreCase)
+                && !line.Equals("Loading...", StringComparison.Ordinal)
+                && !line.Equals("Refresh Link", StringComparison.OrdinalIgnoreCase))
+            {
+                return line;
+            }
+        }
+
+        return null;
+    }
+
+    private static double? ParseTaggedDouble(IReadOnlyList<string> lines, string tag)
+    {
+        foreach (string line in lines)
+        {
+            int tagIndex = line.IndexOf(tag, StringComparison.OrdinalIgnoreCase);
+            if (tagIndex < 0)
+                continue;
+
+            return ParseDouble(line[(tagIndex + tag.Length)..]);
+        }
+
+        return null;
+    }
+
+    private static int? ParseInt(string? text)
+    {
+        double? value = ParseDouble(text);
+        return value.HasValue ? (int)Math.Round(value.Value) : null;
+    }
+
+    private static double? ParseDouble(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        Match match = s_numberRegex.Match(text);
+        if (!match.Success)
+            return null;
+
+        return double.TryParse(match.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+            ? value
+            : null;
+    }
+
+    private static string? NormalizeOptional(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        string trimmed = value.Trim();
+        return trimmed is "—" or "-"
+            ? null
+            : trimmed;
     }
 
     private async Task<MarsTelemetrySnapshot?> TryReadCacheAsync(CancellationToken cancellationToken)

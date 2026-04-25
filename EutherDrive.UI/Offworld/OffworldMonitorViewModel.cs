@@ -21,6 +21,9 @@ internal sealed class OffworldMonitorViewModel : INotifyPropertyChanged, IDispos
     private string _pressureLabel = "N/A";
     private string _windLabel = "N/A";
     private string _seasonLabel = "N/A";
+    private string _locationLabel = "N/A";
+    private string _orbitLabel = "N/A";
+    private string _atmosphereLabel = "N/A";
     private string _lastTelemetryLabel = "Awaiting telemetry.";
     private string _flavorLine = "Awaiting offworld handshake.";
     private string _sourceLabel = "NO LINK";
@@ -30,7 +33,7 @@ internal sealed class OffworldMonitorViewModel : INotifyPropertyChanged, IDispos
     public OffworldMonitorViewModel(IMarsTelemetryProvider provider, TimeSpan? refreshInterval = null)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
-        TimeSpan interval = refreshInterval ?? TimeSpan.FromMinutes(45);
+        TimeSpan interval = refreshInterval ?? TimeSpan.FromMinutes(20);
         _staleThreshold = interval + interval;
         _refreshTimer = new DispatcherTimer { Interval = interval };
         _refreshTimer.Tick += OnRefreshTimerTick;
@@ -72,6 +75,24 @@ internal sealed class OffworldMonitorViewModel : INotifyPropertyChanged, IDispos
     {
         get => _seasonLabel;
         private set => SetProperty(ref _seasonLabel, value);
+    }
+
+    public string LocationLabel
+    {
+        get => _locationLabel;
+        private set => SetProperty(ref _locationLabel, value);
+    }
+
+    public string OrbitLabel
+    {
+        get => _orbitLabel;
+        private set => SetProperty(ref _orbitLabel, value);
+    }
+
+    public string AtmosphereLabel
+    {
+        get => _atmosphereLabel;
+        private set => SetProperty(ref _atmosphereLabel, value);
     }
 
     public string LastTelemetryLabel
@@ -151,22 +172,25 @@ internal sealed class OffworldMonitorViewModel : INotifyPropertyChanged, IDispos
         MarsTelemetrySnapshot previewSnapshot = new()
         {
             Sol = 1434,
+            Location = "JEZERO CRATER / PERSEVERANCE",
             TemperatureAverageC = -62.3,
             TemperatureMinimumC = -97.8,
             TemperatureMaximumC = -14.1,
             PressureAveragePa = 742.7,
             PressureMinimumPa = 728.2,
             PressureMaximumPa = 759.3,
+            PressureStatus = "STABLE ATMOSPHERE",
             WindSpeedAverageMs = 4.3,
             WindSpeedMinimumMs = 0.6,
             WindSpeedMaximumMs = 16.4,
             WindCompassPoint = "SSW",
-            Season = "winter",
+            Season = "Late Autumn",
+            SolarLongitudeDeg = 245.5,
             ObservationStartUtc = new DateTimeOffset(2022, 12, 10, 0, 48, 0, TimeSpan.Zero),
             ObservationEndUtc = new DateTimeOffset(2022, 12, 11, 1, 17, 0, TimeSpan.Zero),
             RetrievedAtUtc = DateTimeOffset.UtcNow,
             Origin = MarsTelemetryOrigin.Live,
-            ProviderName = "NASA InSight",
+            ProviderName = "SpaceInformer Mars Weather",
             StatusDetail = "Preview offworld telemetry."
         };
 
@@ -201,9 +225,16 @@ internal sealed class OffworldMonitorViewModel : INotifyPropertyChanged, IDispos
         TemperatureLabel = FormatMetric(snapshot.TemperatureAverageC, snapshot.TemperatureMinimumC, snapshot.TemperatureMaximumC, "°C");
         PressureLabel = FormatMetric(snapshot.PressureAveragePa, snapshot.PressureMinimumPa, snapshot.PressureMaximumPa, "Pa");
         WindLabel = FormatWind(snapshot.WindSpeedAverageMs, snapshot.WindSpeedMinimumMs, snapshot.WindSpeedMaximumMs, snapshot.WindCompassPoint);
+        LocationLabel = string.IsNullOrWhiteSpace(snapshot.Location)
+            ? "MARS SURFACE"
+            : snapshot.Location.ToUpperInvariant();
         SeasonLabel = string.IsNullOrWhiteSpace(snapshot.Season)
             ? "N/A"
             : snapshot.Season.ToUpperInvariant();
+        OrbitLabel = snapshot.SolarLongitudeDeg.HasValue
+            ? $"LS {snapshot.SolarLongitudeDeg.Value.ToString("0.0", CultureInfo.InvariantCulture)}°"
+            : "LS N/A";
+        AtmosphereLabel = BuildAtmosphereLabel(snapshot);
         LastTelemetryLabel = BuildLastTelemetryLabel(snapshot);
         FlavorLine = BuildFlavorLine(snapshot, stale, observationArchive);
     }
@@ -245,18 +276,30 @@ internal sealed class OffworldMonitorViewModel : INotifyPropertyChanged, IDispos
             return "LAST SOL RECEIVED";
 
         return snapshot.Origin == MarsTelemetryOrigin.Live
-            ? "OFFWORLD LINK: ACTIVE"
+            ? $"{snapshot.ProviderName.ToUpperInvariant()} SYNC"
             : "CACHE RELAY ENGAGED";
     }
 
     private static string BuildLastTelemetryLabel(MarsTelemetrySnapshot snapshot)
     {
-        string observed = snapshot.ObservationEndUtc.HasValue
-            ? snapshot.ObservationEndUtc.Value.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture)
-            : "N/A";
         string fetched = snapshot.RetrievedAtUtc.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture);
 
+        if (!snapshot.ObservationEndUtc.HasValue)
+            return $"Source sync {fetched}";
+
+        string observed = snapshot.ObservationEndUtc.Value.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture);
         return $"Last telemetry {observed} • sync {fetched}";
+    }
+
+    private static string BuildAtmosphereLabel(MarsTelemetrySnapshot snapshot)
+    {
+        if (!string.IsNullOrWhiteSpace(snapshot.PressureStatus))
+            return snapshot.PressureStatus.ToUpperInvariant();
+
+        if (snapshot.PressureAveragePa.HasValue)
+            return "PRESSURE LINK LOCKED";
+
+        return "ATMOSPHERE N/A";
     }
 
     private static string FormatMetric(double? average, double? minimum, double? maximum, string unit)

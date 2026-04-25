@@ -5,16 +5,16 @@
              x:DataType="offworld:OffworldMonitorViewModel">
   <UserControl.Styles>
     <Style Selector="Border.telemetry-cell">
-      <Setter Property="Background" Value="#A6101A26"/>
+      <Setter Property="Background" Value="#B20D1723"/>
       <Setter Property="BorderBrush" Value="{DynamicResource EdStrokeBrush}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="CornerRadius" Value="12"/>
+      <Setter Property="CornerRadius" Value="8"/>
     </Style>
     <Style Selector="Border.telemetry-band">
-      <Setter Property="Background" Value="#88132130"/>
-      <Setter Property="BorderBrush" Value="#33506A"/>
+      <Setter Property="Background" Value="#99101B28"/>
+      <Setter Property="BorderBrush" Value="#405A72"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="CornerRadius" Value="12"/>
+      <Setter Property="CornerRadius" Value="8"/>
     </Style>
     <Style Selector="TextBlock.telemetry-caption">
       <Setter Property="Foreground" Value="{DynamicResource EdAccentBrush}"/>
@@ -32,42 +32,29 @@
       <Setter Property="FontFamily" Value="{DynamicResource EdMonoFont}"/>
       <Setter Property="FontSize" Value="16"/>
       <Setter Property="FontWeight" Value="Black"/>
-      <Setter Property="LetterSpacing" Value="0.5"/>
+      <Setter Property="LetterSpacing" Value="0"/>
     </Style>
     <Style Selector="TextBlock.telemetry-tagline">
       <Setter Property="Foreground" Value="{DynamicResource EdTextMutedBrush}"/>
       <Setter Property="FontFamily" Value="{DynamicResource EdMonoFont}"/>
       <Setter Property="FontSize" Value="10"/>
-      <Setter Property="LetterSpacing" Value="0.4"/>
+      <Setter Property="LetterSpacing" Value="0"/>
       <Setter Property="Opacity" Value="0.82"/>
     </Style>
   </UserControl.Styles>
 
-  <Border Classes="panel" Padding="7,6" HorizontalAlignment="Stretch">
-    <StackPanel Spacing="5">
-      <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto" ColumnSpacing="8" RowSpacing="2">
+  <Border Classes="panel" Padding="8,7" HorizontalAlignment="Stretch">
+    <StackPanel Spacing="6">
+      <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="2">
         <TextBlock Grid.Row="0"
-                   Grid.Column="0"
                    Classes="deck-label"
-                   Text="OFFWORLD"/>
-        <Border Grid.Row="0"
-                Grid.Column="1"
-                Classes="telemetry-band"
-                Padding="7,3"
-                VerticalAlignment="Top">
-          <TextBlock Classes="kicker"
-                     FontFamily="{DynamicResource EdMonoFont}"
-                     Text="{Binding SourceLabel}"/>
-        </Border>
+                   TextWrapping="NoWrap"
+                   Text="OFFWORLD RELAY"/>
         <TextBlock Grid.Row="1"
-                   Grid.Column="0"
-                   Grid.ColumnSpan="2"
                    Classes="telemetry-tagline"
-                   Text="MARS SURFACE TELEMETRY"
+                   Text="MARS WEATHER SYNC"
                    TextWrapping="Wrap"/>
         <TextBlock Grid.Row="2"
-                   Grid.Column="0"
-                   Grid.ColumnSpan="2"
                    Classes="muted"
                    FontSize="11"
                    Text="{Binding FlavorLine}"
@@ -75,18 +62,26 @@
       </Grid>
 
       <Border Classes="telemetry-band" Padding="7,5">
-        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-          <TextBlock Classes="telemetry-caption" Text="MARS SOL" VerticalAlignment="Center"/>
-          <TextBlock Classes="telemetry-display"
+        <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto" ColumnSpacing="8" RowSpacing="2">
+          <TextBlock Grid.Row="0" Grid.Column="0" Classes="telemetry-caption" Text="STATION" VerticalAlignment="Center"/>
+          <TextBlock Grid.Row="0"
+                     Grid.Column="1"
+                     Classes="telemetry-display"
                      Text="{Binding SolLabel}"
                      HorizontalAlignment="Right"/>
+          <TextBlock Grid.Row="1"
+                     Grid.Column="0"
+                     Grid.ColumnSpan="2"
+                     Classes="telemetry-value"
+                     FontSize="11"
+                     Text="{Binding LocationLabel}"/>
         </Grid>
       </Border>
 
       <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="6" RowSpacing="6">
         <Border Grid.Row="0" Grid.Column="0" Classes="telemetry-cell" Padding="6,5">
           <StackPanel Spacing="2">
-            <TextBlock Classes="telemetry-caption" Text="SURFACE TEMP"/>
+            <TextBlock Classes="telemetry-caption" Text="TEMP"/>
             <TextBlock Classes="telemetry-value" Text="{Binding TemperatureLabel}"/>
           </StackPanel>
         </Border>
@@ -96,16 +91,22 @@
             <TextBlock Classes="telemetry-value" Text="{Binding PressureLabel}"/>
           </StackPanel>
         </Border>
-        <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Classes="telemetry-cell" Padding="6,5">
+        <Border Grid.Row="1" Grid.Column="0" Classes="telemetry-cell" Padding="6,5">
           <StackPanel Spacing="2">
-            <TextBlock Classes="telemetry-caption" Text="WIND"/>
-            <TextBlock Classes="telemetry-value" Text="{Binding WindLabel}"/>
+            <TextBlock Classes="telemetry-caption" Text="SEASON"/>
+            <TextBlock Classes="telemetry-value" Text="{Binding SeasonLabel}"/>
+          </StackPanel>
+        </Border>
+        <Border Grid.Row="1" Grid.Column="1" Classes="telemetry-cell" Padding="6,5">
+          <StackPanel Spacing="2">
+            <TextBlock Classes="telemetry-caption" Text="ORBIT"/>
+            <TextBlock Classes="telemetry-value" Text="{Binding OrbitLabel}"/>
           </StackPanel>
         </Border>
         <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Classes="telemetry-cell" Padding="6,5">
           <StackPanel Spacing="2">
-            <TextBlock Classes="telemetry-caption" Text="SEASON"/>
-            <TextBlock Classes="telemetry-value" Text="{Binding SeasonLabel}"/>
+            <TextBlock Classes="telemetry-caption" Text="ATMOSPHERE"/>
+            <TextBlock Classes="telemetry-value" Text="{Binding AtmosphereLabel}"/>
           </StackPanel>
         </Border>
       </Grid>
