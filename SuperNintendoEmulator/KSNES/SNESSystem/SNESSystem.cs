@@ -1130,8 +1130,12 @@ public class SNESSystem : ISNESSystem
         if (ROM.Sa1 != null || ForceLegacyTiming)
             return false;
 
-        // Raster IRQ handlers need the exact timer edge; batching CPU wait can step over it.
-        if (_hIrqEnabled || _vIrqEnabled)
+        bool superFxWaitBatch = RomImpl.SuperFx != null;
+
+        // Raster IRQ handlers need the exact timer edge. Keep the legacy guard for
+        // non-SuperFX carts; SuperFX wait batches below explicitly sample the IRQ line
+        // after moving the beam to the clipped boundary.
+        if ((_hIrqEnabled || _vIrqEnabled) && !superFxWaitBatch)
             return false;
 
         if (_inIrq || _cpuImpl.NmiWanted || RomImpl.IrqWanted || RomImpl.NmiWanted)
@@ -1164,7 +1168,7 @@ public class SNESSystem : ISNESSystem
                 return false;
 
             chunkMclks = Math.Min(chunkMclks, cpuWaitMclks);
-            batchSuperFxInternalCpuWait = RomImpl.SuperFx != null;
+            batchSuperFxInternalCpuWait = superFxWaitBatch;
         }
 
         if (!batchSuperFxInternalCpuWait)
@@ -1184,9 +1188,12 @@ public class SNESSystem : ISNESSystem
             _cpuCyclesLeft -= chunkMclks;
         RomImpl.RunCoprocessor(Cycles);
         CatchUpApu();
-        _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
         AdvanceBeamPositionBy(chunkMclks, currentLineMclks);
-        _lastIrqHTime = GetIrqHTime();
+        if (_hIrqEnabled || _vIrqEnabled)
+            UpdateIrqLine();
+        else
+            _lastIrqHTime = GetIrqHTime();
+        _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
 
         if (PerfStatsEnabled)
         {
