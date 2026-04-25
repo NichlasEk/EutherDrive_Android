@@ -2002,8 +2002,11 @@ namespace Ryu64.MIPS
         {
             uint start = ReadBigEndianWord(DPC_START_REG_RW);
             uint end = ReadBigEndianWord(DPC_END_REG_RW);
-            TrackFramebufferInfosFromDpcBuffer(start, end);
-            ExecuteRdpDisplayList(start, end);
+            uint current = ReadBigEndianWord(DPC_CURRENT_REG_RW);
+            if (current == 0)
+                current = start;
+            TrackFramebufferInfosFromDpcBuffer(current, end);
+            ExecuteRdpDisplayList(current, end);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, end);
 
             uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
@@ -2020,7 +2023,7 @@ namespace Ryu64.MIPS
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] Graphics task finalized dpcStart=0x{start:x8} dpcEnd=0x{end:x8} " +
+                    $"[N64IO] Graphics task finalized dpcStart=0x{start:x8} dpcCurrent=0x{current:x8} dpcEnd=0x{end:x8} " +
                     $"yield=0x{_activeRspTask.YieldDataPtr:x8}/0x{_activeRspTask.YieldDataSize:x} pc=0x{Registers.R4300.PC:x8}");
             }
         }
@@ -2957,15 +2960,18 @@ namespace Ryu64.MIPS
             uint value = ReadBigEndianWord(DPC_END_REG_RW);
             WriteBigEndianWord(DPC_END_REG_RW, value);
             uint start = ReadBigEndianWord(DPC_START_REG_RW);
-            TrackFramebufferInfosFromDpcBuffer(start, value);
-            ExecuteRdpDisplayList(start, value);
+            uint current = ReadBigEndianWord(DPC_CURRENT_REG_RW);
+            if (current == 0)
+                current = start;
+            TrackFramebufferInfosFromDpcBuffer(current, value);
+            ExecuteRdpDisplayList(current, value);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
             SetMiDpInterrupt();
 
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64IO] DPC_END queued start=0x{ReadBigEndianWord(DPC_START_REG_RW):x8} end=0x{value:x8} " +
+                    $"[N64IO] DPC_END queued start=0x{ReadBigEndianWord(DPC_START_REG_RW):x8} current=0x{current:x8} end=0x{value:x8} " +
                     $"status=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8} pc=0x{Registers.R4300.PC:x8}");
             }
         }

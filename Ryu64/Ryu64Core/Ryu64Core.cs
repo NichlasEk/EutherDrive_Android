@@ -278,11 +278,15 @@ namespace Ryu64Core
                         && tracked != origin
                         && trackedScore != 0)
                     {
-                        origin = tracked;
-                        _lastTrackedFramebufferOrigin = tracked;
-                        producerBackedFramebufferSelected = true;
-                        _lastFramebufferStatus =
-                            $"Tracked framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, trackedScore={trackedScore}, dirtyPages={trackedDirtyPages})";
+                        int trackedVisualScore = ScoreFramebufferCandidate(tracked, width, height, bytesPerPixel);
+                        if (IsRecoveredFramebufferCandidateAcceptable(tracked, trackedVisualScore, producerBacked: true))
+                        {
+                            origin = tracked;
+                            _lastTrackedFramebufferOrigin = tracked;
+                            producerBackedFramebufferSelected = true;
+                            _lastFramebufferStatus =
+                                $"Tracked framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, trackedScore={trackedScore}, dirtyPages={trackedDirtyPages}, visualScore={trackedVisualScore})";
+                        }
                     }
                 }
 
@@ -538,33 +542,40 @@ namespace Ryu64Core
             int sameLeft = 0;
             int sameUp = 0;
             int hugeDiff = 0;
-            ushort firstPixel = 0;
+            uint firstPixel = 0;
             bool firstPixelSet = false;
             bool allSame = true;
-            ushort[] prevRow = new ushort[sampleCols];
+            uint[] prevRow = new uint[sampleCols];
             bool prevRowValid = false;
 
             for (int sy = 0; sy < sampleRows; sy++)
             {
                 int y = Math.Min(height - 1, sy * stepY);
-                ushort left = 0;
+                uint left = 0;
                 bool leftValid = false;
 
                 for (int sx = 0; sx < sampleCols; sx++)
                 {
                     int x = Math.Min(width - 1, sx * stepX);
                     uint pixelOffset = (uint)((y * width + x) * bytesPerPixel);
-                    ushort pixel;
-                    if (bytesPerPixel >= 2)
+                    uint pixel;
+                    if (bytesPerPixel >= 4)
+                    {
+                        byte r = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset);
+                        byte g = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset + 1u);
+                        byte b = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset + 2u);
+                        pixel = (uint)((r << 16) | (g << 8) | b);
+                    }
+                    else if (bytesPerPixel >= 2)
                     {
                         byte hi = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset);
                         byte lo = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset + 1u);
-                        pixel = (ushort)((hi << 8) | lo);
+                        pixel = (uint)(((hi << 8) | lo) & 0xFFFE);
                     }
                     else
                     {
                         byte value = R4300.memory.ReadUInt8PhysicalUncached(origin + pixelOffset);
-                        pixel = (ushort)(value << 8);
+                        pixel = value;
                     }
 
                     if (!firstPixelSet)
@@ -586,16 +597,16 @@ namespace Ryu64Core
                     {
                         if (pixel == left)
                             sameLeft++;
-                        else if (Math.Abs(pixel - left) > 0x1800)
+                        else if (Math.Abs((long)pixel - left) > 0x1800)
                             hugeDiff++;
                     }
 
                     if (prevRowValid)
                     {
-                        ushort up = prevRow[sx];
+                        uint up = prevRow[sx];
                         if (pixel == up)
                             sameUp++;
-                        else if (Math.Abs(pixel - up) > 0x1800)
+                        else if (Math.Abs((long)pixel - up) > 0x1800)
                             hugeDiff++;
                     }
 

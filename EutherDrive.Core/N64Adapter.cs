@@ -223,12 +223,14 @@ public sealed class N64Adapter : IEmulatorCore
         }
         else
         {
-            if (!_swap5551BytesDecision.HasValue)
+            var (swapCandidate, normalScore, swappedScore) = DetectRgba5551ByteOrder(raw);
+            if (!_swap5551BytesDecision.HasValue || ShouldUpdateRgba5551ByteOrder(_swap5551BytesDecision.Value, normalScore, swappedScore))
             {
-                var (swap, normalScore, swappedScore) = DetectRgba5551ByteOrder(raw);
-                _swap5551BytesDecision = swap;
+                bool changed = _swap5551BytesDecision.HasValue && _swap5551BytesDecision.Value != swapCandidate;
+                _swap5551BytesDecision = swapCandidate;
                 Console.WriteLine(
-                    $"[N64Adapter] RGBA5551 byte-order auto-detect: swap={swap} scoreNormal={normalScore} scoreSwapped={swappedScore}");
+                    $"[N64Adapter] RGBA5551 byte-order {(changed ? "updated" : "auto-detect")}: " +
+                    $"swap={swapCandidate} scoreNormal={normalScore} scoreSwapped={swappedScore}");
             }
 
             ConvertRgba5551ToBgra(raw, _frameBuffer, _swap5551BytesDecision.Value);
@@ -399,6 +401,14 @@ public sealed class N64Adapter : IEmulatorCore
         }
 
         return (swappedScore > normalScore, normalScore, swappedScore);
+    }
+
+    private static bool ShouldUpdateRgba5551ByteOrder(bool currentSwap, int normalScore, int swappedScore)
+    {
+        int margin = Math.Max(64, Math.Max(normalScore, swappedScore) / 8);
+        return currentSwap
+            ? normalScore > swappedScore + margin
+            : swappedScore > normalScore + margin;
     }
 
     private static void ConvertRgba8888ToBgra(ReadOnlySpan<byte> src, Span<byte> dst)
