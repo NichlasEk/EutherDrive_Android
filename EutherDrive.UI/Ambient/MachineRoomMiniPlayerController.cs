@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
 using System.Globalization;
 using System.Linq;
 using System.Net.Sockets;
@@ -1245,17 +1246,27 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     }
 
     private static string GetMpvSocketPath()
-        => Path.Combine(Path.GetTempPath(), $"eutherdrive-machine-room-{Environment.ProcessId}-{Guid.NewGuid():N}.sock");
+    {
+        string name = $"eutherdrive-machine-room-{Environment.ProcessId}-{Guid.NewGuid():N}";
+        return RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? $@"\\.\pipe\{name}"
+            : Path.Combine(Path.GetTempPath(), $"{name}.sock");
+    }
 
     private static void SendMpvCommand(string socketPath, string json)
     {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            return;
-
         try
         {
-            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            socket.Connect(new UnixDomainSocketEndPoint(socketPath));
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                using var pipe = OpenMpvNamedPipe(socketPath);
+                byte[] pipeBytes = Encoding.UTF8.GetBytes(json + "\n");
+                pipe.Write(pipeBytes, 0, pipeBytes.Length);
+                pipe.Flush();
+                return;
+            }
+
+            using var socket = OpenMpvUnixSocket(socketPath);
             byte[] bytes = Encoding.UTF8.GetBytes(json + "\n");
             socket.Send(bytes);
         }
@@ -1267,38 +1278,78 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
     private static double? SendMpvNumberRequest(string socketPath, string json)
     {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            return null;
-
         try
         {
-            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            socket.Connect(new UnixDomainSocketEndPoint(socketPath));
-            using var stream = new NetworkStream(socket, ownsSocket: false);
-            stream.ReadTimeout = 250;
-            stream.WriteTimeout = 250;
-            byte[] bytes = Encoding.UTF8.GetBytes(json + "\n");
-            stream.Write(bytes, 0, bytes.Length);
-            stream.Flush();
-
-            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
-            string? response = reader.ReadLine();
-            if (string.IsNullOrWhiteSpace(response))
-                return null;
-
-            using JsonDocument document = JsonDocument.Parse(response);
-            if (!document.RootElement.TryGetProperty("data", out JsonElement data)
-                || data.ValueKind != JsonValueKind.Number)
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                return null;
+                using var pipe = OpenMpvNamedPipe(socketPath);
+                return SendMpvNumberRequest(pipe, json);
             }
 
-            return data.TryGetDouble(out double value) ? value : null;
+            using var socket = OpenMpvUnixSocket(socketPath);
+            using var stream = new NetworkStream(socket, ownsSocket: false);
+            return SendMpvNumberRequest(stream, json);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static Socket OpenMpvUnixSocket(string socketPath)
+    {
+        var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        socket.Connect(new UnixDomainSocketEndPoint(socketPath));
+        return socket;
+    }
+
+    private static NamedPipeClientStream OpenMpvNamedPipe(string pipePath)
+    {
+        var pipe = new NamedPipeClientStream(
+            ".",
+            GetWindowsPipeName(pipePath),
+            PipeDirection.InOut,
+            PipeOptions.None);
+        pipe.Connect(250);
+        return pipe;
+    }
+
+    private static double? SendMpvNumberRequest(Stream stream, string json)
+    {
+        if (stream.CanTimeout)
+        {
+            stream.ReadTimeout = 250;
+            stream.WriteTimeout = 250;
+        }
+
+        byte[] bytes = Encoding.UTF8.GetBytes(json + "\n");
+        stream.Write(bytes, 0, bytes.Length);
+        stream.Flush();
+
+        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+        string? response = reader.ReadLine();
+        if (string.IsNullOrWhiteSpace(response))
+            return null;
+
+        using JsonDocument document = JsonDocument.Parse(response);
+        if (!document.RootElement.TryGetProperty("data", out JsonElement data)
+            || data.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        return data.TryGetDouble(out double value) ? value : null;
+    }
+
+    private static string GetWindowsPipeName(string pipePath)
+    {
+        const string win32Prefix = @"\\.\pipe\";
+        const string ntPrefix = @"\\?\pipe\";
+        if (pipePath.StartsWith(win32Prefix, StringComparison.OrdinalIgnoreCase))
+            return pipePath[win32Prefix.Length..];
+        if (pipePath.StartsWith(ntPrefix, StringComparison.OrdinalIgnoreCase))
+            return pipePath[ntPrefix.Length..];
+        return pipePath;
     }
 
     private static void TryDeleteFile(string path)
