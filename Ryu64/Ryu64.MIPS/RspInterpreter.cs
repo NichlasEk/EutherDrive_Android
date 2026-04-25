@@ -7,8 +7,12 @@ namespace Ryu64.MIPS
         private const uint LoopReportThreshold = 2048;
         private const uint NoProgressInstructionLimitRaw = 2_000_000;
         private const uint AbsoluteMaxInstructionsRaw = 100_000_000;
-        private const uint NoProgressInstructionLimitTask = 20_000_000;
-        private const uint AbsoluteMaxInstructionsTask = 500_000_000;
+        private const uint DefaultNoProgressInstructionLimitTask = 20_000_000;
+        private const uint DefaultAbsoluteMaxInstructionsTask = 500_000_000;
+        private static readonly uint NoProgressInstructionLimitTask =
+            ReadUIntEnvironment("EUTHERDRIVE_N64_RSP_TASK_NO_PROGRESS_LIMIT", DefaultNoProgressInstructionLimitTask);
+        private static readonly uint AbsoluteMaxInstructionsTask =
+            ReadUIntEnvironment("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", DefaultAbsoluteMaxInstructionsTask);
         private static readonly bool TraceRspCp0 =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_DMA"), "1", StringComparison.Ordinal)
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_MMIO"), "1", StringComparison.Ordinal)
@@ -109,6 +113,21 @@ namespace Ryu64.MIPS
         private readonly uint[] _recentInstrs = new uint[16];
         private int _recentIndex;
 
+        private static uint ReadUIntEnvironment(string name, uint fallback)
+        {
+            string value = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(value))
+                return fallback;
+
+            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                && uint.TryParse(value.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out uint hex))
+                return Math.Max(1u, hex);
+
+            return uint.TryParse(value, out uint parsed)
+                ? Math.Max(1u, parsed)
+                : fallback;
+        }
+
         public RspInterpreter(Memory memory)
         {
             _memory = memory;
@@ -120,7 +139,7 @@ namespace Ryu64.MIPS
             uint activeTaskType = _memory.GetActiveRspTaskType();
             bool enforceWatchdog = !hasValidTask;
             uint noProgressInstructionLimit = enforceWatchdog ? NoProgressInstructionLimitRaw : NoProgressInstructionLimitTask;
-            uint absoluteMaxInstructions = enforceWatchdog ? AbsoluteMaxInstructionsRaw : uint.MaxValue;
+            uint absoluteMaxInstructions = enforceWatchdog ? AbsoluteMaxInstructionsRaw : AbsoluteMaxInstructionsTask;
 
             _pc = _memory.ReadRspPc();
             _branchPending = false;
@@ -138,7 +157,7 @@ namespace Ryu64.MIPS
 
             for (executedInstructions = 0; executedInstructions < absoluteMaxInstructions; executedInstructions++)
             {
-                if (enforceWatchdog && _stagnantInstructionCount >= noProgressInstructionLimit)
+                if (_stagnantInstructionCount >= noProgressInstructionLimit)
                 {
                     stopReason = $"no-progress stagnant={_stagnantInstructionCount}";
                     break;
@@ -280,11 +299,11 @@ namespace Ryu64.MIPS
                 case 0x01:
                     return ExecuteRegImm(pc, rt, rs, imm, out stopReason);
                 case 0x02:
-                    SetBranch(((pc + 4) & 0xF0000000u) | (target << 2));
+                    SetBranch(target << 2);
                     return true;
                 case 0x03:
-                    WriteGpr(31, pc + 8);
-                    SetBranch(((pc + 4) & 0xF0000000u) | (target << 2));
+                    WriteGpr(31, (pc + 8) & 0x0FFCu);
+                    SetBranch(target << 2);
                     return true;
                 case 0x04:
                     if (_gpr[rs] == _gpr[rt]) SetBranch(BranchTarget(pc, imm));
@@ -449,7 +468,7 @@ namespace Ryu64.MIPS
                 case 0x06: WriteGpr(rd, _gpr[rt] >> (int)(_gpr[rs] & 0x1F)); return true;
                 case 0x07: WriteGpr(rd, unchecked((uint)((int)_gpr[rt] >> (int)(_gpr[rs] & 0x1F)))); return true;
                 case 0x08: SetBranch(_gpr[rs]); return true;
-                case 0x09: WriteGpr(rd == 0 ? 31u : rd, pc + 8); SetBranch(_gpr[rs]); return true;
+                case 0x09: WriteGpr(rd == 0 ? 31u : rd, (pc + 8) & 0x0FFCu); SetBranch(_gpr[rs]); return true;
                 case 0x0D: stopReason = "break"; return false;
                 case 0x10: WriteGpr(rd, _hi); return true;
                 case 0x12: WriteGpr(rd, _lo); return true;
@@ -493,18 +512,18 @@ namespace Ryu64.MIPS
                 case 0x02: return ExecuteLikelyBranch((int)_gpr[rs] < 0, BranchTarget(pc, imm));
                 case 0x03: return ExecuteLikelyBranch((int)_gpr[rs] >= 0, BranchTarget(pc, imm));
                 case 0x10:
-                    WriteGpr(31, pc + 8);
+                    WriteGpr(31, (pc + 8) & 0x0FFCu);
                     if ((int)_gpr[rs] < 0) SetBranch(BranchTarget(pc, imm));
                     return true;
                 case 0x11:
-                    WriteGpr(31, pc + 8);
+                    WriteGpr(31, (pc + 8) & 0x0FFCu);
                     if ((int)_gpr[rs] >= 0) SetBranch(BranchTarget(pc, imm));
                     return true;
                 case 0x12:
-                    WriteGpr(31, pc + 8);
+                    WriteGpr(31, (pc + 8) & 0x0FFCu);
                     return ExecuteLikelyBranch((int)_gpr[rs] < 0, BranchTarget(pc, imm));
                 case 0x13:
-                    WriteGpr(31, pc + 8);
+                    WriteGpr(31, (pc + 8) & 0x0FFCu);
                     return ExecuteLikelyBranch((int)_gpr[rs] >= 0, BranchTarget(pc, imm));
                 default:
                     stopReason = $"unsupported-regimm pc=0x{pc:x3} rt=0x{rt:x2}";
@@ -544,13 +563,13 @@ namespace Ryu64.MIPS
             switch (rs)
             {
                 case 0x00: // MFC2
-                    WriteGpr(rt, unchecked((uint)(int)(short)ReadVectorElement((int)rd, (int)(element & 0xEu))));
+                    WriteGpr(rt, unchecked((uint)(int)(short)ReadVectorElement((int)rd, (int)element)));
                     return true;
                 case 0x02: // CFC2
-                    WriteGpr(rt, ReadVectorControl((int)rd));
+                    WriteGpr(rt, unchecked((uint)(int)(short)ReadVectorControl((int)rd)));
                     return true;
                 case 0x04: // MTC2
-                    WriteVectorElement((int)rd, (int)(element & 0xEu), (ushort)_gpr[rt]);
+                    WriteVectorElement((int)rd, (int)element, (ushort)_gpr[rt]);
                     return true;
                 case 0x06: // CTC2
                     WriteVectorControl((int)rd, (ushort)_gpr[rt]);
@@ -624,6 +643,25 @@ namespace Ryu64.MIPS
                     StoreVector(vd, result);
                     return true;
 
+                case 0x02: // VRNDP
+                    ExecuteVectorRound(vd, vs, rhs, positive: true);
+                    return true;
+
+                case 0x03: // VMULQ
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        int prod = (short)lhs[lane] * (short)rhs[lane];
+                        if (prod < 0)
+                            prod += 31;
+
+                        _accLo[lane] = 0;
+                        _accMd[lane] = unchecked((ushort)prod);
+                        _accHi[lane] = unchecked((ushort)(prod >> 16));
+                        result[lane] = (ushort)(ClampSigned16(prod >> 1) & ~15);
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
                 case 0x08: // VMACF
                     for (int lane = 0; lane < 8; lane++)
                     {
@@ -638,10 +676,33 @@ namespace Ryu64.MIPS
                     StoreVector(vd, result);
                     return true;
 
+                case 0x0A: // VRNDN
+                    ExecuteVectorRound(vd, vs, rhs, positive: false);
+                    return true;
+
+                case 0x0B: // VMACQ
+                    for (int lane = 0; lane < 8; lane++)
+                    {
+                        int prod = ((short)_accHi[lane] << 16) | _accMd[lane];
+                        if ((prod & 0x20) == 0)
+                        {
+                            if (prod < 0)
+                                prod += 32;
+                            else if (prod >= 32)
+                                prod -= 32;
+                        }
+
+                        _accMd[lane] = unchecked((ushort)prod);
+                        _accHi[lane] = unchecked((ushort)(prod >> 16));
+                        result[lane] = (ushort)(ClampSigned16(prod >> 1) & ~15);
+                    }
+                    StoreVector(vd, result);
+                    return true;
+
                 case 0x05: // VMUDM
                     for (int lane = 0; lane < 8; lane++)
                     {
-                        long prod = (long)(short)lhs[lane] * (ushort)rhs[lane];
+                        long prod = (long)(ushort)lhs[lane] * (short)rhs[lane];
                         _accLo[lane] = unchecked((ushort)prod);
                         _accMd[lane] = unchecked((ushort)(prod >> 16));
                         _accHi[lane] = (ushort)(((short)_accMd[lane] < 0) ? 0xffff : 0x0000);
@@ -690,7 +751,7 @@ namespace Ryu64.MIPS
                     for (int lane = 0; lane < 8; lane++)
                     {
                         long acc = ReadAccumulator(lane);
-                        long prod = (long)(short)lhs[lane] * (ushort)rhs[lane];
+                        long prod = (long)(ushort)lhs[lane] * (short)rhs[lane];
                         acc += prod;
                         WriteAccumulator(lane, acc);
                         result[lane] = unchecked((ushort)SaturateAccumulatorToSignedMd(lane));
@@ -1013,7 +1074,7 @@ namespace Ryu64.MIPS
 
                             int diffLe = (vsLane & (signBit ? -1 : 0)) + vtLane;
                             bool leBit = diffLe < 0;
-                            int diffGe = Math.Min(vsLane | (signBit ? -1 : 0), vtLane);
+                            int diffGe = Math.Min(signBit ? -1 : vsLane, vtLane);
                             bool geBit = diffGe == vtLane;
 
                             ge = SetMaskBit(ge, lane, geBit);
@@ -1138,7 +1199,7 @@ namespace Ryu64.MIPS
                         long acc = ReadAccumulator(lane);
                         long prod = ((long)(short)lhs[lane] * (short)rhs[lane]) << 1;
                         WriteAccumulator(lane, acc + prod);
-                        result[lane] = UnsignedClampAccumulator(_accMd[lane], _accMd[lane], _accHi[lane]);
+                        result[lane] = ClampAccumulatorToVmacu(lane);
                     }
                     StoreVector(vd, result);
                     return true;
@@ -1163,16 +1224,16 @@ namespace Ryu64.MIPS
                     TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)offset, 1);
                     return true;
                 case 1: // SV
-                    TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)(offset << 1), 2);
+                    TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)(offset << 1), 2, partialLoad: true);
                     return true;
                 case 2: // LV
-                    TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)(offset << 2), 4);
+                    TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)(offset << 2), 4, partialLoad: true);
                     return true;
                 case 3: // DV
-                    TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)(offset << 3), 8);
+                    TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)(offset << 3), 8, partialLoad: true);
                     return true;
                 case 4: // QV
-                    TransferVectorBytes(isLoad, (int)vt, element, baseAddress + (uint)(offset << 4), 16);
+                    TransferVectorQuad(isLoad, (int)vt, element, baseAddress + (uint)(offset << 4));
                     return true;
                 case 5: // RV
                     TransferVectorReverse(isLoad, (int)vt, element, baseAddress + (uint)(offset << 4));
@@ -1193,13 +1254,8 @@ namespace Ryu64.MIPS
                         StoreVectorFour((int)vt, element, baseAddress + (uint)(offset << 4));
                     return true;
                 case 10: // WV
-                    if (!isLoad)
-                    {
-                        StoreVectorWrapped((int)vt, element, baseAddress + (uint)(offset << 4));
-                        return true;
-                    }
-                    stopReason = $"unsupported-vector-mem pc=0x{pc:x3} op=0x{instr:x8}";
-                    return false;
+                    TransferVectorWrapped(isLoad, (int)vt, element, baseAddress + (uint)(offset << 4));
+                    return true;
                 case 11: // TV
                     TransferVectorTable(isLoad, (int)vt, element, baseAddress + (uint)(offset << 4));
                     return true;
@@ -1209,16 +1265,34 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void TransferVectorBytes(bool isLoad, int vt, int element, uint address, int count)
+        private void TransferVectorBytes(bool isLoad, int vt, int element, uint address, int count, bool partialLoad = false)
         {
-            for (int i = 0; i < count; i++)
+            int end = isLoad && partialLoad && element + count > 16
+                ? 16
+                : element + count;
+            for (int i = element; i < end; i++)
             {
-                int lane = (element + i) & 0xF;
-                uint addr = (address + (uint)i) & 0xFFFu;
+                uint addr = (address + (uint)(i - element)) & 0xFFFu;
                 if (isLoad)
-                    _vr[vt, lane] = ReadByte(addr);
+                    _vr[vt, i & 0xF] = ReadByte(addr);
                 else
-                    WriteByte(addr, _vr[vt, lane]);
+                    WriteByte(addr, _vr[vt, i & 0xF]);
+            }
+        }
+
+        private void TransferVectorQuad(bool isLoad, int vt, int element, uint address)
+        {
+            uint addr = address & 0xFFFu;
+            int end = element + (16 - (int)(addr & 0xFu));
+            if (end > 16)
+                end = 16;
+
+            for (int i = element; i < end; i++)
+            {
+                if (isLoad)
+                    _vr[vt, i & 0xF] = ReadByte(addr++ & 0xFFFu);
+                else
+                    WriteByte(addr++ & 0xFFFu, _vr[vt, i & 0xF]);
             }
         }
 
@@ -1300,15 +1374,15 @@ namespace Ryu64.MIPS
             int end = element > 8 ? 16 : element + 8;
             addr &= ~7u;
 
-            byte[] temp = new byte[16];
+            ushort[] temp = new ushort[8];
             for (int i = 0; i < 4; i++)
             {
-                temp[i] = ReadByte((addr + (uint)((index + (i * 4)) & 0xF)) & 0xFFFu);
-                temp[i + 4] = ReadByte((addr + (uint)((index + (i * 4) + 8) & 0xF)) & 0xFFFu);
+                temp[i] = (ushort)(ReadByte((addr + (uint)((index + (i * 4)) & 0xF)) & 0xFFFu) << 7);
+                temp[i + 4] = (ushort)(ReadByte((addr + (uint)((index + (i * 4) + 8) & 0xF)) & 0xFFFu) << 7);
             }
 
             for (int i = element; i < end; i++)
-                _vr[vt, i & 0xF] = temp[i & 0xF];
+                _vr[vt, i & 0xF] = ReadHalfwordByte(temp, i);
         }
 
         private void StoreVectorFour(int vt, int element, uint address)
@@ -1358,14 +1432,25 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void StoreVectorWrapped(int vt, int element, uint address)
+        private void TransferVectorWrapped(bool isLoad, int vt, int element, uint address)
         {
             uint addr = address & 0xFFFu;
-            uint baseIndex = addr & 7u;
-            addr &= ~7u;
+            if (isLoad)
+            {
+                for (int i = 16 - element; i < 16 + element; i++)
+                {
+                    _vr[vt, i & 0xF] = ReadByte(addr & 0xFFFu);
+                    addr += 4;
+                }
+            }
+            else
+            {
+                uint baseIndex = addr & 7u;
+                addr &= ~7u;
 
-            for (int i = element; i < element + 16; i++)
-                WriteByte(addr + (baseIndex++ & 0xFu), _vr[vt, i & 0xF]);
+                for (int i = element; i < element + 16; i++)
+                    WriteByte(addr + (baseIndex++ & 0xFu), _vr[vt, i & 0xF]);
+            }
         }
 
         private void TransferVectorTable(bool isLoad, int vt, int element, uint address)
@@ -1406,6 +1491,14 @@ namespace Ryu64.MIPS
             }
         }
 
+        private static byte ReadHalfwordByte(ushort[] halfwords, int element)
+        {
+            int index = (element & 0xF) >> 1;
+            return (element & 1) == 0
+                ? (byte)(halfwords[index] >> 8)
+                : (byte)halfwords[index];
+        }
+
         private ushort ReadVectorElement(int vt, int element)
         {
             int lane = element & 0xF;
@@ -1418,7 +1511,8 @@ namespace Ryu64.MIPS
         {
             int lane = element & 0xF;
             _vr[vt, lane] = (byte)(value >> 8);
-            _vr[vt, (lane + 1) & 0xF] = (byte)value;
+            if (lane != 0xF)
+                _vr[vt, lane + 1] = (byte)value;
         }
 
         private ushort ReadVectorLane16(int vt, int lane)
@@ -1478,6 +1572,27 @@ namespace Ryu64.MIPS
                 WriteVectorLane16(vt, lane, src[lane]);
         }
 
+        private void ExecuteVectorRound(int vd, int vs, ushort[] rhs, bool positive)
+        {
+            ushort[] result = new ushort[8];
+            for (int lane = 0; lane < 8; lane++)
+            {
+                long acc = ReadAccumulator(lane);
+                bool negativeAcc = acc < 0;
+                if (positive != negativeAcc)
+                {
+                    long value = (short)rhs[lane];
+                    if ((vs & 1) != 0)
+                        value <<= 16;
+                    acc = NormalizeAccumulator48(acc + value);
+                    WriteAccumulator(lane, acc);
+                }
+
+                result[lane] = unchecked((ushort)ClampSigned16(unchecked((int)(acc >> 16))));
+            }
+            StoreVector(vd, result);
+        }
+
         private uint ReadVectorControl(int rd)
         {
             switch (rd & 3)
@@ -1521,9 +1636,8 @@ namespace Ryu64.MIPS
 
         private ushort ReadHalf(uint address)
         {
-            uint word = ReadWord(address & ~3u);
-            int shift = (int)((1 - ((address & 2u) >> 1)) * 16);
-            ushort value = (ushort)((word >> shift) & 0xFFFFu);
+            uint aligned = address & 0x0FFFu;
+            ushort value = (ushort)((ReadByte(aligned) << 8) | ReadByte((aligned + 1u) & 0x0FFFu));
             TraceRspScalarRead("half", address & 0x0FFFu, value);
             return value;
         }
@@ -1579,11 +1693,9 @@ namespace Ryu64.MIPS
 
         private void WriteHalf(uint address, ushort value)
         {
-            uint aligned = address & ~3u;
-            uint word = ReadWord(aligned);
-            int shift = (int)((1 - ((address & 2u) >> 1)) * 16);
-            uint mask = 0xFFFFu << shift;
-            WriteWord(aligned, (word & ~mask) | ((uint)value << shift));
+            uint aligned = address & 0x0FFFu;
+            WriteByte(aligned, (byte)(value >> 8));
+            WriteByte((aligned + 1u) & 0x0FFFu, (byte)value);
         }
 
         private void WriteByte(uint address, byte value)
@@ -1638,7 +1750,7 @@ namespace Ryu64.MIPS
 
         private static uint BranchTarget(uint pc, short imm)
         {
-            return unchecked((uint)((int)(pc + 4) + (imm << 2)));
+            return unchecked((uint)((int)(pc + 4) + (imm << 2))) & 0x0FFCu;
         }
 
         private static int ClampSigned16(int value)
@@ -1695,6 +1807,19 @@ namespace Ryu64.MIPS
                 return value;
 
             return hiSigned < 0 ? (ushort)0x0000 : (ushort)0xffff;
+        }
+
+        private ushort ClampAccumulatorToVmacu(int lane)
+        {
+            short hi = unchecked((short)_accHi[lane]);
+            if (hi > 0)
+                return 0xffff;
+            if (hi < 0)
+                return 0x0000;
+
+            return unchecked((short)_accMd[lane]) < 0
+                ? (ushort)0xffff
+                : _accMd[lane];
         }
 
         private static bool GetMaskBit(ushort mask, int lane)
