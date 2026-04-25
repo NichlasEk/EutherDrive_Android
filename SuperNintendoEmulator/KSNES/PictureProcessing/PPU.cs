@@ -2268,9 +2268,8 @@ public class PPU : IPPU
         return !trueHiResOutput
             && !_frameTrueHiResOutput
             && !_forcedBlank
-            && _mode == 1
+            && (_mode == 1 || _mode == 3)
             && !_directColor
-            && !_lineHasLayerWindows
             && !_bigTiles[0]
             && !_bigTiles[1]
             && !_bigTiles[2]
@@ -2484,6 +2483,8 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
         fixed (byte* spritePrio = _spritePrioBuffer)
         fixed (byte* spriteLine = _spriteLineBuffer)
         fixed (byte* clipCache = _clipToBlackCache)
+        fixed (byte* mainVis = _mainScreenVisibleCache)
+        fixed (byte* subVis = _subScreenVisibleCache)
         {
             int* pRow = pOut + outputRow;
             int* argbTabOffset = argbTab + brightnessOffset;
@@ -2501,6 +2502,7 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
             bool resolveSubFromLayers = _addSub && _lineAnyColorMathEnabled && _lineHasSubScreenLayers;
             bool usesColorWindow = _window1Enabled[5] || _window2Enabled[5];
             bool useDirectMathCheck = !usesColorWindow && _preventMath == 0 && _colorClip == 0;
+            bool useLayerWindows = _lineHasLayerWindows;
 
             for (int startX = 0; startX < 256; startX += FastChunkPixelCount)
             {
@@ -2522,15 +2524,20 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                     int layer = _lineOrderedLayers[j];
                     byte priority = _lineOrderedPriorities[j];
                     byte screenMask = _lineOrderedScreenMasks[j];
-                    if ((screenMask & 0x1) == 0 && ((screenMask & 0x2) == 0 || !resolveSubFromLayers))
+                    bool layerCanMain = (screenMask & 0x1) != 0;
+                    bool layerCanSub = resolveSubFromLayers && (screenMask & 0x2) != 0;
+                    if (!layerCanMain && !layerCanSub)
                         continue;
 
                     if (layer == 4)
                     {
+                        int visibleBase = layer << 8;
                         for (int pixelX = 0; pixelX < FastChunkPixelCount; pixelX++)
                         {
                             int screenX = startX + pixelX;
-                            if ((screenMask & 0x1) != 0 && mainLayers[pixelX] == 5)
+                            bool mainVisible = layerCanMain
+                                && (!useLayerWindows || mainVis[visibleBase | screenX] != 0);
+                            if (mainVisible && mainLayers[pixelX] == 5)
                             {
                                 if (spritePrio[screenX] == priority)
                                 {
@@ -2545,7 +2552,9 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                                 }
                             }
 
-                            if (resolveSubFromLayers && (screenMask & 0x2) != 0 && subLayers[pixelX] == 5)
+                            bool subVisible = layerCanSub
+                                && (!useLayerWindows || subVis[visibleBase | screenX] != 0);
+                            if (subVisible && subLayers[pixelX] == 5)
                             {
                                 if (spritePrio[screenX] == priority)
                                 {
@@ -2579,6 +2588,7 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                     Span<ushort> layerPixels = bgLayerPixels.Slice(layer * FastChunkPixelCount, FastChunkPixelCount);
                     Span<byte> layerOpaque = bgLayerOpaque.Slice(layer * FastChunkPixelCount, FastChunkPixelCount);
                     Span<byte> layerPriority = bgLayerPriority.Slice(layer * FastChunkPixelCount, FastChunkPixelCount);
+                    int layerVisibleBase = layer << 8;
                     for (int pixelX = 0; pixelX < FastChunkPixelCount; pixelX++)
                     {
                         if (layerOpaque[pixelX] == 0 || layerPriority[pixelX] != priority)
@@ -2586,7 +2596,10 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
 
                         int pixel = layerPixels[pixelX];
                         ushort color = cgramPtr[pixel & 0xff];
-                        if ((screenMask & 0x1) != 0 && mainLayers[pixelX] == 5)
+                        int screenX = startX + pixelX;
+                        bool mainVisible = layerCanMain
+                            && (!useLayerWindows || mainVis[layerVisibleBase | screenX] != 0);
+                        if (mainVisible && mainLayers[pixelX] == 5)
                         {
                             mainLayers[pixelX] = layer;
                             mainPixels[pixelX] = pixel;
@@ -2594,7 +2607,9 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                             pendingMain--;
                         }
 
-                        if (resolveSubFromLayers && (screenMask & 0x2) != 0 && subLayers[pixelX] == 5)
+                        bool subVisible = layerCanSub
+                            && (!useLayerWindows || subVis[layerVisibleBase | screenX] != 0);
+                        if (subVisible && subLayers[pixelX] == 5)
                         {
                             subLayers[pixelX] = layer;
                             subPixels[pixelX] = pixel;
