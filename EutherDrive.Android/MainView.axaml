@@ -941,7 +941,7 @@
           <Grid RowDefinitions="Auto,*" RowSpacing="14">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
               <StackPanel Spacing="4">
-                <TextBlock Text="System Files & Skin"
+                <TextBlock Text="System Files &amp; Skin"
                            FontSize="22"
                            FontWeight="Black"
                            FontStyle="Italic"
