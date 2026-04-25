@@ -1556,8 +1556,19 @@ public class ROM : IROM
 
     public bool RunCoprocessorAndCheckIrq(ulong snesCycles)
     {
-        RunCoprocessor(snesCycles);
-        return CoprocessorIrqWantedNoSync;
+        switch (_timedDispatch)
+        {
+            case TimedCoprocessorDispatch.None:
+                return false;
+            case TimedCoprocessorDispatch.SuperFx:
+                return _superFx!.TickAndCheckIrq(snesCycles);
+            case TimedCoprocessorDispatch.Sa1:
+                SyncSa1ForDispatch(snesCycles);
+                return _sa1!.SnesIrq();
+            default:
+                RunCoprocessor(snesCycles);
+                return CoprocessorIrqWantedNoSync;
+        }
     }
 
     public bool CoprocessorIrqWantedNoSync => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);

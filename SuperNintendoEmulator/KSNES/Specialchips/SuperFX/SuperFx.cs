@@ -251,6 +251,13 @@ internal sealed class SuperFx
 
     public bool Irq => _gsu.IrqAsserted();
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TickAndCheckIrq(ulong masterCyclesElapsed)
+    {
+        Tick(masterCyclesElapsed);
+        return _gsu.IrqAsserted();
+    }
+
     public int GetFastCpuWindowChunkLimit()
     {
         return _gsu.GetFastCpuWindowChunkLimit(_overclockFactor);
