@@ -11,6 +11,7 @@ internal enum MultiplierSpeed
 
 internal static class MultiplierSpeedExtensions
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static MultiplierSpeed FromBit(bool bit) => bit ? MultiplierSpeed.High : MultiplierSpeed.Standard;
 }
 
@@ -22,12 +23,16 @@ internal enum ClockSpeed
 
 internal static class ClockSpeedExtensions
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ClockSpeed FromBit(bool bit) => bit ? ClockSpeed.Fast : ClockSpeed.Slow;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong MclkDivider(this ClockSpeed speed) => speed == ClockSpeed.Fast ? 1UL : 2UL;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte MemoryAccessCycles(this ClockSpeed speed) => speed == ClockSpeed.Fast ? (byte)5 : (byte)3;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte RomBufferWaitCycles(this ClockSpeed speed) => speed == ClockSpeed.Fast ? (byte)7 : (byte)5;
 }
 
@@ -102,6 +107,7 @@ internal enum BusAccess
 
 internal static class BusAccessExtensions
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static BusAccess FromBit(bool bit) => bit ? BusAccess.Gsu : BusAccess.Snes;
 }
 
@@ -114,6 +120,7 @@ internal enum StopState
 
 internal static class StopStateExtensions
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static StopState Next(this StopState state)
     {
         return state switch
@@ -179,6 +186,8 @@ internal sealed class GraphicsSupportUnit
     public BusAccess RomAccess = BusAccess.Snes;
     public BusAccess RamAccess = BusAccess.Snes;
     public byte WaitCycles;
+    public readonly ulong[] PerfOpcodeCounts = new ulong[256];
+    public readonly ulong[] PerfOpcodeCycles = new ulong[256];
 
     public byte? ReadRegister(uint address)
     {

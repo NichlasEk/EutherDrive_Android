@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -255,6 +256,11 @@ internal sealed class SuperFx
         _perfMasterCycles = 0;
         _perfInputCycles = 0;
         _perfInstructions = 0;
+        if (Instructions.PerfOpcodeHistogram)
+        {
+            Array.Clear(_gsu.PerfOpcodeCounts);
+            Array.Clear(_gsu.PerfOpcodeCycles);
+        }
     }
 
     internal string GetPerfSummary()
@@ -263,9 +269,58 @@ internal sealed class SuperFx
             return string.Empty;
 
         double tickMs = _perfTickTicks * 1000.0 / Stopwatch.Frequency;
-        return string.Create(
+        string summary = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
             $"SNES sfx  instr:{_perfInstructions}  tick:{tickMs:0.0}ms  calls:{_perfTickCalls}/{_perfActiveTickCalls}/{_perfIdleTickCalls}  m:{_perfMasterCycles}  gsu:{_perfInputCycles}  wait:{_gsu.WaitCycles}  go:{(_gsu.IsRunning() ? 1 : 0)}");
+
+        return Instructions.PerfOpcodeHistogram
+            ? summary + BuildOpcodeHistogramSummary()
+            : summary;
+    }
+
+    private string BuildOpcodeHistogramSummary()
+    {
+        Span<byte> topOpcodes = stackalloc byte[8];
+        Span<ulong> topCycles = stackalloc ulong[8];
+
+        for (int opcode = 0; opcode < _gsu.PerfOpcodeCycles.Length; opcode++)
+        {
+            ulong cycles = _gsu.PerfOpcodeCycles[opcode];
+            if (cycles == 0)
+                continue;
+
+            for (int slot = 0; slot < topCycles.Length; slot++)
+            {
+                if (cycles <= topCycles[slot])
+                    continue;
+
+                for (int shift = topCycles.Length - 1; shift > slot; shift--)
+                {
+                    topCycles[shift] = topCycles[shift - 1];
+                    topOpcodes[shift] = topOpcodes[shift - 1];
+                }
+
+                topCycles[slot] = cycles;
+                topOpcodes[slot] = (byte)opcode;
+                break;
+            }
+        }
+
+        var builder = new StringBuilder(160);
+        builder.Append("  ophist:");
+        for (int slot = 0; slot < topCycles.Length && topCycles[slot] != 0; slot++)
+        {
+            byte opcode = topOpcodes[slot];
+            builder.Append(' ');
+            builder.Append("0x");
+            builder.Append(opcode.ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+            builder.Append(':');
+            builder.Append(_gsu.PerfOpcodeCounts[opcode].ToString(System.Globalization.CultureInfo.InvariantCulture));
+            builder.Append('/');
+            builder.Append(topCycles[slot].ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return builder.ToString();
     }
 
     public void Reset()

@@ -944,7 +944,7 @@ public class SNESSystem : ISNESSystem
             _cpuImpl.NmiWanted = true;
         }
         
-        _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
+        _cpuImpl.IrqWanted = _inIrq || RomImpl.RunCoprocessorAndCheckIrq(Cycles);
         if (XPos == RenderLineMclk && !noPpu)
         {
             long ppuStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
@@ -969,8 +969,7 @@ public class SNESSystem : ISNESSystem
             }
         }
 
-        // Tick coprocessor every cycle for timing accuracy, but batch APU.
-        RomImpl.RunCoprocessor(Cycles);
+        // Coprocessor timing was synced above when sampling IRQ state; batch APU only here.
         if ((Cycles & ApuPeriodicCatchUpMask) == 0 || XPos == 0)
         {
             CatchUpApu();

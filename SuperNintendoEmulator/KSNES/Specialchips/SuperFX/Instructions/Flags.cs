@@ -1,7 +1,10 @@
+using System.Runtime.CompilerServices;
+
 namespace KSNES.Specialchips.SuperFX;
 
 internal static class Flags
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte From(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte cycles;
@@ -26,6 +29,7 @@ internal static class Flags
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte To(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         byte cycles;
@@ -46,6 +50,7 @@ internal static class Flags
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte With(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         byte register = (byte)(opcode & 0x0F);
@@ -56,18 +61,21 @@ internal static class Flags
         return memoryType.AccessCycles(gsu.ClockSpeed);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Alt1(MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         gsu.Alt1 = true;
         return memoryType.AccessCycles(gsu.ClockSpeed);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Alt2(MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         gsu.Alt2 = true;
         return memoryType.AccessCycles(gsu.ClockSpeed);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte Alt3(MemoryType memoryType, GraphicsSupportUnit gsu)
     {
         gsu.Alt1 = true;

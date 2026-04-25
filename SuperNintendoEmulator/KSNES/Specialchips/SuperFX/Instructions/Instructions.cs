@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
 
@@ -18,14 +19,10 @@ internal enum WaitKind
 
 internal static class MemoryTypeExtensions
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte AccessCycles(this MemoryType memoryType, ClockSpeed clockSpeed)
     {
-        return memoryType switch
-        {
-            MemoryType.CodeCache => 1,
-            MemoryType.Rom or MemoryType.Ram => clockSpeed.MemoryAccessCycles(),
-            _ => 1
-        };
+        return memoryType == MemoryType.CodeCache ? (byte)1 : clockSpeed.MemoryAccessCycles();
     }
 }
 
@@ -42,6 +39,8 @@ internal static class Instructions
         ParseTraceHex("EUTHERDRIVE_TRACE_SNES_SUPERFX_CACHE_END", 0x8C3F);
     private static readonly bool TraceExec =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_EXEC"), "1", StringComparison.Ordinal);
+    internal static readonly bool PerfOpcodeHistogram =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_SUPERFX_OPCODE_HIST"), "1", StringComparison.Ordinal);
     private static readonly int TraceExecLimit =
         ParseTraceLimit("EUTHERDRIVE_TRACE_SNES_SUPERFX_EXEC_LIMIT", 2048);
     private static readonly int TraceExecStart =
@@ -53,7 +52,7 @@ internal static class Instructions
 
     public static byte Execute(GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
-        MemoryType memoryType = NextOpcodeMemoryType(gsu);
+        MemoryType memoryType = NextOpcodeMemoryType(gsu, out byte cachedOpcode);
         byte opcode = gsu.State.OpcodeBuffer;
         
         if (TraceCache)
@@ -98,8 +97,16 @@ internal static class Instructions
             gsu.State.RamBufferWaitCycles = 0;
         }
 
-        FetchOpcode(gsu, rom, ram);
+        if (memoryType == MemoryType.CodeCache)
+            FetchCachedOpcode(gsu, cachedOpcode);
+        else
+            FetchOpcode(gsu, rom, ram);
         cycles = (byte)(cycles + ExecuteOpcode(opcode, memoryType, gsu, rom, ram));
+        if (PerfOpcodeHistogram)
+        {
+            gsu.PerfOpcodeCounts[opcode]++;
+            gsu.PerfOpcodeCycles[opcode] += cycles;
+        }
 
         if (gsu.State.RomPointerChanged)
         {
@@ -153,6 +160,7 @@ internal static class Instructions
             || ((alt1 || alt2) && ((opcode >= 0xA0 && opcode <= 0xAF) || (opcode >= 0xF0 && opcode <= 0xFF)));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static (byte Value, MemoryType Type) ReadMemory(byte bank, ushort address, byte[] rom, byte[] ram)
     {
         int bankMasked = bank & 0x7F;
@@ -174,6 +182,7 @@ internal static class Instructions
         return (0, MemoryType.CodeCache);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void FetchOpcode(GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort fetchAddr = gsu.R[15];
@@ -207,12 +216,28 @@ internal static class Instructions
         gsu.R[15] = unchecked((ushort)(gsu.R[15] + 1));
     }
 
-    internal static MemoryType NextOpcodeMemoryType(GraphicsSupportUnit gsu)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void FetchCachedOpcode(GraphicsSupportUnit gsu, byte opcode)
     {
-        if (gsu.CodeCache.PcIsCacheable(gsu.R[15]) && gsu.CodeCache.TryGet(gsu.R[15], out _))
+        ushort fetchAddr = gsu.R[15];
+        gsu.State.OpcodeBuffer = opcode;
+        if (TraceCache) TraceCacheEvent(gsu, "FETCH-HIT", fetchAddr, $"opcode=0x{opcode:X2}");
+        gsu.R[15] = unchecked((ushort)(fetchAddr + 1));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static MemoryType NextOpcodeMemoryType(GraphicsSupportUnit gsu)
+        => NextOpcodeMemoryType(gsu, out _);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static MemoryType NextOpcodeMemoryType(GraphicsSupportUnit gsu, out byte cachedOpcode)
+    {
+        if (gsu.CodeCache.PcIsCacheable(gsu.R[15]) && gsu.CodeCache.TryGet(gsu.R[15], out cachedOpcode))
         {
             return MemoryType.CodeCache;
         }
+
+        cachedOpcode = 0;
 
         int bankMasked = gsu.Pbr & 0x7F;
         if (bankMasked <= 0x5F)
@@ -227,6 +252,7 @@ internal static class Instructions
         return MemoryType.Rom;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static byte FillCacheToPc(GraphicsSupportUnit gsu, ushort pc, byte[] rom, byte[] ram)
     {
         if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.TryGet(pc, out _))
@@ -247,6 +273,7 @@ internal static class Instructions
         return (byte)(gsu.ClockSpeed.MemoryAccessCycles() * count);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static byte CacheAtPc(GraphicsSupportUnit gsu, ushort pc, byte[] rom, byte[] ram)
     {
         if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.TryGet(pc, out _))
@@ -262,6 +289,7 @@ internal static class Instructions
         return gsu.ClockSpeed.MemoryAccessCycles();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static byte FillCacheFromPc(GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         if ((gsu.R[15] & 0xF) == 0)
@@ -288,6 +316,7 @@ internal static class Instructions
         return (byte)(gsu.ClockSpeed.MemoryAccessCycles() * (0x10 - start));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static ushort ReadRegister(GraphicsSupportUnit gsu, byte register)
     {
         return register == 15
@@ -295,6 +324,7 @@ internal static class Instructions
             : gsu.R[register];
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static byte WriteRegister(GraphicsSupportUnit gsu, byte register, ushort value, byte[] rom, byte[] ram)
     {
         byte cycles = 0;
@@ -315,6 +345,7 @@ internal static class Instructions
         return cycles;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void ClearPrefixFlags(GraphicsSupportUnit gsu)
     {
         gsu.Alt1 = false;
@@ -324,6 +355,7 @@ internal static class Instructions
         gsu.DReg = 0;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte ExecuteOpcode(byte opcode, MemoryType memoryType, GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         return opcode switch
@@ -444,15 +476,18 @@ internal static class Instructions
         return (byte)(cycles + memoryType.AccessCycles(gsu.ClockSpeed) + (updated ? 1 : 0));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte SaturatingSub(byte value, byte sub)
     {
         int result = value - sub;
         return (byte)(result < 0 ? 0 : result);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static WaitKind GetWaitKind(GraphicsSupportUnit gsu)
         => GetWaitKind(gsu, NextOpcodeMemoryType(gsu), gsu.State.OpcodeBuffer);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static WaitKind GetWaitKind(GraphicsSupportUnit gsu, MemoryType memoryType, byte opcode)
     {
         if (gsu.RomAccess == BusAccess.Snes

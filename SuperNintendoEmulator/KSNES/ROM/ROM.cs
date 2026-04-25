@@ -1554,6 +1554,14 @@ public class ROM : IROM
         }
     }
 
+    public bool RunCoprocessorAndCheckIrq(ulong snesCycles)
+    {
+        RunCoprocessor(snesCycles);
+        return CoprocessorIrqWantedNoSync;
+    }
+
+    public bool CoprocessorIrqWantedNoSync => (_superFx?.Irq ?? false) || (_sa1?.SnesIrq() ?? false);
+
     public void ResyncCoprocessors(ulong snesCycles)
     {
         ConfigureTimedCoprocessorDispatch();
