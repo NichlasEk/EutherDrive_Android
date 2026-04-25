@@ -55,7 +55,7 @@ public partial class MainWindow : Window
     private readonly SavestateViewModel _savestateViewModel;
     private readonly EffectManager _effectManager = new();
     private readonly AmbientMusicController _ambientMusicController;
-    private readonly MachineRoomMiniPlayerController _machineRoomMiniPlayerController = new();
+    private readonly MachineRoomMiniPlayerController _machineRoomMiniPlayerController;
     private readonly OffworldMonitorViewModel _offworldMonitorViewModel;
     private Bitmap? _ambientMusicCoverBitmap;
     private readonly DispatcherTimer _deckMonitorTimer;
@@ -486,6 +486,7 @@ public partial class MainWindow : Window
     private const double MinMouseCaptureSensitivity = 0.25;
     private const double MaxMouseCaptureSensitivity = 4.0;
     private const string AmbientMusicCacheDirectoryName = ".ambient-music-cache";
+    private const string MachineRoomCoverCacheDirectoryName = ".machine-room-cover-cache";
     private double _uiScale = DefaultUiScale;
 
     public MainWindow()
@@ -539,6 +540,7 @@ public partial class MainWindow : Window
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
         _ambientMusicController = new AmbientMusicController(GetAmbientMusicCachePath());
+        _machineRoomMiniPlayerController = new MachineRoomMiniPlayerController(GetMachineRoomCoverCachePath());
         _ambientMusicController.StateChanged += OnAmbientMusicStateChanged;
         _machineRoomMiniPlayerController.StateChanged += OnMachineRoomMiniPlayerStateChanged;
         _offworldMonitorViewModel = offworldMonitorViewModel ?? OffworldMonitorViewModel.CreatePreview();
@@ -3625,6 +3627,9 @@ public partial class MainWindow : Window
     private static string GetAmbientMusicCachePath()
         => Path.Combine(Directory.GetCurrentDirectory(), AmbientMusicCacheDirectoryName);
 
+    private static string GetMachineRoomCoverCachePath()
+        => Path.Combine(Directory.GetCurrentDirectory(), MachineRoomCoverCacheDirectoryName);
+
     private void OnAmbientMusicStateChanged(object? sender, EventArgs e)
     {
         AmbientMusicSnapshot snapshot = _ambientMusicController.GetSnapshot();
@@ -3665,7 +3670,7 @@ public partial class MainWindow : Window
             MachineRoomStopButton.IsEnabled = miniPlayer.HasSelection || miniPlayer.IsPlaying;
         if (AmbientMusicButton != null)
             AmbientMusicButton.IsEnabled = !ambient.IsBusy;
-        UpdateAmbientMusicCover(showMiniPlayer ? null : ambient.CoverPath);
+        UpdateAmbientMusicCover(showMiniPlayer ? miniPlayer.CoverPath : ambient.CoverPath);
         MaybeUpdateDeckMonitorUi(force: true);
     }
 

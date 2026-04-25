@@ -1,9 +1,13 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace EutherDrive.UI.Ambient;
@@ -13,7 +17,8 @@ internal readonly record struct MachineRoomMiniPlayerSnapshot(
     bool IsPlaying,
     bool IsPaused,
     string TrackTitle,
-    string StatusText);
+    string StatusText,
+    string? CoverPath);
 
 internal sealed class MachineRoomMiniPlayerController : IDisposable
 {
@@ -25,8 +30,11 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private static readonly string[] SupportedPlaylistExtensions = [".m3u", ".m3u8", ".pls"];
 
     private readonly object _lock = new();
+    private readonly string _coverCacheRoot;
     private List<string> _playlist = [];
     private Process? _process;
+    private PlayerKind _playerKind = PlayerKind.None;
+    private string? _mpvSocketPath;
     private int _currentIndex;
     private int _volumePercent = 60;
     private bool _isPlaying;
@@ -35,6 +43,12 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private bool _disposed;
     private string _trackTitle = "Cyberpunk Ambient";
     private string _statusText = "Ambient off.";
+    private string? _coverPath;
+
+    public MachineRoomMiniPlayerController(string coverCacheRoot)
+    {
+        _coverCacheRoot = coverCacheRoot ?? throw new ArgumentNullException(nameof(coverCacheRoot));
+    }
 
     public event EventHandler? StateChanged;
 
@@ -47,7 +61,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _isPlaying,
                 _isPaused,
                 _trackTitle,
-                _statusText);
+                _statusText,
+                _coverPath);
         }
     }
 
@@ -68,10 +83,11 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             {
                 _trackTitle = "Mini Winamp";
                 _statusText = "No playable media selected.";
+                _coverPath = null;
             }
             else
             {
-                _trackTitle = GetDisplayTitle(_playlist[0]);
+                UpdateCurrentTrackMetadataLocked();
                 _statusText = _playlist.Count == 1
                     ? "Loaded 1 track."
                     : $"Loaded {_playlist.Count} tracks.";
@@ -84,16 +100,28 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     public void SetVolumePercent(int percent)
     {
         Process? process;
+        PlayerKind playerKind;
+        string? mpvSocketPath;
+        int volumePercent;
         int previousPercent;
         lock (_lock)
         {
             previousPercent = _volumePercent;
             _volumePercent = Math.Clamp(percent, 0, 100);
+            volumePercent = _volumePercent;
             process = _process;
+            playerKind = _playerKind;
+            mpvSocketPath = _mpvSocketPath;
         }
 
         if (process == null || process.HasExited)
             return;
+
+        if (playerKind == PlayerKind.Mpv && !string.IsNullOrWhiteSpace(mpvSocketPath))
+        {
+            SendMpvCommand(mpvSocketPath, $"{{\"command\":[\"set_property\",\"volume\",{volumePercent}]}}");
+            return;
+        }
 
         int steps = (int)Math.Round((_volumePercent - previousPercent) / 10.0);
         if (steps == 0)
@@ -116,11 +144,15 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     {
         bool shouldStart;
         Process? process;
+        PlayerKind playerKind;
+        string? mpvSocketPath;
 
         lock (_lock)
         {
             shouldStart = !_isPlaying || _process == null || _process.HasExited;
             process = _process;
+            playerKind = _playerKind;
+            mpvSocketPath = _mpvSocketPath;
         }
 
         if (shouldStart)
@@ -128,8 +160,16 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
         try
         {
-            process?.StandardInput.Write("p");
-            process?.StandardInput.Flush();
+            if (playerKind == PlayerKind.Mpv && !string.IsNullOrWhiteSpace(mpvSocketPath))
+            {
+                SendMpvCommand(mpvSocketPath, "{\"command\":[\"cycle\",\"pause\"]}");
+            }
+            else
+            {
+                process?.StandardInput.Write("p");
+                process?.StandardInput.Flush();
+            }
+
             lock (_lock)
             {
                 _isPaused = !_isPaused;
@@ -148,38 +188,30 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
     public Task PreviousAsync()
     {
-        bool shouldStart;
         lock (_lock)
         {
             if (_playlist.Count == 0)
                 return Task.CompletedTask;
             _currentIndex = (_currentIndex - 1 + _playlist.Count) % _playlist.Count;
-            shouldStart = _isPlaying || _process != null;
         }
 
-        return shouldStart ? StartCurrentAsync() : RefreshStoppedTrackAsync();
+        return StartCurrentAsync();
     }
 
     public Task NextAsync()
     {
-        bool shouldStart;
         lock (_lock)
         {
             if (_playlist.Count == 0)
                 return Task.CompletedTask;
             _currentIndex = (_currentIndex + 1) % _playlist.Count;
-            shouldStart = _isPlaying || _process != null;
         }
 
-        return shouldStart ? StartCurrentAsync() : RefreshStoppedTrackAsync();
+        return StartCurrentAsync();
     }
 
     public Task RandomFromDirectoryAsync(string? root)
     {
-        bool shouldStart;
-        lock (_lock)
-            shouldStart = _isPlaying || _process != null;
-
         if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
         {
             lock (_lock)
@@ -220,12 +252,12 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         {
             _playlist = tracks;
             _currentIndex = randomIndex;
-            _trackTitle = GetDisplayTitle(_playlist[_currentIndex]);
+            UpdateCurrentTrackMetadataLocked();
             _statusText = $"Random from {Path.GetFileName(root)}.";
         }
 
         NotifyStateChanged();
-        return shouldStart ? StartCurrentAsync() : Task.CompletedTask;
+        return StartCurrentAsync();
     }
 
     public void Stop()
@@ -237,13 +269,14 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             _isPaused = false;
             if (_playlist.Count > 0)
             {
-                _trackTitle = GetDisplayTitle(_playlist[Math.Clamp(_currentIndex, 0, _playlist.Count - 1)]);
+                UpdateCurrentTrackMetadataLocked();
                 _statusText = "Stopped.";
             }
             else
             {
                 _trackTitle = "Cyberpunk Ambient";
                 _statusText = "Ambient off.";
+                _coverPath = null;
             }
         }
 
@@ -261,14 +294,14 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
     private Task StartCurrentAsync()
     {
-        string? ffplayPath = FindFfplay();
-        if (ffplayPath == null)
+        PlayerLaunch player = FindPlayer();
+        if (player.Kind == PlayerKind.None)
         {
             lock (_lock)
             {
                 _isPlaying = false;
                 _isPaused = false;
-                _statusText = "Install ffplay to play mp4/audio here.";
+                _statusText = "Install mpv or ffplay to play media here.";
             }
 
             NotifyStateChanged();
@@ -293,22 +326,37 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
         try
         {
-            var startInfo = new ProcessStartInfo(ffplayPath)
+            string? mpvSocketPath = null;
+            var startInfo = new ProcessStartInfo(player.Path)
             {
                 UseShellExecute = false,
-                RedirectStandardInput = true,
+                RedirectStandardInput = player.Kind == PlayerKind.Ffplay,
                 CreateNoWindow = true
             };
 
-            startInfo.ArgumentList.Add("-hide_banner");
-            startInfo.ArgumentList.Add("-loglevel");
-            startInfo.ArgumentList.Add("error");
-            startInfo.ArgumentList.Add("-nostats");
-            startInfo.ArgumentList.Add("-volume");
-            startInfo.ArgumentList.Add(_volumePercent.ToString());
-            startInfo.ArgumentList.Add("-nodisp");
-            startInfo.ArgumentList.Add("-autoexit");
-            startInfo.ArgumentList.Add(path);
+            if (player.Kind == PlayerKind.Mpv)
+            {
+                mpvSocketPath = GetMpvSocketPath();
+                startInfo.ArgumentList.Add("--no-video");
+                startInfo.ArgumentList.Add("--really-quiet");
+                startInfo.ArgumentList.Add("--force-window=no");
+                startInfo.ArgumentList.Add("--input-terminal=no");
+                startInfo.ArgumentList.Add($"--input-ipc-server={mpvSocketPath}");
+                startInfo.ArgumentList.Add($"--volume={_volumePercent}");
+                startInfo.ArgumentList.Add(path);
+            }
+            else
+            {
+                startInfo.ArgumentList.Add("-hide_banner");
+                startInfo.ArgumentList.Add("-loglevel");
+                startInfo.ArgumentList.Add("error");
+                startInfo.ArgumentList.Add("-nostats");
+                startInfo.ArgumentList.Add("-volume");
+                startInfo.ArgumentList.Add(_volumePercent.ToString());
+                startInfo.ArgumentList.Add("-nodisp");
+                startInfo.ArgumentList.Add("-autoexit");
+                startInfo.ArgumentList.Add(path);
+            }
 
             var process = new Process
             {
@@ -321,10 +369,12 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             lock (_lock)
             {
                 _process = process;
+                _playerKind = player.Kind;
+                _mpvSocketPath = mpvSocketPath;
                 _isPlaying = true;
                 _isPaused = false;
                 _stopping = false;
-                _trackTitle = GetDisplayTitle(path);
+                UpdateCurrentTrackMetadataLocked();
                 _statusText = totalCount > 1
                     ? $"Playing {currentIndex + 1}/{totalCount}."
                     : "Playing.";
@@ -369,11 +419,15 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private void StopProcess(bool clearSelection)
     {
         Process? process;
+        string? mpvSocketPath;
         lock (_lock)
         {
             _stopping = true;
             process = _process;
+            mpvSocketPath = _mpvSocketPath;
             _process = null;
+            _playerKind = PlayerKind.None;
+            _mpvSocketPath = null;
             _isPlaying = false;
             _isPaused = false;
             if (clearSelection)
@@ -396,6 +450,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         finally
         {
             process.Dispose();
+            if (!string.IsNullOrWhiteSpace(mpvSocketPath))
+                TryDeleteFile(mpvSocketPath);
         }
     }
 
@@ -422,7 +478,7 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         {
             if (_playlist.Count > 0)
             {
-                _trackTitle = GetDisplayTitle(_playlist[Math.Clamp(_currentIndex, 0, _playlist.Count - 1)]);
+                UpdateCurrentTrackMetadataLocked();
                 _statusText = "Selected.";
             }
         }
@@ -478,9 +534,324 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private static bool IsSupportedMediaPath(string path)
         => SupportedMediaExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
-    private static string? FindFfplay()
+    private void UpdateCurrentTrackMetadataLocked()
     {
-        string executableName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "ffplay.exe" : "ffplay";
+        if (_playlist.Count == 0)
+        {
+            _trackTitle = "Mini Winamp";
+            _coverPath = null;
+            return;
+        }
+
+        string path = _playlist[Math.Clamp(_currentIndex, 0, _playlist.Count - 1)];
+        _trackTitle = GetDisplayTitle(path);
+        _coverPath = TryGetEmbeddedCoverPath(path);
+    }
+
+    private string? TryGetEmbeddedCoverPath(string mediaPath)
+    {
+        if (!File.Exists(mediaPath))
+            return null;
+
+        try
+        {
+            if (string.Equals(Path.GetExtension(mediaPath), ".mp3", StringComparison.OrdinalIgnoreCase))
+            {
+                byte[]? imageBytes = TryReadId3ApicImage(mediaPath, out string? mimeType);
+                if (imageBytes is { Length: > 0 })
+                {
+                    Directory.CreateDirectory(_coverCacheRoot);
+                    string extension = GetImageExtension(mimeType, imageBytes);
+                    string cacheName = GetStableCacheStem(mediaPath) + extension;
+                    string cachePath = Path.Combine(_coverCacheRoot, cacheName);
+                    if (!File.Exists(cachePath))
+                        File.WriteAllBytes(cachePath, imageBytes);
+                    return cachePath;
+                }
+            }
+
+            return TryExtractCoverWithFfmpeg(mediaPath)
+                ?? TryExtractCompanionCoverWithFfmpeg(mediaPath);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static byte[]? TryReadId3ApicImage(string path, out string? mimeType)
+    {
+        mimeType = null;
+        using var stream = File.OpenRead(path);
+        Span<byte> header = stackalloc byte[10];
+        if (stream.Read(header) != header.Length
+            || header[0] != (byte)'I'
+            || header[1] != (byte)'D'
+            || header[2] != (byte)'3')
+        {
+            return null;
+        }
+
+        int majorVersion = header[3];
+        int tagSize = DecodeSynchsafeInt(header[6], header[7], header[8], header[9]);
+        if (tagSize <= 0)
+            return null;
+
+        long tagEnd = Math.Min(stream.Length, 10L + tagSize);
+        Span<byte> frameHeader = stackalloc byte[6];
+        Span<byte> id3FrameHeader = stackalloc byte[10];
+        while (stream.Position + (majorVersion == 2 ? 6 : 10) <= tagEnd)
+        {
+            if (majorVersion == 2)
+            {
+                if (stream.Read(frameHeader) != frameHeader.Length)
+                    return null;
+
+                string frameId = System.Text.Encoding.ASCII.GetString(frameHeader[..3]);
+                int frameSize = (frameHeader[3] << 16) | (frameHeader[4] << 8) | frameHeader[5];
+                if (frameSize <= 0 || stream.Position + frameSize > tagEnd)
+                    return null;
+
+                byte[] frame = new byte[frameSize];
+                if (stream.Read(frame) != frame.Length)
+                    return null;
+                if (frameId == "PIC")
+                    return ParsePicFrame(frame, out mimeType);
+                continue;
+            }
+
+            if (stream.Read(id3FrameHeader) != id3FrameHeader.Length)
+                return null;
+
+            if (id3FrameHeader[..4].IndexOf((byte)0) >= 0)
+                return null;
+
+            string id3FrameId = System.Text.Encoding.ASCII.GetString(id3FrameHeader[..4]);
+            int id3FrameSize = majorVersion == 4
+                ? DecodeSynchsafeInt(id3FrameHeader[4], id3FrameHeader[5], id3FrameHeader[6], id3FrameHeader[7])
+                : BinaryPrimitives.ReadInt32BigEndian(id3FrameHeader[4..8]);
+            if (id3FrameSize <= 0 || stream.Position + id3FrameSize > tagEnd)
+                return null;
+
+            byte[] id3Frame = new byte[id3FrameSize];
+            if (stream.Read(id3Frame) != id3Frame.Length)
+                return null;
+            if (id3FrameId == "APIC")
+                return ParseApicFrame(id3Frame, out mimeType);
+        }
+
+        return null;
+    }
+
+    private static byte[]? ParseApicFrame(byte[] frame, out string? mimeType)
+    {
+        mimeType = null;
+        if (frame.Length < 4)
+            return null;
+
+        int index = 1;
+        int mimeEnd = Array.IndexOf(frame, (byte)0, index);
+        if (mimeEnd < 0 || mimeEnd + 2 >= frame.Length)
+            return null;
+
+        mimeType = System.Text.Encoding.ASCII.GetString(frame, index, mimeEnd - index);
+        index = mimeEnd + 2;
+        index = SkipEncodedText(frame, index, frame[0]);
+        return index >= 0 && index < frame.Length ? frame[index..] : null;
+    }
+
+    private static byte[]? ParsePicFrame(byte[] frame, out string? mimeType)
+    {
+        mimeType = null;
+        if (frame.Length < 6)
+            return null;
+
+        string format = System.Text.Encoding.ASCII.GetString(frame, 1, 3).Trim();
+        mimeType = format.Equals("PNG", StringComparison.OrdinalIgnoreCase) ? "image/png" : "image/jpeg";
+        int index = SkipEncodedText(frame, 5, frame[0]);
+        return index >= 0 && index < frame.Length ? frame[index..] : null;
+    }
+
+    private static int SkipEncodedText(byte[] data, int start, byte encoding)
+    {
+        if (start >= data.Length)
+            return -1;
+
+        if (encoding is 1 or 2)
+        {
+            for (int i = start; i + 1 < data.Length; i += 2)
+            {
+                if (data[i] == 0 && data[i + 1] == 0)
+                    return i + 2;
+            }
+
+            return -1;
+        }
+
+        int end = Array.IndexOf(data, (byte)0, start);
+        return end < 0 ? -1 : end + 1;
+    }
+
+    private static int DecodeSynchsafeInt(byte b0, byte b1, byte b2, byte b3)
+        => (b0 << 21) | (b1 << 14) | (b2 << 7) | b3;
+
+    private static string GetImageExtension(string? mimeType, byte[] imageBytes)
+    {
+        if (string.Equals(mimeType, "image/png", StringComparison.OrdinalIgnoreCase)
+            || imageBytes is [0x89, 0x50, 0x4E, 0x47, ..])
+        {
+            return ".png";
+        }
+
+        return ".jpg";
+    }
+
+    private string? TryExtractCompanionCoverWithFfmpeg(string mediaPath)
+    {
+        if (!string.Equals(Path.GetExtension(mediaPath), ".mp3", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        string? directory = Path.GetDirectoryName(mediaPath);
+        string? parent = string.IsNullOrWhiteSpace(directory) ? null : Directory.GetParent(directory)?.FullName;
+        if (string.IsNullOrWhiteSpace(parent))
+            return null;
+
+        string companion = Path.Combine(parent, Path.GetFileNameWithoutExtension(mediaPath) + ".m4a");
+        return File.Exists(companion) ? TryExtractCoverWithFfmpeg(companion, mediaPath) : null;
+    }
+
+    private string? TryExtractCoverWithFfmpeg(string mediaPath, string? cacheKeyPath = null)
+    {
+        string? ffmpegPath = FindExecutable(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "ffmpeg.exe" : "ffmpeg");
+        if (ffmpegPath == null)
+            return null;
+
+        Directory.CreateDirectory(_coverCacheRoot);
+        string cachePath = Path.Combine(_coverCacheRoot, GetStableCacheStem(cacheKeyPath ?? mediaPath) + ".jpg");
+        if (File.Exists(cachePath))
+            return cachePath;
+
+        string tempPath = cachePath + ".tmp";
+        try
+        {
+            var startInfo = new ProcessStartInfo(ffmpegPath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            startInfo.ArgumentList.Add("-hide_banner");
+            startInfo.ArgumentList.Add("-loglevel");
+            startInfo.ArgumentList.Add("error");
+            startInfo.ArgumentList.Add("-y");
+            startInfo.ArgumentList.Add("-i");
+            startInfo.ArgumentList.Add(mediaPath);
+            startInfo.ArgumentList.Add("-map");
+            startInfo.ArgumentList.Add("0:v:0");
+            startInfo.ArgumentList.Add("-frames:v");
+            startInfo.ArgumentList.Add("1");
+            startInfo.ArgumentList.Add(tempPath);
+
+            using var process = Process.Start(startInfo);
+            process?.WaitForExit(2500);
+            if (process == null
+                || !process.HasExited
+                || process.ExitCode != 0
+                || !File.Exists(tempPath)
+                || new FileInfo(tempPath).Length == 0)
+            {
+                try
+                {
+                    if (process is { HasExited: false })
+                        process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best effort cleanup.
+                }
+
+                return null;
+            }
+
+            File.Move(tempPath, cachePath, overwrite: true);
+            return cachePath;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+            catch
+            {
+                // Ignore cache cleanup failures.
+            }
+        }
+    }
+
+    private static string GetStableCacheStem(string path)
+        => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(path))).ToLowerInvariant();
+
+    private static PlayerLaunch FindPlayer()
+    {
+        string? mpv = FindExecutable(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "mpv.exe" : "mpv");
+        if (mpv != null)
+            return new PlayerLaunch(PlayerKind.Mpv, mpv);
+
+        string? ffplay = FindExecutable(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "ffplay.exe" : "ffplay");
+        return ffplay == null ? default : new PlayerLaunch(PlayerKind.Ffplay, ffplay);
+    }
+
+    private static string GetMpvSocketPath()
+        => Path.Combine(Path.GetTempPath(), $"eutherdrive-machine-room-{Environment.ProcessId}-{Guid.NewGuid():N}.sock");
+
+    private static void SendMpvCommand(string socketPath, string json)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+
+        try
+        {
+            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            socket.Connect(new UnixDomainSocketEndPoint(socketPath));
+            byte[] bytes = Encoding.UTF8.GetBytes(json + "\n");
+            socket.Send(bytes);
+        }
+        catch
+        {
+            // Runtime player control is best effort; the next track starts with the saved setting.
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            // Ignore temporary IPC socket cleanup failures.
+        }
+    }
+
+    private readonly record struct PlayerLaunch(PlayerKind Kind, string Path);
+
+    private enum PlayerKind
+    {
+        None,
+        Mpv,
+        Ffplay
+    }
+
+    private static string? FindExecutable(string executableName)
+    {
         string? pathEnv = Environment.GetEnvironmentVariable("PATH");
         if (string.IsNullOrWhiteSpace(pathEnv))
             return null;
