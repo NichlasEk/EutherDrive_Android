@@ -9,8 +9,7 @@ namespace KSNES.PictureProcessing;
 public class PPU : IPPU
 {
     private static readonly bool PerfStatsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
-        || OperatingSystem.IsAndroid();
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     public const int MaxFrameWidth = 512;
     public const int MaxFrameHeight = 240;
     private const int TilePixelCount = 64;

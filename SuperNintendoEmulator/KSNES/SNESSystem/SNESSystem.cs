@@ -12,18 +12,16 @@ namespace KSNES.SNESSystem;
 public class SNESSystem : ISNESSystem
 {
     private static readonly bool PerfStatsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
-        || OperatingSystem.IsAndroid();
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private static readonly bool ForceLegacyTiming =
-        OperatingSystem.IsAndroid() || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_LEGACY_TIMING"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_FORCE_LEGACY_TIMING"), "1", StringComparison.Ordinal);
     private static readonly bool DetailedPerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF_DETAIL"), "1", StringComparison.Ordinal);
     // Keep fast CPU windows opt-in for now. Raster IRQ-driven paths such as Kirby 3's HUD
     // self-disable the fast window anyway, and leaving the feature on by default just adds
     // more branch/work overhead in titles that spend most of the frame with H/V IRQ timing armed.
     private static readonly bool DisableFastPpuPaths =
-        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS"), "0", StringComparison.Ordinal) 
-        || OperatingSystem.IsAndroid();
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_DISABLE_FAST_PPU_PATHS"), "0", StringComparison.Ordinal);
     private enum GpDmaState
     {
         Idle,

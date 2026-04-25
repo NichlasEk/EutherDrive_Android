@@ -458,10 +458,15 @@ class Program
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
                 bool traceSpcWindow = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SPC_WINDOW") == "1";
                 bool traceSnesCheckpoints = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CHECKPOINTS") == "1";
+                bool traceSnesFrameEnd = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_FRAME_END") == "1";
                 bool sa1SnapshotOnExit = Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_HEADLESS_SA1_SNAPSHOT_ON_EXIT") == "1";
+                bool traceSnesPerf = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PERF") == "1";
+                bool traceSnesPerfEveryFrame = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PERF_EVERY_FRAME") == "1";
                 int traceSnesCheckpointEvery = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_EVERY") ?? 1);
                 int traceSnesCheckpointStart = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_START_FRAME") ?? 0;
                 int traceSnesCheckpointEnd = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_END_FRAME") ?? int.MaxValue;
+                int traceSnesPerfStart = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_PERF_FRAME_START") ?? 0;
+                int traceSnesPerfEnd = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_PERF_FRAME_END") ?? int.MaxValue;
                 StreamWriter? snesTraceWriter = null;
                 if (traceSnesFrames || traceSnesCheckpoints)
                 {
@@ -530,6 +535,12 @@ class Program
 
                     snes.RunFrame();
                     TraceCheckpoint(frame);
+                    if (ShouldTraceSnesPerfFrame(frame, traceSnesPerf, traceSnesPerfEveryFrame, traceSnesPerfStart, traceSnesPerfEnd) &&
+                        snes.TryGetFramePerfSummary(out string perfSummary) &&
+                        !string.IsNullOrWhiteSpace(perfSummary))
+                    {
+                        Trace($"[HEADLESS][SNES-PERF] frame={frame} {perfSummary.Replace(Environment.NewLine, " | ")}");
+                    }
 
                     if (traceSnesFrames)
                     {
@@ -586,7 +597,8 @@ class Program
                         string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}" : "";
                         ushort? spcPcValue = snes.System.APU?.Spc?.ProgramCounter;
                         string spcPc = spcPcValue.HasValue ? $" SPC PC=0x{spcPcValue.Value:X4}" : "";
-                        TraceFrameEnd($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}{spcPc}");
+                        if (traceSnesFrames || traceSnesFrameEnd || traceSpcWindow)
+                            TraceFrameEnd($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}{spcPc}");
                         if (traceSpcWindow && spcPcValue.HasValue)
                         {
                             TraceFrameEnd($"[HEADLESS] Frame {frame} SPC window {DumpSpcWindow(snes.System.APU, spcPcValue.Value)}");
@@ -2429,9 +2441,14 @@ class Program
                 bool traceSnesFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 bool traceSnesPpuSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU_SNAPSHOT") == "1";
                 bool traceSnesCheckpoints = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_CHECKPOINTS") == "1";
+                bool traceSnesFrameEnd = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_FRAME_END") == "1";
+                bool traceSnesPerf = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PERF") == "1";
+                bool traceSnesPerfEveryFrame = Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PERF_EVERY_FRAME") == "1";
                 int traceSnesCheckpointEvery = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_EVERY") ?? 1);
                 int traceSnesCheckpointStart = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_START_FRAME") ?? 0;
                 int traceSnesCheckpointEnd = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_CHECKPOINT_END_FRAME") ?? int.MaxValue;
+                int traceSnesPerfStart = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_PERF_FRAME_START") ?? 0;
+                int traceSnesPerfEnd = ParseOptionalIntEnv("EUTHERDRIVE_TRACE_SNES_PERF_FRAME_END") ?? int.MaxValue;
                 StreamWriter? snesTraceWriter = null;
                 if (traceSnesFrames || traceSnesCheckpoints)
                 {
@@ -2497,6 +2514,12 @@ class Program
 
                     snes.RunFrame();
                     TraceCheckpoint(frame);
+                    if (ShouldTraceSnesPerfFrame(frame, traceSnesPerf, traceSnesPerfEveryFrame, traceSnesPerfStart, traceSnesPerfEnd) &&
+                        snes.TryGetFramePerfSummary(out string perfSummary) &&
+                        !string.IsNullOrWhiteSpace(perfSummary))
+                    {
+                        Trace($"[HEADLESS][SNES-PERF] frame={frame} {perfSummary.Replace(Environment.NewLine, " | ")}");
+                    }
 
                     if (traceSnesFrames)
                     {
@@ -2556,7 +2579,8 @@ class Program
                         string sa1Pc = snes.System.ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1 && sa1.GetCpu() is KSNES.CPU.CPU sa1Cpu
                             ? $" SA1 PC=0x{sa1Cpu.ProgramCounter24:X6}"
                             : "";
-                        Trace($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
+                        if (traceSnesFrames || traceSnesFrameEnd)
+                            Trace($"[HEADLESS] Frame {frame} ending SNES PC=0x{cpu.ProgramCounter24:X6}{sa1Pc}");
                     }
                 }
 
@@ -3711,6 +3735,17 @@ class Program
         if (traceEveryFrame)
             return true;
         return frame < 60 || (frame % 60) == 0;
+    }
+
+    private static bool ShouldTraceSnesPerfFrame(int frame, bool traceEnabled, bool traceEveryFrame, int startFrame, int endFrame)
+    {
+        if (!traceEnabled)
+            return false;
+        if (frame < startFrame || frame > endFrame)
+            return false;
+        if (traceEveryFrame)
+            return true;
+        return frame < 10 || (frame % 60) == 0;
     }
 
     private static string GetSavestateRoot()

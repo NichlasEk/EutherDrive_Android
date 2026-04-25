@@ -13,8 +13,7 @@ namespace EutherDrive.Core;
 public sealed class SnesAdapter : IEmulatorCore, ISavestateCapable, IExtendedInputHandler
 {
     private static readonly bool SnesPerfEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
-        || OperatingSystem.IsAndroid();
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private const double NtscFps = 21477272.0 / (1364.0 * 262.0);
     private const double PalFps = 21281370.0 / (1364.0 * 312.0);
     private const int DefaultWidth = 256;

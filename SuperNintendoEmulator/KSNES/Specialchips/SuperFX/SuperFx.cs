@@ -201,6 +201,11 @@ internal sealed class SuperFx
 
     public bool Irq => _gsu.IrqAsserted();
 
+    public int GetFastCpuWindowChunkLimit()
+    {
+        return _gsu.IsRunning() ? 0 : int.MaxValue;
+    }
+
     public void Reset()
     {
         _gsu.Reset();

@@ -10,8 +10,7 @@ namespace KSNES.CPU;
 public class CPU : ICPU
 {
     private static readonly bool PerfStatsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal)
-        || OperatingSystem.IsAndroid();
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private static readonly bool DetailedPerfStatsEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF_DETAIL"), "1", StringComparison.Ordinal);
     private const int DBR = 0;

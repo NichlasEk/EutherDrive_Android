@@ -1509,6 +1509,7 @@ public class ROM : IROM
         return _timedDispatch switch
         {
             TimedCoprocessorDispatch.None => int.MaxValue,
+            TimedCoprocessorDispatch.SuperFx => _superFx?.GetFastCpuWindowChunkLimit() ?? 0,
             TimedCoprocessorDispatch.Sa1 => GetSa1FastCpuWindowChunkLimit(snesCycles),
             _ => 0,
         };
