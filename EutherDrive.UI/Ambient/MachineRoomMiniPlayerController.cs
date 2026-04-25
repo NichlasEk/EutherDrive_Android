@@ -769,7 +769,9 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         if (File.Exists(cachePath))
             return cachePath;
 
-        string tempPath = cachePath + ".tmp";
+        string tempPath = Path.Combine(
+            _coverCacheRoot,
+            $"{Path.GetFileNameWithoutExtension(cachePath)}.{Guid.NewGuid():N}.tmp.jpg");
         try
         {
             var startInfo = new ProcessStartInfo(ffmpegPath)
