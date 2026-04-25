@@ -38,6 +38,7 @@ internal sealed class Sega32XVdp
     private const ulong DramRefreshStartMclkCycles = HBlankStartMclkCycles;
     private const ulong DramRefreshEndMclkCycles = HBlankStartMclkCycles + ((40 * 7) / 3);
     [NonSerialized] private int _scanlinesPerFrame = 262;
+    private bool _ntscTiming = true;
     private const int ActiveScanlinesPerFrameV28 = 224;
     private const int ActiveScanlinesPerFrameV30 = 240;
     public ulong FrameMclkCycles => MclkCyclesPerScanline * (ulong)_scanlinesPerFrame;
@@ -109,6 +110,7 @@ internal sealed class Sega32XVdp
     public void SetRegion(ConsoleRegion region)
     {
         _scanlinesPerFrame = region == ConsoleRegion.EU ? 313 : 262;
+        _ntscTiming = region != ConsoleRegion.EU;
     }
 
     public void SetHostDisplayWidth(int width)
@@ -826,7 +828,7 @@ internal sealed class Sega32XVdp
 
     private ushort ReadDisplayMode()
     {
-        return (ushort)(0x8000 | (Priority ? 0x0080 : 0) | (DisplayMode & 0x0043));
+        return (ushort)((_ntscTiming ? 0x8000 : 0) | (Priority ? 0x0080 : 0) | (DisplayMode & 0x0043));
     }
 
     private ushort ReadFrameBufferControl()
