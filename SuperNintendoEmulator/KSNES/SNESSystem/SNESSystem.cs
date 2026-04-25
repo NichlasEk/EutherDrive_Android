@@ -1133,6 +1133,10 @@ public class SNESSystem : ISNESSystem
         if (ROM.Sa1 != null || ForceLegacyTiming)
             return false;
 
+        // Raster IRQ handlers need the exact timer edge; batching CPU wait can step over it.
+        if (_hIrqEnabled || _vIrqEnabled)
+            return false;
+
         if (_inIrq || _cpuImpl.NmiWanted || RomImpl.IrqWanted || RomImpl.NmiWanted)
             return false;
 
