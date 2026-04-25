@@ -367,12 +367,11 @@ public sealed class N64Adapter : IEmulatorCore
             int r5 = (p >> 11) & 0x1F;
             int g5 = (p >> 6) & 0x1F;
             int b5 = (p >> 1) & 0x1F;
-            byte a = (byte)((p & 1) != 0 ? 0xFF : 0x00);
-
             dst[di + 0] = (byte)((b5 * 255) / 31);
             dst[di + 1] = (byte)((g5 * 255) / 31);
             dst[di + 2] = (byte)((r5 * 255) / 31);
-            dst[di + 3] = a;
+            // The VI output is an opaque video signal; do not expose RGBA5551's alpha bit to UI compositing.
+            dst[di + 3] = 0xFF;
             di += 4;
         }
 
