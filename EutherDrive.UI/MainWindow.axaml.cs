@@ -58,6 +58,11 @@ public partial class MainWindow : Window
     private readonly MachineRoomMiniPlayerController _machineRoomMiniPlayerController;
     private readonly OffworldMonitorViewModel _offworldMonitorViewModel;
     private Bitmap? _ambientMusicCoverBitmap;
+    private bool _machineRoomMediaOnMainScreen;
+    private IntPtr _machineRoomMiniVideoHandle;
+    private string _machineRoomMiniVideoHandleDescriptor = string.Empty;
+    private IntPtr _machineRoomBigVideoHandle;
+    private string _machineRoomBigVideoHandleDescriptor = string.Empty;
     private readonly DispatcherTimer _deckMonitorTimer;
     private readonly Stopwatch _deckMonitorSessionStopwatch = Stopwatch.StartNew();
     private long _deckMonitorLastRefreshMs;
@@ -543,6 +548,16 @@ public partial class MainWindow : Window
         _machineRoomMiniPlayerController = new MachineRoomMiniPlayerController(GetMachineRoomCoverCachePath());
         _ambientMusicController.StateChanged += OnAmbientMusicStateChanged;
         _machineRoomMiniPlayerController.StateChanged += OnMachineRoomMiniPlayerStateChanged;
+        if (MachineRoomMiniVideoHost != null)
+        {
+            MachineRoomMiniVideoHost.NativeHandleReady += OnMachineRoomVideoHandleReady;
+            MachineRoomMiniVideoHost.NativeHandleDestroyed += OnMachineRoomVideoHandleDestroyed;
+        }
+        if (MachineRoomBigVideoHost != null)
+        {
+            MachineRoomBigVideoHost.NativeHandleReady += OnMachineRoomVideoHandleReady;
+            MachineRoomBigVideoHost.NativeHandleDestroyed += OnMachineRoomVideoHandleDestroyed;
+        }
         _offworldMonitorViewModel = offworldMonitorViewModel ?? OffworldMonitorViewModel.CreatePreview();
         if (OffworldMonitorPanel != null)
             OffworldMonitorPanel.DataContext = _offworldMonitorViewModel;
@@ -1031,6 +1046,16 @@ public partial class MainWindow : Window
         _deckMonitorTimer.Stop();
         _ambientMusicController.StateChanged -= OnAmbientMusicStateChanged;
         _machineRoomMiniPlayerController.StateChanged -= OnMachineRoomMiniPlayerStateChanged;
+        if (MachineRoomMiniVideoHost != null)
+        {
+            MachineRoomMiniVideoHost.NativeHandleReady -= OnMachineRoomVideoHandleReady;
+            MachineRoomMiniVideoHost.NativeHandleDestroyed -= OnMachineRoomVideoHandleDestroyed;
+        }
+        if (MachineRoomBigVideoHost != null)
+        {
+            MachineRoomBigVideoHost.NativeHandleReady -= OnMachineRoomVideoHandleReady;
+            MachineRoomBigVideoHost.NativeHandleDestroyed -= OnMachineRoomVideoHandleDestroyed;
+        }
         _ambientMusicController.Dispose();
         _machineRoomMiniPlayerController.Dispose();
         _offworldMonitorViewModel.Dispose();
@@ -3671,7 +3696,77 @@ public partial class MainWindow : Window
         if (AmbientMusicButton != null)
             AmbientMusicButton.IsEnabled = !ambient.IsBusy;
         UpdateAmbientMusicCover(showMiniPlayer ? miniPlayer.CoverPath : ambient.CoverPath);
+        UpdateMachineRoomVideoPlacement(showMiniPlayer ? miniPlayer : default);
         MaybeUpdateDeckMonitorUi(force: true);
+    }
+
+    private void UpdateMachineRoomVideoPlacement(MachineRoomMiniPlayerSnapshot miniPlayer)
+    {
+        bool showVideo = miniPlayer.HasSelection && miniPlayer.IsVideo;
+        if (!showVideo)
+            _machineRoomMediaOnMainScreen = false;
+
+        if (MachineRoomMiniVideoHost != null)
+            MachineRoomMiniVideoHost.IsVisible = showVideo && !_machineRoomMediaOnMainScreen;
+        if (MachineRoomBigVideoHost != null)
+            MachineRoomBigVideoHost.IsVisible = showVideo && _machineRoomMediaOnMainScreen;
+        if (AmbientMusicCoverImage != null)
+            AmbientMusicCoverImage.IsVisible = !(showVideo && !_machineRoomMediaOnMainScreen);
+        if (NativeScreenOverlayHost != null)
+            NativeScreenOverlayHost.IsVisible = !(showVideo && _machineRoomMediaOnMainScreen);
+        if (MachineRoomMediaSwapButton != null)
+        {
+            MachineRoomMediaSwapButton.IsEnabled = showVideo;
+            MachineRoomMediaSwapButton.Content = _machineRoomMediaOnMainScreen ? "Dock" : "Swap";
+            ToolTip.SetTip(
+                MachineRoomMediaSwapButton,
+                _machineRoomMediaOnMainScreen
+                    ? "Move Machine Room video back to the small screen"
+                    : "Move Machine Room video to the main screen");
+        }
+
+        RetargetMachineRoomVideo();
+    }
+
+    private void RetargetMachineRoomVideo()
+    {
+        IntPtr handle = _machineRoomMediaOnMainScreen ? _machineRoomBigVideoHandle : _machineRoomMiniVideoHandle;
+        string descriptor = _machineRoomMediaOnMainScreen
+            ? _machineRoomBigVideoHandleDescriptor
+            : _machineRoomMiniVideoHandleDescriptor;
+        _ = _machineRoomMiniPlayerController.SetVideoTargetAsync(handle, descriptor);
+    }
+
+    private void OnMachineRoomVideoHandleReady(object? sender, MachineRoomVideoHandleEventArgs e)
+    {
+        if (ReferenceEquals(sender, MachineRoomMiniVideoHost))
+        {
+            _machineRoomMiniVideoHandle = e.Handle;
+            _machineRoomMiniVideoHandleDescriptor = e.Descriptor;
+        }
+        else if (ReferenceEquals(sender, MachineRoomBigVideoHost))
+        {
+            _machineRoomBigVideoHandle = e.Handle;
+            _machineRoomBigVideoHandleDescriptor = e.Descriptor;
+        }
+
+        RetargetMachineRoomVideo();
+    }
+
+    private void OnMachineRoomVideoHandleDestroyed(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, MachineRoomMiniVideoHost))
+        {
+            _machineRoomMiniVideoHandle = IntPtr.Zero;
+            _machineRoomMiniVideoHandleDescriptor = string.Empty;
+        }
+        else if (ReferenceEquals(sender, MachineRoomBigVideoHost))
+        {
+            _machineRoomBigVideoHandle = IntPtr.Zero;
+            _machineRoomBigVideoHandleDescriptor = string.Empty;
+        }
+
+        RetargetMachineRoomVideo();
     }
 
     private void UpdateAmbientMusicCover(string? coverPath)
@@ -7088,7 +7183,7 @@ public partial class MainWindow : Window
                     Patterns = new[]
                     {
                         "*.mp3", "*.mp4", "*.m4a", "*.aac", "*.flac", "*.ogg", "*.opus", "*.wav",
-                        "*.webm", "*.mkv", "*.mov", "*.m3u", "*.m3u8", "*.pls"
+                        "*.webm", "*.mkv", "*.mov", "*.avi", "*.mpeg", "*.mpg", "*.wmv", "*.m3u", "*.m3u8", "*.pls"
                     }
                 },
                 FilePickerFileTypes.All
@@ -7168,6 +7263,16 @@ public partial class MainWindow : Window
         UpdateMachineRoomMp3FolderUi();
         UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
         SaveSettings();
+    }
+
+    private void OnMachineRoomMediaSwapClick(object? sender, RoutedEventArgs e)
+    {
+        MachineRoomMiniPlayerSnapshot miniPlayer = _machineRoomMiniPlayerController.GetSnapshot();
+        if (!miniPlayer.HasSelection || !miniPlayer.IsVideo)
+            return;
+
+        _machineRoomMediaOnMainScreen = !_machineRoomMediaOnMainScreen;
+        UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), miniPlayer);
     }
 
     private void OnMachineRoomStopClick(object? sender, RoutedEventArgs e)

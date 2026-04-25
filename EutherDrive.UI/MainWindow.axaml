@@ -4,6 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:imaging="clr-namespace:Avalonia.Media.Imaging;assembly=Avalonia"
         xmlns:controls="clr-namespace:EutherDrive.UI.Controls"
+        xmlns:ambient="clr-namespace:EutherDrive.UI.Ambient"
         xmlns:savestates="clr-namespace:EutherDrive.UI.Savestates"
         mc:Ignorable="d"
         Background="Transparent"
@@ -248,7 +249,10 @@
                         Background="#0C1520"
                         BorderBrush="{DynamicResource EdStrokeBrush}"
                         BorderThickness="1">
-                  <Image Name="AmbientMusicCoverImage" Stretch="UniformToFill"/>
+                  <Grid>
+                    <Image Name="AmbientMusicCoverImage" Stretch="UniformToFill"/>
+                    <ambient:MachineRoomVideoHost Name="MachineRoomMiniVideoHost" IsVisible="False"/>
+                  </Grid>
                 </Border>
                 <TextBlock Name="AmbientMusicTitleText"
                            Text="Cyberpunk Ambient"
@@ -260,7 +264,7 @@
                            Text="Ambient off."
                            TextWrapping="Wrap"/>
                 <Grid ColumnDefinitions="*,*,*,*"
-                      RowDefinitions="20,20,20,22"
+                      RowDefinitions="20,20,20,20,22"
                       ColumnSpacing="4"
                       RowSpacing="4">
                   <Button Name="MachineRoomOpenButton"
@@ -340,6 +344,18 @@
                           Content="Random"
                           ToolTip.Tip="Random track from MP3 Dir and subfolders"
                           Click="OnMachineRoomRandomClick"/>
+                  <Button Name="MachineRoomMediaSwapButton"
+                          Grid.Row="3"
+                          Grid.Column="2"
+                          Grid.ColumnSpan="2"
+                          Classes="compact small"
+                          MinHeight="0"
+                          Height="20"
+                          Padding="4,0"
+                          FontSize="10"
+                          Content="Swap"
+                          ToolTip.Tip="Move Machine Room video to the main screen"
+                          Click="OnMachineRoomMediaSwapClick"/>
                   <Button Name="MachineRoomMp3FolderButton"
                           Grid.Row="2"
                           Grid.Column="0"
@@ -353,7 +369,7 @@
                           ToolTip.Tip="Set MP3 random folder"
                           Click="OnMachineRoomMp3FolderClick"/>
                   <Slider Name="MachineRoomMusicVolumeSlider"
-                          Grid.Row="3"
+                          Grid.Row="4"
                           Grid.Column="0"
                           Grid.ColumnSpan="3"
                           Minimum="0"
@@ -363,7 +379,7 @@
                           VerticalAlignment="Center"
                           ValueChanged="OnMachineRoomMusicVolumeChanged"/>
                   <TextBlock Name="MachineRoomMusicVolumeText"
-                             Grid.Row="3"
+                             Grid.Row="4"
                              Grid.Column="3"
                              Classes="muted"
                              FontSize="10"
@@ -1214,7 +1230,7 @@
             <Viewbox Stretch="Uniform">
               <Grid Name="ScreenGrid" Width="320" Height="224" ClipToBounds="True">
                 <Border Background="#000000"/>
-                <Grid Name="ScreenContentRoot"
+                  <Grid Name="ScreenContentRoot"
                       Width="320"
                       Height="224"
                       HorizontalAlignment="Center"
@@ -1224,6 +1240,9 @@
                         Width="320"
                         Height="224"/>
                 </Grid>
+                <ambient:MachineRoomVideoHost Name="MachineRoomBigVideoHost"
+                                              IsVisible="False"
+                                              ZIndex="50"/>
                 <Image Name="SplashImage"
                        Source="avares://EutherDrive.UI/Assets/logo_crop.jpeg"
                        Stretch="Uniform"/>

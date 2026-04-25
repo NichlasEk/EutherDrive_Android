@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -16,6 +17,7 @@ internal readonly record struct MachineRoomMiniPlayerSnapshot(
     bool HasSelection,
     bool IsPlaying,
     bool IsPaused,
+    bool IsVideo,
     string TrackTitle,
     string StatusText,
     string? CoverPath);
@@ -24,10 +26,12 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 {
     private static readonly string[] SupportedMediaExtensions =
     [
-        ".mp3", ".mp4", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".webm", ".mkv", ".mov"
+        ".mp3", ".mp4", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".webm", ".mkv", ".mov",
+        ".avi", ".mpeg", ".mpg", ".wmv"
     ];
 
     private static readonly string[] SupportedPlaylistExtensions = [".m3u", ".m3u8", ".pls"];
+    private static readonly string[] VideoExtensions = [".mp4", ".webm", ".mkv", ".mov", ".avi", ".mpeg", ".mpg", ".wmv"];
 
     private readonly object _lock = new();
     private readonly string _coverCacheRoot;
@@ -41,9 +45,12 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private bool _isPaused;
     private bool _stopping;
     private bool _disposed;
+    private IntPtr _videoWindowHandle;
+    private string _videoWindowDescriptor = string.Empty;
     private string _trackTitle = "Cyberpunk Ambient";
     private string _statusText = "Ambient off.";
     private string? _coverPath;
+    private bool _isCurrentVideo;
 
     public MachineRoomMiniPlayerController(string coverCacheRoot)
     {
@@ -60,6 +67,7 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _playlist.Count > 0,
                 _isPlaying,
                 _isPaused,
+                _isCurrentVideo,
                 _trackTitle,
                 _statusText,
                 _coverPath);
@@ -84,6 +92,7 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _trackTitle = "Mini Winamp";
                 _statusText = "No playable media selected.";
                 _coverPath = null;
+                _isCurrentVideo = false;
             }
             else
             {
@@ -138,6 +147,25 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         {
             // ffplay volume hotkeys are best effort; the next track starts with the exact requested volume.
         }
+    }
+
+    public Task SetVideoTargetAsync(IntPtr handle, string? descriptor)
+    {
+        bool shouldRestart;
+        lock (_lock)
+        {
+            descriptor ??= string.Empty;
+            bool changed = _videoWindowHandle != handle
+                || !string.Equals(_videoWindowDescriptor, descriptor, StringComparison.Ordinal);
+            _videoWindowHandle = handle;
+            _videoWindowDescriptor = descriptor;
+            shouldRestart = changed
+                && _isCurrentVideo
+                && _isPlaying
+                && _process is { HasExited: false };
+        }
+
+        return shouldRestart ? StartCurrentAsync() : Task.CompletedTask;
     }
 
     public Task TogglePlayPauseAsync()
@@ -335,12 +363,22 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
             if (player.Kind == PlayerKind.Mpv)
             {
                 mpvSocketPath = GetMpvSocketPath();
-                startInfo.ArgumentList.Add("--no-video");
                 startInfo.ArgumentList.Add("--really-quiet");
                 startInfo.ArgumentList.Add("--force-window=no");
                 startInfo.ArgumentList.Add("--input-terminal=no");
                 startInfo.ArgumentList.Add($"--input-ipc-server={mpvSocketPath}");
                 startInfo.ArgumentList.Add($"--volume={_volumePercent}");
+                if (IsVideoPath(path) && TryGetMpvWindowId(out string windowId))
+                {
+                    startInfo.ArgumentList.Add($"--wid={windowId}");
+                    startInfo.ArgumentList.Add("--no-osc");
+                    startInfo.ArgumentList.Add("--keep-open=no");
+                }
+                else
+                {
+                    startInfo.ArgumentList.Add("--no-video");
+                }
+
                 startInfo.ArgumentList.Add(path);
             }
             else
@@ -572,17 +610,45 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private static bool IsSupportedMediaPath(string path)
         => SupportedMediaExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
+    private static bool IsVideoPath(string path)
+        => VideoExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+
+    private bool TryGetMpvWindowId(out string windowId)
+    {
+        lock (_lock)
+        {
+            if (_videoWindowHandle == IntPtr.Zero)
+            {
+                windowId = string.Empty;
+                return false;
+            }
+
+            if (_videoWindowDescriptor.Equals("XID", StringComparison.OrdinalIgnoreCase)
+                || _videoWindowDescriptor.Equals("HWND", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(_videoWindowDescriptor))
+            {
+                windowId = _videoWindowHandle.ToInt64().ToString(CultureInfo.InvariantCulture);
+                return true;
+            }
+        }
+
+        windowId = string.Empty;
+        return false;
+    }
+
     private void UpdateCurrentTrackMetadataLocked()
     {
         if (_playlist.Count == 0)
         {
             _trackTitle = "Mini Winamp";
             _coverPath = null;
+            _isCurrentVideo = false;
             return;
         }
 
         string path = _playlist[Math.Clamp(_currentIndex, 0, _playlist.Count - 1)];
         _trackTitle = GetDisplayTitle(path);
+        _isCurrentVideo = IsVideoPath(path);
         _coverPath = TryGetEmbeddedCoverPath(path);
     }
 
