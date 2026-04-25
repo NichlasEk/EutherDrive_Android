@@ -568,6 +568,10 @@ namespace Ryu64.MIPS
         private bool _dpInterruptDelayArmed;
         private RspTask _activeRspTask;
         private readonly RspInterpreter _rspInterpreter;
+        private uint _rdpColorImageAddress;
+        private uint _rdpColorImageWidth;
+        private uint _rdpColorImageSize;
+        private uint _rdpFillColor;
 
         private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
         private const uint CpuCyclesPerSecond = CpuCyclesPerViFrame * 60u;
@@ -805,6 +809,172 @@ namespace Ryu64.MIPS
                         $"w0=0x{word0:x8} addr=0x{address:x8} size={bytesPerPixel} width={width} heightHint={heightHint}");
                 }
                 RegisterFramebufferInfo(address, bytesPerPixel, width, heightHint);
+            }
+        }
+
+        private void ExecuteRdpDisplayList(uint start, uint end)
+        {
+            uint current = start & 0x00FFFFF8u;
+            uint endAddress = end & 0x00FFFFF8u;
+            if (endAddress <= current)
+                return;
+
+            uint maxEnd = current + Math.Min(endAddress - current, 0x20000u);
+            bool xbusDmem = (ReadBigEndianWord(DPC_STATUS_REG_R) & DpcStatusXbusDmemDma) != 0;
+            while (current + 8u <= maxEnd)
+            {
+                uint w0 = ReadRdpCommandWord(current, xbusDmem);
+                uint w1 = ReadRdpCommandWord(current + 4u, xbusDmem);
+                int command = (int)((w0 >> 24) & 0x3Fu);
+                int words = GetRdpCommandWordLength(command);
+                if (words < 2 || current + (uint)(words * 4) > maxEnd)
+                    break;
+
+                switch (command)
+                {
+                    case 0x36: // FillRectangle
+                        ExecuteRdpFillRectangle(w0, w1);
+                        break;
+                    case 0x37: // SetFillColor
+                        _rdpFillColor = w1;
+                        break;
+                    case 0x3F: // SetColorImage
+                        _rdpColorImageSize = (w0 >> 19) & 0x3u;
+                        _rdpColorImageWidth = (w0 & 0x03FFu) + 1u;
+                        _rdpColorImageAddress = w1 & 0x00FFFFFFu;
+                        RegisterFramebufferInfo(_rdpColorImageAddress, RdpBytesPerPixel(_rdpColorImageSize), _rdpColorImageWidth, GetFramebufferHeightHint());
+                        break;
+                }
+
+                current += (uint)(words * 4);
+            }
+        }
+
+        private uint ReadRdpCommandWord(uint address, bool xbusDmem)
+        {
+            if (xbusDmem)
+                return ReadSpDmemWord(address & 0x0FFFu);
+
+            uint physical = address & 0x00FFFFFCu;
+            if (physical + 4u > RDRAM.Length)
+                return 0;
+            return ReadUInt32Physical(physical);
+        }
+
+        private static int GetRdpCommandWordLength(int command)
+        {
+            if (command >= 0x08 && command <= 0x0F)
+            {
+                switch (command)
+                {
+                    case 0x08: return 8;
+                    case 0x09: return 12;
+                    case 0x0A: return 24;
+                    case 0x0B: return 28;
+                    case 0x0C: return 24;
+                    case 0x0D: return 28;
+                    case 0x0E: return 40;
+                    case 0x0F: return 44;
+                }
+            }
+
+            return command == 0x24 || command == 0x25 ? 4 : 2;
+        }
+
+        private static uint RdpBytesPerPixel(uint rdpSize)
+        {
+            switch (rdpSize & 0x3u)
+            {
+                case 0u:
+                case 1u:
+                    return 1u;
+                case 2u:
+                    return 2u;
+                case 3u:
+                    return 4u;
+                default:
+                    return 0u;
+            }
+        }
+
+        private void ExecuteRdpFillRectangle(uint w0, uint w1)
+        {
+            uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0)
+                return;
+
+            uint x1 = ((w0 >> 12) & 0x0FFFu) >> 2;
+            uint y1 = (w0 & 0x0FFFu) >> 2;
+            uint x0 = ((w1 >> 12) & 0x0FFFu) >> 2;
+            uint y0 = (w1 & 0x0FFFu) >> 2;
+            if (x1 < x0)
+            {
+                uint temp = x0;
+                x0 = x1;
+                x1 = temp;
+            }
+            if (y1 < y0)
+            {
+                uint temp = y0;
+                y0 = y1;
+                y1 = temp;
+            }
+
+            if (x0 >= _rdpColorImageWidth)
+                return;
+            if (x1 >= _rdpColorImageWidth)
+                x1 = _rdpColorImageWidth - 1u;
+
+            uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
+            if (maxRows == 0 || y0 >= maxRows)
+                return;
+            if (y1 >= maxRows)
+                y1 = maxRows - 1u;
+
+            for (uint y = y0; y <= y1; y++)
+            {
+                uint rowStart = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0) * bytesPerPixel);
+                uint rowPixels = x1 - x0 + 1u;
+                for (uint x = 0; x < rowPixels; x++)
+                {
+                    uint pixelIndex = y * _rdpColorImageWidth + x0 + x;
+                    uint address = _rdpColorImageAddress + pixelIndex * bytesPerPixel;
+                    WriteRdpFillPixel(address, pixelIndex, bytesPerPixel);
+                }
+                NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
+            }
+        }
+
+        private void WriteRdpFillPixel(uint address, uint pixelIndex, uint bytesPerPixel)
+        {
+            if (address >= RDRAM.Length)
+                return;
+
+            switch (bytesPerPixel)
+            {
+                case 1u:
+                    RDRAM[address] = (byte)((_rdpFillColor >> (int)((3u - (address & 3u)) * 8u)) & 0xFFu);
+                    break;
+                case 2u:
+                    if (address + 1u >= RDRAM.Length)
+                        return;
+                    ushort color16 = (pixelIndex & 1u) == 0u
+                        ? (ushort)(_rdpFillColor >> 16)
+                        : (ushort)_rdpFillColor;
+                    RDRAM[address] = (byte)(color16 >> 8);
+                    RDRAM[address + 1u] = (byte)color16;
+                    break;
+                case 4u:
+                    if (address + 3u >= RDRAM.Length)
+                        return;
+                    RDRAM[address] = (byte)(_rdpFillColor >> 24);
+                    RDRAM[address + 1u] = (byte)(_rdpFillColor >> 16);
+                    RDRAM[address + 2u] = (byte)(_rdpFillColor >> 8);
+                    RDRAM[address + 3u] = (byte)_rdpFillColor;
+                    break;
             }
         }
 
@@ -1833,6 +2003,7 @@ namespace Ryu64.MIPS
             uint start = ReadBigEndianWord(DPC_START_REG_RW);
             uint end = ReadBigEndianWord(DPC_END_REG_RW);
             TrackFramebufferInfosFromDpcBuffer(start, end);
+            ExecuteRdpDisplayList(start, end);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, end);
 
             uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
@@ -2785,7 +2956,10 @@ namespace Ryu64.MIPS
         {
             uint value = ReadBigEndianWord(DPC_END_REG_RW);
             WriteBigEndianWord(DPC_END_REG_RW, value);
-            TrackFramebufferInfosFromDpcBuffer(ReadBigEndianWord(DPC_START_REG_RW), value);
+            uint start = ReadBigEndianWord(DPC_START_REG_RW);
+            TrackFramebufferInfosFromDpcBuffer(start, value);
+            ExecuteRdpDisplayList(start, value);
+            WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
             SetMiDpInterrupt();
 
             if (TraceN64Io)
