@@ -862,9 +862,9 @@ public class PPU : IPPU
                 return val;
             case 0x39:
                 int val2 = _vramReadBuffer;
-                _vramReadBuffer = _vram[GetVramRemap()];
                 if (!_vramIncOnHigh)
                 {
+                    _vramReadBuffer = _vram[GetVramRemap()];
                     _vramAdr += _vramInc;
                     _vramAdr &= 0xffff;
                 }
@@ -873,9 +873,9 @@ public class PPU : IPPU
                 return value;
             case 0x3a:
                 int val3 = _vramReadBuffer;
-                _vramReadBuffer = _vram[GetVramRemap()];
                 if (_vramIncOnHigh)
                 {
+                    _vramReadBuffer = _vram[GetVramRemap()];
                     _vramAdr += _vramInc;
                     _vramAdr &= 0xffff;
                 }
