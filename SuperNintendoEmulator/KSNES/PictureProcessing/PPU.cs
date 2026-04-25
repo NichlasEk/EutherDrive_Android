@@ -1911,6 +1911,8 @@ public class PPU : IPPU
     public unsafe void RenderLine(int line) 
     {
         int screenY = line - 1;
+        // Active SNES scanlines are 1-based; the framebuffer rows are 0-based.
+        int sampleY = line;
         EnsureRuntimeBuffers();
         bool hiResOutput = IsHiResOutput();
         bool trueHiResOutput = IsTrueHiResOutput();
@@ -1954,7 +1956,7 @@ public class PPU : IPPU
             {
                 if (PerfStatsEnabled)
                     PerfMode7Lines++;
-                GenerateMode7Coords(screenY);
+                GenerateMode7Coords(sampleY);
             }
             if (PerfStatsEnabled)
             {
@@ -1971,7 +1973,7 @@ public class PPU : IPPU
             if (useSimpleMainPath)
             {
                 long perfStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
-                bool usedChunked = RenderLineSimpleMainOnly(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
+                bool usedChunked = RenderLineSimpleMainOnly(sampleY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
                 if (PerfStatsEnabled)
                 {
                     long elapsed = Stopwatch.GetTimestamp() - perfStart;
@@ -2006,7 +2008,7 @@ public class PPU : IPPU
             if (CanUseChunkedComplexWindowlessPath(hiResOutput, trueHiResOutput, useLegacyLayerOrdering))
             {
                 long perfStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
-                RenderLineComplexWindowlessChunked(screenY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
+                RenderLineComplexWindowlessChunked(sampleY, outputRow, brightnessOffset, brightnessTable, pixelOutput);
                 if (PerfStatsEnabled)
                 {
                     long elapsed = Stopwatch.GetTimestamp() - perfStart;
@@ -2052,13 +2054,13 @@ public class PPU : IPPU
                                 // common windowless case. The Kirby 3 HUD bug was traced back to
                                 // fast CPU window timing, not this PPU pair path, so windowless
                                 // sub-screen composition can safely stay on the batched route.
-                                GetColor(false, i, screenY, out color, out item2, out item3);
+                                GetColor(false, i, sampleY, out color, out item2, out item3);
                             }
                             else
                             {
                                 GetColorPairWindowless(
                                     i,
-                                    screenY,
+                                    sampleY,
                                     out color,
                                     out item2,
                                     out item3,
@@ -2070,7 +2072,7 @@ public class PPU : IPPU
                         }
                         else
                         {
-                            GetColor(false, i, screenY, out color, out item2, out item3);
+                            GetColor(false, i, sampleY, out color, out item2, out item3);
                         }
 
                         bool mathEnabled = GetMathEnabled(i, item2, item3);
@@ -2088,7 +2090,7 @@ public class PPU : IPPU
                         {
                             if (!prefetchedSubColor)
                             {
-                                GetColor(true, i, screenY, out secondColor, out secondLayer, out secondPixel);
+                                GetColor(true, i, sampleY, out secondColor, out secondLayer, out secondPixel);
                             }
                             subVisible = secondLayer < 5;
                             r1 = secondColor & 0x1f;

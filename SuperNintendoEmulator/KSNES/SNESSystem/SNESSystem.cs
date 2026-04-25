@@ -90,6 +90,7 @@ public class SNESSystem : ISNESSystem
     private const int BusPageAccessMask = 0xff;
     private const int BusPageKindShift = 8;
     private const ulong ApuPeriodicCatchUpMask = 0x3F;
+    private const int RenderLineMclk = 92;
 
     [JsonIgnore]
     private readonly int[] _dmaOffs = [
@@ -941,7 +942,7 @@ public class SNESSystem : ISNESSystem
         }
         
         _cpuImpl.IrqWanted = _inIrq || RomImpl.IrqWanted;
-        if (XPos == 512 && !noPpu)
+        if (XPos == RenderLineMclk && !noPpu)
         {
             long ppuStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
             _ppuImpl.RenderLine(YPos);
@@ -1253,14 +1254,14 @@ public class SNESSystem : ISNESSystem
 
     private int GetFastCpuWindowEnd(int currentLineMclks, bool noPpu)
     {
-        if (XPos == 0 || XPos == 4 || XPos == 1096 || XPos == 1104 || (!noPpu && XPos == 512))
+        if (XPos == 0 || XPos == 4 || XPos == 1096 || XPos == 1104 || (!noPpu && XPos == RenderLineMclk))
             return XPos;
 
         if (XPos < 4)
             return 4;
 
-        if (XPos < 512)
-            return noPpu ? 536 : 512;
+        if (!noPpu && XPos < RenderLineMclk)
+            return RenderLineMclk;
 
         if (XPos < 536)
             return 536;
