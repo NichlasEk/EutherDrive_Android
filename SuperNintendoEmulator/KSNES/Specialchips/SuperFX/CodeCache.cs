@@ -11,20 +11,31 @@ internal sealed class CodeCache
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool PcIsCacheable(ushort address)
-    {
-        if (_cbr < 0xFE00)
-            return address >= _cbr && address < _cbr + 512;
-        return address >= _cbr || address < (ushort)(_cbr + 512);
-    }
+        => (ushort)(address - _cbr) < CodeCacheRamLen;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte? Get(ushort address)
+        => TryGetCacheable(address, out byte value) ? value : null;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryGetCacheable(ushort address, out byte value)
     {
-        ushort cacheAddr = (ushort)(address - _cbr);
+        int cacheAddr = (ushort)(address - _cbr);
+        if ((uint)cacheAddr >= CodeCacheRamLen)
+        {
+            value = 0;
+            return false;
+        }
+
         int cacheLineBit = cacheAddr >> 4;
         if (((_cachedLines >> cacheLineBit) & 1) == 0)
-            return null;
-        return _ram[cacheAddr & 0x1FF];
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _ram[cacheAddr];
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

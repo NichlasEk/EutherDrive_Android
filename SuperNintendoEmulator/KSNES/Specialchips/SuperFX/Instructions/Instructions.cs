@@ -56,8 +56,7 @@ internal static class Instructions
             && !TraceExec
             && !PerfOpcodeHistogram
             && !gsu.State.JustJumped
-            && gsu.CodeCache.PcIsCacheable(gsu.R[15])
-            && gsu.CodeCache.TryGet(gsu.R[15], out byte fastCachedOpcode))
+            && gsu.CodeCache.TryGetCacheable(gsu.R[15], out byte fastCachedOpcode))
         {
             byte fastOpcode = gsu.State.OpcodeBuffer;
             if ((gsu.RomAccess == BusAccess.Snes && IsRomAccessOpcode(fastOpcode))
@@ -240,8 +239,7 @@ internal static class Instructions
     internal static void FetchOpcode(GraphicsSupportUnit gsu, byte[] rom, byte[] ram)
     {
         ushort fetchAddr = gsu.R[15];
-        bool isCacheable = gsu.CodeCache.PcIsCacheable(fetchAddr);
-        if (isCacheable && gsu.CodeCache.TryGet(fetchAddr, out byte cached))
+        if (gsu.CodeCache.TryGetCacheable(fetchAddr, out byte cached))
         {
             gsu.State.OpcodeBuffer = cached;
             if (TraceCache) TraceCacheEvent(gsu, "FETCH-HIT", fetchAddr, $"opcode=0x{cached:X2}");
@@ -249,6 +247,7 @@ internal static class Instructions
             return;
         }
 
+        bool isCacheable = gsu.CodeCache.PcIsCacheable(fetchAddr);
         (byte opcode, MemoryType sourceType) = ReadMemory(gsu.Pbr, fetchAddr, rom, ram);
         gsu.State.OpcodeBuffer = opcode;
         
@@ -286,7 +285,7 @@ internal static class Instructions
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static MemoryType NextOpcodeMemoryType(GraphicsSupportUnit gsu, out byte cachedOpcode)
     {
-        if (gsu.CodeCache.PcIsCacheable(gsu.R[15]) && gsu.CodeCache.TryGet(gsu.R[15], out cachedOpcode))
+        if (gsu.CodeCache.TryGetCacheable(gsu.R[15], out cachedOpcode))
         {
             return MemoryType.CodeCache;
         }
