@@ -1284,6 +1284,7 @@ public sealed class Sa1
         public int OpenBus => 0;
         public int XPos => 0;
         public int YPos => 0;
+        public int FrameCounter => 0;
         public bool IsPal { get; set; }
 
         private sealed class NullPpu : IPPU
