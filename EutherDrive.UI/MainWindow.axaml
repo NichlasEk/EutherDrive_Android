@@ -251,7 +251,9 @@
                         BorderThickness="1">
                   <Grid>
                     <Image Name="AmbientMusicCoverImage" Stretch="UniformToFill"/>
-                    <ambient:MachineRoomVideoHost Name="MachineRoomMiniVideoHost" IsVisible="False"/>
+                    <Grid Name="MachineRoomMiniMediaFrameHost"
+                          IsVisible="False"
+                          ClipToBounds="True"/>
                     <Grid Name="MachineRoomMiniEmulatorHost"
                           IsVisible="False"
                           ClipToBounds="True"/>
@@ -1243,13 +1245,10 @@
                         Width="320"
                         Height="224"/>
                 </Grid>
-                <ambient:MachineRoomVideoHost Name="MachineRoomBigVideoHost"
-                                              IsVisible="False"
-                                              ZIndex="50"/>
-                <Image Name="MachineRoomBigMediaImage"
-                       Stretch="Uniform"
-                       IsVisible="False"
-                       ZIndex="51"/>
+                <Grid Name="MachineRoomBigMediaFrameHost"
+                      IsVisible="False"
+                      ClipToBounds="True"
+                      ZIndex="50"/>
                 <Image Name="SplashImage"
                        Source="avares://EutherDrive.UI/Assets/logo_crop.jpeg"
                        Stretch="Uniform"/>

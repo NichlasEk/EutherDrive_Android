@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace EutherDrive.UI.Ambient;
@@ -21,6 +22,22 @@ internal readonly record struct MachineRoomMiniPlayerSnapshot(
     string TrackTitle,
     string StatusText,
     string? CoverPath);
+
+internal sealed class MachineRoomVideoFrameEventArgs : EventArgs
+{
+    public MachineRoomVideoFrameEventArgs(byte[] pixels, int width, int height, int stride)
+    {
+        Pixels = pixels;
+        Width = width;
+        Height = height;
+        Stride = stride;
+    }
+
+    public byte[] Pixels { get; }
+    public int Width { get; }
+    public int Height { get; }
+    public int Stride { get; }
+}
 
 internal sealed class MachineRoomMiniPlayerController : IDisposable
 {
@@ -37,6 +54,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private readonly string _coverCacheRoot;
     private List<string> _playlist = [];
     private Process? _process;
+    private Process? _videoProcess;
+    private CancellationTokenSource? _videoDecodeCts;
     private PlayerKind _playerKind = PlayerKind.None;
     private string? _mpvSocketPath;
     private int _currentIndex;
@@ -45,8 +64,6 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     private bool _isPaused;
     private bool _stopping;
     private bool _disposed;
-    private IntPtr _videoWindowHandle;
-    private string _videoWindowDescriptor = string.Empty;
     private string _trackTitle = "Cyberpunk Ambient";
     private string _statusText = "Ambient off.";
     private string? _coverPath;
@@ -58,6 +75,7 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
     }
 
     public event EventHandler? StateChanged;
+    public event EventHandler<MachineRoomVideoFrameEventArgs>? VideoFrameReady;
 
     public MachineRoomMiniPlayerSnapshot GetSnapshot()
     {
@@ -147,25 +165,6 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
         {
             // ffplay volume hotkeys are best effort; the next track starts with the exact requested volume.
         }
-    }
-
-    public Task SetVideoTargetAsync(IntPtr handle, string? descriptor)
-    {
-        bool shouldRestart;
-        lock (_lock)
-        {
-            descriptor ??= string.Empty;
-            bool changed = _videoWindowHandle != handle
-                || !string.Equals(_videoWindowDescriptor, descriptor, StringComparison.Ordinal);
-            _videoWindowHandle = handle;
-            _videoWindowDescriptor = descriptor;
-            shouldRestart = changed
-                && _isCurrentVideo
-                && _isPlaying
-                && _process is { HasExited: false };
-        }
-
-        return shouldRestart ? StartCurrentAsync() : Task.CompletedTask;
     }
 
     public Task TogglePlayPauseAsync()
@@ -405,6 +404,9 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                     ? $"Playing {currentIndex + 1}/{totalCount}."
                     : "Playing.";
             }
+
+            if (IsVideoPath(path))
+                StartVideoDecoder(path);
         }
         catch (Exception ex)
         {
@@ -437,6 +439,9 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 _statusText = "Finished.";
         }
 
+        if (!advance)
+            StopVideoDecoder();
+
         NotifyStateChanged();
         if (advance)
             _ = StartCurrentAsync();
@@ -444,6 +449,8 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
     private void StopProcess(bool clearSelection)
     {
+        StopVideoDecoder();
+
         Process? process;
         string? mpvSocketPath;
         lock (_lock)
@@ -496,6 +503,268 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
                 yield return path;
             }
         }
+    }
+
+    private void StartVideoDecoder(string path)
+    {
+        StopVideoDecoder();
+
+        var cts = new CancellationTokenSource();
+        lock (_lock)
+        {
+            _videoDecodeCts = cts;
+        }
+
+        _ = Task.Run(() => DecodeVideoFramesAsync(path, cts.Token));
+    }
+
+    private async Task DecodeVideoFramesAsync(string path, CancellationToken cancellationToken)
+    {
+        string? ffmpegPath = FindExecutable(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "ffmpeg.exe" : "ffmpeg");
+        string? ffprobePath = FindExecutable(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "ffprobe.exe" : "ffprobe");
+        if (ffmpegPath == null || ffprobePath == null)
+            return;
+
+        if (!TryProbeVideo(ffprobePath, path, out int width, out int height, out double fps))
+            return;
+
+        long frameBytes64 = (long)width * height * 4;
+        if (frameBytes64 <= 0 || frameBytes64 > 256L * 1024 * 1024)
+            return;
+
+        var startInfo = new ProcessStartInfo(ffmpegPath)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        startInfo.ArgumentList.Add("-hide_banner");
+        startInfo.ArgumentList.Add("-loglevel");
+        startInfo.ArgumentList.Add("error");
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add(path);
+        startInfo.ArgumentList.Add("-map");
+        startInfo.ArgumentList.Add("0:v:0");
+        startInfo.ArgumentList.Add("-an");
+        startInfo.ArgumentList.Add("-sn");
+        startInfo.ArgumentList.Add("-pix_fmt");
+        startInfo.ArgumentList.Add("bgra");
+        startInfo.ArgumentList.Add("-f");
+        startInfo.ArgumentList.Add("rawvideo");
+        startInfo.ArgumentList.Add("-");
+
+        Process? process = null;
+        try
+        {
+            process = new Process
+            {
+                StartInfo = startInfo,
+                EnableRaisingEvents = false
+            };
+            process.Start();
+            _ = process.StandardError.ReadToEndAsync(cancellationToken);
+
+            lock (_lock)
+                _videoProcess = process;
+
+            int frameBytes = (int)frameBytes64;
+            int stride = width * 4;
+            TimeSpan frameDelay = TimeSpan.FromMilliseconds(1000.0 / Math.Clamp(fps, 1.0, 60.0));
+            Stream output = process.StandardOutput.BaseStream;
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                byte[] frame = new byte[frameBytes];
+                if (!await ReadExactlyAsync(output, frame, cancellationToken).ConfigureAwait(false))
+                    break;
+
+                while (IsVideoPaused() && !cancellationToken.IsCancellationRequested)
+                    await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+
+                VideoFrameReady?.Invoke(this, new MachineRoomVideoFrameEventArgs(frame, width, height, stride));
+                if (frameDelay > TimeSpan.Zero)
+                    await Task.Delay(frameDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Video preview is best effort; audio playback continues even if decoding fails.
+        }
+        finally
+        {
+            if (process != null)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best effort shutdown.
+                }
+
+                process.Dispose();
+            }
+
+            lock (_lock)
+            {
+                if (ReferenceEquals(_videoProcess, process))
+                    _videoProcess = null;
+            }
+        }
+    }
+
+    private bool IsVideoPaused()
+    {
+        lock (_lock)
+        {
+            return _isPaused;
+        }
+    }
+
+    private void StopVideoDecoder()
+    {
+        Process? process;
+        CancellationTokenSource? cts;
+        lock (_lock)
+        {
+            process = _videoProcess;
+            cts = _videoDecodeCts;
+            _videoProcess = null;
+            _videoDecodeCts = null;
+        }
+
+        try
+        {
+            cts?.Cancel();
+        }
+        catch
+        {
+            // Best effort cancellation.
+        }
+
+        try
+        {
+            if (process is { HasExited: false })
+                process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            // Best effort shutdown.
+        }
+        finally
+        {
+            cts?.Dispose();
+        }
+    }
+
+    private static async Task<bool> ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
+    {
+        int offset = 0;
+        while (offset < buffer.Length)
+        {
+            int read = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset), cancellationToken)
+                .ConfigureAwait(false);
+            if (read == 0)
+                return false;
+            offset += read;
+        }
+
+        return true;
+    }
+
+    private static bool TryProbeVideo(string ffprobePath, string path, out int width, out int height, out double fps)
+    {
+        width = 0;
+        height = 0;
+        fps = 24.0;
+
+        try
+        {
+            var startInfo = new ProcessStartInfo(ffprobePath)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("-v");
+            startInfo.ArgumentList.Add("error");
+            startInfo.ArgumentList.Add("-select_streams");
+            startInfo.ArgumentList.Add("v:0");
+            startInfo.ArgumentList.Add("-show_entries");
+            startInfo.ArgumentList.Add("stream=width,height,r_frame_rate");
+            startInfo.ArgumentList.Add("-of");
+            startInfo.ArgumentList.Add("default=noprint_wrappers=1:nokey=1");
+            startInfo.ArgumentList.Add(path);
+
+            using Process? process = Process.Start(startInfo);
+            if (process == null)
+                return false;
+
+            string output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit(2500);
+            if (!process.HasExited || process.ExitCode != 0)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best effort cleanup.
+                }
+
+                return false;
+            }
+
+            string[] lines = output
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (lines.Length < 2
+                || !int.TryParse(lines[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out width)
+                || !int.TryParse(lines[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out height)
+                || width <= 0
+                || height <= 0)
+            {
+                return false;
+            }
+
+            if (lines.Length >= 3 && TryParseFrameRate(lines[2], out double parsedFps))
+                fps = parsedFps;
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryParseFrameRate(string raw, out double fps)
+    {
+        fps = 24.0;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        string[] parts = raw.Split(new[] { '/' }, StringSplitOptions.TrimEntries);
+        if (parts.Length == 2
+            && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double numerator)
+            && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double denominator)
+            && numerator > 0
+            && denominator > 0)
+        {
+            fps = numerator / denominator;
+            return fps > 0;
+        }
+
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out fps) && fps > 0;
     }
 
     private Task RefreshStoppedTrackAsync()
@@ -602,29 +871,6 @@ internal sealed class MachineRoomMiniPlayerController : IDisposable
 
     private static bool IsVideoPath(string path)
         => VideoExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
-
-    private bool TryGetMpvWindowId(out string windowId)
-    {
-        lock (_lock)
-        {
-            if (_videoWindowHandle == IntPtr.Zero)
-            {
-                windowId = string.Empty;
-                return false;
-            }
-
-            if (_videoWindowDescriptor.Equals("XID", StringComparison.OrdinalIgnoreCase)
-                || _videoWindowDescriptor.Equals("HWND", StringComparison.OrdinalIgnoreCase)
-                || string.IsNullOrWhiteSpace(_videoWindowDescriptor))
-            {
-                windowId = _videoWindowHandle.ToInt64().ToString(CultureInfo.InvariantCulture);
-                return true;
-            }
-        }
-
-        windowId = string.Empty;
-        return false;
-    }
 
     private void UpdateCurrentTrackMetadataLocked()
     {

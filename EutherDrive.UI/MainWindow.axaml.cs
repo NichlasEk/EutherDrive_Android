@@ -59,12 +59,15 @@ public partial class MainWindow : Window
     private readonly OffworldMonitorViewModel _offworldMonitorViewModel;
     private Bitmap? _ambientMusicCoverBitmap;
     private bool _machineRoomMediaOnMainScreen;
-    private IntPtr _machineRoomMiniVideoHandle;
-    private string _machineRoomMiniVideoHandleDescriptor = string.Empty;
-    private IntPtr _machineRoomBigVideoHandle;
-    private string _machineRoomBigVideoHandleDescriptor = string.Empty;
+    private bool _machineRoomHasVideoFrame;
+    private byte[]? _machineRoomLastVideoFrame;
+    private int _machineRoomLastVideoWidth;
+    private int _machineRoomLastVideoHeight;
+    private int _machineRoomLastVideoStride;
+    private FrameBlitOptions _machineRoomLastVideoOptions = new(SharpPixels: false);
+    private WriteableBitmapRenderSurface? _machineRoomMiniMediaSurface;
+    private WriteableBitmapRenderSurface? _machineRoomBigMediaSurface;
     private WriteableBitmapRenderSurface? _machineRoomMiniEmulatorSurface;
-    private Bitmap? _machineRoomBigMediaBitmap;
     private readonly DispatcherTimer _deckMonitorTimer;
     private readonly Stopwatch _deckMonitorSessionStopwatch = Stopwatch.StartNew();
     private long _deckMonitorLastRefreshMs;
@@ -550,16 +553,7 @@ public partial class MainWindow : Window
         _machineRoomMiniPlayerController = new MachineRoomMiniPlayerController(GetMachineRoomCoverCachePath());
         _ambientMusicController.StateChanged += OnAmbientMusicStateChanged;
         _machineRoomMiniPlayerController.StateChanged += OnMachineRoomMiniPlayerStateChanged;
-        if (MachineRoomMiniVideoHost != null)
-        {
-            MachineRoomMiniVideoHost.NativeHandleReady += OnMachineRoomVideoHandleReady;
-            MachineRoomMiniVideoHost.NativeHandleDestroyed += OnMachineRoomVideoHandleDestroyed;
-        }
-        if (MachineRoomBigVideoHost != null)
-        {
-            MachineRoomBigVideoHost.NativeHandleReady += OnMachineRoomVideoHandleReady;
-            MachineRoomBigVideoHost.NativeHandleDestroyed += OnMachineRoomVideoHandleDestroyed;
-        }
+        _machineRoomMiniPlayerController.VideoFrameReady += OnMachineRoomVideoFrameReady;
         _offworldMonitorViewModel = offworldMonitorViewModel ?? OffworldMonitorViewModel.CreatePreview();
         if (OffworldMonitorPanel != null)
             OffworldMonitorPanel.DataContext = _offworldMonitorViewModel;
@@ -1048,21 +1042,15 @@ public partial class MainWindow : Window
         _deckMonitorTimer.Stop();
         _ambientMusicController.StateChanged -= OnAmbientMusicStateChanged;
         _machineRoomMiniPlayerController.StateChanged -= OnMachineRoomMiniPlayerStateChanged;
-        if (MachineRoomMiniVideoHost != null)
-        {
-            MachineRoomMiniVideoHost.NativeHandleReady -= OnMachineRoomVideoHandleReady;
-            MachineRoomMiniVideoHost.NativeHandleDestroyed -= OnMachineRoomVideoHandleDestroyed;
-        }
-        if (MachineRoomBigVideoHost != null)
-        {
-            MachineRoomBigVideoHost.NativeHandleReady -= OnMachineRoomVideoHandleReady;
-            MachineRoomBigVideoHost.NativeHandleDestroyed -= OnMachineRoomVideoHandleDestroyed;
-        }
+        _machineRoomMiniPlayerController.VideoFrameReady -= OnMachineRoomVideoFrameReady;
         _ambientMusicController.Dispose();
         _machineRoomMiniPlayerController.Dispose();
         _offworldMonitorViewModel.Dispose();
         DisposeAmbientMusicCoverBitmap();
-        DisposeMachineRoomBigMediaBitmap();
+        _machineRoomMiniMediaSurface?.Dispose();
+        _machineRoomMiniMediaSurface = null;
+        _machineRoomBigMediaSurface?.Dispose();
+        _machineRoomBigMediaSurface = null;
         _machineRoomMiniEmulatorSurface?.Dispose();
         _machineRoomMiniEmulatorSurface = null;
     }
@@ -3709,14 +3697,15 @@ public partial class MainWindow : Window
     {
         bool showVideo = miniPlayer.HasSelection && miniPlayer.IsVideo;
         if (!showVideo)
+        {
             _machineRoomMediaOnMainScreen = false;
+            _machineRoomHasVideoFrame = false;
+        }
 
-        if (MachineRoomMiniVideoHost != null)
-            MachineRoomMiniVideoHost.IsVisible = false;
-        if (MachineRoomBigVideoHost != null)
-            MachineRoomBigVideoHost.IsVisible = false;
-        if (MachineRoomBigMediaImage != null)
-            MachineRoomBigMediaImage.IsVisible = showVideo && _machineRoomMediaOnMainScreen;
+        if (MachineRoomMiniMediaFrameHost != null)
+            MachineRoomMiniMediaFrameHost.IsVisible = showVideo && !_machineRoomMediaOnMainScreen && _machineRoomHasVideoFrame;
+        if (MachineRoomBigMediaFrameHost != null)
+            MachineRoomBigMediaFrameHost.IsVisible = showVideo && _machineRoomMediaOnMainScreen && _machineRoomHasVideoFrame;
         if (AmbientMusicCoverImage != null)
             AmbientMusicCoverImage.IsVisible = !showVideo || !_machineRoomMediaOnMainScreen;
         if (MachineRoomMiniEmulatorHost != null)
@@ -3736,41 +3725,7 @@ public partial class MainWindow : Window
                     : "Move Machine Room video to the main screen");
         }
 
-        UpdateMachineRoomBigMediaImage(showVideo && _machineRoomMediaOnMainScreen ? miniPlayer.CoverPath : null);
-    }
-
-    private void UpdateMachineRoomBigMediaImage(string? coverPath)
-    {
-        DisposeMachineRoomBigMediaBitmap();
-
-        if (MachineRoomBigMediaImage == null || string.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
-        {
-            if (MachineRoomBigMediaImage != null)
-                MachineRoomBigMediaImage.Source = null;
-            return;
-        }
-
-        try
-        {
-            _machineRoomBigMediaBitmap = new Bitmap(coverPath);
-            MachineRoomBigMediaImage.Source = _machineRoomBigMediaBitmap;
-        }
-        catch
-        {
-            MachineRoomBigMediaImage.Source = null;
-            _machineRoomBigMediaBitmap = null;
-        }
-    }
-
-    private void DisposeMachineRoomBigMediaBitmap()
-    {
-        if (_machineRoomBigMediaBitmap == null)
-            return;
-
-        if (MachineRoomBigMediaImage != null)
-            MachineRoomBigMediaImage.Source = null;
-        _machineRoomBigMediaBitmap.Dispose();
-        _machineRoomBigMediaBitmap = null;
+        PresentLastMachineRoomVideoFrame();
     }
 
     private void PresentMachineRoomMiniEmulatorFrame(
@@ -3801,45 +3756,81 @@ public partial class MainWindow : Window
         _machineRoomMiniEmulatorSurface.View.InvalidateVisual();
     }
 
-    private void RetargetMachineRoomVideo()
+    private void OnMachineRoomVideoFrameReady(object? sender, MachineRoomVideoFrameEventArgs e)
     {
-        IntPtr handle = _machineRoomMediaOnMainScreen ? _machineRoomBigVideoHandle : _machineRoomMiniVideoHandle;
-        string descriptor = _machineRoomMediaOnMainScreen
-            ? _machineRoomBigVideoHandleDescriptor
-            : _machineRoomMiniVideoHandleDescriptor;
-        _ = _machineRoomMiniPlayerController.SetVideoTargetAsync(handle, descriptor);
+        byte[] pixels = e.Pixels;
+        int width = e.Width;
+        int height = e.Height;
+        int stride = e.Stride;
+        Dispatcher.UIThread.Post(() => PresentMachineRoomVideoFrame(pixels, width, height, stride));
     }
 
-    private void OnMachineRoomVideoHandleReady(object? sender, MachineRoomVideoHandleEventArgs e)
+    private void PresentMachineRoomVideoFrame(byte[] pixels, int width, int height, int stride)
     {
-        if (ReferenceEquals(sender, MachineRoomMiniVideoHost))
-        {
-            _machineRoomMiniVideoHandle = e.Handle;
-            _machineRoomMiniVideoHandleDescriptor = e.Descriptor;
-        }
-        else if (ReferenceEquals(sender, MachineRoomBigVideoHost))
-        {
-            _machineRoomBigVideoHandle = e.Handle;
-            _machineRoomBigVideoHandleDescriptor = e.Descriptor;
-        }
+        if (pixels.Length == 0 || width <= 0 || height <= 0 || stride <= 0)
+            return;
 
-        RetargetMachineRoomVideo();
+        _machineRoomHasVideoFrame = true;
+        _machineRoomLastVideoFrame = pixels;
+        _machineRoomLastVideoWidth = width;
+        _machineRoomLastVideoHeight = height;
+        _machineRoomLastVideoStride = stride;
+        _machineRoomLastVideoOptions = new FrameBlitOptions(SharpPixels: false, ForceOpaque: true);
+
+        MachineRoomMiniPlayerSnapshot miniPlayer = _machineRoomMiniPlayerController.GetSnapshot();
+        bool showVideo = miniPlayer.HasSelection && miniPlayer.IsVideo;
+        if (!showVideo)
+            return;
+
+        if (MachineRoomMiniMediaFrameHost != null)
+            MachineRoomMiniMediaFrameHost.IsVisible = !_machineRoomMediaOnMainScreen;
+        if (MachineRoomBigMediaFrameHost != null)
+            MachineRoomBigMediaFrameHost.IsVisible = _machineRoomMediaOnMainScreen;
+
+        if (_machineRoomMediaOnMainScreen)
+            PresentMachineRoomVideoFrameInHost(MachineRoomBigMediaFrameHost, ref _machineRoomBigMediaSurface, pixels, width, height, stride, _machineRoomLastVideoOptions);
+        else
+            PresentMachineRoomVideoFrameInHost(MachineRoomMiniMediaFrameHost, ref _machineRoomMiniMediaSurface, pixels, width, height, stride, _machineRoomLastVideoOptions);
     }
 
-    private void OnMachineRoomVideoHandleDestroyed(object? sender, EventArgs e)
+    private void PresentLastMachineRoomVideoFrame()
     {
-        if (ReferenceEquals(sender, MachineRoomMiniVideoHost))
+        if (!_machineRoomHasVideoFrame
+            || _machineRoomLastVideoFrame == null
+            || _machineRoomLastVideoWidth <= 0
+            || _machineRoomLastVideoHeight <= 0
+            || _machineRoomLastVideoStride <= 0)
         {
-            _machineRoomMiniVideoHandle = IntPtr.Zero;
-            _machineRoomMiniVideoHandleDescriptor = string.Empty;
-        }
-        else if (ReferenceEquals(sender, MachineRoomBigVideoHost))
-        {
-            _machineRoomBigVideoHandle = IntPtr.Zero;
-            _machineRoomBigVideoHandleDescriptor = string.Empty;
+            return;
         }
 
-        RetargetMachineRoomVideo();
+        if (_machineRoomMediaOnMainScreen)
+            PresentMachineRoomVideoFrameInHost(MachineRoomBigMediaFrameHost, ref _machineRoomBigMediaSurface, _machineRoomLastVideoFrame, _machineRoomLastVideoWidth, _machineRoomLastVideoHeight, _machineRoomLastVideoStride, _machineRoomLastVideoOptions);
+        else
+            PresentMachineRoomVideoFrameInHost(MachineRoomMiniMediaFrameHost, ref _machineRoomMiniMediaSurface, _machineRoomLastVideoFrame, _machineRoomLastVideoWidth, _machineRoomLastVideoHeight, _machineRoomLastVideoStride, _machineRoomLastVideoOptions);
+    }
+
+    private static void PresentMachineRoomVideoFrameInHost(
+        Panel? host,
+        ref WriteableBitmapRenderSurface? surface,
+        ReadOnlySpan<byte> pixels,
+        int width,
+        int height,
+        int stride,
+        in FrameBlitOptions options)
+    {
+        if (host == null)
+            return;
+
+        if (surface == null)
+        {
+            surface = new WriteableBitmapRenderSurface();
+            host.Children.Clear();
+            host.Children.Add(surface.View);
+        }
+
+        surface.Present(pixels, width, height, stride, options, measurePerf: false);
+        surface.View.InvalidateVisual();
     }
 
     private void UpdateAmbientMusicCover(string? coverPath)
