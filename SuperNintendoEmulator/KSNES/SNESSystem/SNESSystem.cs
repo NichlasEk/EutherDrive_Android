@@ -1155,13 +1155,9 @@ public class SNESSystem : ISNESSystem
         if (endX <= XPos)
             return false;
 
-        int chunkMclks = endX - XPos;
-        int coprocessorChunkLimit = RomImpl.GetFastCpuWindowChunkLimit(Cycles);
-        if (coprocessorChunkLimit <= 0)
-            return false;
-        chunkMclks = Math.Min(chunkMclks, coprocessorChunkLimit);
-
         bool cpuCanRun = IsCpuBusAvailable();
+        int chunkMclks = endX - XPos;
+        bool batchSuperFxInternalCpuWait = false;
         if (cpuCanRun)
         {
             int cpuWaitMclks = _cpuCyclesLeft & ~0x1;
@@ -1169,6 +1165,15 @@ public class SNESSystem : ISNESSystem
                 return false;
 
             chunkMclks = Math.Min(chunkMclks, cpuWaitMclks);
+            batchSuperFxInternalCpuWait = RomImpl.SuperFx != null;
+        }
+
+        if (!batchSuperFxInternalCpuWait)
+        {
+            int coprocessorChunkLimit = RomImpl.GetFastCpuWindowChunkLimit(Cycles);
+            if (coprocessorChunkLimit <= 0)
+                return false;
+            chunkMclks = Math.Min(chunkMclks, coprocessorChunkLimit);
         }
 
         chunkMclks &= ~0x1;
@@ -1851,6 +1856,8 @@ public class SNESSystem : ISNESSystem
         _apuImpl.ResetPerfCounters();
         if (ROM.Sa1 is KSNES.Specialchips.SA1.Sa1 sa1)
             sa1.ResetPerfCounters();
+        if (RomImpl.SuperFx is KSNES.Specialchips.SuperFX.SuperFx superFx)
+            superFx.ResetPerfCounters();
     }
 
     public string GetPerfSummary()
@@ -1885,6 +1892,12 @@ public class SNESSystem : ISNESSystem
             string sa1Summary = sa1.GetPerfSummary();
             if (!string.IsNullOrWhiteSpace(sa1Summary))
                 summary = $"{summary}\n{sa1Summary}";
+        }
+        if (RomImpl.SuperFx is KSNES.Specialchips.SuperFX.SuperFx superFx)
+        {
+            string superFxSummary = superFx.GetPerfSummary();
+            if (!string.IsNullOrWhiteSpace(superFxSummary))
+                summary = $"{summary}\n{superFxSummary}";
         }
 
         return summary;

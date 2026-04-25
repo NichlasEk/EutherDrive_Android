@@ -269,26 +269,44 @@ internal sealed class GraphicsSupportUnit
     public bool IsRunning() => Go;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Tick(ulong masterCyclesElapsed, byte[] rom, byte[] ram)
+    public ulong Tick(ulong masterCyclesElapsed, byte[] rom, byte[] ram)
     {
         if (!Go)
         {
             WaitCycles = 0;
-            return;
+            return 0;
         }
 
+        ulong executedInstructions = 0;
         ulong gsuCycles = masterCyclesElapsed / ClockSpeed.MclkDivider();
         while (gsuCycles >= WaitCycles)
         {
             gsuCycles -= WaitCycles;
             WaitCycles = Instructions.Execute(this, rom, ram);
+            executedInstructions++;
             if (!Go)
             {
                 WaitCycles = 0;
-                return;
+                return executedInstructions;
             }
         }
         WaitCycles -= (byte)gsuCycles;
+        return executedInstructions;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public int GetFastCpuWindowChunkLimit(ulong overclockFactor)
+    {
+        if (!Go)
+            return int.MaxValue;
+
+        byte waitCycles = WaitCycles;
+        if (waitCycles == 0)
+            return 0;
+
+        ulong factor = Math.Max(1UL, overclockFactor);
+        ulong masterCycles = ((ulong)waitCycles * ClockSpeed.MclkDivider() + factor - 1) / factor;
+        return masterCycles > int.MaxValue ? int.MaxValue : (int)masterCycles;
     }
 
     public bool IrqAsserted() => IrqEnabled && Irq;

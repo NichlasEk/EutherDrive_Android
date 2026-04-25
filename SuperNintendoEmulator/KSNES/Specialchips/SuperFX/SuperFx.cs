@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace KSNES.Specialchips.SuperFX;
@@ -19,6 +20,8 @@ internal sealed class SuperFx
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SUPERFX_ALLOW_SNES_ROM_READ_WHILE_WAITING_ON_RAM"), "1", StringComparison.Ordinal);
     private static readonly bool TraceState =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_SUPERFX_STATE"), "1", StringComparison.Ordinal);
+    private static readonly bool PerfStatsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SNES_PERF"), "1", StringComparison.Ordinal);
     private static readonly int TraceBusLimit = 512;
     private static int _traceBusCount;
     private static int _traceRamWatchCount;
@@ -29,6 +32,13 @@ internal sealed class SuperFx
     private readonly GraphicsSupportUnit _gsu;
     private readonly ulong _overclockFactor;
     private ulong _lastSnesCycles;
+    private long _perfTickTicks;
+    private ulong _perfTickCalls;
+    private ulong _perfActiveTickCalls;
+    private ulong _perfIdleTickCalls;
+    private ulong _perfMasterCycles;
+    private ulong _perfInputCycles;
+    private ulong _perfInstructions;
 
     public SuperFx(byte[] rom, byte[] ram, ulong overclockFactor)
     {
@@ -196,20 +206,73 @@ internal sealed class SuperFx
         }
         ulong delta = masterCyclesElapsed - _lastSnesCycles;
         _lastSnesCycles = masterCyclesElapsed;
-        _gsu.Tick(_overclockFactor * delta, _rom, _ram);
+        if (!_gsu.IsRunning())
+        {
+            _gsu.WaitCycles = 0;
+            if (PerfStatsEnabled)
+            {
+                _perfTickCalls++;
+                _perfIdleTickCalls++;
+                _perfMasterCycles += delta;
+                _perfInputCycles += _overclockFactor * delta;
+            }
+            return;
+        }
+
+        ulong inputCycles = _overclockFactor * delta;
+        if (!PerfStatsEnabled)
+        {
+            _gsu.Tick(inputCycles, _rom, _ram);
+            return;
+        }
+
+        long startTicks = Stopwatch.GetTimestamp();
+        ulong instructions = _gsu.Tick(inputCycles, _rom, _ram);
+        _perfTickTicks += Stopwatch.GetTimestamp() - startTicks;
+        _perfTickCalls++;
+        _perfActiveTickCalls++;
+        _perfMasterCycles += delta;
+        _perfInputCycles += inputCycles;
+        _perfInstructions += instructions;
     }
 
     public bool Irq => _gsu.IrqAsserted();
 
     public int GetFastCpuWindowChunkLimit()
     {
-        return _gsu.IsRunning() ? 0 : int.MaxValue;
+        return _gsu.GetFastCpuWindowChunkLimit(_overclockFactor);
+    }
+
+    internal void ResetPerfCounters()
+    {
+        if (!PerfStatsEnabled)
+            return;
+
+        _perfTickTicks = 0;
+        _perfTickCalls = 0;
+        _perfActiveTickCalls = 0;
+        _perfIdleTickCalls = 0;
+        _perfMasterCycles = 0;
+        _perfInputCycles = 0;
+        _perfInstructions = 0;
+    }
+
+    internal string GetPerfSummary()
+    {
+        if (!PerfStatsEnabled)
+            return string.Empty;
+
+        double tickMs = _perfTickTicks * 1000.0 / Stopwatch.Frequency;
+        return string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"SNES sfx  instr:{_perfInstructions}  tick:{tickMs:0.0}ms  calls:{_perfTickCalls}/{_perfActiveTickCalls}/{_perfIdleTickCalls}  m:{_perfMasterCycles}  gsu:{_perfInputCycles}  wait:{_gsu.WaitCycles}  go:{(_gsu.IsRunning() ? 1 : 0)}");
     }
 
     public void Reset()
     {
         _gsu.Reset();
         _lastSnesCycles = 0;
+        ResetPerfCounters();
     }
 
     public void ResyncTo(ulong snesCycles)

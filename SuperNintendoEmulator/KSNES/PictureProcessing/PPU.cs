@@ -1878,9 +1878,7 @@ public class PPU : IPPU
         }
         else if (line > 0 && line < (FrameOverscan ? 240 : 225))
         {
-            // Copy current scroll values to line buffers. A blanket +1 V scroll bias
-            // causes Secret of Evermore's large-tile backgrounds to pick the wrong
-            // tile quadrants; keep the latched values exact here.
+            // Copy current scroll values to line buffers; keep the latched values exact here.
             for (int i = 0; i < 4; i++)
             {
                 _lineHoff[i] = _bgHoff[i];
@@ -2261,21 +2259,26 @@ public class PPU : IPPU
 
     private bool CanUseChunkedSimpleMainScreenPath()
     {
-        // Secret of Evermore and debug layer toggles both point at correctness issues
-        // in the chunked tile decode path. Keep the scalar path for now.
+        // Keep the broad chunked path opt-in until the tile decode cases are covered.
         return false;
     }
 
     private bool CanUseChunkedComplexWindowlessPath(bool hiResOutput, bool trueHiResOutput, bool useLegacyLayerOrdering)
     {
-        return !hiResOutput
-            && !trueHiResOutput
+        return !trueHiResOutput
             && !_frameTrueHiResOutput
             && !_forcedBlank
-            && _mode != 7
+            && _mode == 1
             && !_directColor
             && !_lineHasLayerWindows
-            && CanUseChunkedSimpleMainScreenPath();
+            && !_bigTiles[0]
+            && !_bigTiles[1]
+            && !_bigTiles[2]
+            && !_bigTiles[3]
+            && !_mosaicEnabled[0]
+            && !_mosaicEnabled[1]
+            && !_mosaicEnabled[2]
+            && !_mosaicEnabled[3];
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2653,6 +2656,27 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                         if ((uint)r2 > 31) r2 = r2 < 0 ? 0 : 31;
                         if ((uint)g2 > 31) g2 = g2 < 0 ? 0 : 31;
                         if ((uint)b2 > 31) b2 = b2 < 0 ? 0 : 31;
+                    }
+
+                    if (_pseudoHires)
+                    {
+                        int r1 = subColor & 0x1f;
+                        int g1 = (subColor >> 5) & 0x1f;
+                        int b1 = (subColor >> 10) & 0x1f;
+                        bool mainVisible = mainLayer < 5;
+                        bool subVisible = subLayer < 5;
+                        if (!mainVisible && subVisible)
+                        {
+                            r2 = r1;
+                            g2 = g1;
+                            b2 = b1;
+                        }
+                        else if (mainVisible && subVisible)
+                        {
+                            r2 = (r2 + r1) >> 1;
+                            g2 = (g2 + g1) >> 1;
+                            b2 = (b2 + b1) >> 1;
+                        }
                     }
 
                     pRow[screenX] = argbTabOffset[(b2 << 10) | (g2 << 5) | r2];

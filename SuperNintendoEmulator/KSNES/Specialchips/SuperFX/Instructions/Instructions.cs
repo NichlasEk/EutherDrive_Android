@@ -178,11 +178,10 @@ internal static class Instructions
     {
         ushort fetchAddr = gsu.R[15];
         bool isCacheable = gsu.CodeCache.PcIsCacheable(fetchAddr);
-        byte? cached = gsu.CodeCache.Get(fetchAddr);
-        if (isCacheable && cached.HasValue)
+        if (isCacheable && gsu.CodeCache.TryGet(fetchAddr, out byte cached))
         {
-            gsu.State.OpcodeBuffer = cached.Value;
-            if (TraceCache) TraceCacheEvent(gsu, "FETCH-HIT", fetchAddr, $"opcode=0x{cached.Value:X2}");
+            gsu.State.OpcodeBuffer = cached;
+            if (TraceCache) TraceCacheEvent(gsu, "FETCH-HIT", fetchAddr, $"opcode=0x{cached:X2}");
             gsu.R[15] = unchecked((ushort)(gsu.R[15] + 1));
             return;
         }
@@ -210,7 +209,7 @@ internal static class Instructions
 
     internal static MemoryType NextOpcodeMemoryType(GraphicsSupportUnit gsu)
     {
-        if (gsu.CodeCache.PcIsCacheable(gsu.R[15]) && gsu.CodeCache.Get(gsu.R[15]).HasValue)
+        if (gsu.CodeCache.PcIsCacheable(gsu.R[15]) && gsu.CodeCache.TryGet(gsu.R[15], out _))
         {
             return MemoryType.CodeCache;
         }
@@ -230,7 +229,7 @@ internal static class Instructions
 
     internal static byte FillCacheToPc(GraphicsSupportUnit gsu, ushort pc, byte[] rom, byte[] ram)
     {
-        if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.Get(pc).HasValue)
+        if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.TryGet(pc, out _))
         {
             if (TraceCache) TraceCacheEvent(gsu, "FILL-TO-SKIP", pc, "reason=not-needed");
             return 0;
@@ -250,7 +249,7 @@ internal static class Instructions
 
     internal static byte CacheAtPc(GraphicsSupportUnit gsu, ushort pc, byte[] rom, byte[] ram)
     {
-        if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.Get(pc).HasValue)
+        if (!gsu.CodeCache.PcIsCacheable(pc) || gsu.CodeCache.TryGet(pc, out _))
         {
             if (TraceCache) TraceCacheEvent(gsu, "CACHE-PC-SKIP", pc, "reason=not-needed");
             return 0;
@@ -271,7 +270,7 @@ internal static class Instructions
             return 0;
         }
 
-        if (!gsu.CodeCache.PcIsCacheable(gsu.R[15]) || gsu.CodeCache.Get(gsu.R[15]).HasValue)
+        if (!gsu.CodeCache.PcIsCacheable(gsu.R[15]) || gsu.CodeCache.TryGet(gsu.R[15], out _))
         {
             if (TraceCache) TraceCacheEvent(gsu, "FILL-FROM-SKIP", gsu.R[15], "reason=not-needed");
             return 0;

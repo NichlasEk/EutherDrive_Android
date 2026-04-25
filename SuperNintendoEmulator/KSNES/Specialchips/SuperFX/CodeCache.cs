@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace KSNES.Specialchips.SuperFX;
 
 internal sealed class CodeCache
@@ -7,6 +9,7 @@ internal sealed class CodeCache
     private ushort _cbr;
     private uint _cachedLines;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool PcIsCacheable(ushort address)
     {
         if (_cbr < 0xFE00)
@@ -14,6 +17,7 @@ internal sealed class CodeCache
         return address >= _cbr || address < (ushort)(_cbr + 512);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte? Get(ushort address)
     {
         ushort cacheAddr = (ushort)(address - _cbr);
@@ -23,6 +27,22 @@ internal sealed class CodeCache
         return _ram[cacheAddr & 0x1FF];
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryGet(ushort address, out byte value)
+    {
+        ushort cacheAddr = (ushort)(address - _cbr);
+        int cacheLineBit = cacheAddr >> 4;
+        if (((_cachedLines >> cacheLineBit) & 1) == 0)
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _ram[cacheAddr & 0x1FF];
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Set(ushort address, byte value)
     {
         ushort cacheAddr = (ushort)(address - _cbr);
