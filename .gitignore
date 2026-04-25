@@ -27,6 +27,7 @@ eutherdrive_last_rom.txt
 eutherdrive_region.txt
 eutherdrive_settings.json
 eutherdrive_settings.toml
+eutherdrive_title_stats.toml
 trusted_exceptions.toml
 memcard.mcr
 savestates/
@@ -36,6 +37,14 @@ bios/
 saves/
 .ambient-music-cache/
 .machine-room-cover-cache/
+
+# Local media selections/playlists
+*.m3u
+*.m3u8
+*.pls
+*.mp3
+*.m4a
+*.m4u
 
 # Local notes
 MEMO.md
