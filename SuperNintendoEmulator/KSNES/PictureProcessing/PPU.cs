@@ -1299,35 +1299,7 @@ public class PPU : IPPU
             case 0x2c:
                 if (_tmRaw == (byte)value)
                     return;
-                
-                // Enhanced workaround for Aladdin timing issue on Android
-                // Track Aladdin's state machine during scene transitions
-                if (_snes != null)
-                {
-                    // Aladdin state tracking
-                    bool isAladdin = _snes.GameName?.Contains("Aladdin", StringComparison.OrdinalIgnoreCase) == true;
-                    
-                    if (isAladdin)
-                    {
-                        // State 1: During cold boot, fix 0x04 -> 0x17
-                        if (value == 0x04 && GetCurrentVblank() && (_snes?.YPos >= 240) == true && (_tmRaw == 0x00))
-                        {
-                            value = 0x17;
-                        }
-                        // State 2: After scene transition (frame ~345), if TM goes to 0x01,
-                        // it might be trying to reset for gameplay but timing is off
-                        // Change it to 0x17 for gameplay (desktop version behavior)
-                        else if (value == 0x01)
-                        {
-                            // Game is trying to reset TM during scene transition
-                            // but timing is off. Force it to gameplay mode (0x17)
-                            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_TM_TS") == "1")
-                                Console.WriteLine($"[PPU-ALADDIN] TM 0x01->0x17");
-                            value = 0x17;
-                        }
-                    }
-                }
-                
+
                 _tmRaw = (byte)value;
                  _mainScreenEnabled[0] = (value & 0x1) > 0;
                  _mainScreenEnabled[1] = (value & 0x2) > 0;
@@ -1341,35 +1313,7 @@ public class PPU : IPPU
             case 0x2d:
                 if (_tsRaw == (byte)value)
                     return;
-                
-                // Enhanced workaround for Aladdin timing issue on Android
-                // Track Aladdin's state machine during scene transitions
-                if (_snes != null)
-                {
-                    // Aladdin state tracking
-                    bool isAladdin = _snes.GameName?.Contains("Aladdin", StringComparison.OrdinalIgnoreCase) == true;
-                    
-                    if (isAladdin)
-                    {
-                        // State 1: During cold boot, fix 0x04 -> 0x17
-                        if (value == 0x04 && GetCurrentVblank() && (_snes?.YPos >= 240) == true && (_tsRaw == 0x00))
-                        {
-                            value = 0x17;
-                        }
-                        // State 2: After scene transition (frame ~345), if TS goes to 0x01,
-                        // it might be trying to reset for gameplay but timing is off
-                        // Change it to 0x17 for gameplay (desktop version behavior)
-                        else if (value == 0x01)
-                        {
-                            // Game is trying to reset TS during scene transition
-                            // but timing is off. Force it to gameplay mode (0x17)
-                            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_TM_TS") == "1")
-                                Console.WriteLine($"[PPU-ALADDIN] TS 0x01->0x17");
-                            value = 0x17;
-                        }
-                    }
-                }
-                
+
                 _tsRaw = (byte)value;
                  _subScreenEnabled[0] = (value & 0x1) > 0;
                  _subScreenEnabled[1] = (value & 0x2) > 0;
