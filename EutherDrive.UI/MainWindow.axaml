@@ -412,7 +412,7 @@
                            TextWrapping="Wrap"
                            Text="ROM EMPTY | AUDIO ON | AMBIENT OFF"/>
                 <Grid ColumnDefinitions="Auto,*"
-                      RowDefinitions="Auto,Auto,Auto,Auto,Auto"
+                      RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto"
                       ColumnSpacing="10"
                       RowSpacing="4">
                   <TextBlock Grid.Row="0" Text="Deck" Classes="muted"/>
@@ -423,8 +423,10 @@
                   <TextBlock Grid.Row="2" Grid.Column="1" Name="DeckMonitorVideoText" Text="Bitmap / idle" TextWrapping="Wrap"/>
                   <TextBlock Grid.Row="3" Text="Mix" Classes="muted"/>
                   <TextBlock Grid.Row="3" Grid.Column="1" Name="DeckMonitorMixText" Text="Master 50% / audio live / ambient off" TextWrapping="Wrap"/>
-                  <TextBlock Grid.Row="4" Text="Uptime" Classes="muted"/>
-                  <TextBlock Grid.Row="4" Grid.Column="1" Name="DeckMonitorUptimeText" Text="00s"/>
+                  <TextBlock Grid.Row="4" Text="Headroom" Classes="muted"/>
+                  <TextBlock Grid.Row="4" Grid.Column="1" Name="DeckMonitorHeadroomText" Text="idle" TextWrapping="Wrap"/>
+                  <TextBlock Grid.Row="5" Text="Uptime" Classes="muted"/>
+                  <TextBlock Grid.Row="5" Grid.Column="1" Name="DeckMonitorUptimeText" Text="00s"/>
                 </Grid>
                 <Border Classes="log-panel" Padding="6,4">
                   <TextBlock Name="DeckMonitorHintText"

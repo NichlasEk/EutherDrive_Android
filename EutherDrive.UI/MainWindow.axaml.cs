@@ -307,6 +307,9 @@ public partial class MainWindow : Window
     private long _emuFpsLastTicks;
     private int _emuFpsFrames;
     private double _emuActualFps;
+    private long _emuCapacityTicks;
+    private int _emuCapacityFrames;
+    private double _emuCapacityFps;
     private long _sysCycleLastLogTicks;
     private long _sysCycleLastValue;
     private long _speedLockLastTicks;
@@ -3984,6 +3987,8 @@ public partial class MainWindow : Window
             DeckMonitorVideoText.Text = GetDeckMonitorVideoText(romRunning);
         if (DeckMonitorMixText != null)
             DeckMonitorMixText.Text = GetDeckMonitorMixText(romRunning, audioEnabled, ambient);
+        if (DeckMonitorHeadroomText != null)
+            DeckMonitorHeadroomText.Text = GetDeckMonitorHeadroomText(romRunning);
         if (DeckMonitorUptimeText != null)
             DeckMonitorUptimeText.Text = FormatDeckMonitorUptime(_deckMonitorSessionStopwatch.Elapsed);
         if (DeckMonitorHintText != null)
@@ -4090,6 +4095,24 @@ public partial class MainWindow : Window
                     : "ambient armed"
                 : "ambient off";
         return $"Master {_masterVolumePercent}% / {audioText} / {ambientText}";
+    }
+
+    private string GetDeckMonitorHeadroomText(bool romRunning)
+    {
+        if (!romRunning)
+            return "idle";
+
+        double targetFps = GetLiveTargetFps();
+        double capacityFps = Volatile.Read(ref _emuCapacityFps);
+        if (!double.IsFinite(targetFps) || targetFps <= 0.1)
+            return "measuring";
+        if (!double.IsFinite(capacityFps) || capacityFps <= 0.1)
+            return $"target {targetFps:0.0} fps / measuring";
+
+        double spareFps = capacityFps - targetFps;
+        double percent = (capacityFps / targetFps) * 100.0;
+        string sign = spareFps >= 0 ? "+" : "";
+        return $"cap {capacityFps:0.0} fps / {sign}{spareFps:0.0} ({percent:0}%)";
     }
 
     private string GetDeckMonitorHintText(bool romRunning, bool audioEnabled, AmbientMusicSnapshot ambient)
@@ -9527,6 +9550,9 @@ public partial class MainWindow : Window
         double targetFps = GetLiveTargetFps();
         double ticksPerFrame = Stopwatch.Frequency / targetFps;
         double nextTick = Stopwatch.GetTimestamp();
+        _emuCapacityTicks = 0;
+        _emuCapacityFrames = 0;
+        Volatile.Write(ref _emuCapacityFps, 0.0);
         bool audioStartupPriming = AudioStartupPrimeUncapped && _audioEngine != null && !_audioPullMode && AudioTargetBufferedFrames > 0;
         long audioStartupPrimeUntilTicks = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 3.0);
         int uiHangFrames = 0;
@@ -9658,6 +9684,7 @@ public partial class MainWindow : Window
                 nextTick += ticksPerFrame;
             }
 
+            long frameWorkStart = Stopwatch.GetTimestamp();
             try
             {
                 lock (_coreAudioLock)
@@ -9843,6 +9870,7 @@ public partial class MainWindow : Window
 
             ProducePsgForFrame();
             SubmitAudio();
+            TrackEmuCapacityFrame(Stopwatch.GetTimestamp() - frameWorkStart);
 
             // Track actual emu FPS
             _emuFpsFrames++;
@@ -9910,6 +9938,25 @@ public partial class MainWindow : Window
         MaybeDumpMdYmStateOnStop("thread-exit");
         MaybeDumpSnesDspStateOnStop("thread-exit");
         Console.WriteLine($"[EmuLoop] Thread exiting gen={generation}");
+    }
+
+    private void TrackEmuCapacityFrame(long frameWorkTicks)
+    {
+        if (frameWorkTicks <= 0)
+            return;
+
+        _emuCapacityTicks += frameWorkTicks;
+        _emuCapacityFrames++;
+
+        if (_emuCapacityFrames < 30 && _emuCapacityTicks < Stopwatch.Frequency)
+            return;
+
+        double workSeconds = _emuCapacityTicks / (double)Stopwatch.Frequency;
+        if (workSeconds > 0)
+            Volatile.Write(ref _emuCapacityFps, _emuCapacityFrames / workSeconds);
+
+        _emuCapacityTicks = 0;
+        _emuCapacityFrames = 0;
     }
 
     private void CatchUpAudio(IEmulatorCore core)
