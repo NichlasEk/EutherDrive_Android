@@ -1642,16 +1642,19 @@ namespace ePceCD
                     break;
                 case 0x01:
                     m_VDC_MARR = (m_VDC_MARR & 0xFF) | (data << 8);
-                    m_VDC_ReadBuffer = m_VRAM[m_VDC_MARR & 0x7FFF];
-                    m_VDC_MARR = (m_VDC_MARR + m_VDC_Increment) & 0x7FFF;
+                    m_VDC_ReadBuffer = ReadVramWord(m_VDC_MARR);
+                    m_VDC_MARR = (m_VDC_MARR + m_VDC_Increment) & 0xFFFF;
                     TraceVdcWriteIfNeeded("MSB", reg, data);
                     break;
                 case 0x02:
                     ushort vdcVwr = (ushort)((Transient.VdcVwr & 0x00FF) | (data << 8));
                     Transient.VdcVwr = vdcVwr;
-                    m_VRAM[m_VDC_MAWR] = vdcVwr;
-                    TraceVramWriteIfNeeded(m_VDC_MAWR, vdcVwr);
-                    m_VDC_MAWR = (m_VDC_MAWR + m_VDC_Increment) & 0x7FFF;
+                    if ((uint)m_VDC_MAWR < 0x8000u)
+                    {
+                        m_VRAM[m_VDC_MAWR] = vdcVwr;
+                        TraceVramWriteIfNeeded(m_VDC_MAWR, vdcVwr);
+                    }
+                    m_VDC_MAWR = (m_VDC_MAWR + m_VDC_Increment) & 0xFFFF;
                     break;
                 case 0x05:
                     switch (data & 0x18)
@@ -1776,8 +1779,8 @@ namespace ePceCD
                     byte data = (byte)(m_VDC_ReadBuffer >> 8);
                     if (m_VDC_Reg == 2)
                     {
-                        m_VDC_ReadBuffer = m_VRAM[m_VDC_MARR & 0x7FFF];
-                        m_VDC_MARR = (m_VDC_MARR + m_VDC_Increment) & 0x7FFF;
+                        m_VDC_ReadBuffer = ReadVramWord(m_VDC_MARR);
+                        m_VDC_MARR = (m_VDC_MARR + m_VDC_Increment) & 0xFFFF;
                     }
                     return data;
             }
