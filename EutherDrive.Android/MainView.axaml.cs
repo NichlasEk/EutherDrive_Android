@@ -1346,7 +1346,8 @@ public partial class MainView : UserControl
 
         string safeName = SanitizeFileComponent(Path.GetFileNameWithoutExtension(romDisplayName), fallback: "rom");
         await using FileStream source = File.OpenRead(romPath);
-        return await CopyToDeterministicCacheAsync(source, baseDir, safeName, Path.GetExtension(romPath));
+        bool preserveOriginalArchiveName = Path.GetExtension(romPath).ToLowerInvariant() is ".zip" or ".7z";
+        return await CopyToDeterministicCacheAsync(source, baseDir, safeName, Path.GetExtension(romPath), preserveOriginalArchiveName);
     }
 
     private static bool IsPathUnderDirectory(string path, string rootDirectory)
@@ -2193,10 +2194,10 @@ public partial class MainView : UserControl
     private async Task<string> ImportRomAsync(IStorageProvider? storageProvider, IStorageFile file, bool isSystemFile)
     {
         string extension = Path.GetExtension(file.Name);
+        string normalizedExtension = extension.ToLowerInvariant();
         if (!isSystemFile)
         {
-            string ext = extension.ToLowerInvariant();
-            if (ext is ".iso" or ".img" or ".chd" or ".pbp")
+            if (normalizedExtension is ".iso" or ".img" or ".chd" or ".pbp")
             {
                 throw new InvalidOperationException("Large/disc-based ROMs are not cached on Android yet. A streaming backend is still needed for PS1/CD images.");
             }
@@ -2224,7 +2225,8 @@ public partial class MainView : UserControl
                 throw new InvalidOperationException("This ROM is too large for temporary Android caching. Disc images need direct streaming support instead.");
             }
 
-            return await CopyToDeterministicCacheAsync(source, baseDir, safeName, extension);
+            bool preserveOriginalArchiveName = !isSystemFile && normalizedExtension is ".zip" or ".7z";
+            return await CopyToDeterministicCacheAsync(source, baseDir, safeName, extension, preserveOriginalArchiveName);
         }
         finally
         {
@@ -2235,7 +2237,12 @@ public partial class MainView : UserControl
         }
     }
 
-    private static async Task<string> CopyToDeterministicCacheAsync(Stream source, string baseDir, string safeName, string extension)
+    private static async Task<string> CopyToDeterministicCacheAsync(
+        Stream source,
+        string baseDir,
+        string safeName,
+        string extension,
+        bool preserveOriginalFileName)
     {
         string tempPath = Path.Combine(baseDir, $".tmp-{Guid.NewGuid():N}{extension}");
         using IncrementalHash hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -2259,7 +2266,18 @@ public partial class MainView : UserControl
             }
 
             string hashPrefix = Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant()[..12];
-            string finalPath = Path.Combine(baseDir, $"{safeName}-{hashPrefix}{extension}");
+            string finalPath;
+            if (preserveOriginalFileName)
+            {
+                string hashDir = Path.Combine(baseDir, hashPrefix);
+                Directory.CreateDirectory(hashDir);
+                finalPath = Path.Combine(hashDir, $"{safeName}{extension}");
+            }
+            else
+            {
+                finalPath = Path.Combine(baseDir, $"{safeName}-{hashPrefix}{extension}");
+            }
+
             if (File.Exists(finalPath))
             {
                 File.Delete(tempPath);
@@ -3840,6 +3858,16 @@ public partial class MainView : UserControl
             return new N64Adapter();
         }
 
+        if (EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter();
+        }
+
+        if (EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.McsArcadeAdapter();
+        }
+
         if (ext is ".smc" or ".sfc")
         {
             return new SnesAdapter();
@@ -3942,6 +3970,8 @@ public partial class MainView : UserControl
             EutherDrive.Core.SegaCd.SegaCdAdapter => "Sega CD",
             PceCdAdapter => "PC Engine CD",
             N64Adapter => "Nintendo 64",
+            EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter => "Arcade",
+            EutherDrive.Core.Arcade.McsArcadeAdapter => "MAME",
             GbAdapter => GetEffectiveRomExtension(romPath) == ".gbc" ? "Game Boy Color" : "Game Boy",
             GbaAdapter => "Game Boy Advance",
             SnesAdapter => "SNES",
