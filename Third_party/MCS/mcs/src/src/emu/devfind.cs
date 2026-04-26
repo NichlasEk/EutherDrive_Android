@@ -616,7 +616,26 @@ namespace mame
     public abstract class object_finder_common_base<ObjectClass, bool_Required> : finder_base
         where bool_Required : bool_const, new()
     {
-        static object_finder_operations<ObjectClass> create_object_finder_operations() { return (object_finder_operations<ObjectClass>)object_finder_operations_helper.get_object_finder_operations(typeof(ObjectClass)); }
+        static object_finder_operations<ObjectClass> create_object_finder_operations()
+        {
+            if (object_finder_operations_helper.get_object_finder_operations == null)
+                throw new InvalidOperationException("MCS object finder operations were not initialized.");
+
+            Type objectClass = typeof(ObjectClass);
+            try
+            {
+                object operations = object_finder_operations_helper.get_object_finder_operations(objectClass);
+                if (operations is object_finder_operations<ObjectClass> typedOperations)
+                    return typedOperations;
+
+                string returnedType = operations != null ? operations.GetType().FullName : "null";
+                throw new InvalidOperationException($"MCS object finder operations for '{objectClass.FullName}' returned '{returnedType}'.");
+            }
+            catch (Exception ex) when (!(ex is InvalidOperationException))
+            {
+                throw new InvalidOperationException($"MCS object finder operations are missing or invalid for '{objectClass.FullName}'.", ex);
+            }
+        }
         protected static readonly object_finder_operations<ObjectClass> ops = create_object_finder_operations();
         protected static readonly bool Required = new bool_Required().value;
 

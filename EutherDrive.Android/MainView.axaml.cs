@@ -1728,13 +1728,13 @@ public partial class MainView : UserControl
 
     private static string FormatExceptionForUi(Exception ex)
     {
-        string typeName = ex.GetType().Name;
-        string message = string.IsNullOrWhiteSpace(ex.Message) ? "(no message)" : ex.Message;
-        if (ex.InnerException != null)
+        var messages = new List<string>();
+        Exception? current = ex;
+        while (current != null && messages.Count < 6)
         {
-            Exception inner = ex.InnerException;
-            string innerMessage = string.IsNullOrWhiteSpace(inner.Message) ? "(no message)" : inner.Message;
-            message += $"\n{inner.GetType().Name}: {innerMessage}";
+            string message = string.IsNullOrWhiteSpace(current.Message) ? "(no message)" : current.Message;
+            messages.Add($"{current.GetType().Name}: {message}");
+            current = current.InnerException;
         }
 
         string? firstFrame = ex.StackTrace?
@@ -1742,8 +1742,8 @@ public partial class MainView : UserControl
             .FirstOrDefault();
 
         return string.IsNullOrWhiteSpace(firstFrame)
-            ? $"{typeName}: {message}"
-            : $"{typeName}: {message}\n{firstFrame.Trim()}";
+            ? string.Join('\n', messages)
+            : $"{string.Join('\n', messages)}\n{firstFrame.Trim()}";
     }
 
     private void ResetPerfCounters()
