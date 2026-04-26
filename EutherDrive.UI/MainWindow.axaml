@@ -769,22 +769,18 @@
                         Data="M 27 18 L 93 18 L 93 206 L 82 240 L 71 206 L 60 240 L 49 206 L 38 240 L 27 206 Z"/>
                   <Path Tag="flag-blue"
                         Fill="#006AA7"
+                        Stroke="#33F4D56A"
+                        StrokeThickness="1.2"
                         Data="M 24 14 L 90 14 L 90 202 L 79 236 L 68 202 L 57 236 L 46 202 L 35 236 L 24 202 Z"/>
-                  <Border Tag="flag-yellow"
-                          Width="16"
-                          Height="128"
-                          Background="#FECC00"
-                          Canvas.Left="48"
-                          Canvas.Top="14"/>
                   <Path Tag="flag-yellow"
                         Fill="#FECC00"
-                        Data="M 48 142 L 64 142 L 64 202 L 56 226 L 48 202 Z"/>
+                        Data="M 47 14 L 67 14 L 67 202 L 68 202 L 57 236 L 46 202 L 47 202 Z"/>
                   <Border Tag="flag-yellow"
                           Width="66"
-                          Height="16"
+                          Height="20"
                           Background="#FECC00"
                           Canvas.Left="24"
-                          Canvas.Top="74"/>
+                          Canvas.Top="72"/>
                 </Canvas>
               </Viewbox>
             </Border>
@@ -1113,22 +1109,18 @@
                         Data="M 27 18 L 93 18 L 93 206 L 82 240 L 71 206 L 60 240 L 49 206 L 38 240 L 27 206 Z"/>
                   <Path Tag="flag-blue"
                         Fill="#006AA7"
+                        Stroke="#33F4D56A"
+                        StrokeThickness="1.2"
                         Data="M 24 14 L 90 14 L 90 202 L 79 236 L 68 202 L 57 236 L 46 202 L 35 236 L 24 202 Z"/>
-                  <Border Tag="flag-yellow"
-                          Width="16"
-                          Height="128"
-                          Background="#FECC00"
-                          Canvas.Left="48"
-                          Canvas.Top="14"/>
                   <Path Tag="flag-yellow"
                         Fill="#FECC00"
-                        Data="M 48 142 L 64 142 L 64 202 L 56 226 L 48 202 Z"/>
+                        Data="M 47 14 L 67 14 L 67 202 L 68 202 L 57 236 L 46 202 L 47 202 Z"/>
                   <Border Tag="flag-yellow"
                           Width="66"
-                          Height="16"
+                          Height="20"
                           Background="#FECC00"
                           Canvas.Left="24"
-                          Canvas.Top="74"/>
+                          Canvas.Top="72"/>
                 </Canvas>
               </Viewbox>
             </Border>
