@@ -9,6 +9,14 @@ using u8 = System.Byte;
 
 namespace mame
 {
+    public class object_finder_operations_device<ObjectClass> : object_finder_operations<ObjectClass>
+        where ObjectClass : device_t
+    {
+        public ObjectClass cast(device_t device) { return (ObjectClass)device; }
+        public ObjectClass cast(device_interface device) { throw new emu_unimplemented(); }
+        public Pointer<ObjectClass> cast(PointerU8 memory) { throw new emu_unimplemented(); }
+    }
+
     public class object_finder_operations_ad7533_device : object_finder_operations<ad7533_device>
     {
         public ad7533_device cast(device_t device) { return (ad7533_device)device; }
@@ -587,6 +595,15 @@ namespace mame
 
     public static class object_finder_operations_global
     {
+        static object create_device_operations(Type objectClass)
+        {
+            if (!typeof(device_t).IsAssignableFrom(objectClass))
+                throw new emu_unimplemented();
+
+            Type operationsType = typeof(object_finder_operations_device<>).MakeGenericType(objectClass);
+            return Activator.CreateInstance(operationsType);
+        }
+
         public static void init()
         {
             object_finder_operations_helper.get_object_finder_operations = (typeof_ObjectClass) =>
@@ -596,9 +613,11 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(address_map_bank_device))    return new object_finder_operations_address_map_bank_device();
                 else if (typeof_ObjectClass == typeof(atari_motion_objects_device)) return new object_finder_operations_atari_motion_objects_device();
                 else if (typeof_ObjectClass == typeof(atari_slapstic_device))      return new object_finder_operations_atari_slapstic_device();
+                else if (typeof_ObjectClass == typeof(avg_tempest_device))         return new object_finder_operations_device<avg_tempest_device>();
                 else if (typeof_ObjectClass == typeof(ay8910_device))              return new object_finder_operations_ay8910_device();
                 else if (typeof_ObjectClass == typeof(bally_squawk_n_talk_device)) return new object_finder_operations_bally_squawk_n_talk_device();
                 else if (typeof_ObjectClass == typeof(cpu_device))                 return new object_finder_operations_cpu_device();
+                else if (typeof_ObjectClass == typeof(dac_4bit_r2r_device))        return new object_finder_operations_device<dac_4bit_r2r_device>();
                 else if (typeof_ObjectClass == typeof(dac_8bit_r2r_device))        return new object_finder_operations_dac_8bit_r2r_device();
                 else if (typeof_ObjectClass == typeof(dac_16bit_r2r_twos_complement_device)) return new object_finder_operations_dac_16bit_r2r_twos_complement_device();
                 else if (typeof_ObjectClass == typeof(deco_cpu7_device))           return new object_finder_operations_deco_cpu7_device();
@@ -609,12 +628,16 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(eeprom_serial_93cxx_device)) return new object_finder_operations_eeprom_serial_93cxx_device();
                 else if (typeof_ObjectClass == typeof(er2055_device))              return new object_finder_operations_er2055_device();
                 else if (typeof_ObjectClass == typeof(filter_biquad_device))       return new object_finder_operations_filter_biquad_device();
+                else if (typeof_ObjectClass == typeof(filter_rc_device))           return new object_finder_operations_device<filter_rc_device>();
                 else if (typeof_ObjectClass == typeof(filter_volume_device))       return new object_finder_operations_filter_volume_device();
                 else if (typeof_ObjectClass == typeof(fixedfreq_device))           return new object_finder_operations_fixedfreq_device();
                 else if (typeof_ObjectClass == typeof(generic_latch_8_device))     return new object_finder_operations_generic_latch_8_device();
+                else if (typeof_ObjectClass == typeof(gottlieb_sound_r1_with_votrax_device)) return new object_finder_operations_device<gottlieb_sound_r1_with_votrax_device>();
                 else if (typeof_ObjectClass == typeof(gunfight_audio_device))      return new object_finder_operations_gunfight_audio_device();
                 else if (typeof_ObjectClass == typeof(gfxdecode_device))           return new object_finder_operations_gfxdecode_device();
                 else if (typeof_ObjectClass == typeof(i8080_cpu_device))           return new object_finder_operations_i8080_cpu_device();
+                else if (typeof_ObjectClass == typeof(i8085a_cpu_device))          return new object_finder_operations_device<i8085a_cpu_device>();
+                else if (typeof_ObjectClass == typeof(i8088_cpu_device))           return new object_finder_operations_device<i8088_cpu_device>();
                 else if (typeof_ObjectClass == typeof(i8255_device))               return new object_finder_operations_i8255_device();
                 else if (typeof_ObjectClass == typeof(i8257_device))               return new object_finder_operations_i8257_device();
                 else if (typeof_ObjectClass == typeof(i8751_device))               return new object_finder_operations_i8751_device();
@@ -624,11 +647,13 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(ls259_device))               return new object_finder_operations_ls259_device();
                 else if (typeof_ObjectClass == typeof(m6502_device))               return new object_finder_operations_m6502_device();
                 else if (typeof_ObjectClass == typeof(m6803_cpu_device))           return new object_finder_operations_m6803_cpu_device();
+                else if (typeof_ObjectClass == typeof(m6802_cpu_device))           return new object_finder_operations_device<m6802_cpu_device>();
                 else if (typeof_ObjectClass == typeof(m6808_cpu_device))           return new object_finder_operations_m6808_cpu_device();
                 else if (typeof_ObjectClass == typeof(m68705p_device))             return new object_finder_operations_m68705p_device();
                 else if (typeof_ObjectClass == typeof(mathbox_device))             return new object_finder_operations_mathbox_device();
                 else if (typeof_ObjectClass == typeof(mb14241_device))             return new object_finder_operations_mb14241_device();
                 else if (typeof_ObjectClass == typeof(mb88_cpu_device))            return new object_finder_operations_mb88_cpu_device();
+                else if (typeof_ObjectClass == typeof(mc1408_device))              return new object_finder_operations_device<mc1408_device>();
                 else if (typeof_ObjectClass == typeof(mc6809e_device))             return new object_finder_operations_mc6809e_device();
                 else if (typeof_ObjectClass == typeof(mcs48_cpu_device))           return new object_finder_operations_mcs48_cpu_device();
                 else if (typeof_ObjectClass == typeof(midway_cheap_squeak_deluxe_device)) return new object_finder_operations_midway_cheap_squeak_deluxe_device();
@@ -636,15 +661,20 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(midway_ssio_device))         return new object_finder_operations_midway_ssio_device();
                 else if (typeof_ObjectClass == typeof(midway_turbo_cheap_squeak_device)) return new object_finder_operations_midway_turbo_cheap_squeak_device();
                 else if (typeof_ObjectClass == typeof(msm5205_device))             return new object_finder_operations_msm5205_device();
+                else if (typeof_ObjectClass == typeof(namco_15xx_device))          return new object_finder_operations_device<namco_15xx_device>();
                 else if (typeof_ObjectClass == typeof(rp2a03_device))              return new object_finder_operations_rp2a03_device();
                 else if (typeof_ObjectClass == typeof(namco_device))               return new object_finder_operations_namco_device();
                 else if (typeof_ObjectClass == typeof(nesapu_device))              return new object_finder_operations_nesapu_device();
+                else if (typeof_ObjectClass == typeof(netlist_mame_analog_output_device)) return new object_finder_operations_device<netlist_mame_analog_output_device>();
                 else if (typeof_ObjectClass == typeof(netlist_mame_device))        return new object_finder_operations_netlist_mame_device();
                 else if (typeof_ObjectClass == typeof(netlist_mame_logic_input_device)) return new object_finder_operations_netlist_mame_logic_input_device();
                 else if (typeof_ObjectClass == typeof(netlist_mame_sound_device))  return new object_finder_operations_netlist_mame_sound_device();
                 else if (typeof_ObjectClass == typeof(palette_device))             return new object_finder_operations_palette_device();
+                else if (typeof_ObjectClass == typeof(pioneer_pr8210_device))      return new object_finder_operations_device<pioneer_pr8210_device>();
                 else if (typeof_ObjectClass == typeof(pokey_device))               return new object_finder_operations_pokey_device();
                 else if (typeof_ObjectClass == typeof(pia6821_device))             return new object_finder_operations_pia6821_device();
+                else if (typeof_ObjectClass == typeof(riot6532_device))            return new object_finder_operations_device<riot6532_device>();
+                else if (typeof_ObjectClass == typeof(s14001a_device))             return new object_finder_operations_device<s14001a_device>();
                 else if (typeof_ObjectClass == typeof(samples_device))             return new object_finder_operations_samples_device();
                 else if (typeof_ObjectClass == typeof(screen_device))              return new object_finder_operations_screen_device();
                 else if (typeof_ObjectClass == typeof(sn76477_device))             return new object_finder_operations_sn76477_device();
@@ -654,9 +684,12 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(tilemap_device))             return new object_finder_operations_tilemap_device();
                 else if (typeof_ObjectClass == typeof(timeplt_audio_device))       return new object_finder_operations_timeplt_audio_device();
                 else if (typeof_ObjectClass == typeof(tms5220c_device))            return new object_finder_operations_tms5220c_device();
+                else if (typeof_ObjectClass == typeof(tms5220_device))             return new object_finder_operations_device<tms5220_device>();
                 else if (typeof_ObjectClass == typeof(ttl153_device))              return new object_finder_operations_ttl153_device();
                 else if (typeof_ObjectClass == typeof(ttl7474_device))             return new object_finder_operations_ttl7474_device();
+                else if (typeof_ObjectClass == typeof(ttl74181_device))            return new object_finder_operations_device<ttl74181_device>();
                 else if (typeof_ObjectClass == typeof(vector_device))              return new object_finder_operations_vector_device();
+                else if (typeof_ObjectClass == typeof(votrax_sc01_device))         return new object_finder_operations_device<votrax_sc01_device>();
                 else if (typeof_ObjectClass == typeof(watchdog_timer_device))      return new object_finder_operations_watchdog_timer_device();
                 else if (typeof_ObjectClass == typeof(ym2151_device))              return new object_finder_operations_ym2151_device();
                 else if (typeof_ObjectClass == typeof(z80_device))                 return new object_finder_operations_z80_device();
@@ -675,7 +708,7 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(intref))                     return new object_finder_operations_intref();
                 else if (typeof_ObjectClass == typeof(u8))                         return new object_finder_operations_u8();
 
-                else throw new emu_unimplemented();
+                else return create_device_operations(typeof_ObjectClass);
             };
         }
     }
