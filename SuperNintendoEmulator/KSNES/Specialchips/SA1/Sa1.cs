@@ -365,19 +365,27 @@ public sealed class Sa1
                     _cpu.NmiWanted = true;
                 _lastSa1Nmi = currentNmi;
 
-                _tracePc = _cpu.ProgramCounter24;
                 if (Sa1Trace.IsEnabled || _hasPcTraceHooks)
-                    _traceOp = TryGetSa1OpByte(_tracePc);
-                int pcBefore = _tracePc;
-                _cpu.Cycle();
-                if (_cpu.CyclesLeft == 0)
-                    FlushPendingSa1BwramWrites();
-                int pcAfter = _cpu.ProgramCounter24;
-                if (_hasPcTraceHooks)
                 {
-                    TracePcTargetIfNeeded(pcBefore, pcAfter);
-                    TracePcRangeIfNeeded(pcBefore, pcAfter);
-                    TracePcBreakIfNeeded(pcBefore, pcAfter);
+                    _tracePc = _cpu.ProgramCounter24;
+                    _traceOp = TryGetSa1OpByte(_tracePc);
+                    int pcBefore = _tracePc;
+                    _cpu.Cycle();
+                    if (_cpu.CyclesLeft == 0)
+                        FlushPendingSa1BwramWrites();
+                    int pcAfter = _cpu.ProgramCounter24;
+                    if (_hasPcTraceHooks)
+                    {
+                        TracePcTargetIfNeeded(pcBefore, pcAfter);
+                        TracePcRangeIfNeeded(pcBefore, pcAfter);
+                        TracePcBreakIfNeeded(pcBefore, pcAfter);
+                    }
+                }
+                else
+                {
+                    _cpu.Cycle();
+                    if (_cpu.CyclesLeft == 0)
+                        FlushPendingSa1BwramWrites();
                 }
                 
                 i++;

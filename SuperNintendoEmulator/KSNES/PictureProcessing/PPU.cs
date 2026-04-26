@@ -19,7 +19,7 @@ public class PPU : IPPU
     private const int Tile2CacheCount = 0x8000 / Tile2WordsPerTile;
     private const int Tile4CacheCount = 0x8000 / Tile4WordsPerTile;
     private const int Tile8CacheCount = 0x8000 / Tile8WordsPerTile;
-    private const int FastChunkPixelCount = 32;
+    private const int FastChunkPixelCount = 128;
 
     private static readonly bool TracePpu =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_SNES_PPU"), "1", StringComparison.Ordinal);
@@ -2259,8 +2259,13 @@ public class PPU : IPPU
 
     private bool CanUseChunkedSimpleMainScreenPath()
     {
-        // Keep the broad chunked path opt-in until the tile decode cases are covered.
-        return false;
+        if (_mode == 2 || _mode == 4 || _mode == 6)
+            return false;
+
+        return !_mosaicEnabled[0]
+            && !_mosaicEnabled[1]
+            && !_mosaicEnabled[2]
+            && !_mosaicEnabled[3];
     }
 
     private bool CanUseChunkedComplexWindowlessPath(bool hiResOutput, bool trueHiResOutput, bool useLegacyLayerOrdering)
