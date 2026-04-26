@@ -602,7 +602,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return (long)(cycles - 4) * M68kToMclkDivider;
             }
 
-            var info = md_m68k.g_opcode_info != null ? md_m68k.g_opcode_info[opcode] : null;
+            var info = md_m68k.TryGetOpcodeInfo(opcode);
             if (info?.opname_org != null)
             {
                 if (info.opname_org.StartsWith("BTST", StringComparison.OrdinalIgnoreCase) ||

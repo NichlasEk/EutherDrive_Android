@@ -56,7 +56,7 @@ namespace EutherDrive.Core.MdTracerCore
 
         internal static int? TryEstimateMoveCycles()
         {
-            var info = g_opcode_info != null ? g_opcode_info[g_opcode] : null;
+            var info = TryGetOpcodeInfo(g_opcode);
             if (info?.opname_org == null || !info.opname_org.StartsWith("MOVE", StringComparison.OrdinalIgnoreCase))
                 return null;
 
@@ -78,9 +78,28 @@ namespace EutherDrive.Core.MdTracerCore
             int w_dest = (g_op2 < 7) ? g_op2 : 7 + g_op1;
 
             if (w_size == 2)
+            {
+                if ((uint)w_src >= (uint)MOVE_CLOCK_L.GetLength(0) ||
+                    (uint)w_dest >= (uint)MOVE_CLOCK_L.GetLength(1))
+                    return null;
+
                 return MOVE_CLOCK_L[w_src, w_dest];
+            }
+
+            if ((uint)w_src >= (uint)MOVE_CLOCK.GetLength(0) ||
+                (uint)w_dest >= (uint)MOVE_CLOCK.GetLength(1))
+                return null;
 
             return MOVE_CLOCK[w_src, w_dest];
+        }
+
+        internal static OPINFO? TryGetOpcodeInfo(ushort opcode)
+        {
+            var table = g_opcode_info;
+            if (table == null || opcode >= table.Length)
+                return null;
+
+            return table[opcode];
         }
 
         // ==========================================================
