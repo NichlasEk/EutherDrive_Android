@@ -2090,6 +2090,7 @@ public class SNESSystem : ISNESSystem
                     int pcLog = CPU is KSNES.CPU.CPU cpuLog ? cpuLog.ProgramCounter24 : -1;
                     Console.WriteLine($"[SNES-REG] W 0x4200 val=0x{value:X2} PC=0x{pcLog:X6}");
                 }
+                bool oldVIrqEnabled = _vIrqEnabled;
                 _autoJoyRead = (value & 0x1) > 0;
                 _hIrqEnabled = (value & 0x10) > 0;
                 _vIrqEnabled = (value & 0x20) > 0;
@@ -2103,6 +2104,11 @@ public class SNESSystem : ISNESSystem
                 {
                     _inIrq = false;
                     _irqLine = false;
+                }
+                else if (!oldVIrqEnabled && _vIrqEnabled && !_hIrqEnabled && GetIrqVTime() == _vTimer)
+                {
+                    _irqLine = true;
+                    _lastIrqHTime = GetIrqHTime();
                 }
                 if (_traceDma)
                 {

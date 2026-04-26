@@ -276,11 +276,18 @@ public class APU : IAPU
         switch (adr)
         {
             case 0xf0:
-            case 0xf1:
-            case 0xfa:
-            case 0xfb:
-            case 0xfc:
                 return 0;
+            case 0xf1:
+                return (byte)((_timer1enabled ? 0x01 : 0)
+                    | (_timer2enabled ? 0x02 : 0)
+                    | (_timer3enabled ? 0x04 : 0)
+                    | (_dspRomReadable ? 0x80 : 0));
+            case 0xfa:
+                return (byte)_timer1target;
+            case 0xfb:
+                return (byte)_timer2target;
+            case 0xfc:
+                return (byte)_timer3target;
             case 0xf2:
                 return _dspAdr;
             case 0xf3:
