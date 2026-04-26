@@ -289,34 +289,10 @@ namespace mame
             GENERIC_LATCH_8(config, m_soundlatch);
 
             ay8910_device ay1 = AY8910(config, "ay1", AUDIO_CLOCK);  /* 1.5 MHz */
-            ay1.set_flags(AY8910_RESISTOR_OUTPUT);
-            ay1.set_resistors_load((int)10000.0, (int)10000.0, (int)10000.0);
-            ay1.add_route(0, "snd_nl", 1.0, 0);
-            ay1.add_route(1, "snd_nl", 1.0, 1);
-            ay1.add_route(2, "snd_nl", 1.0, 2);
+            ay1.add_route(ALL_OUTPUTS, "mono", 0.05);
 
             ay8910_device ay2 = AY8910(config, "ay2", AUDIO_CLOCK);  /* 1.5 MHz */
-            ay2.set_flags(AY8910_RESISTOR_OUTPUT);
-            ay2.set_resistors_load((int)10000.0, (int)10000.0, (int)10000.0);
-            ay2.add_route(0, "snd_nl", 1.0, 3);
-            ay2.add_route(1, "snd_nl", 1.0, 4);
-            ay2.add_route(2, "snd_nl", 1.0, 5);
-
-            /* NETLIST configuration using internal AY8910 resistor values */
-
-            /* Minimize resampling between ay8910 and netlist */
-            NETLIST_SOUND(config, "snd_nl", AUDIO_CLOCK / 8 / 2)
-                .set_source(netlist_1942)
-                .disound.add_route(ALL_OUTPUTS, "mono", 5.0);
-            NETLIST_STREAM_INPUT(config, "snd_nl:cin0", 0, "R_AY1_1.R");
-            NETLIST_STREAM_INPUT(config, "snd_nl:cin1", 1, "R_AY1_2.R");
-            NETLIST_STREAM_INPUT(config, "snd_nl:cin2", 2, "R_AY1_3.R");
-            NETLIST_STREAM_INPUT(config, "snd_nl:cin3", 3, "R_AY2_1.R");
-            NETLIST_STREAM_INPUT(config, "snd_nl:cin4", 4, "R_AY2_2.R");
-            NETLIST_STREAM_INPUT(config, "snd_nl:cin5", 5, "R_AY2_3.R");
-
-            NETLIST_STREAM_OUTPUT(config, "snd_nl:cout0", 0, "R1.1").set_mult_offset(70000.0 / 32768.0, 0.0);
-            //NETLIST_STREAM_OUTPUT(config, "snd_nl:cout0", 0, "VR.2");
+            ay2.add_route(ALL_OUTPUTS, "mono", 0.05);
         }
     }
 
