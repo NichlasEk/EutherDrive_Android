@@ -206,12 +206,13 @@ namespace EutherDrive.Core.MdTracerCore
         {
             int cellHeight = GetCellHeightPixels();
             int scrollScanline = g_scanline;
-            if (ScrollUseOutputLine)
+            if (ScrollUseOutputLine && g_vdp_interlace_mode != 2)
             {
                 int outputLine = GetOutputLineForScanline(g_scanline);
                 if (outputLine >= 0 && outputLine < g_output_ysize)
                     scrollScanline = outputLine;
             }
+            int lineY = GetInterlaceLine(g_scanline);
             if (TraceScrollLine && g_scanline == TraceScrollLineScanline && _traceScrollLineFrame != _frameCounter)
             {
                 _traceScrollLineFrame = _frameCounter;
@@ -245,7 +246,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int raw_hscrollB = (int)(vram_read_render((w_addr + 1) << 1) & 0x3ff);
                 int w_hscrollA;
                 int w_hscrollB;
-                if (HScrollUnsigned)
+                if (g_vdp_interlace_mode == 2 || HScrollUnsigned)
                 {
                     w_hscrollA = raw_hscrollA;
                     w_hscrollB = raw_hscrollB;
@@ -256,12 +257,22 @@ namespace EutherDrive.Core.MdTracerCore
                     w_hscrollB = (raw_hscrollB & 0x200) != 0 ? (raw_hscrollB | ~0x3ff) : raw_hscrollB;
                 }
 
-                int modA = w_hscrollA % g_scroll_xsize;
-                if (modA < 0) modA += g_scroll_xsize;
-                int modB = w_hscrollB % g_scroll_xsize;
-                if (modB < 0) modB += g_scroll_xsize;
-                int w_view_xA = HScrollDirect ? modA : (g_scroll_xsize - modA) % g_scroll_xsize;
-                int w_view_xB = HScrollDirect ? modB : (g_scroll_xsize - modB) % g_scroll_xsize;
+                int w_view_xA;
+                int w_view_xB;
+                if (g_vdp_interlace_mode == 2)
+                {
+                    w_view_xA = raw_hscrollA;
+                    w_view_xB = raw_hscrollB;
+                }
+                else
+                {
+                    int modA = w_hscrollA % g_scroll_xsize;
+                    if (modA < 0) modA += g_scroll_xsize;
+                    int modB = w_hscrollB % g_scroll_xsize;
+                    if (modB < 0) modB += g_scroll_xsize;
+                    w_view_xA = HScrollDirect ? modA : (g_scroll_xsize - modA) % g_scroll_xsize;
+                    w_view_xB = HScrollDirect ? modB : (g_scroll_xsize - modB) % g_scroll_xsize;
+                }
 
                 g_line_snap[g_scanline].hscrollA = w_view_xA;
                 g_line_snap[g_scanline].hscrollB = w_view_xB;
@@ -273,7 +284,7 @@ namespace EutherDrive.Core.MdTracerCore
                         $"[SCROLLLINE] frame={_frameCounter} scanline={g_scanline} hmode={hscrollMode} " +
                         $"hbase=0x{w_addr:X4} hline={hscrollLine} addr=0x{(w_addr << 1):X4} " +
                         $"hsA=0x{w_hscrollA:X3} hsB=0x{w_hscrollB:X3} viewA={w_view_xA} viewB={w_view_xB} " +
-                        $"xsize={g_scroll_xsize} source={(ScrollUseOutputLine ? "out" : "scan")}");
+                        $"xsize={g_scroll_xsize} source={(ScrollUseOutputLine && g_vdp_interlace_mode != 2 ? "out" : "scan")}");
                 }
             }
 
@@ -309,7 +320,6 @@ namespace EutherDrive.Core.MdTracerCore
 
             // VScroll A/B
             {
-                int lineY = (g_vdp_interlace_mode == 0) ? scrollScanline : GetInterlaceLine(scrollScanline);
                 int vscrollMode = UseScrollLatch ? _latchedReg11VScroll : g_vdp_reg_11_2_vscroll;
                 if (vscrollMode == 0)
                 {

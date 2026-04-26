@@ -92,15 +92,26 @@ namespace EutherDrive.Core.MdTracerCore
         // Kör en scanline
         private void rendering_line()
         {
-            if (g_vdp_interlace_mode == 2 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
+            if (g_vdp_interlace_mode == 2
+                && InterlaceOutput == InterlaceOutputPolicy.DoubleField
+                && !ForceInterlaceBob)
             {
                 byte currentField = (byte)(g_vdp_interlace_field & 0x01);
-                uint[] dest = (currentField == 0) ? g_game_field_even : g_game_field_odd;
-                RenderLineWithField(currentField, g_scanline, dest);
+                RenderLineWithField(0, g_scanline, g_game_field_even);
+                RenderLineWithField(1, g_scanline, g_game_field_odd);
+                g_vdp_interlace_field = currentField;
                 return;
             }
 
             RenderLineWithField(g_vdp_interlace_field, GetOutputLineForScanline(g_scanline));
+        }
+
+        private void ClearInterlaceFieldBuffers()
+        {
+            if (g_game_field_even.Length != 0)
+                Array.Fill(g_game_field_even, 0xFF000000u);
+            if (g_game_field_odd.Length != 0)
+                Array.Fill(g_game_field_odd, 0xFF000000u);
         }
 
         private static readonly bool DebugShadowHighlight =

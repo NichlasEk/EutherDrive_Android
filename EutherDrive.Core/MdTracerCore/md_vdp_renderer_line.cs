@@ -179,6 +179,108 @@ namespace EutherDrive.Core.MdTracerCore
             return (ushort)((hi << 8) | lo);
         }
 
+        private int GetInterlaceMode2ColumnViewY(bool planeA, int tilePairColumn)
+        {
+            int lineY = GetInterlaceLine(g_scanline);
+
+            if (ForceScrollZero)
+                return lineY % g_scroll_ysize;
+
+            if (g_line_snap[g_scanline].reg11_vscroll_mode == 0)
+                return planeA ? g_line_snap[g_scanline].vscrollA[0] : g_line_snap[g_scanline].vscrollB[0];
+
+            int vscroll;
+            if (tilePairColumn < 0)
+            {
+                vscroll = IsH40Mode() && VScrollUseH40Neg1 ? GetH40Neg1VScrollWord() : 0;
+            }
+            else
+            {
+                int index = tilePairColumn;
+                if (!IsH40Mode())
+                    index &= 0x0F;
+                else if (index >= VSRAM_DATASIZE)
+                    index %= VSRAM_DATASIZE;
+
+                int vsramWordIndex = (index << 1) + (planeA ? 0 : 1);
+                vscroll = (uint)vsramWordIndex < (uint)g_vsram.Length ? g_vsram[vsramWordIndex] : 0;
+            }
+
+            vscroll &= 0x07FF;
+            int view = VScrollSubtract ? (lineY - vscroll) : (lineY + vscroll);
+            view %= g_scroll_ysize;
+            if (view < 0)
+                view += g_scroll_ysize;
+            return view;
+        }
+
+        private uint ReadPlanePatternPixel(int tileIndex, int xInTile, int yInTile, uint reverse, TileRebaseKind rebaseKind)
+        {
+            if (g_vdp_interlace_mode == 2 || ForceDirectVramReadPlanes)
+                return ReadPatternPixelDirect(tileIndex, xInTile, yInTile, reverse, rebaseKind);
+
+            int wordAddress = GetTileWordAddress(tileIndex, yInTile, reverse, rebaseKind) + (xInTile >> 2);
+            uint word = g_renderer_vram[wordAddress];
+            return (word >> ((3 - (xInTile & 3)) << 2)) & 0x0F;
+        }
+
+        private void RenderInterlaceMode2ScrollLayer(
+            bool planeA,
+            uint[] planeColor,
+            uint[] planePrio,
+            int nameTableBaseWord,
+            int rawHScroll,
+            TileRebaseKind rebaseKind)
+        {
+            int activeWidth = g_display_xsize;
+            int tilePairCount = (activeWidth + 15) >> 4;
+            int hScroll = ForceScrollZero ? 0 : (rawHScroll & 0x03FF);
+            int fineScroll = hScroll & 0x0F;
+            int scrollOffset = 16 - fineScroll;
+            int planePairOffset = -(hScroll >> 4);
+            int planeWidthMask = g_scroll_xcell - 1;
+            int rowShift = GetCellHeightShift();
+            int nameTableWidthCells = Math.Max(1, g_scroll_xcell);
+
+            for (int pair = 0; pair <= tilePairCount; pair++)
+            {
+                int outputX = (pair << 4) - scrollOffset;
+                int vscrollColumn = pair - 1;
+                int mapColumn = Math.Max(0, vscrollColumn);
+                int tileX = ((planePairOffset + mapColumn) << 1) & planeWidthMask;
+                int viewY = GetInterlaceMode2ColumnViewY(planeA, vscrollColumn);
+                int rowWord = (viewY >> rowShift) * nameTableWidthCells;
+                int yInTile = GetRowInCell(viewY);
+
+                for (int cell = 0; cell < 2; cell++)
+                {
+                    int cellX = outputX + (cell << 3);
+                    if (cellX >= activeWidth || cellX + 8 <= 0)
+                        continue;
+
+                    uint nameWord = ReadNameTableWord(nameTableBaseWord, rowWord + ((tileX + cell) & planeWidthMask));
+                    uint priority = (nameWord >> 15) & 0x0001;
+                    uint palette = ((nameWord >> 13) & 0x0003) << 4;
+                    uint reverse = (nameWord >> 11) & 0x0003;
+                    int tileIndex = (int)(nameWord & 0x07FF);
+
+                    for (int pixel = 0; pixel < 8; pixel++)
+                    {
+                        int x = cellX + pixel;
+                        if ((uint)x >= (uint)activeWidth)
+                            continue;
+
+                        uint color = ReadPlanePatternPixel(tileIndex, pixel, yInTile, reverse, rebaseKind);
+                        if (color == 0)
+                            continue;
+
+                        planeColor[x] = palette + color;
+                        planePrio[x] = priority;
+                    }
+                }
+            }
+        }
+
         // Hardware-accurate default: when display is OFF, current line should be filled (not preserved).
         // Preserving stale pixels can leak previous frame content as bottom-line garbage in some games.
         // Optional opt-in compatibility behavior:
@@ -293,7 +395,7 @@ namespace EutherDrive.Core.MdTracerCore
             }
 
             // DIAGNOSTIC: Dump name tables from both sources when interlace=2 (once per 60 frames)
-            if (g_vdp_interlace_mode == 2 && g_scanline == 0 && _frameCounter % 60 == 0)
+            if (TraceRenderPlaneDebug && g_vdp_interlace_mode == 2 && g_scanline == 0 && _frameCounter % 60 == 0)
             {
                 bool isH40 = (g_vdp_reg_12_7_cellmode1 != 0);
                 int scrollMask = isH40 ? 0xFE00 : 0xFC00;
@@ -425,8 +527,14 @@ namespace EutherDrive.Core.MdTracerCore
                     }
                 }
 
-                for (int wx = 0; wx < g_display_xsize; wx++)
+                if (g_vdp_interlace_mode == 2)
                 {
+                    RenderInterlaceMode2ScrollLayer(false, planeBColor, planeBPrio, w_screen_adrdr, g_line_snap[g_scanline].hscrollB, TileRebaseKind.PlaneB);
+                }
+                else
+                {
+                    for (int wx = 0; wx < g_display_xsize; wx++)
+                    {
                     if ((wx & w_vscroll_mask) == 0)
                     {
                         int vscrollIndex = wx >> 4;
@@ -529,8 +637,9 @@ namespace EutherDrive.Core.MdTracerCore
                         planeBColor[wx] = w_palette + picValue;
                         planeBPrio[wx] = w_priority;
                     }
-                    w_view_x += 1;
-                    w_view_dx += 1;
+                        w_view_x += 1;
+                        w_view_dx += 1;
+                    }
                 }
             }
 
@@ -586,8 +695,14 @@ namespace EutherDrive.Core.MdTracerCore
                         }
                     }
 
-                for (int wx = 0; wx < g_display_xsize; wx++)
+                if (g_vdp_interlace_mode == 2)
                 {
+                    RenderInterlaceMode2ScrollLayer(true, planeAColor, planeAPrio, w_screen_adrdr, g_line_snap[g_scanline].hscrollA, TileRebaseKind.PlaneA);
+                }
+                else
+                {
+                    for (int wx = 0; wx < g_display_xsize; wx++)
+                    {
                     if ((wx & w_vscroll_mask) == 0)
                     {
                         int vscrollIndex = wx >> 4;
@@ -681,6 +796,7 @@ namespace EutherDrive.Core.MdTracerCore
                         w_view_x += 1;
                         w_view_dx += 1;
                     }
+                }
             }
 
             if (TracePriMap && g_scanline == TracePriMapScanline && _tracePriMapFrame != _frameCounter)
@@ -864,7 +980,7 @@ namespace EutherDrive.Core.MdTracerCore
                         {
                             if (w_posx >= windowStartPixel && w_posx < windowEndPixel)
                             {
-                                if (ForceDirectVramReadWindow || ForceDirectVramReadPlanes)
+                                if (g_vdp_interlace_mode == 2 || ForceDirectVramReadWindow || ForceDirectVramReadPlanes)
                                 {
                                     uint picValueDirect = ReadPatternPixelDirect((int)w_char, w_dx, w_view_dy, w_reverse_bits, TileRebaseKind.Window);
                                     // Window always replaces Plane A where enabled, but color 0 stays transparent.

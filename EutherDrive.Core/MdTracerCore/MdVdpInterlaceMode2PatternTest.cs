@@ -10,8 +10,14 @@ public static class MdVdpInterlaceMode2PatternTest
         Console.WriteLine("[TEST] Interlace Mode 2 Pattern Address Test");
         var vdp = new md_vdp();
 
+        // Display on, H40.
+        vdp.write16(0xC00004, 0x8174);
+        vdp.write16(0xC00004, 0x8C81);
+        // Auto-increment by one word.
+        vdp.write16(0xC00004, 0x8F02);
+
         // Set interlace mode 2
-        ushort reg12Mode2 = (ushort)(0x8000 | (0x0C << 8) | 0x06); // 0x8000 | 0x0C00 | 0x06 = 0x8C06
+        ushort reg12Mode2 = (ushort)(0x8000 | (0x0C << 8) | 0x87);
         vdp.write16(0xC00004, reg12Mode2);
 
         if (vdp.g_vdp_interlace_mode != 2)
@@ -38,21 +44,28 @@ public static class MdVdpInterlaceMode2PatternTest
         // Write a scroll plane entry at 0xC000 (tile index 0, no reverse)
         // This should be read from 0x6000 in renderer VRAM
         ushort entry0 = 0x0001; // Tile index 1, priority 0, palette 0
+        SetVramWriteAddress(vdp, 0xC000);
         vdp.write16(0xC00000, entry0);
+        FlushVdpFifo(vdp);
         Console.WriteLine($"[TEST] Wrote scroll entry 0x{entry0:X4} to VRAM 0xC000");
 
-        // Write pattern data for tile 1 at address 0xE000 (scrollA + 0x2000)
-        // Pattern data is 8 rows of 8 pixels = 64 bytes
-        ushort patternData = 0xFFFF; // All pixels set
-        int patternAddr = vdp.g_vdp_reg_2_scrolla + 0x2000 + (1 << 6); // 0xC000 + 0x2000 + 0x40 = 0xE040
+        // Interlace mode 2 patterns are 8x16: tile 1 starts at byte address 0x0040.
+        ushort patternData = 0x1111; // All pixels use palette entry 1.
+        int patternAddr = 1 << 6;
         Console.WriteLine($"[TEST] Pattern address for tile 1 = 0x{patternAddr:X4}");
 
         // Write pattern data (2 bytes at a time)
+        SetVramWriteAddress(vdp, patternAddr);
         for (int i = 0; i < 64; i += 2)
         {
-            vdp.write16((uint)(patternAddr + i), patternData);
+            vdp.write16(0xC00000, patternData);
         }
+        FlushVdpFifo(vdp);
         Console.WriteLine($"[TEST] Wrote pattern data to 0x{patternAddr:X4}");
+
+        SetCramWriteAddress(vdp, 0x02);
+        vdp.write16(0xC00000, 0x0EEE);
+        FlushVdpFifo(vdp);
 
         // Now verify GetTileWordAddress returns correct address
         int tileAddr = vdp.GetTileWordAddress(1, 0, 0);
@@ -80,9 +93,26 @@ public static class MdVdpInterlaceMode2PatternTest
         Console.WriteLine("[TEST] Done");
     }
 
+    private static void SetVramWriteAddress(md_vdp vdp, int address)
+    {
+        vdp.write16(0xC00004, (ushort)(0x4000 | (address & 0x3FFF)));
+        vdp.write16(0xC00004, (ushort)((address >> 14) & 0x0003));
+    }
+
+    private static void SetCramWriteAddress(md_vdp vdp, int address)
+    {
+        vdp.write16(0xC00004, (ushort)(0xC000 | (address & 0x3FFF)));
+        vdp.write16(0xC00004, (ushort)((address >> 14) & 0x0003));
+    }
+
+    private static void FlushVdpFifo(md_vdp vdp)
+    {
+        vdp.ProcessVdpFifoForM68kCycles(4096);
+    }
+
     private static void StepFrame(md_vdp vdp)
     {
-        int lines = vdp.g_display_ysize * 2; // Interlace mode 2 doubles lines
+        int lines = vdp.g_display_ysize;
         for (int line = 0; line <= lines; line++)
             vdp.run(line);
     }

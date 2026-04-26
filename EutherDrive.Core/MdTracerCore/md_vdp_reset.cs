@@ -49,6 +49,7 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (g_game_screen != null && g_game_screen.Length > 0)
                 Array.Fill(g_game_screen, 0xFF000000u);
+            ClearInterlaceFieldBuffers();
 
             if (g_renderer_vram != null && g_renderer_vram.Length > 0)
                 Array.Clear(g_renderer_vram, 0, g_renderer_vram.Length);

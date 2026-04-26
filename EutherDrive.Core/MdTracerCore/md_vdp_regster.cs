@@ -910,6 +910,7 @@ namespace EutherDrive.Core.MdTracerCore
                        {
                            Console.WriteLine($"[VDP-INTERLACE-CHANGE] frame={_frameCounter} prev={prevInterlace} new={g_vdp_interlace_mode} reg12_interlacemode={g_vdp_reg_12_2_interlacemode}");
                            g_vdp_interlace_field = 0;
+                           ClearInterlaceFieldBuffers();
                            InvalidateSpriteRowCache();
                            RecomputeScrollSizes();
                            RecomputeWindowBounds();

@@ -482,6 +482,7 @@ private static readonly bool SpriteLinkSequential =
                    {
                        Console.WriteLine($"[VDP-INTERLACE-CHANGE] frame={_frameCounter} prev={prevInterlace} new={g_vdp_interlace_mode} reg12_interlacemode={g_vdp_reg_12_2_interlacemode}");
                        g_vdp_interlace_field = 0;
+                       ClearInterlaceFieldBuffers();
                        InvalidateSpriteRowCache();
                        RecomputeScrollSizes();
                        RecomputeWindowBounds();
@@ -1338,11 +1339,13 @@ private static readonly bool SpriteLinkSequential =
             int height = g_display_ysize;
             // Only double height for interlace mode 2 (double resolution)
             // Mode 1 (standard interlace) should NOT double the height
-            bool shouldDouble = g_vdp_interlace_mode == 2 && InterlaceOutput == InterlaceOutputPolicy.DoubleField;
+            bool shouldDouble = g_vdp_interlace_mode == 2
+                && InterlaceOutput == InterlaceOutputPolicy.DoubleField
+                && !ForceInterlaceBob;
             if (shouldDouble)
                 height = g_display_ysize * 2;
             
-            if (TraceVdpInterlace || shouldDouble)
+            if (TraceVdpInterlace)
             {
                 Console.WriteLine($"[VDP-OUTPUT-HEIGHT-DETAIL] g_display_ysize={g_display_ysize} g_vdp_interlace_mode={g_vdp_interlace_mode} InterlaceOutput={InterlaceOutput} shouldDouble={shouldDouble} => {height}");
             }
@@ -1354,10 +1357,10 @@ private static readonly bool SpriteLinkSequential =
         {
             // Only apply field interlace for mode 2 (double resolution) when DoubleField policy is used
             // Mode 1 should not double scanlines
-            if (g_vdp_interlace_mode == 2 && InterlaceOutput == InterlaceOutputPolicy.DoubleField)
+            if (g_vdp_interlace_mode == 2
+                && InterlaceOutput == InterlaceOutputPolicy.DoubleField
+                && !ForceInterlaceBob)
             {
-                if (ForceInterlaceBob && g_vdp_interlace_mode == 2)
-                    return scanline << 1;
                 return (scanline << 1) | g_vdp_interlace_field;
             }
             return scanline;
@@ -1389,8 +1392,8 @@ private static readonly bool SpriteLinkSequential =
         {
             if (string.IsNullOrWhiteSpace(raw))
             {
-                Console.WriteLine("[VDP-INTERLACE] Parsed InterlaceOutputPolicy: SingleField (default)");
-                return InterlaceOutputPolicy.SingleField;
+                Console.WriteLine("[VDP-INTERLACE] Parsed InterlaceOutputPolicy: DoubleField (default)");
+                return InterlaceOutputPolicy.DoubleField;
             }
 
             if (string.Equals(raw, "single_field", StringComparison.OrdinalIgnoreCase) ||
@@ -1409,8 +1412,8 @@ private static readonly bool SpriteLinkSequential =
                 return InterlaceOutputPolicy.DoubleField;
             }
 
-            Console.WriteLine($"[VDP-INTERLACE] Unknown policy '{raw}', using SingleField");
-            return InterlaceOutputPolicy.SingleField;
+            Console.WriteLine($"[VDP-INTERLACE] Unknown policy '{raw}', using DoubleField");
+            return InterlaceOutputPolicy.DoubleField;
         }
 
         private static bool TryParseVramRange(string? raw, out int start, out int end)
