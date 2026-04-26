@@ -396,7 +396,11 @@ namespace mame
         bool m_reset_asserted;
         bool m_cpu_started;
         static readonly bool s_trace_sounds_good = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SG_TRACE") == "1";
-        static int s_trace_sounds_good_remaining = 240;
+        static readonly bool s_trace_sounds_good_commands = s_trace_sounds_good || Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SG_TRACE_COMMANDS") == "1";
+        static readonly bool s_trace_sounds_good_dac = s_trace_sounds_good || Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SG_TRACE_DAC") == "1";
+        static readonly bool s_trace_sounds_good_pia = s_trace_sounds_good || Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SG_TRACE_PIA") == "1";
+        static readonly bool s_trace_sounds_good_run = s_trace_sounds_good || Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SG_TRACE_RUN") == "1";
+        static int s_trace_sounds_good_remaining = ParseTraceLimit("EUTHERDRIVE_MCS_SG_TRACE_LIMIT", 512);
 
 
         // construction/destruction
@@ -461,7 +465,7 @@ namespace mame
         {
             m_dacval = (uint16_t)(data & 0x03ff);
             m_dac_sample = (stream_buffer_sample_t)(((m_dacval - 512) / 512.0) * 0.75);
-            TraceSoundsGood("dac=" + m_dacval.ToString("X3") + " sample=" + m_dac_sample.ToString("0.000"));
+            TraceSoundsGood(s_trace_sounds_good_dac, "dac=" + m_dacval.ToString("X3") + " sample=" + m_dac_sample.ToString("0.000"));
         }
 
 
@@ -474,7 +478,7 @@ namespace mame
             m_cpu.Reset(m_bus);
             m_cpu_started = true;
             m_cycle_remainder = 0;
-            TraceSoundsGood("cpu reset pc=0x" + m_cpu.Pc.ToString("X6") + " sp=0x" + m_cpu.Ssp.ToString("X6"));
+            TraceSoundsGood(s_trace_sounds_good_commands, "cpu reset pc=0x" + m_cpu.Pc.ToString("X6") + " sp=0x" + m_cpu.Ssp.ToString("X6"));
         }
 
 
@@ -488,8 +492,8 @@ namespace mame
             while (remaining != 0 && guard++ < 4096)
             {
                 uint32_t used = m_cpu.ExecuteInstruction(m_bus);
-                if (guard == 1)
-                    TraceSoundsGood("run pc=0x" + m_cpu.Pc.ToString("X6") + " irq=" + m_bus.InterruptLevel().ToString());
+                if (guard == 1 && s_trace_sounds_good_run)
+                    TraceSoundsGood(s_trace_sounds_good_run, "run pc=0x" + m_cpu.Pc.ToString("X6") + " irq=" + m_bus.InterruptLevel().ToString());
                 if (used == 0)
                     used = 1;
                 if (used >= remaining)
@@ -499,11 +503,20 @@ namespace mame
         }
 
 
-        static void TraceSoundsGood(string message)
+        static void TraceSoundsGood(bool enabled, string message)
         {
-            if (!s_trace_sounds_good || s_trace_sounds_good_remaining-- <= 0)
+            if (!enabled || s_trace_sounds_good_remaining-- <= 0)
                 return;
             Console.WriteLine("[MCS-SG] " + message);
+        }
+
+
+        static int ParseTraceLimit(string name, int fallback)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value) && value > 0)
+                return value;
+            return fallback;
         }
 
 
@@ -615,7 +628,7 @@ namespace mame
 
             public void WriteCommand(uint8_t data)
             {
-                TraceSoundsGood("cmd=0x" + data.ToString("X2"));
+                TraceSoundsGood(s_trace_sounds_good_commands, "cmd=0x" + data.ToString("X2"));
                 m_in_b = (uint8_t)((m_in_b & 0xf0) | ((data >> 1) & 0x0f));
                 Ca1Write((~data) & 0x01);
             }
@@ -716,7 +729,7 @@ namespace mame
 
             void WritePiaRegister(uint32_t reg, uint8_t data)
             {
-                TraceSoundsGood("pia-w r" + (reg & 3).ToString() + "=0x" + data.ToString("X2") + " ca=0x" + m_ctl_a.ToString("X2") + " cb=0x" + m_ctl_b.ToString("X2") + " ddra=0x" + m_ddr_a.ToString("X2") + " ddrb=0x" + m_ddr_b.ToString("X2"));
+                TraceSoundsGood(s_trace_sounds_good_pia, "pia-w r" + (reg & 3).ToString() + "=0x" + data.ToString("X2") + " ca=0x" + m_ctl_a.ToString("X2") + " cb=0x" + m_ctl_b.ToString("X2") + " ddra=0x" + m_ddr_a.ToString("X2") + " ddrb=0x" + m_ddr_b.ToString("X2"));
                 switch (reg & 3)
                 {
                     case 0:
@@ -767,7 +780,10 @@ namespace mame
             {
                 state &= 1;
                 if (m_ca1 != state && ((state != 0 && C1LowToHigh(m_ctl_a)) || (state == 0 && C1HighToLow(m_ctl_a))))
+                {
                     m_irq_a1 = true;
+                    TraceSoundsGood(s_trace_sounds_good_commands, "ca1 edge state=" + state.ToString() + " ctl=0x" + m_ctl_a.ToString("X2"));
+                }
                 m_ca1 = state;
             }
 

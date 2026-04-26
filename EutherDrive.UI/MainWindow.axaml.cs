@@ -23,6 +23,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using EutherDrive.Rendering;
 using EutherDrive.Core;
+using EutherDrive.Core.Arcade;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.UI.Audio;
@@ -9705,7 +9706,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)

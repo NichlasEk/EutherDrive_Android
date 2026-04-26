@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -13,7 +14,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private const int PlaceholderWidth = 256;
     private const int PlaceholderHeight = 224;
     private const int PlaceholderStride = PlaceholderWidth * 4;
-    private const int OutputSampleRate = 48_000;
+    private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int OutputChannels = 2;
     private static readonly object McsInitLock = new();
     private static readonly McsHostCore HostCore = new();
@@ -98,6 +99,20 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         {
             return false;
         }
+    }
+
+    private static int ParseOutputSampleRate()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUTPUT_HZ");
+        if (!string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+            && value >= 22_050
+            && value <= 192_000)
+        {
+            return value;
+        }
+
+        return 44_100;
     }
 
     public void LoadRom(string path)
@@ -379,6 +394,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                     _romDirectory,
                     "-noreadconfig",
                     "-nowriteconfig",
+                    "-samplerate",
+                    OutputSampleRate.ToString(CultureInfo.InvariantCulture),
                     "-skip_gameinfo",
                     "-ui",
                     "simple"
