@@ -79,6 +79,13 @@ namespace mame
         public Pointer<filter_biquad_device> cast(PointerU8 memory) { throw new emu_unimplemented(); }
     }
 
+    public class object_finder_operations_filter_volume_device : object_finder_operations<filter_volume_device>
+    {
+        public filter_volume_device cast(device_t device) { return (filter_volume_device)device; }
+        public filter_volume_device cast(device_interface device) { throw new emu_unimplemented(); }
+        public Pointer<filter_volume_device> cast(PointerU8 memory) { throw new emu_unimplemented(); }
+    }
+
     public class object_finder_operations_fixedfreq_device : object_finder_operations<fixedfreq_device>
     {
         public fixedfreq_device cast(device_t device) { return (fixedfreq_device)device; }
@@ -602,6 +609,7 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(eeprom_serial_93cxx_device)) return new object_finder_operations_eeprom_serial_93cxx_device();
                 else if (typeof_ObjectClass == typeof(er2055_device))              return new object_finder_operations_er2055_device();
                 else if (typeof_ObjectClass == typeof(filter_biquad_device))       return new object_finder_operations_filter_biquad_device();
+                else if (typeof_ObjectClass == typeof(filter_volume_device))       return new object_finder_operations_filter_volume_device();
                 else if (typeof_ObjectClass == typeof(fixedfreq_device))           return new object_finder_operations_fixedfreq_device();
                 else if (typeof_ObjectClass == typeof(generic_latch_8_device))     return new object_finder_operations_generic_latch_8_device();
                 else if (typeof_ObjectClass == typeof(gunfight_audio_device))      return new object_finder_operations_gunfight_audio_device();
