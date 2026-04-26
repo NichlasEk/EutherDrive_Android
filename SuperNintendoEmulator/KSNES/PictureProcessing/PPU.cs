@@ -675,6 +675,17 @@ public class PPU : IPPU
         return _snes.YPos < visibleLines;
     }
 
+    private bool CanWriteVramDataPort(int wordAddress, bool dma)
+    {
+        if (_forcedBlank || GetCurrentVblank())
+            return true;
+
+        if (!dma || !InActiveDisplay())
+            return false;
+
+        return _sprAdr1 >= 0x6000 && wordAddress >= _sprAdr1 && wordAddress < 0x8000;
+    }
+
     public void Reset()
     {
         _vram = new ushort[0x8000];
@@ -987,21 +998,15 @@ public class PPU : IPPU
                 return;
             case 0x02:
                 _oamRegAdr = value;
-                if (!InActiveDisplay() || _forcedBlank)
-                {
-                    _oamAdr = _oamRegAdr;
-                    _oamInHigh = _oamRegInHigh;
-                }
+                _oamAdr = _oamRegAdr;
+                _oamInHigh = _oamRegInHigh;
                 _oamSecond = false;
                 return;
             case 0x03:
                 _oamRegInHigh = (value & 0x1) > 0;
                 _objPriority = (value & 0x80) > 0;
-                if (!InActiveDisplay() || _forcedBlank)
-                {
-                    _oamAdr = _oamRegAdr;
-                    _oamInHigh = _oamRegInHigh;
-                }
+                _oamAdr = _oamRegAdr;
+                _oamInHigh = _oamRegInHigh;
                 _oamSecond = false;
                 return;
             case 0x04:
@@ -1128,7 +1133,7 @@ public class PPU : IPPU
                 return;
             case 0x18:
                 int adr2 = GetVramRemap();
-                if (_forcedBlank || GetCurrentVblank())
+                if (CanWriteVramDataPort(adr2, dma))
                 {
                     _vram[adr2] = (ushort) ((_vram[adr2] & 0xff00) | value);
                     InvalidateTileCachesForVramWord(adr2);
@@ -1146,7 +1151,7 @@ public class PPU : IPPU
                 return;
             case 0x19:
                 int adr3 = GetVramRemap();
-                if (_forcedBlank || GetCurrentVblank())
+                if (CanWriteVramDataPort(adr3, dma))
                 {
                     _vram[adr3] = (ushort) ((_vram[adr3] & 0xff) | (value << 8));
                     InvalidateTileCachesForVramWord(adr3);
