@@ -3,7 +3,10 @@
 
 using System;
 
+using mame.eutherdrive_m68000;
+
 using offs_t = System.UInt32;  //using offs_t = u32;
+using stream_buffer_sample_t = System.Single;
 using uint8_t = System.Byte;
 using uint16_t = System.UInt16;
 using uint32_t = System.UInt32;
@@ -362,58 +365,419 @@ namespace mame
 
     // ======================> midway_sounds_good_device
     public class midway_sounds_good_device : device_t
-                                             //device_mixer_interface
     {
         //DEFINE_DEVICE_TYPE(MIDWAY_SOUNDS_GOOD,        midway_sounds_good_device,        "midsg",   "Midway Sounds Good Sound Board")
         public static readonly emu.detail.device_type_impl MIDWAY_SOUNDS_GOOD = DEFINE_DEVICE_TYPE("midsg", "Midway Sounds Good Sound Board", (type, mconfig, tag, owner, clock) => { return new midway_sounds_good_device(mconfig, tag, owner, clock); });
 
 
-        // internal state
+        public class device_sound_interface_sounds_good : device_sound_interface
+        {
+            public device_sound_interface_sounds_good(machine_config mconfig, device_t device) : base(mconfig, device) { }
+
+            public override void sound_stream_update(sound_stream stream, std.vector<read_stream_view> inputs, std.vector<write_stream_view> outputs)
+            {
+                ((midway_sounds_good_device)device()).device_sound_interface_sound_stream_update(stream, inputs, outputs);
+            }
+        }
+
+
+        const uint32_t SoundCpuClock = 8_000_000;
+        const uint32_t OutputSampleRate = 48_000;
+
+        device_sound_interface_sounds_good m_disound;
+        sound_stream m_stream;
+        M68000 m_cpu;
+        SoundsGoodBus m_bus;
+
         uint8_t m_status;
+        uint16_t m_dacval;
+        stream_buffer_sample_t m_dac_sample;
+        double m_cycle_remainder;
+        bool m_reset_asserted;
+        bool m_cpu_started;
+        static readonly bool s_trace_sounds_good = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SG_TRACE") == "1";
+        static int s_trace_sounds_good_remaining = 240;
 
 
         // construction/destruction
         midway_sounds_good_device(machine_config mconfig, string tag, device_t owner, uint32_t clock = 16_000_000)
             : base(mconfig, MIDWAY_SOUNDS_GOOD, tag, owner, clock)
         {
+            m_class_interfaces.Add(new device_sound_interface_sounds_good(mconfig, this));
+            m_disound = GetClassInterface<device_sound_interface_sounds_good>();
+            m_cpu = M68000.CreateBuilder().AllowTasWrites(true).Name("MCS-SoundsGood").Build();
+            m_bus = new SoundsGoodBus(this);
             m_status = 0;
+            m_dacval = 0;
+            m_dac_sample = 0;
+            m_cycle_remainder = 0;
+            m_reset_asserted = false;
+            m_cpu_started = false;
         }
+
+
+        public device_sound_interface_sounds_good disound { get { return m_disound; } }
 
 
         // read/write
-        public uint8_t read()
-        {
-            return m_status;
-        }
+        public uint8_t read() { return m_status; }
+
 
         public void write(uint8_t data)
         {
-            // The full Sounds Good board depends on the 68000 core, which MCS has
-            // not ported yet. Keep the external latch visible enough for MCR3 to boot.
-            m_status = 0;
+            m_stream?.update();
+            m_bus.WriteCommand(data);
         }
+
 
         public void reset_write(int state)
         {
-            if (state != 0)
+            bool asserted = state != 0;
+            if (m_reset_asserted == asserted)
+                return;
+
+            m_stream?.update();
+            m_reset_asserted = asserted;
+            if (m_reset_asserted)
+            {
                 m_status = 0;
+                m_bus.ResetPia();
+            }
+            else
+            {
+                ResetSoundCpu();
+            }
         }
 
-        //void soundsgood_map(address_map &map);
+
+        void set_status_bit(uint8_t bit, uint8_t value)
+        {
+            uint8_t mask = (uint8_t)(1 << bit);
+            m_status = (uint8_t)((m_status & ~mask) | ((value != 0) ? mask : 0));
+        }
 
 
-        // device-level overrides
+        void write_dac(uint16_t data)
+        {
+            m_dacval = (uint16_t)(data & 0x03ff);
+            m_dac_sample = (stream_buffer_sample_t)(((m_dacval - 512) / 512.0) * 0.75);
+            TraceSoundsGood("dac=" + m_dacval.ToString("X3") + " sample=" + m_dac_sample.ToString("0.000"));
+        }
+
+
+        void ResetSoundCpu()
+        {
+            if (m_bus.RomLength < 8)
+                return;
+
+            m_bus.ClearResetPulse();
+            m_cpu.Reset(m_bus);
+            m_cpu_started = true;
+            m_cycle_remainder = 0;
+            TraceSoundsGood("cpu reset pc=0x" + m_cpu.Pc.ToString("X6") + " sp=0x" + m_cpu.Ssp.ToString("X6"));
+        }
+
+
+        void RunSoundCycles(uint32_t cycles)
+        {
+            if (m_reset_asserted || !m_cpu_started)
+                return;
+
+            uint32_t remaining = cycles;
+            int guard = 0;
+            while (remaining != 0 && guard++ < 4096)
+            {
+                uint32_t used = m_cpu.ExecuteInstruction(m_bus);
+                if (guard == 1)
+                    TraceSoundsGood("run pc=0x" + m_cpu.Pc.ToString("X6") + " irq=" + m_bus.InterruptLevel().ToString());
+                if (used == 0)
+                    used = 1;
+                if (used >= remaining)
+                    break;
+                remaining -= used;
+            }
+        }
+
+
+        static void TraceSoundsGood(string message)
+        {
+            if (!s_trace_sounds_good || s_trace_sounds_good_remaining-- <= 0)
+                return;
+            Console.WriteLine("[MCS-SG] " + message);
+        }
+
+
         protected override void device_add_mconfig(machine_config config) { }
-        protected override void device_start() { save_item(NAME(new { m_status })); }
-        protected override void device_reset() { m_status = 0; }
-
-        //TIMER_CALLBACK_MEMBER(synced_write);
 
 
-        // internal communications
-        //void porta_w(uint8_t data);
-        //void portb_w(uint8_t data);
-        //DECLARE_WRITE_LINE_MEMBER(irq_w);
+        protected override void device_start()
+        {
+            m_stream = m_disound.stream_alloc(0, 1, OutputSampleRate);
+            m_bus.LoadRom(memregion("cpu"));
+            ResetSoundCpu();
+
+            save_item(NAME(new { m_status }));
+            save_item(NAME(new { m_dacval }));
+        }
+
+
+        protected override void device_reset()
+        {
+            m_status = 0;
+            m_dacval = 0;
+            m_dac_sample = 0;
+            m_cycle_remainder = 0;
+            m_reset_asserted = false;
+            m_bus.ResetPia();
+            ResetSoundCpu();
+        }
+
+
+        void device_sound_interface_sound_stream_update(sound_stream stream, std.vector<read_stream_view> inputs, std.vector<write_stream_view> outputs)
+        {
+            var output = outputs[0];
+            double cyclesPerSample = SoundCpuClock / (double)OutputSampleRate;
+            for (int sample = 0; sample < output.samples(); sample++)
+            {
+                m_cycle_remainder += cyclesPerSample;
+                uint32_t wholeCycles = (uint32_t)m_cycle_remainder;
+                if (wholeCycles != 0)
+                {
+                    m_cycle_remainder -= wholeCycles;
+                    RunSoundCycles(wholeCycles);
+                }
+
+                output.put(sample, m_dac_sample);
+            }
+        }
+
+
+        sealed class SoundsGoodBus : IBusInterface
+        {
+            readonly midway_sounds_good_device m_owner;
+            readonly uint8_t [] m_ram = new uint8_t [0x1000];
+            uint8_t [] m_rom = Array.Empty<uint8_t>();
+            uint8_t m_ddr_a;
+            uint8_t m_ddr_b;
+            uint8_t m_ctl_a;
+            uint8_t m_ctl_b;
+            uint8_t m_out_a;
+            uint8_t m_out_b;
+            uint8_t m_in_b;
+            int m_ca1 = 1;
+            bool m_irq_a1;
+            bool m_irq_b1;
+            bool m_reset_pulse;
+
+            public SoundsGoodBus(midway_sounds_good_device owner)
+            {
+                m_owner = owner;
+            }
+
+            public ushort CurrentOpcode { get; private set; }
+            public BusSignals Signals { get { return new BusSignals(m_reset_pulse); } }
+            public int RomLength { get { return m_rom.Length; } }
+
+            public void LoadRom(memory_region region)
+            {
+                if (region == null || region.bytes() == 0)
+                {
+                    m_rom = Array.Empty<uint8_t>();
+                    return;
+                }
+
+                m_rom = new uint8_t [region.bytes()];
+                MemoryContainer<uint8_t> source = region.base_();
+                for (int i = 0; i < m_rom.Length; i++)
+                    m_rom[i] = source[i];
+            }
+
+            public void ClearResetPulse()
+            {
+                m_reset_pulse = false;
+            }
+
+            public void ResetPia()
+            {
+                Array.Clear(m_ram, 0, m_ram.Length);
+                m_ddr_a = 0;
+                m_ddr_b = 0;
+                m_ctl_a = 0;
+                m_ctl_b = 0;
+                m_out_a = 0;
+                m_out_b = 0;
+                m_in_b = 0;
+                m_ca1 = 1;
+                m_irq_a1 = false;
+                m_irq_b1 = false;
+                m_reset_pulse = true;
+            }
+
+            public void WriteCommand(uint8_t data)
+            {
+                TraceSoundsGood("cmd=0x" + data.ToString("X2"));
+                m_in_b = (uint8_t)((m_in_b & 0xf0) | ((data >> 1) & 0x0f));
+                Ca1Write((~data) & 0x01);
+            }
+
+            public byte InterruptLevel() { return (byte)((IrqAState() || IrqBState()) ? 4 : 0); }
+            public void AcknowledgeInterrupt(byte level) { }
+            public bool Reset() { return m_reset_pulse; }
+            public bool Halt() { return false; }
+
+            public byte ReadByte(uint address)
+            {
+                address &= 0x0007ffff;
+                if (address < 0x040000)
+                    return address < m_rom.Length ? m_rom[address] : (byte)0xff;
+                if (address >= 0x060000 && address <= 0x060fff)
+                    return ReadPiaByte(address);
+                if (address >= 0x070000 && address <= 0x070fff)
+                    return m_ram[address & 0x0fff];
+                return 0xff;
+            }
+
+            public ushort ReadWord(uint address)
+            {
+                CurrentOpcode = (ushort)((ReadByte(address) << 8) | ReadByte(address + 1));
+                return CurrentOpcode;
+            }
+
+            public uint ReadLong(uint address) { return (uint)((ReadWord(address) << 16) | ReadWord(address + 2)); }
+
+            public void WriteByte(uint address, byte value)
+            {
+                address &= 0x0007ffff;
+                if (address >= 0x060000 && address <= 0x060fff)
+                {
+                    WritePiaByte(address, value);
+                    return;
+                }
+
+                if (address >= 0x070000 && address <= 0x070fff)
+                    m_ram[address & 0x0fff] = value;
+            }
+
+            public void WriteWord(uint address, ushort value)
+            {
+                WriteByte(address, (byte)(value >> 8));
+                WriteByte(address + 1, (byte)value);
+            }
+
+            public void WriteLong(uint address, uint value)
+            {
+                WriteWord(address, (ushort)(value >> 16));
+                WriteWord(address + 2, (ushort)value);
+            }
+
+            uint8_t ReadPiaByte(uint32_t address)
+            {
+                if ((address & 1) != 0)
+                    return 0xff;
+                return ReadPiaRegister(PiaRegisterFromAddress(address));
+            }
+
+            void WritePiaByte(uint32_t address, uint8_t data)
+            {
+                if ((address & 1) != 0)
+                    return;
+                WritePiaRegister(PiaRegisterFromAddress(address), data);
+            }
+
+            static uint32_t PiaRegisterFromAddress(uint32_t address)
+            {
+                uint32_t offset = (address >> 1) & 3;
+                return ((offset << 1) & 2) | ((offset >> 1) & 1);
+            }
+
+            uint8_t ReadPiaRegister(uint32_t reg)
+            {
+                switch (reg & 3)
+                {
+                    case 0:
+                        if (!OutputSelected(m_ctl_a))
+                            return m_ddr_a;
+                        m_irq_a1 = false;
+                        return (uint8_t)((m_out_a & m_ddr_a) | (0xff & ~m_ddr_a));
+
+                    case 1:
+                        return (uint8_t)(m_ctl_a | (m_irq_a1 ? 0x80 : 0));
+
+                    case 2:
+                        if (!OutputSelected(m_ctl_b))
+                            return m_ddr_b;
+                        m_irq_b1 = false;
+                        return (uint8_t)((m_out_b & m_ddr_b) | (m_in_b & ~m_ddr_b));
+
+                    default:
+                        return (uint8_t)(m_ctl_b | (m_irq_b1 ? 0x80 : 0));
+                }
+            }
+
+            void WritePiaRegister(uint32_t reg, uint8_t data)
+            {
+                TraceSoundsGood("pia-w r" + (reg & 3).ToString() + "=0x" + data.ToString("X2") + " ca=0x" + m_ctl_a.ToString("X2") + " cb=0x" + m_ctl_b.ToString("X2") + " ddra=0x" + m_ddr_a.ToString("X2") + " ddrb=0x" + m_ddr_b.ToString("X2"));
+                switch (reg & 3)
+                {
+                    case 0:
+                        if (OutputSelected(m_ctl_a))
+                            PortAWrite(data);
+                        else
+                            m_ddr_a = data;
+                        break;
+
+                    case 1:
+                        m_ctl_a = (uint8_t)(data & 0x3f);
+                        break;
+
+                    case 2:
+                        if (OutputSelected(m_ctl_b))
+                            PortBWrite(data);
+                        else
+                            m_ddr_b = data;
+                        break;
+
+                    default:
+                        m_ctl_b = (uint8_t)(data & 0x3f);
+                        break;
+                }
+            }
+
+            void PortAWrite(uint8_t data)
+            {
+                m_out_a = data;
+                uint16_t dac = (uint16_t)((data << 2) | (m_owner.m_dacval & 3));
+                m_owner.write_dac(dac);
+            }
+
+            void PortBWrite(uint8_t data)
+            {
+                m_out_b = data;
+                uint8_t zMask = (uint8_t)~m_ddr_b;
+                uint16_t dac = (uint16_t)((m_owner.m_dacval & ~3) | (data >> 6));
+                m_owner.write_dac(dac);
+
+                if ((zMask & 0x10) == 0)
+                    m_owner.set_status_bit(0, (uint8_t)((data >> 4) & 1));
+                if ((zMask & 0x20) == 0)
+                    m_owner.set_status_bit(1, (uint8_t)((data >> 5) & 1));
+            }
+
+            void Ca1Write(int state)
+            {
+                state &= 1;
+                if (m_ca1 != state && ((state != 0 && C1LowToHigh(m_ctl_a)) || (state == 0 && C1HighToLow(m_ctl_a))))
+                    m_irq_a1 = true;
+                m_ca1 = state;
+            }
+
+            bool IrqAState() { return m_irq_a1 && Irq1Enabled(m_ctl_a); }
+            bool IrqBState() { return m_irq_b1 && Irq1Enabled(m_ctl_b); }
+            static bool Irq1Enabled(uint8_t control) { return (control & 0x01) != 0; }
+            static bool C1LowToHigh(uint8_t control) { return (control & 0x02) != 0; }
+            static bool C1HighToLow(uint8_t control) { return (control & 0x02) == 0; }
+            static bool OutputSelected(uint8_t control) { return (control & 0x04) != 0; }
+        }
     }
 
 

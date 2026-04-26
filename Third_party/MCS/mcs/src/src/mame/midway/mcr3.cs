@@ -222,7 +222,7 @@ namespace mame
         public void mono_sg(machine_config config)
         {
             mcrmono(config);
-            MIDWAY_SOUNDS_GOOD(config, m_sounds_good);
+            MIDWAY_SOUNDS_GOOD(config, m_sounds_good).disound.add_route(ALL_OUTPUTS, "speaker", 0.75);
         }
 
 
