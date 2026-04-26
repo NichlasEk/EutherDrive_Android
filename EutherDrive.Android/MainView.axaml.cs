@@ -1730,6 +1730,13 @@ public partial class MainView : UserControl
     {
         string typeName = ex.GetType().Name;
         string message = string.IsNullOrWhiteSpace(ex.Message) ? "(no message)" : ex.Message;
+        if (ex.InnerException != null)
+        {
+            Exception inner = ex.InnerException;
+            string innerMessage = string.IsNullOrWhiteSpace(inner.Message) ? "(no message)" : inner.Message;
+            message += $"\n{inner.GetType().Name}: {innerMessage}";
+        }
+
         string? firstFrame = ex.StackTrace?
             .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
             .FirstOrDefault();

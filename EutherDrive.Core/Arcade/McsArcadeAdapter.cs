@@ -21,6 +21,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private static readonly McsHostFileSystem HostFileSystem = new();
     private static readonly McsHostDirectorySystem HostDirectorySystem = new();
     private static readonly McsHostLibrary HostLibrary = new();
+    private static readonly string McsDataRoot = CreateMcsDataRoot();
     private static bool _mcsInitialized;
 
     private static readonly HashSet<string> ConsoleArchiveExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -113,6 +114,17 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         }
 
         return 44_100;
+    }
+
+    private static string CreateMcsDataRoot()
+    {
+        string baseDirectory = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(baseDirectory))
+            baseDirectory = Path.Combine(Path.GetTempPath(), "EutherDrive");
+
+        string root = Path.Combine(baseDirectory, "mcs");
+        Directory.CreateDirectory(root);
+        return root;
     }
 
     public void LoadRom(string path)
@@ -386,12 +398,38 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                 mame.mame_machine_manager.close_instance();
 
                 var options = new mame.osd_options();
+                string cfgDirectory = EnsureMcsDirectory("cfg");
+                string nvramDirectory = EnsureMcsDirectory("nvram");
+                string inputDirectory = EnsureMcsDirectory("inp");
+                string stateDirectory = EnsureMcsDirectory("sta");
+                string snapshotDirectory = EnsureMcsDirectory("snap");
+                string diffDirectory = EnsureMcsDirectory("diff");
+                string commentDirectory = EnsureMcsDirectory("comments");
+                string shareDirectory = EnsureMcsDirectory("share");
                 var args = new mame.std.vector<string>(new[]
                 {
                     "eutherdrive-mcs",
                     _driverName,
                     "-rompath",
                     _romDirectory,
+                    "-homepath",
+                    McsDataRoot,
+                    "-cfg_directory",
+                    cfgDirectory,
+                    "-nvram_directory",
+                    nvramDirectory,
+                    "-input_directory",
+                    inputDirectory,
+                    "-state_directory",
+                    stateDirectory,
+                    "-snapshot_directory",
+                    snapshotDirectory,
+                    "-diff_directory",
+                    diffDirectory,
+                    "-comment_directory",
+                    commentDirectory,
+                    "-share_directory",
+                    shareDirectory,
                     "-noreadconfig",
                     "-nowriteconfig",
                     "-samplerate",
@@ -403,7 +441,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
 
                 int result = mame.emulator_info.start_frontend(options, _osd, args);
                 if (result != mame.main_global.EMU_ERR_NONE)
-                    _fault = new InvalidOperationException($"MCS exited with code {result} while running '{_driverName}'.");
+                    _fault = new InvalidOperationException($"MCS exited with code {result} ({DescribeMcsExitCode(result)}) while running '{_driverName}'.");
             }
             catch (Exception ex)
             {
@@ -415,6 +453,27 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                 _stopped.Set();
                 mame.mame_machine_manager.close_instance();
             }
+        }
+
+        private static string EnsureMcsDirectory(string name)
+        {
+            string path = Path.Combine(McsDataRoot, name);
+            Directory.CreateDirectory(path);
+            return path;
+        }
+
+        private static string DescribeMcsExitCode(int result)
+        {
+            return result switch
+            {
+                mame.main_global.EMU_ERR_FAILED_VALIDITY => "failed validity checks",
+                mame.main_global.EMU_ERR_MISSING_FILES => "missing ROM or sample files",
+                mame.main_global.EMU_ERR_FATALERROR => "fatal emulator error",
+                mame.main_global.EMU_ERR_DEVICE => "device initialization error",
+                mame.main_global.EMU_ERR_NO_SUCH_SYSTEM => "unknown MAME system",
+                mame.main_global.EMU_ERR_INVALID_CONFIG => "invalid MAME configuration",
+                _ => "unknown error"
+            };
         }
     }
 
