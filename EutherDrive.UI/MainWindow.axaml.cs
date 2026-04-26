@@ -756,6 +756,8 @@ public partial class MainWindow : Window
             return new GbaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsN64Rom(path))
             return new N64Adapter();
+        if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
+            return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
             return new SnesAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsNesRom(path))
@@ -826,9 +828,12 @@ public partial class MainWindow : Window
 
     private static bool IsSnesRom(string path)
     {
-        string ext = Path.GetExtension(path).ToLowerInvariant();
+        string fileExt = Path.GetExtension(path).ToLowerInvariant();
+        string ext = GetEffectiveRomExtension(path);
         if (ext is ".smc" or ".sfc")
             return true;
+        if (fileExt is ".zip" or ".7z")
+            return false;
         if (ext is ".sms" or ".sg" or ".gg")
             return false;
         if (ext is ".nes")

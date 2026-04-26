@@ -54,6 +54,7 @@
     <ProjectReference Include="..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj" Condition="Exists('..\NESCore\XamariNES.Emulator\XamariNES.Emulator.csproj')" />
     <ProjectReference Include="..\ProjectPSX\ProjectPSX.csproj" Condition="'$(IncludeOptionalCores)' == 'true' and Exists('..\ProjectPSX\ProjectPSX.csproj')" />
     <ProjectReference Include="..\Ryu64\Ryu64Core\Ryu64Core.csproj" Condition="'$(IncludeOptionalCores)' == 'true' and Exists('..\Ryu64\Ryu64Core\Ryu64Core.csproj')" />
+    <ProjectReference Include="..\Third_party\MCS\mcs\mcs.csproj" Condition="Exists('..\Third_party\MCS\mcs\mcs.csproj')" />
   </ItemGroup>
 
 </Project>
