@@ -1911,6 +1911,26 @@ public class PPU : IPPU
             int brightnessOffset = _brightness << 15;
             int[] brightnessTable = BrightnessArgbTable;
             int[] pixelOutput = _pixelOutput;
+            if (_forcedBlank)
+            {
+                if (trueHiResOutput && !_frameTrueHiResOutput)
+                {
+                    ExpandBufferedLinesToHiRes(screenY);
+                    _frameTrueHiResOutput = true;
+                }
+
+                int outputWidth = trueHiResOutput || _frameTrueHiResOutput ? 512 : 256;
+                long perfStart = PerfStatsEnabled ? Stopwatch.GetTimestamp() : 0;
+                Array.Fill(pixelOutput, brightnessTable[brightnessOffset], outputRow, outputWidth);
+                if (PerfStatsEnabled)
+                {
+                    PerfSimpleMainLines++;
+                    PerfSimpleMainTicks += Stopwatch.GetTimestamp() - perfStart;
+                    PerfOutputPixels += (ulong)outputWidth;
+                }
+                return;
+            }
+
             bool useSimpleMainPath = CanUseSimpleMainScreenPath(hiResOutput, trueHiResOutput);
             if (useSimpleMainPath)
             {
@@ -2315,6 +2335,14 @@ public class PPU : IPPU
                 activeCount++;
             }
 
+            if (activeCount == 0)
+            {
+                int fillColor = argbTabOffset[cgramPtr[0] & 0x7fff];
+                for (int x = 0; x < 256; x++)
+                    pRow[x] = fillColor;
+                return true;
+            }
+
             int baseY = _interlace && (_mode == 5 || _mode == 6)
                 ? screenY * 2 + (_evenFrame ? 1 : 0)
                 : screenY;
@@ -2422,22 +2450,28 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
         {
             int* pRow = pOut + outputRow;
             int* argbTabOffset = argbTab + brightnessOffset;
-            Span<ushort> chunkPixels = stackalloc ushort[12 * FastChunkPixelCount];
-            Span<byte> chunkOpaque = stackalloc byte[12 * FastChunkPixelCount];
+            Span<ushort> bgLayerPixels = stackalloc ushort[4 * FastChunkPixelCount];
+            Span<byte> bgLayerOpaque = stackalloc byte[4 * FastChunkPixelCount];
+            Span<byte> bgLayerPriority = stackalloc byte[4 * FastChunkPixelCount];
+            Span<byte> bgLayerDecoded = stackalloc byte[4];
 
             for (int startX = 0; startX < 256; startX += FastChunkPixelCount)
             {
+                bgLayerDecoded.Clear();
                 for (int j = 0; j < activeCount; j++)
                 {
-                    int entryOffset = j * FastChunkPixelCount;
-                    Span<ushort> entryPixels = chunkPixels.Slice(entryOffset, FastChunkPixelCount);
-                    Span<byte> entryOpaque = chunkOpaque.Slice(entryOffset, FastChunkPixelCount);
-                    entryPixels.Clear();
-                    entryOpaque.Clear();
-
                     int layer = activeLayers[j];
-                    if (layer < 4)
-                        FillChunkPixelsForLayer(startX, baseY, layer, activePriorities[j], entryPixels, entryOpaque);
+                    if (layer >= 4 || bgLayerDecoded[layer] != 0)
+                        continue;
+
+                    FillChunkPixelsForLayerAllPriorities(
+                        startX,
+                        baseY,
+                        layer,
+                        bgLayerPixels.Slice(layer * FastChunkPixelCount, FastChunkPixelCount),
+                        bgLayerOpaque.Slice(layer * FastChunkPixelCount, FastChunkPixelCount),
+                        bgLayerPriority.Slice(layer * FastChunkPixelCount, FastChunkPixelCount));
+                    bgLayerDecoded[layer] = 1;
                 }
 
                 for (int pixelX = 0; pixelX < FastChunkPixelCount; pixelX++)
@@ -2460,11 +2494,11 @@ ly = (_optVerBuffer[layer] & 0x1fff) + (ly - _lineVoff[layer]);
                             break;
                         }
 
-                        int chunkIndex = j * FastChunkPixelCount + pixelX;
-                        if (chunkOpaque[chunkIndex] == 0)
+                        int chunkIndex = layer * FastChunkPixelCount + pixelX;
+                        if (bgLayerOpaque[chunkIndex] == 0 || bgLayerPriority[chunkIndex] != activePriorities[j])
                             continue;
 
-                        color = cgramPtr[chunkPixels[chunkIndex]];
+                        color = cgramPtr[bgLayerPixels[chunkIndex]];
                         break;
                     }
 
