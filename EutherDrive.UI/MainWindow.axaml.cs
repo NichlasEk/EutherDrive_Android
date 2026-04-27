@@ -757,6 +757,8 @@ public partial class MainWindow : Window
             return new GbaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsN64Rom(path))
             return new N64Adapter();
+        if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(path))
+            return new EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))

@@ -142,6 +142,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
     private static readonly int S32xPeripheralAccessWordCycles =
         Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_ACCESS_SYNC_CYCLES", 4));
+    private static readonly int S32xM68kInterleaveSliceCycles =
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 16));
+    private static readonly bool S32xLegacyFrameBudgetTiming =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_LEGACY_FRAME_BUDGET"), "1", StringComparison.Ordinal);
     private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
     private static readonly int BootRecoverStallFrames = ParseBootRecoverStallFrames();
     private static readonly int BootRecoverWindowFrames = ParseBootRecoverWindowFrames();
@@ -1345,6 +1349,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         _regionOverride = region;
         if (md_main.g_md_io != null)
             md_main.g_md_io.SetRegionOverride(region);
+        _sega32XCore?.SetRegionOverride(region);
     }
 
     public void RunInterlaceMode2Test()
@@ -1514,7 +1519,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
 
                     _bus.Attach32XBus(
                         _sega32XCore.Bus,
-                        _sega32XCore.UseExperimentalSharedTimebase ? Sync32XOnM68k32XPeripheralAccess : null);
+                        S32xLegacyFrameBudgetTiming ? null : Sync32XOnM68k32XPeripheralAccess);
                     Console.WriteLine("[MdTracerAdapter] 32X host bridge enabled.");
                 }
                 else
@@ -1552,6 +1557,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 Console.WriteLine($"[MdTracerAdapter] Detected ROM region: {regionLabel} (raw='{regionRaw}')");
                 if (md_main.g_md_io != null)
                     md_main.g_md_io.SetRomRegionHint(regionHint);
+                _sega32XCore?.SetRegionOverride(GetEffectiveRegion());
 
                 uint sp = ReadBe32(vecRom, 0x000000);
                 uint pc = ReadBe32(vecRom, 0x000004);
@@ -2767,7 +2773,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 int cpuBudget = _cpuCyclesPerLine > 0 ? _cpuCyclesPerLine : md_main.VDL_LINE_RENDER_MC68_CLOCK;
                 bool useCycleCounterZ80Scheduling = md_main.IsCycleCounterZ80SchedulingEnabled();
                 bool svpActive = md_main.g_md_bus?.OverrideBus is SvpBusOverride;
-                bool useExperimental32XTiming = _sega32XCore?.UseExperimentalSharedTimebase == true;
+                bool useM68k32XTiming = _sega32XCore != null && !S32xLegacyFrameBudgetTiming;
 
                 for (int v = 0; v < vlines; v++)
                 {
@@ -2819,6 +2825,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                             remaining -= slice;
                         }
                     }
+                    else if (useM68k32XTiming)
+                    {
+                        RunM68kLineWith32XInterleave(cpuBudget, ref cpuTicks, ref s32xSliceTicks);
+                    }
                     else
                     {
                         if (TracePerf)
@@ -2830,27 +2840,6 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                         else
                         {
                             _cpu.RunSome(budget: cpuBudget);
-                        }
-
-                        if (_sega32XCore != null && useExperimental32XTiming)
-                        {
-                            int remainingM68kCycles = cpuBudget - _s32xAccessDrivenM68kCycles;
-                            if (remainingM68kCycles < 0)
-                                remainingM68kCycles = 0;
-
-                            if (TracePerf)
-                            {
-                                long s32xStart = Stopwatch.GetTimestamp();
-                                if (remainingM68kCycles != 0)
-                                    Run32XInterleavedLine((ulong)remainingM68kCycles);
-                                s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
-                            }
-                            else if (remainingM68kCycles != 0)
-                            {
-                                Run32XInterleavedLine((ulong)remainingM68kCycles);
-                            }
-
-                            _s32xAccessDrivenM68kCycles = 0;
                         }
 
                         md_main.AdvanceSystemCycles(cpuBudget, flushAudio: false);
@@ -2882,7 +2871,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                         md_main.FlushScheduledAudio();
                         audioFlushTicks += Stopwatch.GetTimestamp() - flushStart;
 
-                        if (_sega32XCore != null && !useExperimental32XTiming)
+                        if (_sega32XCore != null && !useM68k32XTiming)
                         {
                             long s32xStart = Stopwatch.GetTimestamp();
                             Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
@@ -2892,7 +2881,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                     else
                     {
                         md_main.FlushScheduledAudio();
-                        if (_sega32XCore != null && !useExperimental32XTiming)
+                        if (_sega32XCore != null && !useM68k32XTiming)
                             Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
                     }
                 }
@@ -3139,6 +3128,50 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private System.IO.FileStream? _asciiFileStream;
     private readonly object _asciiStreamLock = new();
     private long _asciiFrameNumber;
+
+    private void RunM68kLineWith32XInterleave(int cpuBudget, ref long cpuTicks, ref long s32xSliceTicks)
+    {
+        if (_cpu == null || _sega32XCore == null)
+            return;
+
+        int remaining = cpuBudget;
+        while (remaining > 0)
+        {
+            int slice = Math.Min(S32xM68kInterleaveSliceCycles, remaining);
+            int accessCyclesBeforeSlice = _s32xAccessDrivenM68kCycles;
+
+            if (TracePerf)
+            {
+                long cpuStart = Stopwatch.GetTimestamp();
+                _cpu.RunSome(budget: slice);
+                cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+            }
+            else
+            {
+                _cpu.RunSome(budget: slice);
+            }
+
+            int accessDrivenCycles = _s32xAccessDrivenM68kCycles - accessCyclesBeforeSlice;
+            int remaining32XCycles = slice - Math.Max(0, accessDrivenCycles);
+            if (remaining32XCycles > 0)
+            {
+                if (TracePerf)
+                {
+                    long s32xStart = Stopwatch.GetTimestamp();
+                    Run32XInterleavedLine((ulong)remaining32XCycles);
+                    s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+                }
+                else
+                {
+                    Run32XInterleavedLine((ulong)remaining32XCycles);
+                }
+            }
+
+            _s32xAccessDrivenM68kCycles = 0;
+            md_main.AdvanceSystemCycles(slice, flushAudio: false);
+            remaining -= slice;
+        }
+    }
 
     private void Run32XInterleavedLine(int line, ulong baseTicksPerLine, ulong remainderTicks)
     {

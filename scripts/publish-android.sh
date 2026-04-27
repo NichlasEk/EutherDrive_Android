@@ -7,12 +7,9 @@ PROJECT_DIR="$REPO_ROOT/EutherDrive.Android"
 PROJECT_FILE="$PROJECT_DIR/EutherDrive.Android.csproj"
 OUTPUT_DIR="$REPO_ROOT/artifacts/android-publish"
 
-JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-11-openjdk}
+JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
 ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-/opt/android-sdk}
 CONFIGURATION=${CONFIGURATION:-Release}
-
-export JAVA_HOME
-export ANDROID_SDK_ROOT
 
 echo "Publishing Android project..."
 echo "  JAVA_HOME=$JAVA_HOME"
@@ -25,6 +22,7 @@ rm -rf bin obj "$OUTPUT_DIR"
 dotnet publish "$PROJECT_FILE" \
   -c "$CONFIGURATION" \
   -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT" \
+  -p:JavaSdkDirectory="$JAVA_HOME" \
   -p:EmbedAssembliesIntoApk=true \
   -p:AndroidUseSharedRuntime=false \
   -p:AndroidFastDeploymentType=None \

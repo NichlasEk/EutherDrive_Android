@@ -28,6 +28,7 @@ internal sealed class Sega32XVdp
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_VDP_REG_WRITES"),
             "1",
             StringComparison.Ordinal);
+    private static readonly int TraceRegisterWriteLimit = ParseTraceRegisterWriteLimit();
     public const int FrameWidth = 320;
     public const int FrameHeight = 240;
     private const int WordsPerBuffer = 0x20000 / 2;
@@ -981,11 +982,7 @@ internal sealed class Sega32XVdp
 
     private void TraceRegisterWriteIfEnabled(uint registerOffset, ushort oldValue, ushort newValue)
     {
-        if (!TraceRegisterWrites || _registerWriteTraceCount >= 128 || oldValue == newValue)
-            return;
-
-        // Focus on mode/swap state changes; autofill traffic is too noisy to be useful.
-        if (registerOffset != 0x0 && registerOffset != 0x2 && registerOffset != 0xA)
+        if (!TraceRegisterWrites || _registerWriteTraceCount >= TraceRegisterWriteLimit || oldValue == newValue)
             return;
 
         _registerWriteTraceCount++;
@@ -993,6 +990,12 @@ internal sealed class Sega32XVdp
             $"[S32X-VDPREG] reg=0x{registerOffset:X1} old=0x{oldValue:X4} new=0x{newValue:X4} " +
             $"disp=0x{DisplayMode:X4} fbctl=0x{FrameBufferControl:X4} front={(_displayFrameBuffer ? 1 : 0)} write={(_writeFrameBuffer ? 1 : 0)} " +
             $"scanline={_scanline} mclk={_scanlineMclk}");
+    }
+
+    private static int ParseTraceRegisterWriteLimit()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_VDP_REG_WRITES_MAX");
+        return int.TryParse(raw, out int value) && value > 0 ? value : 128;
     }
 
     private int GetActiveScanlinesPerFrame()

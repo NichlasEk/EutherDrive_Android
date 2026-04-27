@@ -19,4 +19,9 @@ namespace EutherDrive.Core.Cpu.Z80Emu
         bool BusReq();
         bool Reset();
     }
+
+    public interface IOpcodeBusInterface : IBusInterface
+    {
+        byte ReadOpcode(ushort address);
+    }
 }

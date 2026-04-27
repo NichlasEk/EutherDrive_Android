@@ -55,6 +55,17 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_DMA_REGS"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TraceVdpBusWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_VDP_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceFrameBufferBusWrites =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_FB_WRITES"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly int TraceVdpBusWriteLimit = ParseTraceVdpBusWriteLimit();
     [NonSerialized] private readonly Sega32XScaffoldCore _core;
     [NonSerialized] private readonly Sega32XCpu _whichCpu;
     private readonly ushort[] _cacheDataArray = new ushort[CacheDataArrayLengthWords];
@@ -86,6 +97,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private uint _dmaVector1;
     [NonSerialized] private ulong _schedulerCycleCounter;
     [NonSerialized] private int _cramWriteTraceCount;
+    [NonSerialized] private int _vdpBusWriteTraceCount;
 
     public Sega32XSh2Bus(Sega32XScaffoldCore core, Sega32XCpu whichCpu)
     {
@@ -159,6 +171,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         _dmaVector0 = 0;
         _dmaVector1 = 0;
         _cramWriteTraceCount = 0;
+        _vdpBusWriteTraceCount = 0;
         ResetTimingState();
     }
 
@@ -274,6 +287,12 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private static int ParseTraceCramWriteLimit()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_CRAM_WRITES_MAX");
+        return int.TryParse(raw, out int value) && value > 0 ? value : 512;
+    }
+
+    private static int ParseTraceVdpBusWriteLimit()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_VDP_WRITES_MAX");
         return int.TryParse(raw, out int value) && value > 0 ? value : 512;
     }
 
@@ -545,8 +564,12 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             {
                 CycleCounter += Sh2VdpCycles;
                 if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                {
+                    TraceVdpBusWrite("write8-reg-denied", masked & ~1u, word, context);
                     return;
+                }
                 _core.Bus.Vdp.WriteRegister(masked & ~1u, word);
+                TraceVdpBusWrite("write8-reg", masked & ~1u, word, context);
             }
             else
                 _core.Registers.Sh2Write(masked & ~1u, word, _whichCpu, _core.Bus.Vdp);
@@ -578,6 +601,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             uint frameBufferAddress = masked - 0x04000000;
             _core.Bus.Vdp.WriteFrameBufferByte(frameBufferAddress, value, IsFrameBufferOverwrite(masked));
+            TraceVdpBusWrite("write8-fb", masked, value, context);
             TracePcWatch("write8", masked, value, context);
             TraceAddressWatch("write8", masked, value, context);
             return;
@@ -659,8 +683,12 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             {
                 CycleCounter += Sh2VdpCycles;
                 if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                {
+                    TraceVdpBusWrite("write16-reg-denied", masked & ~1u, value, context);
                     return;
+                }
                 _core.Bus.Vdp.WriteRegister(masked & ~1u, value);
+                TraceVdpBusWrite("write16-reg", masked & ~1u, value, context);
             }
             else
                 _core.Registers.Sh2Write(masked & ~1u, value, _whichCpu, _core.Bus.Vdp);
@@ -690,6 +718,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, value);
             else
                 _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, value);
+            TraceVdpBusWrite(IsFrameBufferOverwrite(masked) ? "write16-fb-ovr" : "write16-fb", masked, value, context);
             TracePcWatch("write16", masked, value, context);
             TraceAddressWatch("write16", masked, value, context);
             return;
@@ -1808,7 +1837,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             CycleCounter += 2;
             SyncIfCommPortAccessed(masked, isRead: false);
             if (IsSh2VdpRegister(masked) && _core.Registers.VdpAccess != Sega32XAccess.Sh2)
+            {
+                TraceVdpBusWrite("write32-reg-denied", masked & ~1u, value, context);
                 return;
+            }
             if (IsSh2VdpRegister(masked))
                 CycleCounter += 2 * Sh2VdpCycles;
 
@@ -1816,6 +1848,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             {
                 _core.Bus.Vdp.WriteRegister(masked & ~1u, (ushort)(value >> 16));
                 _core.Bus.Vdp.WriteRegister((masked + 2) & ~1u, (ushort)value);
+                TraceVdpBusWrite("write32-reg-hi", masked & ~1u, value >> 16, context);
+                TraceVdpBusWrite("write32-reg-lo", (masked + 2) & ~1u, value, context);
             }
             else
             {
@@ -1856,12 +1890,14 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
             else
                 _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+            TraceVdpBusWrite(IsFrameBufferOverwrite(masked) ? "write32-fb-hi-ovr" : "write32-fb-hi", masked, value >> 16, context);
 
             CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             if (IsFrameBufferOverwrite(masked))
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
             else
                 _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
+            TraceVdpBusWrite(IsFrameBufferOverwrite(masked) ? "write32-fb-lo-ovr" : "write32-fb-lo", masked | 2, value, context);
             TracePcWatch("write32", masked, value, context);
             TraceAddressWatch("write32", masked, value, context);
             return;
@@ -1893,9 +1929,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             if (IsSh2VdpRegister(masked))
             {
                 if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                {
+                    TraceVdpBusWrite("write16-reg-denied", masked & ~1u, value, context);
                     return;
+                }
                 CycleCounter += 1 + Sh2VdpCycles;
                 _core.Bus.Vdp.WriteRegister(masked & ~1u, value);
+                TraceVdpBusWrite("write16-reg", masked & ~1u, value, context);
             }
             else
             {
@@ -1923,6 +1963,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, value);
             else
                 _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, value);
+            TraceVdpBusWrite(IsFrameBufferOverwrite(masked) ? "write16-fb-ovr" : "write16-fb", masked, value, context);
             TracePcWatch("write16", masked, value, context);
             TraceAddressWatch("write16", masked, value, context);
             return;
@@ -1951,6 +1992,20 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             $"[S32X-CRAM-{_whichCpu}] pc=0x{CurrentCpu.CurrentInstructionPc:X8} op={op} " +
             $"addr=0x{address:X8} offset=0x{address - 0x00004200:X3} value=0x{value:X8} " +
             $"stored=0x{stored:X4} fm={(_core.Registers.VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)} " +
+            $"ctx={context} cyc={CycleCounter}");
+    }
+
+    private void TraceVdpBusWrite(string op, uint address, uint value, Sega32XSh2AccessContext context)
+    {
+        if (!TraceFrameBufferBusWrites && op.Contains("-fb", StringComparison.Ordinal))
+            return;
+        if (!TraceVdpBusWrites || _vdpBusWriteTraceCount >= TraceVdpBusWriteLimit)
+            return;
+
+        _vdpBusWriteTraceCount++;
+        Console.WriteLine(
+            $"[S32X-VDPBUS-{_whichCpu}] pc=0x{CurrentCpu.CurrentInstructionPc:X8} op={op} " +
+            $"addr=0x{address:X8} value=0x{value:X8} fm={(_core.Registers.VdpAccess == Sega32XAccess.Sh2 ? 1 : 0)} " +
             $"ctx={context} cyc={CycleCounter}");
     }
 

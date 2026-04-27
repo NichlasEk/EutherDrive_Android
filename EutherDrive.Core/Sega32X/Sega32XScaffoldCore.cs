@@ -293,6 +293,12 @@ internal sealed class Sega32XScaffoldCore
 
     public bool TryConsumeRecentCommWrite(uint address, Sega32XCpu readerCpu, ulong readerM68kReferenceCyclesDone, out ushort value)
     {
+        if (CommWriteVisibilityWindow == 0)
+        {
+            value = 0;
+            return false;
+        }
+
         Sega32XCommSource readerSource = ToCommSource(readerCpu);
 
         for (int offset = 1; offset <= CommWriteFifoSize; offset++)
@@ -449,10 +455,10 @@ internal sealed class Sega32XScaffoldCore
     private static ulong ParseCommWriteVisibilityWindow()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_COMM_FIFO_WINDOW");
-        if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
+        if (ulong.TryParse(raw, out ulong parsed))
             return parsed;
 
-        return 64;
+        return 0;
     }
 
     private static bool ParseBoolEnv(string name)

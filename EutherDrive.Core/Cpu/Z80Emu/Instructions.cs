@@ -35,16 +35,25 @@ namespace EutherDrive.Core.Cpu.Z80Emu
         {
             private readonly Registers _registers;
             private readonly IBusInterface _bus;
+            private readonly IOpcodeBusInterface? _opcodeBus;
 
             public InstructionExecutor(Registers registers, IBusInterface bus)
             {
                 _registers = registers;
                 _bus = bus;
+                _opcodeBus = bus as IOpcodeBusInterface;
             }
 
             internal byte FetchOperand()
             {
                 byte operand = _bus.ReadMemory(_registers.Pc);
+                _registers.Pc = (ushort)(_registers.Pc + 1);
+                return operand;
+            }
+
+            internal byte FetchOpcode()
+            {
+                byte operand = _opcodeBus != null ? _opcodeBus.ReadOpcode(_registers.Pc) : _bus.ReadMemory(_registers.Pc);
                 _registers.Pc = (ushort)(_registers.Pc + 1);
                 return operand;
             }
@@ -62,7 +71,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
                 uint tCycles = 0;
                 while (true)
                 {
-                    byte opcode = FetchOperand();
+                    byte opcode = FetchOpcode();
                     switch (opcode)
                     {
                         case 0xDD:
@@ -195,7 +204,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
                     indexWithOffset = (index.Value, offset);
                 }
 
-                byte opcode2 = FetchOperand();
+                byte opcode2 = FetchOpcode();
 
                 if ((opcode2 <= 0x05) || opcode2 == 0x07)
                     return RlcR(opcode2, indexWithOffset);
@@ -251,7 +260,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
 
             private uint ExecuteEdPrefix()
             {
-                byte opcode2 = FetchOperand();
+                byte opcode2 = FetchOpcode();
 
                 return opcode2 switch
                 {

@@ -192,10 +192,12 @@ Install the .NET Android workload first:
 dotnet workload install android
 ```
 
-Then build the Android head directly:
+Android SDK tooling requires Java 17 or newer. The repo scripts default to `/usr/lib/jvm/java-17-openjdk`, while still respecting an explicit `JAVA_HOME`.
+
+Then build the Android head:
 
 ```bash
-dotnet build EutherDrive.Android/EutherDrive.Android.csproj
+scripts/build-android.sh
 ```
 
 ## References

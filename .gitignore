@@ -35,6 +35,8 @@ roms/
 logs/
 bios/
 saves/
+cfg/
+nvram/
 .ambient-music-cache/
 .machine-room-cover-cache/
 
