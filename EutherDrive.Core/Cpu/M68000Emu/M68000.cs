@@ -117,7 +117,7 @@ public sealed class M68000
 
         _regs.Ssp = bus.ReadLong(0x000000) & 0x00FF_FFFF;
         _regs.Pc = bus.ReadLong(0x000004) & 0x00FF_FFFF;
-        _regs.Prefetch = bus.ReadWord(_regs.Pc);
+        _regs.Prefetch = ReadOpcodeWord(bus, _regs.Pc);
     }
 
     public uint ExecuteInstruction(IBusInterface bus)
@@ -132,4 +132,7 @@ public sealed class M68000
 
         return new InstructionExecutor(_regs, bus, _allowTasWrites, _name).Execute();
     }
+
+    private static ushort ReadOpcodeWord(IBusInterface bus, uint address)
+        => bus is IOpcodeBusInterface opcodeBus ? opcodeBus.ReadOpcodeWord(address) : bus.ReadWord(address);
 }

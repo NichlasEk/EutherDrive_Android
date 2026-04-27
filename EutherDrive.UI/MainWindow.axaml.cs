@@ -760,6 +760,8 @@ public partial class MainWindow : Window
             return new N64Adapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(path))
+            return new EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
@@ -9718,7 +9720,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)

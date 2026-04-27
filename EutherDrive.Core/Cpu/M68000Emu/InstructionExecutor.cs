@@ -108,7 +108,7 @@ internal sealed partial class InstructionExecutor
                 $"D0=0x{_registers.Data[0]:X8} D1=0x{_registers.Data[1]:X8} D5=0x{_registers.Data[5]:X8}");
         }
 
-        var next = ReadBusWord(_registers.Pc + 2);
+        var next = ReadOpcodeBusWord(_registers.Pc + 2);
         if (!next.IsOk)
             return ExecuteResult<uint>.Err(next.Error!.Value);
         _registers.Prefetch = next.Value;
@@ -250,6 +250,17 @@ internal sealed partial class InstructionExecutor
         return ExecuteResult<ushort>.Ok(_bus.ReadWord(address));
     }
 
+    private ExecuteResult<ushort> ReadOpcodeBusWord(uint address)
+    {
+        if ((address & 1) != 0)
+            return ExecuteResult<ushort>.Err(M68kException.AddressError(address, BusOpType.Read));
+
+        ushort value = _bus is IOpcodeBusInterface opcodeBus
+            ? opcodeBus.ReadOpcodeWord(address)
+            : _bus.ReadWord(address);
+        return ExecuteResult<ushort>.Ok(value);
+    }
+
     private ExecuteResult<uint> ReadBusLong(uint address)
     {
         if ((address & 1) != 0)
@@ -276,7 +287,7 @@ internal sealed partial class InstructionExecutor
     private ExecuteResult<ushort> FetchOperand()
     {
         ushort operand = _registers.Prefetch;
-        var next = ReadBusWord(_registers.Pc + 2);
+        var next = ReadOpcodeBusWord(_registers.Pc + 2);
         if (!next.IsOk) return ExecuteResult<ushort>.Err(next.Error!.Value);
         _registers.Prefetch = next.Value;
         _registers.Pc = (_registers.Pc + 2) & 0x00FF_FFFF;
