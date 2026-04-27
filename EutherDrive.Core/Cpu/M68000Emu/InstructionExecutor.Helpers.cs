@@ -11,6 +11,7 @@ internal sealed partial class InstructionExecutor
             ResolvedAddressKind.DataRegister => (byte)resolved.DataReg.Read(_registers),
             ResolvedAddressKind.AddressRegister => (byte)resolved.AddrReg.Read(_registers),
             ResolvedAddressKind.Memory or ResolvedAddressKind.MemoryPostincrement => _bus.ReadByte(resolved.Address),
+            ResolvedAddressKind.ProgramMemory => ReadProgramByte(resolved.Address).Value,
             ResolvedAddressKind.Immediate => (byte)resolved.ImmediateValue,
             _ => 0
         };

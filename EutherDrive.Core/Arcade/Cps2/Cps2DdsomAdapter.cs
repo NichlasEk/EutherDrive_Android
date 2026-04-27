@@ -206,6 +206,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         private readonly ushort[] _cpsA = new ushort[0x20];
         private readonly ushort[] _cpsB = new ushort[0x20];
         private readonly Cps1QSound _qsound = new();
+        private readonly SerialEeprom93C46 _eeprom = new();
 
         private ArcadeInputState _input;
         private byte _interruptLevel;
@@ -213,6 +214,9 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         private int _audioBank;
         private int _audioIrqCountdown;
         private bool _audioIrqAsserted;
+        private bool _audioResetAsserted;
+        private bool _audioResetPending;
+        private ushort _addonRamControl;
         private short[]? _audioFrameBuffer;
         private int _audioFrameCycles;
         private int _audioFrameSampleIndex;
@@ -250,6 +254,8 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             _qsound.Load(roms.QSound, roms.QSoundDsp);
             ResetVideoRegisters();
             ResetAudioState();
+            _eeprom.ResetContents();
+            _addonRamControl = 0;
             _interruptLevel = 0;
             _objRamBank = 0;
         }
@@ -270,6 +276,8 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             Array.Clear(_cpsB);
             ResetVideoRegisters();
             ResetAudioState();
+            _eeprom.ResetLines();
+            _addonRamControl = 0;
             _interruptLevel = 0;
             _objRamBank = 0;
         }
@@ -296,6 +304,12 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         public int RunAudioCpu(EutherDrive.Core.Cpu.Z80Emu.Z80 audioCpu, Cps2AudioBus audioBus, int cycleBudget)
         {
+            if (_audioResetPending)
+            {
+                audioCpu.ApplyResetLine();
+                _audioResetPending = false;
+            }
+
             int cycles = 0;
             while (cycles < cycleBudget)
             {
@@ -348,6 +362,8 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             => _audioIrqAsserted
                 ? EutherDrive.Core.Cpu.Z80Emu.InterruptLine.Low
                 : EutherDrive.Core.Cpu.Z80Emu.InterruptLine.High;
+
+        public bool AudioResetAsserted => _audioResetAsserted;
 
         public byte ReadAudioMemory(ushort address)
         {
@@ -431,6 +447,8 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 return (ushort)(0xff00 | _qsoundShared0[(address - 0x618000) >> 1]);
             if (address >= 0x660000 && address <= 0x663fff)
                 return ReadBigEndianWord(_addonRam, (int)(address - 0x660000));
+            if (address >= 0x664000 && address <= 0x664001)
+                return _addonRamControl;
             if (address >= 0x700000 && address <= 0x701fff)
                 return _objRam[_objRamBank & 1][(address - 0x700000) >> 1];
             if (address >= 0x708000 && address <= 0x70ffff)
@@ -465,6 +483,13 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         public uint ReadLong(uint address)
         {
+            address &= 0x00ff_ffff;
+
+            // CPS2 reset vectors are fetched through the decrypted instruction
+            // path; keep normal byte/word ROM reads encrypted for checksum code.
+            if (address == 0x000000 || address == 0x000004)
+                return ((uint)ReadOpcodeWord(address) << 16) | ReadOpcodeWord(address + 2);
+
             ushort hi = ReadWord(address);
             ushort lo = ReadWord(address + 2);
             return ((uint)hi << 16) | lo;
@@ -490,6 +515,11 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 _addonRam[address - 0x660000] = value;
                 return;
             }
+            if (address >= 0x664000 && address <= 0x664001)
+            {
+                WriteWordByte(ref _addonRamControl, address, value);
+                return;
+            }
             if (address >= 0x700000 && address <= 0x701fff)
             {
                 WriteWordByte(ref _objRam[_objRamBank & 1][(address - 0x700000) >> 1], address, value);
@@ -498,6 +528,22 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             if (address >= 0x708000 && address <= 0x70ffff)
             {
                 WriteWordByte(ref _objRam[(_objRamBank ^ 1) & 1][((address - 0x708000) & 0x1fff) >> 1], address, value);
+                return;
+            }
+            if (address >= 0x800100 && address <= 0x80013f)
+            {
+                int index = (int)((address - 0x800100) >> 1);
+                WriteWordByte(ref _cpsA[index], address, value);
+                if (index == Cps1Regs.PaletteBase)
+                    LatchPalette();
+                return;
+            }
+            if (address >= 0x800140 && address <= 0x80017f)
+            {
+                int index = (int)((address - 0x800140) >> 1);
+                WriteWordByte(ref _cpsB[index], address, value);
+                if (index == Cps2Config.PaletteControl / 2)
+                    LatchPalette();
                 return;
             }
             if (address >= 0x804100 && address <= 0x80413f)
@@ -514,6 +560,11 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 WriteWordByte(ref _cpsB[index], address, value);
                 if (index == Cps2Config.PaletteControl / 2)
                     LatchPalette();
+                return;
+            }
+            if (address >= 0x804040 && address <= 0x804041)
+            {
+                WriteControlPortByte(address, value);
                 return;
             }
             if (address >= 0x900000 && address <= 0x92ffff)
@@ -548,6 +599,11 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 WriteBigEndianWord(_addonRam, (int)(address - 0x660000), value);
                 return;
             }
+            if (address >= 0x664000 && address <= 0x664001)
+            {
+                _addonRamControl = value;
+                return;
+            }
             if (address >= 0x700000 && address <= 0x701fff)
             {
                 _objRam[_objRamBank & 1][(address - 0x700000) >> 1] = value;
@@ -575,7 +631,10 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 return;
             }
             if (address >= 0x804040 && address <= 0x804041)
+            {
+                WriteControlPortWord(value);
                 return;
+            }
             if (address >= 0x8040e0 && address <= 0x8040e1)
             {
                 _objRamBank = value & 1;
@@ -641,7 +700,36 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             _audioBank = 0;
             _audioIrqCountdown = 32_000;
             _audioIrqAsserted = false;
+            _audioResetAsserted = false;
+            _audioResetPending = false;
             _qsound.Reset();
+        }
+
+        private void WriteControlPortByte(uint address, byte value)
+        {
+            if ((address & 1) == 0)
+            {
+                ushort latched = _eeprom.LastWrite;
+                WriteWordByte(ref latched, address, value);
+                _eeprom.Write(latched);
+                return;
+            }
+
+            UpdateAudioReset(value);
+        }
+
+        private void WriteControlPortWord(ushort value)
+        {
+            _eeprom.Write(value);
+            UpdateAudioReset((byte)value);
+        }
+
+        private void UpdateAudioReset(byte value)
+        {
+            bool asserted = (value & 0x08) == 0;
+            if (asserted && !_audioResetAsserted)
+                _audioResetPending = true;
+            _audioResetAsserted = asserted;
         }
 
         private void LatchPalette()
@@ -689,8 +777,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         private ushort Input2()
         {
-            int value = 0xffff;
-            value |= 0x0001;
+            int value = 0xfffe | _eeprom.OutputBit;
             if (_input.Start)
                 value &= ~0x0100;
             if (_input.Coin)
@@ -698,14 +785,33 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             return (ushort)value;
         }
 
-        private static ushort ReadCpsB(int offset)
+        private ushort ReadCpsB(int offset)
         {
-            _ = offset;
+            offset &= 0x1f;
+            int register = offset * 2;
+            if (register == Cps2Config.CpsBIdAddress)
+                return 0xffff;
+
+            if (register == Cps2Config.MultResultLow || register == Cps2Config.MultResultHigh)
+            {
+                uint product = (uint)(_cpsB[Cps2Config.MultFactor1 / 2] * _cpsB[Cps2Config.MultFactor2 / 2]);
+                return register == Cps2Config.MultResultLow
+                    ? (ushort)product
+                    : (ushort)(product >> 16);
+            }
+
+            if (register == 0x0e)
+                return (ushort)(_cpsB[offset] & 0x0001);
+            if (register == 0x10 || register == 0x12)
+                return (ushort)(_cpsB[offset] & 0x01ff);
+
             return 0xffff;
         }
 
         private static bool IsWordMapped(uint address)
             => (address >= 0x400000 && address <= 0x40000b)
+               || (address >= 0x660000 && address <= 0x663fff)
+               || (address >= 0x664000 && address <= 0x664001)
                || (address >= 0x804000 && address <= 0x804041)
                || (address >= 0x804100 && address <= 0x80417f)
                || (address >= 0x800100 && address <= 0x80017f)
@@ -731,6 +837,200 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             word = (address & 1) == 0
                 ? (ushort)((word & 0x00ff) | (value << 8))
                 : (ushort)((word & 0xff00) | value);
+        }
+
+        private sealed class SerialEeprom93C46
+        {
+            private const int WordCount = 64;
+            private readonly ushort[] _words = new ushort[WordCount];
+
+            private bool _chipSelect;
+            private bool _clock;
+            private int _command;
+            private int _commandBits;
+            private int _readData;
+            private int _readBitsRemaining;
+            private int _writeData;
+            private int _writeBits;
+            private int _writeAddress;
+            private bool _writeEnabled;
+            private Mode _mode;
+
+            private enum Mode
+            {
+                Command,
+                Read,
+                Write,
+                WriteAll
+            }
+
+            public ushort LastWrite { get; private set; }
+
+            public int OutputBit { get; private set; } = 1;
+
+            public void ResetContents()
+            {
+                Array.Fill(_words, (ushort)0xffff);
+                _writeEnabled = false;
+                ResetLines();
+            }
+
+            public void ResetLines()
+            {
+                _chipSelect = false;
+                _clock = false;
+                LastWrite = 0;
+                ResetSerial();
+            }
+
+            public void Write(ushort value)
+            {
+                LastWrite = value;
+                bool chipSelect = (value & 0x4000) != 0;
+                bool clock = (value & 0x2000) != 0;
+                bool dataIn = (value & 0x1000) != 0;
+
+                if (!chipSelect)
+                {
+                    _chipSelect = false;
+                    _clock = clock;
+                    ResetSerial();
+                    return;
+                }
+
+                if (!_chipSelect)
+                    ResetSerial();
+
+                if (_chipSelect && !_clock && clock)
+                    Clock(dataIn);
+
+                _chipSelect = true;
+                _clock = clock;
+            }
+
+            private void ResetSerial()
+            {
+                _command = 0;
+                _commandBits = 0;
+                _readData = 0;
+                _readBitsRemaining = 0;
+                _writeData = 0;
+                _writeBits = 0;
+                _writeAddress = 0;
+                _mode = Mode.Command;
+                OutputBit = 1;
+            }
+
+            private void Clock(bool dataIn)
+            {
+                switch (_mode)
+                {
+                    case Mode.Read:
+                        if (_readBitsRemaining > 0)
+                        {
+                            OutputBit = (_readData >> (_readBitsRemaining - 1)) & 1;
+                            _readBitsRemaining--;
+                        }
+                        else
+                        {
+                            OutputBit = 1;
+                        }
+                        return;
+
+                    case Mode.Write:
+                    case Mode.WriteAll:
+                        _writeData = ((_writeData << 1) | (dataIn ? 1 : 0)) & 0xffff;
+                        _writeBits++;
+                        if (_writeBits == 16)
+                        {
+                            if (_writeEnabled)
+                            {
+                                if (_mode == Mode.WriteAll)
+                                    Array.Fill(_words, (ushort)_writeData);
+                                else
+                                    _words[_writeAddress] = (ushort)_writeData;
+                            }
+
+                            _mode = Mode.Command;
+                            _command = 0;
+                            _commandBits = 0;
+                        }
+                        OutputBit = 1;
+                        return;
+                }
+
+                if (_commandBits == 0 && !dataIn)
+                    return;
+
+                _command = (_command << 1) | (dataIn ? 1 : 0);
+                _commandBits++;
+                if (_commandBits == 9)
+                    DecodeCommand();
+            }
+
+            private void DecodeCommand()
+            {
+                int op = (_command >> 6) & 0x03;
+                int address = _command & 0x3f;
+
+                switch (op)
+                {
+                    case 0x02:
+                        _readData = _words[address];
+                        _readBitsRemaining = 16;
+                        _mode = Mode.Read;
+                        OutputBit = 0;
+                        break;
+
+                    case 0x01:
+                        _writeAddress = address;
+                        _writeData = 0;
+                        _writeBits = 0;
+                        _mode = Mode.Write;
+                        OutputBit = 1;
+                        break;
+
+                    case 0x03:
+                        if (_writeEnabled)
+                            _words[address] = 0xffff;
+                        ResetSerial();
+                        break;
+
+                    default:
+                        DecodeSpecialCommand(address);
+                        break;
+                }
+            }
+
+            private void DecodeSpecialCommand(int address)
+            {
+                int control = (address >> 4) & 0x03;
+                switch (control)
+                {
+                    case 0x00:
+                        _writeEnabled = false;
+                        ResetSerial();
+                        break;
+
+                    case 0x01:
+                        _writeData = 0;
+                        _writeBits = 0;
+                        _mode = Mode.WriteAll;
+                        OutputBit = 1;
+                        break;
+
+                    case 0x02:
+                        if (_writeEnabled)
+                            Array.Fill(_words, (ushort)0xffff);
+                        ResetSerial();
+                        break;
+
+                    case 0x03:
+                        _writeEnabled = true;
+                        ResetSerial();
+                        break;
+                }
+            }
         }
     }
 
@@ -768,7 +1068,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         public bool BusReq() => false;
 
-        public bool Reset() => false;
+        public bool Reset() => _bus.AudioResetAsserted;
     }
 
     private sealed class Cps2Video
@@ -1120,6 +1420,11 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
     private static class Cps2Config
     {
+        public const int CpsBIdAddress = 0x32;
+        public const int MultFactor1 = 0x00;
+        public const int MultFactor2 = 0x02;
+        public const int MultResultLow = 0x04;
+        public const int MultResultHigh = 0x06;
         public const int LayerControl = 0x26;
         public const int PaletteControl = 0x30;
     }

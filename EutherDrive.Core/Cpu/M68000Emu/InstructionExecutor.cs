@@ -261,6 +261,48 @@ internal sealed partial class InstructionExecutor
         return ExecuteResult<ushort>.Ok(value);
     }
 
+    private ExecuteResult<byte> ReadProgramByte(uint address)
+    {
+        var word = ReadOpcodeBusWord(address & ~1u);
+        if (!word.IsOk) return ExecuteResult<byte>.Err(word.Error!.Value);
+        int shift = (address & 1) == 0 ? 8 : 0;
+        return ExecuteResult<byte>.Ok((byte)(word.Value >> shift));
+    }
+
+    private ExecuteResult<ushort> ReadProgramWord(uint address)
+    {
+        if ((address & 1) == 0)
+            return ReadOpcodeBusWord(address);
+
+        var high = ReadOpcodeBusWord(address - 1);
+        if (!high.IsOk) return ExecuteResult<ushort>.Err(high.Error!.Value);
+        var low = ReadOpcodeBusWord(address + 1);
+        if (!low.IsOk) return ExecuteResult<ushort>.Err(low.Error!.Value);
+        return ExecuteResult<ushort>.Ok((ushort)((high.Value << 8) | (low.Value >> 8)));
+    }
+
+    private ExecuteResult<uint> ReadProgramLong(uint address)
+    {
+        if ((address & 1) == 0)
+        {
+            var high = ReadOpcodeBusWord(address);
+            if (!high.IsOk) return ExecuteResult<uint>.Err(high.Error!.Value);
+            var low = ReadOpcodeBusWord(address + 2);
+            if (!low.IsOk) return ExecuteResult<uint>.Err(low.Error!.Value);
+            return ExecuteResult<uint>.Ok(((uint)high.Value << 16) | low.Value);
+        }
+        else
+        {
+            var high = ReadOpcodeBusWord(address - 1);
+            if (!high.IsOk) return ExecuteResult<uint>.Err(high.Error!.Value);
+            var middle = ReadOpcodeBusWord(address + 1);
+            if (!middle.IsOk) return ExecuteResult<uint>.Err(middle.Error!.Value);
+            var low = ReadOpcodeBusWord(address + 3);
+            if (!low.IsOk) return ExecuteResult<uint>.Err(low.Error!.Value);
+            return ExecuteResult<uint>.Ok(((uint)high.Value << 24) | ((uint)middle.Value << 8) | (uint)(low.Value >> 8));
+        }
+    }
+
     private ExecuteResult<uint> ReadBusLong(uint address)
     {
         if ((address & 1) != 0)
@@ -357,7 +399,7 @@ internal sealed partial class InstructionExecutor
                         Console.WriteLine(
                             $"[M68K-PCREL] pcBefore=0x{pcBefore:X8} pcAfter=0x{_registers.Pc:X8} ext=0x{ext.Value:X4} disp=0x{disp:X4} addr=0x{addr:X8}");
                     }
-                    resolved = ResolvedAddress.Memory(addr);
+                    resolved = ResolvedAddress.ProgramMemory(addr);
                     break;
                 }
             case AddressingModeKind.PcRelativeIndexed:
@@ -380,7 +422,7 @@ internal sealed partial class InstructionExecutor
                             $"idx={idxKind}{idxNum} size={(idxSize == IndexSize.LongWord ? "L" : "W")} " +
                             $"index=0x{index:X8} disp=0x{(byte)disp:X2} addr=0x{addr:X8}");
                     }
-                    resolved = ResolvedAddress.Memory(addr);
+                    resolved = ResolvedAddress.ProgramMemory(addr);
                     break;
                 }
             case AddressingModeKind.AbsoluteShort:
@@ -447,6 +489,7 @@ internal sealed partial class InstructionExecutor
             ResolvedAddressKind.DataRegister => ExecuteResult<ushort>.Ok((ushort)resolved.DataReg.Read(_registers)),
             ResolvedAddressKind.AddressRegister => ExecuteResult<ushort>.Ok((ushort)resolved.AddrReg.Read(_registers)),
             ResolvedAddressKind.Memory or ResolvedAddressKind.MemoryPostincrement => ReadBusWord(resolved.Address),
+            ResolvedAddressKind.ProgramMemory => ReadProgramWord(resolved.Address),
             ResolvedAddressKind.Immediate => ExecuteResult<ushort>.Ok((ushort)resolved.ImmediateValue),
             _ => ExecuteResult<ushort>.Ok(0)
         };
@@ -459,6 +502,7 @@ internal sealed partial class InstructionExecutor
             ResolvedAddressKind.DataRegister => ExecuteResult<uint>.Ok(resolved.DataReg.Read(_registers)),
             ResolvedAddressKind.AddressRegister => ExecuteResult<uint>.Ok(resolved.AddrReg.Read(_registers)),
             ResolvedAddressKind.Memory or ResolvedAddressKind.MemoryPostincrement => ReadBusLong(resolved.Address),
+            ResolvedAddressKind.ProgramMemory => ReadProgramLong(resolved.Address),
             ResolvedAddressKind.Immediate => ExecuteResult<uint>.Ok(resolved.ImmediateValue),
             _ => ExecuteResult<uint>.Ok(0)
         };
@@ -865,6 +909,9 @@ internal readonly struct ResolvedAddress
     public static ResolvedAddress MemoryPostincrement(uint address, AddressRegister reg, uint increment) =>
         new(ResolvedAddressKind.MemoryPostincrement, default, reg, address, 0, increment);
 
+    public static ResolvedAddress ProgramMemory(uint address) =>
+        new(ResolvedAddressKind.ProgramMemory, default, default, address, 0, 0);
+
     public static ResolvedAddress Immediate(uint value) =>
         new(ResolvedAddressKind.Immediate, default, default, 0, value, 0);
 
@@ -883,5 +930,6 @@ internal enum ResolvedAddressKind
     AddressRegister,
     Memory,
     MemoryPostincrement,
+    ProgramMemory,
     Immediate,
 }

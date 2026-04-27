@@ -11,7 +11,8 @@ internal sealed partial class InstructionExecutor
     {
         var resolved = ResolveAddress(source, OpSize.LongWord);
         if (!resolved.IsOk) return ExecuteResult<uint>.Err(resolved.Error!.Value);
-        if (resolved.Value.Kind != ResolvedAddressKind.Memory)
+        if (resolved.Value.Kind != ResolvedAddressKind.Memory
+            && resolved.Value.Kind != ResolvedAddressKind.ProgramMemory)
             throw new InvalidOperationException("Effective address operation resolved to non-memory addressing mode.");
         return ExecuteResult<uint>.Ok(resolved.Value.Address);
     }

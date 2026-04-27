@@ -115,8 +115,8 @@ public sealed class M68000
         _regs.Frozen = false;
         _regs.AddressError = false;
 
-        _regs.Ssp = bus.ReadLong(0x000000) & 0x00FF_FFFF;
-        _regs.Pc = bus.ReadLong(0x000004) & 0x00FF_FFFF;
+        _regs.Ssp = ReadOpcodeLong(bus, 0x000000) & 0x00FF_FFFF;
+        _regs.Pc = ReadOpcodeLong(bus, 0x000004) & 0x00FF_FFFF;
         _regs.Prefetch = ReadOpcodeWord(bus, _regs.Pc);
     }
 
@@ -135,4 +135,7 @@ public sealed class M68000
 
     private static ushort ReadOpcodeWord(IBusInterface bus, uint address)
         => bus is IOpcodeBusInterface opcodeBus ? opcodeBus.ReadOpcodeWord(address) : bus.ReadWord(address);
+
+    private static uint ReadOpcodeLong(IBusInterface bus, uint address)
+        => ((uint)ReadOpcodeWord(bus, address) << 16) | ReadOpcodeWord(bus, address + 2);
 }
