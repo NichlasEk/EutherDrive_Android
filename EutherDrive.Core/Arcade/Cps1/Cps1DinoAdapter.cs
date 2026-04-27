@@ -884,6 +884,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private readonly Cps1Bus _bus;
         private readonly Cps1Graphics _graphics;
         private readonly ushort[] _pixels = new ushort[InternalWidth * InternalHeight];
+        private readonly byte[] _spritePriority = new byte[InternalWidth * InternalHeight];
         private readonly uint[] _palette = new uint[PaletteEntries];
 
         public Cps1Video(Cps1Bus bus, byte[] gfxRom)
@@ -898,12 +899,24 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         {
             BuildPalette();
             Array.Fill(_pixels, (ushort)0x0bff);
+            Array.Clear(_spritePriority);
 
             ushort layerControl = CpsB(Cps1DinoConfig.LayerControl / 2);
-            DrawLayer((layerControl >> 6) & 0x03);
-            DrawLayer((layerControl >> 8) & 0x03);
-            DrawLayer((layerControl >> 10) & 0x03);
-            DrawLayer((layerControl >> 12) & 0x03);
+            int l0 = (layerControl >> 6) & 0x03;
+            int l1 = (layerControl >> 8) & 0x03;
+            int l2 = (layerControl >> 10) & 0x03;
+            int l3 = (layerControl >> 12) & 0x03;
+
+            DrawLayer(l0);
+            if (l1 == 0)
+                MarkSpritePriorityLayer(l0);
+            DrawLayer(l1);
+            if (l2 == 0)
+                MarkSpritePriorityLayer(l1);
+            DrawLayer(l2);
+            if (l3 == 0)
+                MarkSpritePriorityLayer(l2);
+            DrawLayer(l3);
 
             int dst = 0;
             for (int y = 0; y < FrameHeight; y++)
@@ -955,6 +968,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         }
 
         private void DrawTilemap(int layer)
+            => ProcessTilemap(layer, markSpritePriority: false);
+
+        private void MarkSpritePriorityLayer(int layer)
+        {
+            if (layer is >= 1 and <= 3)
+                ProcessTilemap(layer - 1, markSpritePriority: true);
+        }
+
+        private void ProcessTilemap(int layer, bool markSpritePriority)
         {
             int tileSize = layer switch { 0 => 8, 1 => 16, _ => 32 };
             int mapSize = tileSize * 64;
@@ -1006,6 +1028,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     ushort codeWord = _bus.ReadGfxWord(baseIndex + tileIndex * 2);
                     ushort attr = _bus.ReadGfxWord(baseIndex + tileIndex * 2 + 1);
                     int code = layer == 2 ? codeWord & 0x3fff : codeWord;
+                    int priorityGroup = (attr >> 7) & 0x03;
+                    ushort priorityMask = PriorityMask(priorityGroup);
                     int flip = (attr >> 5) & 0x03;
                     int px = (flip & 0x01) != 0 ? tileSize - 1 - localX : localX;
                     int py = (flip & 0x02) != 0 ? tileSize - 1 - localY : localY;
@@ -1017,8 +1041,16 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     };
                     if (pen != TransparentPen)
                     {
-                        int color = ((attr & 0x1f) + (layer switch { 0 => 0x20, 1 => 0x40, _ => 0x60 })) * 16;
-                        _pixels[dst + x] = (ushort)((color + pen) % PaletteEntries);
+                        if (markSpritePriority)
+                        {
+                            if (((priorityMask >> pen) & 1) != 0)
+                                _spritePriority[dst + x] = 1;
+                        }
+                        else
+                        {
+                            int color = ((attr & 0x1f) + (layer switch { 0 => 0x20, 1 => 0x40, _ => 0x60 })) * 16;
+                            _pixels[dst + x] = (ushort)((color + pen) % PaletteEntries);
+                        }
                     }
                 }
             }
@@ -1041,7 +1073,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             for (int i = last; i >= 0; i -= 4)
             {
                 int x = obj[baseIndex + 0] & 0x01ff;
-                int y = obj[baseIndex + 1] & 0x00ff;
+                int y = obj[baseIndex + 1] & 0x01ff;
                 int code = obj[baseIndex + 2];
                 ushort attr = obj[baseIndex + 3];
                 baseIndex += 4;
@@ -1094,8 +1126,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
                     int px = flipX ? 15 - x : x;
                     int pen = _graphics.GetTile16Pen(code, px, py);
-                    if (pen != TransparentPen)
+                    if (pen != TransparentPen && _spritePriority[row + dx] == 0)
+                    {
                         _pixels[row + dx] = (ushort)(baseColor + pen);
+                        _spritePriority[row + dx] = 31;
+                    }
                 }
             }
         }
@@ -1120,6 +1155,18 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private ushort CpsA(int index) => _bus.CpsA[index];
 
         private ushort CpsB(int index) => _bus.CpsB[index];
+
+        private ushort PriorityMask(int group)
+        {
+            int register = group switch
+            {
+                0 => Cps1DinoConfig.PriorityMask0 / 2,
+                1 => Cps1DinoConfig.PriorityMask1 / 2,
+                2 => Cps1DinoConfig.PriorityMask2 / 2,
+                _ => Cps1DinoConfig.PriorityMask3 / 2
+            };
+            return CpsB(register);
+        }
     }
 
     private sealed class Cps1Graphics
@@ -1220,6 +1267,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private static class Cps1DinoConfig
     {
         public const int LayerControl = 0x0a;
+        public const int PriorityMask0 = 0x0c;
+        public const int PriorityMask1 = 0x0e;
+        public const int PriorityMask2 = 0x00;
+        public const int PriorityMask3 = 0x02;
         public const int PaletteControl = 0x04;
     }
 
