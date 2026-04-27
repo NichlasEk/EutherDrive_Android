@@ -52,6 +52,9 @@ internal sealed class Cps1QSound
     private int _debugUpdateCount;
     private byte _debugLastWriteAddress;
     private ushort _debugLastWriteData;
+    private readonly short[] _resamplePrevious = new short[2];
+    private readonly short[] _resampleNext = new short[2];
+    private bool _resamplePrimed;
 
     internal int DebugWriteCount => _debugWriteCount;
     internal int DebugStatusReadCount => _debugStatusReadCount;
@@ -89,6 +92,11 @@ internal sealed class Cps1QSound
         _debugUpdateCount = 0;
         _debugLastWriteAddress = 0;
         _debugLastWriteData = 0;
+        _resamplePrevious[0] = 0;
+        _resamplePrevious[1] = 0;
+        _resampleNext[0] = 0;
+        _resampleNext[1] = 0;
+        _resamplePrimed = false;
     }
 
     public void Write(int offset, byte data)
@@ -102,7 +110,6 @@ internal sealed class Cps1QSound
                 _dataLatch = (ushort)((_dataLatch & 0xff00) | data);
                 break;
             case 2:
-                UpdateSample();
                 WriteData(data, _dataLatch);
                 _debugWriteCount++;
                 _debugLastWriteAddress = data;
@@ -114,25 +121,59 @@ internal sealed class Cps1QSound
     public byte ReadStatus()
     {
         _debugStatusReadCount++;
-        UpdateSample();
         return _readyFlag;
     }
 
     public void Render(short[] destination)
     {
+        int sampleFrameIndex = 0;
+        RenderFrames(destination, ref sampleFrameIndex, destination.Length / 2);
+    }
+
+    public void RenderFrames(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
+    {
+        EnsureResamplerPrimed();
         double step = DspSampleRate / (double)OutputSampleRate;
-        for (int i = 0; i < destination.Length; i += 2)
+        int sampleFrames = destination.Length / 2;
+        targetSampleFrames = Math.Clamp(targetSampleFrames, 0, sampleFrames);
+        while (sampleFrameIndex < targetSampleFrames)
         {
+            int destinationIndex = sampleFrameIndex * 2;
+            destination[destinationIndex] = Interpolate(_resamplePrevious[0], _resampleNext[0], _resampleAccumulator);
+            destination[destinationIndex + 1] = Interpolate(_resamplePrevious[1], _resampleNext[1], _resampleAccumulator);
+            sampleFrameIndex++;
+
             _resampleAccumulator += step;
             while (_resampleAccumulator >= 1.0)
             {
+                _resamplePrevious[0] = _resampleNext[0];
+                _resamplePrevious[1] = _resampleNext[1];
                 UpdateSample();
+                _resampleNext[0] = _out[0];
+                _resampleNext[1] = _out[1];
                 _resampleAccumulator -= 1.0;
             }
-
-            destination[i] = _out[0];
-            destination[i + 1] = _out[1];
         }
+    }
+
+    private void EnsureResamplerPrimed()
+    {
+        if (_resamplePrimed)
+            return;
+
+        _resamplePrevious[0] = _out[0];
+        _resamplePrevious[1] = _out[1];
+        UpdateSample();
+        _resampleNext[0] = _out[0];
+        _resampleNext[1] = _out[1];
+        _resampleAccumulator = 0;
+        _resamplePrimed = true;
+    }
+
+    private static short Interpolate(short previous, short next, double fraction)
+    {
+        int value = (int)Math.Round(previous + (next - previous) * fraction);
+        return (short)Math.Clamp(value, short.MinValue, short.MaxValue);
     }
 
     private void WriteData(byte address, ushort data)

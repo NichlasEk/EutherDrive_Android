@@ -14,15 +14,14 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 {
     private const int OutputSampleRate = 44_100;
     private const int OutputChannels = 2;
-    private const int OutputSamplesPerFrame = OutputSampleRate / 60;
+    private const double TargetFps = (16_000_000.0 / 2.0) / (512.0 * 262.0);
     private const int FrameWidth = 384;
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
-    private const int CpuCyclesPerFrame = 201_000;
-    private const int AudioCpuCyclesPerFrame = 8_000_000 / 60;
+    private const int CpuCyclesPerFrame = 201_216;
+    private const int AudioCpuCyclesPerFrame = 134_144;
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
-    private readonly short[] _audioBuffer = new short[OutputSamplesPerFrame * OutputChannels];
     private readonly Cps1Bus _bus = new();
     private readonly Cps1AudioBus _audioBus;
     private readonly M68000 _mainCpu = M68000.CreateBuilder()
@@ -32,6 +31,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private readonly EutherDrive.Core.Cpu.Z80Emu.Z80 _audioCpu = new();
 
     private Cps1Video? _video;
+    private short[] _audioBuffer = Array.Empty<short>();
+    private int _audioSampleFramesThisFrame;
+    private double _audioSampleAccumulator;
     private ArcadeInputState _input;
     private bool _loaded;
 
@@ -64,7 +66,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         _loaded = true;
 
         Array.Clear(_frameBuffer);
-        Array.Clear(_audioBuffer);
+        _audioBuffer = Array.Empty<short>();
+        _audioSampleFramesThisFrame = 0;
+        _audioSampleAccumulator = 0;
     }
 
     public void Reset()
@@ -75,6 +79,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         _bus.ResetMachine();
         _mainCpu.Reset(_bus);
         _audioCpu.ApplyResetLine();
+        _audioSampleFramesThisFrame = 0;
+        _audioSampleAccumulator = 0;
     }
 
     public void RunFrame()
@@ -83,6 +89,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return;
 
         _bus.SetInput(_input);
+        _audioSampleFramesThisFrame = GetAudioSampleFramesPerFrame();
+        EnsureAudioBuffer(_audioSampleFramesThisFrame * OutputChannels);
+        _bus.BeginAudioFrame(_audioBuffer);
         _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame / 2);
 
         _bus.AssertVBlankInterrupt();
@@ -93,9 +102,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         _bus.ClearInterrupt();
         _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - (AudioCpuCyclesPerFrame / 2));
+        _bus.EndAudioFrame();
         _video!.Render(_frameBuffer);
         _bus.LatchSprites();
-        _bus.RenderAudio(_audioBuffer);
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -110,7 +119,25 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     {
         sampleRate = OutputSampleRate;
         channels = OutputChannels;
-        return _audioBuffer;
+        return _audioBuffer.AsSpan(0, _audioSampleFramesThisFrame * OutputChannels);
+    }
+
+    public double GetTargetFps() => TargetFps;
+
+    private int GetAudioSampleFramesPerFrame()
+    {
+        _audioSampleAccumulator += OutputSampleRate / TargetFps;
+        int sampleFrames = (int)_audioSampleAccumulator;
+        if (sampleFrames < 1)
+            sampleFrames = 1;
+        _audioSampleAccumulator -= sampleFrames;
+        return sampleFrames;
+    }
+
+    private void EnsureAudioBuffer(int samples)
+    {
+        if (_audioBuffer.Length != samples)
+            _audioBuffer = new short[samples];
     }
 
     public void SetInputState(
@@ -173,6 +200,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private int _audioIrqCountdown;
         private int _audioIrqHoldCycles;
         private bool _audioIrqAsserted;
+        private short[]? _audioFrameBuffer;
+        private int _audioFrameCycles;
+        private int _audioFrameSampleIndex;
 
         public ReadOnlySpan<ushort> GfxRam => _gfxRam;
         public ReadOnlySpan<ushort> PaletteRam => _paletteRam;
@@ -224,6 +254,14 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _interruptLevel = 0;
         }
 
+        public void BeginAudioFrame(short[] destination)
+        {
+            Array.Clear(destination);
+            _audioFrameBuffer = destination;
+            _audioFrameCycles = 0;
+            _audioFrameSampleIndex = 0;
+        }
+
         public void SetInput(ArcadeInputState input) => _input = input;
 
         public void AssertVBlankInterrupt() => _interruptLevel = 2;
@@ -255,6 +293,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 int elapsed = checked((int)audioCpu.ExecuteInstruction(audioBus));
                 cycles += elapsed;
                 _audioIrqCountdown -= elapsed;
+                AdvanceAudioFrame(elapsed);
 
                 if (_audioIrqAsserted)
                 {
@@ -272,7 +311,27 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             }
         }
 
-        public void RenderAudio(short[] destination) => _qsound.Render(destination);
+        public void EndAudioFrame()
+        {
+            if (_audioFrameBuffer is null)
+                return;
+
+            _qsound.RenderFrames(_audioFrameBuffer, ref _audioFrameSampleIndex, _audioFrameBuffer.Length / 2);
+            _audioFrameBuffer = null;
+            _audioFrameCycles = 0;
+            _audioFrameSampleIndex = 0;
+        }
+
+        private void AdvanceAudioFrame(int elapsedCycles)
+        {
+            if (_audioFrameBuffer is null || elapsedCycles <= 0)
+                return;
+
+            _audioFrameCycles = Math.Min(_audioFrameCycles + elapsedCycles, AudioCpuCyclesPerFrame);
+            int sampleFrames = _audioFrameBuffer.Length / 2;
+            int targetFrames = (int)((long)_audioFrameCycles * sampleFrames / AudioCpuCyclesPerFrame);
+            _qsound.RenderFrames(_audioFrameBuffer, ref _audioFrameSampleIndex, targetFrames);
+        }
 
         public EutherDrive.Core.Cpu.Z80Emu.InterruptLine AudioInterruptLine
             => _audioIrqAsserted

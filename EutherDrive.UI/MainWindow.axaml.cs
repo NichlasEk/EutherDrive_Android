@@ -24,6 +24,7 @@ using Avalonia.Threading;
 using EutherDrive.Rendering;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade;
+using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.UI.Audio;
@@ -948,6 +949,8 @@ public partial class MainWindow : Window
             target = psx.GetTargetFps();
         else if (_core is EutherDrive.Core.Sega32XAdapter s32x)
             target = s32x.GetTargetFps();
+        else if (_core is Cps1DinoAdapter cps1)
+            target = cps1.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -8650,7 +8653,7 @@ public partial class MainWindow : Window
         if (_renderSurface == null)
             return;
 
-        ApplyPsxAspectIfNeeded(core, presentWidth, presentHeight);
+        ApplyCoreAspectIfNeeded(core, presentWidth, presentHeight);
 
         if (FrameBufferTraceEnabled)
         {
@@ -9385,22 +9388,29 @@ public partial class MainWindow : Window
     private bool UsesDetachedNativeOverlayHost()
         => UsesNativeDesktopPresentationLayout() && NativeScreenOverlayHost != null;
 
-    private void ApplyPsxAspectIfNeeded(IEmulatorCore core, int width, int height)
+    private void ApplyCoreAspectIfNeeded(IEmulatorCore core, int width, int height)
     {
         if (ScreenGrid == null)
             return;
 
-        if (core is not PsxAdapter psx || height <= 0)
+        if (height <= 0)
             return;
 
-        double targetWidth = Math.Round(height * (4.0 / 3.0));
-        double targetHeight = height;
-        if (psx.TryGetPresentationSize(out double adapterWidth, out double adapterHeight))
+        if (core is PsxAdapter psx)
         {
-            targetWidth = adapterWidth;
-            targetHeight = adapterHeight;
+            double targetWidth = Math.Round(height * (4.0 / 3.0));
+            double targetHeight = height;
+            if (psx.TryGetPresentationSize(out double adapterWidth, out double adapterHeight))
+            {
+                targetWidth = adapterWidth;
+                targetHeight = adapterHeight;
+            }
+            ApplyPresentationSize(targetWidth, targetHeight);
         }
-        ApplyPresentationSize(targetWidth, targetHeight);
+        else if (core is Cps1DinoAdapter)
+        {
+            ApplyPresentationSize(Math.Round(height * (4.0 / 3.0)), height);
+        }
     }
 
     private void PresentPendingFrame()
@@ -9708,7 +9718,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10586,6 +10596,8 @@ public partial class MainWindow : Window
             return sms.GetTargetFps() * _speedScale;
         if (_core is PsxAdapter psx)
             return psx.GetTargetFps() * _speedScale;
+        if (_core is Cps1DinoAdapter cps1)
+            return cps1.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 
