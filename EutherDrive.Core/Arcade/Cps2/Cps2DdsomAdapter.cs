@@ -224,6 +224,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         public ReadOnlySpan<ushort> GfxRam => _gfxRam;
         public ReadOnlySpan<ushort> PaletteRam => _paletteRam;
         public ReadOnlySpan<ushort> BufferedObj => _bufferedObj;
+        public ushort BufferedObjPriority { get; private set; }
         public ReadOnlySpan<ushort> Output => _output;
         public ReadOnlySpan<ushort> CpsA => _cpsA;
         public ReadOnlySpan<ushort> CpsB => _cpsB;
@@ -244,6 +245,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             Array.Clear(_objRam[0]);
             Array.Clear(_objRam[1]);
             Array.Clear(_bufferedObj);
+            BufferedObjPriority = 0;
             Array.Clear(_output);
             Array.Clear(_cpsA);
             Array.Clear(_cpsB);
@@ -271,6 +273,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             Array.Clear(_objRam[0]);
             Array.Clear(_objRam[1]);
             Array.Clear(_bufferedObj);
+            BufferedObjPriority = 0;
             Array.Clear(_output);
             Array.Clear(_cpsA);
             Array.Clear(_cpsB);
@@ -300,6 +303,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         {
             ushort[] source = (_objRamBank & 1) != 0 ? _objRam[1] : _objRam[0];
             Array.Copy(source, _bufferedObj, _bufferedObj.Length);
+            BufferedObjPriority = _output[2];
         }
 
         public int RunAudioCpu(EutherDrive.Core.Cpu.Z80Emu.Z80 audioCpu, Cps2AudioBus audioBus, int cycleBudget)
@@ -565,6 +569,12 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             if (address >= 0x804040 && address <= 0x804041)
             {
                 WriteControlPortByte(address, value);
+                return;
+            }
+            if (address >= 0x8040e0 && address <= 0x8040e1)
+            {
+                if ((address & 1) != 0)
+                    _objRamBank = value & 1;
                 return;
             }
             if (address >= 0x900000 && address <= 0x92ffff)
@@ -1085,6 +1095,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         private readonly Cps2Bus _bus;
         private readonly Cps2Graphics _graphics;
         private readonly ushort[] _pixels = new ushort[InternalWidth * InternalHeight];
+        private readonly byte[] _priority = new byte[InternalWidth * InternalHeight];
         private readonly uint[] _palette = new uint[PaletteEntries];
 
         public Cps2Video(Cps2Bus bus, byte[] gfxRom)
@@ -1099,21 +1110,30 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         {
             BuildPalette();
             Array.Fill(_pixels, (ushort)0x0bff);
+            Array.Clear(_priority);
 
             ushort layerControl = CpsB(Cps2Config.LayerControl / 2);
             int l0 = (layerControl >> 6) & 0x03;
             int l1 = (layerControl >> 8) & 0x03;
             int l2 = (layerControl >> 10) & 0x03;
             int l3 = (layerControl >> 12) & 0x03;
+            ushort priorityControl = _bus.BufferedObjPriority;
+            int l0Priority = PriorityNibble(priorityControl, l0);
+            int l1Priority = PriorityNibble(priorityControl, l1);
+            int l2Priority = PriorityNibble(priorityControl, l2);
+            int l3Priority = PriorityNibble(priorityControl, l3);
 
-            if (l0 == 0) { l0 = l1; l1 = 0; }
-            if (l1 == 0) { l1 = l2; l2 = 0; }
-            if (l2 == 0) { l2 = l3; l3 = 0; }
+            if (l0 == 0) { l0 = l1; l1 = 0; l0Priority = l1Priority; }
+            if (l1 == 0) { l1 = l2; l2 = 0; l1Priority = l2Priority; }
+            if (l2 == 0) { l2 = l3; l3 = 0; l2Priority = l3Priority; }
 
-            DrawLayer(l0);
-            DrawLayer(l1);
-            DrawLayer(l2);
-            DrawSprites();
+            Span<uint> spritePriorityMasks = stackalloc uint[8];
+            BuildSpritePriorityMasks(spritePriorityMasks, l0Priority, l1Priority, l2Priority);
+
+            DrawLayer(l0, 0x01);
+            DrawLayer(l1, 0x02);
+            DrawLayer(l2, 0x04);
+            DrawSprites(spritePriorityMasks);
 
             int dst = 0;
             for (int y = 0; y < FrameHeight; y++)
@@ -1145,13 +1165,13 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             }
         }
 
-        private void DrawLayer(int layer)
+        private void DrawLayer(int layer, byte priority)
         {
             if (layer is >= 1 and <= 3)
-                DrawTilemap(layer - 1);
+                DrawTilemap(layer - 1, priority);
         }
 
-        private void DrawTilemap(int layer)
+        private void DrawTilemap(int layer, byte priority)
         {
             int tileSize = layer switch { 0 => 8, 1 => 16, _ => 32 };
             int mapSize = tileSize * 64;
@@ -1201,7 +1221,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                     int tileIndex = TileIndex(layer, tileCol, tileRow);
                     ushort codeWord = _bus.ReadGfxWord(baseIndex + tileIndex * 2);
                     ushort attr = _bus.ReadGfxWord(baseIndex + tileIndex * 2 + 1);
-                    int code = layer == 2 ? codeWord & 0x3fff : codeWord;
+                    int code = MapScrollCode(layer, layer == 2 ? codeWord & 0x3fff : codeWord);
                     int flip = (attr >> 5) & 0x03;
                     int px = (flip & 0x01) != 0 ? tileSize - 1 - localX : localX;
                     int py = (flip & 0x02) != 0 ? tileSize - 1 - localY : localY;
@@ -1215,12 +1235,13 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                     {
                         int color = ((attr & 0x1f) + (layer switch { 0 => 0x20, 1 => 0x40, _ => 0x60 })) * 16;
                         _pixels[dst + x] = (ushort)((color + pen) % PaletteEntries);
+                        _priority[dst + x] |= priority;
                     }
                 }
             }
         }
 
-        private void DrawSprites()
+        private void DrawSprites(ReadOnlySpan<uint> priorityMasks)
         {
             ReadOnlySpan<ushort> obj = _bus.BufferedObj;
             ReadOnlySpan<ushort> output = _bus.Output;
@@ -1240,6 +1261,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             {
                 int x = obj[i + 0];
                 int y = obj[i + 1];
+                int priority = (x >> 13) & 0x07;
                 int code = obj[i + 2] + ((y & 0x6000) << 3);
                 ushort attr = obj[i + 3];
                 int color = attr & 0x1f;
@@ -1262,22 +1284,23 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                         {
                             int sx = (x + xx * 16 + xoffs) & 0x3ff;
                             int tile = SpriteBlockCode(code, xx, yy, nx, ny, flipX, flipY);
-                            DrawSpriteTile(tile, color, flipX, flipY, sx, sy);
+                            DrawSpriteTile(tile, color, flipX, flipY, sx, sy, priorityMasks[priority]);
                         }
                     }
                 }
                 else
                 {
-                    DrawSpriteTile(code, color, flipX, flipY, (x + xoffs) & 0x3ff, (y + yoffs) & 0x3ff);
+                    DrawSpriteTile(code, color, flipX, flipY, (x + xoffs) & 0x3ff, (y + yoffs) & 0x3ff, priorityMasks[priority]);
                 }
             }
         }
 
-        private void DrawSpriteTile(int code, int color, bool flipX, bool flipY, int sx, int sy)
+        private void DrawSpriteTile(int code, int color, bool flipX, bool flipY, int sx, int sy, uint priorityMask)
         {
             if ((uint)code >= _graphics.Tile16Count)
                 return;
 
+            priorityMask |= 0x8000_0000u;
             int baseColor = color * 16;
             for (int y = 0; y < 16; y++)
             {
@@ -1295,8 +1318,13 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
                     int px = flipX ? 15 - x : x;
                     int pen = _graphics.GetTile16Pen(code, px, py);
-                    if (pen != TransparentPen)
-                        _pixels[row + dx] = (ushort)(baseColor + pen);
+                    if (pen == TransparentPen)
+                        continue;
+
+                    int pixel = row + dx;
+                    if (((1u << (_priority[pixel] & 0x1f)) & priorityMask) == 0)
+                        _pixels[pixel] = (ushort)(baseColor + pen);
+                    _priority[pixel] = 31;
                 }
             }
         }
@@ -1316,6 +1344,48 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 1 => (row & 0x0f) + ((col & 0x3f) << 4) + ((row & 0x30) << 6),
                 _ => (row & 0x07) + ((col & 0x3f) << 3) + ((row & 0x38) << 6)
             };
+        }
+
+        private static int MapScrollCode(int layer, int code)
+            => layer switch
+            {
+                0 => code + 0x20000,
+                1 => code + 0x10000,
+                _ => code + 0x4000
+            };
+
+        private static int PriorityNibble(ushort priorityControl, int layer)
+            => (priorityControl >> (4 * layer)) & 0x0f;
+
+        private static void BuildSpritePriorityMasks(Span<uint> masks, int l0Priority, int l1Priority, int l2Priority)
+        {
+            uint mask0 = 0xaa;
+            uint mask1 = 0xcc;
+            if (l0Priority > l1Priority)
+                mask0 &= ~0x88u;
+            if (l0Priority > l2Priority)
+                mask0 &= ~0xa0u;
+            if (l1Priority > l2Priority)
+                mask1 &= ~0xc0u;
+
+            masks[0] = 0xff;
+            for (int i = 1; i < masks.Length; i++)
+            {
+                if (i <= l0Priority && i <= l1Priority && i <= l2Priority)
+                {
+                    masks[i] = 0xfe;
+                    continue;
+                }
+
+                uint mask = 0;
+                if (i <= l0Priority)
+                    mask |= mask0;
+                if (i <= l1Priority)
+                    mask |= mask1;
+                if (i <= l2Priority)
+                    mask |= 0xf0;
+                masks[i] = mask;
+            }
         }
 
         private ushort CpsA(int index) => _bus.CpsA[index];
