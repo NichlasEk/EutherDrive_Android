@@ -164,6 +164,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
             private uint InterruptServiceRoutine(InterruptType interruptType)
             {
                 _registers.Halted = false;
+                _registers.LastInterruptAccepted = true;
 
                 switch (interruptType)
                 {
@@ -304,6 +305,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
             public uint Execute()
             {
                 _registers.R = (byte)((_registers.R + 1) & 0x7F | (_registers.R & 0x80));
+                _registers.LastInterruptAccepted = false;
 
                 InterruptType? interruptType = CheckPendingInterrupt();
 

@@ -19,7 +19,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
     private const int CpuCyclesPerFrame = 201_216;
-    private const int AudioCpuCyclesPerFrame = 134_144;
+    private static readonly int AudioCpuCyclesPerFrame = GetAudioCpuCyclesPerFrame();
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly Cps1Bus _bus = new();
@@ -92,16 +92,28 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         _audioSampleFramesThisFrame = GetAudioSampleFramesPerFrame();
         EnsureAudioBuffer(_audioSampleFramesThisFrame * OutputChannels);
         _bus.BeginAudioFrame(_audioBuffer);
-        _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame / 2);
 
         _bus.AssertVBlankInterrupt();
 
-        int cycles = 0;
-        while (cycles < CpuCyclesPerFrame)
-            cycles += checked((int)_mainCpu.ExecuteInstruction(_bus));
+        int mainCycles = 0;
+        int audioCycles = 0;
+        while (mainCycles < CpuCyclesPerFrame)
+        {
+            mainCycles += checked((int)_mainCpu.ExecuteInstruction(_bus));
+
+            int targetAudioCycles = Math.Min(
+                AudioCpuCyclesPerFrame,
+                (int)((long)mainCycles * AudioCpuCyclesPerFrame / CpuCyclesPerFrame));
+            int audioSlice = targetAudioCycles - audioCycles;
+            if (audioSlice > 0)
+            {
+                audioCycles += _bus.RunAudioCpu(_audioCpu, _audioBus, audioSlice);
+            }
+        }
 
         _bus.ClearInterrupt();
-        _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - (AudioCpuCyclesPerFrame / 2));
+        if (audioCycles < AudioCpuCyclesPerFrame)
+            _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - audioCycles);
         _bus.EndAudioFrame();
         _video!.Render(_frameBuffer);
         _bus.LatchSprites();
@@ -138,6 +150,30 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     {
         if (_audioBuffer.Length != samples)
             _audioBuffer = new short[samples];
+    }
+
+    private static int GetAudioCpuCyclesPerFrame()
+    {
+        const double nominalAudioCpuClock = 8_000_000.0;
+        const double defaultTimingScale = 1.00;
+        double scale = ReadDoubleEnv("EUTHERDRIVE_CPS1_QSOUND_Z80_SCALE", defaultTimingScale);
+        if (scale < 0.50)
+            scale = 0.50;
+        else if (scale > 1.10)
+            scale = 1.10;
+
+        return Math.Max(1, (int)Math.Round((nominalAudioCpuClock * scale) / TargetFps));
+    }
+
+    private static double ReadDoubleEnv(string name, double fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        return double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value)
+            ? value
+            : fallback;
     }
 
     public void SetInputState(
@@ -198,7 +234,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private byte _interruptLevel;
         private int _audioBank;
         private int _audioIrqCountdown;
-        private int _audioIrqHoldCycles;
         private bool _audioIrqAsserted;
         private short[]? _audioFrameBuffer;
         private int _audioFrameCycles;
@@ -275,7 +310,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 _bufferedObj[i] = ReadGfxWord(objBase + i);
         }
 
-        public void RunAudioCpu(
+        public int RunAudioCpu(
             EutherDrive.Core.Cpu.Z80Emu.Z80 audioCpu,
             Cps1AudioBus audioBus,
             int cycleBudget)
@@ -285,9 +320,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             {
                 if (_audioIrqCountdown <= 0)
                 {
-                    _audioIrqAsserted = true;
-                    _audioIrqHoldCycles = 64;
-                    _audioIrqCountdown += 32_000;
+                    if (!_audioIrqAsserted)
+                        _audioIrqAsserted = true;
+                    do
+                    {
+                        _audioIrqCountdown += 32_000;
+                    }
+                    while (_audioIrqCountdown <= 0);
                 }
 
                 int elapsed = checked((int)audioCpu.ExecuteInstruction(audioBus));
@@ -295,20 +334,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 _audioIrqCountdown -= elapsed;
                 AdvanceAudioFrame(elapsed);
 
-                if (_audioIrqAsserted)
-                {
-                    _audioIrqHoldCycles -= elapsed;
-                    if (_audioIrqHoldCycles <= 0)
-                    {
-                        _audioIrqAsserted = false;
-                        _audioIrqHoldCycles = 0;
-                    }
-                }
-                else
-                {
+                if (audioCpu.LastInterruptAccepted)
                     _audioIrqAsserted = false;
-                }
             }
+
+            return cycles;
         }
 
         public void EndAudioFrame()
@@ -587,7 +617,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         {
             _audioBank = 0;
             _audioIrqCountdown = 32_000;
-            _audioIrqHoldCycles = 0;
             _audioIrqAsserted = false;
             _qsound.Reset();
         }

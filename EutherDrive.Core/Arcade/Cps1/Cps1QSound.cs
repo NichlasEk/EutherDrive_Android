@@ -7,6 +7,7 @@ internal sealed class Cps1QSound
 {
     private const int DspSampleRate = 60_000_000 / 2 / 1248;
     private const int OutputSampleRate = 44_100;
+    private const double OutputLowPassCutoffHz = 11_500.0;
 
     private const int DataPanTable = 0x110;
     private const int DataAdpcmTable = 0x9dc;
@@ -54,6 +55,8 @@ internal sealed class Cps1QSound
     private ushort _debugLastWriteData;
     private readonly short[] _resamplePrevious = new short[2];
     private readonly short[] _resampleNext = new short[2];
+    private readonly BiquadLowPass _outputLowPassLeft = new(OutputSampleRate, OutputLowPassCutoffHz);
+    private readonly BiquadLowPass _outputLowPassRight = new(OutputSampleRate, OutputLowPassCutoffHz);
     private bool _resamplePrimed;
 
     internal int DebugWriteCount => _debugWriteCount;
@@ -96,6 +99,8 @@ internal sealed class Cps1QSound
         _resamplePrevious[1] = 0;
         _resampleNext[0] = 0;
         _resampleNext[1] = 0;
+        _outputLowPassLeft.Reset();
+        _outputLowPassRight.Reset();
         _resamplePrimed = false;
     }
 
@@ -139,8 +144,10 @@ internal sealed class Cps1QSound
         while (sampleFrameIndex < targetSampleFrames)
         {
             int destinationIndex = sampleFrameIndex * 2;
-            destination[destinationIndex] = Interpolate(_resamplePrevious[0], _resampleNext[0], _resampleAccumulator);
-            destination[destinationIndex + 1] = Interpolate(_resamplePrevious[1], _resampleNext[1], _resampleAccumulator);
+            double left = Interpolate(_resamplePrevious[0], _resampleNext[0], _resampleAccumulator);
+            double right = Interpolate(_resamplePrevious[1], _resampleNext[1], _resampleAccumulator);
+            destination[destinationIndex] = ClampToShort(_outputLowPassLeft.Apply(left));
+            destination[destinationIndex + 1] = ClampToShort(_outputLowPassRight.Apply(right));
             sampleFrameIndex++;
 
             _resampleAccumulator += step;
@@ -170,11 +177,11 @@ internal sealed class Cps1QSound
         _resamplePrimed = true;
     }
 
-    private static short Interpolate(short previous, short next, double fraction)
-    {
-        int value = (int)Math.Round(previous + (next - previous) * fraction);
-        return (short)Math.Clamp(value, short.MinValue, short.MaxValue);
-    }
+    private static double Interpolate(short previous, short next, double fraction)
+        => previous + (next - previous) * fraction;
+
+    private static short ClampToShort(double value)
+        => (short)Math.Clamp((int)Math.Round(value), short.MinValue, short.MaxValue);
 
     private void WriteData(byte address, ushort data)
     {
@@ -515,7 +522,7 @@ internal sealed class Cps1QSound
 
         public short Update(Cps1QSound dsp, ref int echoOut)
         {
-            int output = (Volume * dsp.ReadSample(Bank, unchecked((ushort)Addr))) >> 14;
+            short output = unchecked((short)((Volume * dsp.ReadSample(Bank, unchecked((ushort)Addr))) >> 14));
             echoOut += (output * Echo) << 2;
 
             int newPhase = Rate + ((Addr << 12) | (Phase >> 4));
@@ -526,7 +533,7 @@ internal sealed class Cps1QSound
             Addr = (short)(newPhase >> 12);
             Phase = (ushort)((newPhase << 4) & 0xffff);
 
-            return unchecked((short)output);
+            return output;
         }
     }
 
@@ -701,6 +708,55 @@ internal sealed class Cps1QSound
                 _delayPos = 0;
 
             return unchecked((short)oldSample);
+        }
+    }
+
+    private sealed class BiquadLowPass
+    {
+        private readonly double _b0;
+        private readonly double _b1;
+        private readonly double _b2;
+        private readonly double _a1;
+        private readonly double _a2;
+        private double _z1;
+        private double _z2;
+
+        public BiquadLowPass(int sampleRate, double cutoffHz)
+        {
+            double nyquist = sampleRate * 0.5;
+            cutoffHz = Math.Clamp(cutoffHz, 1.0, nyquist - 1.0);
+            double q = 1.0 / Math.Sqrt(2.0);
+            double omega = 2.0 * Math.PI * cutoffHz / sampleRate;
+            double sin = Math.Sin(omega);
+            double cos = Math.Cos(omega);
+            double alpha = sin / (2.0 * q);
+
+            double b0 = (1.0 - cos) * 0.5;
+            double b1 = 1.0 - cos;
+            double b2 = (1.0 - cos) * 0.5;
+            double a0 = 1.0 + alpha;
+            double a1 = -2.0 * cos;
+            double a2 = 1.0 - alpha;
+
+            _b0 = b0 / a0;
+            _b1 = b1 / a0;
+            _b2 = b2 / a0;
+            _a1 = a1 / a0;
+            _a2 = a2 / a0;
+        }
+
+        public double Apply(double sample)
+        {
+            double output = _b0 * sample + _z1;
+            _z1 = _b1 * sample - _a1 * output + _z2;
+            _z2 = _b2 * sample - _a2 * output;
+            return output;
+        }
+
+        public void Reset()
+        {
+            _z1 = 0.0;
+            _z2 = 0.0;
         }
     }
 }

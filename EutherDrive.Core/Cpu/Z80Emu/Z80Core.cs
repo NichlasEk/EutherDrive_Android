@@ -80,6 +80,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
         public InterruptMode InterruptMode;
         public bool InterruptDelay;
         public InterruptLine LastNmi;
+        public bool LastInterruptAccepted;
         public bool Halted;
 
         public Registers()
@@ -111,6 +112,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
             InterruptMode = InterruptMode.Mode0;
             InterruptDelay = false;
             LastNmi = InterruptLine.High;
+            LastInterruptAccepted = false;
             Halted = false;
         }
     }
@@ -295,6 +297,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
         }
 
         public ushort Pc => _registers.Pc;
+        public bool LastInterruptAccepted => _registers.LastInterruptAccepted;
 
         public void SetPc(ushort pc) => _registers.Pc = pc;
         public void SetSp(ushort sp) => _registers.Sp = sp;
@@ -314,6 +317,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
             _registers.InterruptMode = InterruptMode.Mode0;
             _registers.InterruptDelay = false;
             _registers.LastNmi = InterruptLine.High;
+            _registers.LastInterruptAccepted = false;
             _registers.Halted = false;
             _stalled = false;
         }
