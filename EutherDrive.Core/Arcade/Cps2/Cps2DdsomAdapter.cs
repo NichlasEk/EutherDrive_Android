@@ -49,7 +49,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "ddsom" or "ddsomu";
+        return Cps2DdsomRomSet.IsSupportedSet(name);
     }
 
     public void LoadRom(string path)
@@ -1518,58 +1518,76 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         public byte[] QSound { get; }
         public byte[] QSoundDsp { get; }
 
+        private const int ProgramRomSize = 0x40_0000;
+        private const int ProgramRomChunkSize = 0x08_0000;
+        private const int AudioCpuRomSize = 0x5_0000;
+        private const int GraphicsBankSize = 0x20_0000;
+
+        private static readonly HashSet<string> SupportedSetNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "armwaru",
+            "avspu",
+            "csclubj",
+            "cybots",
+            "ddsom",
+            "ddsomu",
+            "ddsomur1",
+            "ddtodur1",
+            "dstlku",
+            "ecofghtr",
+            "gigawing",
+            "megaman2",
+            "msh",
+            "mvsc",
+            "nwarr",
+            "pfghtj",
+            "ringdest",
+            "sfa2",
+            "sfa3r1",
+            "sfz2aj",
+            "sfz2j",
+            "sfz3j",
+            "sfzj",
+            "sgemf",
+            "spf2t",
+            "ssf2tu",
+            "vhunt2",
+            "xmcotau"
+        };
+
+        private readonly record struct NumberedRomFile(string Name, int Number, byte[] Data);
+
+        private readonly record struct GraphicsLoad(string Name, byte[] Data, int Offset);
+
+        public static bool IsSupportedSet(string setName) => SupportedSetNames.Contains(setName);
+
         public static Cps2DdsomRomSet Load(string path)
         {
             string setName = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
+            if (!IsSupportedSet(setName))
+                throw new NotSupportedException($"CPS2 ROM set '{setName}' is not registered in the EutherDrive CPS2 loader.");
+
             Dictionary<string, byte[]> entries = ReadArchive(path);
-            if (setName == "ddsomu")
-                MergeParentIfPresent(path, entries, "ddsom.zip", "ddsom.7z");
+            MergeParentArchivesIfPresent(path, setName, entries);
 
-            byte[] program = new byte[0x40_0000];
+            List<NumberedRomFile> programFiles = FindNumberedFiles(
+                entries,
+                3,
+                10,
+                static (name, _, data) => data.Length == ProgramRomChunkSize && !IsOpcodeRomName(name),
+                name => PreferredProgramScore(setName, name));
+            if (programFiles.Count == 0)
+                throw new InvalidDataException($"CPS2 ROM set '{setName}' does not contain any 68000 program ROMs.");
+
+            byte[] program = new byte[ProgramRomSize];
             Array.Fill(program, (byte)0xff);
-            if (setName == "ddsomu")
-            {
-                Load16WordSwap(entries, program, 0x000000, "dd2u.03g");
-                Load16WordSwap(entries, program, 0x080000, "dd2u.04g");
-                Load16WordSwap(entries, program, 0x100000, "dd2.05g");
-                Load16WordSwap(entries, program, 0x180000, "dd2.06g");
-            }
-            else
-            {
-                Load16WordSwap(entries, program, 0x000000, "dd2e.03e");
-                Load16WordSwap(entries, program, 0x080000, "dd2e.04e");
-                Load16WordSwap(entries, program, 0x100000, "dd2e.05e");
-                Load16WordSwap(entries, program, 0x180000, "dd2e.06e");
-            }
-            Load16WordSwap(entries, program, 0x200000, setName == "ddsomu" ? "dd2.07" : "dd2e.07");
-            Load16WordSwap(entries, program, 0x280000, setName == "ddsomu" ? "dd2.08" : "dd2e.08");
-            Load16WordSwap(entries, program, 0x300000, setName == "ddsomu" ? "dd2.09" : "dd2e.09");
-            Load16WordSwap(entries, program, 0x380000, setName == "ddsomu" ? "dd2.10" : "dd2e.10");
+            foreach (NumberedRomFile file in programFiles)
+                Load16WordSwap(program, (file.Number - 3) * ProgramRomChunkSize, file.Name, file.Data);
 
-            byte[] key = Find(entries, setName == "ddsomu" ? "ddsomu.key" : "ddsom.key");
-            byte[] opcodes = Cps2Decrypter.Decrypt(program, key);
-
-            byte[] gfx = new byte[0x180_0000];
-            Load64Word(entries, gfx, 0x0000000, "dd2.13m");
-            Load64Word(entries, gfx, 0x0000002, "dd2.15m");
-            Load64Word(entries, gfx, 0x0000004, "dd2.17m");
-            Load64Word(entries, gfx, 0x0000006, "dd2.19m");
-            Load64Word(entries, gfx, 0x1000000, "dd2.14m");
-            Load64Word(entries, gfx, 0x1000002, "dd2.16m");
-            Load64Word(entries, gfx, 0x1000004, "dd2.18m");
-            Load64Word(entries, gfx, 0x1000006, "dd2.20m");
-            UnshuffleGraphics(gfx, 0x20_0000);
-
-            byte[] audioCpu = new byte[0x5_0000];
-            byte[] audio0 = Find(entries, "dd2.01");
-            audio0.AsSpan(0, Math.Min(0x8000, audio0.Length)).CopyTo(audioCpu);
-            if (audio0.Length > 0x8000)
-                audio0.AsSpan(0x8000, Math.Min(0x18000, audio0.Length - 0x8000)).CopyTo(audioCpu.AsSpan(0x10000));
-            Find(entries, "dd2.02").AsSpan(0, 0x20000).CopyTo(audioCpu.AsSpan(0x28000));
-
-            byte[] qsound = new byte[0x40_0000];
-            Load16WordSwap(entries, qsound, 0x000000, "dd2.11m");
-            Load16WordSwap(entries, qsound, 0x200000, "dd2.12m");
+            byte[] opcodes = BuildOpcodes(entries, setName, programFiles, program);
+            byte[] gfx = BuildGraphics(entries);
+            byte[] audioCpu = BuildAudioCpu(entries, setName);
+            byte[] qsound = BuildQSoundSamples(entries, setName);
             byte[] qsoundDsp = LoadQSoundDsp(path, entries);
 
             return new Cps2DdsomRomSet(program, opcodes, gfx, audioCpu, qsound, qsoundDsp);
@@ -1593,27 +1611,149 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             return entries;
         }
 
-        private static void MergeParentIfPresent(string childPath, Dictionary<string, byte[]> entries, params string[] parentArchives)
+        private static void MergeParentArchivesIfPresent(string childPath, string setName, Dictionary<string, byte[]> entries)
         {
             string? directory = Path.GetDirectoryName(childPath);
             if (string.IsNullOrWhiteSpace(directory))
                 return;
 
-            string? parentPath = parentArchives
-                .Select(parentArchive => Path.Combine(directory, parentArchive))
-                .FirstOrDefault(File.Exists);
-            if (string.IsNullOrWhiteSpace(parentPath))
-                return;
+            foreach (string parentArchive in ParentArchiveCandidates(setName).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string parentPath = Path.Combine(directory, parentArchive);
+                if (!File.Exists(parentPath))
+                    continue;
 
-            foreach (KeyValuePair<string, byte[]> entry in ReadArchive(parentPath))
-                entries.TryAdd(entry.Key, entry.Value);
+                foreach (KeyValuePair<string, byte[]> entry in ReadArchive(parentPath))
+                    entries.TryAdd(entry.Key, entry.Value);
+            }
+        }
+
+        private static byte[] BuildOpcodes(
+            Dictionary<string, byte[]> entries,
+            string setName,
+            IReadOnlyList<NumberedRomFile> programFiles,
+            byte[] program)
+        {
+            if (TryFindKey(entries, setName, out byte[] key))
+                return Cps2Decrypter.Decrypt(program, key);
+
+            byte[] opcodes = (byte[])program.Clone();
+            int opcodeOverlays = 0;
+            foreach (NumberedRomFile file in programFiles)
+            {
+                if (!TryFind(entries, out byte[] opcodeRom, OpcodeRomName(file.Name)))
+                    continue;
+
+                Load16WordSwap(opcodes, (file.Number - 3) * ProgramRomChunkSize, OpcodeRomName(file.Name), opcodeRom);
+                opcodeOverlays++;
+            }
+
+            if (opcodeOverlays == 0)
+            {
+                string present = string.Join(", ", entries.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase).Take(32));
+                throw new InvalidDataException(
+                    $"Missing CPS2 key or decrypted opcode ROMs for '{setName}'. Present files: {present}");
+            }
+
+            return opcodes;
+        }
+
+        private static byte[] BuildGraphics(Dictionary<string, byte[]> entries)
+        {
+            int[] group0Numbers = { 13, 15, 17, 19 };
+            int[] group1Numbers = { 14, 16, 18, 20 };
+            int[] group2Numbers = { 21, 23, 25, 27 };
+            List<NumberedRomFile> group0 = FindGraphicsGroup(entries, group0Numbers);
+            List<NumberedRomFile> group1 = FindGraphicsGroup(entries, group1Numbers);
+            List<NumberedRomFile> group2 = FindGraphicsGroup(entries, group2Numbers);
+            if (group0.Count == 0 && group1.Count == 0 && group2.Count == 0)
+                throw new InvalidDataException("CPS2 ROM set does not contain any graphics ROMs.");
+
+            var loads = new List<GraphicsLoad>();
+            int maxEnd = 0;
+            int group0Size = FirstRomSize(group0);
+            int group1Base = group0Size != 0 ? group0Size * 4 : 0x80_0000;
+            int group1Size = FirstRomSize(group1);
+            int group2Base = group1Size != 0 ? group1Base + group1Size * 4 : group1Base;
+
+            AddGraphicsGroup(loads, group0, group0Numbers, 0, ref maxEnd);
+            AddGraphicsGroup(loads, group1, group1Numbers, group1Base, ref maxEnd);
+            AddGraphicsGroup(loads, group2, group2Numbers, group2Base, ref maxEnd);
+
+            byte[] gfx = new byte[RoundUp(maxEnd, GraphicsBankSize)];
+            foreach (GraphicsLoad load in loads)
+                Load64Word(gfx, load.Offset, load.Name, load.Data);
+
+            UnshuffleGraphics(gfx, GraphicsBankSize);
+            return gfx;
+        }
+
+        private static byte[] BuildAudioCpu(Dictionary<string, byte[]> entries, string setName)
+        {
+            List<NumberedRomFile> audioFiles = FindNumberedFiles(
+                entries,
+                1,
+                2,
+                static (name, _, data) => data.Length is >= 0x8000 and <= 0x2_0000 && !IsOpcodeRomName(name));
+            if (audioFiles.Count == 0)
+                throw new InvalidDataException($"CPS2 ROM set '{setName}' does not contain any Z80 audio ROMs.");
+
+            byte[] audioCpu = new byte[AudioCpuRomSize];
+            NumberedRomFile audio0 = audioFiles.FirstOrDefault(static file => file.Number == 1);
+            if (audio0.Data is not null)
+            {
+                CopySlice(audio0.Data, 0, audioCpu, 0, 0x8000);
+                CopySlice(audio0.Data, 0x8000, audioCpu, 0x10000, 0x18000);
+            }
+
+            NumberedRomFile audio1 = audioFiles.FirstOrDefault(static file => file.Number == 2);
+            if (audio1.Data is not null)
+                CopySlice(audio1.Data, 0, audioCpu, 0x28000, 0x20000);
+
+            return audioCpu;
+        }
+
+        private static byte[] BuildQSoundSamples(Dictionary<string, byte[]> entries, string setName)
+        {
+            List<NumberedRomFile> sampleFiles = FindNumberedFiles(
+                entries,
+                11,
+                12,
+                static (name, _, data) => data.Length >= 0x8_0000 && !IsOpcodeRomName(name));
+            if (sampleFiles.Count == 0)
+                throw new InvalidDataException($"CPS2 ROM set '{setName}' does not contain any QSound sample ROMs.");
+
+            NumberedRomFile first = sampleFiles.First();
+            int secondOffset = sampleFiles.FirstOrDefault(static file => file.Number == 11).Data?.Length ?? first.Data.Length;
+            int maxEnd = 0;
+            foreach (NumberedRomFile file in sampleFiles)
+            {
+                int offset = file.Number == 11 ? 0 : secondOffset;
+                maxEnd = Math.Max(maxEnd, offset + file.Data.Length);
+            }
+
+            byte[] qsound = new byte[RoundUp(maxEnd, 0x10_0000)];
+            foreach (NumberedRomFile file in sampleFiles)
+            {
+                int offset = file.Number == 11 ? 0 : secondOffset;
+                Load16WordSwap(qsound, offset, file.Name, file.Data);
+            }
+
+            return qsound;
         }
 
         private static void Load16WordSwap(Dictionary<string, byte[]> entries, byte[] destination, int offset, params string[] names)
         {
             byte[] source = Find(entries, names);
+            Load16WordSwap(destination, offset, names[0], source);
+        }
+
+        private static void Load16WordSwap(byte[] destination, int offset, string name, byte[] source)
+        {
             if (offset + source.Length > destination.Length)
-                throw new InvalidDataException($"ROM '{names[0]}' is too large for the CPS2 region.");
+                throw new InvalidDataException($"ROM '{name}' is too large for the CPS2 region.");
+            if ((source.Length & 1) != 0)
+                throw new InvalidDataException($"ROM '{name}' has an odd byte length.");
 
             for (int i = 0; i < source.Length; i += 2)
             {
@@ -1625,16 +1765,186 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         private static void Load64Word(Dictionary<string, byte[]> entries, byte[] destination, int offset, params string[] names)
         {
             byte[] source = Find(entries, names);
+            Load64Word(destination, offset, names[0], source);
+        }
+
+        private static void Load64Word(byte[] destination, int offset, string name, byte[] source)
+        {
+            if ((source.Length & 1) != 0)
+                throw new InvalidDataException($"ROM '{name}' has an odd byte length.");
+
             int words = source.Length / 2;
             for (int i = 0; i < words; i++)
             {
                 int src = i * 2;
                 int dst = offset + i * 8;
                 if (dst + 1 >= destination.Length)
-                    throw new InvalidDataException($"ROM '{names[0]}' is too large for the CPS2 graphics region.");
+                    throw new InvalidDataException($"ROM '{name}' is too large for the CPS2 graphics region.");
                 destination[dst] = source[src];
                 destination[dst + 1] = source[src + 1];
             }
+        }
+
+        private static IEnumerable<string> ParentArchiveCandidates(string setName)
+        {
+            if (setName is "ddsomu" or "ddsomur1")
+            {
+                yield return "ddsomu.zip";
+                yield return "ddsomu.7z";
+                yield return "ddsom.zip";
+                yield return "ddsom.7z";
+            }
+        }
+
+        private static int PreferredProgramScore(string setName, string name)
+        {
+            string lowerName = name.ToLowerInvariant();
+            string[] prefixes = setName switch
+            {
+                "ddsomu" or "ddsomur1" => new[] { "dd2u", "dd2.", "dd2e" },
+                "ddsom" => new[] { "dd2e", "dd2.", "dd2u" },
+                _ => Array.Empty<string>()
+            };
+
+            for (int i = 0; i < prefixes.Length; i++)
+            {
+                if (lowerName.StartsWith(prefixes[i], StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+
+            return prefixes.Length;
+        }
+
+        private static List<NumberedRomFile> FindNumberedFiles(
+            Dictionary<string, byte[]> entries,
+            int minNumber,
+            int maxNumber,
+            Func<string, int, byte[], bool> predicate,
+            Func<string, int>? score = null)
+        {
+            var candidates = new List<NumberedRomFile>();
+            foreach (KeyValuePair<string, byte[]> entry in entries)
+            {
+                if (!TryGetRomNumber(entry.Key, out int number) || number < minNumber || number > maxNumber)
+                    continue;
+                if (!predicate(entry.Key, number, entry.Value))
+                    continue;
+
+                candidates.Add(new NumberedRomFile(entry.Key, number, entry.Value));
+            }
+
+            int Score(NumberedRomFile file) => score?.Invoke(file.Name) ?? 0;
+
+            return candidates
+                .GroupBy(static file => file.Number)
+                .Select(group => group
+                    .OrderBy(Score)
+                    .ThenBy(static file => file.Name, StringComparer.OrdinalIgnoreCase)
+                    .First())
+                .OrderBy(static file => file.Number)
+                .ToList();
+        }
+
+        private static bool TryGetRomNumber(string name, out int number)
+        {
+            string extension = Path.GetExtension(name);
+            if (extension.Length < 3 || !char.IsDigit(extension[1]) || !char.IsDigit(extension[2]))
+            {
+                number = 0;
+                return false;
+            }
+
+            number = (extension[1] - '0') * 10 + extension[2] - '0';
+            return true;
+        }
+
+        private static bool IsOpcodeRomName(string name)
+        {
+            int dot = name.IndexOf('.');
+            return dot > 0 && char.ToLowerInvariant(name[dot - 1]) == 'x';
+        }
+
+        private static string OpcodeRomName(string programRomName)
+        {
+            int dot = programRomName.IndexOf('.');
+            return dot > 0 ? programRomName[..dot] + "x" + programRomName[dot..] : programRomName + "x";
+        }
+
+        private static bool TryFindKey(Dictionary<string, byte[]> entries, string setName, out byte[] key)
+        {
+            foreach (string candidate in KeyNameCandidates(setName))
+            {
+                if (TryFind(entries, out key, candidate))
+                    return true;
+            }
+
+            List<KeyValuePair<string, byte[]>> keyFiles = entries
+                .Where(static entry => Path.GetExtension(entry.Key).Equals(".key", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (keyFiles.Count == 1)
+            {
+                key = keyFiles[0].Value;
+                return true;
+            }
+
+            key = Array.Empty<byte>();
+            return false;
+        }
+
+        private static IEnumerable<string> KeyNameCandidates(string setName)
+        {
+            yield return setName + ".key";
+            if (setName.StartsWith("ddsom", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "ddsomu.key";
+                yield return "ddsom.key";
+            }
+        }
+
+        private static List<NumberedRomFile> FindGraphicsGroup(Dictionary<string, byte[]> entries, int[] numbers)
+            => FindNumberedFiles(
+                entries,
+                numbers.Min(),
+                numbers.Max(),
+                (name, number, data) => Array.IndexOf(numbers, number) >= 0
+                    && data.Length >= 0x8_0000
+                    && !IsOpcodeRomName(name));
+
+        private static int FirstRomSize(IReadOnlyList<NumberedRomFile> files)
+            => files.Count == 0 ? 0 : files[0].Data.Length;
+
+        private static void AddGraphicsGroup(
+            List<GraphicsLoad> loads,
+            IReadOnlyList<NumberedRomFile> files,
+            int[] numbers,
+            int baseOffset,
+            ref int maxEnd)
+        {
+            foreach (NumberedRomFile file in files)
+            {
+                int lane = Array.IndexOf(numbers, file.Number);
+                if (lane < 0)
+                    continue;
+
+                int offset = baseOffset + lane * 2;
+                loads.Add(new GraphicsLoad(file.Name, file.Data, offset));
+                maxEnd = Math.Max(maxEnd, baseOffset + file.Data.Length * 4);
+            }
+        }
+
+        private static int RoundUp(int value, int alignment)
+            => alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+
+        private static void CopySlice(byte[] source, int sourceOffset, byte[] destination, int destinationOffset, int length)
+        {
+            if (sourceOffset >= source.Length || length <= 0)
+                return;
+
+            int count = Math.Min(length, source.Length - sourceOffset);
+            if (destinationOffset + count > destination.Length)
+                throw new InvalidDataException("CPS2 audio ROM slice is too large for the destination region.");
+
+            source.AsSpan(sourceOffset, count).CopyTo(destination.AsSpan(destinationOffset));
         }
 
         private static byte[] Find(Dictionary<string, byte[]> entries, params string[] names)
@@ -1648,7 +1958,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             string wanted = string.Join(", ", names);
             string present = string.Join(", ", entries.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase).Take(32));
             throw new InvalidDataException(
-                string.Create(CultureInfo.InvariantCulture, $"Missing CPS2 ddsom ROM file ({wanted}). Put the parent ddsom.zip or ddsom.7z beside clone zips if this is a split MAME set. Present files: {present}"));
+                string.Create(CultureInfo.InvariantCulture, $"Missing CPS2 ROM file ({wanted}). Put the required parent archive beside clone zips if this is a split MAME set. Present files: {present}"));
         }
 
         private static byte[] LoadQSoundDsp(string mainArchivePath, Dictionary<string, byte[]> mainEntries)
@@ -1675,7 +1985,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             }
 
             throw new InvalidDataException(
-                "Missing CPS2 QSound DSP ROM 'dl-1425.bin'. Put dl-1425.bin, qsound.zip or qsound.7z beside ddsom/ddsomu.");
+                "Missing CPS2 QSound DSP ROM 'dl-1425.bin'. Put dl-1425.bin, qsound.zip or qsound.7z beside the CPS2 game archive.");
         }
 
         private static bool TryFind(Dictionary<string, byte[]> entries, out byte[] data, params string[] names)
