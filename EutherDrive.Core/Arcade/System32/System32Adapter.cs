@@ -673,6 +673,8 @@ public sealed class System32Adapter : IEmulatorCore
     {
         ushort data0 = _bus.ReadSpriteWord(wordOffset + 0);
         bool bpp8 = (data0 & 0x0200) != 0;
+        int packedPixelsPerLong = bpp8 ? 4 : 8;
+        int endPen = (data0 & 0x0100) != 0 ? 0 : (bpp8 ? 0xff : 0x0f);
         bool flipY = (data0 & 0x0080) != 0;
         bool flipX = (data0 & 0x0040) != 0;
         bool applyY = (data0 & 0x0020) != 0;
@@ -729,27 +731,32 @@ public sealed class System32Adapter : IEmulatorCore
                 for (int xStep = 0, x = xPos; xStep < destWidth; xStep++, x += xDelta)
                 {
                     int pen;
+                    int packedPixelIndex = sourcePixelsRead & (packedPixelsPerLong - 1);
                     if (!bpp8)
                     {
-                        if ((sourcePixelsRead & 7) == 0)
+                        if (packedPixelIndex == 0)
                             packed = ReadSpriteLong(_roms!.Sprites, bank, currentAddress++);
-                        int shift = 28 - (sourcePixelsRead & 7) * 4;
+                        int shift = 28 - packedPixelIndex * 4;
                         pen = (int)((packed >> shift) & 0x0f);
                     }
                     else
                     {
-                        if ((sourcePixelsRead & 3) == 0)
+                        if (packedPixelIndex == 0)
                             packed = ReadSpriteLong(_roms!.Sprites, bank, currentAddress++);
-                        int shift = 24 - (sourcePixelsRead & 3) * 8;
+                        int shift = 24 - packedPixelIndex * 8;
                         pen = (int)((packed >> shift) & 0xff);
                     }
 
                     bool clippedOut = clipOutY && x >= clipOutMinX && x <= clipOutMaxX;
-                    if (pen != 0 && pen != (bpp8 ? 0xff : 0x0f) && x >= clipMinX && x <= clipMaxX && !clippedOut)
+                    bool endPenApplies = endPen != 0 && (packedPixelIndex == 0 || packedPixelIndex == packedPixelsPerLong - 1);
+                    if (pen != 0 && (!endPenApplies || pen != endPen) && x >= clipMinX && x <= clipMaxX && !clippedOut)
                     {
                         target[y * FrameWidth + x] = (ushort)(colorBase | pen);
                         drawn++;
                     }
+
+                    if (endPen != 0 && packedPixelIndex == packedPixelsPerLong - 1 && pen == endPen)
+                        break;
 
                     xAccumulator += hZoom;
                     while (xAccumulator >= 0x10000)
