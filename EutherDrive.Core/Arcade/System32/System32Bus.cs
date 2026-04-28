@@ -11,6 +11,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private const uint AddressMask = 0x00ff_ffff;
     private const int MainIrqVblankStart = 0;
     private const int MainIrqVblankStop = 1;
+    private const int MainIrqTimer0 = 3;
+    private const int MainIrqTimer1 = 4;
 
     private readonly byte[] _workRam = new byte[0x1_0000];
     private readonly byte[] _videoRam = new byte[0x2_0000];
@@ -31,6 +33,9 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private byte _spriteRenderCount;
     private bool _spriteBufferStatus = true;
     private bool _displayEnabled;
+    private int _mainCpuInstructionTicksPerSecond = 4864 * 60;
+    private int _irqTimer0Countdown = -1;
+    private int _irqTimer1Countdown = -1;
     private byte _p1Input = 0xff;
     private byte _p2Input = 0xff;
     private byte _serviceInput = 0xff;
@@ -62,6 +67,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         _spriteRenderCount = 0;
         _spriteBufferStatus = true;
         _displayEnabled = false;
+        _irqTimer0Countdown = -1;
+        _irqTimer1Countdown = -1;
         _p1Input = 0xff;
         _p2Input = 0xff;
         _serviceInput = 0xff;
@@ -73,6 +80,12 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     public byte TileBankExternal => _tileBankExternal;
 
     public bool DisplayEnabled => _displayEnabled;
+
+    public void ConfigureMainCpuTiming(int activeInstructions, int vblankStartInstructions, int vblankStopInstructions)
+    {
+        int instructionsPerFrame = Math.Max(1, activeInstructions + vblankStartInstructions + vblankStopInstructions);
+        _mainCpuInstructionTicksPerSecond = instructionsPerFrame * 60;
+    }
 
     public void SetInput(
         bool up,
@@ -271,6 +284,32 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         return -1;
     }
 
+    public void AdvanceMainCpuTimers(int instructionTicks)
+    {
+        if (instructionTicks <= 0)
+            return;
+
+        if (_irqTimer0Countdown > 0)
+        {
+            _irqTimer0Countdown -= instructionTicks;
+            if (_irqTimer0Countdown <= 0)
+            {
+                _irqTimer0Countdown = -1;
+                SignalV60Irq(MainIrqTimer0);
+            }
+        }
+
+        if (_irqTimer1Countdown > 0)
+        {
+            _irqTimer1Countdown -= instructionTicks;
+            if (_irqTimer1Countdown <= 0)
+            {
+                _irqTimer1Countdown = -1;
+                SignalV60Irq(MainIrqTimer1);
+            }
+        }
+    }
+
     private byte ReadMainDpram(uint address)
     {
         uint offset = address - 0xa0_0000;
@@ -422,8 +461,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
 
     private byte ReadInterruptControl(uint address)
     {
-        int offset = (int)(address & 0x0f);
-        return offset is 8 or 10 ? (byte)0 : (byte)0xff;
+        return 0xff;
     }
 
     private void WriteInterruptControl(uint address, byte value)
@@ -432,7 +470,46 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         if (offset == 7)
             _irqControl[offset] &= value;
         else
+        {
             _irqControl[offset] = value;
+            if (offset is 8 or 9)
+                ScheduleIrqTimer0();
+            else if (offset is 10 or 11)
+                ScheduleIrqTimer1();
+        }
+    }
+
+    private void ScheduleIrqTimer0()
+    {
+        int duration = _irqControl[8] | ((_irqControl[9] << 8) & 0x0f00);
+        if (duration == 0)
+        {
+            _irqTimer0Countdown = -1;
+            return;
+        }
+
+        _irqTimer0Countdown = TicksToInstructionCountdown(0x800L * duration, 32_215_900L / 2L);
+    }
+
+    private void ScheduleIrqTimer1()
+    {
+        int duration = _irqControl[10] | ((_irqControl[11] << 8) & 0x0f00);
+        if (duration == 0)
+        {
+            _irqTimer1Countdown = -1;
+            return;
+        }
+
+        _irqTimer1Countdown = TicksToInstructionCountdown(0x100L * duration, 50_000_000L / 16L);
+    }
+
+    private int TicksToInstructionCountdown(long timerTicks, long timerClock)
+    {
+        long numerator = timerTicks * _mainCpuInstructionTicksPerSecond;
+        long countdown = (numerator + timerClock - 1) / timerClock;
+        if (countdown < 1)
+            return 1;
+        return countdown > int.MaxValue ? int.MaxValue : (int)countdown;
     }
 
     private void SignalV60Irq(int which)

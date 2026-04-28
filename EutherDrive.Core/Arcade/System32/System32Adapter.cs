@@ -24,7 +24,10 @@ public sealed class System32Adapter : IEmulatorCore
     private const int LayerSprites = 6;
     private const int LayerBackground = 7;
 
-    private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
+    private readonly object _frameSync = new();
+    private byte[] _presentFrameBuffer = new byte[FrameHeight * FrameStride];
+    private byte[] _renderFrameBuffer = new byte[FrameHeight * FrameStride];
+    private byte[] _snapshotFrameBuffer = new byte[FrameHeight * FrameStride];
     private ushort[] _spriteVisiblePixels = new ushort[FrameWidth * FrameHeight];
     private ushort[] _spriteRenderPixels = new ushort[FrameWidth * FrameHeight];
     private int _spriteVisibleNumber = 6;
@@ -70,7 +73,10 @@ public sealed class System32Adapter : IEmulatorCore
     private int _lastTilePixels;
     private int _lastSpritePixels;
     private int _visibleWidth = 320;
+    private int _presentVisibleWidth = 320;
     private int _mainCpuInstructionsPerFrame = 4096;
+    private int _vblankStartInstructions = 512;
+    private int _vblankStopInstructions = 256;
     private int _traceTailIndex;
     private int _traceTailCount;
     private readonly string[] _traceTailLines = new string[128];
@@ -118,6 +124,9 @@ public sealed class System32Adapter : IEmulatorCore
         _traceTail = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_TAIL");
         _videoStats = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_VIDEO_STATS");
         _mainCpuInstructionsPerFrame = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_MAINCPU_SLICE", 4096);
+        _vblankStartInstructions = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_VBLANK_START_SLICE", 512);
+        _vblankStopInstructions = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_VBLANK_STOP_SLICE", 256);
+        _bus.ConfigureMainCpuTiming(_mainCpuInstructionsPerFrame, _vblankStartInstructions, _vblankStopInstructions);
         _loaded = true;
         Reset();
     }
@@ -125,12 +134,19 @@ public sealed class System32Adapter : IEmulatorCore
     public void Reset()
     {
         _bus.Reset();
+        _bus.ConfigureMainCpuTiming(_mainCpuInstructionsPerFrame, _vblankStartInstructions, _vblankStopInstructions);
         if (_roms is not null)
         {
             _mainCpu.Reset(_bus);
             _mcu.Reset(_bus);
         }
-        Array.Clear(_frameBuffer);
+        lock (_frameSync)
+        {
+            Array.Clear(_presentFrameBuffer);
+            Array.Clear(_snapshotFrameBuffer);
+            _presentVisibleWidth = 320;
+        }
+        Array.Clear(_renderFrameBuffer);
         Array.Fill(_spriteVisiblePixels, (ushort)0xffff);
         Array.Fill(_spriteRenderPixels, (ushort)0xffff);
         _spriteVisibleNumber = 6;
@@ -152,22 +168,36 @@ public sealed class System32Adapter : IEmulatorCore
 
         _bus.SetInput(_input.Up, _input.Down, _input.Left, _input.Right, _input.A, _input.B, _input.C, _input.Start, _input.Mode);
 
-        _bus.SignalVblankStartIrq();
         ExecuteMcuSlice();
-        ExecuteMainCpuBootstrapSlice();
-        _bus.SignalVblankStopIrq();
-        ProcessSpriteEndOfVblank(_bus.EndFrame());
+        ExecuteMainCpuSlice(_mainCpuInstructionsPerFrame);
 
-        Array.Clear(_frameBuffer);
         _visibleWidth = GetVisibleWidth();
         if (_bus.DisplayEnabled)
         {
+            Array.Clear(_renderFrameBuffer);
             ClearLayerBuffers();
             RenderBackgroundLayer();
             RenderTileLayers();
+            RenderBitmapLayer();
             RenderTextLayer();
             MixLayers();
             LogVideoStats();
+        }
+        else
+        {
+            Array.Clear(_renderFrameBuffer);
+        }
+
+        _bus.SignalVblankStartIrq();
+        ExecuteMainCpuSlice(_vblankStartInstructions);
+        _bus.SignalVblankStopIrq();
+        ProcessSpriteEndOfVblank(_bus.EndFrame());
+        ExecuteMainCpuSlice(_vblankStopInstructions);
+
+        lock (_frameSync)
+        {
+            Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
+            _presentVisibleWidth = _visibleWidth;
         }
 
         _ = _roms;
@@ -177,10 +207,14 @@ public sealed class System32Adapter : IEmulatorCore
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
-        width = _visibleWidth;
-        height = FrameHeight;
-        stride = FrameStride;
-        return _frameBuffer;
+        lock (_frameSync)
+        {
+            Buffer.BlockCopy(_presentFrameBuffer, 0, _snapshotFrameBuffer, 0, _presentFrameBuffer.Length);
+            width = _presentVisibleWidth;
+            height = FrameHeight;
+            stride = FrameStride;
+            return _snapshotFrameBuffer;
+        }
     }
 
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
@@ -192,7 +226,7 @@ public sealed class System32Adapter : IEmulatorCore
 
     public double GetTargetFps() => 60.0;
 
-    private void ExecuteMainCpuBootstrapSlice()
+    private void ExecuteMainCpuSlice(int instructionBudget)
     {
         if (_mainCpu.Halted)
         {
@@ -200,7 +234,7 @@ public sealed class System32Adapter : IEmulatorCore
             return;
         }
 
-        for (int i = 0; i < _mainCpuInstructionsPerFrame && !_mainCpu.Halted; i++)
+        for (int i = 0; i < instructionBudget && !_mainCpu.Halted; i++)
         {
             int vector = _bus.GetPendingV60InterruptVector();
             if (vector >= 0)
@@ -208,6 +242,7 @@ public sealed class System32Adapter : IEmulatorCore
 
             uint pc = _mainCpu.Pc;
             int cycles = _mainCpu.ExecuteInstruction();
+            _bus.AdvanceMainCpuTimers(1);
             string? traceLine = null;
             if (_traceBoot || _traceTail)
                 traceLine = string.Create(
@@ -811,6 +846,73 @@ public sealed class System32Adapter : IEmulatorCore
         return 1;
     }
 
+    private void RenderBitmapLayer()
+    {
+        ushort layerDisable = _bus.ReadVideoWord(0x1ff02);
+        ushort mixerDisable = _bus.ReadVideoWord(0x1ff8e);
+        if ((layerDisable & 0x0020) != 0 || (mixerDisable & 0x0020) != 0)
+            return;
+
+        ushort screenControl = _bus.ReadVideoWord(0x1ff00);
+        int bpp = (screenControl & 0x0800) != 0 ? 8 : 4;
+        int xScroll = _bus.ReadVideoWord(0x1ff88) & 0x01ff;
+        int yScroll = _bus.ReadVideoWord(0x1ff8a) & 0x01ff;
+        int color = (_bus.ReadVideoWord(0x1ff8c) << 4) & 0x1fff0 & ~((1 << bpp) - 1);
+        bool clipEnable = (layerDisable & 0x8000) != 0;
+        bool clipOut = (layerDisable & 0x0400) != 0;
+
+        for (int y = 0; y < FrameHeight; y++)
+        {
+            bool any = false;
+            int sourceY = (y + yScroll) & (bpp == 8 ? 0x0ff : 0x1ff);
+            for (int x = 0; x < _visibleWidth; x++)
+            {
+                if (!IsBitmapPixelDrawn(x, y, clipEnable, clipOut))
+                    continue;
+
+                int sourceX = (x + xScroll) & 0x01ff;
+                int pen;
+                if (bpp == 8)
+                {
+                    pen = ReadVideoByte(sourceY * 512 + sourceX);
+                    if (pen == 0)
+                        continue;
+                }
+                else
+                {
+                    ushort packed = _bus.ReadVideoWord(sourceY * 256 + (sourceX >> 2) * 2);
+                    pen = (packed >> (4 * (sourceX & 3))) & 0x0f;
+                    if (pen == 0)
+                        continue;
+                }
+
+                _layerPixels[LayerBitmap][y * FrameWidth + x] = (ushort)(color + pen);
+                any = true;
+            }
+
+            _layerTransparent[LayerBitmap][y] = !any;
+        }
+    }
+
+    private bool IsBitmapPixelDrawn(int x, int y, bool clipEnable, bool clipOut)
+    {
+        if (!clipEnable)
+            return true;
+
+        int minX = _bus.ReadVideoWord(0x1ff60 + 4 * 8) & 0x1ff;
+        int minY = _bus.ReadVideoWord(0x1ff62 + 4 * 8) & 0x0ff;
+        int maxX = _bus.ReadVideoWord(0x1ff64 + 4 * 8) & 0x1ff;
+        int maxY = _bus.ReadVideoWord(0x1ff66 + 4 * 8) & 0x0ff;
+        bool inside = x >= minX && x <= maxX && y >= minY && y <= maxY;
+        return clipOut ? !inside : inside;
+    }
+
+    private byte ReadVideoByte(int byteOffset)
+    {
+        ushort value = _bus.ReadVideoWord(byteOffset & ~1);
+        return (byte)(((byteOffset & 1) == 0) ? value : value >> 8);
+    }
+
     private void PutLayerPixel(int layer, int x, int y, ushort value)
     {
         _layerPixels[layer][y * FrameWidth + x] = value;
@@ -940,10 +1042,10 @@ public sealed class System32Adapter : IEmulatorCore
     private void WritePixel(int x, int y, uint bgra)
     {
         int offset = y * FrameStride + x * 4;
-        _frameBuffer[offset + 0] = (byte)bgra;
-        _frameBuffer[offset + 1] = (byte)(bgra >> 8);
-        _frameBuffer[offset + 2] = (byte)(bgra >> 16);
-        _frameBuffer[offset + 3] = 0xff;
+        _renderFrameBuffer[offset + 0] = (byte)bgra;
+        _renderFrameBuffer[offset + 1] = (byte)(bgra >> 8);
+        _renderFrameBuffer[offset + 2] = (byte)(bgra >> 16);
+        _renderFrameBuffer[offset + 3] = 0xff;
     }
 
     private static int ReadTilePen(byte[] tiles, int tileIndex, int x, int y)
