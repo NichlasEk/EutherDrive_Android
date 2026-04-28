@@ -762,6 +762,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(path))
+            return new EutherDrive.Core.Arcade.System32.System32Adapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
@@ -8615,7 +8617,7 @@ public partial class MainWindow : Window
         }
 
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
-        var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
+        var blitOptions = CreateCurrentFrameBlitOptions(core, forceOpaque);
 
         if (_renderSurface is IAcceleratedRenderSurface glSurface
             && core is PsxAdapter psx
@@ -8818,14 +8820,16 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private FrameBlitOptions CreateCurrentFrameBlitOptions(bool forceOpaque)
+    private FrameBlitOptions CreateCurrentFrameBlitOptions(IEmulatorCore core, bool forceOpaque)
     {
         bool applyScanlines = _crtScanlinesEnabled;
-        bool applyAdvancedPixelFilter = _sharpPixelsEnabled && _advancedPixelFilterEnabled;
+        bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter;
+        bool sharpPixels = _sharpPixelsEnabled || forceSharpPixels;
+        bool applyAdvancedPixelFilter = sharpPixels && _advancedPixelFilterEnabled && !forceSharpPixels;
         int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
         int scanlineDarkenFactor = 256 - ((scanlineStrength * 256) / 100);
         return new FrameBlitOptions(
-            SharpPixels: _sharpPixelsEnabled,
+            SharpPixels: sharpPixels,
             ForceOpaque: forceOpaque,
             ApplyScanlines: applyScanlines,
             ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
