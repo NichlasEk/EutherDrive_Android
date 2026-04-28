@@ -9724,7 +9724,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)

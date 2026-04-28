@@ -55,6 +55,7 @@ public sealed class System32Adapter : IEmulatorCore
         new bool[FrameHeight]
     };
     private readonly System32Bus _bus = new();
+    private readonly System32Sound _sound;
     private readonly V60 _mainCpu = new();
     private readonly V25 _mcu = new();
     private short[] _audioBuffer = Array.Empty<short>();
@@ -80,6 +81,12 @@ public sealed class System32Adapter : IEmulatorCore
     private int _traceTailIndex;
     private int _traceTailCount;
     private readonly string[] _traceTailLines = new string[128];
+
+    public System32Adapter()
+    {
+        _sound = new System32Sound(_bus.SharedRam);
+        _bus.AttachSound(_sound);
+    }
 
     private readonly record struct MixerLayer(
         int Index,
@@ -119,6 +126,7 @@ public sealed class System32Adapter : IEmulatorCore
 
         _roms = System32RomSet.LoadGoldenAxe2(path);
         _bus.Load(_roms);
+        _sound.Load(_roms);
         _traceBoot = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_BOOT");
         _traceMcu = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_MCU");
         _traceTail = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_TAIL");
@@ -134,6 +142,7 @@ public sealed class System32Adapter : IEmulatorCore
     public void Reset()
     {
         _bus.Reset();
+        _sound.ResetSound();
         _bus.ConfigureMainCpuTiming(_mainCpuInstructionsPerFrame, _vblankStartInstructions, _vblankStopInstructions);
         if (_roms is not null)
         {
@@ -152,7 +161,7 @@ public sealed class System32Adapter : IEmulatorCore
         _spriteVisibleNumber = 6;
         _spriteRenderNumber = 8;
         _bus.SetSpriteBufferStatus(_spriteVisibleNumber < _spriteRenderNumber);
-        _audioBuffer = Array.Empty<short>();
+        _audioBuffer = new short[(OutputSampleRate / 60) * OutputChannels];
         _cpuStoppedLogged = false;
         _mcuStoppedLogged = false;
         _frameCounter = 0;
@@ -193,6 +202,7 @@ public sealed class System32Adapter : IEmulatorCore
         _bus.SignalVblankStopIrq();
         ProcessSpriteEndOfVblank(_bus.EndFrame());
         ExecuteMainCpuSlice(_vblankStopInstructions);
+        _sound.RunFrame(_audioBuffer);
 
         lock (_frameSync)
         {

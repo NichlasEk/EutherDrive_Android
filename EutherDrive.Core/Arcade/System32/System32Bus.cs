@@ -40,11 +40,17 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private byte _p2Input = 0xff;
     private byte _serviceInput = 0xff;
     private System32RomSet? _roms;
+    private System32Sound? _sound;
 
     public void Load(System32RomSet roms)
     {
         _roms = roms ?? throw new ArgumentNullException(nameof(roms));
         Reset();
+    }
+
+    public void AttachSound(System32Sound sound)
+    {
+        _sound = sound;
     }
 
     public void Reset()
@@ -80,6 +86,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     public byte TileBankExternal => _tileBankExternal;
 
     public bool DisplayEnabled => _displayEnabled;
+
+    public byte[] SharedRam => _sharedRam;
 
     public void ConfigureMainCpuTiming(int activeInstructions, int vblankStartInstructions, int vblankStopInstructions)
     {
@@ -425,6 +433,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             case 0x0e:
                 _ioCounter = value;
                 _displayEnabled = (value & 0x02) != 0;
+                _sound?.SetResetAsserted((value & 0x04) == 0);
                 break;
 
             case 0x0f:
@@ -476,6 +485,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
                 ScheduleIrqTimer0();
             else if (offset is 10 or 11)
                 ScheduleIrqTimer1();
+            else if (offset == 15)
+                _sound?.SignalV60SoundIrq();
         }
     }
 
