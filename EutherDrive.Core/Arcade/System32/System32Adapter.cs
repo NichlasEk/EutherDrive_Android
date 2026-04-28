@@ -25,6 +25,10 @@ public sealed class System32Adapter : IEmulatorCore
     private const int LayerBackground = 7;
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
+    private ushort[] _spriteVisiblePixels = new ushort[FrameWidth * FrameHeight];
+    private ushort[] _spriteRenderPixels = new ushort[FrameWidth * FrameHeight];
+    private int _spriteVisibleNumber = 6;
+    private int _spriteRenderNumber = 8;
     private readonly ushort[][] _layerPixels =
     {
         new ushort[FrameWidth * FrameHeight],
@@ -65,6 +69,7 @@ public sealed class System32Adapter : IEmulatorCore
     private int _lastTextPixels;
     private int _lastTilePixels;
     private int _lastSpritePixels;
+    private int _visibleWidth = 320;
     private int _mainCpuInstructionsPerFrame = 4096;
     private int _traceTailIndex;
     private int _traceTailCount;
@@ -126,6 +131,11 @@ public sealed class System32Adapter : IEmulatorCore
             _mcu.Reset(_bus);
         }
         Array.Clear(_frameBuffer);
+        Array.Fill(_spriteVisiblePixels, (ushort)0xffff);
+        Array.Fill(_spriteRenderPixels, (ushort)0xffff);
+        _spriteVisibleNumber = 6;
+        _spriteRenderNumber = 8;
+        _bus.SetSpriteBufferStatus(_spriteVisibleNumber < _spriteRenderNumber);
         _audioBuffer = Array.Empty<short>();
         _cpuStoppedLogged = false;
         _mcuStoppedLogged = false;
@@ -141,25 +151,25 @@ public sealed class System32Adapter : IEmulatorCore
             return;
 
         _bus.SetInput(_input.Up, _input.Down, _input.Left, _input.Right, _input.A, _input.B, _input.C, _input.Start, _input.Mode);
+
         _bus.SignalVblankStartIrq();
         ExecuteMcuSlice();
         ExecuteMainCpuBootstrapSlice();
         _bus.SignalVblankStopIrq();
-        _bus.EndFrame();
+        ProcessSpriteEndOfVblank(_bus.EndFrame());
+
         Array.Clear(_frameBuffer);
-        if (!_bus.DisplayEnabled)
+        _visibleWidth = GetVisibleWidth();
+        if (_bus.DisplayEnabled)
         {
-            _frameCounter++;
-            return;
+            ClearLayerBuffers();
+            RenderBackgroundLayer();
+            RenderTileLayers();
+            RenderTextLayer();
+            MixLayers();
+            LogVideoStats();
         }
 
-        ClearLayerBuffers();
-        RenderBackgroundLayer();
-        RenderTileLayers();
-        RenderSprites();
-        RenderTextLayer();
-        MixLayers();
-        LogVideoStats();
         _ = _roms;
         _ = _input;
         _frameCounter++;
@@ -167,7 +177,7 @@ public sealed class System32Adapter : IEmulatorCore
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
-        width = FrameWidth;
+        width = _visibleWidth;
         height = FrameHeight;
         stride = FrameStride;
         return _frameBuffer;
@@ -294,12 +304,14 @@ public sealed class System32Adapter : IEmulatorCore
     {
         for (int layer = 0; layer < _layerPixels.Length; layer++)
         {
-            if (layer == LayerSprites)
-                Array.Fill(_layerPixels[layer], (ushort)0xffff);
-            else
-                Array.Clear(_layerPixels[layer]);
+            Array.Clear(_layerPixels[layer]);
             Array.Fill(_layerTransparent[layer], true);
         }
+    }
+
+    private int GetVisibleWidth()
+    {
+        return (_bus.ReadVideoWord(0x1ff00) & 0x8000) != 0 ? 416 : 320;
     }
 
     private void RenderBackgroundLayer()
@@ -320,7 +332,7 @@ public sealed class System32Adapter : IEmulatorCore
             }
 
             int row = y * FrameWidth;
-            for (int x = 0; x < FrameWidth; x++)
+            for (int x = 0; x < _visibleWidth; x++)
                 layer[row + x] = (ushort)color;
             _layerTransparent[LayerBackground][y] = false;
         }
@@ -386,7 +398,7 @@ public sealed class System32Adapter : IEmulatorCore
 
         if (flipX)
         {
-            srcXStart += (FrameWidth - 1) * srcXStep;
+            srcXStart += (_visibleWidth - 1) * srcXStep;
             srcXStep = -srcXStep;
         }
 
@@ -395,7 +407,7 @@ public sealed class System32Adapter : IEmulatorCore
         {
             long srcX = srcXStart;
             int sourceY = (int)((srcY >> 20) & 0x1ff);
-            for (int x = 0; x < FrameWidth; x++, srcX += srcXStep)
+            for (int x = 0; x < _visibleWidth; x++, srcX += srcXStep)
             {
                 if (!IsTileLayerPixelDrawn(bgnum, x, y))
                     continue;
@@ -440,12 +452,12 @@ public sealed class System32Adapter : IEmulatorCore
                 sourceY = yScroll + _bus.ReadVideoWord(tableBase + (0x200 + 0x100 * (bgnum - 2) + yLookup) * 2);
 
             sourceY &= 0x01ff;
-            for (int x = 0; x < FrameWidth; x++)
+            for (int x = 0; x < _visibleWidth; x++)
             {
                 if (!IsTileLayerPixelDrawn(bgnum, x, y))
                     continue;
 
-                int sourceX = (flipX ? FrameWidth - 1 - x : x) + sourceXBase;
+                int sourceX = (flipX ? _visibleWidth - 1 - x : x) + sourceXBase;
                 if (!TryReadTilePixel(bgnum, tileBank, sourceX & 0x03ff, sourceY, out int rawPixel))
                     continue;
 
@@ -531,7 +543,22 @@ public sealed class System32Adapter : IEmulatorCore
         return clipOut ? !inside : inside;
     }
 
-    private void RenderSprites()
+    private void ProcessSpriteEndOfVblank(byte spriteCommand)
+    {
+        if ((spriteCommand & 0x02) != 0)
+            Array.Fill(_spriteVisiblePixels, (ushort)0xffff);
+
+        if ((spriteCommand & 0x01) == 0)
+            return;
+
+        (_spriteVisiblePixels, _spriteRenderPixels) = (_spriteRenderPixels, _spriteVisiblePixels);
+        (_spriteVisibleNumber, _spriteRenderNumber) = (_spriteRenderNumber, _spriteVisibleNumber);
+        _bus.SetSpriteBufferStatus(_spriteVisibleNumber < _spriteRenderNumber);
+        _bus.LatchSpriteControl();
+        RenderSpritesTo(_spriteRenderPixels);
+    }
+
+    private void RenderSpritesTo(ushort[] target)
     {
         if (_roms is null)
             return;
@@ -540,6 +567,15 @@ public sealed class System32Adapter : IEmulatorCore
         int spriteNumber = 0;
         int xOffset = 0;
         int yOffset = 0;
+        int outerClipMaxX = (_bus.SpriteControlLatchedByte(6) & 1) != 0 ? 415 : 319;
+        int clipMinX = 0;
+        int clipMinY = 0;
+        int clipMaxX = outerClipMaxX;
+        int clipMaxY = FrameHeight - 1;
+        int clipOutMinX = 0;
+        int clipOutMinY = 0;
+        int clipOutMaxX = -1;
+        int clipOutMaxY = -1;
 
         for (int entry = 0; entry < 0x2000 && spriteNumber < 0x2000; entry++)
         {
@@ -548,10 +584,26 @@ public sealed class System32Adapter : IEmulatorCore
             switch (command >> 14)
             {
                 case 0:
-                    pixels += DrawOneSprite(wordOffset, xOffset, yOffset);
+                    pixels += DrawOneSprite(target, wordOffset, xOffset, yOffset, clipMinX, clipMinY, clipMaxX, clipMaxY, clipOutMinX, clipOutMinY, clipOutMaxX, clipOutMaxY);
                     spriteNumber++;
                     break;
                 case 1:
+                    if ((command & 0x1000) != 0)
+                    {
+                        clipMinY = Math.Max(0, SignExtend12(command));
+                        clipMaxY = Math.Min(FrameHeight - 1, SignExtend12(_bus.ReadSpriteWord(wordOffset + 1)));
+                        clipMinX = Math.Max(0, SignExtend12(_bus.ReadSpriteWord(wordOffset + 2)));
+                        clipMaxX = Math.Min(outerClipMaxX, SignExtend12(_bus.ReadSpriteWord(wordOffset + 3)));
+                    }
+
+                    if ((command & 0x2000) != 0)
+                    {
+                        clipOutMinY = SignExtend12(_bus.ReadSpriteWord(wordOffset + 4));
+                        clipOutMaxY = SignExtend12(_bus.ReadSpriteWord(wordOffset + 5));
+                        clipOutMinX = SignExtend12(_bus.ReadSpriteWord(wordOffset + 6));
+                        clipOutMaxX = SignExtend12(_bus.ReadSpriteWord(wordOffset + 7));
+                    }
+
                     spriteNumber++;
                     break;
                 case 2:
@@ -572,7 +624,7 @@ public sealed class System32Adapter : IEmulatorCore
         _lastSpritePixels = pixels;
     }
 
-    private int DrawOneSprite(int wordOffset, int xOffset, int yOffset)
+    private int DrawOneSprite(ushort[] target, int wordOffset, int xOffset, int yOffset, int clipMinX, int clipMinY, int clipMaxX, int clipMaxY, int clipOutMinX, int clipOutMinY, int clipOutMaxX, int clipOutMaxY)
     {
         ushort data0 = _bus.ReadSpriteWord(wordOffset + 0);
         bool bpp8 = (data0 & 0x0200) != 0;
@@ -621,8 +673,9 @@ public sealed class System32Adapter : IEmulatorCore
 
         for (int yStep = 0, y = yPos; yStep < destHeight; yStep++, y += yDelta)
         {
-            if ((uint)y < FrameHeight)
+            if (y >= clipMinY && y <= clipMaxY)
             {
+                bool clipOutY = y >= clipOutMinY && y <= clipOutMaxY;
                 int xAccumulator = 0;
                 int currentAddress = rowAddress;
                 int sourcePixelsRead = 0;
@@ -646,9 +699,10 @@ public sealed class System32Adapter : IEmulatorCore
                         pen = (int)((packed >> shift) & 0xff);
                     }
 
-                    if (pen != 0 && pen != (bpp8 ? 0xff : 0x0f) && (uint)x < FrameWidth)
+                    bool clippedOut = clipOutY && x >= clipOutMinX && x <= clipOutMaxX;
+                    if (pen != 0 && pen != (bpp8 ? 0xff : 0x0f) && x >= clipMinX && x <= clipMaxX && !clippedOut)
                     {
-                        PutLayerPixel(LayerSprites, x, y, (ushort)(colorBase | pen));
+                        target[y * FrameWidth + x] = (ushort)(colorBase | pen);
                         drawn++;
                     }
 
@@ -696,7 +750,7 @@ public sealed class System32Adapter : IEmulatorCore
     private void RenderTextLayer()
     {
         ushort control = _bus.ReadVideoWord(0x1ff00);
-        int width = (control & 0x8000) != 0 ? 416 : 320;
+        int width = _visibleWidth;
         int textControl = _bus.ReadVideoWord(0x1ff5c);
         int tileBase = ((textControl >> 4) & 0x1f) * 0x800 * 2;
         int gfxBase = (textControl & 7) * 0x2000 * 2;
@@ -770,11 +824,11 @@ public sealed class System32Adapter : IEmulatorCore
         GetSpriteGroupParameters(spriteControl, out int spriteGroupShift, out int spriteGroupMask, out int spriteGroupOr);
         int spritePixelMask = ((1 << spriteGroupShift) - 1) & 0x3fff;
 
-        ushort[] spriteLayer = _layerPixels[LayerSprites];
+        ushort[] spriteLayer = _spriteVisiblePixels;
         for (int y = 0; y < FrameHeight; y++)
         {
             int row = y * FrameWidth;
-            for (int x = 0; x < FrameWidth; x++)
+            for (int x = 0; x < _visibleWidth; x++)
             {
                 int offset = row + x;
                 MixerLayer best = default;
@@ -820,7 +874,7 @@ public sealed class System32Adapter : IEmulatorCore
                 ushort finalRaw = 0;
                 if (found)
                 {
-                    ushort rawPixel = _layerPixels[best.Index][offset];
+                    ushort rawPixel = best.Index == LayerSprites ? spriteRaw : _layerPixels[best.Index][offset];
                     if (best.Index == LayerSprites)
                         rawPixel = (ushort)(rawPixel & spritePixelMask);
                     int paletteIndex = best.PaletteBase + ((rawPixel >> best.MixShift) & 0xfff0) + (rawPixel & 0x0f);

@@ -28,6 +28,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private byte _ioCounter;
     private byte _ioDirection;
     private byte _tileBankExternal;
+    private byte _spriteRenderCount;
+    private bool _spriteBufferStatus = true;
     private bool _displayEnabled;
     private byte _p1Input = 0xff;
     private byte _p2Input = 0xff;
@@ -57,6 +59,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         _ioCounter = 0;
         _ioDirection = 0;
         _tileBankExternal = 0;
+        _spriteRenderCount = 0;
+        _spriteBufferStatus = true;
         _displayEnabled = false;
         _p1Input = 0xff;
         _p2Input = 0xff;
@@ -283,11 +287,40 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             _dpram[(offset >> 1) & 0x07ff] = value;
     }
 
-    public void EndFrame()
+    public byte EndFrame()
     {
-        _spriteControl.AsSpan().CopyTo(_spriteControlLatched);
+        if ((_spriteControl[3] & 0x02) == 0)
+        {
+            if (_spriteRenderCount == 0)
+            {
+                _spriteControl[0] = 0x03;
+                _spriteRenderCount = (byte)(_spriteControl[3] & 0x01);
+            }
+            else
+            {
+                _spriteRenderCount--;
+            }
+        }
+
+        byte spriteCommand = _spriteControl[0];
         if ((_spriteControl[0] & 0x03) != 0)
             _spriteControl[0] = 0;
+        return spriteCommand;
+    }
+
+    public void LatchSpriteControl()
+    {
+        _spriteControl.AsSpan().CopyTo(_spriteControlLatched);
+    }
+
+    public void SetSpriteBufferStatus(bool visibleBufferIsLower)
+    {
+        _spriteBufferStatus = visibleBufferIsLower;
+    }
+
+    public byte SpriteControlLatchedByte(int offset)
+    {
+        return _spriteControlLatched[offset & 7];
     }
 
     private byte ReadSpriteControl(uint address)
@@ -298,7 +331,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         int offset = (int)((address >> 1) & 7);
         return offset switch
         {
-            0 => 0xfd,
+            0 => (byte)(0xfc | (_spriteBufferStatus ? 1 : 0)),
             1 => 0xfd,
             2 => (byte)(0xfc | (_spriteControlLatched[2] & 0x03)),
             3 => (byte)(0xfc | (_spriteControlLatched[3] & 0x03)),

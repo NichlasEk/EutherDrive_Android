@@ -154,6 +154,18 @@ public sealed class V60
                 return ExecuteSetFlag(bus);
             case 0x48:
                 return ExecuteBranchSubroutine(bus);
+            case 0x50:
+                return ExecuteRemainder(bus, dimension: 0, unsigned: false);
+            case 0x51:
+                return ExecuteRemainder(bus, dimension: 0, unsigned: true);
+            case 0x52:
+                return ExecuteRemainder(bus, dimension: 1, unsigned: false);
+            case 0x53:
+                return ExecuteRemainder(bus, dimension: 1, unsigned: true);
+            case 0x54:
+                return ExecuteRemainder(bus, dimension: 2, unsigned: false);
+            case 0x55:
+                return ExecuteRemainder(bus, dimension: 2, unsigned: true);
             case 0x58:
                 return ExecuteExtended58(bus);
             case 0x5a:
@@ -176,6 +188,8 @@ public sealed class V60
                 return ExecuteLogicalOperation(bus, dimension: 0, LogicalOperation.Or);
             case 0x89:
                 return ExecuteRotate(bus, dimension: 0);
+            case 0x90:
+                return ExecuteAdd(bus, dimension: 0, carry: true);
             case 0x99:
                 return ExecuteRotateCarry(bus, dimension: 0);
             case 0x91:
@@ -184,6 +198,8 @@ public sealed class V60
                 return ExecuteLogicalOperation(bus, dimension: 1, LogicalOperation.Or);
             case 0x8b:
                 return ExecuteRotate(bus, dimension: 1);
+            case 0x92:
+                return ExecuteAdd(bus, dimension: 1, carry: true);
             case 0x9b:
                 return ExecuteRotateCarry(bus, dimension: 1);
             case 0x93:
@@ -192,6 +208,8 @@ public sealed class V60
                 return ExecuteLogicalOperation(bus, dimension: 2, LogicalOperation.Or);
             case 0x8d:
                 return ExecuteRotate(bus, dimension: 2);
+            case 0x94:
+                return ExecuteAdd(bus, dimension: 2, carry: true);
             case 0x9d:
                 return ExecuteRotateCarry(bus, dimension: 2);
             case 0x95:
@@ -218,6 +236,18 @@ public sealed class V60
                 return ExecuteShiftLogical(bus, dimension: 1);
             case 0xad:
                 return ExecuteShiftLogical(bus, dimension: 2);
+            case 0x98:
+                return ExecuteSubtract(bus, dimension: 0, carry: true);
+            case 0x9a:
+                return ExecuteSubtract(bus, dimension: 1, carry: true);
+            case 0x9c:
+                return ExecuteSubtract(bus, dimension: 2, carry: true);
+            case 0xb9:
+                return ExecuteShiftArithmetic(bus, dimension: 0);
+            case 0xbb:
+                return ExecuteShiftArithmetic(bus, dimension: 1);
+            case 0xbd:
+                return ExecuteShiftArithmetic(bus, dimension: 2);
             case 0xa8:
                 return ExecuteSubtract(bus, dimension: 0);
             case 0xaa:
@@ -254,6 +284,10 @@ public sealed class V60
                 return ExecutePopMultiple(bus, modm: 0);
             case 0xe5:
                 return ExecutePopMultiple(bus, modm: 1);
+            case 0xe6:
+                return ExecutePop(bus, modm: 0);
+            case 0xe7:
+                return ExecutePop(bus, modm: 1);
             case 0xd0:
                 return ExecuteIncrementDecrement(bus, dimension: 0, modm: 0, increment: false);
             case 0xd1:
@@ -670,6 +704,21 @@ public sealed class V60
 
         _reg[SpIndex] -= 4;
         bus.Write32(_reg[SpIndex], value);
+        return length + 1;
+    }
+
+    private uint ExecutePop(IV60Bus bus, int modm)
+    {
+        byte mod = bus.Read8(Pc + 1);
+        uint value = bus.Read32(_reg[SpIndex]);
+        _reg[SpIndex] += 4;
+        if (!TryWriteAddressModeValue(bus, modm, mod, Pc + 1, dimension: 2, value, out uint length, out string error))
+        {
+            Halted = true;
+            LastStopReason = error;
+            return 0;
+        }
+
         return length + 1;
     }
 
@@ -1363,7 +1412,7 @@ public sealed class V60
         return firstLength + secondLength + 2;
     }
 
-    private uint ExecuteAdd(IV60Bus bus, int dimension)
+    private uint ExecuteAdd(IV60Bus bus, int dimension, bool carry = false)
     {
         if (!TryDecodeFormat12ValueAndAddress(bus, dimension, dimension, out uint source, out OperandReference dest, out uint sourceLength, out uint destLength, out string error))
         {
@@ -1376,12 +1425,13 @@ public sealed class V60
         uint sign = SignBitForDimension(dimension);
         uint destValue = ReadOperandReference(bus, dest, dimension) & mask;
         source &= mask;
-        ulong sum = (ulong)destValue + source;
+        uint carryIn = carry ? _cy : 0u;
+        ulong sum = (ulong)destValue + source + carryIn;
         uint result = (uint)sum & mask;
         _cy = (byte)(sum > mask ? 1 : 0);
         _z = (byte)(result == 0 ? 1 : 0);
         _s = (byte)((result & sign) != 0 ? 1 : 0);
-        _ov = (byte)((((~(destValue ^ source)) & (destValue ^ result) & sign) != 0) ? 1 : 0);
+        _ov = (byte)((((result ^ source) & (result ^ destValue) & sign) != 0) ? 1 : 0);
         WriteOperandReference(bus, dest, result, dimension);
         return sourceLength + destLength + 2;
     }
@@ -1495,7 +1545,42 @@ public sealed class V60
         return sourceLength + destLength + 2;
     }
 
-    private uint ExecuteSubtract(IV60Bus bus, int dimension)
+    private uint ExecuteRemainder(IV60Bus bus, int dimension, bool unsigned)
+    {
+        if (!TryDecodeFormat12ValueAndAddress(bus, dimension, dimension, out uint divisor, out OperandReference dest, out uint sourceLength, out uint destLength, out string error))
+        {
+            Halted = true;
+            LastStopReason = error;
+            return 0;
+        }
+
+        uint mask = MaskForDimension(dimension);
+        uint sign = SignBitForDimension(dimension);
+        divisor &= mask;
+        uint result = ReadOperandReference(bus, dest, dimension) & mask;
+        _ov = 0;
+
+        if (divisor != 0)
+        {
+            if (unsigned)
+            {
+                result = (result % divisor) & mask;
+            }
+            else
+            {
+                long left = SignedValue(result, dimension);
+                long right = SignedValue(divisor, dimension);
+                result = unchecked((uint)(left % right)) & mask;
+            }
+        }
+
+        _z = (byte)(result == 0 ? 1 : 0);
+        _s = (byte)((result & sign) != 0 ? 1 : 0);
+        WriteOperandReference(bus, dest, result, dimension);
+        return sourceLength + destLength + 2;
+    }
+
+    private uint ExecuteSubtract(IV60Bus bus, int dimension, bool carry = false)
     {
         if (!TryDecodeFormat12ValueAndAddress(bus, dimension, dimension, out uint source, out OperandReference dest, out uint sourceLength, out uint destLength, out string error))
         {
@@ -1508,8 +1593,10 @@ public sealed class V60
         uint sign = SignBitForDimension(dimension);
         uint destValue = ReadOperandReference(bus, dest, dimension) & mask;
         source &= mask;
-        uint result = (destValue - source) & mask;
-        _cy = (byte)(destValue < source ? 1 : 0);
+        uint carryIn = carry ? _cy : 0u;
+        ulong difference = (ulong)destValue - source - carryIn;
+        uint result = (uint)difference & mask;
+        _cy = (byte)(((difference >> (SizeForDimension(dimension) * 8)) & 1) != 0 ? 1 : 0);
         _z = (byte)(result == 0 ? 1 : 0);
         _s = (byte)((result & sign) != 0 ? 1 : 0);
         _ov = (byte)((((destValue ^ source) & (destValue ^ result) & sign) != 0) ? 1 : 0);
@@ -1553,6 +1640,62 @@ public sealed class V60
         result &= MaskForDimension(dimension);
         _z = (byte)(result == 0 ? 1 : 0);
         _s = (byte)((result & SignBitForDimension(dimension)) != 0 ? 1 : 0);
+        WriteOperandReference(bus, dest, result, dimension);
+        return sourceLength + destLength + 2;
+    }
+
+    private uint ExecuteShiftArithmetic(IV60Bus bus, int dimension)
+    {
+        if (!TryDecodeFormat12ValueAndAddress(bus, sourceDimension: 0, destDimension: dimension, out uint source, out OperandReference dest, out uint sourceLength, out uint destLength, out string error))
+        {
+            Halted = true;
+            LastStopReason = error;
+            return 0;
+        }
+
+        uint mask = MaskForDimension(dimension);
+        uint sign = SignBitForDimension(dimension);
+        int bits = SizeForDimension(dimension) * 8;
+        uint destValue = ReadOperandReference(bus, dest, dimension) & mask;
+        uint result = destValue;
+        int count = unchecked((sbyte)(byte)source);
+
+        if (count == 0)
+        {
+            _cy = 0;
+            _ov = 0;
+        }
+        else if (count > 0)
+        {
+            if (count >= bits)
+            {
+                uint shiftedBits = destValue & mask;
+                _ov = (byte)((destValue & sign) != 0 ? (shiftedBits != mask ? 1 : 0) : (shiftedBits != 0 ? 1 : 0));
+                _cy = (byte)(count == bits ? destValue & 1 : 0);
+                result = 0;
+            }
+            else
+            {
+                uint shiftedMask = ((1u << count) - 1u) << (bits - count);
+                _ov = (byte)((destValue & sign) != 0 ? ((destValue & shiftedMask) != shiftedMask ? 1 : 0) : ((destValue & shiftedMask) != 0 ? 1 : 0));
+                _cy = (byte)((destValue >> (bits - count)) & 1);
+                result = (destValue << count) & mask;
+            }
+        }
+        else
+        {
+            int shift = -count;
+            _ov = 0;
+            _cy = (byte)(shift <= bits ? (destValue >> (shift - 1)) & 1 : 0);
+            if (shift >= bits)
+                result = (destValue & sign) != 0 ? mask : 0;
+            else
+                result = ArithmeticRightShiftByDimension(destValue, dimension, shift);
+        }
+
+        result &= mask;
+        _z = (byte)(result == 0 ? 1 : 0);
+        _s = (byte)((result & sign) != 0 ? 1 : 0);
         WriteOperandReference(bus, dest, result, dimension);
         return sourceLength + destLength + 2;
     }
@@ -2330,6 +2473,16 @@ public sealed class V60
             1 => 0x8000,
             2 => 0x80000000,
             _ => 0x80000000
+        };
+    }
+
+    private static uint ArithmeticRightShiftByDimension(uint value, int dimension, int shift)
+    {
+        return dimension switch
+        {
+            0 => unchecked((uint)(((sbyte)(byte)value) >> shift)),
+            1 => unchecked((uint)(((short)(ushort)value) >> shift)),
+            _ => unchecked((uint)(((int)value) >> shift))
         };
     }
 
