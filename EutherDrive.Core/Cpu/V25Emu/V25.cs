@@ -22,7 +22,7 @@ public sealed class V25
     private const int Ss = 2;
     private const int Ds0 = 3;
 
-    private static readonly byte[] GoldenAxe2OpcodeTable =
+    public static readonly byte[] GoldenAxe2OpcodeTable =
     {
         0x00,0x00,0xea,0x00,0x00,0x8b,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
         0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xfa,
@@ -45,6 +45,7 @@ public sealed class V25
     private readonly ushort[] _regs = new ushort[8];
     private readonly ushort[] _sregs = new ushort[4];
     private IV25Bus? _bus;
+    private byte[] _opcodeTable = GoldenAxe2OpcodeTable;
     private ushort _ip;
     private uint _prefixBase;
     private bool _segmentPrefix;
@@ -74,6 +75,14 @@ public sealed class V25
         LastStopReason = string.Empty;
     }
 
+    public void SetOpcodeTable(byte[] opcodeTable)
+    {
+        if (opcodeTable.Length != 256)
+            throw new ArgumentException("V25 opcode decryption table must contain 256 entries.", nameof(opcodeTable));
+
+        _opcodeTable = opcodeTable;
+    }
+
     public int ExecuteInstruction()
     {
         IV25Bus bus = _bus ?? throw new InvalidOperationException("V25 has not been reset with a bus.");
@@ -82,7 +91,7 @@ public sealed class V25
 
         PreviousPc = Pc;
         byte encrypted = Fetch(bus);
-        byte opcode = GoldenAxe2OpcodeTable[encrypted];
+        byte opcode = _opcodeTable[encrypted];
         if (opcode == 0)
             opcode = encrypted;
         LastOpcode = opcode;
@@ -111,6 +120,19 @@ public sealed class V25
             case 0x02:
                 ExecuteAddR8Rm8(bus);
                 return;
+            case 0x03:
+                ExecuteAddR16Rm16(bus);
+                return;
+            case 0x15:
+                {
+                    ushort source = FetchWord(bus);
+                    ushort dest = _regs[Ax];
+                    int carry = _carry;
+                    ushort result = (ushort)(dest + source + carry);
+                    SetAdcFlags16(dest, source, carry, result);
+                    _regs[Ax] = result;
+                    return;
+                }
             case 0x3a:
                 ExecuteCmpR8Rm8(bus);
                 return;
@@ -122,8 +144,23 @@ public sealed class V25
                 _regs[Cx]--;
                 SetIncDecFlags16(_regs[Cx]);
                 return;
+            case >= 0x50 and <= 0x57:
+                Push(bus, _regs[opcode - 0x50]);
+                return;
+            case >= 0x58 and <= 0x5f:
+                _regs[opcode - 0x58] = Pop(bus);
+                return;
+            case 0x73:
+                Branch8(bus, _carry == 0);
+                return;
+            case 0x74:
+                Branch8(bus, _zero != 0);
+                return;
             case 0x75:
                 Branch8(bus, _zero == 0);
+                return;
+            case 0x78:
+                Branch8(bus, _sign != 0);
                 return;
             case 0x80:
                 ExecuteGroup80(bus);
@@ -192,7 +229,7 @@ public sealed class V25
         _prefixBase = (uint)_sregs[segment] << 4;
         _segmentPrefix = true;
         byte encrypted = Fetch(bus);
-        byte opcode = GoldenAxe2OpcodeTable[encrypted];
+        byte opcode = _opcodeTable[encrypted];
         if (opcode == 0)
             opcode = encrypted;
         LastOpcode = opcode;
@@ -259,6 +296,17 @@ public sealed class V25
         SetReg8(reg, result);
     }
 
+    private void ExecuteAddR16Rm16(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        ushort source = ReadRm16(bus, modrm);
+        int reg = (modrm >> 3) & 7;
+        ushort dest = _regs[reg];
+        ushort result = (ushort)(dest + source);
+        SetAddFlags16(dest, source, result);
+        _regs[reg] = result;
+    }
+
     private void ExecuteCmpR8Rm8(IV25Bus bus)
     {
         byte modrm = Fetch(bus);
@@ -295,12 +343,24 @@ public sealed class V25
     {
         byte modrm = Fetch(bus);
         int op = (modrm >> 3) & 7;
-        ushort dest = ReadRm16(bus, modrm);
+        ushort dest = ReadRm16Resolved(bus, modrm, out bool isRegister, out int register, out uint address);
         ushort immediate = FetchWord(bus);
-        if (op == 7)
-            SetSubFlags16(dest, immediate, (ushort)(dest - immediate));
-        else
-            StopUnsupportedGroup(0x81, op);
+        switch (op)
+        {
+            case 4:
+                {
+                    ushort result = (ushort)(dest & immediate);
+                    SetLogicalFlags16(result);
+                    WriteRm16Resolved(bus, isRegister, register, address, result);
+                    break;
+                }
+            case 7:
+                SetSubFlags16(dest, immediate, (ushort)(dest - immediate));
+                break;
+            default:
+                StopUnsupportedGroup(0x81, op);
+                break;
+        }
     }
 
     private void ExecuteGroup83(IV25Bus bus)
@@ -586,6 +646,22 @@ public sealed class V25
         _zero = (byte)(result == 0 ? 1 : 0);
         _sign = (byte)((result & 0x8000) != 0 ? 1 : 0);
         _overflow = (byte)((~(left ^ right) & (left ^ result) & 0x8000) != 0 ? 1 : 0);
+    }
+
+    private void SetAdcFlags16(ushort left, ushort right, int carry, ushort result)
+    {
+        _carry = (byte)(left + right + carry > 0xffff ? 1 : 0);
+        _zero = (byte)(result == 0 ? 1 : 0);
+        _sign = (byte)((result & 0x8000) != 0 ? 1 : 0);
+        _overflow = (byte)(((left ^ result) & (right ^ result) & 0x8000) != 0 ? 1 : 0);
+    }
+
+    private void SetLogicalFlags16(ushort result)
+    {
+        _carry = 0;
+        _overflow = 0;
+        _zero = (byte)(result == 0 ? 1 : 0);
+        _sign = (byte)((result & 0x8000) != 0 ? 1 : 0);
     }
 
     private void SetSubFlags8(byte left, byte right, byte result)

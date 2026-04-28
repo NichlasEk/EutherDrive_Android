@@ -114,7 +114,7 @@ public sealed class System32Adapter : IEmulatorCore
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "ga2" or "ga2u" or "ga2j";
+        return name is "ga2" or "ga2u" or "ga2j" or "arabfgt" or "arabfgtu" or "arabfgtj";
     }
 
     public void LoadRom(string path)
@@ -124,9 +124,10 @@ public sealed class System32Adapter : IEmulatorCore
         if (!File.Exists(path))
             throw new FileNotFoundException("Sega System 32 ROM archive not found.", path);
 
-        _roms = System32RomSet.LoadGoldenAxe2(path);
+        _roms = System32RomSet.Load(path);
         _bus.Load(_roms);
         _sound.Load(_roms);
+        _mcu.SetOpcodeTable(_roms.McuOpcodeTable);
         _traceBoot = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_BOOT");
         _traceMcu = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_MCU");
         _traceTail = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_TAIL");

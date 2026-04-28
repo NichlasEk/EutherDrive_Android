@@ -9,6 +9,7 @@ public sealed class V60
 {
     private const int SpIndex = 31;
     private const int PcIndex = 32;
+    private const int ApIndex = 29;
     private const int PswIndex = 33;
     private const int SbrIndex = 41;
     private const int SycwIndex = 43;
@@ -154,6 +155,8 @@ public sealed class V60
                 return ExecuteSetFlag(bus);
             case 0x48:
                 return ExecuteBranchSubroutine(bus);
+            case 0x49:
+                return ExecuteCall(bus);
             case 0x50:
                 return ExecuteRemainder(bus, dimension: 0, unsigned: false);
             case 0x51:
@@ -322,6 +325,10 @@ public sealed class V60
                 return ExecuteIncrementDecrement(bus, dimension: 2, modm: 0, increment: true);
             case 0xdd:
                 return ExecuteIncrementDecrement(bus, dimension: 2, modm: 1, increment: true);
+            case 0xe2:
+                return ExecuteReturn(bus, modm: 0);
+            case 0xe3:
+                return ExecuteReturn(bus, modm: 1);
             case 0xe8:
                 return ExecuteJumpSubroutine(bus, modm: 0);
             case 0xe9:
@@ -383,6 +390,72 @@ public sealed class V60
         return 0;
     }
 
+    private uint ExecuteCall(IV60Bus bus)
+    {
+        byte instFlags = bus.Read8(Pc + 1);
+        uint targetAddress;
+        uint targetLength;
+        uint apAddress;
+        uint apLength;
+
+        if ((instFlags & 0x80) != 0)
+        {
+            uint targetModAddress = Pc + 2;
+            byte targetMod = bus.Read8(targetModAddress);
+            if (!TryReadAddressModeAddress(bus, (instFlags & 0x40) != 0 ? 1 : 0, targetMod, targetModAddress, dimension: 0, out targetAddress, out targetLength, out string targetError))
+            {
+                Halted = true;
+                LastStopReason = targetError;
+                return 0;
+            }
+
+            uint apModAddress = Pc + 2 + targetLength;
+            byte apMod = bus.Read8(apModAddress);
+            if (!TryReadAddressModeAddress(bus, (instFlags & 0x20) != 0 ? 1 : 0, apMod, apModAddress, dimension: 2, out apAddress, out apLength, out string apError))
+            {
+                Halted = true;
+                LastStopReason = apError;
+                return 0;
+            }
+        }
+        else if ((instFlags & 0x20) != 0)
+        {
+            uint targetModAddress = Pc + 2;
+            byte targetMod = bus.Read8(targetModAddress);
+            if (!TryReadAddressModeAddress(bus, (instFlags & 0x40) != 0 ? 1 : 0, targetMod, targetModAddress, dimension: 0, out targetAddress, out targetLength, out string targetError))
+            {
+                Halted = true;
+                LastStopReason = targetError;
+                return 0;
+            }
+
+            apAddress = _reg[instFlags & 0x1f];
+            apLength = 0;
+        }
+        else
+        {
+            targetAddress = _reg[instFlags & 0x1f];
+            targetLength = 0;
+            uint apModAddress = Pc + 2;
+            byte apMod = bus.Read8(apModAddress);
+            if (!TryReadAddressModeAddress(bus, (instFlags & 0x40) != 0 ? 1 : 0, apMod, apModAddress, dimension: 2, out apAddress, out apLength, out string apError))
+            {
+                Halted = true;
+                LastStopReason = apError;
+                return 0;
+            }
+        }
+
+        _reg[SpIndex] -= 4;
+        bus.Write32(_reg[SpIndex], _reg[ApIndex]);
+        _reg[ApIndex] = apAddress;
+
+        _reg[SpIndex] -= 4;
+        bus.Write32(_reg[SpIndex], Pc + targetLength + apLength + 2);
+        _reg[PcIndex] = targetAddress;
+        return 0;
+    }
+
     private uint ExecuteIncrementDecrement(IV60Bus bus, int dimension, int modm, bool increment)
     {
         byte mod = bus.Read8(Pc + 1);
@@ -424,6 +497,9 @@ public sealed class V60
         {
             0x08 => ExecuteMoveStringUp(bus, subop, dimension: 0),
             0x09 => ExecuteMoveStringDown(bus, subop, dimension: 0),
+            0x0a => ExecuteMoveStringUp(bus, subop, dimension: 0, fill: true),
+            0x0b => ExecuteMoveStringDown(bus, subop, dimension: 0, fill: true),
+            0x0c => ExecuteMoveStringUp(bus, subop, dimension: 0, stop: true),
             0x18 => ExecuteSearchString(bus, subop, dimension: 0, down: false, searchForEqual: true),
             0x19 => ExecuteSearchString(bus, subop, dimension: 0, down: true, searchForEqual: true),
             0x1a => ExecuteSearchString(bus, subop, dimension: 0, down: false, searchForEqual: false),
@@ -447,7 +523,7 @@ public sealed class V60
         };
     }
 
-    private uint ExecuteMoveStringUp(IV60Bus bus, byte subop, int dimension)
+    private uint ExecuteMoveStringUp(IV60Bus bus, byte subop, int dimension, bool fill = false, bool stop = false)
     {
         uint sourceModAddress = Pc + 2;
         byte sourceMod = bus.Read8(sourceModAddress);
@@ -479,16 +555,33 @@ public sealed class V60
 
         uint count = Math.Min(sourceCount, destCount);
         uint stride = (uint)SizeForDimension(dimension);
+        uint fillValue = _reg[26] & MaskForDimension(dimension);
         uint i;
         for (i = 0; i < count; i++)
-            WriteMemoryByDimension(bus, destAddress + i * stride, ReadMemoryByDimension(bus, sourceAddress + i * stride, dimension), dimension);
+        {
+            uint value = ReadMemoryByDimension(bus, sourceAddress + i * stride, dimension);
+            WriteMemoryByDimension(bus, destAddress + i * stride, value, dimension);
+            if (stop && (value & MaskForDimension(dimension)) == fillValue)
+            {
+                i++;
+                break;
+            }
+        }
 
         _reg[28] = sourceAddress + i * stride;
         _reg[27] = destAddress + i * stride;
+        if (fill && sourceCount < destCount)
+        {
+            for (; i < destCount; i++)
+                WriteMemoryByDimension(bus, destAddress + i * stride, fillValue, dimension);
+
+            _reg[27] = destAddress + i * stride;
+        }
+
         return sourceLength + destLength + 4;
     }
 
-    private uint ExecuteMoveStringDown(IV60Bus bus, byte subop, int dimension)
+    private uint ExecuteMoveStringDown(IV60Bus bus, byte subop, int dimension, bool fill = false, bool stop = false)
     {
         uint sourceModAddress = Pc + 2;
         byte sourceMod = bus.Read8(sourceModAddress);
@@ -520,15 +613,33 @@ public sealed class V60
 
         uint count = Math.Min(sourceCount, destCount);
         uint stride = (uint)SizeForDimension(dimension);
+        uint fillValue = _reg[26] & MaskForDimension(dimension);
         uint i;
         for (i = 0; i < count; i++)
         {
             uint index = count - i - 1;
-            WriteMemoryByDimension(bus, destAddress + index * stride, ReadMemoryByDimension(bus, sourceAddress + index * stride, dimension), dimension);
+            uint value = ReadMemoryByDimension(bus, sourceAddress + index * stride, dimension);
+            WriteMemoryByDimension(bus, destAddress + index * stride, value, dimension);
+            if (stop && (value & MaskForDimension(dimension)) == fillValue)
+            {
+                i++;
+                break;
+            }
         }
 
         _reg[28] = unchecked(sourceAddress + (sourceCount - i - 1) * stride);
         _reg[27] = unchecked(destAddress + (destCount - i - 1) * stride);
+        if (fill && sourceCount < destCount)
+        {
+            for (; i < destCount; i++)
+            {
+                uint fillIndex = count + destCount - i - 1;
+                WriteMemoryByDimension(bus, destAddress + fillIndex * stride, fillValue, dimension);
+            }
+
+            _reg[27] = unchecked(destAddress + (destCount - i - 1) * stride);
+        }
+
         return sourceLength + destLength + 4;
     }
 
@@ -605,6 +716,24 @@ public sealed class V60
     {
         _reg[PcIndex] = bus.Read32(_reg[SpIndex]);
         _reg[SpIndex] += 4;
+        return 0;
+    }
+
+    private uint ExecuteReturn(IV60Bus bus, int modm)
+    {
+        byte mod = bus.Read8(Pc + 1);
+        if (!TryReadAddressModeValue(bus, modm, mod, Pc + 1, dimension: 2, out uint stackFrameBytes, out _, out string error))
+        {
+            Halted = true;
+            LastStopReason = error;
+            return 0;
+        }
+
+        _reg[PcIndex] = bus.Read32(_reg[SpIndex]);
+        _reg[SpIndex] += 4;
+        _reg[ApIndex] = bus.Read32(_reg[SpIndex]);
+        _reg[SpIndex] += 4;
+        _reg[SpIndex] = unchecked(_reg[SpIndex] + stackFrameBytes);
         return 0;
     }
 
