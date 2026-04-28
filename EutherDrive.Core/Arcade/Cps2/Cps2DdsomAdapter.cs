@@ -1641,10 +1641,11 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             int opcodeOverlays = 0;
             foreach (NumberedRomFile file in programFiles)
             {
-                if (!TryFind(entries, out byte[] opcodeRom, OpcodeRomName(file.Name)))
+                string opcodeRomName = OpcodeRomName(file.Name);
+                if (!TryFind(entries, out byte[] opcodeRom, opcodeRomName))
                     continue;
 
-                Load16WordSwap(opcodes, (file.Number - 3) * ProgramRomChunkSize, OpcodeRomName(file.Name), opcodeRom);
+                Xor16WordSwap(opcodes, (file.Number - 3) * ProgramRomChunkSize, opcodeRomName, opcodeRom);
                 opcodeOverlays++;
             }
 
@@ -1759,6 +1760,20 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             {
                 destination[offset + i] = source[i + 1];
                 destination[offset + i + 1] = source[i];
+            }
+        }
+
+        private static void Xor16WordSwap(byte[] destination, int offset, string name, byte[] source)
+        {
+            if (offset + source.Length > destination.Length)
+                throw new InvalidDataException($"CPS2 XOR ROM '{name}' is too large for the opcode region.");
+            if ((source.Length & 1) != 0)
+                throw new InvalidDataException($"CPS2 XOR ROM '{name}' has an odd byte length.");
+
+            for (int i = 0; i < source.Length; i += 2)
+            {
+                destination[offset + i] ^= source[i + 1];
+                destination[offset + i + 1] ^= source[i];
             }
         }
 
