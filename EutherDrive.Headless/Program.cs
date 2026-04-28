@@ -25,6 +25,7 @@ using EutherDrive.Core.Sega32X;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
+using EutherDrive.Core.Arcade.Cps2;
 using EutherDrive.Audio;
 using EutherDrive.Core.Cpu.M68000Emu;
 
@@ -301,6 +302,9 @@ class Program
         LogEnv("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE");
         LogEnv("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_EVERY");
         LogEnv("EUTHERDRIVE_TRACE_Z80_AUDIO_RATE_START_FRAME");
+        LogEnv("EUTHERDRIVE_CPS2_EEPROM_TRACE");
+        LogEnv("EUTHERDRIVE_CPS2_EEPROM_TRACE_LIMIT");
+        LogEnv("EUTHERDRIVE_M68K_TRACE_EX");
 
         string dumpDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_DIR")
             ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
@@ -341,6 +345,9 @@ class Program
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+            bool useCps2 = string.Equals(coreOverride, "cps2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "arcade-cps2", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Cps2DdsomAdapter.IsSupportedArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -353,6 +360,64 @@ class Program
                 useN64 = false;
                 useSegaCd = false;
                 usePce = false;
+                useCps2 = false;
+            }
+
+            if (useCps2)
+            {
+                Console.WriteLine("[HEADLESS] Using CPS2 core");
+                var cps2 = new Cps2DdsomAdapter();
+                cps2.LoadRom(romPath);
+
+                ReadOnlySpan<byte> fbIn = cps2.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                bool traceCps2Frames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+
+                Console.WriteLine($"[HEADLESS] CPS2 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    cps2.SetInputState(
+                        up: false,
+                        down: false,
+                        left: false,
+                        right: false,
+                        a: false,
+                        b: false,
+                        c: false,
+                        start: false,
+                        x: false,
+                        y: false,
+                        z: false,
+                        mode: false,
+                        padType: PadType.SixButton);
+                    cps2.RunFrame();
+
+                    ReadOnlySpan<byte> fb = cps2.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceCps2Frames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: cps2_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+                    }
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = cps2.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] CPS2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
             }
 
             if (useNes)

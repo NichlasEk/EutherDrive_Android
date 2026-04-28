@@ -271,36 +271,21 @@ internal sealed partial class InstructionExecutor
 
     private ExecuteResult<ushort> ReadProgramWord(uint address)
     {
-        if ((address & 1) == 0)
-            return ReadOpcodeBusWord(address);
-
-        var high = ReadOpcodeBusWord(address - 1);
-        if (!high.IsOk) return ExecuteResult<ushort>.Err(high.Error!.Value);
-        var low = ReadOpcodeBusWord(address + 1);
-        if (!low.IsOk) return ExecuteResult<ushort>.Err(low.Error!.Value);
-        return ExecuteResult<ushort>.Ok((ushort)((high.Value << 8) | (low.Value >> 8)));
+        if ((address & 1) != 0)
+            return ExecuteResult<ushort>.Err(M68kException.AddressError(address, BusOpType.Read));
+        return ReadOpcodeBusWord(address);
     }
 
     private ExecuteResult<uint> ReadProgramLong(uint address)
     {
-        if ((address & 1) == 0)
-        {
-            var high = ReadOpcodeBusWord(address);
-            if (!high.IsOk) return ExecuteResult<uint>.Err(high.Error!.Value);
-            var low = ReadOpcodeBusWord(address + 2);
-            if (!low.IsOk) return ExecuteResult<uint>.Err(low.Error!.Value);
-            return ExecuteResult<uint>.Ok(((uint)high.Value << 16) | low.Value);
-        }
-        else
-        {
-            var high = ReadOpcodeBusWord(address - 1);
-            if (!high.IsOk) return ExecuteResult<uint>.Err(high.Error!.Value);
-            var middle = ReadOpcodeBusWord(address + 1);
-            if (!middle.IsOk) return ExecuteResult<uint>.Err(middle.Error!.Value);
-            var low = ReadOpcodeBusWord(address + 3);
-            if (!low.IsOk) return ExecuteResult<uint>.Err(low.Error!.Value);
-            return ExecuteResult<uint>.Ok(((uint)high.Value << 24) | ((uint)middle.Value << 8) | (uint)(low.Value >> 8));
-        }
+        if ((address & 1) != 0)
+            return ExecuteResult<uint>.Err(M68kException.AddressError(address, BusOpType.Read));
+
+        var high = ReadOpcodeBusWord(address);
+        if (!high.IsOk) return ExecuteResult<uint>.Err(high.Error!.Value);
+        var low = ReadOpcodeBusWord(address + 2);
+        if (!low.IsOk) return ExecuteResult<uint>.Err(low.Error!.Value);
+        return ExecuteResult<uint>.Ok(((uint)high.Value << 16) | low.Value);
     }
 
     private ExecuteResult<uint> ReadBusLong(uint address)

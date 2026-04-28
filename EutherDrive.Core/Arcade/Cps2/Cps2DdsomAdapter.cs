@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Cpu.M68000Emu;
+using EutherDrive.Core.Savestates;
 using SharpCompress.Archives;
 
 namespace EutherDrive.Core.Arcade.Cps2;
@@ -21,6 +22,9 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
     private const int FrameStride = FrameWidth * 4;
     private static readonly int CpuCyclesPerFrame = Math.Max(1, (int)Math.Round(16_000_000.0 / TargetFps));
     private static readonly int AudioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(8_000_000.0 / TargetFps));
+    private static readonly bool TraceEeprom =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CPS2_EEPROM_TRACE"), "1", StringComparison.Ordinal);
+    private static readonly int TraceEepromLimit = Math.Max(1, ReadIntEnv("EUTHERDRIVE_CPS2_EEPROM_TRACE_LIMIT") ?? 768);
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly Cps2Bus _bus = new();
@@ -36,6 +40,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
     private int _audioSampleFramesThisFrame;
     private double _audioSampleAccumulator;
     private ArcadeInputState _input;
+    private string? _eepromPath;
     private bool _loaded;
 
     public Cps2DdsomAdapter()
@@ -61,6 +66,10 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         Cps2DdsomRomSet roms = Cps2DdsomRomSet.Load(path);
         _bus.Load(roms);
+        string saveDirectory = PersistentStoragePath.ResolveSaveDirectory(path, "cps2");
+        Directory.CreateDirectory(saveDirectory);
+        _eepromPath = Path.Combine(saveDirectory, roms.SetName + ".eeprom");
+        LoadEeprom();
         _video = new Cps2Video(_bus, roms.Graphics);
         _mainCpu.Reset(_bus);
         _audioCpu.ApplyResetLine();
@@ -89,31 +98,38 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         if (!_loaded)
             return;
 
-        _bus.SetInput(_input);
-        _audioSampleFramesThisFrame = GetAudioSampleFramesPerFrame();
-        EnsureAudioBuffer(_audioSampleFramesThisFrame * OutputChannels);
-        _bus.BeginAudioFrame(_audioBuffer);
-        _bus.AssertVBlankInterrupt();
-
-        int mainCycles = 0;
-        int audioCycles = 0;
-        while (mainCycles < CpuCyclesPerFrame)
+        try
         {
-            mainCycles += checked((int)_mainCpu.ExecuteInstruction(_bus));
-            int targetAudioCycles = Math.Min(
-                AudioCpuCyclesPerFrame,
-                (int)((long)mainCycles * AudioCpuCyclesPerFrame / CpuCyclesPerFrame));
-            int audioSlice = targetAudioCycles - audioCycles;
-            if (audioSlice > 0)
-                audioCycles += _bus.RunAudioCpu(_audioCpu, _audioBus, audioSlice);
-        }
+            _bus.SetInput(_input);
+            _audioSampleFramesThisFrame = GetAudioSampleFramesPerFrame();
+            EnsureAudioBuffer(_audioSampleFramesThisFrame * OutputChannels);
+            _bus.BeginAudioFrame(_audioBuffer);
+            _bus.AssertVBlankInterrupt();
 
-        _bus.ClearInterrupt();
-        if (audioCycles < AudioCpuCyclesPerFrame)
-            _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - audioCycles);
-        _bus.EndAudioFrame();
-        _video!.Render(_frameBuffer);
-        _bus.LatchSprites();
+            int mainCycles = 0;
+            int audioCycles = 0;
+            while (mainCycles < CpuCyclesPerFrame)
+            {
+                mainCycles += checked((int)_mainCpu.ExecuteInstruction(_bus));
+                int targetAudioCycles = Math.Min(
+                    AudioCpuCyclesPerFrame,
+                    (int)((long)mainCycles * AudioCpuCyclesPerFrame / CpuCyclesPerFrame));
+                int audioSlice = targetAudioCycles - audioCycles;
+                if (audioSlice > 0)
+                    audioCycles += _bus.RunAudioCpu(_audioCpu, _audioBus, audioSlice);
+            }
+
+            _bus.ClearInterrupt();
+            if (audioCycles < AudioCpuCyclesPerFrame)
+                _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - audioCycles);
+            _bus.EndAudioFrame();
+            _video!.Render(_frameBuffer);
+            _bus.LatchSprites();
+        }
+        finally
+        {
+            SaveEepromIfDirty();
+        }
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -147,6 +163,67 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
     {
         if (_audioBuffer.Length != samples)
             _audioBuffer = new short[samples];
+    }
+
+    private void LoadEeprom()
+    {
+        if (string.IsNullOrWhiteSpace(_eepromPath))
+            return;
+
+        if (!File.Exists(_eepromPath))
+        {
+            TraceEepromLine($"save missing path='{_eepromPath}'");
+            return;
+        }
+
+        try
+        {
+            byte[] data = File.ReadAllBytes(_eepromPath);
+            TraceEepromLine($"load path='{_eepromPath}' bytes={data.Length} head={FormatBytes(data, 32)}");
+            _bus.LoadEeprom(data);
+        }
+        catch (Exception ex)
+        {
+            TraceEepromLine($"load failed path='{_eepromPath}' error={ex.GetType().Name}:{ex.Message}");
+            // Corrupt/old EEPROM saves should not block arcade boot.
+        }
+    }
+
+    private void SaveEepromIfDirty()
+    {
+        if (!_bus.EepromDirty || string.IsNullOrWhiteSpace(_eepromPath))
+            return;
+
+        try
+        {
+            byte[] data = _bus.ExportEeprom();
+            TraceEepromLine($"save path='{_eepromPath}' bytes={data.Length} head={FormatBytes(data, 32)}");
+            File.WriteAllBytes(_eepromPath, data);
+            _bus.ClearEepromDirty();
+        }
+        catch (Exception ex)
+        {
+            TraceEepromLine($"save failed path='{_eepromPath}' error={ex.GetType().Name}:{ex.Message}");
+        }
+    }
+
+    private static int? ReadIntEnv(string name)
+    {
+        return int.TryParse(Environment.GetEnvironmentVariable(name), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+            ? value
+            : null;
+    }
+
+    private static void TraceEepromLine(string message)
+    {
+        if (TraceEeprom)
+            Console.WriteLine($"[CPS2-EEPROM] {message}");
+    }
+
+    private static string FormatBytes(ReadOnlySpan<byte> data, int maxBytes)
+    {
+        int count = Math.Min(data.Length, maxBytes);
+        return count <= 0 ? string.Empty : Convert.ToHexString(data[..count]);
     }
 
     public void SetInputState(
@@ -230,6 +307,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         public ReadOnlySpan<ushort> CpsB => _cpsB;
         public BusSignals Signals => new(false);
         public ushort CurrentOpcode => 0;
+        public bool EepromDirty => _eeprom.Dirty;
 
         public void Load(Cps2DdsomRomSet roms)
         {
@@ -260,6 +338,21 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             _addonRamControl = 0;
             _interruptLevel = 0;
             _objRamBank = 0;
+        }
+
+        public void LoadEeprom(ReadOnlySpan<byte> data)
+        {
+            _eeprom.Import(data);
+        }
+
+        public byte[] ExportEeprom()
+        {
+            return _eeprom.Export();
+        }
+
+        public void ClearEepromDirty()
+        {
+            _eeprom.ClearDirty();
         }
 
         public void ResetMachine()
@@ -787,7 +880,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         private ushort Input2()
         {
-            int value = 0xfffe | _eeprom.OutputBit;
+            int value = 0xfffe | _eeprom.ReadOutputBit();
             if (_input.Start)
                 value &= ~0x0100;
             if (_input.Coin)
@@ -852,37 +945,78 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
         private sealed class SerialEeprom93C46
         {
             private const int WordCount = 64;
+            private const int CommandAddressBits = 6;
             private readonly ushort[] _words = new ushort[WordCount];
 
             private bool _chipSelect;
             private bool _clock;
+            private int _state;
             private int _command;
             private int _commandBits;
-            private int _readData;
+            private int _readShift;
             private int _readBitsRemaining;
             private int _writeData;
             private int _writeBits;
             private int _writeAddress;
+            private bool _writeAll;
             private bool _writeEnabled;
-            private Mode _mode;
+            private int _traceEvents;
+            private readonly char[] _commandBitTrace = new char[16];
+
+            public bool Dirty { get; private set; }
 
             private enum Mode
             {
-                Command,
+                InReset,
+                WaitForStartBit,
+                WaitForCommand,
                 Read,
                 Write,
-                WriteAll
+                Completion
             }
 
             public ushort LastWrite { get; private set; }
 
-            public int OutputBit { get; private set; } = 1;
+            private int OutputBit { get; set; } = 1;
+
+            private static bool Ready => true;
 
             public void ResetContents()
             {
                 Array.Fill(_words, (ushort)0xffff);
                 _writeEnabled = false;
+                Dirty = false;
+                Trace("contents reset to erased");
                 ResetLines();
+            }
+
+            public void Import(ReadOnlySpan<byte> data)
+            {
+                if (data.Length < WordCount * 2)
+                    return;
+
+                for (int i = 0; i < WordCount; i++)
+                    _words[i] = (ushort)(data[i * 2] | (data[i * 2 + 1] << 8));
+                Dirty = false;
+                Trace($"import words={WordCount} first={FormatWords(8)}");
+                ResetLines();
+            }
+
+            public byte[] Export()
+            {
+                byte[] data = new byte[WordCount * 2];
+                for (int i = 0; i < WordCount; i++)
+                {
+                    data[i * 2] = (byte)_words[i];
+                    data[i * 2 + 1] = (byte)(_words[i] >> 8);
+                }
+
+                return data;
+            }
+
+            public void ClearDirty()
+            {
+                Dirty = false;
             }
 
             public void ResetLines()
@@ -890,6 +1024,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 _chipSelect = false;
                 _clock = false;
                 LastWrite = 0;
+                _state = (int)Mode.InReset;
                 ResetSerial();
             }
 
@@ -902,108 +1037,186 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
                 if (!chipSelect)
                 {
+                    if (_chipSelect)
+                        Trace($"cs=0 reset value=0x{value:X4} clk={(clock ? 1 : 0)} di={(dataIn ? 1 : 0)}");
                     _chipSelect = false;
                     _clock = clock;
+                    _state = (int)Mode.InReset;
                     ResetSerial();
                     return;
                 }
 
                 if (!_chipSelect)
-                    ResetSerial();
+                {
+                    Trace($"cs=1 value=0x{value:X4} clk={(clock ? 1 : 0)} di={(dataIn ? 1 : 0)}");
+                    _chipSelect = true;
+                    _clock = clock;
+                    _state = (int)Mode.WaitForStartBit;
+                    _commandBits = 0;
+                    _command = 0;
+                    _writeAll = false;
+                    OutputBit = 1;
+                    return;
+                }
 
-                if (_chipSelect && !_clock && clock)
-                    Clock(dataIn);
-
-                _chipSelect = true;
+                bool risingClock = !_clock && clock;
                 _clock = clock;
+
+                if (risingClock)
+                    Clock(dataIn);
             }
 
             private void ResetSerial()
             {
                 _command = 0;
                 _commandBits = 0;
-                _readData = 0;
+                Array.Clear(_commandBitTrace);
+                _readShift = 0;
                 _readBitsRemaining = 0;
                 _writeData = 0;
                 _writeBits = 0;
                 _writeAddress = 0;
-                _mode = Mode.Command;
+                _writeAll = false;
+                if (_state != (int)Mode.InReset)
+                    _state = (int)Mode.WaitForStartBit;
                 OutputBit = 1;
+            }
+
+            public int ReadOutputBit()
+            {
+                if (_state == (int)Mode.WaitForStartBit && !Ready)
+                    return 0;
+
+                return OutputBit;
             }
 
             private void Clock(bool dataIn)
             {
-                switch (_mode)
+                if (_state == (int)Mode.WaitForStartBit)
                 {
-                    case Mode.Read:
-                        if (_readBitsRemaining > 0)
+                    if (!dataIn || !Ready)
+                        return;
+
+                    Trace("start bit accepted");
+                    _state = (int)Mode.WaitForCommand;
+                    _command = 0;
+                    _commandBits = 0;
+                    Array.Clear(_commandBitTrace);
+                    return;
+                }
+
+                if (_state == (int)Mode.Read)
+                {
+                    if (_readBitsRemaining == 16)
+                    {
+                        ushort word = ReadWordFromWire(_writeAddress);
+                        Trace($"read shift addr=0x{_writeAddress:X2} word=0x{word:X4}");
+                        _readShift = (word << 16) & unchecked((int)0xffff_0000);
+                    }
+
+                    if (_readBitsRemaining > 0)
+                    {
+                        OutputBit = (_readShift >> 31) & 1;
+                        _readShift = (_readShift << 1) | 1;
+                        _readBitsRemaining--;
+                    }
+                    else
+                    {
+                        OutputBit = 1;
+                    }
+
+                    return;
+                }
+
+                if (_state == (int)Mode.Write)
+                {
+                    _writeData = ((_writeData << 1) | (dataIn ? 1 : 0)) & 0xffff;
+                    _writeBits++;
+
+                    if (_writeBits == 16)
+                    {
+                        if (_writeEnabled)
                         {
-                            OutputBit = (_readData >> (_readBitsRemaining - 1)) & 1;
-                            _readBitsRemaining--;
+                            ushort value = WriteWordToWire((ushort)_writeData);
+                            if (_writeAll)
+                            {
+                                for (int i = 0; i < WordCount; i++)
+                                    _words[i] &= value;
+                            }
+                            else
+                            {
+                                _words[_writeAddress] = value;
+                            }
+
+                            Dirty = true;
+                            Trace(_writeAll
+                                ? $"write-all value=0x{value:X4}"
+                                : $"write addr=0x{_writeAddress:X2} value=0x{value:X4}");
                         }
                         else
                         {
-                            OutputBit = 1;
+                            Trace(_writeAll
+                                ? $"write-all ignored locked value=0x{_writeData:X4}"
+                                : $"write ignored locked addr=0x{_writeAddress:X2} value=0x{_writeData:X4}");
                         }
-                        return;
 
-                    case Mode.Write:
-                    case Mode.WriteAll:
-                        _writeData = ((_writeData << 1) | (dataIn ? 1 : 0)) & 0xffff;
-                        _writeBits++;
-                        if (_writeBits == 16)
-                        {
-                            if (_writeEnabled)
-                            {
-                                if (_mode == Mode.WriteAll)
-                                    Array.Fill(_words, (ushort)_writeData);
-                                else
-                                    _words[_writeAddress] = (ushort)_writeData;
-                            }
-
-                            _mode = Mode.Command;
-                            _command = 0;
-                            _commandBits = 0;
-                        }
+                        _state = (int)Mode.Completion;
                         OutputBit = 1;
-                        return;
+                    }
+
+                    return;
                 }
 
-                if (_commandBits == 0 && !dataIn)
+                if (_state != (int)Mode.WaitForCommand)
                     return;
 
-                _command = (_command << 1) | (dataIn ? 1 : 0);
+                _command = ((_command << 1) | (dataIn ? 1 : 0)) & 0x1ff;
+                if (_commandBits < _commandBitTrace.Length)
+                    _commandBitTrace[_commandBits] = dataIn ? '1' : '0';
                 _commandBits++;
-                if (_commandBits == 9)
+                if (_commandBits == 2 + CommandAddressBits)
                     DecodeCommand();
             }
 
             private void DecodeCommand()
             {
-                int op = (_command >> 6) & 0x03;
-                int address = _command & 0x3f;
+                int op = (_command >> CommandAddressBits) & 0x03;
+                int address = _command & ((1 << CommandAddressBits) - 1);
 
                 switch (op)
                 {
                     case 0x02:
-                        _readData = _words[address];
+                        _writeAddress = address;
                         _readBitsRemaining = 16;
-                        _mode = Mode.Read;
+                        _state = (int)Mode.Read;
+                        _readShift = 0;
                         OutputBit = 0;
+                        Trace($"cmd READ bits={CommandBits()} raw=0x{_command:X3} addr=0x{address:X2} word=0x{ReadWordFromWire(address):X4}");
                         break;
 
                     case 0x01:
                         _writeAddress = address;
                         _writeData = 0;
                         _writeBits = 0;
-                        _mode = Mode.Write;
+                        _writeAll = false;
+                        _state = (int)Mode.Write;
                         OutputBit = 1;
+                        Trace($"cmd WRITE bits={CommandBits()} raw=0x{_command:X3} addr=0x{address:X2} enabled={_writeEnabled}");
                         break;
 
                     case 0x03:
                         if (_writeEnabled)
+                        {
                             _words[address] = 0xffff;
-                        ResetSerial();
+                            Dirty = true;
+                            Trace($"cmd ERASE bits={CommandBits()} raw=0x{_command:X3} addr=0x{address:X2}");
+                        }
+                        else
+                        {
+                            Trace($"cmd ERASE ignored locked bits={CommandBits()} raw=0x{_command:X3} addr=0x{address:X2}");
+                        }
+
+                        _state = (int)Mode.Completion;
                         break;
 
                     default:
@@ -1019,27 +1232,84 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 {
                     case 0x00:
                         _writeEnabled = false;
-                        ResetSerial();
+                        _state = (int)Mode.InReset;
+                        Trace($"cmd LOCK bits={CommandBits()} raw=0x{_command:X3}");
                         break;
 
                     case 0x01:
+                        _writeAll = true;
                         _writeData = 0;
                         _writeBits = 0;
-                        _mode = Mode.WriteAll;
+                        _state = (int)Mode.Write;
                         OutputBit = 1;
+                        Trace($"cmd WRITEALL bits={CommandBits()} raw=0x{_command:X3} enabled={_writeEnabled}");
                         break;
 
                     case 0x02:
                         if (_writeEnabled)
+                        {
                             Array.Fill(_words, (ushort)0xffff);
-                        ResetSerial();
+                            Dirty = true;
+                            Trace($"cmd ERASEALL bits={CommandBits()} raw=0x{_command:X3}");
+                        }
+                        else
+                        {
+                            Trace($"cmd ERASEALL ignored locked bits={CommandBits()} raw=0x{_command:X3}");
+                        }
+
+                        _state = (int)Mode.Completion;
                         break;
 
                     case 0x03:
                         _writeEnabled = true;
-                        ResetSerial();
+                        _state = (int)Mode.InReset;
+                        Trace($"cmd UNLOCK bits={CommandBits()} raw=0x{_command:X3}");
+                        break;
+
+                    default:
+                        _state = (int)Mode.InReset;
+                        Trace($"cmd SPECIAL unknown bits={CommandBits()} raw=0x{_command:X3} addr=0x{address:X2}");
                         break;
                 }
+            }
+
+            private ushort ReadWordFromWire(int index)
+                => _words[index & (WordCount - 1)];
+
+            private ushort WriteWordToWire(ushort value)
+                => value;
+
+            private void Trace(string message)
+            {
+                if (!TraceEeprom)
+                    return;
+                if (_traceEvents >= TraceEepromLimit)
+                {
+                    if (_traceEvents == TraceEepromLimit)
+                        Console.WriteLine("[CPS2-EEPROM] trace limit reached");
+                    _traceEvents++;
+                    return;
+                }
+
+                Console.WriteLine(
+                    $"[CPS2-EEPROM] {message} state={(Mode)_state} cs={(_chipSelect ? 1 : 0)} clk={(_clock ? 1 : 0)} " +
+                    $"out={OutputBit} enabled={_writeEnabled}");
+                _traceEvents++;
+            }
+
+            private string FormatWords(int count)
+            {
+                count = Math.Min(count, _words.Length);
+                string[] words = new string[count];
+                for (int i = 0; i < count; i++)
+                    words[i] = _words[i].ToString("X4", CultureInfo.InvariantCulture);
+                return string.Join(' ', words);
+            }
+
+            private string CommandBits()
+            {
+                int count = Math.Min(_commandBits, _commandBitTrace.Length);
+                return count <= 0 ? string.Empty : new string(_commandBitTrace, 0, count);
             }
         }
     }
@@ -1501,8 +1771,9 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
     private sealed class Cps2DdsomRomSet
     {
-        private Cps2DdsomRomSet(byte[] program, byte[] opcodes, byte[] graphics, byte[] audioCpu, byte[] qsound, byte[] qsoundDsp)
+        private Cps2DdsomRomSet(string setName, byte[] program, byte[] opcodes, byte[] graphics, byte[] audioCpu, byte[] qsound, byte[] qsoundDsp)
         {
+            SetName = setName;
             Program = program;
             Opcodes = opcodes;
             Graphics = graphics;
@@ -1511,6 +1782,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             QSoundDsp = qsoundDsp;
         }
 
+        public string SetName { get; }
         public byte[] Program { get; }
         public byte[] Opcodes { get; }
         public byte[] Graphics { get; }
@@ -1590,7 +1862,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             byte[] qsound = BuildQSoundSamples(entries, setName);
             byte[] qsoundDsp = LoadQSoundDsp(path, entries);
 
-            return new Cps2DdsomRomSet(program, opcodes, gfx, audioCpu, qsound, qsoundDsp);
+            return new Cps2DdsomRomSet(setName, program, opcodes, gfx, audioCpu, qsound, qsoundDsp);
         }
 
         private static Dictionary<string, byte[]> ReadArchive(string path)
@@ -1802,6 +2074,12 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         private static IEnumerable<string> ParentArchiveCandidates(string setName)
         {
+            if (setName is "armwaru" or "armwaru1" or "armwarb" or "armwara" or "armwarar1" or "pgear" or "pgearr1")
+            {
+                yield return "armwar.zip";
+                yield return "armwar.7z";
+            }
+
             if (setName is "ddsomu" or "ddsomur1")
             {
                 yield return "ddsomu.zip";
@@ -1816,6 +2094,10 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             string lowerName = name.ToLowerInvariant();
             string[] prefixes = setName switch
             {
+                "armwaru" or "armwaru1" => new[] { "pwgu", "pwg.", "pwge" },
+                "armwarb" => new[] { "pwgb", "pwg.", "pwge" },
+                "armwara" or "armwarar1" => new[] { "pwga", "pwg.", "pwge" },
+                "pgear" or "pgearr1" => new[] { "pwgj", "pwg.", "pwge" },
                 "ddsomu" or "ddsomur1" => new[] { "dd2u", "dd2.", "dd2e" },
                 "ddsom" => new[] { "dd2e", "dd2.", "dd2u" },
                 _ => Array.Empty<string>()
@@ -1891,15 +2173,6 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             {
                 if (TryFind(entries, out key, candidate))
                     return true;
-            }
-
-            List<KeyValuePair<string, byte[]>> keyFiles = entries
-                .Where(static entry => Path.GetExtension(entry.Key).Equals(".key", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (keyFiles.Count == 1)
-            {
-                key = keyFiles[0].Value;
-                return true;
             }
 
             key = Array.Empty<byte>();

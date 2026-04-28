@@ -682,7 +682,7 @@ internal sealed partial class InstructionExecutor
         uint rotates = (uint)(count.Get(_registers) % 64);
         _registers.Ccr.Overflow = false;
         _registers.Ccr.Carry = _registers.Ccr.Extend;
-        uint value = reg.Read(_registers);
+        uint value = reg.Read(_registers) & MaskForWidth(width);
         for (uint i = 0; i < rotates; i++)
         {
             bool carry = ((value >> (width - 1)) & 1u) != 0;
@@ -702,7 +702,7 @@ internal sealed partial class InstructionExecutor
         uint rotates = (uint)(count.Get(_registers) % 64);
         _registers.Ccr.Overflow = false;
         _registers.Ccr.Carry = _registers.Ccr.Extend;
-        uint value = reg.Read(_registers);
+        uint value = reg.Read(_registers) & MaskForWidth(width);
         for (uint i = 0; i < rotates; i++)
         {
             bool carry = (value & 1u) != 0;
