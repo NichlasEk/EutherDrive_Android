@@ -155,10 +155,19 @@ internal sealed partial class InstructionExecutor
         if (!resolved.IsOk) return ExecuteResult<uint>.Err(resolved.Error!.Value);
 
         uint address;
+        bool programMemory = false;
         AddressRegister? postincRegister = null;
         if (resolved.Value.Kind == ResolvedAddressKind.Memory)
         {
             address = resolved.Value.Address;
+        }
+        else if (resolved.Value.Kind == ResolvedAddressKind.ProgramMemory)
+        {
+            if (direction == Direction.RegisterToMemory)
+                return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
+
+            address = resolved.Value.Address;
+            programMemory = true;
         }
         else if (resolved.Value.Kind == ResolvedAddressKind.MemoryPostincrement)
         {
@@ -167,7 +176,7 @@ internal sealed partial class InstructionExecutor
         }
         else
         {
-            throw new InvalidOperationException("MOVEM only supports addressing modes that resolve to a memory address");
+            return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
         }
 
         int count = 0;
@@ -190,7 +199,7 @@ internal sealed partial class InstructionExecutor
                 }
                 else
                 {
-                    throw new InvalidOperationException("MOVEM does not support size byte");
+                    return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
                 }
 
                 count++;
@@ -202,7 +211,7 @@ internal sealed partial class InstructionExecutor
             {
                 if (size == OpSize.Word)
                 {
-                    var value = ReadBusWord(address);
+                    var value = programMemory ? ReadProgramWord(address) : ReadBusWord(address);
                     if (!value.IsOk) return ExecuteResult<uint>.Err(value.Error!.Value);
                     uint signExtended = (uint)(short)value.Value;
 
@@ -213,7 +222,7 @@ internal sealed partial class InstructionExecutor
                 }
                 else if (size == OpSize.LongWord)
                 {
-                    var value = ReadBusLong(address);
+                    var value = programMemory ? ReadProgramLong(address) : ReadBusLong(address);
                     if (!value.IsOk) return ExecuteResult<uint>.Err(value.Error!.Value);
 
                     if (!(reg.IsAddress && postincRegister.HasValue && reg.Address.Index == postincRegister.Value.Index))
@@ -223,7 +232,7 @@ internal sealed partial class InstructionExecutor
                 }
                 else
                 {
-                    throw new InvalidOperationException("MOVEM does not support size byte");
+                    return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
                 }
 
                 count++;
@@ -269,7 +278,7 @@ internal sealed partial class InstructionExecutor
             }
             else
             {
-                throw new InvalidOperationException("MOVEM does not support size byte");
+                return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
             }
 
             count++;
