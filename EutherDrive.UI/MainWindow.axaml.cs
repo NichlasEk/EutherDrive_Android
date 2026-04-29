@@ -51,6 +51,13 @@ public partial class MainWindow : Window
         Jungle
     }
 
+    private enum TateRotation
+    {
+        Off,
+        Clockwise,
+        CounterClockwise
+    }
+
     private IEmulatorCore? _core;
     private readonly object _coreAudioLock = new();
     private readonly SavestateService _savestateService;
@@ -192,6 +199,8 @@ public partial class MainWindow : Window
     private IEmulatorCore? _pendingPresentCore;
     private int _pendingPresentQueued;
     private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
+    private TateRotation _tateRotation = TateRotation.Off;
+    private byte[] _tateFrameBuffer = Array.Empty<byte>();
 
     private string? _romPath;
     private string? _romLibraryPath;
@@ -578,6 +587,7 @@ public partial class MainWindow : Window
         LoadTitleStats();
         ApplySnesSpecialRomOverrides();
         UpdateRecentRomCombo();
+        UpdateTateButton();
         if (MasterVolumeSlider != null)
             MasterVolumeSlider.Value = _masterVolumePercent;
         UpdateMasterVolumeText();
@@ -6885,6 +6895,47 @@ public partial class MainWindow : Window
             SaveSettings();
     }
 
+    private void OnTateClicked(object? sender, RoutedEventArgs e)
+    {
+        _tateRotation = _tateRotation switch
+        {
+            TateRotation.Off => TateRotation.Clockwise,
+            TateRotation.Clockwise => TateRotation.CounterClockwise,
+            _ => TateRotation.Off
+        };
+
+        UpdateTateButton();
+        _lastCoreFrameId = -1;
+        if (_core != null)
+            RenderFrame(_core);
+        else
+            UpdatePresentationLayout();
+    }
+
+    private void UpdateTateButton()
+    {
+        if (TateButton == null)
+            return;
+
+        TateButton.Content = _tateRotation switch
+        {
+            TateRotation.Clockwise => "TATE 90",
+            TateRotation.CounterClockwise => "TATE 270",
+            _ => "TATE"
+        };
+        ToolTip.SetTip(TateButton, _tateRotation switch
+        {
+            TateRotation.Clockwise => "Rotera bilden 90 grader medurs",
+            TateRotation.CounterClockwise => "Rotera bilden 90 grader moturs",
+            _ => "TATE-rotation av"
+        });
+
+        if (_tateRotation == TateRotation.Off)
+            TateButton.Classes.Remove("action");
+        else if (!TateButton.Classes.Contains("action"))
+            TateButton.Classes.Add("action");
+    }
+
     private static Control BuildControlsSection(string title, params string[] lines)
     {
         var section = new StackPanel { Spacing = 6 };
@@ -8557,6 +8608,7 @@ public partial class MainWindow : Window
         _pendingPresentCore = null;
         _pendingPresentQueued = 0;
         _glSwapPresentBuffer = Array.Empty<byte>();
+        _tateFrameBuffer = Array.Empty<byte>();
         _psxInterlaceReconstructor.Reset();
         _lastCoreFrameId = -1;
         _presentTickCounter = 0;
@@ -8653,6 +8705,15 @@ public partial class MainWindow : Window
             }
         }
 
+        presentSrc = ApplyTateRotation(
+            presentSrc,
+            presentWidth,
+            presentHeight,
+            presentStride,
+            out presentWidth,
+            out presentHeight,
+            out presentStride);
+
         EnsureBitmapFromCore(presentWidth, presentHeight);
         if (_renderSurface == null)
             return;
@@ -8699,10 +8760,10 @@ public partial class MainWindow : Window
             UpdateRenderBackendUi();
             UpdatePresentationLayout();
             _renderSurface.Present(
-                src,
-                w,
-                h,
-                srcStride,
+                presentSrc,
+                presentWidth,
+                presentHeight,
+                presentStride,
                 blitOptions,
                 TracePerf);
         }
@@ -8713,7 +8774,7 @@ public partial class MainWindow : Window
 
         // Log presentation info
         if (TraceUiPresent)
-            Console.WriteLine($"[MainWindow] Present WxH={w}x{h} stride={srcStride} forceOpaque={forceOpaque}");
+            Console.WriteLine($"[MainWindow] Present WxH={presentWidth}x{presentHeight} stride={presentStride} forceOpaque={forceOpaque}");
 
         if (!_earlyMagentaReported && _earlyMagentaTimer.IsRunning)
         {
@@ -8727,6 +8788,72 @@ public partial class MainWindow : Window
 
         if (TraceUiProfile)
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
+    }
+
+    private ReadOnlySpan<byte> ApplyTateRotation(
+        ReadOnlySpan<byte> source,
+        int width,
+        int height,
+        int srcStride,
+        out int rotatedWidth,
+        out int rotatedHeight,
+        out int rotatedStride)
+    {
+        rotatedWidth = width;
+        rotatedHeight = height;
+        rotatedStride = srcStride;
+
+        if (_tateRotation == TateRotation.Off || source.IsEmpty || width <= 0 || height <= 0)
+            return source;
+
+        const int bytesPerPixel = 4;
+        int sourceRowBytes = width * bytesPerPixel;
+        long sourceBytesNeeded = ((long)(height - 1) * srcStride) + sourceRowBytes;
+        if (srcStride < sourceRowBytes || sourceBytesNeeded > source.Length)
+            return source;
+
+        rotatedWidth = height;
+        rotatedHeight = width;
+        rotatedStride = rotatedWidth * bytesPerPixel;
+        long rotatedBytesNeeded = (long)rotatedStride * rotatedHeight;
+        if (rotatedBytesNeeded <= 0 || rotatedBytesNeeded > int.MaxValue)
+        {
+            rotatedWidth = width;
+            rotatedHeight = height;
+            rotatedStride = srcStride;
+            return source;
+        }
+
+        int rotatedLength = (int)rotatedBytesNeeded;
+        if (_tateFrameBuffer.Length < rotatedLength)
+            _tateFrameBuffer = new byte[rotatedLength];
+
+        Span<byte> destination = _tateFrameBuffer.AsSpan(0, rotatedLength);
+        for (int y = 0; y < height; y++)
+        {
+            int srcRow = y * srcStride;
+            for (int x = 0; x < width; x++)
+            {
+                int dstX;
+                int dstY;
+                if (_tateRotation == TateRotation.Clockwise)
+                {
+                    dstX = height - 1 - y;
+                    dstY = x;
+                }
+                else
+                {
+                    dstX = y;
+                    dstY = width - 1 - x;
+                }
+
+                int srcOffset = srcRow + (x * bytesPerPixel);
+                int dstOffset = (dstY * rotatedStride) + (dstX * bytesPerPixel);
+                source.Slice(srcOffset, bytesPerPixel).CopyTo(destination.Slice(dstOffset, bytesPerPixel));
+            }
+        }
+
+        return destination;
     }
 
     private bool TryRenderPsxAcceleratedFrame(PsxAdapter psx, IAcceleratedRenderSurface acceleratedSurface, in FrameBlitOptions options, long renderStart)
@@ -9415,7 +9542,10 @@ public partial class MainWindow : Window
         }
         else if (core is Cps1DinoAdapter)
         {
-            ApplyPresentationSize(Math.Round(height * (4.0 / 3.0)), height);
+            if (_tateRotation == TateRotation.Off)
+                ApplyPresentationSize(Math.Round(height * (4.0 / 3.0)), height);
+            else
+                ApplyPresentationSize(width, Math.Round(width * (4.0 / 3.0)));
         }
     }
 

@@ -43,7 +43,7 @@
           <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
           <StackPanel Name="TopControlsPanel" Grid.Column="0" Orientation="Horizontal" Spacing="6">
           <Border Classes="panel" Padding="6,5" MinWidth="336">
-            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="6" RowSpacing="6">
+            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="6" RowSpacing="6">
               <Button Grid.Row="0"
                       Grid.Column="0"
                       Classes="action compact"
@@ -54,15 +54,21 @@
                       Classes="compact"
                       Content="Skin"
                       Click="OnSkinSettings"/>
+              <Button Grid.Row="0"
+                      Grid.Column="2"
+                      Name="TateButton"
+                      Classes="compact"
+                      Content="TATE"
+                      Click="OnTateClicked"/>
               <TextBlock Grid.Row="0"
-                         Grid.Column="2"
+                         Grid.Column="3"
                          Classes="kicker"
                          Text="Recent"
                          HorizontalAlignment="Right"
                          VerticalAlignment="Center"/>
               <ComboBox Grid.Row="1"
                         Grid.Column="0"
-                        Grid.ColumnSpan="3"
+                        Grid.ColumnSpan="4"
                         Name="RecentRomCombo"
                         HorizontalAlignment="Stretch"
                         MinWidth="300"
