@@ -668,7 +668,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             }
             if (_audioHardware == Cps1AudioHardware.YmOki && address >= 0x800188 && address <= 0x80018f)
             {
-                _soundLatch1 = value;
+                if ((address & 1) != 0)
+                    _soundLatch1 = value;
                 return;
             }
             if (address >= 0xf18000 && address <= 0xf19fff)
@@ -789,8 +790,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _audioIrqCountdown = 32_000;
             _audioIrqAsserted = false;
             _audioCpuClockHz = _audioCpuClockHz <= 0.0 ? 8_000_000.0 : _audioCpuClockHz;
-            _soundLatch0 = 0xff;
-            _soundLatch1 = 0xff;
+            _soundLatch0 = 0;
+            _soundLatch1 = 0;
             _qsound.Reset();
             _oki.Reset();
             _ym2151.Reset();
@@ -830,10 +831,16 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return (ushort)((input << 8) | 0xff);
         }
 
-        private static ushort ReadCpsB(int offset)
+        private ushort ReadCpsB(int offset)
         {
-            _ = offset;
-            return 0xffff;
+            if ((uint)offset >= _cpsB.Length)
+                return 0xffff;
+
+            int address = offset * 2;
+            if (_videoConfig.CpsBAddress == address)
+                return _videoConfig.CpsBValue;
+
+            return _cpsB[offset];
         }
 
         private ushort ReadQSoundRom(int offset)
@@ -1532,14 +1539,24 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         public const int VideoControl = 0x22 / 2;
     }
 
-    private readonly record struct Cps1VideoConfig(int LayerControl, int Priority0, int Priority1, int Priority2, int Priority3, int PaletteControl)
+    private readonly record struct Cps1VideoConfig(
+        int LayerControl,
+        int Priority0,
+        int Priority1,
+        int Priority2,
+        int Priority3,
+        int PaletteControl,
+        int CpsBAddress = -1,
+        ushort CpsBValue = 0xffff)
     {
         public static readonly Cps1VideoConfig Default = new(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30);
         public static readonly Cps1VideoConfig QSound1 = new(0x22, 0x24, 0x26, 0x28, 0x2a, 0x2c);
         public static readonly Cps1VideoConfig QSound2 = new(0x0a, 0x0c, 0x0e, 0x00, 0x02, 0x04);
-        public static readonly Cps1VideoConfig QSound3 = new(0x12, 0x14, 0x16, 0x08, 0x0a, 0x0c);
-        public static readonly Cps1VideoConfig QSound4 = new(0x16, 0x00, 0x02, 0x28, 0x2a, 0x2c);
-        public static readonly Cps1VideoConfig QSound5 = new(0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x1c);
+        public static readonly Cps1VideoConfig QSound3 = new(0x12, 0x14, 0x16, 0x08, 0x0a, 0x0c, 0x0e, 0x0c00);
+        public static readonly Cps1VideoConfig QSound4 = new(0x16, 0x00, 0x02, 0x28, 0x2a, 0x2c, 0x2e, 0x0c01);
+        public static readonly Cps1VideoConfig QSound5 = new(0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x1c, 0x1e, 0x0c02);
+        public static readonly Cps1VideoConfig CpsB05 = new(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x20, 0x0005);
+        public static readonly Cps1VideoConfig CpsB16 = new(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00, 0x0406);
 
         public int PriorityMask(int group) => group switch
         {
@@ -1706,6 +1723,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         {
             Dictionary<string, byte[]> entries = ReadArchive(path);
             MergeParentArchivesIfPresent(path, ResolveParentSetName(setName, definition.ParentSetName), entries);
+            ValidateQSoundSetEntries(setName, entries);
 
             byte[] program = new byte[ProgramRomSize];
             Array.Fill(program, (byte)0xff);
@@ -1733,6 +1751,24 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 Array.Empty<byte>(),
                 qsound,
                 qsoundDsp);
+        }
+
+        private static void ValidateQSoundSetEntries(string setName, Dictionary<string, byte[]> entries)
+        {
+            if (string.Equals(setName, "mbomberj", StringComparison.OrdinalIgnoreCase))
+            {
+                RequireRom(entries, "mbj_23e.8f", "mbj23e");
+                RequireRom(entries, "mbj_22b.7f");
+            }
+        }
+
+        private static void RequireRom(Dictionary<string, byte[]> entries, params string[] names)
+        {
+            if (TryFind(entries, out _, names))
+                return;
+
+            string present = string.Join(", ", entries.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase));
+            throw new InvalidDataException($"Missing CPS1 ROM file ({string.Join(" or ", names)}). Present files: {present}");
         }
 
         private static Cps1DinoRomSet LoadClassicSet(string path, string setName, Cps1ClassicDefinition definition)
@@ -2399,7 +2435,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["cawing"] = new Cps1ClassicDefinition(
                 "cawing",
                 null,
-                new Cps1VideoConfig(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02),
+                Cps1VideoConfig.CpsB16,
                 0x200000,
                 0x40000,
                 new[]
@@ -2430,7 +2466,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["cawingj"] = new Cps1ClassicDefinition(
                 "cawingj",
                 null,
-                new Cps1VideoConfig(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02),
+                Cps1VideoConfig.CpsB16,
                 0x200000,
                 0x40000,
                 new[]
@@ -2476,7 +2512,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["cawingr1"] = new Cps1ClassicDefinition(
                 "cawingr1",
                 null,
-                new Cps1VideoConfig(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02),
+                Cps1VideoConfig.CpsB16,
                 0x200000,
                 0x40000,
                 new[]
@@ -2507,7 +2543,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["cawingu"] = new Cps1ClassicDefinition(
                 "cawingu",
                 null,
-                new Cps1VideoConfig(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32),
+                Cps1VideoConfig.CpsB05,
                 0x200000,
                 0x40000,
                 new[]
@@ -2553,7 +2589,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["cawingur1"] = new Cps1ClassicDefinition(
                 "cawingur1",
                 "cawing",
-                new Cps1VideoConfig(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02),
+                Cps1VideoConfig.CpsB16,
                 0x200000,
                 0x40000,
                 new[]
@@ -8963,7 +8999,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40_0000,
                 new[]
                 {
-                    Word(0x000000, "mbe_23e.8f", "mbe_23e.rom", "mbu_23e.8f", "mbu-23e.rom", "mbj_23e.8f", "mbj23e"),
+                    Word(0x000000, "mbj_23e.8f", "mbj23e", "mbe_23e.8f", "mbe_23e.rom", "mbu_23e.8f", "mbu-23e.rom"),
                     Byte(0x000000, "mbde_26.11e", "mbd_26.bin", "mbdj_26.11e"),
                     Byte(0x000001, "mbde_30.11f", "mbde_30.rom", "mbdj_30.11f", "mbdj_30.bin"),
                     Byte(0x040000, "mbde_27.12e", "mbd_27.bin", "mbdj_27.12e"),
