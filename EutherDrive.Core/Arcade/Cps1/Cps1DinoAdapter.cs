@@ -1612,6 +1612,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             ["captcomb"] = "captcommb",
             ["captcomj"] = "captcommj",
             ["captcomu"] = "captcommu",
+            ["cawingu"] = "cawingur1",
             ["daimakr2"] = "daimakair",
             ["dinoh"] = "dinohunt",
             ["dynwaru"] = "dynwara",
@@ -1670,6 +1671,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private static readonly Dictionary<string, Cps1ClassicDefinition> GeneratedClassicDefinitions = BuildGeneratedClassicDefinitions();
 
+        private static readonly Dictionary<string, string> GeneratedParentSets = BuildGeneratedParentSets();
+
         private static readonly Dictionary<string, uint> KnownRomCrcs = BuildKnownRomCrcs();
 
         private static readonly uint[] Crc32Table = BuildCrc32Table();
@@ -1702,7 +1705,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private static Cps1DinoRomSet LoadQSoundSet(string path, string setName, Cps1QSoundDefinition definition)
         {
             Dictionary<string, byte[]> entries = ReadArchive(path);
-            MergeParentArchivesIfPresent(path, definition.ParentSetName, entries);
+            MergeParentArchivesIfPresent(path, ResolveParentSetName(setName, definition.ParentSetName), entries);
 
             byte[] program = new byte[ProgramRomSize];
             Array.Fill(program, (byte)0xff);
@@ -1735,7 +1738,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private static Cps1DinoRomSet LoadClassicSet(string path, string setName, Cps1ClassicDefinition definition)
         {
             Dictionary<string, byte[]> entries = ReadArchive(path);
-            MergeParentArchivesIfPresent(path, definition.ParentSetName, entries);
+            MergeParentArchivesIfPresent(path, ResolveParentSetName(setName, definition.ParentSetName), entries);
 
             byte[] program = new byte[ProgramRomSize];
             Array.Fill(program, (byte)0xff);
@@ -1761,6 +1764,240 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 oki,
                 Array.Empty<byte>(),
                 Array.Empty<byte>());
+        }
+
+        private static Dictionary<string, string> BuildGeneratedParentSets()
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["1941j"] = "1941",
+                ["1941r1"] = "1941",
+                ["1941u"] = "1941",
+                ["3wondersb"] = "3wonders",
+                ["3wondersbi"] = "3wonders",
+                ["3wondersh"] = "3wonders",
+                ["3wondersr1"] = "3wonders",
+                ["3wondersu"] = "3wonders",
+                ["area88"] = "unsquad",
+                ["area88r"] = "unsquad",
+                ["captcommb"] = "captcomm",
+                ["captcommb2"] = "captcomm",
+                ["captcommj"] = "captcomm",
+                ["captcommjr1"] = "captcomm",
+                ["captcommr1"] = "captcomm",
+                ["captcommu"] = "captcomm",
+                ["cawingb2"] = "cawing",
+                ["cawingbl"] = "cawing",
+                ["cawingj"] = "cawing",
+                ["cawingjr"] = "cawing",
+                ["cawingr1"] = "cawing",
+                ["cawingu"] = "cawing",
+                ["cawingur1"] = "cawing",
+                ["chikij"] = "mtwins",
+                ["cworld2ja"] = "cworld2j",
+                ["cworld2jb"] = "cworld2j",
+                ["daimakai"] = "ghouls",
+                ["daimakair"] = "ghouls",
+                ["dinoa"] = "dino",
+                ["dinohunt"] = "dino",
+                ["dinoj"] = "dino",
+                ["dinopic"] = "dino",
+                ["dinopic2"] = "dino",
+                ["dinopic3"] = "dino",
+                ["dinou"] = "dino",
+                ["dynwara"] = "dynwar",
+                ["dynwarj"] = "dynwar",
+                ["dynwarjr"] = "dynwar",
+                ["fcrash"] = "ffight",
+                ["ffighta"] = "ffight",
+                ["ffightae"] = "ffight",
+                ["ffightbl"] = "ffight",
+                ["ffightbla"] = "ffight",
+                ["ffightblb"] = "ffight",
+                ["ffightj"] = "ffight",
+                ["ffightj1"] = "ffight",
+                ["ffightj2"] = "ffight",
+                ["ffightj3"] = "ffight",
+                ["ffightj4"] = "ffight",
+                ["ffightjh"] = "ffight",
+                ["ffightu"] = "ffight",
+                ["ffightu1"] = "ffight",
+                ["ffightua"] = "ffight",
+                ["ffightub"] = "ffight",
+                ["ffightuc"] = "ffight",
+                ["forgottna"] = "forgottn",
+                ["forgottnj"] = "forgottn",
+                ["forgottnu"] = "forgottn",
+                ["forgottnua"] = "forgottn",
+                ["forgottnuaa"] = "forgottn",
+                ["forgottnuc"] = "forgottn",
+                ["forgottnue"] = "forgottn",
+                ["ghoulsu"] = "ghouls",
+                ["jurassic99"] = "dino",
+                ["knightsb"] = "knights",
+                ["knightsb2"] = "knights",
+                ["knightsb3"] = "knights",
+                ["knightsj"] = "knights",
+                ["knightsja"] = "knights",
+                ["knightsu"] = "knights",
+                ["kodb"] = "kod",
+                ["kodj"] = "kod",
+                ["kodja"] = "kod",
+                ["kodr1"] = "kod",
+                ["kodr2"] = "kod",
+                ["kodu"] = "kod",
+                ["lostwrld"] = "forgottn",
+                ["lostwrldo"] = "forgottn",
+                ["mbomberj"] = "slammast",
+                ["mbombrdj"] = "mbombrd",
+                ["megamana"] = "megaman",
+                ["mercsj"] = "mercs",
+                ["mercsu"] = "mercs",
+                ["mercsur1"] = "mercs",
+                ["mswordj"] = "msword",
+                ["mswordr1"] = "msword",
+                ["mswordu"] = "msword",
+                ["mtwinsb"] = "mtwins",
+                ["nemoj"] = "nemo",
+                ["nemoja"] = "nemo",
+                ["nemor1"] = "nemo",
+                ["pang3b"] = "pang3",
+                ["pang3b2"] = "pang3",
+                ["pang3b3"] = "pang3",
+                ["pang3b4"] = "pang3",
+                ["pang3b5"] = "pang3",
+                ["pang3j"] = "pang3",
+                ["pang3r1"] = "pang3",
+                ["punipic"] = "punisher",
+                ["punipic2"] = "punisher",
+                ["punipic3"] = "punisher",
+                ["punisherbz"] = "punisher",
+                ["punisherh"] = "punisher",
+                ["punisherj"] = "punisher",
+                ["punisheru"] = "punisher",
+                ["qadjr"] = "qad",
+                ["rockmanj"] = "megaman",
+                ["sf2acc"] = "sf2ce",
+                ["sf2acca"] = "sf2ce",
+                ["sf2accp2"] = "sf2ce",
+                ["sf2amf"] = "sf2ce",
+                ["sf2amf2"] = "sf2ce",
+                ["sf2amf3"] = "sf2ce",
+                ["sf2b"] = "sf2",
+                ["sf2b2"] = "sf2",
+                ["sf2bhh"] = "sf2ce",
+                ["sf2ceb"] = "sf2ce",
+                ["sf2ceb2"] = "sf2ce",
+                ["sf2ceb3"] = "sf2ce",
+                ["sf2ceb4"] = "sf2ce",
+                ["sf2ceb5"] = "sf2ce",
+                ["sf2ceblp"] = "sf2ce",
+                ["sf2cebltw"] = "sf2ce",
+                ["sf2ceds6"] = "sf2ce",
+                ["sf2ceea"] = "sf2ce",
+                ["sf2ceec"] = "sf2ce",
+                ["sf2ceja"] = "sf2ce",
+                ["sf2cejb"] = "sf2ce",
+                ["sf2cejc"] = "sf2ce",
+                ["sf2cems6a"] = "sf2ce",
+                ["sf2cems6b"] = "sf2ce",
+                ["sf2cems6c"] = "sf2ce",
+                ["sf2cet"] = "sf2ce",
+                ["sf2ceua"] = "sf2ce",
+                ["sf2ceub"] = "sf2ce",
+                ["sf2ceuc"] = "sf2ce",
+                ["sf2ceupl"] = "sf2ce",
+                ["sf2dkot2"] = "sf2ce",
+                ["sf2dongb"] = "sf2ce",
+                ["sf2ea"] = "sf2",
+                ["sf2eb"] = "sf2",
+                ["sf2ebbl"] = "sf2",
+                ["sf2ebbl2"] = "sf2",
+                ["sf2ebbl3"] = "sf2",
+                ["sf2ed"] = "sf2",
+                ["sf2ee"] = "sf2",
+                ["sf2ef"] = "sf2",
+                ["sf2em"] = "sf2",
+                ["sf2en"] = "sf2",
+                ["sf2hfj"] = "sf2hf",
+                ["sf2hfu"] = "sf2hf",
+                ["sf2j"] = "sf2",
+                ["sf2j17"] = "sf2",
+                ["sf2ja"] = "sf2",
+                ["sf2jc"] = "sf2",
+                ["sf2jf"] = "sf2",
+                ["sf2jh"] = "sf2",
+                ["sf2jl"] = "sf2",
+                ["sf2koryu"] = "sf2ce",
+                ["sf2level"] = "sf2ce",
+                ["sf2m1"] = "sf2ce",
+                ["sf2m10"] = "sf2ce",
+                ["sf2m2"] = "sf2ce",
+                ["sf2m3"] = "sf2ce",
+                ["sf2m4"] = "sf2ce",
+                ["sf2m5"] = "sf2ce",
+                ["sf2m6"] = "sf2ce",
+                ["sf2m7"] = "sf2ce",
+                ["sf2m8"] = "sf2ce",
+                ["sf2m9"] = "sf2ce",
+                ["sf2mdt"] = "sf2ce",
+                ["sf2mdta"] = "sf2ce",
+                ["sf2mdtb"] = "sf2ce",
+                ["sf2mkot"] = "sf2ce",
+                ["sf2qp1"] = "sf2",
+                ["sf2qp2"] = "sf2",
+                ["sf2rb"] = "sf2ce",
+                ["sf2rb2"] = "sf2ce",
+                ["sf2rb3"] = "sf2ce",
+                ["sf2re"] = "sf2ce",
+                ["sf2red"] = "sf2ce",
+                ["sf2reda"] = "sf2ce",
+                ["sf2rk"] = "sf2",
+                ["sf2rules"] = "sf2",
+                ["sf2stt"] = "sf2",
+                ["sf2thndr"] = "sf2",
+                ["sf2thndr2"] = "sf2",
+                ["sf2ua"] = "sf2",
+                ["sf2ub"] = "sf2",
+                ["sf2uc"] = "sf2",
+                ["sf2ud"] = "sf2",
+                ["sf2ue"] = "sf2",
+                ["sf2uf"] = "sf2",
+                ["sf2ug"] = "sf2",
+                ["sf2uh"] = "sf2",
+                ["sf2ui"] = "sf2",
+                ["sf2uk"] = "sf2",
+                ["sf2um"] = "sf2",
+                ["sf2v004"] = "sf2ce",
+                ["sf2yyc"] = "sf2ce",
+                ["sgyxz"] = "wof",
+                ["slammastu"] = "slammast",
+                ["slampic"] = "slammast",
+                ["slampic2"] = "slammast",
+                ["striderj"] = "strider",
+                ["striderjr"] = "strider",
+                ["striderua"] = "strider",
+                ["strideruc"] = "strider",
+                ["varthb"] = "varth",
+                ["varthb2"] = "varth",
+                ["varthb3"] = "varth",
+                ["varthj"] = "varth",
+                ["varthjr"] = "varth",
+                ["varthr1"] = "varth",
+                ["varthu"] = "varth",
+                ["willowj"] = "willow",
+                ["willowu"] = "willow",
+                ["willowuo"] = "willow",
+                ["wofa"] = "wof",
+                ["wofabl"] = "wof",
+                ["wofhfh"] = "wof",
+                ["wofj"] = "wof",
+                ["wofpic"] = "wof",
+                ["wofr1"] = "wof",
+                ["wofr1bl"] = "wof",
+                ["wofu"] = "wof",
+                ["wonder3"] = "3wonders",
+            };
         }
 
         private static Dictionary<string, Cps1QSoundDefinition> BuildGeneratedQSoundDefinitions()
@@ -2312,6 +2549,37 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 {
                     Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "cau_30.12c"),
                     Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "cau_31.13c"),
+                });
+            definitions["cawingur1"] = new Cps1ClassicDefinition(
+                "cawingur1",
+                "cawing",
+                new Cps1VideoConfig(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02),
+                0x200000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "cau_30a.11f", "cae_30a.11f"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "cau_35a.11h"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "cau_31a.12f", "cae_31a.12f"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "cau_36a.12h", "cae_36a.12h"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "ca-32m.8h"),
+                },
+                new[]
+                {
+                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "ca-5m.7a"),
+                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "ca-7m.9a"),
+                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "ca-1m.3a"),
+                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "ca-3m.5a"),
+                },
+                new[]
+                {
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "cau_09.12b", "ca_9.12b"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "cau_09.12b", "ca_9.12b"),
+                },
+                new[]
+                {
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "cau_18.11c", "ca_18.11c"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "cau_19.12c", "ca_19.12c"),
                 });
             definitions["chikij"] = new Cps1ClassicDefinition(
                 "chikij",
@@ -8855,6 +9123,14 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private static string CanonicalSetName(string setName)
             => Aliases.TryGetValue(setName.Trim().ToLowerInvariant(), out string? canonical) ? canonical : setName.Trim().ToLowerInvariant();
+
+        private static string? ResolveParentSetName(string setName, string? explicitParentSetName)
+        {
+            if (!string.IsNullOrWhiteSpace(explicitParentSetName))
+                return explicitParentSetName;
+
+            return GeneratedParentSets.TryGetValue(setName, out string? parentSetName) ? parentSetName : null;
+        }
 
         private static RomLoad Word(int offset, params string[] names)
             => new(RomLoadKind.WordSwap, offset, 0, -1, names);
