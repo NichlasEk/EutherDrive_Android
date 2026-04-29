@@ -421,6 +421,8 @@ internal sealed class Cps1Ym2151
             {
                 if ((mode & 0x04) != 0)
                     _status |= 0x01;
+                if ((mode & 0x80) != 0)
+                    PulseCsmKeyOn();
                 _timerACounter += TimerAPeriod();
             }
         }
@@ -445,6 +447,12 @@ internal sealed class Cps1Ym2151
 
     private int TimerBInitialPeriod()
         => Math.Max(1, TimerBPeriod() - (_timerClockCounter & 0x0f));
+
+    private void PulseCsmKeyOn()
+    {
+        foreach (YmChannel channel in _channels)
+            channel.PulseCsmKeyOn();
+    }
 
     private void InitializeLfoWaveforms()
     {
@@ -682,7 +690,13 @@ internal sealed class Cps1Ym2151
         public void KeyOn(int mask)
         {
             for (int op = 0; op < 4; op++)
-                _ops[op].SetKeyOn(((mask >> op) & 1) != 0);
+                _ops[op].SetNormalKeyOn(((mask >> op) & 1) != 0);
+        }
+
+        public void PulseCsmKeyOn()
+        {
+            for (int op = 0; op < 4; op++)
+                _ops[op].PulseCsmKeyOn();
         }
 
         public void Generate(int lfoRawPm, ref int leftMix, ref int rightMix)
@@ -769,6 +783,8 @@ internal sealed class Cps1Ym2151
         private int _totalLevel;
         private int _sustainLevel;
         private readonly int[] _rate = new int[4];
+        private bool _normalKeyOn;
+        private bool _csmKeyOn;
 
         public YmOperator(Cps1Ym2151 chip, int offset)
         {
@@ -780,6 +796,8 @@ internal sealed class Cps1Ym2151
         {
             _state = EnvelopeState.Release;
             _keyOn = false;
+            _normalKeyOn = false;
+            _csmKeyOn = false;
             _phase = 0;
             _envAttenuation = 0x3ff;
             Refresh();
@@ -816,8 +834,21 @@ internal sealed class Cps1Ym2151
             Refresh();
         }
 
-        public void SetKeyOn(bool keyOn)
+        public void SetNormalKeyOn(bool keyOn)
         {
+            _normalKeyOn = keyOn;
+            UpdateKeyState();
+        }
+
+        public void PulseCsmKeyOn()
+        {
+            _csmKeyOn = true;
+            UpdateKeyState();
+        }
+
+        private void UpdateKeyState()
+        {
+            bool keyOn = _normalKeyOn || _csmKeyOn;
             if (keyOn == _keyOn)
                 return;
 
@@ -840,6 +871,8 @@ internal sealed class Cps1Ym2151
 
         public void Clock(int lfoRawPm)
         {
+            UpdateKeyState();
+            _csmKeyOn = false;
             ClockEnvelope();
             int step = _chip.ComputeOperatorPhaseStep(_offset, _channel, _blockFrequency, lfoRawPm);
             _phaseStep = (uint)Math.Max(0, step);
