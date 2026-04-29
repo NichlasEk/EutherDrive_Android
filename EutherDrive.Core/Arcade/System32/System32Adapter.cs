@@ -418,9 +418,6 @@ public sealed class System32Adapter : IEmulatorCore
 
     private int TileBankForLayer(int bgnum, ushort screenControl)
     {
-        if (_roms is not null && _roms.Tiles.Length > 0x10_0000)
-            return (_bus.TileBankExternal >> (2 * bgnum)) & 3;
-
         return ((_bus.TileBankExternal & 1) << 1) | (((screenControl & 0x0400) != 0) ? 1 : 0);
     }
 
