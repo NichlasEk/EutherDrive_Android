@@ -14,6 +14,8 @@ internal sealed class Cps1Ym2151
     private const int InputClockHz = 3_579_545;
     private const int SourceSampleRate = InputClockHz / 64;
     private const double TwoPi = Math.PI * 2.0;
+    private const double PhaseStepScale = TwoPi / 1_048_576.0;
+    private const double OperatorModulationScale = TwoPi * 4.0;
 
     private static readonly int[][] OperatorMap =
     {
@@ -27,7 +29,30 @@ internal sealed class Cps1Ym2151
         new[] {  7, 23, 15, 31 }
     };
 
-    private static readonly double[] Detune2Cents = { 0.0, 600.0, 781.0, 950.0 };
+    private static readonly int[,] DetuneAdjustment =
+    {
+        { 0, 0, 1, 2 }, { 0, 0, 1, 2 }, { 0, 0, 1, 2 }, { 0, 0, 1, 2 },
+        { 0, 1, 2, 2 }, { 0, 1, 2, 3 }, { 0, 1, 2, 3 }, { 0, 1, 2, 3 },
+        { 0, 1, 2, 4 }, { 0, 1, 3, 4 }, { 0, 1, 3, 4 }, { 0, 1, 3, 5 },
+        { 0, 2, 4, 5 }, { 0, 2, 4, 6 }, { 0, 2, 4, 6 }, { 0, 2, 5, 7 },
+        { 0, 2, 5, 8 }, { 0, 3, 6, 8 }, { 0, 3, 6, 9 }, { 0, 3, 7, 10 },
+        { 0, 4, 8, 11 }, { 0, 4, 8, 12 }, { 0, 4, 9, 13 }, { 0, 5, 10, 14 },
+        { 0, 5, 11, 16 }, { 0, 6, 12, 17 }, { 0, 6, 13, 19 }, { 0, 7, 14, 20 },
+        { 0, 8, 16, 22 }, { 0, 8, 16, 22 }, { 0, 8, 16, 22 }, { 0, 8, 16, 22 }
+    };
+
+    private static readonly int[] Detune2Delta = { 0, 384, 500, 608 };
+    private static readonly double[] FeedbackScale =
+    {
+        0.0,
+        TwoPi / 64.0,
+        TwoPi / 32.0,
+        TwoPi / 16.0,
+        TwoPi / 8.0,
+        TwoPi / 4.0,
+        TwoPi / 2.0,
+        TwoPi
+    };
 
     private readonly byte[] _registers = new byte[0x100];
     private readonly YmChannel[] _channels = new YmChannel[ChannelCount];
@@ -260,15 +285,62 @@ internal sealed class Cps1Ym2151
     private byte Reg(int address)
         => _registers[address & 0xff];
 
-    private double ChannelFrequency(int channel)
+    private int ChannelBlockFrequency(int channel)
+        => ((Reg(0x28 + channel) & 0x7f) << 6) | (Reg(0x30 + channel) >> 2);
+
+    private int ComputeOperatorPhaseStep(int operatorOffset, int blockFrequency)
     {
-        int keyCode = Reg(0x28 + channel);
-        int keyFraction = Reg(0x30 + channel) >> 2;
-        int block = (keyCode >> 4) & 0x07;
-        int note = keyCode & 0x0f;
-        int adjustedNote = note - ((note >> 2) & 0x03);
-        double semitone = block * 12.0 + adjustedNote + keyFraction / 64.0;
-        return 440.0 * Math.Pow(2.0, (semitone - 57.0) / 12.0);
+        int keyCode = (blockFrequency >> 8) & 0x1f;
+        int detune = (Reg(0x40 + operatorOffset) >> 4) & 0x07;
+        int detuneAdjustment = DetuneAdjustment[keyCode, detune & 0x03];
+        if ((detune & 0x04) != 0)
+            detuneAdjustment = -detuneAdjustment;
+
+        int detune2 = (Reg(0xc0 + operatorOffset) >> 6) & 0x03;
+        int phaseStep = OpmKeyCodeToPhaseStep(blockFrequency, Detune2Delta[detune2]) + detuneAdjustment;
+
+        int multiple = Reg(0x40 + operatorOffset) & 0x0f;
+        int multipleX2 = multiple == 0 ? 1 : multiple * 2;
+        return Math.Max(0, (phaseStep * multipleX2) >> 1);
+    }
+
+    private static int OpmKeyCodeToPhaseStep(int blockFrequency, int delta)
+    {
+        int block = (blockFrequency >> 10) & 0x07;
+        int keyCode = (blockFrequency >> 6) & 0x0f;
+        int adjustedCode = keyCode - (keyCode >> 2);
+        int effectiveFrequency = (adjustedCode << 6) | (blockFrequency & 0x3f);
+        effectiveFrequency += delta;
+
+        if ((uint)effectiveFrequency >= 768u)
+        {
+            if (effectiveFrequency < 0)
+            {
+                effectiveFrequency += 768;
+                if (block-- == 0)
+                    return BaseOpmPhaseStep(0) >> 7;
+            }
+            else
+            {
+                effectiveFrequency -= 768;
+                if (effectiveFrequency >= 768)
+                {
+                    block++;
+                    effectiveFrequency -= 768;
+                }
+
+                if (block++ >= 7)
+                    return BaseOpmPhaseStep(767);
+            }
+        }
+
+        return BaseOpmPhaseStep(effectiveFrequency) >> (block ^ 7);
+    }
+
+    private static int BaseOpmPhaseStep(int effectiveFrequency)
+    {
+        double octaveFraction = Math.Clamp(effectiveFrequency, 0, 767) / 768.0;
+        return (int)Math.Round(41_568.0 * Math.Pow(2.0, octaveFraction));
     }
 
     private static short Mix(short current, int add)
@@ -322,9 +394,9 @@ internal sealed class Cps1Ym2151
 
         public void RefreshFrequency()
         {
-            double baseFrequency = _chip.ChannelFrequency(_index);
+            int blockFrequency = _chip.ChannelBlockFrequency(_index);
             foreach (YmOperator op in _ops)
-                op.SetBaseFrequency(baseFrequency);
+                op.SetBlockFrequency(blockFrequency);
         }
 
         public void KeyOn(int mask)
@@ -338,7 +410,9 @@ internal sealed class Cps1Ym2151
             _feedback0 = _feedback1;
             _feedback1 = _feedbackIn;
 
-            double feedbackInput = _feedback == 0 ? 0.0 : (_feedback0 + _feedback1) * (1 << _feedback) * 0.125;
+            double feedbackInput = _feedback == 0
+                ? 0.0
+                : (_feedback0 + _feedback1) * FeedbackScale[_feedback];
             double op1 = _feedbackIn = _ops[0].Clock(feedbackInput);
 
             double op2;
@@ -348,39 +422,40 @@ internal sealed class Cps1Ym2151
             switch (_algorithm)
             {
                 case 0:
-                    op2 = _ops[1].Clock(op1);
-                    op3 = _ops[2].Clock(op2);
-                    result = _ops[3].Clock(op3);
+                    op2 = _ops[1].Clock(op1 * OperatorModulationScale);
+                    op3 = _ops[2].Clock(op2 * OperatorModulationScale);
+                    result = _ops[3].Clock(op3 * OperatorModulationScale);
                     break;
                 case 1:
                     op2 = _ops[1].Clock(0.0);
-                    op3 = _ops[2].Clock(op1 + op2);
-                    result = _ops[3].Clock(op3);
+                    op3 = _ops[2].Clock((op1 + op2) * OperatorModulationScale);
+                    result = _ops[3].Clock(op3 * OperatorModulationScale);
                     break;
                 case 2:
                     op2 = _ops[1].Clock(0.0);
-                    op3 = _ops[2].Clock(op2);
-                    result = _ops[3].Clock(op1 + op3);
+                    op3 = _ops[2].Clock(op2 * OperatorModulationScale);
+                    result = _ops[3].Clock((op1 + op3) * OperatorModulationScale);
                     break;
                 case 3:
-                    op2 = _ops[1].Clock(op1);
+                    op2 = _ops[1].Clock(op1 * OperatorModulationScale);
                     op3 = _ops[2].Clock(0.0);
-                    result = _ops[3].Clock(op2 + op3);
+                    result = _ops[3].Clock((op2 + op3) * OperatorModulationScale);
                     break;
                 case 4:
-                    op2 = _ops[1].Clock(op1);
+                    op2 = _ops[1].Clock(op1 * OperatorModulationScale);
                     op3 = _ops[2].Clock(0.0);
-                    op4 = _ops[3].Clock(op3);
+                    op4 = _ops[3].Clock(op3 * OperatorModulationScale);
                     result = op2 + op4;
                     break;
                 case 5:
-                    op2 = _ops[1].Clock(op1);
-                    op3 = _ops[2].Clock(op1);
-                    op4 = _ops[3].Clock(op1);
+                    double mod = op1 * OperatorModulationScale;
+                    op2 = _ops[1].Clock(mod);
+                    op3 = _ops[2].Clock(mod);
+                    op4 = _ops[3].Clock(mod);
                     result = op2 + op3 + op4;
                     break;
                 case 6:
-                    op2 = _ops[1].Clock(op1);
+                    op2 = _ops[1].Clock(op1 * OperatorModulationScale);
                     op3 = _ops[2].Clock(0.0);
                     op4 = _ops[3].Clock(0.0);
                     result = op2 + op3 + op4;
@@ -407,7 +482,8 @@ internal sealed class Cps1Ym2151
         private readonly int _offset;
         private EnvelopeState _state;
         private bool _keyOn;
-        private double _baseFrequency = 440.0;
+        private int _blockFrequency;
+        private double _phaseStep;
         private double _phase;
         private double _envelope;
         private double _attackStep;
@@ -416,8 +492,6 @@ internal sealed class Cps1Ym2151
         private double _releaseStep;
         private double _sustainLevel;
         private double _totalLevel;
-        private double _multiple;
-        private double _detuneRatio;
 
         public YmOperator(Cps1Ym2151 chip, int offset)
         {
@@ -436,36 +510,34 @@ internal sealed class Cps1Ym2151
 
         public void Refresh()
         {
-            byte mulDt = _chip.Reg(0x40 + _offset);
-            int mul = mulDt & 0x0f;
-            _multiple = mul == 0 ? 0.5 : mul;
-
-            int detune = (mulDt >> 4) & 0x07;
-            int detuneSign = (detune & 0x04) != 0 ? -1 : 1;
-            double detuneCents = detuneSign * ((detune & 0x03) * 3.5);
-
-            int detune2 = (_chip.Reg(0xc0 + _offset) >> 6) & 0x03;
-            detuneCents += Detune2Cents[detune2];
-            _detuneRatio = Math.Pow(2.0, detuneCents / 1200.0);
+            RefreshPhaseStep();
 
             int tl = _chip.Reg(0x60 + _offset) & 0x7f;
             _totalLevel = Math.Pow(10.0, -(tl * 0.75) / 20.0);
 
             int ar = _chip.Reg(0x80 + _offset) & 0x1f;
+            int ksr = (_chip.Reg(0x80 + _offset) >> 6) & 0x03;
             int d1r = _chip.Reg(0xa0 + _offset) & 0x1f;
             int d2r = _chip.Reg(0xc0 + _offset) & 0x1f;
             int rr = _chip.Reg(0xe0 + _offset) & 0x0f;
             int sl = (_chip.Reg(0xe0 + _offset) >> 4) & 0x0f;
+            int keyCode = (_blockFrequency >> 8) & 0x1f;
+            int ksrValue = keyCode >> (ksr ^ 3);
 
-            _attackStep = RateToStep(ar, 0.015);
-            _decayStep = RateToStep(d1r, 0.060);
-            _sustainStep = RateToStep(d2r, 0.100);
-            _releaseStep = RateToStep(rr * 2 + 2, 0.070);
-            _sustainLevel = sl == 15 ? 0.0 : Math.Pow(10.0, -(sl * 3.0) / 20.0);
+            _attackStep = RateToStep(EffectiveRate(ar * 2, ksrValue), 0.015);
+            _decayStep = RateToStep(EffectiveRate(d1r * 2, ksrValue), 0.060);
+            _sustainStep = RateToStep(EffectiveRate(d2r * 2, ksrValue), 0.100);
+            _releaseStep = RateToStep(EffectiveRate(rr * 4 + 2, ksrValue), 0.070);
+
+            int sustain = sl | ((sl + 1) & 0x10);
+            _sustainLevel = Math.Pow(10.0, -((sustain << 5) * 0.09375) / 20.0);
         }
 
-        public void SetBaseFrequency(double frequency)
-            => _baseFrequency = frequency;
+        public void SetBlockFrequency(int blockFrequency)
+        {
+            _blockFrequency = blockFrequency;
+            RefreshPhaseStep();
+        }
 
         public void SetKeyOn(bool keyOn)
         {
@@ -490,14 +562,16 @@ internal sealed class Cps1Ym2151
         {
             ClockEnvelope();
 
-            double frequency = Math.Clamp(_baseFrequency * _multiple * _detuneRatio, 4.0, SourceSampleRate * 0.45);
-            _phase += TwoPi * frequency / SourceSampleRate;
+            _phase += _phaseStep;
             if (_phase >= TwoPi)
                 _phase -= TwoPi * Math.Floor(_phase / TwoPi);
 
-            double phase = _phase + modulation * 2.0;
+            double phase = _phase + modulation;
             return Math.Sin(phase) * _envelope * _totalLevel;
         }
+
+        private void RefreshPhaseStep()
+            => _phaseStep = _chip.ComputeOperatorPhaseStep(_offset, _blockFrequency) * PhaseStepScale;
 
         private void ClockEnvelope()
         {
@@ -532,9 +606,12 @@ internal sealed class Cps1Ym2151
             if (rate <= 0)
                 return 0.0;
 
-            double normalized = rate / 31.0;
+            double normalized = rate / 63.0;
             return Math.Clamp(scale * Math.Pow(2.0, normalized * 5.0), 0.00001, 1.0);
         }
+
+        private static int EffectiveRate(int rawRate, int ksr)
+            => rawRate == 0 ? 0 : Math.Min(rawRate + ksr, 63);
 
         private enum EnvelopeState
         {
