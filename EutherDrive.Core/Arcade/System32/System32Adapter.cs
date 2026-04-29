@@ -15,6 +15,13 @@ public sealed class System32Adapter : IEmulatorCore
     private const int FrameStride = FrameWidth * 4;
     private const int OutputSampleRate = 44_100;
     private const int OutputChannels = 2;
+    private const int MainCpuClockHz = 32_215_900 / 2;
+    private const int ScreenTotalLines = 262;
+    private const int ScreenVisibleLines = 224;
+    private const int MainCpuCyclesPerFrame = MainCpuClockHz / 60;
+    private const int MainCpuVisibleCyclesDefault = MainCpuCyclesPerFrame * ScreenVisibleLines / ScreenTotalLines;
+    private const int MainCpuVblankCyclesDefault = MainCpuCyclesPerFrame - MainCpuVisibleCyclesDefault;
+    private const int SpriteUpdateDelayCyclesDefault = MainCpuClockHz / 20_000;
     private const int LayerText = 0;
     private const int LayerNbg0 = 1;
     private const int LayerNbg1 = 2;
@@ -75,9 +82,9 @@ public sealed class System32Adapter : IEmulatorCore
     private int _lastSpritePixels;
     private int _visibleWidth = 320;
     private int _presentVisibleWidth = 320;
-    private int _mainCpuInstructionsPerFrame = 4096;
-    private int _vblankStartInstructions = 512;
-    private int _vblankStopInstructions = 256;
+    private int _mainCpuVisibleCycles = MainCpuVisibleCyclesDefault;
+    private int _vblankCycles = MainCpuVblankCyclesDefault;
+    private int _spriteUpdateDelayCycles = SpriteUpdateDelayCyclesDefault;
     private int _traceTailIndex;
     private int _traceTailCount;
     private readonly string[] _traceTailLines = new string[128];
@@ -139,10 +146,10 @@ public sealed class System32Adapter : IEmulatorCore
         _traceMcu = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_MCU");
         _traceTail = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_TAIL");
         _videoStats = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_VIDEO_STATS");
-        _mainCpuInstructionsPerFrame = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_MAINCPU_SLICE", 4096);
-        _vblankStartInstructions = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_VBLANK_START_SLICE", 512);
-        _vblankStopInstructions = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_VBLANK_STOP_SLICE", 256);
-        _bus.ConfigureMainCpuTiming(_mainCpuInstructionsPerFrame, _vblankStartInstructions, _vblankStopInstructions);
+        _mainCpuVisibleCycles = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_MAINCPU_VISIBLE_CYCLES", MainCpuVisibleCyclesDefault);
+        _vblankCycles = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_VBLANK_CYCLES", MainCpuVblankCyclesDefault);
+        _spriteUpdateDelayCycles = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_SPRITE_DELAY_CYCLES", SpriteUpdateDelayCyclesDefault);
+        _bus.ConfigureMainCpuTiming(MainCpuClockHz);
         _loaded = true;
         Reset();
     }
@@ -151,7 +158,7 @@ public sealed class System32Adapter : IEmulatorCore
     {
         _bus.Reset();
         _sound.ResetSound();
-        _bus.ConfigureMainCpuTiming(_mainCpuInstructionsPerFrame, _vblankStartInstructions, _vblankStopInstructions);
+        _bus.ConfigureMainCpuTiming(MainCpuClockHz);
         if (_roms is not null)
         {
             _mainCpu.Reset(_bus);
@@ -186,13 +193,13 @@ public sealed class System32Adapter : IEmulatorCore
         _bus.SetInput(_input.Up, _input.Down, _input.Left, _input.Right, _input.A, _input.B, _input.C, _input.Start, _input.Mode);
 
         ExecuteMcuSlice();
-        ExecuteMainCpuSlice(_mainCpuInstructionsPerFrame);
+        ExecuteMainCpuCycles(_mainCpuVisibleCycles);
 
         _bus.SignalVblankStartIrq();
-        ExecuteMainCpuSlice(_vblankStartInstructions);
+        ExecuteMainCpuCycles(_vblankCycles);
         _bus.SignalVblankStopIrq();
+        ExecuteMainCpuCycles(_spriteUpdateDelayCycles);
         ProcessSpriteEndOfVblank(_bus.EndFrame());
-        ExecuteMainCpuSlice(_vblankStopInstructions);
 
         _visibleWidth = GetVisibleWidth();
         if (_bus.DisplayEnabled)
@@ -245,7 +252,7 @@ public sealed class System32Adapter : IEmulatorCore
 
     public double GetTargetFps() => 60.0;
 
-    private void ExecuteMainCpuSlice(int instructionBudget)
+    private void ExecuteMainCpuCycles(int cycleBudget)
     {
         if (_mainCpu.Halted)
         {
@@ -253,7 +260,8 @@ public sealed class System32Adapter : IEmulatorCore
             return;
         }
 
-        for (int i = 0; i < instructionBudget && !_mainCpu.Halted; i++)
+        int elapsedCycles = 0;
+        while (elapsedCycles < cycleBudget && !_mainCpu.Halted)
         {
             int vector = _bus.GetPendingV60InterruptVector();
             if (vector >= 0)
@@ -261,7 +269,9 @@ public sealed class System32Adapter : IEmulatorCore
 
             uint pc = _mainCpu.Pc;
             int cycles = _mainCpu.ExecuteInstruction();
-            _bus.AdvanceMainCpuTimers(1);
+            int elapsed = Math.Max(1, cycles);
+            elapsedCycles += elapsed;
+            _bus.AdvanceMainCpuTimers(elapsed);
             string? traceLine = null;
             if (_traceBoot || _traceTail)
                 traceLine = string.Create(

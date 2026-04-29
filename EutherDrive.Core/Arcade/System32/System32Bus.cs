@@ -33,7 +33,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private byte _spriteRenderCount;
     private bool _spriteBufferStatus = true;
     private bool _displayEnabled;
-    private int _mainCpuInstructionTicksPerSecond = 4864 * 60;
+    private int _mainCpuCyclesPerSecond = 32_215_900 / 2;
     private int _irqTimer0Countdown = -1;
     private int _irqTimer1Countdown = -1;
     private byte _p1Input = 0xff;
@@ -89,10 +89,9 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
 
     public byte[] SharedRam => _sharedRam;
 
-    public void ConfigureMainCpuTiming(int activeInstructions, int vblankStartInstructions, int vblankStopInstructions)
+    public void ConfigureMainCpuTiming(int cyclesPerSecond)
     {
-        int instructionsPerFrame = Math.Max(1, activeInstructions + vblankStartInstructions + vblankStopInstructions);
-        _mainCpuInstructionTicksPerSecond = instructionsPerFrame * 60;
+        _mainCpuCyclesPerSecond = Math.Max(1, cyclesPerSecond);
     }
 
     public void SetInput(
@@ -292,14 +291,14 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         return -1;
     }
 
-    public void AdvanceMainCpuTimers(int instructionTicks)
+    public void AdvanceMainCpuTimers(int elapsedCycles)
     {
-        if (instructionTicks <= 0)
+        if (elapsedCycles <= 0)
             return;
 
         if (_irqTimer0Countdown > 0)
         {
-            _irqTimer0Countdown -= instructionTicks;
+            _irqTimer0Countdown -= elapsedCycles;
             if (_irqTimer0Countdown <= 0)
             {
                 _irqTimer0Countdown = -1;
@@ -309,7 +308,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
 
         if (_irqTimer1Countdown > 0)
         {
-            _irqTimer1Countdown -= instructionTicks;
+            _irqTimer1Countdown -= elapsedCycles;
             if (_irqTimer1Countdown <= 0)
             {
                 _irqTimer1Countdown = -1;
@@ -499,7 +498,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             return;
         }
 
-        _irqTimer0Countdown = TicksToInstructionCountdown(0x800L * duration, 32_215_900L / 2L);
+        _irqTimer0Countdown = TicksToMainCpuCycles(0x800L * duration, 32_215_900L / 2L);
     }
 
     private void ScheduleIrqTimer1()
@@ -511,12 +510,12 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             return;
         }
 
-        _irqTimer1Countdown = TicksToInstructionCountdown(0x100L * duration, 50_000_000L / 16L);
+        _irqTimer1Countdown = TicksToMainCpuCycles(0x100L * duration, 50_000_000L / 16L);
     }
 
-    private int TicksToInstructionCountdown(long timerTicks, long timerClock)
+    private int TicksToMainCpuCycles(long timerTicks, long timerClock)
     {
-        long numerator = timerTicks * _mainCpuInstructionTicksPerSecond;
+        long numerator = timerTicks * _mainCpuCyclesPerSecond;
         long countdown = (numerator + timerClock - 1) / timerClock;
         if (countdown < 1)
             return 1;
