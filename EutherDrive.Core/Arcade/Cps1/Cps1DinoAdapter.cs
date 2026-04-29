@@ -404,7 +404,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             else
             {
                 int sampleFrames = _audioFrameBuffer.Length / 2;
-                _ym2151.RenderStereo(_audioFrameBuffer, ref _ymFrameSampleIndex, sampleFrames);
+                _ym2151.RenderStereo(_audioFrameBuffer, ref _ymFrameSampleIndex, sampleFrames, routeToMono: true);
                 _oki.RenderStereo(_audioFrameBuffer, ref _okiFrameSampleIndex, sampleFrames);
             }
 
@@ -440,7 +440,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
             int sampleFrames = _audioFrameBuffer.Length / 2;
             int targetFrames = (int)((long)_audioFrameCycles * sampleFrames / _audioCpuCyclesPerFrame);
-            _ym2151.RenderStereo(_audioFrameBuffer, ref _ymFrameSampleIndex, targetFrames);
+            _ym2151.RenderStereo(_audioFrameBuffer, ref _ymFrameSampleIndex, targetFrames, routeToMono: true);
         }
 
         private void SynchronizeOkiStream()

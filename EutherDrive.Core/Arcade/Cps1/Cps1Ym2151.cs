@@ -112,7 +112,13 @@ internal sealed class Cps1Ym2151
         ClockTimers(ticks);
     }
 
-    public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames, float gain = 0.70f, int outputSampleRate = 44_100)
+    public void RenderStereo(
+        short[] destination,
+        ref int sampleFrameIndex,
+        int targetSampleFrames,
+        float gain = 0.70f,
+        int outputSampleRate = 44_100,
+        bool routeToMono = false)
     {
         if (destination.Length == 0)
             return;
@@ -136,6 +142,13 @@ internal sealed class Cps1Ym2151
 
             int left = (int)Math.Round(_lastLeft + (_nextLeft - _lastLeft) * _sourcePhase);
             int right = (int)Math.Round(_lastRight + (_nextRight - _lastRight) * _sourcePhase);
+            if (routeToMono)
+            {
+                int mono = (left + right) / 2;
+                left = mono;
+                right = mono;
+            }
+
             int offset = sampleFrameIndex * 2;
             destination[offset] = Mix(destination[offset], left);
             destination[offset + 1] = Mix(destination[offset + 1], right);
