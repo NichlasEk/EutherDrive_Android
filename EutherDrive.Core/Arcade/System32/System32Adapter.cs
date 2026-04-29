@@ -97,6 +97,10 @@ public sealed class System32Adapter : IEmulatorCore
         int SpriteBlendMask,
         int ColorOffset);
 
+    private readonly record struct SpriteDrawResult(
+        int DrawnPixels,
+        int ExtraEntries);
+
     private readonly record struct ArcadeInputState(
         bool Up,
         bool Down,
@@ -184,6 +188,12 @@ public sealed class System32Adapter : IEmulatorCore
         ExecuteMcuSlice();
         ExecuteMainCpuSlice(_mainCpuInstructionsPerFrame);
 
+        _bus.SignalVblankStartIrq();
+        ExecuteMainCpuSlice(_vblankStartInstructions);
+        _bus.SignalVblankStopIrq();
+        ProcessSpriteEndOfVblank(_bus.EndFrame());
+        ExecuteMainCpuSlice(_vblankStopInstructions);
+
         _visibleWidth = GetVisibleWidth();
         if (_bus.DisplayEnabled)
         {
@@ -201,11 +211,6 @@ public sealed class System32Adapter : IEmulatorCore
             Array.Clear(_renderFrameBuffer);
         }
 
-        _bus.SignalVblankStartIrq();
-        ExecuteMainCpuSlice(_vblankStartInstructions);
-        _bus.SignalVblankStopIrq();
-        ProcessSpriteEndOfVblank(_bus.EndFrame());
-        ExecuteMainCpuSlice(_vblankStopInstructions);
         _sound.RunFrame(_audioBuffer);
 
         lock (_frameSync)
@@ -638,8 +643,9 @@ public sealed class System32Adapter : IEmulatorCore
             switch (command >> 14)
             {
                 case 0:
-                    pixels += DrawOneSprite(target, wordOffset, xOffset, yOffset, clipMinX, clipMinY, clipMaxX, clipMaxY, clipOutMinX, clipOutMinY, clipOutMaxX, clipOutMaxY);
-                    spriteNumber++;
+                    SpriteDrawResult result = DrawOneSprite(target, wordOffset, xOffset, yOffset, clipMinX, clipMinY, clipMaxX, clipMaxY, clipOutMinX, clipOutMinY, clipOutMaxX, clipOutMaxY);
+                    pixels += result.DrawnPixels;
+                    spriteNumber += 1 + result.ExtraEntries;
                     break;
                 case 1:
                     if ((command & 0x1000) != 0)
@@ -678,9 +684,13 @@ public sealed class System32Adapter : IEmulatorCore
         _lastSpritePixels = pixels;
     }
 
-    private int DrawOneSprite(ushort[] target, int wordOffset, int xOffset, int yOffset, int clipMinX, int clipMinY, int clipMaxX, int clipMaxY, int clipOutMinX, int clipOutMinY, int clipOutMaxX, int clipOutMaxY)
+    private SpriteDrawResult DrawOneSprite(ushort[] target, int wordOffset, int xOffset, int yOffset, int clipMinX, int clipMinY, int clipMaxX, int clipMaxY, int clipOutMinX, int clipOutMinY, int clipOutMaxX, int clipOutMaxY)
     {
         ushort data0 = _bus.ReadSpriteWord(wordOffset + 0);
+        bool indirect = (data0 & 0x2000) != 0;
+        bool indirectLocal = (data0 & 0x1000) != 0;
+        bool shadow = (data0 & 0x0800) != 0 && (_bus.SpriteControlLatchedByte(5) & 1) != 0;
+        bool fromRam = (data0 & 0x0400) != 0;
         bool bpp8 = (data0 & 0x0200) != 0;
         int packedPixelsPerLong = bpp8 ? 4 : 8;
         int endPen = (data0 & 0x0100) != 0 ? 0 : (bpp8 ? 0xff : 0x0f);
@@ -702,9 +712,22 @@ public sealed class System32Adapter : IEmulatorCore
         int address = _bus.ReadSpriteWord(wordOffset + 6) | ((data2 & 0xf000) << 4);
         int bank = ((data3 & 0x0800) >> 11) | ((data3 & 0x4000) >> 13);
         int colorBase = 0x8000 | (_bus.ReadSpriteWord(wordOffset + 7) & (bpp8 ? 0x7f00 : 0x7ff0));
+        int extraEntries = indirect && indirectLocal ? 2 : 0;
 
         if (sourceWidth == 0 || sourceHeight == 0 || destWidth == 0 || destHeight == 0)
-            return 0;
+            return new SpriteDrawResult(0, extraEntries);
+
+        Span<ushort> indirectTable = stackalloc ushort[16];
+        int transMask = SpriteTransparencyMask(_bus.SpriteControlLatchedByte(4) & 3, _bus.SpriteControlLatchedByte(5) & 3);
+        if (bpp8)
+            transMask &= 0xfff0;
+        if (indirect)
+        {
+            int tableOffset = indirectLocal ? wordOffset + 8 : 8 * (_bus.ReadSpriteWord(wordOffset + 7) & 0x1fff);
+            ushort shadowBit = (_bus.SpriteControlLatchedByte(5) & 1) != 0 ? (ushort)0x8000 : (ushort)0;
+            for (int i = 0; i < indirectTable.Length; i++)
+                indirectTable[i] = (ushort)((_bus.ReadSpriteWord(tableOffset + i) & (bpp8 ? 0xfff0 : 0xffff)) | shadowBit);
+        }
 
         if (applyX)
             xPos += xOffset;
@@ -733,46 +756,44 @@ public sealed class System32Adapter : IEmulatorCore
             {
                 bool clipOutY = y >= clipOutMinY && y <= clipOutMaxY;
                 int xAccumulator = 0;
-                int currentAddress = rowAddress;
-                int sourcePixelsRead = 0;
-                uint packed = 0;
+                int currentAddress = rowAddress - 1;
+                int xStep = 0;
+                int x = xPos;
 
-                for (int xStep = 0, x = xPos; xStep < destWidth; xStep++, x += xDelta)
+                while (xStep < destWidth)
                 {
-                    int pen;
-                    int packedPixelIndex = sourcePixelsRead & (packedPixelsPerLong - 1);
-                    if (!bpp8)
-                    {
-                        if (packedPixelIndex == 0)
-                            packed = ReadSpriteLong(_roms!.Sprites, bank, currentAddress++);
-                        int shift = 28 - packedPixelIndex * 4;
-                        pen = (int)((packed >> shift) & 0x0f);
-                    }
-                    else
-                    {
-                        if (packedPixelIndex == 0)
-                            packed = ReadSpriteLong(_roms!.Sprites, bank, currentAddress++);
-                        int shift = 24 - packedPixelIndex * 8;
-                        pen = (int)((packed >> shift) & 0xff);
-                    }
+                    uint packed = fromRam
+                        ? ReadSpriteRamLong(++currentAddress)
+                        : ReadSpriteLong(_roms!.Sprites, bank, ++currentAddress);
+                    int lastPen = 0;
 
-                    bool clippedOut = clipOutY && x >= clipOutMinX && x <= clipOutMaxX;
-                    bool endPenApplies = endPen != 0 && (packedPixelIndex == 0 || packedPixelIndex == packedPixelsPerLong - 1);
-                    if (pen != 0 && (!endPenApplies || pen != endPen) && x >= clipMinX && x <= clipMaxX && !clippedOut)
+                    for (int packedPixelIndex = 0; packedPixelIndex < packedPixelsPerLong && xStep < destWidth; packedPixelIndex++)
                     {
-                        target[y * FrameWidth + x] = (ushort)(colorBase | pen);
-                        drawn++;
-                    }
+                        int shift = bpp8 ? 24 - packedPixelIndex * 8 : 28 - packedPixelIndex * 4;
+                        int pen = bpp8 ? (int)((packed >> shift) & 0xff) : (int)((packed >> shift) & 0x0f);
+                        lastPen = pen;
 
-                    if (endPen != 0 && packedPixelIndex == packedPixelsPerLong - 1 && pen == endPen)
-                        break;
+                        bool endPenApplies = endPen != 0 && (packedPixelIndex == 0 || packedPixelIndex == packedPixelsPerLong - 1);
+                        int transparentPen = endPenApplies ? endPen : 0;
+                        while (xAccumulator < 0x10000 && xStep < destWidth)
+                        {
+                            bool clippedOut = clipOutY && x >= clipOutMinX && x <= clipOutMaxX;
+                            if (pen != transparentPen && x >= clipMinX && x <= clipMaxX && !clippedOut && TryResolveSpritePixel(pen, bpp8, indirect, shadow, indirectTable, transMask, colorBase, target[y * FrameWidth + x], out ushort resolvedPixel))
+                            {
+                                target[y * FrameWidth + x] = resolvedPixel;
+                                drawn++;
+                            }
 
-                    xAccumulator += hZoom;
-                    while (xAccumulator >= 0x10000)
-                    {
-                        sourcePixelsRead++;
+                            x += xDelta;
+                            xStep++;
+                            xAccumulator += hZoom;
+                        }
+
                         xAccumulator -= 0x10000;
                     }
+
+                    if (endPen != 0 && lastPen == endPen)
+                        break;
                 }
             }
 
@@ -781,7 +802,29 @@ public sealed class System32Adapter : IEmulatorCore
             yAccumulator &= 0xffff;
         }
 
-        return drawn;
+        return new SpriteDrawResult(drawn, extraEntries);
+    }
+
+    private bool TryResolveSpritePixel(int pen, bool bpp8, bool indirect, bool shadow, ReadOnlySpan<ushort> indirectTable, int transMask, int colorBase, ushort currentPixel, out ushort resolvedPixel)
+    {
+        resolvedPixel = 0;
+        if (!indirect)
+        {
+            if (pen == 0)
+                return false;
+
+            resolvedPixel = shadow ? (ushort)(currentPixel & 0x7fff) : (ushort)(colorBase | pen);
+            return shadow ? (currentPixel & 0x7fff) != 0x7fff : true;
+        }
+
+        int indirectPixel = bpp8
+            ? indirectTable[(pen >> 4) & 0x0f] | (pen & 0x0f)
+            : indirectTable[pen & 0x0f];
+        if ((indirectPixel & transMask) == transMask)
+            return false;
+
+        resolvedPixel = shadow ? (ushort)(currentPixel & 0x7fff) : (ushort)indirectPixel;
+        return shadow ? (currentPixel & 0x7fff) != 0x7fff : true;
     }
 
     private static int AdjustSpritePosition(int position, int size, int adjust)
@@ -1277,6 +1320,41 @@ public sealed class System32Adapter : IEmulatorCore
             return 0;
 
         return (uint)((sprites[offset] << 24) | (sprites[offset + 1] << 16) | (sprites[offset + 2] << 8) | sprites[offset + 3]);
+    }
+
+    private uint ReadSpriteRamLong(int wordAddress)
+    {
+        int index = wordAddress & ((0x2_0000 / 4) - 1);
+        ushort even = _bus.ReadSpriteWord(index * 2);
+        ushort odd = _bus.ReadSpriteWord(index * 2 + 1);
+        return (uint)(
+            ((odd >> 8) & 0x000000ff) |
+            ((odd << 8) & 0x0000ff00) |
+            ((even << 8) & 0x00ff0000) |
+            ((even << 24) & unchecked((int)0xff000000)));
+    }
+
+    private static int SpriteTransparencyMask(int controlA, int controlB)
+    {
+        return (controlA & 3, controlB & 3) switch
+        {
+            (0, 0) => 0x7fff,
+            (0, 1) => 0x3fff,
+            (0, 2) => 0x1fff,
+            (0, _) => 0x0fff,
+            (1, 0) => 0x3fff,
+            (1, 1) => 0x1fff,
+            (1, 2) => 0x0fff,
+            (1, _) => 0x07ff,
+            (2, 0) => 0x3fff,
+            (2, 1) => 0x1fff,
+            (2, 2) => 0x0fff,
+            (2, _) => 0x07ff,
+            (3, 0) => 0x1fff,
+            (3, 1) => 0x0fff,
+            (3, 2) => 0x07ff,
+            _ => 0x03ff
+        };
     }
 
     private static uint PaletteRawToBgra(ushort raw)
