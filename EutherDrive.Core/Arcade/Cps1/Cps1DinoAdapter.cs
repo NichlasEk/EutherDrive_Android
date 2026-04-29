@@ -870,8 +870,25 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             int address = offset * 2;
             if (_videoConfig.CpsBAddress == address)
                 return _videoConfig.CpsBValue;
+            if (_videoConfig.MultResultLo == address)
+                return (ushort)CpsBMultiplyResult();
+            if (_videoConfig.MultResultHi == address)
+                return (ushort)(CpsBMultiplyResult() >> 16);
 
             return _cpsB[offset];
+        }
+
+        private uint CpsBMultiplyResult()
+        {
+            if (_videoConfig.MultFactor1 < 0 || _videoConfig.MultFactor2 < 0)
+                return 0xffff_ffff;
+
+            int factor1Offset = _videoConfig.MultFactor1 / 2;
+            int factor2Offset = _videoConfig.MultFactor2 / 2;
+            if ((uint)factor1Offset >= _cpsB.Length || (uint)factor2Offset >= _cpsB.Length)
+                return 0xffff_ffff;
+
+            return (uint)(_cpsB[factor1Offset] * _cpsB[factor2Offset]);
         }
 
         private ushort ReadQSoundRom(int offset)
@@ -1642,6 +1659,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.WL24B && TryMapWL24B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
+            if (_mapper == Cps1GfxMapper.RT24B && TryMapRT24B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.RT22B && TryMapRT22B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
 
             return _mapper == Cps1GfxMapper.Linear ? code : -1;
         }
@@ -1737,6 +1758,144 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return true;
         }
 
+        private static bool TryMapRT24B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    if (expandedCode >= 0x0000 && expandedCode <= 0x53ff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x5400 && expandedCode <= 0x7fff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    inRange = expandedCode >= 0x5400 && expandedCode <= 0x6fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    if (expandedCode >= 0x7000 && expandedCode <= 0x7fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x0000 && expandedCode <= 0x3fff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                default:
+                    bank = 1;
+                    inRange = expandedCode >= 0x2800 && expandedCode <= 0x7fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapRT22B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x4000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    if (expandedCode >= 0x0000 && expandedCode <= 0x3fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x4000 && expandedCode <= 0x53ff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x5400 && expandedCode <= 0x7fff)
+                    {
+                        bank = 3;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 1;
+                    inRange = expandedCode >= 0x5400 && expandedCode <= 0x6fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    if (expandedCode >= 0x7000 && expandedCode <= 0x7fff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x0000 && expandedCode <= 0x3fff)
+                    {
+                        bank = 2;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                default:
+                    if (expandedCode >= 0x2800 && expandedCode <= 0x3fff)
+                    {
+                        bank = 2;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x4000 && expandedCode <= 0x7fff)
+                    {
+                        bank = 3;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
         private static byte[] Decode(byte[] gfx, int width, int height, int bytesPerTile, int xStartBits)
         {
             int tileCount = gfx.Length / bytesPerTile;
@@ -1781,7 +1940,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     {
         Linear,
         S9263B,
-        WL24B
+        WL24B,
+        RT24B,
+        RT22B
     }
 
     private enum Cps1GfxLayer
@@ -1818,7 +1979,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         int Priority3,
         int PaletteControl,
         int CpsBAddress = -1,
-        ushort CpsBValue = 0xffff)
+        ushort CpsBValue = 0xffff,
+        int MultResultLo = -1,
+        int MultResultHi = -1,
+        int MultFactor1 = -1,
+        int MultFactor2 = -1)
     {
         public static readonly Cps1VideoConfig Default = new(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30);
         public static readonly Cps1VideoConfig QSound1 = new(0x22, 0x24, 0x26, 0x28, 0x2a, 0x2c);
@@ -1828,6 +1993,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         public static readonly Cps1VideoConfig QSound5 = new(0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x1c, 0x1e, 0x0c02);
         public static readonly Cps1VideoConfig CpsB05 = new(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x20, 0x0005);
         public static readonly Cps1VideoConfig CpsB16 = new(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00, 0x0406);
+        public static readonly Cps1VideoConfig CpsB21Bt1 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x30, 0x32, 0x0800, 0x0a, 0x08, 0x0e, 0x0c);
+        public static readonly Cps1VideoConfig HackB2 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x22);
 
         public int PriorityMask(int group) => group switch
         {
@@ -1954,6 +2121,21 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             "willowu",
             "willowuo",
             "willowj"
+        };
+
+        private static readonly HashSet<string> RT24BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "3wonders",
+            "3wondersr1",
+            "3wondersu",
+            "3wondersh",
+            "3wondersb",
+            "3wondersbi"
+        };
+
+        private static readonly HashSet<string> RT22BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "wonder3"
         };
 
         private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
@@ -2098,7 +2280,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             if (string.Equals(setName, "mbomberj", StringComparison.OrdinalIgnoreCase))
             {
                 RequireRom(entries, "mbj_23e.8f", "mbj23e");
-                RequireRom(entries, "mbj_22b.7f");
             }
         }
 
@@ -2109,6 +2290,33 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 && TryFind(entries, out _, "tk2e_23b.8f", "tk2e_23b.rom"))
             {
                 return definition with { VideoConfig = Cps1VideoConfig.Default };
+            }
+
+            if (string.Equals(setName, "mbomberj", StringComparison.OrdinalIgnoreCase)
+                && !TryFind(entries, out _, "mbj_22b.7f"))
+            {
+                return definition with { ProgramLoads = SlamMastersMbomberjFallbackProgramLoads() };
+            }
+
+            return definition;
+        }
+
+        private static Cps1ClassicDefinition SelectEffectiveClassicDefinition(
+            string setName,
+            Cps1ClassicDefinition definition,
+            Dictionary<string, byte[]> entries)
+        {
+            if (string.Equals(setName, "1941j", StringComparison.OrdinalIgnoreCase)
+                && !TryFind(entries, out _, "41_34.10f")
+                && TryFind(entries, out _, "41-32m.8h", "41_32.rom"))
+            {
+                return definition with
+                {
+                    ProgramLoads = Sparse1941jProgramLoads(),
+                    GraphicsLoads = Common1941GraphicsLoads(),
+                    AudioCpuLoads = Common1941AudioCpuLoads(),
+                    OkiLoads = Common1941OkiLoads()
+                };
             }
 
             return definition;
@@ -2128,6 +2336,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             Dictionary<string, byte[]> entries = ReadArchive(path);
             MergeParentArchivesIfPresent(path, ResolveParentSetName(setName, definition.ParentSetName), entries);
             MergeSparseAliasParentIfNeeded(path, requestedSetName, setName, entries);
+            definition = SelectEffectiveClassicDefinition(setName, definition, entries);
 
             byte[] program = new byte[ProgramRomSize];
             Array.Fill(program, (byte)0xff);
@@ -2170,6 +2379,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 return Cps1GfxMapper.S9263B;
             if (WL24BMapperSets.Contains(setName))
                 return Cps1GfxMapper.WL24B;
+            if (RT24BMapperSets.Contains(setName))
+                return Cps1GfxMapper.RT24B;
+            if (RT22BMapperSets.Contains(setName))
+                return Cps1GfxMapper.RT22B;
             return Cps1GfxMapper.Linear;
         }
 
@@ -2419,44 +2632,77 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return definitions;
         }
 
+        private static RomLoad[] Sparse1941jProgramLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "41_36.12f", "4136.bin", "41_36.rom"),
+                Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "41_42.12h", "4142.bin", "41_42.rom"),
+                Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "41_37.13f", "4137.bin", "41_37.rom"),
+                Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "41_43.13h", "4143.bin", "41_43.rom"),
+                Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "41-32m.8h", "41_32.rom"),
+            };
+
+        private static RomLoad[] Common1941GraphicsLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "41-5m.7a", "41_gfx5.rom"),
+                Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "41-7m.9a", "41_gfx7.rom"),
+                Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "41-1m.3a", "41_gfx1.rom"),
+                Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "41-3m.5a", "41_gfx3.rom"),
+            };
+
+        private static RomLoad[] Common1941AudioCpuLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "41_9.12b", "41_09.rom"),
+                Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "41_9.12b", "41_09.rom"),
+            };
+
+        private static RomLoad[] Common1941OkiLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "41_18.11c", "41_18.rom"),
+                Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "41_19.12c", "41_19.rom"),
+            };
+
         private static Dictionary<string, Cps1ClassicDefinition> BuildGeneratedClassicDefinitions()
         {
             var definitions = new Dictionary<string, Cps1ClassicDefinition>(StringComparer.OrdinalIgnoreCase);
             definitions["1941"] = new Cps1ClassicDefinition(
                 "1941",
                 null,
-                new Cps1VideoConfig(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32),
+                Cps1VideoConfig.CpsB05,
                 0x200000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "41em_30.11f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "41em_35.11h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "41em_31.12f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "41em_36.12h"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "41-32m.8h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "41em_30.11f", "41e_30.11f", "41e_30.rom"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "41em_35.11h", "41e_35.11h", "41e_35.rom"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "41em_31.12f", "41e_31.12f", "41e_31.rom"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "41em_36.12h", "41e_36.12h", "41e_36.rom"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "41-32m.8h", "41_32.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "41-5m.7a"),
-                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "41-7m.9a"),
-                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "41-1m.3a"),
-                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "41-3m.5a"),
+                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "41-5m.7a", "41_gfx5.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "41-7m.9a", "41_gfx7.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "41-1m.3a", "41_gfx1.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "41-3m.5a", "41_gfx3.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "41_9.12b"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "41_9.12b"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "41_9.12b", "41_09.rom"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "41_9.12b", "41_09.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "41_18.11c"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "41_19.12c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "41_18.11c", "41_18.rom"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "41_19.12c", "41_19.rom"),
                 });
             definitions["1941j"] = new Cps1ClassicDefinition(
                 "1941j",
                 null,
-                new Cps1VideoConfig(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32),
+                Cps1VideoConfig.CpsB05,
                 0x200000,
                 0x40000,
                 new[]
@@ -2502,7 +2748,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["3wonders"] = new Cps1ClassicDefinition(
                 "3wonders",
                 null,
-                new Cps1VideoConfig(0x28, 0x26, 0x24, 0x22, 0x20, 0x30),
+                Cps1VideoConfig.CpsB21Bt1,
                 0x400000,
                 0x40000,
                 new[]
@@ -2540,7 +2786,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["3wondersh"] = new Cps1ClassicDefinition(
                 "3wondersh",
                 null,
-                Cps1VideoConfig.Default,
+                Cps1VideoConfig.HackB2,
                 0x400000,
                 0x40000,
                 new[]
@@ -2586,7 +2832,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["3wondersu"] = new Cps1ClassicDefinition(
                 "3wondersu",
                 null,
-                new Cps1VideoConfig(0x28, 0x26, 0x24, 0x22, 0x20, 0x30),
+                Cps1VideoConfig.CpsB21Bt1,
                 0x400000,
                 0x40000,
                 new[]
@@ -6206,7 +6452,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["wonder3"] = new Cps1ClassicDefinition(
                 "wonder3",
                 null,
-                new Cps1VideoConfig(0x28, 0x26, 0x24, 0x22, 0x20, 0x30),
+                Cps1VideoConfig.CpsB21Bt1,
                 0x400000,
                 0x40000,
                 new[]
@@ -9371,21 +9617,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 SlamMastersKabuki,
                 0x60_0000,
                 0x40_0000,
-                new[]
-                {
-                    Word(0x000000, "mbj_23e.8f", "mbj23e", "mbe_23e.8f", "mbe_23e.rom", "mbu_23e.8f", "mbu-23e.rom"),
-                    Byte(0x000000, "mbde_26.11e", "mbd_26.bin", "mbdj_26.11e"),
-                    Byte(0x000001, "mbde_30.11f", "mbde_30.rom", "mbdj_30.11f", "mbdj_30.bin"),
-                    Byte(0x040000, "mbde_27.12e", "mbd_27.bin", "mbdj_27.12e"),
-                    Byte(0x040001, "mbde_31.12f", "mbd_31.bin", "mbdj_31.12f"),
-                    Byte(0x080000, "mbe_24b.9e", "mbe_24b.rom", "mbu_24b.9e", "mbde_24.9e", "mbd_24.bin", "mbdj_24.9e"),
-                    Byte(0x080001, "mbe_28b.9f", "mbe_28b.rom", "mbu_28b.9f", "mbde_28.9f", "mbd_28.bin", "mbdj_28.9f"),
-                    Byte(0x0c0000, "mbe_25b.10e", "mbe_25b.rom", "mbu_25b.10e", "mbde_25.10e", "mbd_25.bin", "mbdj_25.10e"),
-                    Byte(0x0c0001, "mbe_29b.10f", "mbe_29b.rom", "mbu_29b.10f", "mbde_29.10f", "mbd_29.bin", "mbdj_29.10f"),
-                    Word(0x080000, "mbj_22b.7f"),
-                    Word(0x100000, "mbe_21a.6f", "mbu_21a.6f", "mbj_21a.6f", "mbde_21.6f", "mbd_21.bin", "mbdj_21.6f"),
-                    Word(0x180000, "mbe_20a.5f", "mbu_20a.5f", "mbu-20a.rom", "mbj_20a.5f", "mbde_20.5f", "mbd_20.bin", "mbdj_20.5f")
-                },
+                SlamMastersProgramLoads(setName),
                 new[]
                 {
                     Gfx(0x000000, "mb-1m.3a", "mb_gfx01.rom", "mb_01.3a", "mbj_01.bin"),
@@ -9411,6 +9643,75 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     "mb-q6.2m|mb_q6.bin",
                     "mb-q7.3m|mb_q7.bin",
                     "mb-q8.4m|mb_q8.bin"));
+
+        private static RomLoad[] SlamMastersProgramLoads(string setName)
+        {
+            if (string.Equals(setName, "mbombrd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(setName, "mbombrdj", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    Byte(0x000000, "mbde_26.11e", "mbd_26.bin", "mbdj_26.11e"),
+                    Byte(0x000001, "mbdj_30.11f", "mbdj_30.bin", "mbde_30.11f", "mbde_30.rom"),
+                    Byte(0x040000, "mbde_27.12e", "mbd_27.bin", "mbdj_27.12e"),
+                    Byte(0x040001, "mbde_31.12f", "mbd_31.bin", "mbdj_31.12f"),
+                    Byte(0x080000, "mbde_24.9e", "mbd_24.bin", "mbdj_24.9e"),
+                    Byte(0x080001, "mbde_28.9f", "mbd_28.bin", "mbdj_28.9f"),
+                    Byte(0x0c0000, "mbde_25.10e", "mbd_25.bin", "mbdj_25.10e"),
+                    Byte(0x0c0001, "mbde_29.10f", "mbd_29.bin", "mbdj_29.10f"),
+                    Word(0x100000, "mbde_21.6f", "mbd_21.bin", "mbdj_21.6f"),
+                    Word(0x180000, "mbde_20.5f", "mbd_20.bin", "mbdj_20.5f")
+                };
+            }
+
+            if (string.Equals(setName, "mbomberj", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    Word(0x000000, "mbj_23e.8f", "mbj23e"),
+                    Word(0x080000, "mbj_22b.7f"),
+                    Word(0x100000, "mbj_21a.6f", "mbe_21a.6f", "mbe_21a.rom"),
+                    Word(0x180000, "mbj_20a.5f", "mbe_20a.5f", "mbe_20a.rom")
+                };
+            }
+
+            if (string.Equals(setName, "slammastu", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    Word(0x000000, "mbu_23e.8f", "mbu-23e.rom", "mbe_23e.8f", "mbe_23e.rom"),
+                    Byte(0x080000, "mbu_24b.9e", "mbe_24b.9e", "mbe_24b.rom"),
+                    Byte(0x080001, "mbu_28b.9f", "mbe_28b.9f", "mbe_28b.rom"),
+                    Byte(0x0c0000, "mbu_25b.10e", "mbe_25b.10e", "mbe_25b.rom"),
+                    Byte(0x0c0001, "mbu_29b.10f", "mbe_29b.10f", "mbe_29b.rom"),
+                    Word(0x100000, "mbu_21a.6f", "mbe_21a.6f", "mbe_21a.rom"),
+                    Word(0x180000, "mbu_20a.5f", "mbu-20a.rom", "mbe_20a.5f", "mbe_20a.rom")
+                };
+            }
+
+            return new[]
+            {
+                Word(0x000000, "mbe_23e.8f", "mbe_23e.rom"),
+                Byte(0x080000, "mbe_24b.9e", "mbe_24b.rom"),
+                Byte(0x080001, "mbe_28b.9f", "mbe_28b.rom"),
+                Byte(0x0c0000, "mbe_25b.10e", "mbe_25b.rom"),
+                Byte(0x0c0001, "mbe_29b.10f", "mbe_29b.rom"),
+                Word(0x100000, "mbe_21a.6f", "mbe_21a.rom"),
+                Word(0x180000, "mbe_20a.5f", "mbe_20a.rom")
+            };
+        }
+
+        private static RomLoad[] SlamMastersMbomberjFallbackProgramLoads()
+            => new[]
+            {
+                Word(0x000000, "mbj_23e.8f", "mbj23e"),
+                Byte(0x080000, "mbe_24b.9e", "mbe_24b.rom"),
+                Byte(0x080001, "mbe_28b.9f", "mbe_28b.rom"),
+                Byte(0x0c0000, "mbe_25b.10e", "mbe_25b.rom"),
+                Byte(0x0c0001, "mbe_29b.10f", "mbe_29b.rom"),
+                Word(0x100000, "mbe_21a.6f", "mbe_21a.rom"),
+                Word(0x180000, "mbe_20a.5f", "mbe_20a.rom")
+            };
 
         private static Cps1ClassicDefinition FinalFightDefinition(string setName, string? parentSetName)
             => new(
