@@ -179,6 +179,7 @@ internal sealed class Cps1Ym2151
     private int _timerB;
     private int _timerACounter;
     private int _timerBCounter;
+    private int _timerClockCounter;
     private int _busyClocks;
     private double _busyClockAccumulator;
     private double _timerTickAccumulator;
@@ -214,6 +215,7 @@ internal sealed class Cps1Ym2151
         _timerB = 0;
         _timerACounter = 0;
         _timerBCounter = 0;
+        _timerClockCounter = 0;
         _busyClocks = 0;
         _busyClockAccumulator = 0.0;
         _timerTickAccumulator = 0.0;
@@ -363,12 +365,12 @@ internal sealed class Cps1Ym2151
             _status &= unchecked((byte)~0x02);
 
         if ((value & 0x01) != 0 && _timerACounter <= 0)
-            _timerACounter = Math.Max(1, 1024 - _timerA);
+            _timerACounter = TimerAPeriod();
         else if ((value & 0x01) == 0)
             _timerACounter = 0;
 
         if ((value & 0x02) != 0 && _timerBCounter <= 0)
-            _timerBCounter = Math.Max(1, 16 * (256 - _timerB));
+            _timerBCounter = TimerBInitialPeriod();
         else if ((value & 0x02) == 0)
             _timerBCounter = 0;
     }
@@ -409,6 +411,8 @@ internal sealed class Cps1Ym2151
 
     private void ClockTimers(int ticks)
     {
+        _timerClockCounter = (_timerClockCounter + ticks) & 0xff;
+
         byte mode = _registers[0x14];
         if ((mode & 0x01) != 0 && _timerACounter > 0)
         {
@@ -417,7 +421,7 @@ internal sealed class Cps1Ym2151
             {
                 if ((mode & 0x04) != 0)
                     _status |= 0x01;
-                _timerACounter += Math.Max(1, 1024 - _timerA);
+                _timerACounter += TimerAPeriod();
             }
         }
 
@@ -428,10 +432,19 @@ internal sealed class Cps1Ym2151
             {
                 if ((mode & 0x08) != 0)
                     _status |= 0x02;
-                _timerBCounter += Math.Max(1, 16 * (256 - _timerB));
+                _timerBCounter += TimerBPeriod();
             }
         }
     }
+
+    private int TimerAPeriod()
+        => Math.Max(1, 1024 - _timerA);
+
+    private int TimerBPeriod()
+        => Math.Max(1, 16 * (256 - _timerB));
+
+    private int TimerBInitialPeriod()
+        => Math.Max(1, TimerBPeriod() - (_timerClockCounter & 0x0f));
 
     private void InitializeLfoWaveforms()
     {
