@@ -16,27 +16,33 @@ internal sealed class System32RomSet
         string driverName,
         byte[] mainCpu,
         byte[] soundCpu,
+        byte[] multiPcm,
         byte[] mcu,
         byte[] mcuOpcodeTable,
         byte[] tiles,
-        byte[] sprites)
+        byte[] sprites,
+        bool isMulti32 = false)
     {
         DriverName = driverName;
         MainCpu = mainCpu;
         SoundCpu = soundCpu;
+        MultiPcm = multiPcm;
         Mcu = mcu;
         McuOpcodeTable = mcuOpcodeTable;
         Tiles = tiles;
         Sprites = sprites;
+        IsMulti32 = isMulti32;
     }
 
     public string DriverName { get; }
     public byte[] MainCpu { get; }
     public byte[] SoundCpu { get; }
+    public byte[] MultiPcm { get; }
     public byte[] Mcu { get; }
     public byte[] McuOpcodeTable { get; }
     public byte[] Tiles { get; }
     public byte[] Sprites { get; }
+    public bool IsMulti32 { get; }
 
     private static readonly byte[] ArabianFightOpcodeTable =
     {
@@ -60,16 +66,24 @@ internal sealed class System32RomSet
 
     public static System32RomSet Load(string path)
     {
-        string driverName = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
+        string driverName = CanonicalDriverName(Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant());
         return driverName switch
         {
             "ga2" or "ga2u" or "ga2j" => LoadGoldenAxe2(path, driverName),
             "arabfgt" or "arabfgtu" or "arabfgtj" => LoadArabianFight(path, driverName),
             "spidman" or "spidmanu" or "spidmanj" => LoadSpiderMan(path, driverName),
             "sonic" or "sonicp" => LoadSegaSonic(path, driverName),
+            "orunners" or "orunnersu" or "orunnersj" => LoadOutRunners(path, driverName),
             _ => throw new NotSupportedException($"Unsupported Sega System 32 driver '{driverName}'.")
         };
     }
+
+    public static string CanonicalDriverName(string driverName)
+        => driverName switch
+        {
+            "outrunners" => "orunners",
+            _ => driverName
+        };
 
     private static System32RomSet LoadGoldenAxe2(string path, string driverName)
     {
@@ -112,7 +126,7 @@ internal sealed class System32RomSet
         Load64Word(entries, sprites, 0x800004, "mpr-14954.ic27");
         Load64Word(entries, sprites, 0x800006, "mpr-14956.ic25");
 
-        return new System32RomSet(driverName, mainCpu, soundCpu, mcu, V25.GoldenAxe2OpcodeTable, tiles, sprites);
+        return new System32RomSet(driverName, mainCpu, soundCpu, Array.Empty<byte>(), mcu, V25.GoldenAxe2OpcodeTable, tiles, sprites);
     }
 
     private static System32RomSet LoadArabianFight(string path, string driverName)
@@ -155,7 +169,7 @@ internal sealed class System32RomSet
         Load64Word(entries, sprites, 0x800004, "mpr-14605.ic27");
         Load64Word(entries, sprites, 0x800006, "mpr-14607.ic25");
 
-        return new System32RomSet(driverName, mainCpu, soundCpu, mcu, ArabianFightOpcodeTable, tiles, sprites);
+        return new System32RomSet(driverName, mainCpu, soundCpu, Array.Empty<byte>(), mcu, ArabianFightOpcodeTable, tiles, sprites);
     }
 
     private static System32RomSet LoadSpiderMan(string path, string driverName)
@@ -201,6 +215,7 @@ internal sealed class System32RomSet
             driverName,
             mainCpu,
             soundCpu,
+            Array.Empty<byte>(),
             Array.Empty<byte>(),
             V25.GoldenAxe2OpcodeTable,
             tiles,
@@ -275,9 +290,60 @@ internal sealed class System32RomSet
             mainCpu,
             soundCpu,
             Array.Empty<byte>(),
+            Array.Empty<byte>(),
             V25.GoldenAxe2OpcodeTable,
             tiles,
             sprites);
+    }
+
+    private static System32RomSet LoadOutRunners(string path, string driverName)
+    {
+        OutRunnersProgramNames programNames = driverName switch
+        {
+            "orunners" => new OutRunnersProgramNames("epr-15620.ic37", "epr-15621.ic40"),
+            "orunnersu" => new OutRunnersProgramNames("epr-15618.ic37", "epr-15619.ic40"),
+            "orunnersj" => new OutRunnersProgramNames("epr-15616.ic37", "epr-15617.ic40"),
+            _ => throw new NotSupportedException($"Unsupported OutRunners driver '{driverName}'.")
+        };
+
+        Dictionary<string, byte[]> entries = ReadArchive(path);
+        byte[] mainCpu = new byte[0x20_0000];
+        Load32WordX4(entries, mainCpu, 0x000000, programNames.Main37);
+        Load32WordX4(entries, mainCpu, 0x000002, programNames.Main40);
+        Load32Word(entries, mainCpu, 0x100000, "mpr-15538.ic36");
+        Load32Word(entries, mainCpu, 0x100002, "mpr-15539.ic39");
+
+        byte[] soundCpu = new byte[0x80_000];
+        LoadLinear(entries, soundCpu, 0x00000, "epr-15550.ic31");
+
+        byte[] multiPcm = new byte[0x40_0000];
+        LoadLinear(entries, multiPcm, 0x000000, "mpr-15551.ic1");
+        LoadLinear(entries, multiPcm, 0x200000, "mpr-15552.ic2");
+
+        byte[] tiles = new byte[0x40_0000];
+        Load16Byte(entries, tiles, 0x000000, "mpr-15548.ic3");
+        Load16Byte(entries, tiles, 0x000001, "mpr-15549.ic11");
+
+        byte[] sprites = new byte[0x100_0000];
+        Load64Word(entries, sprites, 0x000000, "mpr-15540.ic14");
+        Load64Word(entries, sprites, 0x000002, "mpr-15542.ic15");
+        Load64Word(entries, sprites, 0x000004, "mpr-15544.ic10");
+        Load64Word(entries, sprites, 0x000006, "mpr-15546.ic38");
+        Load64Word(entries, sprites, 0x800000, "mpr-15541.ic22");
+        Load64Word(entries, sprites, 0x800002, "mpr-15543.ic23");
+        Load64Word(entries, sprites, 0x800004, "mpr-15545.ic18");
+        Load64Word(entries, sprites, 0x800006, "mpr-15547.ic41");
+
+        return new System32RomSet(
+            driverName,
+            mainCpu,
+            soundCpu,
+            multiPcm,
+            Array.Empty<byte>(),
+            V25.GoldenAxe2OpcodeTable,
+            tiles,
+            sprites,
+            isMulti32: true);
     }
 
     private static Dictionary<string, byte[]> ReadArchive(string path)
@@ -364,6 +430,33 @@ internal sealed class System32RomSet
             Load16Byte(source, destination, offset + reload * 2 * source.Length, name, "V60");
     }
 
+    private static void Load32Word(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
+    {
+        byte[] source = Find(entries, name);
+        Load32Word(source, destination, offset, name, "V60");
+    }
+
+    private static void Load32WordX4(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
+    {
+        byte[] source = Find(entries, name);
+        for (int reload = 0; reload < 4; reload++)
+            Load32Word(source, destination, offset + reload * 2 * source.Length, name, "V60");
+    }
+
+    private static void Load32Word(byte[] source, byte[] destination, int offset, string name, string regionName)
+    {
+        int words = source.Length / 2;
+        for (int i = 0; i < words; i++)
+        {
+            int src = i * 2;
+            int dst = offset + i * 4;
+            if (dst + 1 >= destination.Length)
+                throw new InvalidDataException($"ROM '{name}' is too large for the Sega System 32 {regionName} region.");
+            destination[dst] = source[src];
+            destination[dst + 1] = source[src + 1];
+        }
+    }
+
     private static void Load16Byte(byte[] source, byte[] destination, int offset, string name, string regionName)
     {
         for (int i = 0; i < source.Length; i++)
@@ -427,6 +520,13 @@ internal sealed class System32RomSet
         if (entries.TryGetValue(name, out byte[]? data))
             return data;
 
+        string normalizedName = NormalizeRomName(name);
+        foreach ((string key, byte[] value) in entries)
+        {
+            if (NormalizeRomName(key) == normalizedName)
+                return value;
+        }
+
         string present = string.Join(", ", entries.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase).Take(32));
         throw new InvalidDataException(
             string.Create(CultureInfo.InvariantCulture, $"Missing Sega System 32 ROM file '{name}'. Present files: {present}"));
@@ -436,8 +536,13 @@ internal sealed class System32RomSet
     {
         foreach (string name in names)
         {
-            if (entries.TryGetValue(name, out byte[]? data))
-                return data;
+            try
+            {
+                return Find(entries, name);
+            }
+            catch (InvalidDataException)
+            {
+            }
         }
 
         string present = string.Join(", ", entries.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase).Take(32));
@@ -463,4 +568,10 @@ internal sealed class System32RomSet
 
     private sealed record GoldenAxe2ProgramNames(string Main17, string Main8, string Main18, string Main9);
     private sealed record SpiderManProgramNames(string Main13, string Main7);
+    private sealed record OutRunnersProgramNames(string Main37, string Main40);
+
+    private static string NormalizeRomName(string name)
+        => name.Replace("-", string.Empty, StringComparison.Ordinal)
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .ToLowerInvariant();
 }

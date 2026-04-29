@@ -91,6 +91,8 @@ public sealed class V60
         {
             case 0x00:
                 return 1; // HALT waits for an interrupt on hardware; MAME's V60 core skips it.
+            case 0x02:
+                return ExecuteStpr(bus);
             case 0x05:
                 Halted = true;
                 LastStopReason = "BRK";
@@ -139,6 +141,8 @@ public sealed class V60
                 return ExecuteNot(bus, dimension: 2);
             case 0x3d:
                 return ExecuteNegate(bus, dimension: 2);
+            case 0x3f:
+                return ExecuteMoveDouble(bus);
             case 0x40:
                 return ExecuteMoveAddress(bus, dimension: 0);
             case 0x41:
@@ -233,6 +237,8 @@ public sealed class V60
                 return ExecuteLogicalOperation(bus, dimension: 2, LogicalOperation.And);
             case 0xa5:
                 return ExecuteDivide(bus, dimension: 2, unsigned: false);
+            case 0xa6:
+                return ExecuteDivideExtendedSigned(bus);
             case 0xa7:
                 return ExecuteBitOperation(bus, BitOperation.Clear);
             case 0xa9:
@@ -1009,23 +1015,32 @@ public sealed class V60
     private uint ExecuteLdpr(IV60Bus bus)
     {
         byte instFlags = bus.Read8(Pc + 1);
-        if ((instFlags & 0x80) == 0)
-        {
-            Halted = true;
-            LastStopReason = string.Create(CultureInfo.InvariantCulture, $"unimplemented LDPR flags=0x{instFlags:X2} pc=0x{PreviousPc:X8}");
-            return 0;
-        }
 
-        if (!TryReadAddressModeValue(bus, (instFlags & 0x40) != 0 ? 1 : 0, bus.Read8(Pc + 2), Pc + 2, 2, out uint source, out uint sourceLength, out string sourceError))
+        uint source;
+        uint sourceLength;
+        if ((instFlags & 0x80) != 0 || (instFlags & 0x20) != 0)
         {
-            Halted = true;
-            LastStopReason = sourceError;
-            return 0;
+            uint sourceAddress = Pc + 2;
+            byte sourceMod = bus.Read8(sourceAddress);
+            if (!TryReadAddressModeValue(bus, (instFlags & 0x40) != 0 ? 1 : 0, sourceMod, sourceAddress, 2, out source, out sourceLength, out string sourceError))
+            {
+                Halted = true;
+                LastStopReason = sourceError;
+                return 0;
+            }
+        }
+        else
+        {
+            source = _reg[instFlags & 0x1f];
+            sourceLength = 0;
         }
 
         uint secondAddress = Pc + 2 + sourceLength;
         byte secondMod = bus.Read8(secondAddress);
-        if (!TryReadAddressModeValue(bus, (instFlags & 0x20) != 0 ? 1 : 0, secondMod, secondAddress, 2, out uint systemRegister, out uint destLength, out string destError))
+        int secondModm = (instFlags & 0x80) != 0
+            ? ((instFlags & 0x20) != 0 ? 1 : 0)
+            : ((instFlags & 0x40) != 0 ? 1 : 0);
+        if (!TryReadAddressModeValue(bus, secondModm, secondMod, secondAddress, 2, out uint systemRegister, out uint destLength, out string destError))
         {
             Halted = true;
             LastStopReason = destError;
@@ -1040,6 +1055,26 @@ public sealed class V60
         }
 
         _reg[systemRegister + 36] = source;
+        return sourceLength + destLength + 2;
+    }
+
+    private uint ExecuteStpr(IV60Bus bus)
+    {
+        if (!TryDecodeFormat12ValueAndAddress(bus, sourceDimension: 2, destDimension: 2, out uint systemRegister, out OperandReference dest, out uint sourceLength, out uint destLength, out string error))
+        {
+            Halted = true;
+            LastStopReason = error;
+            return 0;
+        }
+
+        if (systemRegister > 28)
+        {
+            Halted = true;
+            LastStopReason = string.Create(CultureInfo.InvariantCulture, $"invalid STPR system register {systemRegister} pc=0x{PreviousPc:X8}");
+            return 0;
+        }
+
+        WriteOperandReference(bus, dest, _reg[systemRegister + 36], 2);
         return sourceLength + destLength + 2;
     }
 
@@ -1095,6 +1130,65 @@ public sealed class V60
             return 0;
         }
 
+        return writeLength + 2;
+    }
+
+    private uint ExecuteMoveDouble(IV60Bus bus)
+    {
+        byte instFlags = bus.Read8(Pc + 1);
+
+        ulong source;
+        uint sourceLength;
+        if ((instFlags & 0x80) != 0 || (instFlags & 0x20) != 0)
+        {
+            uint sourceAddress = Pc + 2;
+            byte sourceMod = bus.Read8(sourceAddress);
+            if (!TryReadAddressModeReference(bus, (instFlags & 0x40) != 0 ? 1 : 0, sourceMod, sourceAddress, dimension: 3, out OperandReference sourceReference, out sourceLength, out string sourceError))
+            {
+                Halted = true;
+                LastStopReason = sourceError;
+                return 0;
+            }
+
+            source = ReadDoubleReference(bus, sourceReference);
+        }
+        else
+        {
+            source = ReadDoubleRegister(instFlags & 0x1f);
+            sourceLength = 0;
+        }
+
+        if ((instFlags & 0x80) != 0)
+        {
+            uint destAddress = Pc + 2 + sourceLength;
+            byte destMod = bus.Read8(destAddress);
+            if (!TryReadAddressModeReference(bus, (instFlags & 0x20) != 0 ? 1 : 0, destMod, destAddress, dimension: 3, out OperandReference destReference, out uint destLength, out string destError))
+            {
+                Halted = true;
+                LastStopReason = destError;
+                return 0;
+            }
+
+            WriteDoubleReference(bus, destReference, source);
+            return sourceLength + destLength + 2;
+        }
+
+        if ((instFlags & 0x20) != 0)
+        {
+            WriteDoubleRegister(instFlags & 0x1f, source);
+            return sourceLength + 2;
+        }
+
+        uint writeAddress = Pc + 2;
+        byte writeMod = bus.Read8(writeAddress);
+        if (!TryReadAddressModeReference(bus, (instFlags & 0x40) != 0 ? 1 : 0, writeMod, writeAddress, dimension: 3, out OperandReference writeReference, out uint writeLength, out string writeError))
+        {
+            Halted = true;
+            LastStopReason = writeError;
+            return 0;
+        }
+
+        WriteDoubleReference(bus, writeReference, source);
         return writeLength + 2;
     }
 
@@ -1695,6 +1789,33 @@ public sealed class V60
             bus.Write32(dest.Address + 4, remainder);
         }
 
+        return sourceLength + destLength + 2;
+    }
+
+    private uint ExecuteDivideExtendedSigned(IV60Bus bus)
+    {
+        if (!TryDecodeFormat12ValueAndAddress(bus, sourceDimension: 2, destDimension: 3, out uint divisorRaw, out OperandReference dest, out uint sourceLength, out uint destLength, out string error))
+        {
+            Halted = true;
+            LastStopReason = error;
+            return 0;
+        }
+
+        int divisor = unchecked((int)divisorRaw);
+        long dividend = unchecked((long)ReadDoubleReference(bus, dest));
+        if (divisor == 0 || (dividend == long.MinValue && divisor == -1))
+        {
+            _ov = 1;
+            return sourceLength + destLength + 2;
+        }
+
+        long quotient64 = dividend / divisor;
+        int remainder = (int)(dividend % divisor);
+        _ov = (byte)(quotient64 is < int.MinValue or > int.MaxValue ? 1 : 0);
+        int quotient = unchecked((int)quotient64);
+        _z = (byte)(quotient == 0 ? 1 : 0);
+        _s = (byte)(quotient < 0 ? 1 : 0);
+        WriteDoubleReference(bus, dest, (uint)quotient | ((ulong)(uint)remainder << 32));
         return sourceLength + destLength + 2;
     }
 
@@ -2868,6 +2989,43 @@ public sealed class V60
             WriteRegisterByDimension(reference.RegisterIndex, value, dimension);
         else
             WriteMemoryByDimension(bus, reference.Address, value, dimension);
+    }
+
+    private ulong ReadDoubleReference(IV60Bus bus, OperandReference reference)
+    {
+        if (reference.IsRegister)
+            return ReadDoubleRegister(reference.RegisterIndex);
+
+        uint lo = bus.Read32(reference.Address);
+        uint hi = bus.Read32(reference.Address + 4);
+        return lo | ((ulong)hi << 32);
+    }
+
+    private void WriteDoubleReference(IV60Bus bus, OperandReference reference, ulong value)
+    {
+        if (reference.IsRegister)
+        {
+            WriteDoubleRegister(reference.RegisterIndex, value);
+            return;
+        }
+
+        bus.Write32(reference.Address, (uint)value);
+        bus.Write32(reference.Address + 4, (uint)(value >> 32));
+    }
+
+    private ulong ReadDoubleRegister(int index)
+    {
+        int lo = index & 0x1f;
+        int hi = (lo + 1) & 0x1f;
+        return _reg[lo] | ((ulong)_reg[hi] << 32);
+    }
+
+    private void WriteDoubleRegister(int index, ulong value)
+    {
+        int lo = index & 0x1f;
+        int hi = (lo + 1) & 0x1f;
+        _reg[lo] = (uint)value;
+        _reg[hi] = (uint)(value >> 32);
     }
 
     private static uint MaskForDimension(int dimension)

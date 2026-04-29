@@ -127,11 +127,12 @@ public sealed class System32Adapter : IEmulatorCore
         if (string.IsNullOrWhiteSpace(path) || !RomArchiveExtractor.IsArchivePath(path))
             return false;
 
-        string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
+        string name = System32RomSet.CanonicalDriverName(Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant());
         return name is "ga2" or "ga2u" or "ga2j"
             or "arabfgt" or "arabfgtu" or "arabfgtj"
             or "spidman" or "spidmanu" or "spidmanj"
-            or "sonic" or "sonicp";
+            or "sonic" or "sonicp"
+            or "orunners" or "orunnersu" or "orunnersj";
     }
 
     public void LoadRom(string path)
@@ -439,6 +440,9 @@ public sealed class System32Adapter : IEmulatorCore
 
     private int TileBankForLayer(int bgnum, ushort screenControl)
     {
+        if (_roms?.IsMulti32 == true)
+            return (_bus.TileBankExternal >> (2 * bgnum)) & 3;
+
         return ((_bus.TileBankExternal & 1) << 1) | (((screenControl & 0x0400) != 0) ? 1 : 0);
     }
 
@@ -719,6 +723,10 @@ public sealed class System32Adapter : IEmulatorCore
         ushort data1 = _bus.ReadSpriteWord(wordOffset + 1);
         ushort data2 = _bus.ReadSpriteWord(wordOffset + 2);
         ushort data3 = _bus.ReadSpriteWord(wordOffset + 3);
+        int extraEntries = indirect && indirectLocal ? 2 : 0;
+        if ((_roms?.IsMulti32 ?? false) && (data3 & 0x0800) != 0)
+            return new SpriteDrawResult(0, extraEntries);
+
         int sourceHeight = data1 >> 8;
         int sourceWidth = bpp8 ? data1 & 0x3f : (data1 >> 1) & 0x3f;
         int destHeight = data2 & 0x03ff;
@@ -726,9 +734,10 @@ public sealed class System32Adapter : IEmulatorCore
         int yPos = SignExtend12(_bus.ReadSpriteWord(wordOffset + 4));
         int xPos = SignExtend12(_bus.ReadSpriteWord(wordOffset + 5));
         int address = _bus.ReadSpriteWord(wordOffset + 6) | ((data2 & 0xf000) << 4);
-        int bank = ((data3 & 0x0800) >> 11) | ((data3 & 0x4000) >> 13);
+        int bank = (_roms?.IsMulti32 ?? false)
+            ? ((data3 & 0x2000) >> 13) | ((data3 & 0x8000) >> 14)
+            : ((data3 & 0x0800) >> 11) | ((data3 & 0x4000) >> 13);
         int colorBase = 0x8000 | (_bus.ReadSpriteWord(wordOffset + 7) & (bpp8 ? 0x7f00 : 0x7ff0));
-        int extraEntries = indirect && indirectLocal ? 2 : 0;
 
         if (sourceWidth == 0 || sourceHeight == 0 || destWidth == 0 || destHeight == 0)
             return new SpriteDrawResult(0, extraEntries);

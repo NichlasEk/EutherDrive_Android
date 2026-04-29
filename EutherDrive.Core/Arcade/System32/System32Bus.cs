@@ -14,11 +14,11 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private const int MainIrqTimer0 = 3;
     private const int MainIrqTimer1 = 4;
 
-    private readonly byte[] _workRam = new byte[0x1_0000];
+    private readonly byte[] _workRam = new byte[0x2_0000];
     private readonly byte[] _videoRam = new byte[0x2_0000];
     private readonly byte[] _spriteRam = new byte[0x2_0000];
-    private readonly byte[] _paletteRam = new byte[0x1_0000];
-    private readonly byte[] _mixerRam = new byte[0x80];
+    private readonly byte[][] _paletteRam = { new byte[0x1_0000], new byte[0x1_0000] };
+    private readonly byte[][] _mixerRam = { new byte[0x80], new byte[0x80] };
     private readonly byte[] _sharedRam = new byte[0x2000];
     private readonly byte[] _commShare = new byte[0x1000];
     private readonly byte[] _dpram = new byte[0x1000];
@@ -39,6 +39,11 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private byte _p1Input = 0xff;
     private byte _p2Input = 0xff;
     private byte _serviceInput = 0xff;
+    private byte _analogSteer = 0x80;
+    private byte _analogAccelerator;
+    private byte _analogBrake;
+    private byte _analogBank;
+    private byte _analogShiftRegister;
     private readonly ushort[] _trackballX = new ushort[3];
     private readonly ushort[] _trackballY = new ushort[3];
     private readonly ushort[] _trackballStartX = new ushort[3];
@@ -64,8 +69,10 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         Array.Clear(_workRam);
         Array.Clear(_videoRam);
         Array.Clear(_spriteRam);
-        Array.Clear(_paletteRam);
-        Array.Fill(_mixerRam, (byte)0xff);
+        Array.Clear(_paletteRam[0]);
+        Array.Clear(_paletteRam[1]);
+        Array.Fill(_mixerRam[0], (byte)0xff);
+        Array.Fill(_mixerRam[1], (byte)0xff);
         Array.Clear(_sharedRam);
         Array.Clear(_commShare);
         Array.Clear(_dpram);
@@ -84,6 +91,11 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         _p1Input = 0xff;
         _p2Input = 0xff;
         _serviceInput = 0xff;
+        _analogSteer = 0x80;
+        _analogAccelerator = 0;
+        _analogBrake = 0;
+        _analogBank = 0;
+        _analogShiftRegister = 0;
         Array.Clear(_trackballX);
         Array.Clear(_trackballY);
         Array.Clear(_trackballStartX);
@@ -124,14 +136,17 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             p1 &= unchecked((byte)~0x02);
         if (button3)
             p1 &= unchecked((byte)~0x04);
-        if (down)
-            p1 &= unchecked((byte)~0x10);
-        if (up)
-            p1 &= unchecked((byte)~0x20);
-        if (right)
-            p1 &= unchecked((byte)~0x40);
-        if (left)
-            p1 &= unchecked((byte)~0x80);
+        if (!IsOutRunners)
+        {
+            if (down)
+                p1 &= unchecked((byte)~0x10);
+            if (up)
+                p1 &= unchecked((byte)~0x20);
+            if (right)
+                p1 &= unchecked((byte)~0x40);
+            if (left)
+                p1 &= unchecked((byte)~0x80);
+        }
 
         byte service = 0xff;
         if (coin)
@@ -156,6 +171,13 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             _trackballHeldDy = 0;
         }
 
+        if (IsOutRunners)
+        {
+            _analogSteer = left ? (byte)0x30 : right ? (byte)0xd0 : (byte)0x80;
+            _analogAccelerator = up ? (byte)0xff : (byte)0x00;
+            _analogBrake = down ? (byte)0xff : (byte)0x00;
+        }
+
         _p1Input = p1;
         _p2Input = 0xff;
         _serviceInput = service;
@@ -170,7 +192,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     public ushort ReadPaletteWord(int colorIndex)
     {
         int offset = (colorIndex & 0x3fff) * 2;
-        return (ushort)(_paletteRam[offset] | (_paletteRam[offset + 1] << 8));
+        return (ushort)(_paletteRam[0][offset] | (_paletteRam[0][offset + 1] << 8));
     }
 
     public ushort ReadSpriteWord(int wordOffset)
@@ -182,14 +204,14 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     public ushort ReadMixerWord(int byteOffset)
     {
         int offset = byteOffset & 0x7e;
-        return (ushort)(_mixerRam[offset] | (_mixerRam[offset + 1] << 8));
+        return (ushort)(_mixerRam[0][offset] | (_mixerRam[0][offset + 1] << 8));
     }
 
     public (int VideoBytes, int PaletteBytes, int SpriteBytes, ushort TextControl, ushort ScreenControl) GetVideoStats()
     {
         return (
             CountNonZero(_videoRam),
-            CountNonZero(_paletteRam),
+            CountNonZero(_paletteRam[0]) + CountNonZero(_paletteRam[1]),
             CountNonZero(_spriteRam),
             ReadVideoWord(0x1ff5c),
             ReadVideoWord(0x1ff00));
@@ -223,7 +245,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         if (address >= 0xf0_0000)
             return ReadArray(roms.MainCpu, address - 0xf0_0000);
         if (address is >= 0x20_0000 and <= 0x2f_ffff)
-            return _workRam[(address - 0x20_0000) & 0xffff];
+            return _workRam[(address - 0x20_0000) & WorkRamMask];
         if (address is >= 0x30_0000 and <= 0x3f_ffff)
             return _videoRam[(address - 0x30_0000) & 0x1ffff];
         if (address is >= 0x40_0000 and <= 0x4f_ffff)
@@ -240,6 +262,10 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             return ReadMainDpram(address);
         if (IsSegaSonicTrackballAddress(address))
             return ReadSegaSonicTrackball(address);
+        if (IsOutRunnersAnalogAddress(address))
+            return ReadOutRunnersAnalog(address);
+        if (address is >= 0xc8_0000 and <= 0xcf_ffff && _roms.IsMulti32)
+            return ReadIoChip(address);
         if (address is >= 0xc0_0000 and <= 0xcf_ffff)
             return ReadIoChip(address);
         if (address is >= 0xd0_0000 and <= 0xd7_ffff)
@@ -256,7 +282,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
 
         if (address is >= 0x20_0000 and <= 0x2f_ffff)
         {
-            int offset = (int)((address - 0x20_0000) & 0xffff);
+            int offset = (int)((address - 0x20_0000) & WorkRamMask);
             _workRam[offset] = value;
             if (IsSegaSonic && (offset == 0xe5c4 || offset == 0xe5c5))
                 ApplySegaSonicLevelLoadProtection();
@@ -277,6 +303,12 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             WriteMainDpram(address, value);
         else if (IsSegaSonicTrackballAddress(address))
             ResetSegaSonicTrackball(address);
+        else if (IsOutRunnersAnalogAddress(address))
+            SelectOutRunnersAnalog(address);
+        else if (IsOutRunnersAnalogBankAddress(address))
+            _analogBank = (byte)(value & 1);
+        else if (address is >= 0xc8_0000 and <= 0xcf_ffff && (_roms?.IsMulti32 ?? false))
+            WriteIoChip(address, value);
         else if (address is >= 0xc0_0000 and <= 0xcf_ffff)
             WriteIoChip(address, value);
         else if (address is >= 0xd0_0000 and <= 0xd7_ffff)
@@ -505,7 +537,50 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             _tileBankExternal = value;
     }
 
+    private int WorkRamMask => (_roms?.IsMulti32 ?? false) ? 0x1ffff : 0xffff;
+
     private bool IsSegaSonic => string.Equals(_roms?.DriverName, "sonic", StringComparison.Ordinal);
+
+    private bool IsOutRunners => string.Equals(_roms?.DriverName, "orunners", StringComparison.Ordinal)
+        || string.Equals(_roms?.DriverName, "orunnersu", StringComparison.Ordinal)
+        || string.Equals(_roms?.DriverName, "orunnersj", StringComparison.Ordinal);
+
+    private bool IsOutRunnersAnalogAddress(uint address)
+    {
+        if (!IsOutRunners || address is < 0xc0_0000 or > 0xc7_ffff)
+            return false;
+
+        uint low = address & 0x7f;
+        return low is >= 0x50 and <= 0x57;
+    }
+
+    private bool IsOutRunnersAnalogBankAddress(uint address)
+    {
+        if (!IsOutRunners || address is < 0xc0_0000 or > 0xc7_ffff)
+            return false;
+
+        return (address & 0x7f) == 0x60;
+    }
+
+    private byte ReadOutRunnersAnalog(uint address)
+    {
+        byte result = (byte)((_analogShiftRegister & 0x80) | 0x7f);
+        _analogShiftRegister <<= 1;
+        return result;
+    }
+
+    private void SelectOutRunnersAnalog(uint address)
+    {
+        int channel = (int)(((address & 0x7f) - 0x50) >> 1) & 3;
+        _analogShiftRegister = channel switch
+        {
+            0 => _analogSteer,
+            1 => _analogAccelerator,
+            2 => _analogBank == 0 ? _analogBrake : (byte)0x00,
+            3 => _analogBank == 0 ? (byte)0x80 : _analogSteer,
+            _ => 0xff
+        };
+    }
 
     private bool IsSegaSonicTrackballAddress(uint address)
     {
@@ -661,12 +736,13 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
 
     private byte ReadPaletteAndMixer(uint address)
     {
-        if ((address & 0xff_0000) == 0x61_0000)
-            return _mixerRam[address & 0x7f];
+        int bank = PaletteMixerBank(address);
+        if ((address & 0x01_0000) != 0)
+            return _mixerRam[bank][address & 0x7f];
 
-        uint byteOffset = (address - 0x60_0000) & 0xffff;
+        uint byteOffset = address & 0xffff;
         uint wordOffset = byteOffset >> 1;
-        ushort value = ReadPaletteWord((int)wordOffset);
+        ushort value = ReadPaletteWord(bank, (int)wordOffset);
         if ((wordOffset & 0x4000) != 0)
             value = PackPaletteUpperFormat(value);
 
@@ -675,27 +751,48 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
 
     private void WritePaletteAndMixer(uint address, byte value)
     {
-        if ((address & 0xff_0000) == 0x61_0000)
+        int bank = PaletteMixerBank(address);
+        if ((address & 0x01_0000) != 0)
         {
-            _mixerRam[address & 0x7f] = value;
+            _mixerRam[bank][address & 0x7f] = value;
             return;
         }
 
-        uint byteOffset = (address - 0x60_0000) & 0xffff;
+        uint byteOffset = address & 0xffff;
         uint wordOffset = byteOffset >> 1;
-        int paletteOffset = (int)(wordOffset & 0x3fff) * 2;
-        ushort oldValue = (ushort)(_paletteRam[paletteOffset] | (_paletteRam[paletteOffset + 1] << 8));
+        int colorIndex = (int)(wordOffset & 0x3fff);
         bool convert = (wordOffset & 0x4000) != 0;
+        WritePaletteByte(bank, colorIndex, convert, (byteOffset & 1) != 0, value);
+
+        ushort mixerControl = (ushort)(_mixerRam[bank][0x4e] | (_mixerRam[bank][0x4f] << 8));
+        if ((mixerControl & 0x0880) != 0)
+            WritePaletteByte(bank, colorIndex ^ 0x2000, convert, (byteOffset & 1) != 0, value);
+    }
+
+    private void WritePaletteByte(int bank, int colorIndex, bool convert, bool highByte, byte value)
+    {
+        int paletteOffset = (colorIndex & 0x3fff) * 2;
+        byte[] paletteRam = _paletteRam[bank];
+        ushort oldValue = (ushort)(paletteRam[paletteOffset] | (paletteRam[paletteOffset + 1] << 8));
         ushort visibleValue = convert ? PackPaletteUpperFormat(oldValue) : oldValue;
-        if ((byteOffset & 1) == 0)
+        if (!highByte)
             visibleValue = (ushort)((visibleValue & 0xff00) | value);
         else
             visibleValue = (ushort)((visibleValue & 0x00ff) | (value << 8));
 
         ushort canonical = convert ? UnpackPaletteUpperFormat(visibleValue) : visibleValue;
-        _paletteRam[paletteOffset] = (byte)canonical;
-        _paletteRam[paletteOffset + 1] = (byte)(canonical >> 8);
+        paletteRam[paletteOffset] = (byte)canonical;
+        paletteRam[paletteOffset + 1] = (byte)(canonical >> 8);
     }
+
+    private ushort ReadPaletteWord(int bank, int colorIndex)
+    {
+        int offset = (colorIndex & 0x3fff) * 2;
+        return (ushort)(_paletteRam[bank & 1][offset] | (_paletteRam[bank & 1][offset + 1] << 8));
+    }
+
+    private int PaletteMixerBank(uint address)
+        => ((_roms?.IsMulti32 ?? false) && (address & 0x08_0000) != 0) ? 1 : 0;
 
     private static ushort PackPaletteUpperFormat(ushort value)
     {
