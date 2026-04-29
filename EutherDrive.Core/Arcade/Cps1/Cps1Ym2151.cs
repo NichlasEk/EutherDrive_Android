@@ -384,6 +384,9 @@ internal sealed class Cps1Ym2151
         for (int channel = 0; channel < ChannelCount; channel++)
             _channels[channel].Generate(lfoRawPm, ref leftMix, ref rightMix);
 
+        leftMix = RoundTripYm3012(leftMix);
+        rightMix = RoundTripYm3012(rightMix);
+
         left = (short)Math.Clamp((int)Math.Round(leftMix * gain), short.MinValue, short.MaxValue);
         right = (short)Math.Clamp((int)Math.Round(rightMix * gain), short.MinValue, short.MaxValue);
     }
@@ -566,6 +569,34 @@ internal sealed class Cps1Ym2151
 
     private static int EffectiveRate(int rawRate, int ksr)
         => rawRate == 0 ? 0 : Math.Min(rawRate + ksr, 63);
+
+    private static int RoundTripYm3012(int value)
+    {
+        if (value < short.MinValue)
+            return short.MinValue;
+        if (value > short.MaxValue)
+            return short.MaxValue;
+
+        int scanValue = value ^ (value >> 31);
+        int exponent = Math.Max(7 - CountLeadingZeros((uint)(scanValue << 17)), 1) - 1;
+        int mask = (1 << exponent) - 1;
+        return value & ~mask;
+    }
+
+    private static int CountLeadingZeros(uint value)
+    {
+        if (value == 0)
+            return 32;
+
+        int count = 0;
+        while ((value & 0x80000000u) == 0)
+        {
+            count++;
+            value <<= 1;
+        }
+
+        return count;
+    }
 
     private static short Mix(short current, int add)
         => (short)Math.Clamp(current + add, short.MinValue, short.MaxValue);
