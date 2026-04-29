@@ -485,7 +485,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
             if (address >= 0xd000 && address <= 0xd7ff)
                 return _classicAudioRam[address - 0xd000];
-            if (address == 0xf000 || address == 0xf001)
+            if (address == 0xf000)
+                return 0xff;
+            if (address == 0xf001)
                 return _ym2151.ReadStatus();
             if (address == 0xf002)
             {

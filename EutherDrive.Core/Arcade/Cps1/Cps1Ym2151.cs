@@ -179,6 +179,8 @@ internal sealed class Cps1Ym2151
     private int _timerB;
     private int _timerACounter;
     private int _timerBCounter;
+    private int _busyClocks;
+    private double _busyClockAccumulator;
     private double _timerTickAccumulator;
     private uint _envCounter;
     private uint _lfoCounter;
@@ -212,6 +214,8 @@ internal sealed class Cps1Ym2151
         _timerB = 0;
         _timerACounter = 0;
         _timerBCounter = 0;
+        _busyClocks = 0;
+        _busyClockAccumulator = 0.0;
         _timerTickAccumulator = 0.0;
         _envCounter = 0;
         _lfoCounter = 0;
@@ -236,7 +240,7 @@ internal sealed class Cps1Ym2151
     }
 
     public byte ReadStatus()
-        => _status;
+        => (byte)(_status | (_busyClocks > 0 ? 0x80 : 0x00));
 
     public bool IrqAsserted
         => (_status & 0x03) != 0;
@@ -257,7 +261,16 @@ internal sealed class Cps1Ym2151
         if (cpuCycles <= 0 || cpuClockHz <= 0.0)
             return;
 
-        _timerTickAccumulator += cpuCycles * (InputClockHz / cpuClockHz) / 64.0;
+        double inputClocks = cpuCycles * (InputClockHz / cpuClockHz);
+        _busyClockAccumulator += inputClocks;
+        int busyElapsed = (int)_busyClockAccumulator;
+        if (busyElapsed > 0)
+        {
+            _busyClockAccumulator -= busyElapsed;
+            _busyClocks = Math.Max(0, _busyClocks - busyElapsed);
+        }
+
+        _timerTickAccumulator += inputClocks / 64.0;
         int ticks = (int)_timerTickAccumulator;
         if (ticks <= 0)
             return;
@@ -312,6 +325,9 @@ internal sealed class Cps1Ym2151
 
     private void WriteRegister(byte register, byte value)
     {
+        _busyClocks = 64;
+        _busyClockAccumulator = 0.0;
+
         if (register == 0x19)
             _registers[(value & 0x80) != 0 ? 0x1a : 0x19] = value;
         else if (register != 0x1a)
