@@ -1723,6 +1723,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         {
             Dictionary<string, byte[]> entries = ReadArchive(path);
             MergeParentArchivesIfPresent(path, ResolveParentSetName(setName, definition.ParentSetName), entries);
+            definition = SelectEffectiveQSoundDefinition(setName, definition, entries);
             ValidateQSoundSetEntries(setName, entries);
 
             byte[] program = new byte[ProgramRomSize];
@@ -1760,6 +1761,18 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 RequireRom(entries, "mbj_23e.8f", "mbj23e");
                 RequireRom(entries, "mbj_22b.7f");
             }
+        }
+
+        private static Cps1QSoundDefinition SelectEffectiveQSoundDefinition(string setName, Cps1QSoundDefinition definition, Dictionary<string, byte[]> entries)
+        {
+            if (string.Equals(setName, "wof", StringComparison.OrdinalIgnoreCase)
+                && !TryFind(entries, out _, "tk2e_23c.8f")
+                && TryFind(entries, out _, "tk2e_23b.8f", "tk2e_23b.rom"))
+            {
+                return definition with { VideoConfig = Cps1VideoConfig.Default };
+            }
+
+            return definition;
         }
 
         private static void RequireRom(Dictionary<string, byte[]> entries, params string[] names)
@@ -8908,8 +8921,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x20_0000,
                 new[]
                 {
-                    Word(0x000000, $"{setName}_23c.8f", $"{setName}_23b.8f", $"{setName}.23c", $"{setName}_23b.rom", "tk2e_23c.8f", "tk2e_23b.8f", "tk2e_23b.rom", "tk2u.23c", "tk2a_23b.rom", "tk2j22c.bin"),
-                    Word(0x080000, $"{setName}_22c.7f", $"{setName}_22b.7f", $"{setName}.22c", $"{setName}_22b.rom", "tk2e_22c.7f", "tk2e_22b.7f", "tk2e_22b.rom", "tk2u.22c", "tk2a_22b.rom", "tk2j23c.bin")
+                    Word(0x000000, $"{setName}_23c.8f", $"{setName}_23b.8f", $"{setName}.23c", $"{setName}_23b.rom", "tk2e_23c.8f", "tk2e_23b.8f", "tk2e_23b.rom", "tk2u.23c", "tk2a_23b.rom", "tk2j_23c.8f", "tk2j23c.bin"),
+                    Word(0x080000, $"{setName}_22c.7f", $"{setName}_22b.7f", $"{setName}.22c", $"{setName}_22b.rom", "tk2e_22c.7f", "tk2e_22b.7f", "tk2e_22b.rom", "tk2u.22c", "tk2a_22b.rom", "tk2j_22c.7f", "tk2j22c.bin")
                 },
                 new[]
                 {
@@ -8917,10 +8930,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     Gfx(0x000002, "tk2-3m.5a", "tk2_gfx3.rom", "tk2_02.4a"),
                     Gfx(0x000004, "tk2-2m.4a", "tk2_gfx2.rom", "tk2_03.5a"),
                     Gfx(0x000006, "tk2-4m.6a", "tk2_gfx4.rom", "tk2_04.6a"),
-                    Gfx(0x200000, "tk2-5m.7a", "tk2_gfx5.rom", "tk2_05.7a"),
-                    Gfx(0x200002, "tk2-7m.9a", "tk2_gfx7.rom", "tk2_06.8a"),
-                    Gfx(0x200004, "tk2-6m.8a", "tk2_gfx6.rom", "tk2_07.9a"),
-                    Gfx(0x200006, "tk2-8m.10a", "tk2_gfx8.rom", "tk2_08.10a")
+                    Gfx(0x200000, "tk2_05.7a", "tk205.bin", "tk2-5m.7a", "tk2_gfx5.rom"),
+                    Gfx(0x200002, "tk2_06.8a", "tk206.bin", "tk2-7m.9a", "tk2_gfx7.rom"),
+                    Gfx(0x200004, "tk2_07.9a", "tk207.bin", "tk2-6m.8a", "tk2_gfx6.rom"),
+                    Gfx(0x200006, "tk2_08.10a", "tk208.bin", "tk2-8m.10a", "tk2_gfx8.rom")
                 },
                 Audio("tk2_qa.5k", "tk2_qa.rom"),
                 QSoundBanks("tk2-q1.1k|tk2_q1.rom", "tk2-q2.2k|tk2_q2.rom", "tk2-q3.3k|tk2_q3.rom", "tk2-q4.4k|tk2_q4.rom"));
