@@ -666,11 +666,6 @@ internal sealed class Cps1Ym2151
             byte control = _chip.Reg(0x20 + _index);
             _right = (control & 0x40) != 0;
             _left = (control & 0x80) != 0;
-            if (!_left && !_right)
-            {
-                _left = true;
-                _right = true;
-            }
 
             _feedback = (control >> 3) & 0x07;
             _algorithm = control & 0x07;
