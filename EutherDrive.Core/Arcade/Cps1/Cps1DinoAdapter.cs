@@ -62,7 +62,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         Cps1DinoRomSet roms = Cps1DinoRomSet.Load(path);
         _bus.Load(roms);
         _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
-        _video = new Cps1Video(_bus, roms.Graphics);
+        _video = new Cps1Video(_bus, roms.Graphics, roms.GfxMapper);
         _mainCpu.Reset(_bus);
         _audioCpu.ApplyResetLine();
         _loaded = true;
@@ -246,6 +246,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private Cps1VideoConfig _videoConfig = Cps1VideoConfig.QSound2;
         private Cps1AudioHardware _audioHardware = Cps1AudioHardware.QSound;
         private bool _hasQSoundProtectionRom;
+        private byte _bootlegKludge;
+        private bool _useSf2HackInputRead;
 
         private ArcadeInputState _input;
         private byte _soundLatch0 = 0xff;
@@ -268,6 +270,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         public ReadOnlySpan<ushort> CpsA => _cpsA;
         public ReadOnlySpan<ushort> CpsB => _cpsB;
         public Cps1VideoConfig VideoConfig => _videoConfig;
+        public bool ReverseSpriteOrder => (_bootlegKludge & 0x40) != 0;
+        public bool UseSf2BootlegVideoKludge => (_bootlegKludge & 0x0f) == 1;
         public bool InterruptAsserted => _interruptLevel != 0;
         public BusSignals Signals => new(false);
         public ushort CurrentOpcode => 0;
@@ -311,6 +315,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _audioHardware = roms.AudioHardware;
             _videoConfig = roms.VideoConfig;
             _hasQSoundProtectionRom = roms.HasQSoundProtectionRom;
+            _bootlegKludge = roms.BootlegKludge;
+            _useSf2HackInputRead = roms.UseSf2HackInputRead;
             _audioCpuClockHz = roms.AudioCpuClockHz;
             _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
             if (roms.AudioHardware == Cps1AudioHardware.QSound)
@@ -359,7 +365,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         public void LatchSprites()
         {
-            int objBase = Cps1Base(Cps1Regs.ObjBase, ObjBytes);
+            int objBase = UseSf2BootlegVideoKludge ? ForcedCps1Base(0x9100, ObjBytes) : Cps1Base(Cps1Regs.ObjBase, ObjBytes);
             for (int i = 0; i < _bufferedObj.Length; i++)
                 _bufferedObj[i] = ReadGfxWord(objBase + i);
         }
@@ -573,8 +579,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         }
 
         public int Cps1Base(int registerIndex, int boundaryBytes)
+            => ForcedCps1Base(_cpsA[registerIndex], boundaryBytes);
+
+        private static int ForcedCps1Base(int registerValue, int boundaryBytes)
         {
-            int baseAddress = _cpsA[registerIndex] * 256;
+            int baseAddress = registerValue * 256;
             baseAddress &= ~(boundaryBytes - 1);
             return (baseAddress & 0x3ffff) / 2;
         }
@@ -825,6 +834,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         }
 
         private ushort ReadDsw(int offset)
+            => _useSf2HackInputRead ? ReadSf2HackDsw(offset) : ReadStandardDsw(offset);
+
+        private ushort ReadStandardDsw(int offset)
         {
             int input = offset switch
             {
@@ -835,6 +847,19 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 _ => 0xff
             };
             return (ushort)((input << 8) | 0xff);
+        }
+
+        private ushort ReadSf2HackDsw(int offset)
+        {
+            int input = offset switch
+            {
+                0 => Input0(),
+                1 => 0xff,
+                2 => 0xff,
+                3 => 0xff,
+                _ => 0xff
+            };
+            return (ushort)(0xff00 | input);
         }
 
         private ushort ReadCpsB(int offset)
@@ -1249,10 +1274,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private readonly byte[] _spritePriority = new byte[InternalWidth * InternalHeight];
         private readonly uint[] _palette = new uint[PaletteEntries];
 
-        public Cps1Video(Cps1Bus bus, byte[] gfxRom)
+        public Cps1Video(Cps1Bus bus, byte[] gfxRom, Cps1GfxMapper gfxMapper)
         {
             _bus = bus;
-            _graphics = new Cps1Graphics(gfxRom);
+            _graphics = new Cps1Graphics(gfxRom, gfxMapper);
             for (int i = 0; i < _palette.Length; i++)
                 _palette[i] = 0xff000000;
         }
@@ -1357,6 +1382,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 1 => Cps1Regs.Scroll2ScrollX,
                 _ => Cps1Regs.Scroll3ScrollX
             });
+            if (_bus.UseSf2BootlegVideoKludge)
+                scrollX += layer switch { 0 => -0x0c, 1 => -0x0e, _ => -0x10 };
             int scrollY = CpsA(layer switch
             {
                 0 => Cps1Regs.Scroll1ScrollY,
@@ -1417,8 +1444,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                                 int pen = layer switch
                                 {
                                     0 => _graphics.GetScroll1Pen(code, rightHalf, px, py),
-                                    1 => _graphics.GetTile16Pen(code, px, py),
-                                    _ => _graphics.GetTile32Pen(code, px, py)
+                                    1 => _graphics.GetScroll2Pen(code, px, py),
+                                    _ => _graphics.GetScroll3Pen(code, px, py)
                                 };
                                 if (pen != TransparentPen && ((priorityMask >> pen) & 1) != 0)
                                     _spritePriority[target + i] = 1;
@@ -1432,8 +1459,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                             int pen = layer switch
                             {
                                 0 => _graphics.GetScroll1Pen(code, rightHalf, px, py),
-                                1 => _graphics.GetTile16Pen(code, px, py),
-                                _ => _graphics.GetTile32Pen(code, px, py)
+                                1 => _graphics.GetScroll2Pen(code, px, py),
+                                _ => _graphics.GetScroll3Pen(code, px, py)
                             };
                             if (pen != TransparentPen)
                                 _pixels[target + i] = (ushort)(color + pen);
@@ -1458,14 +1485,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 }
             }
 
-            int baseIndex = 0;
+            int baseIndex = _bus.ReverseSpriteOrder ? last : 0;
+            int baseStep = _bus.ReverseSpriteOrder ? -4 : 4;
             for (int i = last; i >= 0; i -= 4)
             {
                 int x = obj[baseIndex + 0] & 0x01ff;
                 int y = obj[baseIndex + 1] & 0x01ff;
                 int code = obj[baseIndex + 2];
                 ushort attr = obj[baseIndex + 3];
-                baseIndex += 4;
+                baseIndex += baseStep;
 
                 int color = attr & 0x1f;
                 bool flipX = (attr & 0x20) != 0;
@@ -1495,9 +1523,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private void DrawSpriteTile(int code, int color, bool flipX, bool flipY, int sx, int sy)
         {
-            if ((uint)code >= _graphics.Tile16Count)
-                return;
-
             int baseColor = color * 16;
             for (int y = 0; y < 16; y++)
             {
@@ -1514,7 +1539,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                         continue;
 
                     int px = flipX ? 15 - x : x;
-                    int pen = _graphics.GetTile16Pen(code, px, py);
+                    int pen = _graphics.GetSpritePen(code, px, py);
                     if (pen != TransparentPen && _spritePriority[row + dx] == 0)
                     {
                         _pixels[row + dx] = (ushort)(baseColor + pen);
@@ -1558,35 +1583,120 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private readonly byte[] _scroll1Right;
         private readonly byte[] _tiles16;
         private readonly byte[] _tiles32;
+        private readonly Cps1GfxMapper _mapper;
 
-        public Cps1Graphics(byte[] gfx)
+        public Cps1Graphics(byte[] gfx, Cps1GfxMapper mapper)
         {
+            _mapper = mapper;
             _scroll1Left = Decode(gfx, 8, 8, 64, 0);
             _scroll1Right = Decode(gfx, 8, 8, 64, 32);
             _tiles16 = Decode(gfx, 16, 16, 128, 0);
             _tiles32 = Decode(gfx, 32, 32, 512, 0);
-            Tile16Count = _tiles16.Length / (16 * 16);
         }
-
-        public int Tile16Count { get; }
 
         public int GetScroll1Pen(int code, bool rightHalf, int x, int y)
         {
+            code = MapCode(Cps1GfxLayer.Scroll1, code);
+            if (code < 0)
+                return 15;
             byte[] data = rightHalf ? _scroll1Right : _scroll1Left;
             int offset = code * 64 + y * 8 + x;
             return (uint)offset < data.Length ? data[offset] : 15;
         }
 
-        public int GetTile16Pen(int code, int x, int y)
+        public int GetSpritePen(int code, int x, int y)
+            => GetTile16Pen(MapCode(Cps1GfxLayer.Sprites, code), x, y);
+
+        public int GetScroll2Pen(int code, int x, int y)
+            => GetTile16Pen(MapCode(Cps1GfxLayer.Scroll2, code), x, y);
+
+        public int GetScroll3Pen(int code, int x, int y)
         {
+            code = MapCode(Cps1GfxLayer.Scroll3, code);
+            if (code < 0)
+                return 15;
+            int offset = code * 1024 + y * 32 + x;
+            return (uint)offset < _tiles32.Length ? _tiles32[offset] : 15;
+        }
+
+        private int GetTile16Pen(int code, int x, int y)
+        {
+            if (code < 0)
+                return 15;
             int offset = code * 256 + y * 16 + x;
             return (uint)offset < _tiles16.Length ? _tiles16[offset] : 15;
         }
 
-        public int GetTile32Pen(int code, int x, int y)
+        private int MapCode(Cps1GfxLayer layer, int code)
         {
-            int offset = code * 1024 + y * 32 + x;
-            return (uint)offset < _tiles32.Length ? _tiles32[offset] : 15;
+            if (_mapper != Cps1GfxMapper.S9263B)
+                return code;
+
+            int shift = layer switch
+            {
+                Cps1GfxLayer.Sprites => 1,
+                Cps1GfxLayer.Scroll1 => 0,
+                Cps1GfxLayer.Scroll2 => 1,
+                _ => 3
+            };
+            int expandedCode = code << shift;
+
+            if (TryMapS9263B(layer, expandedCode, shift, out int mappedCode))
+                return mappedCode;
+
+            return -1;
+        }
+
+        private static bool TryMapS9263B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            bool inRange;
+            int bank;
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    if (expandedCode >= 0x00000 && expandedCode <= 0x07fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x08000 && expandedCode <= 0x0ffff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x10000 && expandedCode <= 0x11fff)
+                    {
+                        bank = 2;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    bank = 2;
+                    inRange = expandedCode >= 0x02000 && expandedCode <= 0x03fff;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 2;
+                    inRange = expandedCode >= 0x04000 && expandedCode <= 0x04fff;
+                    break;
+                default:
+                    bank = 2;
+                    inRange = expandedCode >= 0x05000 && expandedCode <= 0x07fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
         }
 
         private static byte[] Decode(byte[] gfx, int width, int height, int bytesPerTile, int xStartBits)
@@ -1627,6 +1737,20 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 return 0;
             return (data[byteOffset] >> (7 - (bitOffset & 7))) & 1;
         }
+    }
+
+    private enum Cps1GfxMapper
+    {
+        Linear,
+        S9263B
+    }
+
+    private enum Cps1GfxLayer
+    {
+        Sprites,
+        Scroll1,
+        Scroll2,
+        Scroll3
     }
 
     private static class Cps1Regs
@@ -1680,6 +1804,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private Cps1DinoRomSet(
             string setName,
             Cps1VideoConfig videoConfig,
+            Cps1GfxMapper gfxMapper,
+            byte bootlegKludge,
+            bool useSf2HackInputRead,
             Cps1AudioHardware audioHardware,
             double audioCpuClockHz,
             bool hasQSoundProtectionRom,
@@ -1693,6 +1820,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         {
             SetName = setName;
             VideoConfig = videoConfig;
+            GfxMapper = gfxMapper;
+            BootlegKludge = bootlegKludge;
+            UseSf2HackInputRead = useSf2HackInputRead;
             AudioHardware = audioHardware;
             AudioCpuClockHz = audioCpuClockHz;
             HasQSoundProtectionRom = hasQSoundProtectionRom;
@@ -1710,6 +1840,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         public string SetName { get; }
         public Cps1VideoConfig VideoConfig { get; }
+        public Cps1GfxMapper GfxMapper { get; }
+        public byte BootlegKludge { get; }
+        public bool UseSf2HackInputRead { get; }
         public Cps1AudioHardware AudioHardware { get; }
         public double AudioCpuClockHz { get; }
         public bool HasQSoundProtectionRom { get; }
@@ -1732,6 +1865,49 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private static readonly KabukiKeys DinoKabuki = new(0x76543210, 0x24601357, 0x4343, 0x43);
         private static readonly KabukiKeys PunisherKabuki = new(0x67452103, 0x75316024, 0x2222, 0x22);
         private static readonly KabukiKeys SlamMastersKabuki = new(0x54321076, 0x65432107, 0x3131, 0x19);
+
+        private static readonly HashSet<string> S9263BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "sf2acc",
+            "sf2acca",
+            "sf2accp2",
+            "sf2bhh",
+            "sf2ce",
+            "sf2ceblp",
+            "sf2cebltw",
+            "sf2ceea",
+            "sf2ceec",
+            "sf2ceja",
+            "sf2cejb",
+            "sf2cejc",
+            "sf2cet",
+            "sf2ceua",
+            "sf2ceub",
+            "sf2ceuc",
+            "sf2dkot2",
+            "sf2dongb",
+            "sf2koryu",
+            "sf2level",
+            "sf2m1",
+            "sf2m2",
+            "sf2m3",
+            "sf2m4",
+            "sf2m5",
+            "sf2m6",
+            "sf2m7",
+            "sf2m8",
+            "sf2m9",
+            "sf2m10",
+            "sf2mkot",
+            "sf2rb",
+            "sf2rb2",
+            "sf2rb3",
+            "sf2red",
+            "sf2reda",
+            "sf2redp2",
+            "sf2v004",
+            "sf2yyc"
+        };
 
         private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -1854,6 +2030,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return new Cps1DinoRomSet(
                 setName,
                 definition.VideoConfig,
+                Cps1GfxMapper.Linear,
+                0,
+                false,
                 Cps1AudioHardware.QSound,
                 8_000_000.0,
                 UsesQSoundProtectionRom(setName),
@@ -1916,6 +2095,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return new Cps1DinoRomSet(
                 setName,
                 definition.VideoConfig,
+                GetGfxMapper(setName),
+                GetBootlegKludge(setName),
+                UsesSf2HackInputRead(setName),
                 Cps1AudioHardware.YmOki,
                 3_579_545.0,
                 false,
@@ -1932,6 +2114,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             => string.Equals(setName, "slammast", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(setName, "slammastu", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(setName, "mbomberj", StringComparison.OrdinalIgnoreCase);
+
+        private static Cps1GfxMapper GetGfxMapper(string setName)
+            => S9263BMapperSets.Contains(setName) ? Cps1GfxMapper.S9263B : Cps1GfxMapper.Linear;
+
+        private static byte GetBootlegKludge(string setName)
+            => string.Equals(setName, "sf2m7", StringComparison.OrdinalIgnoreCase) ? (byte)0x41 : (byte)0;
+
+        private static bool UsesSf2HackInputRead(string setName)
+            => string.Equals(setName, "sf2m7", StringComparison.OrdinalIgnoreCase);
 
         private static Dictionary<string, string> BuildGeneratedParentSets()
         {
