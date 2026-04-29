@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using EutherDrive.Core.Cpu.M68000Emu;
 using SharpCompress.Archives;
 
@@ -1199,18 +1200,14 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 MarkSpritePriorityLayer(l2);
             DrawLayer(l3);
 
+            Span<uint> frameWords = MemoryMarshal.Cast<byte, uint>(frameBuffer);
             int dst = 0;
             for (int y = 0; y < FrameHeight; y++)
             {
                 int src = (y + CropY) * InternalWidth + CropX;
                 for (int x = 0; x < FrameWidth; x++)
                 {
-                    uint argb = _palette[_pixels[src + x] % _palette.Length];
-                    frameBuffer[dst + 0] = (byte)argb;
-                    frameBuffer[dst + 1] = (byte)(argb >> 8);
-                    frameBuffer[dst + 2] = (byte)(argb >> 16);
-                    frameBuffer[dst + 3] = 0xff;
-                    dst += 4;
+                    frameWords[dst++] = _palette[_pixels[src + x]];
                 }
             }
         }
@@ -1286,6 +1283,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 _ => Cps1Regs.Scroll3ScrollY
             });
 
+            int tileShift = layer switch { 0 => 3, 1 => 4, _ => 5 };
+            int tileMask = tileSize - 1;
+            int mapMask = mapSize - 1;
+            int layerColorBase = layer switch { 0 => 0x20, 1 => 0x40, _ => 0x60 };
+            ReadOnlySpan<ushort> gfxRam = _bus.GfxRam;
+            int gfxRamWords = gfxRam.Length;
+
             for (int y = 0; y < InternalHeight; y++)
             {
                 int effectiveScrollX = scrollX;
@@ -1295,44 +1299,67 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     effectiveScrollX += _bus.ReadGfxWord(otherBase + ((row + rowScrollOffset) & 0x3ff));
                 }
 
-                int sourceY = (y + scrollY) & (mapSize - 1);
-                int tileRow = sourceY / tileSize;
-                int localY = sourceY & (tileSize - 1);
+                int sourceY = (y + scrollY) & mapMask;
+                int tileRow = sourceY >> tileShift;
+                int localY = sourceY & tileMask;
 
                 int dst = y * InternalWidth;
-                for (int x = 0; x < InternalWidth; x++)
+                int x = 0;
+                while (x < InternalWidth)
                 {
-                    int sourceX = (x + effectiveScrollX) & (mapSize - 1);
-                    int tileCol = sourceX / tileSize;
-                    int localX = sourceX & (tileSize - 1);
+                    int sourceX = (x + effectiveScrollX) & mapMask;
+                    int tileCol = sourceX >> tileShift;
+                    int localX = sourceX & tileMask;
+                    int run = Math.Min(tileSize - localX, InternalWidth - x);
                     int tileIndex = TileIndex(layer, tileCol, tileRow);
-                    ushort codeWord = _bus.ReadGfxWord(baseIndex + tileIndex * 2);
-                    ushort attr = _bus.ReadGfxWord(baseIndex + tileIndex * 2 + 1);
+                    int tileWord = baseIndex + tileIndex * 2;
+                    ushort codeWord = gfxRam[tileWord % gfxRamWords];
+                    ushort attr = gfxRam[(tileWord + 1) % gfxRamWords];
                     int code = layer == 2 ? codeWord & 0x3fff : codeWord;
                     int priorityGroup = (attr >> 7) & 0x03;
                     ushort priorityMask = PriorityMask(priorityGroup);
                     int flip = (attr >> 5) & 0x03;
-                    int px = (flip & 0x01) != 0 ? tileSize - 1 - localX : localX;
+                    bool flipX = (flip & 0x01) != 0;
                     int py = (flip & 0x02) != 0 ? tileSize - 1 - localY : localY;
-                    int pen = layer switch
+                    bool rightHalf = layer == 0 && (tileIndex & 0x20) != 0;
+                    int color = ((attr & 0x1f) + layerColorBase) * 16;
+                    int localStep = flipX ? -1 : 1;
+                    int px = flipX ? tileSize - 1 - localX : localX;
+                    int target = dst + x;
+
+                    if (markSpritePriority)
                     {
-                        0 => _graphics.GetScroll1Pen(code, (tileIndex & 0x20) != 0, px, py),
-                        1 => _graphics.GetTile16Pen(code, px, py),
-                        _ => _graphics.GetTile32Pen(code, px, py)
-                    };
-                    if (pen != TransparentPen)
-                    {
-                        if (markSpritePriority)
+                        if (priorityMask != 0)
                         {
-                            if (((priorityMask >> pen) & 1) != 0)
-                                _spritePriority[dst + x] = 1;
-                        }
-                        else
-                        {
-                            int color = ((attr & 0x1f) + (layer switch { 0 => 0x20, 1 => 0x40, _ => 0x60 })) * 16;
-                            _pixels[dst + x] = (ushort)((color + pen) % PaletteEntries);
+                            for (int i = 0; i < run; i++, px += localStep)
+                            {
+                                int pen = layer switch
+                                {
+                                    0 => _graphics.GetScroll1Pen(code, rightHalf, px, py),
+                                    1 => _graphics.GetTile16Pen(code, px, py),
+                                    _ => _graphics.GetTile32Pen(code, px, py)
+                                };
+                                if (pen != TransparentPen && ((priorityMask >> pen) & 1) != 0)
+                                    _spritePriority[target + i] = 1;
+                            }
                         }
                     }
+                    else
+                    {
+                        for (int i = 0; i < run; i++, px += localStep)
+                        {
+                            int pen = layer switch
+                            {
+                                0 => _graphics.GetScroll1Pen(code, rightHalf, px, py),
+                                1 => _graphics.GetTile16Pen(code, px, py),
+                                _ => _graphics.GetTile32Pen(code, px, py)
+                            };
+                            if (pen != TransparentPen)
+                                _pixels[target + i] = (ushort)(color + pen);
+                        }
+                    }
+
+                    x += run;
                 }
             }
         }
