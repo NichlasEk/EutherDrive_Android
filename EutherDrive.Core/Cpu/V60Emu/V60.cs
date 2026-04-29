@@ -173,6 +173,8 @@ public sealed class V60
                 return ExecuteExtended58(bus);
             case 0x5a:
                 return ExecuteExtended5A(bus);
+            case 0x5b:
+                return ExecuteExtended5B(bus);
             case 0x80:
                 return ExecuteAdd(bus, dimension: 0);
             case 0x81:
@@ -515,12 +517,71 @@ public sealed class V60
         {
             0x08 => ExecuteMoveStringUp(bus, subop, dimension: 1),
             0x09 => ExecuteMoveStringDown(bus, subop, dimension: 1),
+            0x0a => ExecuteMoveStringUp(bus, subop, dimension: 1, fill: true),
+            0x0b => ExecuteMoveStringDown(bus, subop, dimension: 1, fill: true),
+            0x0c => ExecuteMoveStringUp(bus, subop, dimension: 1, stop: true),
             0x18 => ExecuteSearchString(bus, subop, dimension: 1, down: false, searchForEqual: true),
             0x19 => ExecuteSearchString(bus, subop, dimension: 1, down: true, searchForEqual: true),
             0x1a => ExecuteSearchString(bus, subop, dimension: 1, down: false, searchForEqual: false),
             0x1b => ExecuteSearchString(bus, subop, dimension: 1, down: true, searchForEqual: false),
             _ => StopUnimplementedExtended("5A", subop)
         };
+    }
+
+    private uint ExecuteExtended5B(IV60Bus bus)
+    {
+        byte subop = bus.Read8(Pc + 1);
+        return (subop & 0x1f) switch
+        {
+            0x08 => ExecuteMoveBitString(bus, subop, down: false),
+            0x09 => ExecuteMoveBitString(bus, subop, down: true),
+            _ => StopUnimplementedExtended("5B", subop)
+        };
+    }
+
+    private uint ExecuteMoveBitString(IV60Bus bus, byte subop, bool down)
+    {
+        uint sourceModAddress = Pc + 2;
+        byte sourceMod = bus.Read8(sourceModAddress);
+        if (!TryReadBitAddressModeAddress(bus, (subop & 0x40) != 0 ? 1 : 0, sourceMod, sourceModAddress, out uint sourceAddress, out int sourceBitOffset, out uint sourceLength, out string sourceError))
+        {
+            Halted = true;
+            LastStopReason = sourceError;
+            return 0;
+        }
+
+        byte lengthToken = bus.Read8(Pc + 2 + sourceLength);
+        uint bitCount = (lengthToken & 0x80) != 0
+            ? _reg[lengthToken & 0x1f]
+            : lengthToken;
+
+        uint destModAddress = Pc + 3 + sourceLength;
+        byte destMod = bus.Read8(destModAddress);
+        if (!TryReadBitAddressModeAddress(bus, (subop & 0x20) != 0 ? 1 : 0, destMod, destModAddress, out uint destAddress, out int destBitOffset, out uint destLength, out string destError))
+        {
+            Halted = true;
+            LastStopReason = destError;
+            return 0;
+        }
+
+        if (down && bitCount != 0)
+        {
+            sourceBitOffset += (int)bitCount - 1;
+            destBitOffset += (int)bitCount - 1;
+        }
+
+        int step = down ? -1 : 1;
+        for (uint i = 0; i < bitCount; i++)
+        {
+            bool bit = ReadBit(bus, sourceAddress, sourceBitOffset);
+            WriteBit(bus, destAddress, destBitOffset, bit);
+            _reg[28] = NormalizeBitAddress(sourceAddress, sourceBitOffset, out _);
+            _reg[27] = NormalizeBitAddress(destAddress, destBitOffset, out _);
+            sourceBitOffset += step;
+            destBitOffset += step;
+        }
+
+        return sourceLength + destLength + 3;
     }
 
     private uint ExecuteMoveStringUp(IV60Bus bus, byte subop, int dimension, bool fill = false, bool stop = false)
@@ -2366,6 +2427,204 @@ public sealed class V60
         return false;
     }
 
+    private bool TryReadBitAddressModeAddress(
+        IV60Bus bus,
+        int modm,
+        byte mod,
+        uint modAddress,
+        out uint address,
+        out int bitOffset,
+        out uint length,
+        out string error)
+    {
+        address = 0;
+        bitOffset = 0;
+        length = 0;
+        error = string.Empty;
+
+        int group = mod >> 5;
+        int registerIndex = mod & 0x1f;
+        if (modm == 0)
+        {
+            switch (group)
+            {
+                case 0:
+                    address = _reg[registerIndex];
+                    bitOffset = (sbyte)bus.Read8(modAddress + 1);
+                    length = 2;
+                    return true;
+                case 1:
+                    address = _reg[registerIndex];
+                    bitOffset = (short)bus.Read16(modAddress + 1);
+                    length = 3;
+                    return true;
+                case 2:
+                    address = _reg[registerIndex];
+                    bitOffset = unchecked((int)bus.Read32(modAddress + 1));
+                    length = 5;
+                    return true;
+                case 3:
+                    address = _reg[registerIndex];
+                    length = 1;
+                    return true;
+                case 4:
+                    address = bus.Read32(unchecked(_reg[registerIndex] + (uint)(sbyte)bus.Read8(modAddress + 1)));
+                    length = 2;
+                    return true;
+                case 5:
+                    address = bus.Read32(unchecked(_reg[registerIndex] + (uint)(short)bus.Read16(modAddress + 1)));
+                    length = 3;
+                    return true;
+                case 6:
+                    address = bus.Read32(unchecked(_reg[registerIndex] + bus.Read32(modAddress + 1)));
+                    length = 5;
+                    return true;
+                case 7:
+                    return TryReadGroup7BitAddressMode(bus, mod, modAddress, out address, out bitOffset, out length, out error);
+            }
+        }
+
+        if (modm == 1)
+        {
+            switch (group)
+            {
+                case 0:
+                    address = bus.Read32(unchecked(_reg[registerIndex] + (uint)(sbyte)bus.Read8(modAddress + 1)));
+                    bitOffset = (sbyte)bus.Read8(modAddress + 2);
+                    length = 3;
+                    return true;
+                case 1:
+                    address = bus.Read32(unchecked(_reg[registerIndex] + (uint)(short)bus.Read16(modAddress + 1)));
+                    bitOffset = (short)bus.Read16(modAddress + 3);
+                    length = 5;
+                    return true;
+                case 2:
+                    address = bus.Read32(unchecked(_reg[registerIndex] + bus.Read32(modAddress + 1)));
+                    bitOffset = unchecked((int)bus.Read32(modAddress + 5));
+                    length = 9;
+                    return true;
+                case 4:
+                    address = _reg[registerIndex];
+                    _reg[registerIndex] = unchecked(_reg[registerIndex] + 1);
+                    length = 1;
+                    return true;
+                case 5:
+                    _reg[registerIndex] = unchecked(_reg[registerIndex] - 1);
+                    address = _reg[registerIndex];
+                    length = 1;
+                    return true;
+                case 6:
+                    return TryReadIndexedBitAddressMode(bus, mod, modAddress, out address, out bitOffset, out length, out error);
+            }
+        }
+
+        error = string.Create(
+            CultureInfo.InvariantCulture,
+            $"unimplemented bit address mode modm={modm} mod=0x{mod:X2} for opcode 0x{bus.Read8(Pc):X2} pc=0x{PreviousPc:X8}");
+        return false;
+    }
+
+    private bool TryReadIndexedBitAddressMode(
+        IV60Bus bus,
+        byte mod,
+        uint modAddress,
+        out uint address,
+        out int bitOffset,
+        out uint length,
+        out string error)
+    {
+        address = 0;
+        bitOffset = 0;
+        length = 0;
+        error = string.Empty;
+
+        byte second = bus.Read8(modAddress + 1);
+        int mode = second >> 5;
+        int baseRegister = second & 0x1f;
+        int indexRegister = mod & 0x1f;
+        bitOffset = unchecked((int)_reg[indexRegister]);
+
+        switch (mode)
+        {
+            case 0:
+                address = unchecked(_reg[baseRegister] + (uint)(sbyte)bus.Read8(modAddress + 2));
+                length = 3;
+                return true;
+            case 1:
+                address = unchecked(_reg[baseRegister] + (uint)(short)bus.Read16(modAddress + 2));
+                length = 4;
+                return true;
+            case 2:
+                address = unchecked(_reg[baseRegister] + bus.Read32(modAddress + 2));
+                length = 6;
+                return true;
+            case 3:
+                address = _reg[baseRegister];
+                length = 2;
+                return true;
+            case 4:
+                address = bus.Read32(unchecked(_reg[baseRegister] + (uint)(sbyte)bus.Read8(modAddress + 2)));
+                length = 3;
+                return true;
+            case 5:
+                address = bus.Read32(unchecked(_reg[baseRegister] + (uint)(short)bus.Read16(modAddress + 2)));
+                length = 4;
+                return true;
+            case 6:
+                address = bus.Read32(unchecked(_reg[baseRegister] + bus.Read32(modAddress + 2)));
+                length = 6;
+                return true;
+        }
+
+        error = string.Create(CultureInfo.InvariantCulture, $"unimplemented indexed bit address mode mod=0x{mod:X2} second=0x{second:X2} pc=0x{PreviousPc:X8}");
+        return false;
+    }
+
+    private bool TryReadGroup7BitAddressMode(
+        IV60Bus bus,
+        byte mod,
+        uint modAddress,
+        out uint address,
+        out int bitOffset,
+        out uint length,
+        out string error)
+    {
+        address = 0;
+        bitOffset = 0;
+        length = 0;
+        error = string.Empty;
+
+        switch (mod & 0x1f)
+        {
+            case 0x10:
+                address = Pc;
+                bitOffset = (sbyte)bus.Read8(modAddress + 1);
+                length = 2;
+                return true;
+            case 0x11:
+                address = Pc;
+                bitOffset = (short)bus.Read16(modAddress + 1);
+                length = 3;
+                return true;
+            case 0x12:
+                address = Pc;
+                bitOffset = unchecked((int)bus.Read32(modAddress + 1));
+                length = 5;
+                return true;
+            case 0x13:
+                address = bus.Read32(modAddress + 1);
+                length = 5;
+                return true;
+            case 0x1b:
+                address = bus.Read32(bus.Read32(modAddress + 1));
+                length = 5;
+                return true;
+        }
+
+        error = string.Create(CultureInfo.InvariantCulture, $"unimplemented group7 bit address mode mod=0x{mod:X2} pc=0x{PreviousPc:X8}");
+        return false;
+    }
+
     private bool TryReadAddressModeValue(
         IV60Bus bus,
         int modm,
@@ -2566,6 +2825,34 @@ public sealed class V60
                 bus.Write32(address, value);
                 break;
         }
+    }
+
+    private static bool ReadBit(IV60Bus bus, uint baseAddress, int bitOffset)
+    {
+        uint address = NormalizeBitAddress(baseAddress, bitOffset, out int bit);
+        return (bus.Read8(address) & (1 << bit)) != 0;
+    }
+
+    private static void WriteBit(IV60Bus bus, uint baseAddress, int bitOffset, bool set)
+    {
+        uint address = NormalizeBitAddress(baseAddress, bitOffset, out int bit);
+        byte mask = (byte)(1 << bit);
+        byte value = bus.Read8(address);
+        value = set ? (byte)(value | mask) : (byte)(value & ~mask);
+        bus.Write8(address, value);
+    }
+
+    private static uint NormalizeBitAddress(uint baseAddress, int bitOffset, out int normalizedBit)
+    {
+        long byteOffset = Math.DivRem(bitOffset, 8, out int bit);
+        if (bit < 0)
+        {
+            byteOffset--;
+            bit += 8;
+        }
+
+        normalizedBit = bit;
+        return unchecked(baseAddress + (uint)byteOffset);
     }
 
     private uint ReadOperandReference(IV60Bus bus, OperandReference reference, int dimension)

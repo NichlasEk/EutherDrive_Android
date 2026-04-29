@@ -39,6 +39,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private byte _p1Input = 0xff;
     private byte _p2Input = 0xff;
     private byte _serviceInput = 0xff;
+    private readonly ushort[] _trackballX = new ushort[3];
+    private readonly ushort[] _trackballY = new ushort[3];
     private System32RomSet? _roms;
     private System32Sound? _sound;
 
@@ -78,6 +80,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         _p1Input = 0xff;
         _p2Input = 0xff;
         _serviceInput = 0xff;
+        Array.Clear(_trackballX);
+        Array.Clear(_trackballY);
         _random = 0x12345678;
         WriteArray16(_videoRam, 0x1ff00, 0x8000);
 
@@ -126,6 +130,14 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             service &= unchecked((byte)~0x04);
         if (start)
             service &= unchecked((byte)~0x10);
+
+        if (IsSegaSonic)
+        {
+            int dx = (right ? 0x18 : 0) - (left ? 0x18 : 0);
+            int dy = (down ? 0x18 : 0) - (up ? 0x18 : 0);
+            _trackballX[0] = (ushort)((_trackballX[0] + dx) & 0x0fff);
+            _trackballY[0] = (ushort)((_trackballY[0] + dy) & 0x0fff);
+        }
 
         _p1Input = p1;
         _p2Input = 0xff;
@@ -209,6 +221,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             return _commShare[address - 0x80_0000];
         if (address is >= 0xa0_0000 and <= 0xa0_0fff)
             return ReadMainDpram(address);
+        if (IsSegaSonicTrackballAddress(address))
+            return ReadSegaSonicTrackball(address);
         if (address is >= 0xc0_0000 and <= 0xcf_ffff)
             return ReadIoChip(address);
         if (address is >= 0xd0_0000 and <= 0xd7_ffff)
@@ -224,7 +238,12 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         address &= AddressMask;
 
         if (address is >= 0x20_0000 and <= 0x2f_ffff)
-            _workRam[(address - 0x20_0000) & 0xffff] = value;
+        {
+            int offset = (int)((address - 0x20_0000) & 0xffff);
+            _workRam[offset] = value;
+            if (IsSegaSonic && (offset == 0xe5c4 || offset == 0xe5c5))
+                ApplySegaSonicLevelLoadProtection();
+        }
         else if (address is >= 0x30_0000 and <= 0x3f_ffff)
             _videoRam[(address - 0x30_0000) & 0x1ffff] = value;
         else if (address is >= 0x40_0000 and <= 0x4f_ffff)
@@ -239,6 +258,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             _commShare[address - 0x80_0000] = value;
         else if (address is >= 0xa0_0000 and <= 0xa0_0fff)
             WriteMainDpram(address, value);
+        else if (IsSegaSonicTrackballAddress(address))
+            ResetSegaSonicTrackball(address);
         else if (address is >= 0xc0_0000 and <= 0xcf_ffff)
             WriteIoChip(address, value);
         else if (address is >= 0xd0_0000 and <= 0xd7_ffff)
@@ -467,6 +488,80 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             _tileBankExternal = value;
     }
 
+    private bool IsSegaSonic => string.Equals(_roms?.DriverName, "sonic", StringComparison.Ordinal);
+
+    private bool IsSegaSonicTrackballAddress(uint address)
+    {
+        if (!IsSegaSonic || address is < 0xc0_0000 or > 0xcf_ffff)
+            return false;
+
+        uint low = address & 0x7f;
+        return low is >= 0x40 and <= 0x57;
+    }
+
+    private byte ReadSegaSonicTrackball(uint address)
+    {
+        if ((address & 1) != 0)
+            return 0xff;
+
+        int byteOffset = (int)((address & 0x7f) - 0x40);
+        int player = byteOffset >> 3;
+        int axisOffset = (byteOffset >> 1) & 3;
+        if ((uint)player >= (uint)_trackballX.Length)
+            return 0xff;
+
+        ushort value = (axisOffset & 2) == 0 ? _trackballX[player] : _trackballY[player];
+        return (axisOffset & 1) == 0 ? (byte)value : (byte)(value >> 8);
+    }
+
+    private void ResetSegaSonicTrackball(uint address)
+    {
+        if ((address & 1) != 0)
+            return;
+
+        int byteOffset = (int)((address & 0x7f) - 0x40);
+        int player = byteOffset >> 3;
+        if ((uint)player >= (uint)_trackballX.Length)
+            return;
+
+        _trackballX[player] = 0;
+        _trackballY[player] = 0;
+    }
+
+    private void ApplySegaSonicLevelLoadProtection()
+    {
+        System32RomSet roms = _roms ?? throw new InvalidOperationException("Sega System 32 ROMs have not been loaded.");
+        ushort clearedLevels = ReadWorkRamWord(0xe5c4);
+        ushort level = 0x0007;
+        if (clearedLevels != 0)
+        {
+            int tableOffset = 0x263a + clearedLevels * 2;
+            level = (ushort)((ReadRomByte(roms.MainCpu, tableOffset - 2) << 8) | ReadRomByte(roms.MainCpu, tableOffset - 1));
+        }
+
+        WriteWorkRamWord(0xf06e, level);
+        WriteWorkRamWord(0xf0bc, 0x0000);
+        WriteWorkRamWord(0xf0be, 0x0000);
+    }
+
+    private ushort ReadWorkRamWord(int byteOffset)
+    {
+        int offset = byteOffset & 0xffff;
+        return (ushort)(_workRam[offset] | (_workRam[(offset + 1) & 0xffff] << 8));
+    }
+
+    private void WriteWorkRamWord(int byteOffset, ushort value)
+    {
+        int offset = byteOffset & 0xffff;
+        _workRam[offset] = (byte)value;
+        _workRam[(offset + 1) & 0xffff] = (byte)(value >> 8);
+    }
+
+    private static byte ReadRomByte(byte[] data, int offset)
+    {
+        return (uint)offset < (uint)data.Length ? data[offset] : (byte)0xff;
+    }
+
     private byte ReadInterruptControl(uint address)
     {
         return 0xff;
@@ -484,7 +579,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
                 ScheduleIrqTimer0();
             else if (offset is 10 or 11)
                 ScheduleIrqTimer1();
-            else if (offset == 15)
+            else if (offset is >= 12 and <= 15)
                 _sound?.SignalV60SoundIrq();
         }
     }

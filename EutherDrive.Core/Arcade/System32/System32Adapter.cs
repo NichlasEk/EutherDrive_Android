@@ -128,7 +128,10 @@ public sealed class System32Adapter : IEmulatorCore
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "ga2" or "ga2u" or "ga2j" or "arabfgt" or "arabfgtu" or "arabfgtj";
+        return name is "ga2" or "ga2u" or "ga2j"
+            or "arabfgt" or "arabfgtu" or "arabfgtj"
+            or "spidman" or "spidmanu" or "spidmanj"
+            or "sonic" or "sonicp";
     }
 
     public void LoadRom(string path)
@@ -288,6 +291,9 @@ public sealed class System32Adapter : IEmulatorCore
 
     private void ExecuteMcuSlice()
     {
+        if (_roms is null || _roms.Mcu.Length == 0)
+            return;
+
         if (_mcu.Halted)
         {
             LogMcuStopOnce();

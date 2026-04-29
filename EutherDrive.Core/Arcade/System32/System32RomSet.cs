@@ -65,6 +65,8 @@ internal sealed class System32RomSet
         {
             "ga2" or "ga2u" or "ga2j" => LoadGoldenAxe2(path, driverName),
             "arabfgt" or "arabfgtu" or "arabfgtj" => LoadArabianFight(path, driverName),
+            "spidman" or "spidmanu" or "spidmanj" => LoadSpiderMan(path, driverName),
+            "sonic" or "sonicp" => LoadSegaSonic(path, driverName),
             _ => throw new NotSupportedException($"Unsupported Sega System 32 driver '{driverName}'.")
         };
     }
@@ -156,6 +158,128 @@ internal sealed class System32RomSet
         return new System32RomSet(driverName, mainCpu, soundCpu, mcu, ArabianFightOpcodeTable, tiles, sprites);
     }
 
+    private static System32RomSet LoadSpiderMan(string path, string driverName)
+    {
+        SpiderManProgramNames programNames = driverName switch
+        {
+            "spidman" => new SpiderManProgramNames("epr-14307.ic13", "epr-14306.ic7"),
+            "spidmanu" => new SpiderManProgramNames("epr-14303a.ic13", "epr-14302a.ic7"),
+            "spidmanj" => new SpiderManProgramNames("epr-14287.ic13", "epr-14286.ic7"),
+            _ => throw new NotSupportedException($"Unsupported Spider-Man driver '{driverName}'.")
+        };
+
+        Dictionary<string, byte[]> entries = ReadArchive(path);
+        byte[] mainCpu = new byte[0x20_0000];
+        LoadX4(entries, mainCpu, 0x000000, programNames.Main13);
+        LoadX4(entries, mainCpu, 0x080000, programNames.Main7);
+        Load16ByteX4(entries, mainCpu, 0x100000, "epr-14281.ic14");
+        Load16ByteX4(entries, mainCpu, 0x100001, "epr-14280.ic6", "epr-14280.ic7");
+
+        byte[] soundCpu = new byte[0x40_0000];
+        LoadX4(entries, soundCpu, 0x000000, "epr-14285.ic35");
+        LoadX2(entries, soundCpu, 0x100000, "mpr-14284.ic31");
+        LoadX2(entries, soundCpu, 0x200000, "mpr-14283.ic26");
+        LoadX2(entries, soundCpu, 0x300000, "mpr-14282.ic22");
+
+        byte[] tiles = new byte[0x40_0000];
+        Load32Byte(entries, tiles, 0x000000, "mpr-14291-s.ic38");
+        Load32Byte(entries, tiles, 0x000002, "mpr-14290-s.ic34");
+        Load32Byte(entries, tiles, 0x000001, "mpr-14289-s.ic29");
+        Load32Byte(entries, tiles, 0x000003, "mpr-14288-s.ic25");
+
+        byte[] sprites = new byte[0x80_0000];
+        Load64Byte(entries, sprites, 0x000000, "mpr-14299-h.ic36");
+        Load64Byte(entries, sprites, 0x000001, "mpr-14298-h.ic32");
+        Load64Byte(entries, sprites, 0x000002, "mpr-14297-h.ic27");
+        Load64Byte(entries, sprites, 0x000003, "mpr-14296-h.ic23");
+        Load64Byte(entries, sprites, 0x000004, "mpr-14295-h.ic37");
+        Load64Byte(entries, sprites, 0x000005, "mpr-14294-h.ic33");
+        Load64Byte(entries, sprites, 0x000006, "mpr-14293-s.ic28");
+        Load64Byte(entries, sprites, 0x000007, "mpr-14292-s.ic24");
+
+        return new System32RomSet(
+            driverName,
+            mainCpu,
+            soundCpu,
+            Array.Empty<byte>(),
+            V25.GoldenAxe2OpcodeTable,
+            tiles,
+            sprites);
+    }
+
+    private static System32RomSet LoadSegaSonic(string path, string driverName)
+    {
+        Dictionary<string, byte[]> entries = ReadArchive(path);
+        byte[] mainCpu = new byte[0x20_0000];
+        byte[] soundCpu = new byte[0x40_0000];
+        byte[] tiles;
+        byte[] sprites;
+
+        if (driverName == "sonic")
+        {
+            LoadX4(entries, mainCpu, 0x000000, "epr-15787c.ic17", "epr-c-87.ic17");
+            LoadX4(entries, mainCpu, 0x080000, "epr-15786c.ic8", "epr-c-86.ic8");
+            Load16ByteX2(entries, mainCpu, 0x100000, "epr-15781c.ic18", "epr-c-81.ic18");
+            Load16ByteX2(entries, mainCpu, 0x100001, "epr-15780c.ic9", "epr-c-80.ic9");
+
+            LoadX4(entries, soundCpu, 0x000000, "epr-15785.ic36");
+            LoadLinear(entries, soundCpu, 0x100000, "mpr-15784.ic35");
+            LoadLinear(entries, soundCpu, 0x200000, "mpr-15783.ic34");
+            LoadLinear(entries, soundCpu, 0x300000, "mpr-15782.ic33");
+
+            tiles = new byte[0x20_0000];
+            Load16Byte(entries, tiles, 0x000000, "mpr-15789.ic14");
+            Load16Byte(entries, tiles, 0x000001, "mpr-15788.ic5");
+
+            sprites = new byte[0x100_0000];
+            Load64Word(entries, sprites, 0x000000, "mpr-15790.ic32");
+            Load64Word(entries, sprites, 0x000002, "mpr-15792.ic30");
+            Load64Word(entries, sprites, 0x000004, "mpr-15794.ic28");
+            Load64Word(entries, sprites, 0x000006, "mpr-15796.ic26");
+            Load64Word(entries, sprites, 0x800000, "mpr-15791.ic31");
+            Load64Word(entries, sprites, 0x800002, "mpr-15793.ic29");
+            Load64Word(entries, sprites, 0x800004, "mpr-15795.ic27");
+            Load64Word(entries, sprites, 0x800006, "mpr-15797.ic25");
+        }
+        else
+        {
+            LoadX4(entries, mainCpu, 0x000000, "sonpg0.bin");
+            LoadX4(entries, mainCpu, 0x080000, "sonpg1.bin");
+            Load16ByteX2(entries, mainCpu, 0x100000, "sonpd0.bin");
+            Load16ByteX2(entries, mainCpu, 0x100001, "sonpd1.bin");
+
+            LoadX4(entries, soundCpu, 0x000000, "sonsnd0.bin");
+            LoadLinear(entries, soundCpu, 0x100000, "sonsnd1.bin");
+            LoadLinear(entries, soundCpu, 0x200000, "sonsnd2.bin");
+            LoadLinear(entries, soundCpu, 0x300000, "sonsnd3.bin");
+
+            tiles = new byte[0x20_0000];
+            Load32Byte(entries, tiles, 0x000000, "sonscl0.bin");
+            Load32Byte(entries, tiles, 0x000002, "sonscl1.bin");
+            Load32Byte(entries, tiles, 0x000001, "sonscl2.bin");
+            Load32Byte(entries, tiles, 0x000003, "sonscl3.bin");
+
+            sprites = new byte[0x80_0000];
+            Load64Byte(entries, sprites, 0x000000, "sonobj0.bin");
+            Load64Byte(entries, sprites, 0x000001, "sonobj1.bin");
+            Load64Byte(entries, sprites, 0x000002, "sonobj2.bin");
+            Load64Byte(entries, sprites, 0x000003, "sonobj3.bin");
+            Load64Byte(entries, sprites, 0x000004, "sonobj4.bin");
+            Load64Byte(entries, sprites, 0x000005, "sonobj5.bin");
+            Load64Byte(entries, sprites, 0x000006, "sonobj6.bin");
+            Load64Byte(entries, sprites, 0x000007, "sonobj7.bin");
+        }
+
+        return new System32RomSet(
+            driverName,
+            mainCpu,
+            soundCpu,
+            Array.Empty<byte>(),
+            V25.GoldenAxe2OpcodeTable,
+            tiles,
+            sprites);
+    }
+
     private static Dictionary<string, byte[]> ReadArchive(string path)
     {
         using IArchive archive = ArchiveFactory.Open(path);
@@ -183,9 +307,10 @@ internal sealed class System32RomSet
         source.CopyTo(destination.AsSpan(offset));
     }
 
-    private static void LoadX4(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
+    private static void LoadX4(Dictionary<string, byte[]> entries, byte[] destination, int offset, params string[] names)
     {
-        byte[] source = Find(entries, name);
+        byte[] source = FindAny(entries, names);
+        string name = names[0];
         for (int reload = 0; reload < 4; reload++)
             CopyReload(source, destination, offset + reload * source.Length, name, "V60");
     }
@@ -204,6 +329,13 @@ internal sealed class System32RomSet
             CopyReload(source, destination, offset + reload * source.Length, name, "sound");
     }
 
+    private static void LoadX2(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
+    {
+        byte[] source = Find(entries, name);
+        for (int reload = 0; reload < 2; reload++)
+            CopyReload(source, destination, offset + reload * source.Length, name, "sound");
+    }
+
     private static void Load16Byte(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
     {
         byte[] source = Find(entries, name);
@@ -216,11 +348,20 @@ internal sealed class System32RomSet
         }
     }
 
-    private static void Load16ByteX2(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
+    private static void Load16ByteX2(Dictionary<string, byte[]> entries, byte[] destination, int offset, params string[] names)
     {
-        byte[] source = Find(entries, name);
+        byte[] source = FindAny(entries, names);
+        string name = names[0];
         Load16Byte(source, destination, offset, name, "V60");
         Load16Byte(source, destination, offset + 2 * source.Length, name, "V60");
+    }
+
+    private static void Load16ByteX4(Dictionary<string, byte[]> entries, byte[] destination, int offset, params string[] names)
+    {
+        byte[] source = FindAny(entries, names);
+        string name = names[0];
+        for (int reload = 0; reload < 4; reload++)
+            Load16Byte(source, destination, offset + reload * 2 * source.Length, name, "V60");
     }
 
     private static void Load16Byte(byte[] source, byte[] destination, int offset, string name, string regionName)
@@ -257,6 +398,30 @@ internal sealed class System32RomSet
         }
     }
 
+    private static void Load32Byte(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
+    {
+        byte[] source = Find(entries, name);
+        for (int i = 0; i < source.Length; i++)
+        {
+            int dst = offset + i * 4;
+            if (dst >= destination.Length)
+                throw new InvalidDataException($"ROM '{name}' is too large for the Sega System 32 tile region.");
+            destination[dst] = source[i];
+        }
+    }
+
+    private static void Load64Byte(Dictionary<string, byte[]> entries, byte[] destination, int offset, string name)
+    {
+        byte[] source = Find(entries, name);
+        for (int i = 0; i < source.Length; i++)
+        {
+            int dst = offset + i * 8;
+            if (dst >= destination.Length)
+                throw new InvalidDataException($"ROM '{name}' is too large for the Sega System 32 sprite region.");
+            destination[dst] = source[i];
+        }
+    }
+
     private static byte[] Find(Dictionary<string, byte[]> entries, string name)
     {
         if (entries.TryGetValue(name, out byte[]? data))
@@ -265,6 +430,19 @@ internal sealed class System32RomSet
         string present = string.Join(", ", entries.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase).Take(32));
         throw new InvalidDataException(
             string.Create(CultureInfo.InvariantCulture, $"Missing Sega System 32 ROM file '{name}'. Present files: {present}"));
+    }
+
+    private static byte[] FindAny(Dictionary<string, byte[]> entries, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            if (entries.TryGetValue(name, out byte[]? data))
+                return data;
+        }
+
+        string present = string.Join(", ", entries.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase).Take(32));
+        throw new InvalidDataException(
+            string.Create(CultureInfo.InvariantCulture, $"Missing Sega System 32 ROM file '{names[0]}'. Present files: {present}"));
     }
 
     private static void DecryptV25Mcu(byte[] rom)
@@ -284,4 +462,5 @@ internal sealed class System32RomSet
     }
 
     private sealed record GoldenAxe2ProgramNames(string Main17, string Main8, string Main18, string Main9);
+    private sealed record SpiderManProgramNames(string Main13, string Main7);
 }
