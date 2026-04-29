@@ -230,6 +230,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private readonly byte[] _mainRam = new byte[MainRamSize];
         private readonly byte[] _audioCpu = new byte[0x2_8000];
         private readonly byte[] _audioOpcodes = new byte[0x8000];
+        private readonly byte[] _audioCpuRaw = new byte[0x8000];
         private readonly byte[] _classicAudioRam = new byte[0x0800];
         private readonly byte[] _qsoundShared0 = new byte[0x1000];
         private readonly byte[] _qsoundShared1 = new byte[0x1000];
@@ -244,6 +245,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private readonly Cps1SerialEeprom _eeprom = new();
         private Cps1VideoConfig _videoConfig = Cps1VideoConfig.QSound2;
         private Cps1AudioHardware _audioHardware = Cps1AudioHardware.QSound;
+        private bool _hasQSoundProtectionRom;
 
         private ArcadeInputState _input;
         private byte _soundLatch0 = 0xff;
@@ -276,6 +278,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             Array.Clear(_mainRam);
             Array.Clear(_audioCpu);
             Array.Clear(_audioOpcodes);
+            Array.Clear(_audioCpuRaw);
             Array.Clear(_classicAudioRam);
             Array.Clear(_qsoundShared0);
             Array.Clear(_qsoundShared1);
@@ -287,6 +290,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
             roms.Program.CopyTo(_mainRom.AsSpan(0, roms.Program.Length));
             roms.AudioCpu.CopyTo(_audioCpu.AsSpan(0, roms.AudioCpu.Length));
+            roms.AudioCpu.AsSpan(0, Math.Min(_audioCpuRaw.Length, roms.AudioCpu.Length)).CopyTo(_audioCpuRaw);
             if (roms.AudioHardware == Cps1AudioHardware.QSound)
             {
                 byte[] encryptedAudio = _audioCpu.AsSpan(0, 0x8000).ToArray();
@@ -306,6 +310,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
             _audioHardware = roms.AudioHardware;
             _videoConfig = roms.VideoConfig;
+            _hasQSoundProtectionRom = roms.HasQSoundProtectionRom;
             _audioCpuClockHz = roms.AudioCpuClockHz;
             _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
             if (roms.AudioHardware == Cps1AudioHardware.QSound)
@@ -612,7 +617,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             if (address >= 0x900000 && address <= 0x92ffff)
                 return ReadGfxWord((int)((address - 0x900000) >> 1));
             if (address >= 0xf00000 && address <= 0xf0ffff)
-                return ReadQSoundRom((int)(address - 0xf00000));
+                return ReadQSoundRom((int)((address - 0xf00000) >> 1));
             if (address >= 0xf18000 && address <= 0xf19fff)
                 return (ushort)(0xff00 | _qsoundShared0[(address - 0xf18000) >> 1]);
             if (address >= 0xf1c000 && address <= 0xf1c001)
@@ -846,9 +851,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private ushort ReadQSoundRom(int offset)
         {
-            if ((uint)offset < _audioCpu.Length)
-                return (ushort)(0xff00 | _audioCpu[offset]);
-            return 0xffff;
+            if (!_hasQSoundProtectionRom)
+                return 0;
+            if ((uint)offset < _audioCpuRaw.Length)
+                return (ushort)(0xff00 | _audioCpuRaw[offset]);
+            return 0;
         }
 
         private int Input0()
@@ -924,7 +931,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private int _bits;
         private int _output;
         private int _outputBits;
+        private bool _waitingForStartBit = true;
+        private bool _readingData;
         private bool _receivingWriteData;
+        private bool _receivingWriteAllData;
+        private bool _locked = true;
+        private bool _ignoreUntilChipDeselect;
         private int _writeAddress;
         private int _writeData;
         private int _writeBits;
@@ -972,9 +984,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private void ClockBit(bool bit)
         {
-            if (_outputBits > 0)
+            if (_ignoreUntilChipDeselect)
+                return;
+
+            if (_readingData)
             {
-                ShiftOutputBit();
+                if (_outputBits > 0)
+                    ShiftOutputBit();
+                else
+                    _dataOut = true;
                 return;
             }
 
@@ -984,30 +1002,51 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 _writeBits++;
                 if (_writeBits == 8)
                 {
-                    _data[_writeAddress & 0x7f] = (byte)_writeData;
-                    ResetTransfer();
+                    if (!_locked)
+                        _data[_writeAddress & 0x7f] = (byte)_writeData;
+                    FinishCommand();
+                }
+                return;
+            }
+
+            if (_receivingWriteAllData)
+            {
+                _writeData = ((_writeData << 1) | (bit ? 1 : 0)) & 0xff;
+                _writeBits++;
+                if (_writeBits == 8)
+                {
+                    if (!_locked)
+                        Array.Fill(_data, (byte)_writeData);
+                    FinishCommand();
                     _dataOut = true;
                 }
                 return;
             }
 
-            _shift = ((_shift << 1) | (bit ? 1 : 0)) & 0x3ff;
+            if (_waitingForStartBit)
+            {
+                if (!bit)
+                    return;
+
+                _waitingForStartBit = false;
+                _shift = 0;
+                _bits = 0;
+                return;
+            }
+
+            _shift = ((_shift << 1) | (bit ? 1 : 0)) & 0x1ff;
             _bits++;
-            if (_bits < 10)
+            if (_bits < 9)
                 return;
 
-            int start = (_shift >> 9) & 1;
             int op = (_shift >> 7) & 0x03;
             int address = _shift & 0x7f;
             ResetTransfer();
 
-            if (start == 0)
-                return;
-
             switch (op)
             {
-                case 0x02:
-                    StartOutput(_data[address]);
+                case 0x00:
+                    ExecuteControlCommand(address);
                     break;
                 case 0x01:
                     _receivingWriteData = true;
@@ -1015,8 +1054,38 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     _writeData = 0;
                     _writeBits = 0;
                     break;
+                case 0x02:
+                    StartOutput(_data[address]);
+                    break;
                 case 0x03:
-                    _data[address] = 0xff;
+                    if (!_locked)
+                        _data[address] = 0xff;
+                    FinishCommand();
+                    break;
+            }
+        }
+
+        private void ExecuteControlCommand(int address)
+        {
+            switch (address >> 5)
+            {
+                case 0:
+                    _locked = true;
+                    FinishCommand();
+                    break;
+                case 1:
+                    _receivingWriteAllData = true;
+                    _writeData = 0;
+                    _writeBits = 0;
+                    break;
+                case 2:
+                    if (!_locked)
+                        Array.Fill(_data, (byte)0xff);
+                    FinishCommand();
+                    break;
+                case 0x03:
+                    _locked = false;
+                    FinishCommand();
                     break;
             }
         }
@@ -1025,7 +1094,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         {
             _output = value;
             _outputBits = 8;
-            ShiftOutputBit();
+            _readingData = true;
+            _dataOut = false;
+        }
+
+        private void FinishCommand()
+        {
+            ResetTransfer();
+            _ignoreUntilChipDeselect = true;
+            _dataOut = true;
         }
 
         private void ShiftOutputBit()
@@ -1041,7 +1118,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _bits = 0;
             _output = 0;
             _outputBits = 0;
+            _waitingForStartBit = true;
+            _readingData = false;
             _receivingWriteData = false;
+            _receivingWriteAllData = false;
+            _ignoreUntilChipDeselect = false;
             _writeAddress = 0;
             _writeData = 0;
             _writeBits = 0;
@@ -1601,6 +1682,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             Cps1VideoConfig videoConfig,
             Cps1AudioHardware audioHardware,
             double audioCpuClockHz,
+            bool hasQSoundProtectionRom,
             KabukiKeys kabukiKeys,
             byte[] program,
             byte[] graphics,
@@ -1613,6 +1695,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             VideoConfig = videoConfig;
             AudioHardware = audioHardware;
             AudioCpuClockHz = audioCpuClockHz;
+            HasQSoundProtectionRom = hasQSoundProtectionRom;
             KabukiSwapKey1 = kabukiKeys.SwapKey1;
             KabukiSwapKey2 = kabukiKeys.SwapKey2;
             KabukiAddressKey = kabukiKeys.AddressKey;
@@ -1629,6 +1712,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         public Cps1VideoConfig VideoConfig { get; }
         public Cps1AudioHardware AudioHardware { get; }
         public double AudioCpuClockHz { get; }
+        public bool HasQSoundProtectionRom { get; }
         public int KabukiSwapKey1 { get; }
         public int KabukiSwapKey2 { get; }
         public int KabukiAddressKey { get; }
@@ -1772,6 +1856,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 definition.VideoConfig,
                 Cps1AudioHardware.QSound,
                 8_000_000.0,
+                UsesQSoundProtectionRom(setName),
                 definition.KabukiKeys,
                 program,
                 gfx,
@@ -1833,6 +1918,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 definition.VideoConfig,
                 Cps1AudioHardware.YmOki,
                 3_579_545.0,
+                false,
                 new KabukiKeys(0, 0, 0, 0),
                 program,
                 gfx,
@@ -1841,6 +1927,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 Array.Empty<byte>(),
                 Array.Empty<byte>());
         }
+
+        private static bool UsesQSoundProtectionRom(string setName)
+            => string.Equals(setName, "slammast", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(setName, "slammastu", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(setName, "mbomberj", StringComparison.OrdinalIgnoreCase);
 
         private static Dictionary<string, string> BuildGeneratedParentSets()
         {
