@@ -29,6 +29,7 @@ internal sealed class System32Sound : IOpcodeBusInterface
     private byte _soundDummy;
     private bool _resetAsserted = true;
     private bool _trace;
+    private bool _ym1IrqAsserted;
     private double _ymTickAccumulator;
     private double _rfAccumulator;
     private double _rfPrevLeft;
@@ -39,6 +40,7 @@ internal sealed class System32Sound : IOpcodeBusInterface
     private double _ym1Right;
     private double _ym2Left;
     private double _ym2Right;
+    private double _outputFrameAccumulator;
 
     public System32Sound(byte[] sharedRam)
     {
@@ -64,10 +66,12 @@ internal sealed class System32Sound : IOpcodeBusInterface
         _soundIrqInput = 0;
         _soundDummy = 0;
         _resetAsserted = true;
+        _ym1IrqAsserted = false;
         _ymTickAccumulator = 0;
         _rfAccumulator = 0;
         _rfPrevLeft = _rfPrevRight = _rfNextLeft = _rfNextRight = 0;
         _ym1Left = _ym1Right = _ym2Left = _ym2Right = 0;
+        _outputFrameAccumulator = 0;
     }
 
     public void SetResetAsserted(bool asserted)
@@ -94,13 +98,36 @@ internal sealed class System32Sound : IOpcodeBusInterface
         }
 
         int cycles = 0;
+        int writeFrame = 0;
+        int peak = 0;
+        double outputFramesPerZ80Cycle = OutputSampleRate / (double)Z80Clock;
         while (cycles < Z80CyclesPerFrame)
         {
             uint elapsed = _cpu.ExecuteInstruction(this);
             cycles += (int)elapsed;
+
+            _outputFrameAccumulator += elapsed * outputFramesPerZ80Cycle;
+            int framesToRender = (int)_outputFrameAccumulator;
+            if (framesToRender > 0)
+            {
+                int frameRoom = OutputFramesPerFrame - writeFrame;
+                int renderNow = Math.Min(framesToRender, frameRoom);
+                if (renderNow > 0)
+                {
+                    RenderAudioFrames(audioBuffer, ref writeFrame, renderNow, ref peak);
+                    _outputFrameAccumulator -= renderNow;
+                }
+
+                if (writeFrame >= OutputFramesPerFrame)
+                    break;
+            }
         }
 
-        RenderAudio(audioBuffer);
+        if (writeFrame < OutputFramesPerFrame)
+            RenderAudioFrames(audioBuffer, ref writeFrame, OutputFramesPerFrame - writeFrame, ref peak);
+
+        if (_trace)
+            Console.WriteLine($"[System32 Sound] pc=0x{_cpu.Pc:X4} bank={_soundBank} irqIn=0x{_soundIrqInput:X2} irqCtl={_soundIrqControl[0]:X2}/{_soundIrqControl[1]:X2}/{_soundIrqControl[2]:X2}/{_soundIrqControl[3]:X2} rfOn=0x{_rf5c68.DebugEnabledMask:X2} peak={peak}");
     }
 
     public byte ReadMemory(ushort address)
@@ -150,6 +177,7 @@ internal sealed class System32Sound : IOpcodeBusInterface
         if ((port & 0xf0) == 0x80)
         {
             WriteYm(_ym1, port & 0x03, value);
+            UpdateYm1Irq();
             return;
         }
         if ((port & 0xf0) == 0x90)
@@ -197,6 +225,18 @@ internal sealed class System32Sound : IOpcodeBusInterface
         return effective != 0 ? InterruptLine.Low : InterruptLine.High;
     }
 
+    public byte InterruptVector()
+    {
+        byte effective = (byte)(_soundIrqInput & ~_soundIrqControl[3] & 0x07);
+        for (int i = 0; i < 3; i++)
+        {
+            if ((effective & (1 << i)) != 0)
+                return (byte)(2 * i);
+        }
+
+        return 0xff;
+    }
+
     public bool BusReq() => false;
 
     public bool Reset() => _resetAsserted;
@@ -208,6 +248,28 @@ internal sealed class System32Sound : IOpcodeBusInterface
             if (_soundIrqControl[i] == which)
                 _soundIrqInput |= (byte)(1 << i);
         }
+    }
+
+    private void ClearSoundIrq(int which)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            if (_soundIrqControl[i] == which)
+                _soundIrqInput &= (byte)~(1 << i);
+        }
+    }
+
+    private void UpdateYm1Irq()
+    {
+        bool asserted = _ym1.TimerIrqAsserted;
+        if (asserted == _ym1IrqAsserted)
+            return;
+
+        _ym1IrqAsserted = asserted;
+        if (asserted)
+            SignalSoundIrq(0);
+        else
+            ClearSoundIrq(0);
     }
 
     private byte ReadSoundRom(int offset)
@@ -234,16 +296,13 @@ internal sealed class System32Sound : IOpcodeBusInterface
         }
     }
 
-    private void RenderAudio(short[] destination)
+    private void RenderAudioFrames(short[] destination, ref int writeFrame, int frameCount, ref int peak)
     {
-        if (destination.Length != OutputFramesPerFrame * 2)
-            Array.Resize(ref destination, OutputFramesPerFrame * 2);
-
         double ymTicksPerOutput = YmTickRate / OutputSampleRate;
         double rfSamplesPerOutput = RfSampleRate / OutputSampleRate;
-        int write = 0;
-        int peak = 0;
-        for (int i = 0; i < OutputFramesPerFrame; i++)
+        int write = writeFrame * 2;
+        int maxFrames = Math.Min(frameCount, Math.Max(0, (destination.Length / 2) - writeFrame));
+        for (int i = 0; i < maxFrames; i++)
         {
             _ymTickAccumulator += ymTicksPerOutput;
             int ymTicks = (int)_ymTickAccumulator;
@@ -255,6 +314,7 @@ internal sealed class System32Sound : IOpcodeBusInterface
                     _ym1Left = left;
                     _ym1Right = right;
                 });
+                UpdateYm1Irq();
                 _ym2.Tick(ymTicks, (left, right) =>
                 {
                     _ym2Left = left;
@@ -281,10 +341,8 @@ internal sealed class System32Sound : IOpcodeBusInterface
             destination[write++] = right;
             peak = Math.Max(peak, Math.Abs(left));
             peak = Math.Max(peak, Math.Abs(right));
+            writeFrame++;
         }
-
-        if (_trace)
-            Console.WriteLine($"[System32 Sound] pc=0x{_cpu.Pc:X4} bank={_soundBank} irqIn=0x{_soundIrqInput:X2} irqCtl={_soundIrqControl[0]:X2}/{_soundIrqControl[1]:X2}/{_soundIrqControl[2]:X2}/{_soundIrqControl[3]:X2} rfOn=0x{_rf5c68.DebugEnabledMask:X2} peak={peak}");
     }
 
     private static double Lerp(double previous, double next, double fraction)

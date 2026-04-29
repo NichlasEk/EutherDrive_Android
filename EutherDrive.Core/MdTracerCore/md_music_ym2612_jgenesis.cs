@@ -1903,6 +1903,8 @@ namespace EutherDrive.Core.MdTracerCore
             return status;
         }
 
+        public bool TimerIrqAsserted => _timerA.OverflowFlag || _timerB.OverflowFlag;
+
         public void Tick(int ticks, Action<double, double>? output)
         {
             for (int i = 0; i < ticks; i++)

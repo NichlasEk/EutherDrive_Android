@@ -437,25 +437,27 @@ class Program
                 ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
                 int unchangedFrames = 0;
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                var system32InputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_SYSTEM32_HEADLESS_INPUT_SCRIPT"));
 
                 Console.WriteLine($"[HEADLESS] System32 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
                 DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
+                    var input = ResolveSnesInputForFrame(frame, system32InputScript);
                     system32.SetInputState(
-                        up: false,
-                        down: false,
-                        left: false,
-                        right: false,
-                        a: false,
-                        b: false,
-                        c: false,
-                        start: false,
-                        x: false,
-                        y: false,
-                        z: false,
-                        mode: false,
+                        up: input.Up,
+                        down: input.Down,
+                        left: input.Left,
+                        right: input.Right,
+                        a: input.A,
+                        b: input.B,
+                        c: input.X,
+                        start: input.Start,
+                        x: input.Y,
+                        y: input.L,
+                        z: input.R,
+                        mode: input.Select,
                         padType: PadType.SixButton);
                     system32.RunFrame();
 

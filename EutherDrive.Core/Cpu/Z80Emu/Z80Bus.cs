@@ -16,6 +16,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
         void WriteIo(ushort address, byte value);
         InterruptLine Nmi();
         InterruptLine Int();
+        byte InterruptVector() => 0xff;
         bool BusReq();
         bool Reset();
     }

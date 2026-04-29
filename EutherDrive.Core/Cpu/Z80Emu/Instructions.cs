@@ -185,9 +185,11 @@ namespace EutherDrive.Core.Cpu.Z80Emu
                                 _registers.Pc = 0x0038;
                                 return 13;
                             case InterruptMode.Mode2:
-                                // Treat as mode 1
                                 PushStack(_registers.Pc);
-                                _registers.Pc = 0x0038;
+                                ushort vectorAddress = (ushort)((_registers.I << 8) | _bus.InterruptVector());
+                                byte lo = _bus.ReadMemory(vectorAddress);
+                                byte hi = _bus.ReadMemory((ushort)(vectorAddress + 1));
+                                _registers.Pc = (ushort)(lo | (hi << 8));
                                 return 19;
                         }
                         break;

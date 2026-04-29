@@ -41,6 +41,10 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private byte _serviceInput = 0xff;
     private readonly ushort[] _trackballX = new ushort[3];
     private readonly ushort[] _trackballY = new ushort[3];
+    private readonly ushort[] _trackballStartX = new ushort[3];
+    private readonly ushort[] _trackballStartY = new ushort[3];
+    private short _trackballHeldDx;
+    private short _trackballHeldDy;
     private System32RomSet? _roms;
     private System32Sound? _sound;
 
@@ -82,6 +86,10 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         _serviceInput = 0xff;
         Array.Clear(_trackballX);
         Array.Clear(_trackballY);
+        Array.Clear(_trackballStartX);
+        Array.Clear(_trackballStartY);
+        _trackballHeldDx = 0;
+        _trackballHeldDy = 0;
         _random = 0x12345678;
         WriteArray16(_videoRam, 0x1ff00, 0x8000);
 
@@ -133,10 +141,19 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
 
         if (IsSegaSonic)
         {
-            int dx = (right ? 0x18 : 0) - (left ? 0x18 : 0);
-            int dy = (down ? 0x18 : 0) - (up ? 0x18 : 0);
+            // SegaSonic uses UPD4701 trackballs, so joystick arrows synthesize
+            // absolute encoder movement and reads expose motion since reset_xy.
+            int dx = (left ? 0x20 : 0) - (right ? 0x20 : 0);
+            int dy = (down ? 0x20 : 0) - (up ? 0x20 : 0);
+            _trackballHeldDx = (short)dx;
+            _trackballHeldDy = (short)dy;
             _trackballX[0] = (ushort)((_trackballX[0] + dx) & 0x0fff);
             _trackballY[0] = (ushort)((_trackballY[0] + dy) & 0x0fff);
+        }
+        else
+        {
+            _trackballHeldDx = 0;
+            _trackballHeldDy = 0;
         }
 
         _p1Input = p1;
@@ -510,7 +527,17 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         if ((uint)player >= (uint)_trackballX.Length)
             return 0xff;
 
-        ushort value = (axisOffset & 2) == 0 ? _trackballX[player] : _trackballY[player];
+        bool xAxis = (axisOffset & 2) == 0;
+        ushort value = xAxis
+            ? (ushort)((_trackballX[player] - _trackballStartX[player]) & 0x0fff)
+            : (ushort)((_trackballY[player] - _trackballStartY[player]) & 0x0fff);
+        if (player == 0 && value == 0)
+        {
+            short heldDelta = xAxis ? _trackballHeldDx : _trackballHeldDy;
+            if (heldDelta != 0)
+                value = (ushort)(heldDelta & 0x0fff);
+        }
+
         return (axisOffset & 1) == 0 ? (byte)value : (byte)(value >> 8);
     }
 
@@ -524,8 +551,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         if ((uint)player >= (uint)_trackballX.Length)
             return;
 
-        _trackballX[player] = 0;
-        _trackballY[player] = 0;
+        _trackballStartX[player] = _trackballX[player];
+        _trackballStartY[player] = _trackballY[player];
     }
 
     private void ApplySegaSonicLevelLoadProtection()

@@ -9731,16 +9731,23 @@ public partial class MainWindow : Window
                         {
                             if (_audioEngine != null && !_audioPullMode)
                             {
-                                int buffered = _audioEngine.BufferedFrames;
-                                int lowWater = Math.Max(AudioEngineBatchFrames * 8, AudioTargetBufferedFrames / 2);
-                                int highWater = Math.Max(lowWater + AudioEngineBatchFrames * 8, (AudioTargetBufferedFrames * 95) / 100);
-                                if (buffered <= lowWater)
-                                    _snesAudioFillEnabled = true;
-                                else if (buffered >= highWater)
-                                    _snesAudioFillEnabled = false;
-
-                                if (_snesAudioFillEnabled)
+                                if (core is EutherDrive.Core.Arcade.System32.System32Adapter)
+                                {
                                     _audioEngine.Submit(audio);
+                                }
+                                else
+                                {
+                                    int buffered = _audioEngine.BufferedFrames;
+                                    int lowWater = Math.Max(AudioEngineBatchFrames * 8, AudioTargetBufferedFrames / 2);
+                                    int highWater = Math.Max(lowWater + AudioEngineBatchFrames * 8, (AudioTargetBufferedFrames * 95) / 100);
+                                    if (buffered <= lowWater)
+                                        _snesAudioFillEnabled = true;
+                                    else if (buffered >= highWater)
+                                        _snesAudioFillEnabled = false;
+
+                                    if (_snesAudioFillEnabled)
+                                        _audioEngine.Submit(audio);
+                                }
                             }
                             else if (_audioPullMode)
                             {
@@ -10047,7 +10054,16 @@ public partial class MainWindow : Window
                 return smsAdapter.GetAudioBufferForFrames(frames, out _, out _);
             }
         }
-        if (_core is SnesAdapter || _core is PceCdAdapter || _core is GbaAdapter || _core is GbAdapter || _core is N64Adapter || _core is SegaCdAdapter)
+        if (_core is SnesAdapter
+            || _core is PceCdAdapter
+            || _core is GbaAdapter
+            || _core is GbAdapter
+            || _core is N64Adapter
+            || _core is SegaCdAdapter
+            || _core is McsArcadeAdapter
+            || _core is Cps1DinoAdapter
+            || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
+            || _core is EutherDrive.Core.Arcade.System32.System32Adapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
     }
