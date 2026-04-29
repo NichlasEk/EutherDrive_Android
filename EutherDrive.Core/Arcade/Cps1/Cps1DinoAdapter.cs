@@ -19,7 +19,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
     private const int CpuCyclesPerFrame = 201_216;
-    private static readonly int AudioCpuCyclesPerFrame = GetAudioCpuCyclesPerFrame();
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly Cps1Bus _bus = new();
@@ -34,6 +33,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private short[] _audioBuffer = Array.Empty<short>();
     private int _audioSampleFramesThisFrame;
     private double _audioSampleAccumulator;
+    private int _audioCpuCyclesPerFrame = GetQSoundAudioCpuCyclesPerFrame();
     private ArcadeInputState _input;
     private bool _loaded;
 
@@ -48,7 +48,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "dino";
+        return Cps1DinoRomSet.IsSupportedSet(name);
     }
 
     public void LoadRom(string path)
@@ -60,6 +60,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         Cps1DinoRomSet roms = Cps1DinoRomSet.Load(path);
         _bus.Load(roms);
+        _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
         _video = new Cps1Video(_bus, roms.Graphics);
         _mainCpu.Reset(_bus);
         _audioCpu.ApplyResetLine();
@@ -152,7 +153,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _audioBuffer = new short[samples];
     }
 
-    private static int GetAudioCpuCyclesPerFrame()
+    private int AudioCpuCyclesPerFrame => _audioCpuCyclesPerFrame;
+
+    private static int GetQSoundAudioCpuCyclesPerFrame()
     {
         const double nominalAudioCpuClock = 8_000_000.0;
         const double defaultTimingScale = 1.00;
@@ -205,6 +208,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         bool Start,
         bool Coin);
 
+    private enum Cps1AudioHardware
+    {
+        QSound,
+        YmOki
+    }
+
     private sealed class Cps1Bus : IBusInterface
     {
         private const int MainRomSize = 0x20_0000;
@@ -220,6 +229,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private readonly byte[] _mainRam = new byte[MainRamSize];
         private readonly byte[] _audioCpu = new byte[0x2_8000];
         private readonly byte[] _audioOpcodes = new byte[0x8000];
+        private readonly byte[] _classicAudioRam = new byte[0x0800];
         private readonly byte[] _qsoundShared0 = new byte[0x1000];
         private readonly byte[] _qsoundShared1 = new byte[0x1000];
         private readonly ushort[] _gfxRam = new ushort[GfxRamWords];
@@ -228,22 +238,33 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private readonly ushort[] _cpsA = new ushort[0x20];
         private readonly ushort[] _cpsB = new ushort[0x20];
         private readonly Cps1QSound _qsound = new();
+        private readonly Cps1Oki6295 _oki = new();
+        private readonly Cps1Ym2151 _ym2151 = new();
         private readonly Cps1SerialEeprom _eeprom = new();
+        private Cps1VideoConfig _videoConfig = Cps1VideoConfig.QSound2;
+        private Cps1AudioHardware _audioHardware = Cps1AudioHardware.QSound;
 
         private ArcadeInputState _input;
+        private byte _soundLatch0 = 0xff;
+        private byte _soundLatch1 = 0xff;
         private byte _interruptLevel;
         private int _audioBank;
         private int _audioIrqCountdown;
         private bool _audioIrqAsserted;
         private short[]? _audioFrameBuffer;
         private int _audioFrameCycles;
-        private int _audioFrameSampleIndex;
+        private int _qsoundFrameSampleIndex;
+        private int _okiFrameSampleIndex;
+        private int _ymFrameSampleIndex;
+        private int _audioCpuCyclesPerFrame = GetQSoundAudioCpuCyclesPerFrame();
+        private double _audioCpuClockHz = 8_000_000.0;
 
         public ReadOnlySpan<ushort> GfxRam => _gfxRam;
         public ReadOnlySpan<ushort> PaletteRam => _paletteRam;
         public ReadOnlySpan<ushort> BufferedObj => _bufferedObj;
         public ReadOnlySpan<ushort> CpsA => _cpsA;
         public ReadOnlySpan<ushort> CpsB => _cpsB;
+        public Cps1VideoConfig VideoConfig => _videoConfig;
         public bool InterruptAsserted => _interruptLevel != 0;
         public BusSignals Signals => new(false);
         public ushort CurrentOpcode => 0;
@@ -254,6 +275,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             Array.Clear(_mainRam);
             Array.Clear(_audioCpu);
             Array.Clear(_audioOpcodes);
+            Array.Clear(_classicAudioRam);
             Array.Clear(_qsoundShared0);
             Array.Clear(_qsoundShared1);
             Array.Clear(_gfxRam);
@@ -264,9 +286,32 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
             roms.Program.CopyTo(_mainRom.AsSpan(0, roms.Program.Length));
             roms.AudioCpu.CopyTo(_audioCpu.AsSpan(0, roms.AudioCpu.Length));
-            byte[] encryptedAudio = _audioCpu.AsSpan(0, 0x8000).ToArray();
-            Cps1Kabuki.DecodeDino(encryptedAudio, _audioOpcodes, _audioCpu.AsSpan(0, 0x8000));
-            _qsound.Load(roms.QSound, roms.QSoundDsp);
+            if (roms.AudioHardware == Cps1AudioHardware.QSound)
+            {
+                byte[] encryptedAudio = _audioCpu.AsSpan(0, 0x8000).ToArray();
+                Cps1Kabuki.Decode(
+                    encryptedAudio,
+                    _audioOpcodes,
+                    _audioCpu.AsSpan(0, 0x8000),
+                    roms.KabukiSwapKey1,
+                    roms.KabukiSwapKey2,
+                    roms.KabukiAddressKey,
+                    roms.KabukiXorKey);
+            }
+            else
+            {
+                _audioCpu.AsSpan(0, 0x8000).CopyTo(_audioOpcodes);
+            }
+
+            _audioHardware = roms.AudioHardware;
+            _videoConfig = roms.VideoConfig;
+            _audioCpuClockHz = roms.AudioCpuClockHz;
+            _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
+            if (roms.AudioHardware == Cps1AudioHardware.QSound)
+                _qsound.Load(roms.QSound, roms.QSoundDsp);
+            else
+                _qsound.Reset();
+            _oki.Load(roms.Oki);
             _eeprom.ResetPins();
             ResetVideoRegisters();
             ResetAudioState();
@@ -276,6 +321,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         public void ResetMachine()
         {
             Array.Clear(_mainRam);
+            Array.Clear(_classicAudioRam);
             Array.Clear(_qsoundShared0);
             Array.Clear(_qsoundShared1);
             Array.Clear(_gfxRam);
@@ -294,7 +340,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             Array.Clear(destination);
             _audioFrameBuffer = destination;
             _audioFrameCycles = 0;
-            _audioFrameSampleIndex = 0;
+            _qsoundFrameSampleIndex = 0;
+            _okiFrameSampleIndex = 0;
+            _ymFrameSampleIndex = 0;
         }
 
         public void SetInput(ArcadeInputState input) => _input = input;
@@ -318,7 +366,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             int cycles = 0;
             while (cycles < cycleBudget)
             {
-                if (_audioIrqCountdown <= 0)
+                if (_audioHardware == Cps1AudioHardware.QSound && _audioIrqCountdown <= 0)
                 {
                     if (!_audioIrqAsserted)
                         _audioIrqAsserted = true;
@@ -331,10 +379,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
                 int elapsed = checked((int)audioCpu.ExecuteInstruction(audioBus));
                 cycles += elapsed;
-                _audioIrqCountdown -= elapsed;
+                if (_audioHardware == Cps1AudioHardware.QSound)
+                    _audioIrqCountdown -= elapsed;
+                else
+                    _ym2151.AdvanceTimersByCpuCycles(elapsed, _audioCpuClockHz);
                 AdvanceAudioFrame(elapsed);
 
-                if (audioCpu.LastInterruptAccepted)
+                if (_audioHardware == Cps1AudioHardware.QSound && audioCpu.LastInterruptAccepted)
                     _audioIrqAsserted = false;
             }
 
@@ -346,10 +397,22 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             if (_audioFrameBuffer is null)
                 return;
 
-            _qsound.RenderFrames(_audioFrameBuffer, ref _audioFrameSampleIndex, _audioFrameBuffer.Length / 2);
+            if (_audioHardware == Cps1AudioHardware.QSound)
+            {
+                _qsound.RenderFrames(_audioFrameBuffer, ref _qsoundFrameSampleIndex, _audioFrameBuffer.Length / 2);
+            }
+            else
+            {
+                int sampleFrames = _audioFrameBuffer.Length / 2;
+                _ym2151.RenderStereo(_audioFrameBuffer, ref _ymFrameSampleIndex, sampleFrames);
+                _oki.RenderStereo(_audioFrameBuffer, ref _okiFrameSampleIndex, sampleFrames);
+            }
+
             _audioFrameBuffer = null;
             _audioFrameCycles = 0;
-            _audioFrameSampleIndex = 0;
+            _qsoundFrameSampleIndex = 0;
+            _okiFrameSampleIndex = 0;
+            _ymFrameSampleIndex = 0;
         }
 
         private void AdvanceAudioFrame(int elapsedCycles)
@@ -357,14 +420,41 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             if (_audioFrameBuffer is null || elapsedCycles <= 0)
                 return;
 
-            _audioFrameCycles = Math.Min(_audioFrameCycles + elapsedCycles, AudioCpuCyclesPerFrame);
+            _audioFrameCycles = Math.Min(_audioFrameCycles + elapsedCycles, _audioCpuCyclesPerFrame);
+        }
+
+        private void SynchronizeQSoundStream()
+        {
+            if (_audioFrameBuffer is null)
+                return;
+
             int sampleFrames = _audioFrameBuffer.Length / 2;
-            int targetFrames = (int)((long)_audioFrameCycles * sampleFrames / AudioCpuCyclesPerFrame);
-            _qsound.RenderFrames(_audioFrameBuffer, ref _audioFrameSampleIndex, targetFrames);
+            int targetFrames = (int)((long)_audioFrameCycles * sampleFrames / _audioCpuCyclesPerFrame);
+            _qsound.RenderFrames(_audioFrameBuffer, ref _qsoundFrameSampleIndex, targetFrames);
+        }
+
+        private void SynchronizeYmStream()
+        {
+            if (_audioFrameBuffer is null)
+                return;
+
+            int sampleFrames = _audioFrameBuffer.Length / 2;
+            int targetFrames = (int)((long)_audioFrameCycles * sampleFrames / _audioCpuCyclesPerFrame);
+            _ym2151.RenderStereo(_audioFrameBuffer, ref _ymFrameSampleIndex, targetFrames);
+        }
+
+        private void SynchronizeOkiStream()
+        {
+            if (_audioFrameBuffer is null)
+                return;
+
+            int sampleFrames = _audioFrameBuffer.Length / 2;
+            int targetFrames = (int)((long)_audioFrameCycles * sampleFrames / _audioCpuCyclesPerFrame);
+            _oki.RenderStereo(_audioFrameBuffer, ref _okiFrameSampleIndex, targetFrames);
         }
 
         public EutherDrive.Core.Cpu.Z80Emu.InterruptLine AudioInterruptLine
-            => _audioIrqAsserted
+            => (_audioHardware == Cps1AudioHardware.YmOki ? _ym2151.IrqAsserted : _audioIrqAsserted)
                 ? EutherDrive.Core.Cpu.Z80Emu.InterruptLine.Low
                 : EutherDrive.Core.Cpu.Z80Emu.InterruptLine.High;
 
@@ -377,12 +467,35 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 int offset = 0x10000 + _audioBank * 0x4000 + (address - 0x8000);
                 return (uint)offset < _audioCpu.Length ? _audioCpu[offset] : (byte)0xff;
             }
-            if (address >= 0xc000 && address <= 0xcfff)
-                return _qsoundShared0[address - 0xc000];
-            if (address == 0xd007)
-                return _qsound.ReadStatus();
-            if (address >= 0xf000)
-                return _qsoundShared1[address - 0xf000];
+
+            if (_audioHardware == Cps1AudioHardware.QSound)
+            {
+                if (address >= 0xc000 && address <= 0xcfff)
+                    return _qsoundShared0[address - 0xc000];
+                if (address == 0xd007)
+                {
+                    SynchronizeQSoundStream();
+                    return _qsound.ReadStatus();
+                }
+                if (address >= 0xf000)
+                    return _qsoundShared1[address - 0xf000];
+
+                return 0xff;
+            }
+
+            if (address >= 0xd000 && address <= 0xd7ff)
+                return _classicAudioRam[address - 0xd000];
+            if (address == 0xf000 || address == 0xf001)
+                return _ym2151.ReadStatus();
+            if (address == 0xf002)
+            {
+                SynchronizeOkiStream();
+                return _oki.ReadStatus();
+            }
+            if (address == 0xf008)
+                return _soundLatch0;
+            if (address == 0xf00a)
+                return _soundLatch1;
 
             return 0xff;
         }
@@ -396,24 +509,59 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         public void WriteAudioMemory(ushort address, byte value)
         {
-            if (address >= 0xc000 && address <= 0xcfff)
+            if (_audioHardware == Cps1AudioHardware.QSound)
             {
-                _qsoundShared0[address - 0xc000] = value;
+                if (address >= 0xc000 && address <= 0xcfff)
+                {
+                    _qsoundShared0[address - 0xc000] = value;
+                    return;
+                }
+                if (address >= 0xd000 && address <= 0xd002)
+                {
+                    if (address == 0xd002)
+                        SynchronizeQSoundStream();
+                    _qsound.Write(address - 0xd000, value);
+                    return;
+                }
+                if (address == 0xd003)
+                {
+                    int bank = value & 0x0f;
+                    _audioBank = 0x10000 + bank * 0x4000 < _audioCpu.Length ? bank : 0;
+                    return;
+                }
+                if (address >= 0xf000)
+                    _qsoundShared1[address - 0xf000] = value;
+
                 return;
             }
-            if (address >= 0xd000 && address <= 0xd002)
+
+            if (address >= 0xd000 && address <= 0xd7ff)
             {
-                _qsound.Write(address - 0xd000, value);
+                _classicAudioRam[address - 0xd000] = value;
                 return;
             }
-            if (address == 0xd003)
+            if (address == 0xf000 || address == 0xf001)
             {
-                int bank = value & 0x0f;
-                _audioBank = 0x10000 + bank * 0x4000 < _audioCpu.Length ? bank : 0;
+                SynchronizeYmStream();
+                _ym2151.Write(address - 0xf000, value);
                 return;
             }
-            if (address >= 0xf000)
-                _qsoundShared1[address - 0xf000] = value;
+            if (address == 0xf002)
+            {
+                SynchronizeOkiStream();
+                _oki.Write(value);
+                return;
+            }
+            if (address == 0xf004)
+            {
+                _audioBank = (value & 0x01) != 0 ? 1 : 0;
+                return;
+            }
+            if (address == 0xf006)
+            {
+                SynchronizeOkiStream();
+                _oki.SetPin7((value & 0x01) != 0);
+            }
         }
 
         public int Cps1Base(int registerIndex, int boundaryBytes)
@@ -507,8 +655,18 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             {
                 int index = (int)((address - 0x800140) >> 1);
                 WriteWordByte(ref _cpsB[index], address, value);
-                if (index == Cps1DinoConfig.PaletteControl / 2)
+                if (index == _videoConfig.PaletteControl / 2)
                     LatchPalette();
+                return;
+            }
+            if (_audioHardware == Cps1AudioHardware.YmOki && address >= 0x800180 && address <= 0x800187)
+            {
+                _soundLatch0 = value;
+                return;
+            }
+            if (_audioHardware == Cps1AudioHardware.YmOki && address >= 0x800188 && address <= 0x80018f)
+            {
+                _soundLatch1 = value;
                 return;
             }
             if (address >= 0xf18000 && address <= 0xf19fff)
@@ -554,8 +712,18 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             {
                 int index = (int)((address - 0x800140) >> 1);
                 _cpsB[index] = value;
-                if (index == Cps1DinoConfig.PaletteControl / 2)
+                if (index == _videoConfig.PaletteControl / 2)
                     LatchPalette();
+                return;
+            }
+            if (_audioHardware == Cps1AudioHardware.YmOki && address >= 0x800180 && address <= 0x800187)
+            {
+                _soundLatch0 = (byte)value;
+                return;
+            }
+            if (_audioHardware == Cps1AudioHardware.YmOki && address >= 0x800188 && address <= 0x80018f)
+            {
+                _soundLatch1 = (byte)value;
                 return;
             }
             if (address >= 0x900000 && address <= 0x92ffff)
@@ -618,14 +786,19 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _audioBank = 0;
             _audioIrqCountdown = 32_000;
             _audioIrqAsserted = false;
+            _audioCpuClockHz = _audioCpuClockHz <= 0.0 ? 8_000_000.0 : _audioCpuClockHz;
+            _soundLatch0 = 0xff;
+            _soundLatch1 = 0xff;
             _qsound.Reset();
+            _oki.Reset();
+            _ym2151.Reset();
         }
 
         private void LatchPalette()
         {
             int source = Cps1Base(Cps1Regs.PaletteBase, PaletteAlignBytes);
             int cursor = source;
-            ushort control = _cpsB[Cps1DinoConfig.PaletteControl / 2];
+            ushort control = _cpsB[_videoConfig.PaletteControl / 2];
 
             for (int page = 0; page < 6; page++)
             {
@@ -703,7 +876,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private static bool IsWordMapped(uint address)
             => (address >= 0x800000 && address <= 0x800007)
                || (address >= 0x800018 && address <= 0x80001f)
-               || (address >= 0x800100 && address <= 0x80017f)
+               || (address >= 0x800100 && address <= 0x80018f)
                || (address >= 0xf00000 && address <= 0xf0ffff)
                || (address >= 0xf1c000 && address <= 0xf1c007);
 
@@ -905,12 +1078,22 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private static class Cps1Kabuki
     {
         public static void DecodeDino(ReadOnlySpan<byte> source, Span<byte> opcodeDestination, Span<byte> dataDestination)
+            => Decode(source, opcodeDestination, dataDestination, 0x76543210, 0x24601357, 0x4343, 0x43);
+
+        public static void Decode(
+            ReadOnlySpan<byte> source,
+            Span<byte> opcodeDestination,
+            Span<byte> dataDestination,
+            int swapKey1,
+            int swapKey2,
+            int addressKey,
+            int xorKey)
         {
             int length = Math.Min(source.Length, Math.Min(Math.Min(opcodeDestination.Length, dataDestination.Length), 0x8000));
             for (int address = 0; address < length; address++)
             {
-                opcodeDestination[address] = (byte)ByteDecode(source[address], 0x76543210, 0x24601357, 0x43, address + 0x4343);
-                dataDestination[address] = (byte)ByteDecode(source[address], 0x76543210, 0x24601357, 0x43, (address ^ 0x1fc0) + 0x4343 + 1);
+                opcodeDestination[address] = (byte)ByteDecode(source[address], swapKey1, swapKey2, xorKey, address + addressKey);
+                dataDestination[address] = (byte)ByteDecode(source[address], swapKey1, swapKey2, xorKey, (address ^ 0x1fc0) + addressKey + 1);
             }
         }
 
@@ -989,7 +1172,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             Array.Fill(_pixels, (ushort)0x0bff);
             Array.Clear(_spritePriority);
 
-            ushort layerControl = CpsB(Cps1DinoConfig.LayerControl / 2);
+            Cps1VideoConfig config = _bus.VideoConfig;
+            ushort layerControl = CpsB(config.LayerControl / 2);
             int l0 = (layerControl >> 6) & 0x03;
             int l1 = (layerControl >> 8) & 0x03;
             int l2 = (layerControl >> 10) & 0x03;
@@ -1246,13 +1430,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private ushort PriorityMask(int group)
         {
-            int register = group switch
-            {
-                0 => Cps1DinoConfig.PriorityMask0 / 2,
-                1 => Cps1DinoConfig.PriorityMask1 / 2,
-                2 => Cps1DinoConfig.PriorityMask2 / 2,
-                _ => Cps1DinoConfig.PriorityMask3 / 2
-            };
+            int register = _bus.VideoConfig.PriorityMask(group) / 2;
             return CpsB(register);
         }
     }
@@ -1352,68 +1530,434 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         public const int VideoControl = 0x22 / 2;
     }
 
-    private static class Cps1DinoConfig
+    private readonly record struct Cps1VideoConfig(int LayerControl, int Priority0, int Priority1, int Priority2, int Priority3, int PaletteControl)
     {
-        public const int LayerControl = 0x0a;
-        public const int PriorityMask0 = 0x0c;
-        public const int PriorityMask1 = 0x0e;
-        public const int PriorityMask2 = 0x00;
-        public const int PriorityMask3 = 0x02;
-        public const int PaletteControl = 0x04;
+        public static readonly Cps1VideoConfig Default = new(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30);
+        public static readonly Cps1VideoConfig QSound1 = new(0x22, 0x24, 0x26, 0x28, 0x2a, 0x2c);
+        public static readonly Cps1VideoConfig QSound2 = new(0x0a, 0x0c, 0x0e, 0x00, 0x02, 0x04);
+        public static readonly Cps1VideoConfig QSound3 = new(0x12, 0x14, 0x16, 0x08, 0x0a, 0x0c);
+        public static readonly Cps1VideoConfig QSound4 = new(0x16, 0x00, 0x02, 0x28, 0x2a, 0x2c);
+        public static readonly Cps1VideoConfig QSound5 = new(0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x1c);
+
+        public int PriorityMask(int group) => group switch
+        {
+            0 => Priority0,
+            1 => Priority1,
+            2 => Priority2,
+            _ => Priority3
+        };
     }
 
     private sealed class Cps1DinoRomSet
     {
-        private Cps1DinoRomSet(byte[] program, byte[] graphics, byte[] audioCpu, byte[] qsound, byte[] qsoundDsp)
+        private Cps1DinoRomSet(
+            string setName,
+            Cps1VideoConfig videoConfig,
+            Cps1AudioHardware audioHardware,
+            double audioCpuClockHz,
+            KabukiKeys kabukiKeys,
+            byte[] program,
+            byte[] graphics,
+            byte[] audioCpu,
+            byte[] oki,
+            byte[] qsound,
+            byte[] qsoundDsp)
         {
+            SetName = setName;
+            VideoConfig = videoConfig;
+            AudioHardware = audioHardware;
+            AudioCpuClockHz = audioCpuClockHz;
+            KabukiSwapKey1 = kabukiKeys.SwapKey1;
+            KabukiSwapKey2 = kabukiKeys.SwapKey2;
+            KabukiAddressKey = kabukiKeys.AddressKey;
+            KabukiXorKey = kabukiKeys.XorKey;
             Program = program;
             Graphics = graphics;
             AudioCpu = audioCpu;
+            Oki = oki;
             QSound = qsound;
             QSoundDsp = qsoundDsp;
         }
 
+        public string SetName { get; }
+        public Cps1VideoConfig VideoConfig { get; }
+        public Cps1AudioHardware AudioHardware { get; }
+        public double AudioCpuClockHz { get; }
+        public int KabukiSwapKey1 { get; }
+        public int KabukiSwapKey2 { get; }
+        public int KabukiAddressKey { get; }
+        public int KabukiXorKey { get; }
         public byte[] Program { get; }
         public byte[] Graphics { get; }
         public byte[] AudioCpu { get; }
+        public byte[] Oki { get; }
         public byte[] QSound { get; }
         public byte[] QSoundDsp { get; }
 
+        private const int ProgramRomSize = 0x20_0000;
+        private const int AudioCpuRomSize = 0x2_8000;
+        private const int QSoundRomBankSize = 0x08_0000;
+
+        private static readonly KabukiKeys WofKabuki = new(0x01234567, 0x54163072, 0x5151, 0x51);
+        private static readonly KabukiKeys DinoKabuki = new(0x76543210, 0x24601357, 0x4343, 0x43);
+        private static readonly KabukiKeys PunisherKabuki = new(0x67452103, 0x75316024, 0x2222, 0x22);
+        private static readonly KabukiKeys SlamMastersKabuki = new(0x54321076, 0x65432107, 0x3131, 0x19);
+
+        private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["punishru"] = "punisheru",
+            ["punishrj"] = "punisherj",
+            ["slammasu"] = "slammastu"
+        };
+
+        private static readonly Dictionary<string, Cps1QSoundDefinition> Definitions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["wof"] = WofDefinition("wof", null, Cps1VideoConfig.QSound1),
+            ["wofr1"] = WofDefinition("wofr1", "wof", Cps1VideoConfig.Default),
+            ["wofu"] = WofDefinition("wofu", "wof", Cps1VideoConfig.QSound1),
+            ["wofa"] = WofDefinition("wofa", "wof", Cps1VideoConfig.Default),
+            ["wofj"] = WofDefinition("wofj", "wof", Cps1VideoConfig.QSound1),
+
+            ["dino"] = DinoDefinition("dino", null),
+            ["dinou"] = DinoDefinition("dinou", "dino"),
+            ["dinoa"] = DinoDefinition("dinoa", "dino"),
+            ["dinoj"] = DinoDefinition("dinoj", "dino"),
+
+            ["punisher"] = PunisherDefinition("punisher", null),
+            ["punisheru"] = PunisherDefinition("punisheru", "punisher"),
+            ["punisherh"] = PunisherDefinition("punisherh", "punisher"),
+            ["punisherj"] = PunisherDefinition("punisherj", "punisher"),
+
+            ["slammast"] = SlamMastersDefinition("slammast", null, Cps1VideoConfig.QSound4),
+            ["slammastu"] = SlamMastersDefinition("slammastu", "slammast", Cps1VideoConfig.QSound4),
+            ["mbomberj"] = SlamMastersDefinition("mbomberj", "slammast", Cps1VideoConfig.QSound4),
+            ["mbombrd"] = SlamMastersDefinition("mbombrd", null, Cps1VideoConfig.QSound5),
+            ["mbombrdj"] = SlamMastersDefinition("mbombrdj", "mbombrd", Cps1VideoConfig.QSound5)
+        };
+
+        private static readonly Dictionary<string, Cps1ClassicDefinition> ClassicDefinitions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ffight"] = FinalFightDefinition("ffight", null),
+            ["ffightu"] = FinalFightDefinition("ffightu", "ffight"),
+            ["ffightj"] = FinalFightJapanDefinition("ffightj", null),
+            ["ffightj1"] = FinalFightJapanDefinition("ffightj1", null),
+            ["ffightj2"] = FinalFightJapanDefinition("ffightj2", null)
+        };
+
+        public static bool IsSupportedSet(string setName)
+        {
+            string canonical = CanonicalSetName(setName);
+            return Definitions.ContainsKey(canonical) || ClassicDefinitions.ContainsKey(canonical);
+        }
+
         public static Cps1DinoRomSet Load(string path)
         {
+            string requestedSetName = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
+            string setName = CanonicalSetName(requestedSetName);
+            if (Definitions.TryGetValue(setName, out Cps1QSoundDefinition? definition))
+                return LoadQSoundSet(path, setName, definition);
+            if (ClassicDefinitions.TryGetValue(setName, out Cps1ClassicDefinition? classicDefinition))
+                return LoadClassicSet(path, setName, classicDefinition);
+
+            throw new NotSupportedException($"CPS1 ROM set '{requestedSetName}' is not registered in the EutherDrive CPS1 loader.");
+        }
+
+        private static Cps1DinoRomSet LoadQSoundSet(string path, string setName, Cps1QSoundDefinition definition)
+        {
             Dictionary<string, byte[]> entries = ReadArchive(path);
+            MergeParentArchivesIfPresent(path, definition.ParentSetName, entries);
 
-            byte[] program = new byte[0x20_0000];
+            byte[] program = new byte[ProgramRomSize];
             Array.Fill(program, (byte)0xff);
-            Load16WordSwap(entries, program, 0x000000, "cde_23a.8f", "cde_23a.rom");
-            Load16WordSwap(entries, program, 0x080000, "cde_22a.7f", "cde_22a.rom");
-            Load16WordSwap(entries, program, 0x100000, "cde_21a.6f", "cde_21a.rom");
+            foreach (RomLoad load in definition.ProgramLoads)
+                LoadProgram(entries, program, load);
 
-            byte[] gfx = new byte[0x40_0000];
-            Load64Word(entries, gfx, 0x000000, "cd-1m.3a", "cd_gfx01.rom");
-            Load64Word(entries, gfx, 0x000002, "cd-3m.5a", "cd_gfx03.rom");
-            Load64Word(entries, gfx, 0x000004, "cd-2m.4a", "cd_gfx02.rom");
-            Load64Word(entries, gfx, 0x000006, "cd-4m.6a", "cd_gfx04.rom");
-            Load64Word(entries, gfx, 0x200000, "cd-5m.7a", "cd_gfx05.rom");
-            Load64Word(entries, gfx, 0x200002, "cd-7m.9a", "cd_gfx07.rom");
-            Load64Word(entries, gfx, 0x200004, "cd-6m.8a", "cd_gfx06.rom");
-            Load64Word(entries, gfx, 0x200006, "cd-8m.10a", "cd_gfx08.rom");
+            byte[] gfx = new byte[definition.GraphicsSize];
+            foreach (RomLoad load in definition.GraphicsLoads)
+                Load64Word(entries, gfx, load.Offset, load.Names);
 
-            byte[] audioCpu = new byte[0x2_8000];
-            byte[] audio = Find(entries, "cd_q.5k", "cd_q.rom");
-            audio.AsSpan(0, 0x8000).CopyTo(audioCpu);
-            audio.AsSpan(0x8000, Math.Min(0x18000, audio.Length - 0x8000)).CopyTo(audioCpu.AsSpan(0x10000));
-
-            byte[] qsound = new byte[0x20_0000];
-            Find(entries, "cd-q1.1k", "cd_q1.rom").CopyTo(qsound.AsSpan(0x000000));
-            Find(entries, "cd-q2.2k", "cd_q2.rom").CopyTo(qsound.AsSpan(0x080000));
-            Find(entries, "cd-q3.3k", "cd_q3.rom").CopyTo(qsound.AsSpan(0x100000));
-            Find(entries, "cd-q4.4k", "cd_q4.rom").CopyTo(qsound.AsSpan(0x180000));
+            byte[] audioCpu = LoadAudioCpu(entries, definition.AudioCpuNames);
+            byte[] qsound = LoadQSound(entries, definition.QSoundSize, definition.QSoundNames);
 
             byte[] qsoundDsp = LoadQSoundDsp(path, entries);
 
-            return new Cps1DinoRomSet(program, gfx, audioCpu, qsound, qsoundDsp);
+            return new Cps1DinoRomSet(
+                setName,
+                definition.VideoConfig,
+                Cps1AudioHardware.QSound,
+                8_000_000.0,
+                definition.KabukiKeys,
+                program,
+                gfx,
+                audioCpu,
+                Array.Empty<byte>(),
+                qsound,
+                qsoundDsp);
         }
+
+        private static Cps1DinoRomSet LoadClassicSet(string path, string setName, Cps1ClassicDefinition definition)
+        {
+            Dictionary<string, byte[]> entries = ReadArchive(path);
+            MergeParentArchivesIfPresent(path, definition.ParentSetName, entries);
+
+            byte[] program = new byte[ProgramRomSize];
+            Array.Fill(program, (byte)0xff);
+            foreach (RomLoad load in definition.ProgramLoads)
+                LoadProgram(entries, program, load);
+
+            byte[] gfx = new byte[definition.GraphicsSize];
+            foreach (RomLoad load in definition.GraphicsLoads)
+                LoadGraphics(entries, gfx, load);
+
+            byte[] audioCpu = LoadAudioCpu(entries, definition.AudioCpuNames);
+            byte[] oki = LoadOki(entries, definition.OkiSize, definition.OkiLoads);
+
+            return new Cps1DinoRomSet(
+                setName,
+                definition.VideoConfig,
+                Cps1AudioHardware.YmOki,
+                3_579_545.0,
+                new KabukiKeys(0, 0, 0, 0),
+                program,
+                gfx,
+                audioCpu,
+                oki,
+                Array.Empty<byte>(),
+                Array.Empty<byte>());
+        }
+
+        private static Cps1QSoundDefinition WofDefinition(string setName, string? parentSetName, Cps1VideoConfig videoConfig)
+            => new(
+                setName,
+                parentSetName,
+                videoConfig,
+                WofKabuki,
+                0x40_0000,
+                0x20_0000,
+                new[]
+                {
+                    Word(0x000000, $"{setName}_23c.8f", $"{setName}_23b.8f", $"{setName}.23c", $"{setName}_23b.rom", "tk2e_23c.8f", "tk2e_23b.8f", "tk2e_23b.rom", "tk2u.23c", "tk2a_23b.rom", "tk2j22c.bin"),
+                    Word(0x080000, $"{setName}_22c.7f", $"{setName}_22b.7f", $"{setName}.22c", $"{setName}_22b.rom", "tk2e_22c.7f", "tk2e_22b.7f", "tk2e_22b.rom", "tk2u.22c", "tk2a_22b.rom", "tk2j23c.bin")
+                },
+                new[]
+                {
+                    Gfx(0x000000, "tk2-1m.3a", "tk2_gfx1.rom", "tk2_01.3a"),
+                    Gfx(0x000002, "tk2-3m.5a", "tk2_gfx3.rom", "tk2_02.4a"),
+                    Gfx(0x000004, "tk2-2m.4a", "tk2_gfx2.rom", "tk2_03.5a"),
+                    Gfx(0x000006, "tk2-4m.6a", "tk2_gfx4.rom", "tk2_04.6a"),
+                    Gfx(0x200000, "tk2-5m.7a", "tk2_gfx5.rom", "tk2_05.7a"),
+                    Gfx(0x200002, "tk2-7m.9a", "tk2_gfx7.rom", "tk2_06.8a"),
+                    Gfx(0x200004, "tk2-6m.8a", "tk2_gfx6.rom", "tk2_07.9a"),
+                    Gfx(0x200006, "tk2-8m.10a", "tk2_gfx8.rom", "tk2_08.10a")
+                },
+                new[] { "tk2_qa.5k", "tk2_qa.rom" },
+                new[]
+                {
+                    new[] { "tk2-q1.1k", "tk2_q1.rom" },
+                    new[] { "tk2-q2.2k", "tk2_q2.rom" },
+                    new[] { "tk2-q3.3k", "tk2_q3.rom" },
+                    new[] { "tk2-q4.4k", "tk2_q4.rom" }
+                });
+
+        private static Cps1QSoundDefinition DinoDefinition(string setName, string? parentSetName)
+            => new(
+                setName,
+                parentSetName,
+                Cps1VideoConfig.QSound2,
+                DinoKabuki,
+                0x40_0000,
+                0x20_0000,
+                new[]
+                {
+                    Word(0x000000, $"{setName}_23a.8f", $"{setName}.23a", $"{setName}-23a.8f", "cde_23a.8f", "cde_23a.rom", "cdu.23a", "cdj-23a.8f"),
+                    Word(0x080000, $"{setName}_22a.7f", $"{setName}.22a", $"{setName}-22a.7f", "cde_22a.7f", "cde_22a.rom", "cdu.22a", "cdj-22a.7f"),
+                    Word(0x100000, $"{setName}_21a.6f", "cde_21a.6f", "cde_21a.rom")
+                },
+                new[]
+                {
+                    Gfx(0x000000, "cd-1m.3a", "cd_gfx01.rom"),
+                    Gfx(0x000002, "cd-3m.5a", "cd_gfx03.rom"),
+                    Gfx(0x000004, "cd-2m.4a", "cd_gfx02.rom"),
+                    Gfx(0x000006, "cd-4m.6a", "cd_gfx04.rom"),
+                    Gfx(0x200000, "cd-5m.7a", "cd_gfx05.rom"),
+                    Gfx(0x200002, "cd-7m.9a", "cd_gfx07.rom"),
+                    Gfx(0x200004, "cd-6m.8a", "cd_gfx06.rom"),
+                    Gfx(0x200006, "cd-8m.10a", "cd_gfx08.rom")
+                },
+                new[] { "cd_q.5k", "cd_q.rom" },
+                new[]
+                {
+                    new[] { "cd-q1.1k", "cd_q1.rom" },
+                    new[] { "cd-q2.2k", "cd_q2.rom" },
+                    new[] { "cd-q3.3k", "cd_q3.rom" },
+                    new[] { "cd-q4.4k", "cd_q4.rom" }
+                });
+
+        private static Cps1QSoundDefinition PunisherDefinition(string setName, string? parentSetName)
+            => new(
+                setName,
+                parentSetName,
+                Cps1VideoConfig.QSound3,
+                PunisherKabuki,
+                0x40_0000,
+                0x20_0000,
+                new[]
+                {
+                    Byte(0x000000, $"{setName[..Math.Min(setName.Length, 3)]}_26.11e", "pse_26.11e", "psu_26.11e", "psu26.rom"),
+                    Byte(0x000001, $"{setName[..Math.Min(setName.Length, 3)]}_30.11f", "pse_30.11f", "psu_30.11f", "psu30.rom"),
+                    Byte(0x040000, "pse_27.12e", "psu_27.12e", "psu27.rom"),
+                    Byte(0x040001, "pse_31.12f", "psu_31.12f", "psu31.rom"),
+                    Byte(0x080000, "pse_24.9e", "psu_24.9e", "psu24.rom"),
+                    Byte(0x080001, "pse_28.9f", "psu_28.9f", "psu28.rom"),
+                    Byte(0x0c0000, "pse_25.10e", "psu_25.10e", "psu25.rom"),
+                    Byte(0x0c0001, "pse_29.10f", "psu_29.10f", "psu29.rom"),
+                    Word(0x000000, "psj_23.8f", "psj23.bin"),
+                    Word(0x080000, "psj_22.7f", "psj22.bin"),
+                    Word(0x100000, "ps_21.6f", "ps_21.rom", "psj_21.6f")
+                },
+                new[]
+                {
+                    Gfx(0x000000, "ps-1m.3a", "ps_gfx1.rom", "ps_01.3a"),
+                    Gfx(0x000002, "ps-3m.5a", "ps_gfx3.rom", "ps_02.4a"),
+                    Gfx(0x000004, "ps-2m.4a", "ps_gfx2.rom", "ps_03.5a"),
+                    Gfx(0x000006, "ps-4m.6a", "ps_gfx4.rom", "ps_04.6a"),
+                    Gfx(0x200000, "ps-5m.7a", "ps_gfx5.rom", "ps_05.7a"),
+                    Gfx(0x200002, "ps-7m.9a", "ps_gfx7.rom", "ps_06.8a"),
+                    Gfx(0x200004, "ps-6m.8a", "ps_gfx6.rom", "ps_07.9a"),
+                    Gfx(0x200006, "ps-8m.10a", "ps_gfx8.rom", "ps_08.10a")
+                },
+                new[] { "ps_q.5k", "ps_q.rom" },
+                new[]
+                {
+                    new[] { "ps-q1.1k", "ps_q1.rom" },
+                    new[] { "ps-q2.2k", "ps_q2.rom" },
+                    new[] { "ps-q3.3k", "ps_q3.rom" },
+                    new[] { "ps-q4.4k", "ps_q4.rom" }
+                });
+
+        private static Cps1QSoundDefinition SlamMastersDefinition(string setName, string? parentSetName, Cps1VideoConfig videoConfig)
+            => new(
+                setName,
+                parentSetName,
+                videoConfig,
+                SlamMastersKabuki,
+                0x60_0000,
+                0x40_0000,
+                new[]
+                {
+                    Word(0x000000, "mbe_23e.8f", "mbe_23e.rom", "mbu_23e.8f", "mbu-23e.rom", "mbj_23e.8f", "mbj23e"),
+                    Byte(0x000000, "mbde_26.11e", "mbd_26.bin", "mbdj_26.11e"),
+                    Byte(0x000001, "mbde_30.11f", "mbde_30.rom", "mbdj_30.11f", "mbdj_30.bin"),
+                    Byte(0x040000, "mbde_27.12e", "mbd_27.bin", "mbdj_27.12e"),
+                    Byte(0x040001, "mbde_31.12f", "mbd_31.bin", "mbdj_31.12f"),
+                    Byte(0x080000, "mbe_24b.9e", "mbe_24b.rom", "mbu_24b.9e", "mbde_24.9e", "mbd_24.bin", "mbdj_24.9e"),
+                    Byte(0x080001, "mbe_28b.9f", "mbe_28b.rom", "mbu_28b.9f", "mbde_28.9f", "mbd_28.bin", "mbdj_28.9f"),
+                    Byte(0x0c0000, "mbe_25b.10e", "mbe_25b.rom", "mbu_25b.10e", "mbde_25.10e", "mbd_25.bin", "mbdj_25.10e"),
+                    Byte(0x0c0001, "mbe_29b.10f", "mbe_29b.rom", "mbu_29b.10f", "mbde_29.10f", "mbd_29.bin", "mbdj_29.10f"),
+                    Word(0x080000, "mbj_22b.7f"),
+                    Word(0x100000, "mbe_21a.6f", "mbu_21a.6f", "mbj_21a.6f", "mbde_21.6f", "mbd_21.bin", "mbdj_21.6f"),
+                    Word(0x180000, "mbe_20a.5f", "mbu_20a.5f", "mbu-20a.rom", "mbj_20a.5f", "mbde_20.5f", "mbd_20.bin", "mbdj_20.5f")
+                },
+                new[]
+                {
+                    Gfx(0x000000, "mb-1m.3a", "mb_gfx01.rom", "mb_01.3a", "mbj_01.bin"),
+                    Gfx(0x000002, "mb-3m.5a", "mb_gfx03.rom", "mb_03.5a", "mbj_03.bin"),
+                    Gfx(0x000004, "mb-2m.4a", "mb_gfx02.rom", "mb_02.4a", "mbj_02.bin"),
+                    Gfx(0x000006, "mb-4m.6a", "mb_gfx04.rom", "mb_04.6a", "mbj_04.bin"),
+                    Gfx(0x200000, "mb-5m.7a", "mb_05.bin", "mb_05.7a"),
+                    Gfx(0x200002, "mb-7m.9a", "mb_07.bin", "mb_06.8a"),
+                    Gfx(0x200004, "mb-6m.8a", "mb_06.bin", "mb_07.9a"),
+                    Gfx(0x200006, "mb-8m.10a", "mb_08.bin", "mb_08.10a"),
+                    Gfx(0x400000, "mb-10m.3c", "mb_10.bin", "mb_10.3c"),
+                    Gfx(0x400002, "mb-12m.5c", "mb_12.bin", "mb_11.4c"),
+                    Gfx(0x400004, "mb-11m.4c", "mb_11.bin", "mb_12.5c"),
+                    Gfx(0x400006, "mb-13m.6c", "mb_13.bin", "mb_13.6c")
+                },
+                new[] { "mb_qa.5k", "mb_qa.rom", "mb_q.5k", "mb_q.bin" },
+                new[]
+                {
+                    new[] { "mb-q1.1k", "mb_q1.bin" },
+                    new[] { "mb-q2.2k", "mb_q2.bin" },
+                    new[] { "mb-q3.3k", "mb_q3.bin" },
+                    new[] { "mb-q4.4k", "mb_q4.bin" },
+                    new[] { "mb-q5.1m", "mb_q5.bin" },
+                    new[] { "mb-q6.2m", "mb_q6.bin" },
+                    new[] { "mb-q7.3m", "mb_q7.bin" },
+                    new[] { "mb-q8.4m", "mb_q8.bin" }
+                });
+
+        private static Cps1ClassicDefinition FinalFightDefinition(string setName, string? parentSetName)
+            => new(
+                setName,
+                parentSetName,
+                Cps1VideoConfig.Default,
+                0x20_0000,
+                0x40_000,
+                new[]
+                {
+                    Byte(0x00000, "ff_36.11f"),
+                    Byte(0x00001, "ff_42.11h"),
+                    Byte(0x40000, "ff_37.12f"),
+                    Byte(0x40001, "ffe_43.12h", "ffu_43.12h", "ff43.rom"),
+                    Word(0x80000, "ff-32m.8h")
+                },
+                new[]
+                {
+                    Gfx(0x000000, "ff-5m.7a"),
+                    Gfx(0x000002, "ff-7m.9a"),
+                    Gfx(0x000004, "ff-1m.3a"),
+                    Gfx(0x000006, "ff-3m.5a")
+                },
+                new[] { "ff_09.12b", "ffe_23.12b", "ff_23.12b" },
+                new[]
+                {
+                    new RomLoad(RomLoadKind.Raw, 0x00000, new[] { "ff_18.11c" }),
+                    new RomLoad(RomLoadKind.Raw, 0x20000, new[] { "ff_19.12c" })
+                });
+
+        private static Cps1ClassicDefinition FinalFightJapanDefinition(string setName, string? parentSetName)
+            => new(
+                setName,
+                parentSetName,
+                Cps1VideoConfig.Default,
+                0x20_0000,
+                0x40_000,
+                new[]
+                {
+                    Byte(0x00000, "ff36.bin", "ffj_36.12f", "ffj_36a.12f", "ff30-36.rom"),
+                    Byte(0x00001, "ff42.bin", "ffj_42.12h", "ffj_42a.12h", "ff35-42.rom"),
+                    Byte(0x40000, "ff37.bin", "ffj_37.13f", "ffj_37a.13f", "ff31-37.rom"),
+                    Byte(0x40001, "ff43.bin", "ffj_43.13h", "ffj_43a.13h", "ff36-43.rom"),
+                    Byte(0x80000, "ffj_34.10f", "ff_34.10f"),
+                    Byte(0x80001, "ffj_40.10h", "ff_40.10h"),
+                    Byte(0xc0000, "ffj_35.11f", "ff_35.11f"),
+                    Byte(0xc0001, "ffj_41.11h", "ff_41.11h")
+                },
+                new[]
+                {
+                    GfxByte(0x000000, "ffj_09.4b"),
+                    GfxByte(0x000001, "ffj_01.4a"),
+                    GfxByte(0x000002, "ffj_13.9b"),
+                    GfxByte(0x000003, "ffj_05.9a"),
+                    GfxByte(0x000004, "ffj_24.5e"),
+                    GfxByte(0x000005, "ffj_17.5c"),
+                    GfxByte(0x000006, "ffj_38.8h"),
+                    GfxByte(0x000007, "ffj_32.8f"),
+                    GfxByte(0x100000, "ffj_10.5b"),
+                    GfxByte(0x100001, "ffj_02.5a"),
+                    GfxByte(0x100002, "ffj_14.10b"),
+                    GfxByte(0x100003, "ffj_06.10a"),
+                    GfxByte(0x100004, "ffj_25.7e"),
+                    GfxByte(0x100005, "ffj_18.7c"),
+                    GfxByte(0x100006, "ffj_39.9h"),
+                    GfxByte(0x100007, "ffj_33.9f")
+                },
+                new[] { "ff_23.bin", "ff_23.13c", "ff_23.13b" },
+                new[]
+                {
+                    new RomLoad(RomLoadKind.Raw, 0x00000, new[] { "ffj_30.bin", "ffj_30.12e", "ffj_30.12c", "ff_30.12e" }),
+                    new RomLoad(RomLoadKind.Raw, 0x20000, new[] { "ffj_31.bin", "ffj_31.13e", "ffj_31.13c", "ff_31.13e" })
+                });
 
         private static Dictionary<string, byte[]> ReadArchive(string path)
         {
@@ -1460,6 +2004,182 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 destination[dst + 1] = source[src + 1];
             }
         }
+
+        private static string CanonicalSetName(string setName)
+            => Aliases.TryGetValue(setName.Trim().ToLowerInvariant(), out string? canonical) ? canonical : setName.Trim().ToLowerInvariant();
+
+        private static RomLoad Word(int offset, params string[] names)
+            => new(RomLoadKind.WordSwap, offset, names);
+
+        private static RomLoad Byte(int offset, params string[] names)
+            => new(RomLoadKind.Byte, offset, names);
+
+        private static RomLoad Gfx(int offset, params string[] names)
+            => new(RomLoadKind.Graphics64Word, offset, names);
+
+        private static RomLoad GfxByte(int offset, params string[] names)
+            => new(RomLoadKind.Graphics64Byte, offset, names);
+
+        private static void MergeParentArchivesIfPresent(string path, string? parentSetName, Dictionary<string, byte[]> entries)
+        {
+            if (string.IsNullOrWhiteSpace(parentSetName))
+                return;
+
+            string? directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(directory))
+                return;
+
+            string parentPath = Path.Combine(directory, parentSetName + ".zip");
+            if (!File.Exists(parentPath))
+                return;
+
+            Dictionary<string, byte[]> parentEntries = ReadArchive(parentPath);
+            foreach ((string name, byte[] data) in parentEntries)
+            {
+                if (!entries.ContainsKey(name))
+                    entries[name] = data;
+            }
+        }
+
+        private static void LoadProgram(Dictionary<string, byte[]> entries, byte[] destination, RomLoad load)
+        {
+            if (!TryFind(entries, out byte[] source, load.Names))
+                return;
+
+            switch (load.Kind)
+            {
+                case RomLoadKind.WordSwap:
+                    Copy16WordSwap(source, destination, load.Offset, load.Names[0]);
+                    break;
+                case RomLoadKind.Byte:
+                    Copy16Byte(source, destination, load.Offset, load.Names[0]);
+                    break;
+            }
+        }
+
+        private static void LoadGraphics(Dictionary<string, byte[]> entries, byte[] destination, RomLoad load)
+        {
+            switch (load.Kind)
+            {
+                case RomLoadKind.Graphics64Word:
+                    Load64Word(entries, destination, load.Offset, load.Names);
+                    break;
+                case RomLoadKind.Graphics64Byte:
+                    Load64Byte(entries, destination, load.Offset, load.Names);
+                    break;
+            }
+        }
+
+        private static void Load64Byte(Dictionary<string, byte[]> entries, byte[] destination, int offset, params string[] names)
+        {
+            byte[] source = Find(entries, names);
+            for (int i = 0; i < source.Length; i++)
+            {
+                int dst = offset + i * 8;
+                if ((uint)dst >= destination.Length)
+                    throw new InvalidDataException($"ROM '{names[0]}' is too large for the CPS1 graphics region.");
+                destination[dst] = source[i];
+            }
+        }
+
+        private static void Copy16WordSwap(byte[] source, byte[] destination, int offset, string name)
+        {
+            if (offset + source.Length > destination.Length)
+                throw new InvalidDataException($"ROM '{name}' is too large for the CPS1 program region.");
+
+            for (int i = 0; i + 1 < source.Length; i += 2)
+            {
+                destination[offset + i] = source[i + 1];
+                destination[offset + i + 1] = source[i];
+            }
+        }
+
+        private static void Copy16Byte(byte[] source, byte[] destination, int offset, string name)
+        {
+            int last = offset + (source.Length - 1) * 2;
+            if ((uint)last >= destination.Length)
+                throw new InvalidDataException($"ROM '{name}' is too large for the CPS1 program region.");
+
+            for (int i = 0; i < source.Length; i++)
+                destination[offset + i * 2] = source[i];
+        }
+
+        private static byte[] LoadAudioCpu(Dictionary<string, byte[]> entries, string[] names)
+        {
+            byte[] audio = Find(entries, names);
+            byte[] audioCpu = new byte[AudioCpuRomSize];
+            audio.AsSpan(0, Math.Min(0x8000, audio.Length)).CopyTo(audioCpu);
+            if (audio.Length > 0x8000)
+                audio.AsSpan(0x8000, Math.Min(0x18000, audio.Length - 0x8000)).CopyTo(audioCpu.AsSpan(0x10000));
+            return audioCpu;
+        }
+
+        private static byte[] LoadQSound(Dictionary<string, byte[]> entries, int size, string[][] banks)
+        {
+            byte[] qsound = new byte[size];
+            for (int bank = 0; bank < banks.Length; bank++)
+            {
+                byte[] source = Find(entries, banks[bank]);
+                int offset = bank * QSoundRomBankSize;
+                if (offset + source.Length > qsound.Length)
+                    throw new InvalidDataException($"ROM '{banks[bank][0]}' is too large for the CPS1 QSound sample region.");
+
+                source.CopyTo(qsound.AsSpan(offset));
+            }
+
+            return qsound;
+        }
+
+        private static byte[] LoadOki(Dictionary<string, byte[]> entries, int size, RomLoad[] loads)
+        {
+            byte[] oki = new byte[size];
+            foreach (RomLoad load in loads)
+            {
+                byte[] source = Find(entries, load.Names);
+                if (load.Offset + source.Length > oki.Length)
+                    throw new InvalidDataException($"ROM '{load.Names[0]}' is too large for the CPS1 OKI sample region.");
+
+                source.CopyTo(oki.AsSpan(load.Offset));
+            }
+
+            return oki;
+        }
+
+        private readonly record struct KabukiKeys(int SwapKey1, int SwapKey2, int AddressKey, int XorKey);
+
+        private enum RomLoadKind
+        {
+            WordSwap,
+            Byte,
+            Graphics64Word,
+            Graphics64Byte,
+            Raw
+        }
+
+        private readonly record struct RomLoad(RomLoadKind Kind, int Offset, string[] Names);
+
+        private sealed record Cps1QSoundDefinition(
+            string SetName,
+            string? ParentSetName,
+            Cps1VideoConfig VideoConfig,
+            KabukiKeys KabukiKeys,
+            int GraphicsSize,
+            int QSoundSize,
+            RomLoad[] ProgramLoads,
+            RomLoad[] GraphicsLoads,
+            string[] AudioCpuNames,
+            string[][] QSoundNames);
+
+        private sealed record Cps1ClassicDefinition(
+            string SetName,
+            string? ParentSetName,
+            Cps1VideoConfig VideoConfig,
+            int GraphicsSize,
+            int OkiSize,
+            RomLoad[] ProgramLoads,
+            RomLoad[] GraphicsLoads,
+            string[] AudioCpuNames,
+            RomLoad[] OkiLoads);
 
         private static byte[] Find(Dictionary<string, byte[]> entries, params string[] names)
         {

@@ -7,7 +7,7 @@ internal sealed class Cps1QSound
 {
     private const int DspSampleRate = 60_000_000 / 2 / 1248;
     private const int OutputSampleRate = 44_100;
-    private const double OutputLowPassCutoffHz = 11_500.0;
+    private const double OutputLowPassCutoffHz = 10_800.0;
 
     private const int DataPanTable = 0x110;
     private const int DataAdpcmTable = 0x9dc;
@@ -55,8 +55,10 @@ internal sealed class Cps1QSound
     private ushort _debugLastWriteData;
     private readonly short[] _resamplePrevious = new short[2];
     private readonly short[] _resampleNext = new short[2];
-    private readonly BiquadLowPass _outputLowPassLeft = new(OutputSampleRate, OutputLowPassCutoffHz);
-    private readonly BiquadLowPass _outputLowPassRight = new(OutputSampleRate, OutputLowPassCutoffHz);
+    private readonly BiquadLowPass _outputLowPassLeftA = new(OutputSampleRate, OutputLowPassCutoffHz);
+    private readonly BiquadLowPass _outputLowPassLeftB = new(OutputSampleRate, OutputLowPassCutoffHz);
+    private readonly BiquadLowPass _outputLowPassRightA = new(OutputSampleRate, OutputLowPassCutoffHz);
+    private readonly BiquadLowPass _outputLowPassRightB = new(OutputSampleRate, OutputLowPassCutoffHz);
     private bool _resamplePrimed;
 
     internal int DebugWriteCount => _debugWriteCount;
@@ -99,8 +101,10 @@ internal sealed class Cps1QSound
         _resamplePrevious[1] = 0;
         _resampleNext[0] = 0;
         _resampleNext[1] = 0;
-        _outputLowPassLeft.Reset();
-        _outputLowPassRight.Reset();
+        _outputLowPassLeftA.Reset();
+        _outputLowPassLeftB.Reset();
+        _outputLowPassRightA.Reset();
+        _outputLowPassRightB.Reset();
         _resamplePrimed = false;
     }
 
@@ -146,8 +150,10 @@ internal sealed class Cps1QSound
             int destinationIndex = sampleFrameIndex * 2;
             double left = Interpolate(_resamplePrevious[0], _resampleNext[0], _resampleAccumulator);
             double right = Interpolate(_resamplePrevious[1], _resampleNext[1], _resampleAccumulator);
-            destination[destinationIndex] = ClampToShort(_outputLowPassLeft.Apply(left));
-            destination[destinationIndex + 1] = ClampToShort(_outputLowPassRight.Apply(right));
+            left = _outputLowPassLeftB.Apply(_outputLowPassLeftA.Apply(left));
+            right = _outputLowPassRightB.Apply(_outputLowPassRightA.Apply(right));
+            destination[destinationIndex] = ClampToShort(left);
+            destination[destinationIndex + 1] = ClampToShort(right);
             sampleFrameIndex++;
 
             _resampleAccumulator += step;
@@ -759,4 +765,5 @@ internal sealed class Cps1QSound
             _z2 = 0.0;
         }
     }
+
 }

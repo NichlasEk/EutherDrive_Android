@@ -1390,6 +1390,9 @@ public partial class MainView : UserControl
             PceCdAdapter pce => pce.GetTargetFps(),
             PsxAdapter psx => psx.GetTargetFps(),
             EutherDrive.Core.Sega32XAdapter s32x => s32x.GetTargetFps(),
+            EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1 => cps1.GetTargetFps(),
+            EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2 => cps2.GetTargetFps(),
+            EutherDrive.Core.Arcade.System32.System32Adapter system32 => system32.GetTargetFps(),
             _ => DefaultTargetFrameRate
         };
     }

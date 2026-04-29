@@ -450,6 +450,13 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 return;
 
             _audioFrameCycles = Math.Min(_audioFrameCycles + elapsedCycles, AudioCpuCyclesPerFrame);
+        }
+
+        private void SynchronizeQSoundStream()
+        {
+            if (_audioFrameBuffer is null)
+                return;
+
             int sampleFrames = _audioFrameBuffer.Length / 2;
             int targetFrames = (int)((long)_audioFrameCycles * sampleFrames / AudioCpuCyclesPerFrame);
             _qsound.RenderFrames(_audioFrameBuffer, ref _audioFrameSampleIndex, targetFrames);
@@ -474,7 +481,10 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             if (address >= 0xc000 && address <= 0xcfff)
                 return _qsoundShared0[address - 0xc000];
             if (address == 0xd007)
+            {
+                SynchronizeQSoundStream();
                 return _qsound.ReadStatus();
+            }
             if (address >= 0xf000)
                 return _qsoundShared1[address - 0xf000];
 
@@ -492,6 +502,8 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             }
             if (address >= 0xd000 && address <= 0xd002)
             {
+                if (address == 0xd002)
+                    SynchronizeQSoundStream();
                 _qsound.Write(address - 0xd000, value);
                 return;
             }
