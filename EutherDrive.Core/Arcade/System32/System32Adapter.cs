@@ -92,7 +92,10 @@ public sealed class System32Adapter : IEmulatorCore
         int Index,
         int EffectivePriority,
         int PaletteBase,
-        int MixShift);
+        int MixShift,
+        int BlendMask,
+        int SpriteBlendMask,
+        int ColorOffset);
 
     private readonly record struct ArcadeInputState(
         bool Up,
@@ -393,7 +396,6 @@ public sealed class System32Adapter : IEmulatorCore
         ushort screenControl = _bus.ReadVideoWord(0x1ff00);
         ushort layerDisable = _bus.ReadVideoWord(0x1ff02);
         ushort mixerDisable = _bus.ReadVideoWord(0x1ff8e);
-        int tileBank = ((_bus.TileBankExternal & 1) << 1) | (((screenControl & 0x0400) != 0) ? 1 : 0);
 
         for (int bgnum = 3; bgnum >= 0; bgnum--)
         {
@@ -405,12 +407,21 @@ public sealed class System32Adapter : IEmulatorCore
             if (!enabled)
                 continue;
 
+            int tileBank = TileBankForLayer(bgnum, screenControl);
             pixels += bgnum < 2
                 ? RenderZoomTileLayer(bgnum, tileBank)
                 : RenderRowscrollTileLayer(bgnum, tileBank);
         }
 
         _lastTilePixels = pixels;
+    }
+
+    private int TileBankForLayer(int bgnum, ushort screenControl)
+    {
+        if (_roms is not null && _roms.Tiles.Length > 0x10_0000)
+            return (_bus.TileBankExternal >> (2 * bgnum)) & 3;
+
+        return ((_bus.TileBankExternal & 1) << 1) | (((screenControl & 0x0400) != 0) ? 1 : 0);
     }
 
     private int RenderZoomTileLayer(int bgnum, int tileBank)
@@ -943,67 +954,120 @@ public sealed class System32Adapter : IEmulatorCore
         ushort spriteControl = _bus.ReadMixerWord(0x4c);
         GetSpriteGroupParameters(spriteControl, out int spriteGroupShift, out int spriteGroupMask, out int spriteGroupOr);
         int spritePixelMask = ((1 << spriteGroupShift) - 1) & 0x3fff;
+        int spriteShadowMask = (spriteControl & 0x04) != 0 ? 0x8000 : 0;
+        int spriteShadow = 0x7ffe & spritePixelMask;
+        int blendFactor = (_bus.ReadMixerWord(0x4e) >> 8) & 7;
+        int[,] rgbOffsets = BuildRgbOffsets();
+        MixerLayer[,] layerOrder = BuildMixerLayerOrders(baseLayers, baseLayerCount, spriteGroupMask, spriteGroupOr, spriteControl, out int[] layerOrderCounts);
+        bool spriteFlipX = (_bus.SpriteControlLatchedByte(2) & 1) != 0;
+        bool spriteFlipY = (_bus.SpriteControlLatchedByte(2) & 2) != 0;
 
         ushort[] spriteLayer = _spriteVisiblePixels;
         for (int y = 0; y < FrameHeight; y++)
         {
             int row = y * FrameWidth;
+            int spriteY = spriteFlipY ? FrameHeight - 1 - y : y;
             for (int x = 0; x < _visibleWidth; x++)
             {
                 int offset = row + x;
-                MixerLayer best = default;
-                bool found = false;
+                int spriteX = spriteFlipX ? _visibleWidth - 1 - x : x;
+                ushort spriteRaw = spriteLayer[spriteY * FrameWidth + spriteX];
+                int spriteGroup = (spriteRaw >> spriteGroupShift) & spriteGroupMask;
+                int shadow = 0;
 
-                for (int i = 0; i < baseLayerCount; i++)
+                if (!TryFindMixerPixel(layerOrder, spriteGroup, layerOrderCounts[spriteGroup], offset, spriteRaw, spritePixelMask, spriteShadowMask, spriteShadow, out MixerLayer firstLayer, out int firstPixel, ref shadow))
                 {
-                    MixerLayer candidate = baseLayers[i];
-                    ushort raw = _layerPixels[candidate.Index][offset];
-                    if (candidate.Index != LayerBackground && raw == 0)
-                        continue;
-                    if (!found || candidate.EffectivePriority > best.EffectivePriority)
-                    {
-                        best = candidate;
-                        found = true;
-                    }
+                    WritePixel(x, y, PaletteRawToBgra(0));
+                    continue;
                 }
 
-                ushort spriteRaw = spriteLayer[offset];
-                if ((spriteRaw & 0x7fff) != 0x7fff)
+                ReadLayerRgb(firstLayer, firstPixel, rgbOffsets, out int r, out int g, out int b);
+
+                if (firstLayer.BlendMask != 0)
                 {
-                    int spriteGroup = (spriteRaw >> spriteGroupShift) & spriteGroupMask;
-                    int effectiveGroup = spriteGroupOr | spriteGroup;
-                    ushort spriteMixer = _bus.ReadMixerWord(effectiveGroup * 2);
-                    int spritePriority = spriteMixer & 0x000f;
-                    if (spritePriority != 0)
+                    if (TryFindMixerPixel(layerOrder, spriteGroup, layerOrderCounts[spriteGroup], offset, spriteRaw, spritePixelMask, spriteShadowMask, spriteShadow, out MixerLayer secondLayer, out int secondPixel, ref shadow, startAfter: firstLayer))
                     {
-                        int spriteEffPriority = (spritePriority << 3) | 7;
-                        ushort paletteSource = (spriteControl & 3) != 3 ? spriteMixer : spriteControl;
-                        var spriteCandidate = new MixerLayer(
-                            LayerSprites,
-                            spriteEffPriority,
-                            (paletteSource & 0x00f0) << 6,
-                            (spriteMixer >> 8) & 3);
-                        if (!found || spriteCandidate.EffectivePriority > best.EffectivePriority)
+                        bool blendsWithLayer = (firstLayer.BlendMask & (1 << secondLayer.Index)) != 0;
+                        bool blendsWithSpriteGroup = secondLayer.Index != LayerSprites || (firstLayer.SpriteBlendMask & (1 << spriteGroup)) != 0;
+                        if (blendsWithLayer && blendsWithSpriteGroup)
                         {
-                            best = spriteCandidate;
-                            found = true;
+                            ReadLayerRgb(secondLayer, secondPixel, rgbOffsets, out int r2, out int g2, out int b2);
+                            r = ((r * (7 - blendFactor)) + (r2 * (blendFactor + 1))) >> 3;
+                            g = ((g * (7 - blendFactor)) + (g2 * (blendFactor + 1))) >> 3;
+                            b = ((b * (7 - blendFactor)) + (b2 * (blendFactor + 1))) >> 3;
                         }
                     }
                 }
 
-                ushort finalRaw = 0;
-                if (found)
+                if (shadow != 0)
                 {
-                    ushort rawPixel = best.Index == LayerSprites ? spriteRaw : _layerPixels[best.Index][offset];
-                    if (best.Index == LayerSprites)
-                        rawPixel = (ushort)(rawPixel & spritePixelMask);
-                    int paletteIndex = best.PaletteBase + ((rawPixel >> best.MixShift) & 0xfff0) + (rawPixel & 0x0f);
-                    finalRaw = _bus.ReadPaletteWord(paletteIndex);
+                    r >>= 1;
+                    g >>= 1;
+                    b >>= 1;
                 }
 
-                WritePixel(x, y, PaletteRawToBgra(finalRaw));
+                WritePixel(x, y, BgraFromRgb5(r, g, b));
             }
         }
+    }
+
+    private bool TryFindMixerPixel(
+        MixerLayer[,] layerOrder,
+        int group,
+        int layerCount,
+        int offset,
+        ushort spriteRaw,
+        int spritePixelMask,
+        int spriteShadowMask,
+        int spriteShadow,
+        out MixerLayer layer,
+        out int pixel,
+        ref int shadow,
+        MixerLayer? startAfter = null)
+    {
+        bool scanning = startAfter is null;
+        for (int i = 0; i < layerCount; i++)
+        {
+            MixerLayer candidate = layerOrder[group, i];
+            if (!scanning)
+            {
+                if (candidate.Equals(startAfter!.Value))
+                    scanning = true;
+                continue;
+            }
+
+            if (candidate.Index != LayerSprites)
+            {
+                pixel = _layerPixels[candidate.Index][offset] & 0x1fff;
+                if (pixel != 0 || candidate.Index == LayerBackground)
+                {
+                    layer = candidate;
+                    return true;
+                }
+
+                continue;
+            }
+
+            int spritePixel = spriteRaw;
+            int spriteShadowPixel = ~spritePixel & spriteShadowMask;
+            if ((spritePixel & 0x7fff) == 0x7fff)
+                continue;
+
+            spritePixel &= spritePixelMask;
+            if ((spritePixel & 0x7ffe) != spriteShadow)
+            {
+                shadow = spriteShadowPixel;
+                pixel = spritePixel;
+                layer = candidate;
+                return true;
+            }
+
+            shadow = 1;
+        }
+
+        layer = default;
+        pixel = 0;
+        return false;
     }
 
     private MixerLayer[] BuildBaseMixerLayers(out int count)
@@ -1026,7 +1090,13 @@ public sealed class System32Adapter : IEmulatorCore
             LayerBackground,
             (1 << 3) | 0,
             (backgroundMixer & 0x00f0) << 6,
-            (backgroundMixer >> 8) & 3);
+            (backgroundMixer >> 8) & 3,
+            0,
+            0,
+            ComputeColorOffset(
+                ((_bus.ReadMixerWord(0x3e) >> 15) & 1) != 0,
+                ((_bus.ReadMixerWord(0x3e) >> 8) & 1) != 0,
+                ((_bus.ReadMixerWord(0x3e) >> 14) & 1) != 0));
 
         for (int i = 0; i < count; i++)
         {
@@ -1050,11 +1120,117 @@ public sealed class System32Adapter : IEmulatorCore
         if (priority == 0)
             return;
 
+        ushort blendControl = _bus.ReadMixerWord(0x30 + layer * 2);
+        bool blendEnabled = (_bus.ReadMixerWord(0x4e) & 0x0800) != 0;
+        ushort colorControl = _bus.ReadMixerWord(0x3e);
         layers[count++] = new MixerLayer(
             layer,
             (priority << 3) | (6 - layer),
             (control & 0x00f0) << 6,
-            (control >> 8) & 3);
+            (control >> 8) & 3,
+            blendEnabled ? (blendControl >> 6) & 0xff : 0,
+            ComputeSpriteBlend(blendControl & 0x3f),
+            ComputeColorOffset(
+                ((colorControl >> 15) & 1) != 0,
+                ((colorControl >> layer) & 1) != 0,
+                ((blendControl >> 14) & 1) != 0));
+    }
+
+    private MixerLayer[,] BuildMixerLayerOrders(
+        MixerLayer[] baseLayers,
+        int baseLayerCount,
+        int spriteGroupMask,
+        int spriteGroupOr,
+        ushort spriteControl,
+        out int[] counts)
+    {
+        var order = new MixerLayer[16, 8];
+        counts = new int[16];
+        ushort colorControl = _bus.ReadMixerWord(0x3e);
+        for (int group = 0; group <= spriteGroupMask; group++)
+        {
+            int effectiveGroup = spriteGroupOr | group;
+            ushort spriteMixer = _bus.ReadMixerWord(effectiveGroup * 2);
+            int spritePriority = spriteMixer & 0x000f;
+            int spriteEffectivePriority = (spritePriority << 3) | 7;
+            ushort paletteSource = (spriteControl & 3) != 3 ? spriteMixer : spriteControl;
+            var spriteLayer = new MixerLayer(
+                LayerSprites,
+                spriteEffectivePriority,
+                (paletteSource & 0x00f0) << 6,
+                (spriteMixer >> 8) & 3,
+                0,
+                0,
+                ComputeColorOffset(
+                    ((colorControl >> 15) & 1) != 0,
+                    ((colorControl >> 6) & 1) != 0,
+                    ((spriteControl >> 15) & 1) != 0));
+
+            bool inserted = false;
+            int dst = 0;
+            for (int i = 0; i < baseLayerCount; i++)
+            {
+                if (!inserted && spriteEffectivePriority > baseLayers[i].EffectivePriority)
+                {
+                    order[group, dst++] = spriteLayer;
+                    inserted = true;
+                }
+
+                order[group, dst++] = baseLayers[i];
+            }
+
+            if (!inserted)
+                order[group, dst++] = spriteLayer;
+
+            counts[group] = dst;
+        }
+
+        return order;
+    }
+
+    private int[,] BuildRgbOffsets()
+    {
+        var offsets = new int[3, 3];
+        offsets[0, 0] = SignExtendBits(_bus.ReadMixerWord(0x40), 6);
+        offsets[0, 1] = SignExtendBits(_bus.ReadMixerWord(0x42), 6);
+        offsets[0, 2] = SignExtendBits(_bus.ReadMixerWord(0x44), 6);
+        offsets[1, 0] = SignExtendBits(_bus.ReadMixerWord(0x46), 6);
+        offsets[1, 1] = SignExtendBits(_bus.ReadMixerWord(0x48), 6);
+        offsets[1, 2] = SignExtendBits(_bus.ReadMixerWord(0x4a), 6);
+        return offsets;
+    }
+
+    private static int ComputeColorOffset(bool globalBit, bool layerBit, bool layerFlag)
+    {
+        int mode = (globalBit ? 2 : 0) | (layerBit ? 1 : 0);
+
+        return mode switch
+        {
+            1 => 2,
+            2 => layerFlag ? 0 : 2,
+            _ => layerFlag ? 0 : 1
+        };
+    }
+
+    private static int ComputeSpriteBlend(int encoding)
+    {
+        int value = encoding & 0x0f;
+        return ((encoding >> 4) & 3) switch
+        {
+            0 => 1 << value,
+            1 => (1 << value) | ((1 << value) - 1),
+            2 => ~((1 << value) - 1) & 0xffff,
+            _ => 0xffff
+        };
+    }
+
+    private void ReadLayerRgb(MixerLayer layer, int pixel, int[,] rgbOffsets, out int r, out int g, out int b)
+    {
+        int paletteIndex = (layer.PaletteBase + ((pixel >> layer.MixShift) & 0xfff0) + (pixel & 0x0f)) & 0x3fff;
+        ushort raw = _bus.ReadPaletteWord(paletteIndex);
+        r = ((raw >> 0) & 0x1f) + rgbOffsets[layer.ColorOffset, 0];
+        g = ((raw >> 5) & 0x1f) + rgbOffsets[layer.ColorOffset, 1];
+        b = ((raw >> 10) & 0x1f) + rgbOffsets[layer.ColorOffset, 2];
     }
 
     private void WritePixel(int x, int y, uint bgra)
@@ -1112,6 +1288,17 @@ public sealed class System32Adapter : IEmulatorCore
         int g = Expand5(raw >> 5);
         int b = Expand5(raw >> 10);
         return (uint)(b | (g << 8) | (r << 16) | unchecked((int)0xff000000));
+    }
+
+    private static uint BgraFromRgb5(int r, int g, int b)
+    {
+        r = Math.Clamp(r, 0, 31);
+        g = Math.Clamp(g, 0, 31);
+        b = Math.Clamp(b, 0, 31);
+        int r8 = Expand5(r);
+        int g8 = Expand5(g);
+        int b8 = Expand5(b);
+        return (uint)(b8 | (g8 << 8) | (r8 << 16) | unchecked((int)0xff000000));
     }
 
     private static void GetSpriteGroupParameters(ushort control, out int groupShift, out int groupMask, out int groupOr)
