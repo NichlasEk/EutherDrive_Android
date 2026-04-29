@@ -1629,9 +1629,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private int MapCode(Cps1GfxLayer layer, int code)
         {
-            if (_mapper != Cps1GfxMapper.S9263B)
-                return code;
-
             int shift = layer switch
             {
                 Cps1GfxLayer.Sprites => 1,
@@ -1641,10 +1638,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             };
             int expandedCode = code << shift;
 
-            if (TryMapS9263B(layer, expandedCode, shift, out int mappedCode))
+            if (_mapper == Cps1GfxMapper.S9263B && TryMapS9263B(layer, expandedCode, shift, out int mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.WL24B && TryMapWL24B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
 
-            return -1;
+            return _mapper == Cps1GfxMapper.Linear ? code : -1;
         }
 
         private static bool TryMapS9263B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
@@ -1699,6 +1698,45 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return true;
         }
 
+        private static bool TryMapWL24B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            mappedCode = -1;
+            int bank;
+            int bankSize;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    bank = 0;
+                    bankSize = 0x8000;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x4fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    bank = 0;
+                    bankSize = 0x8000;
+                    inRange = expandedCode >= 0x5000 && expandedCode <= 0x6fff;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    bankSize = 0x8000;
+                    inRange = expandedCode >= 0x7000 && expandedCode <= 0x7fff;
+                    break;
+                default:
+                    bank = 1;
+                    bankSize = 0x4000;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x3fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            int baseAddress = bank == 0 ? 0 : 0x8000;
+            mappedCode = (baseAddress + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
         private static byte[] Decode(byte[] gfx, int width, int height, int bytesPerTile, int xStartBits)
         {
             int tileCount = gfx.Length / bytesPerTile;
@@ -1742,7 +1780,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private enum Cps1GfxMapper
     {
         Linear,
-        S9263B
+        S9263B,
+        WL24B
     }
 
     private enum Cps1GfxLayer
@@ -1909,6 +1948,14 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             "sf2yyc"
         };
 
+        private static readonly HashSet<string> WL24BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "willow",
+            "willowu",
+            "willowuo",
+            "willowj"
+        };
+
         private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
         {
             ["3wonderh"] = "3wondersh",
@@ -1933,7 +1980,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             ["slammasu"] = "slammastu",
             ["stridrja"] = "striderjr",
             ["stridrua"] = "striderua",
-            ["willowje"] = "willowj",
+            ["willowje"] = "willow",
             ["wofh"] = "wofhfh"
         };
 
@@ -1995,21 +2042,22 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             string requestedSetName = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
             string setName = CanonicalSetName(requestedSetName);
             if (Definitions.TryGetValue(setName, out Cps1QSoundDefinition? definition))
-                return LoadQSoundSet(path, setName, definition);
+                return LoadQSoundSet(path, requestedSetName, setName, definition);
             if (ClassicDefinitions.TryGetValue(setName, out Cps1ClassicDefinition? classicDefinition))
-                return LoadClassicSet(path, setName, classicDefinition);
+                return LoadClassicSet(path, requestedSetName, setName, classicDefinition);
             if (GeneratedQSoundDefinitions.TryGetValue(setName, out Cps1QSoundDefinition? generatedQSoundDefinition))
-                return LoadQSoundSet(path, setName, generatedQSoundDefinition);
+                return LoadQSoundSet(path, requestedSetName, setName, generatedQSoundDefinition);
             if (GeneratedClassicDefinitions.TryGetValue(setName, out Cps1ClassicDefinition? generatedClassicDefinition))
-                return LoadClassicSet(path, setName, generatedClassicDefinition);
+                return LoadClassicSet(path, requestedSetName, setName, generatedClassicDefinition);
 
             throw new NotSupportedException($"CPS1 ROM set '{requestedSetName}' is not registered in the EutherDrive CPS1 loader.");
         }
 
-        private static Cps1DinoRomSet LoadQSoundSet(string path, string setName, Cps1QSoundDefinition definition)
+        private static Cps1DinoRomSet LoadQSoundSet(string path, string requestedSetName, string setName, Cps1QSoundDefinition definition)
         {
             Dictionary<string, byte[]> entries = ReadArchive(path);
             MergeParentArchivesIfPresent(path, ResolveParentSetName(setName, definition.ParentSetName), entries);
+            MergeSparseAliasParentIfNeeded(path, requestedSetName, setName, entries);
             definition = SelectEffectiveQSoundDefinition(setName, definition, entries);
             ValidateQSoundSetEntries(setName, entries);
 
@@ -2075,10 +2123,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             throw new InvalidDataException($"Missing CPS1 ROM file ({string.Join(" or ", names)}). Present files: {present}");
         }
 
-        private static Cps1DinoRomSet LoadClassicSet(string path, string setName, Cps1ClassicDefinition definition)
+        private static Cps1DinoRomSet LoadClassicSet(string path, string requestedSetName, string setName, Cps1ClassicDefinition definition)
         {
             Dictionary<string, byte[]> entries = ReadArchive(path);
             MergeParentArchivesIfPresent(path, ResolveParentSetName(setName, definition.ParentSetName), entries);
+            MergeSparseAliasParentIfNeeded(path, requestedSetName, setName, entries);
 
             byte[] program = new byte[ProgramRomSize];
             Array.Fill(program, (byte)0xff);
@@ -2116,7 +2165,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 || string.Equals(setName, "mbomberj", StringComparison.OrdinalIgnoreCase);
 
         private static Cps1GfxMapper GetGfxMapper(string setName)
-            => S9263BMapperSets.Contains(setName) ? Cps1GfxMapper.S9263B : Cps1GfxMapper.Linear;
+        {
+            if (S9263BMapperSets.Contains(setName))
+                return Cps1GfxMapper.S9263B;
+            if (WL24BMapperSets.Contains(setName))
+                return Cps1GfxMapper.WL24B;
+            return Cps1GfxMapper.Linear;
+        }
 
         private static byte GetBootlegKludge(string setName)
             => string.Equals(setName, "sf2m7", StringComparison.OrdinalIgnoreCase) ? (byte)0x41 : (byte)0;
@@ -6034,53 +6089,50 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "wle_30.11f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "wle_35.11h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "wlu_31.12f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "wlu_36.12h"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "wlm-32.8h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "wle_30.11f", "wlu_30.11f", "wlu_30.rom"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "wle_35.11h", "35.11h", "wlu_35.11h", "willow-u.35"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "wlu_31.12f", "wlu_31.rom"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "wlu_36.12h", "wlu_36.rom"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "wlm-32.8h", "wl_32.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "wlm-7.7a"),
-                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "wlm-5.9a"),
-                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "wlm-3.3a"),
-                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "wlm-1.5a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x20000, "wl_24.7d"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x20000, "wl_14.7c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x20000, "wl_26.9d"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x20000, "wl_16.9c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x20000, "wl_20.3d"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x20000, "wl_10.3c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x20000, "wl_22.5d"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x20000, "wl_12.5c"),
+                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "wlm-7.7a", "wl_gfx5.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "wlm-5.9a", "wl_gfx7.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "wlm-3.3a", "wl_gfx1.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "wlm-1.5a", "wl_gfx3.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x20000, "wl_24.7d", "wl_24.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x20000, "wl_14.7c", "wl_14.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x20000, "wl_26.9d", "wl_26.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x20000, "wl_16.9c", "wl_16.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x20000, "wl_20.3d", "wl_20.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x20000, "wl_10.3c", "wl_10.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x20000, "wl_22.5d", "wl_22.rom"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x20000, "wl_12.5c", "wl_12.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "wl_09.12b"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "wl_09.12b"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "wl_09.12b", "wl_09.rom"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "wl_09.12b", "wl_09.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "wl_18.11c"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "wl_19.12c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "wl_18.11c", "wl_18.rom"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "wl_19.12c", "wl_19.rom"),
                 });
             definitions["willowj"] = new Cps1ClassicDefinition(
                 "willowj",
-                null,
+                "willow",
                 new Cps1VideoConfig(0x30, 0x2e, 0x2c, 0x2a, 0x28, 0x26),
                 0x400000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "wl_36.12f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "wl_42.12h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "wl_37.13f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "wl_43.13h"),
-                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "wl_34.10f"),
-                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "wl_40.10h"),
-                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "wl_35.11f"),
-                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "wl_41.11h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "wl_36.12f", "wl36.bin"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "wl_42.12h", "wl42.bin"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "wl_37.13f", "wl37.bin"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "wl_43.13h", "wl43.bin"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "wlm-32.8h", "wl_32.rom"),
                 },
                 new[]
                 {
@@ -6111,13 +6163,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "wl_23.13c"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "wl_23.13c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "wl_23.13c", "wl23.bin"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "wl_23.13c", "wl23.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "wl_30.12e"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "wl_31.13e"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "wl_30.12e", "wl30.bin"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "wl_31.13e", "wl32.bin"),
                 });
             definitions["wofhfh"] = new Cps1ClassicDefinition(
                 "wofhfh",
@@ -9544,10 +9596,21 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             }
         }
 
+        private static void MergeSparseAliasParentIfNeeded(
+            string path,
+            string requestedSetName,
+            string setName,
+            Dictionary<string, byte[]> entries)
+        {
+            if (string.Equals(requestedSetName, setName, StringComparison.OrdinalIgnoreCase) || entries.Count > 8)
+                return;
+
+            MergeParentArchivesIfPresent(path, setName, entries);
+        }
+
         private static void LoadProgram(Dictionary<string, byte[]> entries, byte[] destination, RomLoad load)
         {
-            if (!TryFind(entries, out byte[] source, load.Names))
-                return;
+            byte[] source = Find(entries, load.Names);
 
             switch (load.Kind)
             {
@@ -9769,8 +9832,43 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     return true;
             }
 
+            foreach (string name in names)
+            {
+                if (TryFindByNormalizedName(entries, name, out data))
+                    return true;
+            }
+
             data = Array.Empty<byte>();
             return false;
+        }
+
+        private static bool TryFindByNormalizedName(Dictionary<string, byte[]> entries, string wantedName, out byte[] data)
+        {
+            string normalizedWanted = NormalizeRomName(wantedName);
+            foreach ((string name, byte[] candidate) in entries)
+            {
+                if (NormalizeRomName(name) == normalizedWanted)
+                {
+                    data = candidate;
+                    return true;
+                }
+            }
+
+            data = Array.Empty<byte>();
+            return false;
+        }
+
+        private static string NormalizeRomName(string name)
+        {
+            Span<char> buffer = stackalloc char[name.Length];
+            int cursor = 0;
+            foreach (char ch in name)
+            {
+                if (char.IsLetterOrDigit(ch))
+                    buffer[cursor++] = char.ToLowerInvariant(ch);
+            }
+
+            return new string(buffer[..cursor]);
         }
 
         private static bool TryFindByCrc(Dictionary<string, byte[]> entries, uint wantedCrc, out byte[] data)
