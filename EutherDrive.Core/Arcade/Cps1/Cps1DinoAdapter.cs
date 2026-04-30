@@ -248,6 +248,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         private bool _hasQSoundProtectionRom;
         private byte _bootlegKludge;
         private bool _useSf2HackInputRead;
+        private bool _useDinoHuntSoundRead;
 
         private ArcadeInputState _input;
         private byte _soundLatch0 = 0xff;
@@ -317,6 +318,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _hasQSoundProtectionRom = roms.HasQSoundProtectionRom;
             _bootlegKludge = roms.BootlegKludge;
             _useSf2HackInputRead = roms.UseSf2HackInputRead;
+            _useDinoHuntSoundRead = UsesDinoHuntSoundRead(roms.SetName);
             _audioCpuClockHz = roms.AudioCpuClockHz;
             _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
             if (roms.AudioHardware == Cps1AudioHardware.QSound)
@@ -356,6 +358,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             _okiFrameSampleIndex = 0;
             _ymFrameSampleIndex = 0;
         }
+
+        private static bool UsesDinoHuntSoundRead(string setName)
+            => string.Equals(setName, "dinoh", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(setName, "dinohunt", StringComparison.OrdinalIgnoreCase);
 
         public void SetInput(ArcadeInputState input) => _input = input;
 
@@ -603,6 +609,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 return _mainRam[address & 0xffff];
             if (IsWordMapped(address))
                 return ReadWordByte(ReadWord(address & ~1u), address);
+            if (_useDinoHuntSoundRead && address >= 0xf18000 && address <= 0xf19fff)
+                return 0xff;
             if (address >= 0xf18000 && address <= 0xf19fff)
                 return ReadQSoundSharedByte(_qsoundShared0, address - 0xf18000);
             if (address >= 0xf1e000 && address <= 0xf1ffff)
@@ -627,8 +635,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 return ReadGfxWord((int)((address - 0x900000) >> 1));
             if (address >= 0xf00000 && address <= 0xf0ffff)
                 return ReadQSoundRom((int)((address - 0xf00000) >> 1));
+            if (_useDinoHuntSoundRead && address >= 0xf18000 && address <= 0xf19fff)
+                return 0x00ff;
             if (address >= 0xf18000 && address <= 0xf19fff)
                 return (ushort)(0xff00 | _qsoundShared0[(address - 0xf18000) >> 1]);
+            if (_useDinoHuntSoundRead && address >= 0xfc0000 && address <= 0xfc0001)
+                return Input2();
             if (address >= 0xf1c000 && address <= 0xf1c001)
                 return Input2();
             if (address >= 0xf1c002 && address <= 0xf1c003)
@@ -672,8 +684,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             {
                 int index = (int)((address - 0x800140) >> 1);
                 WriteWordByte(ref _cpsB[index], address, value);
-                if (index == _videoConfig.PaletteControl / 2)
-                    LatchPalette();
                 return;
             }
             if (_audioHardware == Cps1AudioHardware.YmOki && address >= 0x800180 && address <= 0x800187)
@@ -730,8 +740,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             {
                 int index = (int)((address - 0x800140) >> 1);
                 _cpsB[index] = value;
-                if (index == _videoConfig.PaletteControl / 2)
-                    LatchPalette();
                 return;
             }
             if (_audioHardware == Cps1AudioHardware.YmOki && address >= 0x800180 && address <= 0x800187)
@@ -1302,7 +1310,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         public void Render(byte[] frameBuffer)
         {
             BuildPalette();
-            Array.Fill(_pixels, (ushort)0x0bff);
+            Array.Clear(_pixels);
             Array.Clear(_spritePriority);
 
             Cps1VideoConfig config = _bus.VideoConfig;
@@ -1369,12 +1377,45 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         }
 
         private void DrawTilemap(int layer)
-            => ProcessTilemap(layer, markSpritePriority: false);
+        {
+            if (!TilemapEnabled(layer))
+                return;
+
+            ProcessTilemap(layer, markSpritePriority: false);
+        }
 
         private void MarkSpritePriorityLayer(int layer)
         {
             if (layer is >= 1 and <= 3)
-                ProcessTilemap(layer - 1, markSpritePriority: true);
+            {
+                int tilemapLayer = layer - 1;
+                if (TilemapEnabled(tilemapLayer))
+                    ProcessTilemap(tilemapLayer, markSpritePriority: true);
+            }
+        }
+
+        private bool TilemapEnabled(int layer)
+        {
+            int mask = layer switch
+            {
+                0 => _bus.VideoConfig.LayerEnable0,
+                1 => _bus.VideoConfig.LayerEnable1,
+                _ => _bus.VideoConfig.LayerEnable2
+            };
+            if (mask < 0)
+                return true;
+
+            ushort layerControl = CpsB(_bus.VideoConfig.LayerControl / 2);
+            if ((layerControl & mask) == 0)
+                return false;
+
+            ushort videoControl = CpsA(Cps1Regs.VideoControl);
+            return layer switch
+            {
+                1 => (videoControl & 0x04) != 0,
+                2 => (videoControl & 0x08) != 0,
+                _ => true
+            };
         }
 
         private void ProcessTilemap(int layer, bool markSpritePriority)
@@ -1663,8 +1704,187 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.RT22B && TryMapRT22B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
+            if (_mapper == Cps1GfxMapper.LW621 && TryMapLW621(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.S224B && TryMapS224B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.S222B && TryMapS222B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.ST24M1 && TryMapST24M1(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.ST22B && TryMapST22B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.AR24B && TryMapAR24B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.AR22B && TryMapAR22B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.CK24B && TryMapCK24B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.CK22B && TryMapCK22B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.NM24B && TryMapNM24B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.DM620 && TryMapDM620(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.DM22A && TryMapDM22A(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.DAM63B && TryMapDAM63B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.TK24B1 && TryMapTK24B1(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.TK22B && TryMapTK22B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
 
             return _mapper == Cps1GfxMapper.Linear ? code : -1;
+        }
+
+        private static bool TryMapST24M1(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    bank = 0;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x4fff;
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 0;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x7fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    bank = 1;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x7fff;
+                    break;
+                default:
+                    bank = 1;
+                    inRange = expandedCode >= 0x7000 && expandedCode <= 0x7fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapST22B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x4000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    if (expandedCode >= 0x0000 && expandedCode <= 0x3fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x4000 && expandedCode <= 0x4fff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 1;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x7fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    if (expandedCode >= 0x0000 && expandedCode <= 0x3fff)
+                    {
+                        bank = 2;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x4000 && expandedCode <= 0x7fff)
+                    {
+                        bank = 3;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                default:
+                    bank = 3;
+                    inRange = expandedCode >= 0x7000 && expandedCode <= 0x7fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapLW621(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            bool inRange = expandedCode >= 0x00000 && expandedCode <= 0x1ffff;
+            if (!inRange)
+                return false;
+
+            int bank = layer is Cps1GfxLayer.Sprites or Cps1GfxLayer.Scroll1 ? 0 : 1;
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapS224B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            bool inRange = layer switch
+            {
+                Cps1GfxLayer.Sprites => expandedCode >= 0x0000 && expandedCode <= 0x43ff,
+                Cps1GfxLayer.Scroll1 => expandedCode >= 0x4400 && expandedCode <= 0x4bff,
+                Cps1GfxLayer.Scroll3 => expandedCode >= 0x4c00 && expandedCode <= 0x5fff,
+                _ => expandedCode >= 0x6000 && expandedCode <= 0x7fff
+            };
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (expandedCode & (bankSize - 1)) >> shift;
+            return true;
+        }
+
+        private static bool TryMapS222B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x4000;
+            mappedCode = -1;
+
+            bool inRange = layer switch
+            {
+                Cps1GfxLayer.Sprites => expandedCode >= 0x0000 && expandedCode <= 0x43ff,
+                Cps1GfxLayer.Scroll1 => expandedCode >= 0x4400 && expandedCode <= 0x4bff,
+                Cps1GfxLayer.Scroll3 => expandedCode >= 0x4c00 && expandedCode <= 0x5fff,
+                _ => expandedCode >= 0x6000 && expandedCode <= 0x7fff
+            };
+
+            if (!inRange)
+                return false;
+
+            int bank = expandedCode <= 0x3fff ? 0 : 1;
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
         }
 
         private static bool TryMapS9263B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
@@ -1896,6 +2116,339 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             return true;
         }
 
+        private static bool TryMapAR24B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            bool inRange = layer switch
+            {
+                Cps1GfxLayer.Sprites => expandedCode >= 0x0000 && expandedCode <= 0x2fff,
+                Cps1GfxLayer.Scroll1 => expandedCode >= 0x3000 && expandedCode <= 0x3fff,
+                Cps1GfxLayer.Scroll2 => expandedCode >= 0x4000 && expandedCode <= 0x5fff,
+                _ => expandedCode >= 0x6000 && expandedCode <= 0x7fff
+            };
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (expandedCode & (bankSize - 1)) >> shift;
+            return true;
+        }
+
+        private static bool TryMapAR22B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x4000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    bank = 0;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x2fff;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    inRange = expandedCode >= 0x3000 && expandedCode <= 0x3fff;
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 1;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x5fff;
+                    break;
+                default:
+                    bank = 1;
+                    inRange = expandedCode >= 0x6000 && expandedCode <= 0x7fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapCK24B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            bool inRange = layer switch
+            {
+                Cps1GfxLayer.Sprites => expandedCode >= 0x0000 && expandedCode <= 0x2fff,
+                Cps1GfxLayer.Scroll1 => expandedCode >= 0x3000 && expandedCode <= 0x3fff,
+                Cps1GfxLayer.Scroll2 => expandedCode >= 0x4000 && expandedCode <= 0x6fff,
+                _ => expandedCode >= 0x7000 && expandedCode <= 0x7fff
+            };
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (expandedCode & (bankSize - 1)) >> shift;
+            return true;
+        }
+
+        private static bool TryMapCK22B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x4000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    bank = 0;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x2fff;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    inRange = expandedCode >= 0x3000 && expandedCode <= 0x3fff;
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 1;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x6fff;
+                    break;
+                default:
+                    bank = 1;
+                    inRange = expandedCode >= 0x7000 && expandedCode <= 0x7fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapNM24B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            bool inRange = layer switch
+            {
+                Cps1GfxLayer.Sprites => expandedCode >= 0x0000 && expandedCode <= 0x3fff
+                    || expandedCode >= 0x4800 && expandedCode <= 0x67ff,
+                Cps1GfxLayer.Scroll2 => expandedCode >= 0x0000 && expandedCode <= 0x3fff
+                    || expandedCode >= 0x4800 && expandedCode <= 0x67ff,
+                Cps1GfxLayer.Scroll1 => expandedCode >= 0x4000 && expandedCode <= 0x47ff,
+                _ => expandedCode >= 0x6800 && expandedCode <= 0x7fff
+            };
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (expandedCode & (bankSize - 1)) >> shift;
+            return true;
+        }
+
+        private static bool TryMapDM620(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Scroll3:
+                    bank = 1;
+                    inRange = expandedCode >= 0x8000 && expandedCode <= 0xbfff;
+                    break;
+                case Cps1GfxLayer.Sprites when expandedCode >= 0x2000 && expandedCode <= 0x3fff:
+                    bank = 2;
+                    inRange = true;
+                    break;
+                default:
+                    bank = 0;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x1ffff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = MapBankedCode(expandedCode, shift, bank, 0x8000, 0x2000, 0x2000, 0);
+            return true;
+        }
+
+        private static bool TryMapDM22A(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites when expandedCode >= 0x0000 && expandedCode <= 0x1fff:
+                    bank = 0;
+                    inRange = true;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    inRange = expandedCode >= 0x2000 && expandedCode <= 0x3fff;
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 1;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x7fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    bank = 2;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x1ffff;
+                    break;
+                case Cps1GfxLayer.Sprites:
+                    bank = 3;
+                    inRange = expandedCode >= 0x2000 && expandedCode <= 0x3fff;
+                    break;
+                default:
+                    bank = 0;
+                    inRange = false;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = MapBankedCode(expandedCode, shift, bank, 0x4000, 0x4000, 0x2000, 0x2000);
+            return true;
+        }
+
+        private static int MapBankedCode(int expandedCode, int shift, int bank, params int[] bankSizes)
+        {
+            int baseAddress = 0;
+            for (int i = 0; i < bank; i++)
+                baseAddress += bankSizes[i];
+
+            int bankSize = bankSizes[bank];
+            return (baseAddress + (expandedCode & (bankSize - 1))) >> shift;
+        }
+
+        private static bool TryMapDAM63B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites when expandedCode >= 0x0000 && expandedCode <= 0x1fff:
+                    bank = 0;
+                    inRange = true;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    inRange = expandedCode >= 0x2000 && expandedCode <= 0x2fff;
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 0;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x7fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    bank = 1;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x1ffff;
+                    break;
+                case Cps1GfxLayer.Sprites:
+                    bank = 1;
+                    inRange = expandedCode >= 0x2000 && expandedCode <= 0x3fff;
+                    break;
+                default:
+                    bank = 0;
+                    inRange = false;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapTK24B1(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    bank = 0;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x5fff;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    inRange = expandedCode >= 0x6000 && expandedCode <= 0x7fff;
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 1;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x7fff;
+                    break;
+                default:
+                    bank = 1;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x3fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapTK22B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x4000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    if (expandedCode >= 0x0000 && expandedCode <= 0x3fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x4000 && expandedCode <= 0x5fff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 1;
+                    inRange = expandedCode >= 0x6000 && expandedCode <= 0x7fff;
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    bank = 2;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x3fff;
+                    break;
+                default:
+                    bank = 3;
+                    inRange = expandedCode >= 0x4000 && expandedCode <= 0x7fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
         private static byte[] Decode(byte[] gfx, int width, int height, int bytesPerTile, int xStartBits)
         {
             int tileCount = gfx.Length / bytesPerTile;
@@ -1940,9 +2493,24 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     {
         Linear,
         S9263B,
+        LW621,
+        S224B,
+        S222B,
+        ST24M1,
+        ST22B,
         WL24B,
         RT24B,
-        RT22B
+        RT22B,
+        AR24B,
+        AR22B,
+        CK24B,
+        CK22B,
+        NM24B,
+        DM620,
+        DM22A,
+        DAM63B,
+        TK24B1,
+        TK22B
     }
 
     private enum Cps1GfxLayer
@@ -1983,15 +2551,23 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         int MultResultLo = -1,
         int MultResultHi = -1,
         int MultFactor1 = -1,
-        int MultFactor2 = -1)
+        int MultFactor2 = -1,
+        int LayerEnable0 = -1,
+        int LayerEnable1 = -1,
+        int LayerEnable2 = -1)
     {
         public static readonly Cps1VideoConfig Default = new(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30);
+        public static readonly Cps1VideoConfig CpsB01 = new(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30, LayerEnable0: 0x02, LayerEnable1: 0x04, LayerEnable2: 0x08);
         public static readonly Cps1VideoConfig QSound1 = new(0x22, 0x24, 0x26, 0x28, 0x2a, 0x2c);
         public static readonly Cps1VideoConfig QSound2 = new(0x0a, 0x0c, 0x0e, 0x00, 0x02, 0x04);
         public static readonly Cps1VideoConfig QSound3 = new(0x12, 0x14, 0x16, 0x08, 0x0a, 0x0c, 0x0e, 0x0c00);
         public static readonly Cps1VideoConfig QSound4 = new(0x16, 0x00, 0x02, 0x28, 0x2a, 0x2c, 0x2e, 0x0c01);
         public static readonly Cps1VideoConfig QSound5 = new(0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x1c, 0x1e, 0x0c02);
+        public static readonly Cps1VideoConfig CpsB02 = new(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22, 0x20, 0x0002);
+        public static readonly Cps1VideoConfig CpsB04 = new(0x2e, 0x26, 0x30, 0x28, 0x32, 0x2a, 0x20, 0x0004);
         public static readonly Cps1VideoConfig CpsB05 = new(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x20, 0x0005);
+        public static readonly Cps1VideoConfig CpsB14 = new(0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c, 0x1e, 0x0404);
+        public static readonly Cps1VideoConfig CpsB15 = new(0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c, 0x0e, 0x0405, LayerEnable0: 0x04, LayerEnable1: 0x02, LayerEnable2: 0x20);
         public static readonly Cps1VideoConfig CpsB16 = new(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00, 0x0406);
         public static readonly Cps1VideoConfig CpsB21Bt1 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x30, 0x32, 0x0800, 0x0a, 0x08, 0x0e, 0x0c);
         public static readonly Cps1VideoConfig HackB2 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x22);
@@ -2138,6 +2714,111 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             "wonder3"
         };
 
+        private static readonly HashSet<string> LW621MapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "forgottn",
+            "forgott1",
+            "forgottna",
+            "forgottnu",
+            "forgottnue",
+            "forgottnuc",
+            "forgottnua",
+            "forgottnuaa",
+            "forgottnj",
+            "lostwrld",
+            "lostwrldo"
+        };
+
+        private static readonly HashSet<string> S224BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "ffight",
+            "ffighta",
+            "ffightu",
+            "ffightu1",
+            "ffightua",
+            "ffightub",
+            "ffightuc"
+        };
+
+        private static readonly HashSet<string> S222BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "ffightj",
+            "ffightj1",
+            "ffightj2",
+            "ffightj3",
+            "ffightj4"
+        };
+
+        private static readonly HashSet<string> ST24M1MapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "strider",
+            "striderua",
+            "strideruc",
+            "striderjr"
+        };
+
+        private static readonly HashSet<string> ST22BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "striderj"
+        };
+
+        private static readonly HashSet<string> AR24BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "unsquad"
+        };
+
+        private static readonly HashSet<string> AR22BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "area88"
+        };
+
+        private static readonly HashSet<string> CK24BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "mtwins",
+            "mtwinsb"
+        };
+
+        private static readonly HashSet<string> CK22BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "chikij"
+        };
+
+        private static readonly HashSet<string> NM24BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "nemo",
+            "nemor1",
+            "nemoj",
+            "nemoja"
+        };
+
+        private static readonly HashSet<string> DM620MapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "ghouls",
+            "ghoulsu"
+        };
+
+        private static readonly HashSet<string> DM22AMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "daimakai"
+        };
+
+        private static readonly HashSet<string> DAM63BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "daimakair"
+        };
+
+        private static readonly HashSet<string> TK24B1MapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "dynwar"
+        };
+
+        private static readonly HashSet<string> TK22BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "dynwara",
+            "dynwarj",
+            "dynwarjr"
+        };
+
         private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
         {
             ["3wonderh"] = "3wondersh",
@@ -2147,7 +2828,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             ["captcomu"] = "captcommu",
             ["cawingu"] = "cawingur1",
             ["daimakr2"] = "daimakair",
-            ["dinoh"] = "dinohunt",
+            ["dinoh"] = "dinoh",
             ["dynwaru"] = "dynwara",
             ["forgott1"] = "forgottn",
             ["knightsh"] = "knights",
@@ -2160,7 +2841,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             ["sf2t"] = "sf2hf",
             ["sf2tj"] = "sf2hfj",
             ["slammasu"] = "slammastu",
-            ["stridrja"] = "striderjr",
+            ["striderj"] = "striderjr",
+            ["stridrja"] = "striderj",
             ["stridrua"] = "striderua",
             ["willowje"] = "willow",
             ["wofh"] = "wofhfh"
@@ -2178,6 +2860,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             ["dinou"] = DinoDefinition("dinou", "dino"),
             ["dinoa"] = DinoDefinition("dinoa", "dino"),
             ["dinoj"] = DinoDefinition("dinoj", "dino"),
+            ["dinoh"] = DinoHackDefinition(),
 
             ["punisher"] = PunisherDefinition("punisher", null),
             ["punisheru"] = PunisherDefinition("punisheru", "punisher"),
@@ -2319,6 +3002,23 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 };
             }
 
+            if (string.Equals(setName, "forgottn", StringComparison.OrdinalIgnoreCase)
+                && TryFind(entries, out _, "lw-01.9d"))
+            {
+                return definition with
+                {
+                    GraphicsLoads = ForgottenWorldsWordGraphicsLoads(),
+                    OkiLoads = ForgottenWorldsOkiLoads()
+                };
+            }
+
+            if (string.Equals(setName, "forgottn", StringComparison.OrdinalIgnoreCase)
+                && TryFind(entries, out _, "lw-05.6d")
+                && TryFind(entries, out _, "lw_2.2b"))
+            {
+                return definition with { GraphicsLoads = ForgottenWorldsMixedGraphicsLoads() };
+            }
+
             return definition;
         }
 
@@ -2342,6 +3042,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             Array.Fill(program, (byte)0xff);
             foreach (RomLoad load in definition.ProgramLoads)
                 LoadProgram(entries, program, load);
+            ApplyClassicProgramPatches(setName, program);
 
             byte[] gfx = new byte[definition.GraphicsSize];
             foreach (RomLoad load in definition.GraphicsLoads)
@@ -2368,6 +3069,25 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 Array.Empty<byte>());
         }
 
+        private static void ApplyClassicProgramPatches(string setName, byte[] program)
+        {
+            if (string.Equals(setName, "ghouls", StringComparison.OrdinalIgnoreCase))
+            {
+                PatchWord(program, 0x61964, 0x4ef9);
+                PatchWord(program, 0x61966, 0x0000);
+                PatchWord(program, 0x61968, 0x0400);
+            }
+        }
+
+        private static void PatchWord(byte[] destination, int offset, ushort value)
+        {
+            if ((uint)(offset + 1) >= destination.Length)
+                return;
+
+            destination[offset] = (byte)(value >> 8);
+            destination[offset + 1] = (byte)value;
+        }
+
         private static bool UsesQSoundProtectionRom(string setName)
             => string.Equals(setName, "slammast", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(setName, "slammastu", StringComparison.OrdinalIgnoreCase)
@@ -2383,6 +3103,36 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 return Cps1GfxMapper.RT24B;
             if (RT22BMapperSets.Contains(setName))
                 return Cps1GfxMapper.RT22B;
+            if (LW621MapperSets.Contains(setName))
+                return Cps1GfxMapper.LW621;
+            if (S224BMapperSets.Contains(setName))
+                return Cps1GfxMapper.S224B;
+            if (S222BMapperSets.Contains(setName))
+                return Cps1GfxMapper.S222B;
+            if (ST24M1MapperSets.Contains(setName))
+                return Cps1GfxMapper.ST24M1;
+            if (ST22BMapperSets.Contains(setName))
+                return Cps1GfxMapper.ST22B;
+            if (AR24BMapperSets.Contains(setName))
+                return Cps1GfxMapper.AR24B;
+            if (AR22BMapperSets.Contains(setName))
+                return Cps1GfxMapper.AR22B;
+            if (CK24BMapperSets.Contains(setName))
+                return Cps1GfxMapper.CK24B;
+            if (CK22BMapperSets.Contains(setName))
+                return Cps1GfxMapper.CK22B;
+            if (NM24BMapperSets.Contains(setName))
+                return Cps1GfxMapper.NM24B;
+            if (DM620MapperSets.Contains(setName))
+                return Cps1GfxMapper.DM620;
+            if (DM22AMapperSets.Contains(setName))
+                return Cps1GfxMapper.DM22A;
+            if (DAM63BMapperSets.Contains(setName))
+                return Cps1GfxMapper.DAM63B;
+            if (TK24B1MapperSets.Contains(setName))
+                return Cps1GfxMapper.TK24B1;
+            if (TK22BMapperSets.Contains(setName))
+                return Cps1GfxMapper.TK22B;
             return Cps1GfxMapper.Linear;
         }
 
@@ -2425,6 +3175,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 ["daimakai"] = "ghouls",
                 ["daimakair"] = "ghouls",
                 ["dinoa"] = "dino",
+                ["dinoh"] = "dino",
                 ["dinohunt"] = "dino",
                 ["dinoj"] = "dino",
                 ["dinopic"] = "dino",
@@ -2665,6 +3416,140 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "41_19.12c", "41_19.rom"),
             };
 
+        private static RomLoad[] CommonGhoulsGraphicsLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "dm-05.3a"),
+                Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "dm-07.3f"),
+                Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "dm-06.3c"),
+                Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "dm-08.3g"),
+                Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x10000, "09.4a", "dm_09.4a", "dm_06.7b"),
+                Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x10000, "18.7a", "dm_18.7a", "dm_05.7a"),
+                Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x10000, "13.4e", "dm_13.4e", "dm_14.11b"),
+                Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x10000, "22.7e", "dm_22.7e", "dm_13.11a"),
+                Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x10000, "11.4c", "dm_11.4c", "dm_22.8e"),
+                Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x10000, "20.7c", "dm_20.7c", "dm_21.8c"),
+                Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x10000, "15.4g", "dm_15.4g", "dm_26.10e"),
+                Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x10000, "24.7g", "dm_24.7g", "dm_25.10c"),
+                Load(RomLoadKind.Graphics64Byte, 0x280000, 0x0, 0x10000, "10.4b", "dm_10.4b", "dm_08.8b"),
+                Load(RomLoadKind.Graphics64Byte, 0x280001, 0x0, 0x10000, "19.7b", "dm_19.7b", "dm_07.8a"),
+                Load(RomLoadKind.Graphics64Byte, 0x280002, 0x0, 0x10000, "14.4f", "dm_14.4f", "dm_16.12b"),
+                Load(RomLoadKind.Graphics64Byte, 0x280003, 0x0, 0x10000, "23.7f", "dm_23.7f", "dm_15.12a"),
+                Load(RomLoadKind.Graphics64Byte, 0x280004, 0x0, 0x10000, "12.4d", "dm_12.4d", "dm_24.9e"),
+                Load(RomLoadKind.Graphics64Byte, 0x280005, 0x0, 0x10000, "21.7d", "dm_21.7d", "dm_23.9c"),
+                Load(RomLoadKind.Graphics64Byte, 0x280006, 0x0, 0x10000, "16.4h", "dm_16.4h", "dm_28.11e"),
+                Load(RomLoadKind.Graphics64Byte, 0x280007, 0x0, 0x10000, "25.7h", "dm_25.7h", "dm_27.11c"),
+            };
+
+        private static RomLoad[] ForgottenWorldsWordGraphicsLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Graphics64Word, 0x000000, 0x0, 0x80000, "lw-01.9d"),
+                Load(RomLoadKind.Graphics64Word, 0x000002, 0x0, 0x80000, "lw-08.9f", "lw-08.9b"),
+                Load(RomLoadKind.Graphics64Word, 0x000004, 0x0, 0x80000, "lw-05.9e", "lw-05.6d"),
+                Load(RomLoadKind.Graphics64Word, 0x000006, 0x0, 0x80000, "lw-12.9g"),
+                Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "lw-02.12d", "lw-02.6b"),
+                Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "lw-09.12f"),
+                Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "lw-06.12e", "lw-06.9d"),
+                Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "lw-13.12g", "lw-13.10d"),
+            };
+
+        private static RomLoad[] ForgottenWorldsMixedGraphicsLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Graphics64Byte, 0x000000, 0x0, 0x20000, "lw_2.2b"),
+                Load(RomLoadKind.Graphics64Byte, 0x000001, 0x0, 0x20000, "lw_1.2a"),
+                Load(RomLoadKind.Graphics64Word, 0x000002, 0x0, 0x80000, "lw-08.9b"),
+                Load(RomLoadKind.Graphics64Word, 0x000004, 0x0, 0x80000, "lw-05.6d"),
+                Load(RomLoadKind.Graphics64Byte, 0x000006, 0x0, 0x20000, "lw_30.8h"),
+                Load(RomLoadKind.Graphics64Byte, 0x000007, 0x0, 0x20000, "lw_29.8f"),
+                Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "lw_4.3b"),
+                Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "lw_3.3a"),
+                Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "lw_32.9h"),
+                Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "lw_31.9f"),
+                Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "lw-02.6b"),
+                Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x20000, "lw_14.10b"),
+                Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x20000, "lw_13.10a"),
+                Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "lw-06.9d"),
+                Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x20000, "lw_26.10e"),
+                Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x20000, "lw_25.10c"),
+                Load(RomLoadKind.Graphics64Byte, 0x300002, 0x0, 0x20000, "lw_16.11b"),
+                Load(RomLoadKind.Graphics64Byte, 0x300003, 0x0, 0x20000, "lw_15.11a"),
+                Load(RomLoadKind.Graphics64Byte, 0x300006, 0x0, 0x20000, "lw_28.11e"),
+                Load(RomLoadKind.Graphics64Byte, 0x300007, 0x0, 0x20000, "lw_27.11c"),
+            };
+
+        private static RomLoad[] ForgottenWorldsOkiLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "lw-03u.12e", "lw-03u.14c"),
+                Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "lw-04u.13e", "lw-04u.13c"),
+            };
+
+        private static RomLoad[] DaimakaiGraphicsLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Graphics64Byte, 0x0, 0x0, 0x20000, "dm_02.4b"),
+                Load(RomLoadKind.Graphics64Byte, 0x1, 0x0, 0x20000, "dm_01.4a"),
+                Load(RomLoadKind.Graphics64Byte, 0x2, 0x0, 0x20000, "dm_10.9b"),
+                Load(RomLoadKind.Graphics64Byte, 0x3, 0x0, 0x20000, "dm_09.9a"),
+                Load(RomLoadKind.Graphics64Byte, 0x4, 0x0, 0x20000, "dm_18.5e"),
+                Load(RomLoadKind.Graphics64Byte, 0x5, 0x0, 0x20000, "dm_17.5c"),
+                Load(RomLoadKind.Graphics64Byte, 0x6, 0x0, 0x20000, "dm_30.8h"),
+                Load(RomLoadKind.Graphics64Byte, 0x7, 0x0, 0x20000, "dm_29.8f"),
+                Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "dm_04.5b"),
+                Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "dm_03.5a"),
+                Load(RomLoadKind.Graphics64Byte, 0x100002, 0x0, 0x20000, "dm_12.10b"),
+                Load(RomLoadKind.Graphics64Byte, 0x100003, 0x0, 0x20000, "dm_11.10a"),
+                Load(RomLoadKind.Graphics64Byte, 0x100004, 0x0, 0x20000, "dm_20.7e"),
+                Load(RomLoadKind.Graphics64Byte, 0x100005, 0x0, 0x20000, "dm_19.7c"),
+                Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "dm_32.9h"),
+                Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "dm_31.9f"),
+                Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x10000, "dm_06.7b", "09.4a"),
+                Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x10000, "dm_05.7a", "18.7a"),
+                Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x10000, "dm_14.11b", "13.4e"),
+                Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x10000, "dm_13.11a", "22.7e"),
+                Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x10000, "dm_22.8e", "11.4c"),
+                Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x10000, "dm_21.8c", "20.7c"),
+                Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x10000, "dm_26.10e", "15.4g"),
+                Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x10000, "dm_25.10c", "24.7g"),
+                Load(RomLoadKind.Graphics64Byte, 0x280000, 0x0, 0x10000, "dm_08.8b", "10.4b"),
+                Load(RomLoadKind.Graphics64Byte, 0x280001, 0x0, 0x10000, "dm_07.8a", "19.7b"),
+                Load(RomLoadKind.Graphics64Byte, 0x280002, 0x0, 0x10000, "dm_16.12b", "14.4f"),
+                Load(RomLoadKind.Graphics64Byte, 0x280003, 0x0, 0x10000, "dm_15.12a", "23.7f"),
+                Load(RomLoadKind.Graphics64Byte, 0x280004, 0x0, 0x10000, "dm_24.9e", "12.4d"),
+                Load(RomLoadKind.Graphics64Byte, 0x280005, 0x0, 0x10000, "dm_23.9c", "21.7d"),
+                Load(RomLoadKind.Graphics64Byte, 0x280006, 0x0, 0x10000, "dm_28.11e", "16.4h"),
+                Load(RomLoadKind.Graphics64Byte, 0x280007, 0x0, 0x10000, "dm_27.11c", "25.7h"),
+            };
+
+        private static RomLoad[] DaimakairGraphicsLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "dam_01.3a"),
+                Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "dam_02.4a"),
+                Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "dam_03.5a"),
+                Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "dam_04.6a"),
+                Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "dam_05.7a"),
+                Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "dam_06.8a"),
+                Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "dam_07.9a"),
+                Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "dam_08.10a"),
+            };
+
+        private static RomLoad[] GhoulsAudioCpuLoads(params string[] names)
+            => new[]
+            {
+                Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, names),
+                Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, names),
+            };
+
+        private static RomLoad[] DaimakairAudioCpuLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "dam_09.12a"),
+                Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x18000, "dam_09.12a"),
+            };
+
         private static Dictionary<string, Cps1ClassicDefinition> BuildGeneratedClassicDefinitions()
         {
             var definitions = new Dictionary<string, Cps1ClassicDefinition>(StringComparer.OrdinalIgnoreCase);
@@ -2745,6 +3630,74 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "41_30.12c"),
                     Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "41_31.13c"),
                 });
+            definitions["ghouls"] = new Cps1ClassicDefinition(
+                "ghouls",
+                null,
+                Cps1VideoConfig.CpsB01,
+                0x300000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "dme_29.10h"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "dme_30.10j"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "dme_27.9h"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "dme_28.9j"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "dm-17.7j"),
+                },
+                CommonGhoulsGraphicsLoads(),
+                GhoulsAudioCpuLoads("26.10a", "dm_26.10a", "dm_37.13c"),
+                Array.Empty<RomLoad>());
+            definitions["ghoulsu"] = new Cps1ClassicDefinition(
+                "ghoulsu",
+                "ghouls",
+                Cps1VideoConfig.CpsB01,
+                0x300000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "dmu_29.10h"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "dmu_30.10j"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "dmu_27.9h"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "dmu_28.9j"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "dm-17.7j"),
+                },
+                CommonGhoulsGraphicsLoads(),
+                GhoulsAudioCpuLoads("26.10a", "dm_26.10a", "dm_37.13c"),
+                Array.Empty<RomLoad>());
+            definitions["daimakai"] = new Cps1ClassicDefinition(
+                "daimakai",
+                "ghouls",
+                Cps1VideoConfig.CpsB01,
+                0x300000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "dmj_38.12f"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "dmj_39.12h"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "dmj_40.13f"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "dmj_41.13h"),
+                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "dm_33.10f"),
+                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "dm_34.10h"),
+                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "dm_35.11f"),
+                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "dm_36.11h"),
+                },
+                DaimakaiGraphicsLoads(),
+                GhoulsAudioCpuLoads("37.13c", "dm_37.13c"),
+                Array.Empty<RomLoad>());
+            definitions["daimakair"] = new Cps1ClassicDefinition(
+                "daimakair",
+                "ghouls",
+                Cps1VideoConfig.Default,
+                0x400000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "damj_23.8f"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "damj_22.7f"),
+                },
+                DaimakairGraphicsLoads(),
+                DaimakairAudioCpuLoads(),
+                Array.Empty<RomLoad>());
             definitions["3wonders"] = new Cps1ClassicDefinition(
                 "3wonders",
                 null,
@@ -3243,7 +4196,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["chikij"] = new Cps1ClassicDefinition(
                 "chikij",
                 null,
-                new Cps1VideoConfig(0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c),
+                Cps1VideoConfig.CpsB14,
                 0x200000,
                 0x40000,
                 new[]
@@ -3294,43 +4247,43 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "q5_36.12f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "q5_42.12h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "q5_37.13f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "q5_43.13h"),
-                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "q5_34.10f"),
-                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "q5_40.10h"),
-                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "q5_35.11f"),
-                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "q5_41.11h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "q5_36.12f", "q536.bin"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "q5_42.12h", "q542.bin"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "q5_37.13f", "q537.bin"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "q5_43.13h", "q543.bin"),
+                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "q5_34.10f", "q534.bin"),
+                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "q5_40.10h", "q540.bin"),
+                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "q5_35.11f", "q535.bin"),
+                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "q5_41.11h", "q541.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Graphics64Byte, 0x0, 0x0, 0x20000, "q5_09.4b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x1, 0x0, 0x20000, "q5_01.4a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x2, 0x0, 0x20000, "q5_13.9b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x3, 0x0, 0x20000, "q5_05.9a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x4, 0x0, 0x20000, "q5_24.5e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x5, 0x0, 0x20000, "q5_17.5c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x6, 0x0, 0x20000, "q5_38.8h"),
-                    Load(RomLoadKind.Graphics64Byte, 0x7, 0x0, 0x20000, "q5_32.8f"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "q5_10.5b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "q5_02.5a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100002, 0x0, 0x20000, "q5_14.10b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100003, 0x0, 0x20000, "q5_06.10a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100004, 0x0, 0x20000, "q5_25.7e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100005, 0x0, 0x20000, "q5_18.7c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "q5_39.9h"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "q5_33.9f"),
+                    Load(RomLoadKind.Graphics64Byte, 0x0, 0x0, 0x20000, "q5_09.4b", "q509.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x1, 0x0, 0x20000, "q5_01.4a", "q501.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x2, 0x0, 0x20000, "q5_13.9b", "q513.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x3, 0x0, 0x20000, "q5_05.9a", "q505.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x4, 0x0, 0x20000, "q5_24.5e", "q524.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x5, 0x0, 0x20000, "q5_17.5c", "q517.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x6, 0x0, 0x20000, "q5_38.8h", "q538.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x7, 0x0, 0x20000, "q5_32.8f", "q532.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "q5_10.5b", "q510.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "q5_02.5a", "q502.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100002, 0x0, 0x20000, "q5_14.10b", "q514.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100003, 0x0, 0x20000, "q5_06.10a", "q506.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100004, 0x0, 0x20000, "q5_25.7e", "q525.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100005, 0x0, 0x20000, "q5_18.7c", "q518.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "q5_39.9h", "q539.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "q5_33.9f", "q533.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "q5_23.13b"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "q5_23.13b"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "q5_23.13b", "q523.bin"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "q5_23.13b", "q523.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "q5_30.12c"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "q5_31.13c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "q5_30.12c", "q530.bin"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "q5_31.13c", "q531.bin"),
                 });
             definitions["dinohunt"] = new Cps1ClassicDefinition(
                 "dinohunt",
@@ -3369,15 +4322,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["dynwar"] = new Cps1ClassicDefinition(
                 "dynwar",
                 null,
-                new Cps1VideoConfig(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22),
+                Cps1VideoConfig.CpsB02,
                 0x400000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "30.11f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "35.11h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "31.12f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "36.12h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "30.11f", "strider.30"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "35.11h", "strider.35"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "31.12f", "strider.31"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "36.12h", "strider.36"),
                     Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "tkm-9.8h"),
                 },
                 new[]
@@ -3404,69 +4357,69 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["dynwara"] = new Cps1ClassicDefinition(
                 "dynwara",
                 null,
-                new Cps1VideoConfig(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22),
+                Cps1VideoConfig.CpsB02,
                 0x400000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "tke_36.12f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "tke_42.12h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "tke_37.13f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "tke_43.13h"),
-                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "34.10f"),
-                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "40.10h"),
-                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "35.11f"),
-                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "41.11h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "tke_36.12f", "36"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "tke_42.12h", "42"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "tke_37.13f", "37"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "tke_43.13h", "43"),
+                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "34.10f", "34.bin"),
+                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "40.10h", "40.bin"),
+                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "35.11f", "35.bin"),
+                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "41.11h", "41.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Graphics64Byte, 0x0, 0x0, 0x20000, "09.4b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x1, 0x0, 0x20000, "01.4a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x2, 0x0, 0x20000, "13.9b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x3, 0x0, 0x20000, "05.9a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x4, 0x0, 0x20000, "24.5e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x5, 0x0, 0x20000, "17.5c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x6, 0x0, 0x20000, "38.8h"),
-                    Load(RomLoadKind.Graphics64Byte, 0x7, 0x0, 0x20000, "32.8f"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "10.5b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "02.5a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100002, 0x0, 0x20000, "14.10b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100003, 0x0, 0x20000, "06.10a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100004, 0x0, 0x20000, "25.7e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100005, 0x0, 0x20000, "18.7c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "39.9h"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "33.9f"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x20000, "11.7b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x20000, "03.7a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x20000, "15.11b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x20000, "07.11a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x20000, "26.8e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x20000, "19.8c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x20000, "28.10e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x20000, "21.10c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300000, 0x0, 0x20000, "12.8b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300001, 0x0, 0x20000, "04.8a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300002, 0x0, 0x20000, "16.12b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300003, 0x0, 0x20000, "08.12a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300004, 0x0, 0x20000, "27.9e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300005, 0x0, 0x20000, "20.9c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300006, 0x0, 0x20000, "29.11e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300007, 0x0, 0x20000, "22.11c"),
+                    Load(RomLoadKind.Graphics64Byte, 0x0, 0x0, 0x20000, "09.4b", "09.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x1, 0x0, 0x20000, "01.4a", "01.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x2, 0x0, 0x20000, "13.9b", "13.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x3, 0x0, 0x20000, "05.9a", "05.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x4, 0x0, 0x20000, "24.5e", "24.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x5, 0x0, 0x20000, "17.5c", "17.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x6, 0x0, 0x20000, "38.8h", "38.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x7, 0x0, 0x20000, "32.8f", "32.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "10.5b", "10.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "02.5a", "02.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100002, 0x0, 0x20000, "14.10b", "14"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100003, 0x0, 0x20000, "06.10a", "06.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100004, 0x0, 0x20000, "25.7e", "25.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100005, 0x0, 0x20000, "18.7c", "18.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "39.9h", "39.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "33.9f", "33.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x20000, "11.7b", "11.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x20000, "03.7a", "03.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x20000, "15.11b", "15.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x20000, "07.11a", "07.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x20000, "26.8e", "26.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x20000, "19.8c", "19.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x20000, "28.10e", "28.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x20000, "21.10c", "21.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300000, 0x0, 0x20000, "12.8b", "12.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300001, 0x0, 0x20000, "04.8a", "04.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300002, 0x0, 0x20000, "16.12b", "16.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300003, 0x0, 0x20000, "08.12a", "08.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300004, 0x0, 0x20000, "27.9e", "27.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300005, 0x0, 0x20000, "20.9c", "20.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300006, 0x0, 0x20000, "29.11e", "29.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300007, 0x0, 0x20000, "22.11c", "22.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "23.13c"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "23.13c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "23.13c", "23.bin"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "23.13c", "23.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "tke_30.12e"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "tke_31.13e"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "tke_30.12e", "30"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "tke_31.13e", "31"),
                 });
             definitions["dynwarj"] = new Cps1ClassicDefinition(
                 "dynwarj",
                 null,
-                new Cps1VideoConfig(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22),
+                Cps1VideoConfig.CpsB02,
                 0x400000,
                 0x40000,
                 new[]
@@ -3595,11 +4548,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "lw40.12f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "lw41.12h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "lw42.13f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "lw43.13h"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "lw-07.10g"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "lw40.12f", "lw11c.12f", "lw_11.12f", "lwu_11a.14f"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "lw41.12h", "lw15c.12h", "lw_15.12h", "lwu_15a.14g"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "lw42.13f", "lw10c.13f", "lw_10.13f", "lwu_10a.13f"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "lw43.13h", "lw14c.13h", "lw_14.13h", "lwu_14a.13g"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "lw-07.10g", "lw-07.13e"),
                 },
                 new[]
                 {
@@ -3629,8 +4582,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "lw_37.13c"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "lw_37.13c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "lw_37.13c", "lw_00.13c", "lwu_00.14a"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "lw_37.13c", "lw_00.13c", "lwu_00.14a"),
                 },
                 new[]
                 {
@@ -4233,7 +5186,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["mtwins"] = new Cps1ClassicDefinition(
                 "mtwins",
                 null,
-                new Cps1VideoConfig(0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c),
+                Cps1VideoConfig.CpsB14,
                 0x200000,
                 0x40000,
                 new[]
@@ -4264,7 +5217,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["nemo"] = new Cps1ClassicDefinition(
                 "nemo",
                 null,
-                new Cps1VideoConfig(0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c),
+                Cps1VideoConfig.CpsB15,
                 0x200000,
                 0x40000,
                 new[]
@@ -4295,7 +5248,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             definitions["nemoj"] = new Cps1ClassicDefinition(
                 "nemoj",
                 null,
-                new Cps1VideoConfig(0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c),
+                Cps1VideoConfig.CpsB15,
                 0x200000,
                 0x40000,
                 new[]
@@ -5999,10 +6952,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "30.11f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "35.11h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "31.12f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "36.12h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "30.11f", "strider.30"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "35.11h", "strider.35"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "31.12f", "strider.31"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "36.12h", "strider.36"),
                     Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "st-14.8h"),
                 },
                 new[]
@@ -6018,13 +6971,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "09.12b"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "09.12b"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "09.12b", "strider.09"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "09.12b", "strider.09"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "18.11c"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "19.12c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "18.11c", "strider.18"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "19.12c", "strider.19"),
                 });
             definitions["striderj"] = new Cps1ClassicDefinition(
                 "striderj",
@@ -6034,59 +6987,59 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "sth_36.12f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "sth_42.12h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "sth_37.13f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "sth_43.13h"),
-                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "sth_34.10f"),
-                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "sth_40.10h"),
-                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "sth_35.11f"),
-                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "sth_41.11h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "sth_36.12f", "sth36.bin"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "sth_42.12h", "sth42.bin"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "sth_37.13f", "sth37.bin"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "sth_43.13h", "sth43.bin"),
+                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "sth_34.10f", "sth34.bin"),
+                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "sth_40.10h", "sth40.bin"),
+                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "sth_35.11f", "sth35.bin"),
+                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "sth_41.11h", "sth41.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Graphics64Byte, 0x0, 0x0, 0x20000, "sth_09.4b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x1, 0x0, 0x20000, "sth_01.4a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x2, 0x0, 0x20000, "sth_13.9b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x3, 0x0, 0x20000, "sth_05.9a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x4, 0x0, 0x20000, "sth_24.5e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x5, 0x0, 0x20000, "sth_17.5c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x6, 0x0, 0x20000, "sth_38.8h"),
-                    Load(RomLoadKind.Graphics64Byte, 0x7, 0x0, 0x20000, "sth_32.8f"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "sth_10.5b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "sth_02.5a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100002, 0x0, 0x20000, "sth_14.10b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100003, 0x0, 0x20000, "sth_06.10a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100004, 0x0, 0x20000, "sth_25.7e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100005, 0x0, 0x20000, "sth_18.7c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "sth_39.9h"),
-                    Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "sth_33.9f"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x20000, "sth_11.7b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x20000, "sth_03.7a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x20000, "sth_15.11b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x20000, "sth_07.11a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x20000, "sth_26.8e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x20000, "sth_19.8c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x20000, "sth_28.10e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x20000, "sth_21.10c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300000, 0x0, 0x20000, "sth_12.8b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300001, 0x0, 0x20000, "sth_04.8a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300002, 0x0, 0x20000, "sth_16.12b"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300003, 0x0, 0x20000, "sth_08.12a"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300004, 0x0, 0x20000, "sth_27.9e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300005, 0x0, 0x20000, "sth_20.9c"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300006, 0x0, 0x20000, "sth_29.11e"),
-                    Load(RomLoadKind.Graphics64Byte, 0x300007, 0x0, 0x20000, "sth_22.11c"),
+                    Load(RomLoadKind.Graphics64Byte, 0x0, 0x0, 0x20000, "sth_09.4b", "sth09.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x1, 0x0, 0x20000, "sth_01.4a", "sth01.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x2, 0x0, 0x20000, "sth_13.9b", "sth13.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x3, 0x0, 0x20000, "sth_05.9a", "sth05.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x4, 0x0, 0x20000, "sth_24.5e", "sth24.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x5, 0x0, 0x20000, "sth_17.5c", "sth17.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x6, 0x0, 0x20000, "sth_38.8h", "sth38.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x7, 0x0, 0x20000, "sth_32.8f", "sth32.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100000, 0x0, 0x20000, "sth_10.5b", "sth10.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100001, 0x0, 0x20000, "sth_02.5a", "sth02.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100002, 0x0, 0x20000, "sth_14.10b", "sth14.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100003, 0x0, 0x20000, "sth_06.10a", "sth06.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100004, 0x0, 0x20000, "sth_25.7e", "sth25.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100005, 0x0, 0x20000, "sth_18.7c", "sth18.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100006, 0x0, 0x20000, "sth_39.9h", "sth39.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x100007, 0x0, 0x20000, "sth_33.9f", "sth33.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200000, 0x0, 0x20000, "sth_11.7b", "sth11.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200001, 0x0, 0x20000, "sth_03.7a", "sth03.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200002, 0x0, 0x20000, "sth_15.11b", "sth15.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200003, 0x0, 0x20000, "sth_07.11a", "sth07.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200004, 0x0, 0x20000, "sth_26.8e", "sth26.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200005, 0x0, 0x20000, "sth_19.8c", "sth19.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200006, 0x0, 0x20000, "sth_28.10e", "sth28.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200007, 0x0, 0x20000, "sth_21.10c", "sth21.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300000, 0x0, 0x20000, "sth_12.8b", "sth12.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300001, 0x0, 0x20000, "sth_04.8a", "sth04.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300002, 0x0, 0x20000, "sth_16.12b", "sth16.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300003, 0x0, 0x20000, "sth_08.12a", "sth08.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300004, 0x0, 0x20000, "sth_27.9e", "sth27.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300005, 0x0, 0x20000, "sth_20.9c", "sth20.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300006, 0x0, 0x20000, "sth_29.11e", "sth29.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x300007, 0x0, 0x20000, "sth_22.11c", "sth22.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "sth_23.13c"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "sth_23.13c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "sth_23.13c", "sth23.bin"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "sth_23.13c", "sth23.bin"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "sth_30.12e"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "sth_31.13e"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "sth_30.12e", "sth30.bin"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "sth_31.13e", "sth31.bin"),
                 });
             definitions["striderjr"] = new Cps1ClassicDefinition(
                 "striderjr",
@@ -6096,29 +7049,29 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "sthj_23.8f"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "sthj_22.7f"),
+                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "sthj_23.8f", "sthj23.bin"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "sthj_22.7f", "st-14.8h"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "sth_01.3a"),
-                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "sth_02.4a"),
-                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "sth_03.5a"),
-                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "sth_04.6a"),
-                    Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "sth_05.7a"),
-                    Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "sth_06.8a"),
-                    Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "sth_07.9a"),
-                    Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "sth_08.10a"),
+                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "sth_01.3a", "st-2.8a"),
+                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "sth_02.4a", "st-11.10a"),
+                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "sth_03.5a", "st-5.4a"),
+                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "sth_04.6a", "st-9.6a"),
+                    Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "sth_05.7a", "st-1.7a"),
+                    Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "sth_06.8a", "st-10.9a"),
+                    Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "sth_07.9a", "st-4.3a"),
+                    Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "sth_08.10a", "st-8.5a"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "sth_09.12a"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "sth_09.12a"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "sth_09.12a", "09.12b", "strider.09"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "sth_09.12a", "09.12b", "strider.09"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "sth_18.11c"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "sth_19.12c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "sth_18.11c", "18.11c", "strider.18"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "sth_19.12c", "19.12c", "strider.19"),
                 });
             definitions["striderua"] = new Cps1ClassicDefinition(
                 "striderua",
@@ -6128,10 +7081,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "30.11f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "35.11h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "31.12f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "36.12h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "30.11f", "strider.30", "strid.30"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "35.11h", "strider.35", "strid.35"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "31.12f", "strider.31", "strid.31"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "36.12h", "strider.36", "strid.36"),
                     Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "st-14.8h"),
                 },
                 new[]
@@ -6147,13 +7100,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "09.12b"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "09.12b"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "09.12b", "strider.09", "strid.09"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "09.12b", "strider.09", "strid.09"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "18.11c"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "19.12c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "18.11c", "strider.18"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "19.12c", "strider.19"),
                 });
             definitions["unsquad"] = new Cps1ClassicDefinition(
                 "unsquad",
@@ -9573,6 +10526,35 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                 Audio("cd_q.5k", "cd_q.rom"),
                 QSoundBanks("cd-q1.1k|cd_q1.rom", "cd-q2.2k|cd_q2.rom", "cd-q3.3k|cd_q3.rom", "cd-q4.4k|cd_q4.rom"));
 
+        private static Cps1QSoundDefinition DinoHackDefinition()
+            => new(
+                "dinoh",
+                "dino",
+                Cps1VideoConfig.Default,
+                DinoKabuki,
+                0x40_0000,
+                0x20_0000,
+                new[]
+                {
+                    Word(0x000000, "cda_23h.rom"),
+                    Word(0x080000, "cda_22h.rom"),
+                    Word(0x100000, "cda_21h.rom"),
+                    Word(0x180000, "cda_20h.rom")
+                },
+                new[]
+                {
+                    Gfx(0x000000, "cd-1m.3a", "cd_gfx01.rom"),
+                    Gfx(0x000002, "cd-3m.5a", "cd_gfx03.rom"),
+                    Gfx(0x000004, "cd-2m.4a", "cd_gfx02.rom"),
+                    Gfx(0x000006, "cd-4m.6a", "cd_gfx04.rom"),
+                    Gfx(0x200000, "cd-5m.7a", "cd_gfx05.rom"),
+                    Gfx(0x200002, "cd-7m.9a", "cd_gfx07.rom"),
+                    Gfx(0x200004, "cd-6m.8a", "cd_gfx06.rom"),
+                    Gfx(0x200006, "cd-8m.10a", "cd_gfx08.rom")
+                },
+                Audio("cd_q.5k", "cd_q.rom"),
+                QSoundBanks("cd-q1.1k|cd_q1.rom", "cd-q2.2k|cd_q2.rom", "cd-q3.3k|cd_q3.rom", "cd-q4.4k|cd_q4.rom"));
+
         private static Cps1QSoundDefinition PunisherDefinition(string setName, string? parentSetName)
             => new(
                 setName,
@@ -9717,7 +10699,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             => new(
                 setName,
                 parentSetName,
-                Cps1VideoConfig.Default,
+                Cps1VideoConfig.CpsB04,
                 0x20_0000,
                 0x40_000,
                 new[]
@@ -9746,7 +10728,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             => new(
                 setName,
                 parentSetName,
-                Cps1VideoConfig.Default,
+                Cps1VideoConfig.CpsB04,
                 0x20_0000,
                 0x40_000,
                 new[]
