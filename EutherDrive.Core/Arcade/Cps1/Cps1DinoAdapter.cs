@@ -3071,12 +3071,6 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
 
         private static void ApplyClassicProgramPatches(string setName, byte[] program)
         {
-            if (string.Equals(setName, "ghouls", StringComparison.OrdinalIgnoreCase))
-            {
-                PatchWord(program, 0x61964, 0x4ef9);
-                PatchWord(program, 0x61966, 0x0000);
-                PatchWord(program, 0x61968, 0x0400);
-            }
         }
 
         private static void PatchWord(byte[] destination, int offset, ushort value)
@@ -3642,7 +3636,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "dme_30.10j"),
                     Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "dme_27.9h"),
                     Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "dme_28.9j"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "dm-17.7j"),
+                    Load(RomLoadKind.Raw, 0x80000, 0x0, 0x80000, "dm-17.7j"),
                 },
                 CommonGhoulsGraphicsLoads(),
                 GhoulsAudioCpuLoads("26.10a", "dm_26.10a", "dm_37.13c"),
@@ -3659,7 +3653,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
                     Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "dmu_30.10j"),
                     Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "dmu_27.9h"),
                     Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "dmu_28.9j"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "dm-17.7j"),
+                    Load(RomLoadKind.Raw, 0x80000, 0x0, 0x80000, "dm-17.7j"),
                 },
                 CommonGhoulsGraphicsLoads(),
                 GhoulsAudioCpuLoads("26.10a", "dm_26.10a", "dm_37.13c"),
