@@ -25,6 +25,7 @@ using EutherDrive.Core.Sega32X;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
+using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.Cps2;
 using EutherDrive.Core.Arcade.System32;
 using EutherDrive.Audio;
@@ -349,6 +350,9 @@ class Program
             bool useCps2 = string.Equals(coreOverride, "cps2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-cps2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Cps2DdsomAdapter.IsSupportedArchive(romPath));
+            bool useCps1 = string.Equals(coreOverride, "cps1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
             bool useSystem32 = string.Equals(coreOverride, "system32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "s32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "sega-system32", StringComparison.OrdinalIgnoreCase)
@@ -365,8 +369,15 @@ class Program
                 useN64 = false;
                 useSegaCd = false;
                 usePce = false;
+                useCps1 = false;
                 useCps2 = false;
                 useSystem32 = false;
+            }
+
+            if (useCps1)
+            {
+                Console.WriteLine("[HEADLESS] Using CPS1 core");
+                return RunCps1Headless(romPath, framesToRun, dumpDir, statePayload: null);
             }
 
             if (useCps2)
@@ -1909,6 +1920,69 @@ class Program
         }
     }
 
+    private static int RunCps1Headless(string romPath, int framesToRun, string dumpDir, byte[]? statePayload)
+    {
+        var cps1 = new Cps1DinoAdapter();
+        cps1.LoadRom(romPath);
+
+        if (statePayload != null)
+        {
+            using var stateStream = new MemoryStream(statePayload, writable: false);
+            using var stateReader = new BinaryReader(stateStream);
+            cps1.LoadState(stateReader);
+        }
+
+        bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+        ReadOnlySpan<byte> fbIn = cps1.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+        var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+        ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+        int unchangedFrames = 0;
+
+        Console.WriteLine($"[HEADLESS] CPS1 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+        DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+        for (int frame = 0; frame < framesToRun; frame++)
+        {
+            cps1.SetInputState(
+                up: false,
+                down: false,
+                left: false,
+                right: false,
+                a: false,
+                b: false,
+                c: false,
+                start: false,
+                x: false,
+                y: false,
+                z: false,
+                mode: false,
+                padType: PadType.SixButton);
+            cps1.RunFrame();
+
+            ReadOnlySpan<byte> fb = cps1.GetFrameBuffer(out int w, out int h, out int s);
+            var stats = GetFrameStats(fb, w, h, s);
+            ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+            unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+            lastFingerprint = fingerprint;
+
+            if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+            {
+                Console.WriteLine($"[HEADLESS] Frame {frame}: cps1_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={cps1.FrameCounter ?? -1}");
+            }
+
+            if (frame == 0 || frame == 5 || frame == 10)
+                DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+        }
+
+        ReadOnlySpan<byte> fbOut = cps1.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+        var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+        ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+        Console.WriteLine($"[HEADLESS] CPS1 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+        DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+        Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+        return 0;
+    }
+
     private static bool IsSnesRomPath(string path)
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
@@ -2149,6 +2223,51 @@ class Program
             || string.Equals(coreOverride, "sega-cd", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "mega-cd", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && IsSegaCdRomPath(romPath));
+        bool useCps1 = string.Equals(coreOverride, "cps1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
+
+        if (useCps1)
+        {
+            var cps1 = new Cps1DinoAdapter();
+            cps1.LoadRom(romPath);
+
+            for (int i = 0; i < 10; i++)
+                cps1.RunFrame();
+
+            byte[] snapshotCps1;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                cps1.SaveState(writer);
+                writer.Flush();
+                snapshotCps1 = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotCps1))
+            using (var reader = new BinaryReader(ms))
+            {
+                cps1.LoadState(reader);
+            }
+
+            byte[] snapshotAfterCps1;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                cps1.SaveState(writer);
+                writer.Flush();
+                snapshotAfterCps1 = ms.ToArray();
+            }
+
+            if (!snapshotCps1.SequenceEqual(snapshotAfterCps1))
+            {
+                Console.Error.WriteLine("[HEADLESS] CPS1 savestate roundtrip failed: payload mismatch.");
+                return 1;
+            }
+
+            Console.WriteLine("[HEADLESS] CPS1 savestate roundtrip ok.");
+            return 0;
+        }
 
         if (use32X)
         {
@@ -2419,6 +2538,26 @@ class Program
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+            bool useCps1 = string.Equals(coreOverride, "cps1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
+
+            if (useCps1)
+            {
+                var cps1 = new Cps1DinoAdapter();
+                cps1.LoadRom(romPath);
+
+                int? slotOverrideCps1 = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadCps1 = TryLoadSavestatePayload(savestatePath, cps1.RomIdentity, slotOverrideCps1, out var cps1Error);
+                if (payloadCps1 == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {cps1Error}");
+                    return 1;
+                }
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (CPS1)");
+                return RunCps1Headless(romPath, framesToRun, dumpDir, payloadCps1);
+            }
 
             if (useGb)
             {

@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core.Arcade.Cps1;
 
@@ -36,6 +38,7 @@ internal sealed class Cps1Oki6295
         new()
     };
 
+    [NonSerialized]
     private byte[] _rom = Array.Empty<byte>();
     private int _pendingCommand = -1;
     private bool _pin7High = true;
@@ -57,6 +60,18 @@ internal sealed class Cps1Oki6295
         _nextSourceSample = 0;
         foreach (OkiVoice voice in _voices)
             voice.Reset();
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
     }
 
     public void SetPin7(bool high)

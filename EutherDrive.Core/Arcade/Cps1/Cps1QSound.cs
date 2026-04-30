@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core.Arcade.Cps1;
 
@@ -27,7 +29,9 @@ internal sealed class Cps1QSound
     private const int DelayBaseOffset = 0x554;
     private const int DelayBaseOffset2 = 0x53c;
 
+    [NonSerialized]
     private readonly ushort[] _dspRom = new ushort[0x1000];
+    [NonSerialized]
     private byte[] _sampleRom = Array.Empty<byte>();
 
     private readonly Voice[] _voices = CreateArray(16, static () => new Voice());
@@ -106,6 +110,18 @@ internal sealed class Cps1QSound
         _outputLowPassRightA.Reset();
         _outputLowPassRightB.Reset();
         _resamplePrimed = false;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
     }
 
     public void Write(int offset, byte data)

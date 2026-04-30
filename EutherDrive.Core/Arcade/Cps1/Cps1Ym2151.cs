@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core.Arcade.Cps1;
 
@@ -239,6 +241,18 @@ internal sealed class Cps1Ym2151
             op.Reset();
         foreach (YmChannel channel in _channels)
             channel.Reset();
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
     }
 
     public byte ReadStatus()
@@ -640,8 +654,10 @@ internal sealed class Cps1Ym2151
 
     private sealed class YmChannel
     {
+        [NonSerialized]
         private readonly Cps1Ym2151 _chip;
         private readonly int _index;
+        [NonSerialized]
         private readonly YmOperator[] _ops = new YmOperator[4];
         private readonly int[] _opout = new int[8];
         private short _feedback0;
@@ -771,6 +787,7 @@ internal sealed class Cps1Ym2151
 
     private sealed class YmOperator
     {
+        [NonSerialized]
         private readonly Cps1Ym2151 _chip;
         private readonly int _offset;
         private EnvelopeState _state;

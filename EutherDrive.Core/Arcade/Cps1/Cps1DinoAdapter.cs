@@ -5,14 +5,17 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using EutherDrive.Core.Cpu.M68000Emu;
+using EutherDrive.Core.Savestates;
 using SharpCompress.Archives;
 
 namespace EutherDrive.Core.Arcade.Cps1;
 
 // CPS1 hardware notes and register constants are translated from MAME's
 // BSD-3-Clause Capcom CPS1 driver by Paul Leaman.
-public sealed class Cps1DinoAdapter : IEmulatorCore
+public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 {
+    private const int SavestateVersion = 1;
+    private const string SavestateMagic = "CPS1DINO";
     private const int OutputSampleRate = 44_100;
     private const int OutputChannels = 2;
     private const double TargetFps = (16_000_000.0 / 2.0) / (512.0 * 262.0);
@@ -37,6 +40,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     private int _audioCpuCyclesPerFrame = GetQSoundAudioCpuCyclesPerFrame();
     private ArcadeInputState _input;
     private bool _loaded;
+    private long _frameCounter;
+    private RomIdentity? _romIdentity;
 
     public Cps1DinoAdapter()
     {
@@ -52,12 +57,19 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         return Cps1DinoRomSet.IsSupportedSet(name);
     }
 
+    public RomIdentity? RomIdentity => _romIdentity;
+    public long? FrameCounter => _loaded ? _frameCounter : null;
+
     public void LoadRom(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("CPS1 ROM path is empty.", nameof(path));
         if (!File.Exists(path))
             throw new FileNotFoundException("CPS1 ROM archive not found.", path);
+
+        byte[] romHash;
+        using (FileStream stream = File.OpenRead(path))
+            romHash = RomIdentity.ComputeSha256(stream);
 
         Cps1DinoRomSet roms = Cps1DinoRomSet.Load(path);
         _bus.Load(roms);
@@ -71,6 +83,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         _audioBuffer = Array.Empty<short>();
         _audioSampleFramesThisFrame = 0;
         _audioSampleAccumulator = 0;
+        _frameCounter = 0;
+        _romIdentity = new RomIdentity(
+            Path.GetFileName(path),
+            romHash,
+            PersistentStoragePath.ResolveSavestateDirectory(path, "cps1"));
     }
 
     public void Reset()
@@ -83,6 +100,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         _audioCpu.ApplyResetLine();
         _audioSampleFramesThisFrame = 0;
         _audioSampleAccumulator = 0;
+        _frameCounter = 0;
     }
 
     public void RunFrame()
@@ -119,6 +137,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
         _bus.EndAudioFrame();
         _video!.Render(_frameBuffer);
         _bus.LatchSprites();
+        _frameCounter++;
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -155,6 +174,76 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
     }
 
     private int AudioCpuCyclesPerFrame => _audioCpuCyclesPerFrame;
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        if (!_loaded || _video is null)
+            throw new InvalidOperationException("CPS1 core not initialized.");
+
+        writer.Write(SavestateMagic);
+        writer.Write(SavestateVersion);
+        writer.Write(_frameCounter);
+        writer.Write(_audioSampleAccumulator);
+        writer.Write(_audioCpuCyclesPerFrame);
+        WriteInputState(writer, _input);
+        StateBinarySerializer.WriteInto(writer, _mainCpu);
+        StateBinarySerializer.WriteInto(writer, _audioCpu);
+        _bus.SaveState(writer);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        if (!_loaded || _video is null)
+            throw new InvalidOperationException("CPS1 core not initialized.");
+
+        string magic = reader.ReadString();
+        if (!string.Equals(magic, SavestateMagic, StringComparison.Ordinal))
+            throw new InvalidDataException("CPS1 savestate magic mismatch.");
+
+        int version = reader.ReadInt32();
+        if (version != SavestateVersion)
+            throw new InvalidDataException($"Unsupported CPS1 savestate version: {version}.");
+
+        _frameCounter = reader.ReadInt64();
+        _audioSampleAccumulator = reader.ReadDouble();
+        _audioCpuCyclesPerFrame = reader.ReadInt32();
+        _input = ReadInputState(reader);
+        StateBinarySerializer.ReadInto(reader, _mainCpu);
+        StateBinarySerializer.ReadInto(reader, _audioCpu);
+        _bus.LoadState(reader);
+
+        _audioBuffer = Array.Empty<short>();
+        _audioSampleFramesThisFrame = 0;
+        Array.Clear(_frameBuffer);
+        _video.Render(_frameBuffer);
+    }
+
+    private static void WriteInputState(BinaryWriter writer, ArcadeInputState input)
+    {
+        writer.Write(input.Up);
+        writer.Write(input.Down);
+        writer.Write(input.Left);
+        writer.Write(input.Right);
+        writer.Write(input.Button1);
+        writer.Write(input.Button2);
+        writer.Write(input.Button3);
+        writer.Write(input.Start);
+        writer.Write(input.Coin);
+    }
+
+    private static ArcadeInputState ReadInputState(BinaryReader reader)
+        => new(
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean());
 
     private static int GetQSoundAudioCpuCyclesPerFrame()
     {
@@ -347,6 +436,73 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             ResetVideoRegisters();
             ResetAudioState();
             _interruptLevel = 0;
+        }
+
+        public void SaveState(BinaryWriter writer)
+        {
+            ArgumentNullException.ThrowIfNull(writer);
+
+            writer.Write(1);
+            WriteByteArray(writer, _mainRam);
+            WriteByteArray(writer, _classicAudioRam);
+            WriteByteArray(writer, _qsoundShared0);
+            WriteByteArray(writer, _qsoundShared1);
+            WriteUshortArray(writer, _gfxRam);
+            WriteUshortArray(writer, _paletteRam);
+            WriteUshortArray(writer, _bufferedObj);
+            WriteUshortArray(writer, _cpsA);
+            WriteUshortArray(writer, _cpsB);
+            WriteInputState(writer, _input);
+            writer.Write(_soundLatch0);
+            writer.Write(_soundLatch1);
+            writer.Write(_interruptLevel);
+            writer.Write(_audioBank);
+            writer.Write(_audioIrqCountdown);
+            writer.Write(_audioIrqAsserted);
+            writer.Write(_audioCpuCyclesPerFrame);
+            writer.Write(_audioCpuClockHz);
+            StateBinarySerializer.WriteInto(writer, _eeprom);
+            _qsound.SaveState(writer);
+            _oki.SaveState(writer);
+            _ym2151.SaveState(writer);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            ArgumentNullException.ThrowIfNull(reader);
+
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new InvalidDataException($"Unsupported CPS1 bus savestate version: {version}.");
+
+            ReadByteArray(reader, _mainRam);
+            ReadByteArray(reader, _classicAudioRam);
+            ReadByteArray(reader, _qsoundShared0);
+            ReadByteArray(reader, _qsoundShared1);
+            ReadUshortArray(reader, _gfxRam);
+            ReadUshortArray(reader, _paletteRam);
+            ReadUshortArray(reader, _bufferedObj);
+            ReadUshortArray(reader, _cpsA);
+            ReadUshortArray(reader, _cpsB);
+            _input = ReadInputState(reader);
+            _soundLatch0 = reader.ReadByte();
+            _soundLatch1 = reader.ReadByte();
+            _interruptLevel = reader.ReadByte();
+            _audioBank = reader.ReadInt32();
+            _audioIrqCountdown = reader.ReadInt32();
+            _audioIrqAsserted = reader.ReadBoolean();
+            _audioCpuCyclesPerFrame = reader.ReadInt32();
+            _audioCpuClockHz = reader.ReadDouble();
+            StateBinarySerializer.ReadInto(reader, _eeprom);
+            _qsound.LoadState(reader);
+            _oki.LoadState(reader);
+            _ym2151.LoadState(reader);
+
+            _audioFrameBuffer = null;
+            _audioFrameCycles = 0;
+            _qsoundFrameSampleIndex = 0;
+            _okiFrameSampleIndex = 0;
+            _ymFrameSampleIndex = 0;
         }
 
         public void BeginAudioFrame(short[] destination)
@@ -967,6 +1123,45 @@ public sealed class Cps1DinoAdapter : IEmulatorCore
             word = (address & 1) == 0
                 ? (ushort)((word & 0x00ff) | (value << 8))
                 : (ushort)((word & 0xff00) | value);
+        }
+
+        private static void WriteByteArray(BinaryWriter writer, byte[] data)
+        {
+            writer.Write(data.Length);
+            writer.Write(data);
+        }
+
+        private static void ReadByteArray(BinaryReader reader, byte[] destination)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"CPS1 byte array length mismatch: state={length} core={destination.Length}.");
+
+            int totalRead = 0;
+            while (totalRead < destination.Length)
+            {
+                int read = reader.Read(destination, totalRead, destination.Length - totalRead);
+                if (read == 0)
+                    throw new EndOfStreamException("Unexpected end of CPS1 byte array.");
+                totalRead += read;
+            }
+        }
+
+        private static void WriteUshortArray(BinaryWriter writer, ushort[] data)
+        {
+            writer.Write(data.Length);
+            for (int i = 0; i < data.Length; i++)
+                writer.Write(data[i]);
+        }
+
+        private static void ReadUshortArray(BinaryReader reader, ushort[] destination)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"CPS1 ushort array length mismatch: state={length} core={destination.Length}.");
+
+            for (int i = 0; i < destination.Length; i++)
+                destination[i] = reader.ReadUInt16();
         }
     }
 

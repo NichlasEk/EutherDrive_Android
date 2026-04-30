@@ -433,6 +433,17 @@ internal static class StateBinarySerializer
 
         int[] strides = BuildStrides(lengths);
         int[] indices = new int[rank];
+
+        if (!elementType.IsValueType && elementType != typeof(string) && !elementType.IsArray)
+        {
+            for (int i = 0; i < total; i++)
+            {
+                ToIndices(i, strides, indices);
+                ReadReferenceArrayElementInto(reader, buffer, elementType, indices);
+            }
+            return;
+        }
+
         for (int i = 0; i < total; i++)
         {
             object? value = ReadValue(reader, elementType);
@@ -445,6 +456,27 @@ internal static class StateBinarySerializer
             Console.WriteLine($"[DEBUG-StateBinarySerializer] ReadArrayInto failed: field={field?.Name} type={elementType?.Name} error={ex.Message}");
             throw;
         }
+    }
+
+    private static void ReadReferenceArrayElementInto(BinaryReader reader, Array buffer, Type elementType, int[] indices)
+    {
+        bool hasObject = reader.ReadBoolean();
+        if (!hasObject)
+        {
+            buffer.SetValue(null, indices);
+            return;
+        }
+
+        object? current = buffer.GetValue(indices);
+        if (current != null)
+        {
+            ReadInto(reader, current);
+            return;
+        }
+
+        object created = CreateInstanceForRead(elementType);
+        ReadInto(reader, created);
+        buffer.SetValue(created, indices);
     }
 
     private static int? DetectLegacy1DArrayLength(BinaryReader reader, FieldInfo field, Type elementType, int rankOrLength, Array? existing)
