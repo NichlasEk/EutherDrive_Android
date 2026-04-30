@@ -1938,6 +1938,7 @@ class Program
         }
 
         bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+        bool traceCps1Perf = Environment.GetEnvironmentVariable("EUTHERDRIVE_CPS1_PERF") == "1";
         ReadOnlySpan<byte> fbIn = cps1.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
         var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
         ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
@@ -1981,6 +1982,8 @@ class Program
             if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
             {
                 Console.WriteLine($"[HEADLESS] Frame {frame}: cps1_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={cps1.FrameCounter ?? -1}");
+                if (traceCps1Perf && cps1.TryGetFramePerfSummary(out string cps1PerfSummary))
+                    Console.WriteLine($"[HEADLESS][CPS1-INTERNAL] frame={frame} {cps1PerfSummary}");
             }
 
             if (frame == 0 || frame == 5 || frame == 10)

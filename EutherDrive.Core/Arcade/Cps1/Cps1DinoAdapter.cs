@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.Savestates;
 using SharpCompress.Archives;
@@ -23,6 +25,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
     private const int CpuCyclesPerFrame = 201_216;
+    private static readonly bool TraceCps1Perf =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CPS1_PERF"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceCps1PerfDetailed =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CPS1_PERF_DETAILED"), "1", StringComparison.Ordinal);
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly Cps1Bus _bus = new();
@@ -42,6 +48,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
     private bool _loaded;
     private long _frameCounter;
     private RomIdentity? _romIdentity;
+    private string? _lastPerfSummary;
 
     public Cps1DinoAdapter()
     {
@@ -59,6 +66,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _loaded ? _frameCounter : null;
+
+    public bool TryGetFramePerfSummary(out string summary)
+    {
+        summary = _lastPerfSummary ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(summary);
+    }
 
     public void LoadRom(string path)
     {
@@ -108,6 +121,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         if (!_loaded)
             return;
 
+        if (TraceCps1Perf)
+        {
+            RunFrameProfiled();
+            return;
+        }
+
         _bus.SetInput(_input);
         _audioSampleFramesThisFrame = GetAudioSampleFramesPerFrame();
         EnsureAudioBuffer(_audioSampleFramesThisFrame * OutputChannels);
@@ -138,6 +157,139 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         _video!.Render(_frameBuffer);
         _bus.LatchSprites();
         _frameCounter++;
+    }
+
+    private void RunFrameProfiled()
+    {
+        long totalStart = Stopwatch.GetTimestamp();
+
+        long setupStart = Stopwatch.GetTimestamp();
+        _bus.SetInput(_input);
+        _audioSampleFramesThisFrame = GetAudioSampleFramesPerFrame();
+        EnsureAudioBuffer(_audioSampleFramesThisFrame * OutputChannels);
+        _bus.BeginAudioFrame(_audioBuffer);
+        _bus.AssertVBlankInterrupt();
+        long setupTicks = Stopwatch.GetTimestamp() - setupStart;
+
+        int mainCycles = 0;
+        int audioCycles = 0;
+        int mainInstructions = 0;
+        int audioCalls = 0;
+        long mainLoopTicks;
+        long mainCpuTicks = 0;
+        long audioInlineTicks = 0;
+
+        long mainLoopStart = Stopwatch.GetTimestamp();
+        while (mainCycles < CpuCyclesPerFrame)
+        {
+            if (TraceCps1PerfDetailed)
+            {
+                long cpuStart = Stopwatch.GetTimestamp();
+                mainCycles += checked((int)_mainCpu.ExecuteInstruction(_bus));
+                mainCpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+            }
+            else
+            {
+                mainCycles += checked((int)_mainCpu.ExecuteInstruction(_bus));
+            }
+            mainInstructions++;
+
+            int targetAudioCycles = Math.Min(
+                AudioCpuCyclesPerFrame,
+                (int)((long)mainCycles * AudioCpuCyclesPerFrame / CpuCyclesPerFrame));
+            int audioSlice = targetAudioCycles - audioCycles;
+            if (audioSlice > 0)
+            {
+                audioCalls++;
+                if (TraceCps1PerfDetailed)
+                {
+                    long audioStart = Stopwatch.GetTimestamp();
+                    audioCycles += _bus.RunAudioCpu(_audioCpu, _audioBus, audioSlice);
+                    audioInlineTicks += Stopwatch.GetTimestamp() - audioStart;
+                }
+                else
+                {
+                    audioCycles += _bus.RunAudioCpu(_audioCpu, _audioBus, audioSlice);
+                }
+            }
+        }
+        mainLoopTicks = Stopwatch.GetTimestamp() - mainLoopStart;
+
+        long audioDrainTicks = 0;
+        _bus.ClearInterrupt();
+        if (audioCycles < AudioCpuCyclesPerFrame)
+        {
+            long audioDrainStart = Stopwatch.GetTimestamp();
+            audioCalls++;
+            int drainCycles = _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - audioCycles);
+            audioCycles += drainCycles;
+            audioDrainTicks = Stopwatch.GetTimestamp() - audioDrainStart;
+        }
+
+        long audioEndStart = Stopwatch.GetTimestamp();
+        _bus.EndAudioFrame();
+        long audioEndTicks = Stopwatch.GetTimestamp() - audioEndStart;
+
+        long renderStart = Stopwatch.GetTimestamp();
+        _video!.Render(_frameBuffer);
+        long renderTicks = Stopwatch.GetTimestamp() - renderStart;
+
+        long latchStart = Stopwatch.GetTimestamp();
+        _bus.LatchSprites();
+        long latchTicks = Stopwatch.GetTimestamp() - latchStart;
+
+        long totalTicks = Stopwatch.GetTimestamp() - totalStart;
+        _lastPerfSummary = FormatPerfSummary(
+            totalTicks,
+            setupTicks,
+            mainLoopTicks,
+            mainCpuTicks,
+            audioInlineTicks,
+            audioDrainTicks,
+            audioEndTicks,
+            renderTicks,
+            latchTicks,
+            mainInstructions,
+            mainCycles,
+            audioCalls,
+            audioCycles);
+        _frameCounter++;
+    }
+
+    private static string FormatPerfSummary(
+        long totalTicks,
+        long setupTicks,
+        long mainLoopTicks,
+        long mainCpuTicks,
+        long audioInlineTicks,
+        long audioDrainTicks,
+        long audioEndTicks,
+        long renderTicks,
+        long latchTicks,
+        int mainInstructions,
+        int mainCycles,
+        int audioCalls,
+        int audioCycles)
+    {
+        double tickMs = 1000.0 / Stopwatch.Frequency;
+        var sb = new StringBuilder(256);
+        sb.Append(CultureInfo.InvariantCulture, $"total_ms={totalTicks * tickMs:0.###}");
+        sb.Append(CultureInfo.InvariantCulture, $" setup_ms={setupTicks * tickMs:0.###}");
+        sb.Append(CultureInfo.InvariantCulture, $" main_loop_ms={mainLoopTicks * tickMs:0.###}");
+        if (TraceCps1PerfDetailed)
+        {
+            sb.Append(CultureInfo.InvariantCulture, $" m68k_ms={mainCpuTicks * tickMs:0.###}");
+            sb.Append(CultureInfo.InvariantCulture, $" audio_inline_ms={audioInlineTicks * tickMs:0.###}");
+        }
+        sb.Append(CultureInfo.InvariantCulture, $" audio_drain_ms={audioDrainTicks * tickMs:0.###}");
+        sb.Append(CultureInfo.InvariantCulture, $" audio_end_ms={audioEndTicks * tickMs:0.###}");
+        sb.Append(CultureInfo.InvariantCulture, $" render_ms={renderTicks * tickMs:0.###}");
+        sb.Append(CultureInfo.InvariantCulture, $" latch_ms={latchTicks * tickMs:0.###}");
+        sb.Append(CultureInfo.InvariantCulture, $" m68k_instr={mainInstructions}");
+        sb.Append(CultureInfo.InvariantCulture, $" m68k_cycles={mainCycles}");
+        sb.Append(CultureInfo.InvariantCulture, $" audio_calls={audioCalls}");
+        sb.Append(CultureInfo.InvariantCulture, $" audio_cycles={audioCycles}");
+        return sb.ToString();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -1677,6 +1829,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                     ushort codeWord = gfxRam[tileWord % gfxRamWords];
                     ushort attr = gfxRam[(tileWord + 1) % gfxRamWords];
                     int code = layer == 2 ? codeWord & 0x3fff : codeWord;
+                    int mappedCode = layer switch
+                    {
+                        0 => _graphics.MapScroll1Code(code),
+                        1 => _graphics.MapScroll2Code(code),
+                        _ => _graphics.MapScroll3Code(code)
+                    };
                     int priorityGroup = (attr >> 7) & 0x03;
                     ushort priorityMask = PriorityMask(priorityGroup);
                     int flip = (attr >> 5) & 0x03;
@@ -1696,9 +1854,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                             {
                                 int pen = layer switch
                                 {
-                                    0 => _graphics.GetScroll1Pen(code, rightHalf, px, py),
-                                    1 => _graphics.GetScroll2Pen(code, px, py),
-                                    _ => _graphics.GetScroll3Pen(code, px, py)
+                                    0 => _graphics.GetMappedScroll1Pen(mappedCode, rightHalf, px, py),
+                                    1 => _graphics.GetMappedScroll2Pen(mappedCode, px, py),
+                                    _ => _graphics.GetMappedScroll3Pen(mappedCode, px, py)
                                 };
                                 if (pen != TransparentPen && ((priorityMask >> pen) & 1) != 0)
                                     _spritePriority[target + i] = 1;
@@ -1711,9 +1869,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                         {
                             int pen = layer switch
                             {
-                                0 => _graphics.GetScroll1Pen(code, rightHalf, px, py),
-                                1 => _graphics.GetScroll2Pen(code, px, py),
-                                _ => _graphics.GetScroll3Pen(code, px, py)
+                                0 => _graphics.GetMappedScroll1Pen(mappedCode, rightHalf, px, py),
+                                1 => _graphics.GetMappedScroll2Pen(mappedCode, px, py),
+                                _ => _graphics.GetMappedScroll3Pen(mappedCode, px, py)
                             };
                             if (pen != TransparentPen)
                                 _pixels[target + i] = (ushort)(color + pen);
@@ -1776,6 +1934,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         private void DrawSpriteTile(int code, int color, bool flipX, bool flipY, int sx, int sy)
         {
+            int mappedCode = _graphics.MapSpriteCode(code);
+            if (mappedCode < 0)
+                return;
+
             int baseColor = color * 16;
             for (int y = 0; y < 16; y++)
             {
@@ -1792,7 +1954,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                         continue;
 
                     int px = flipX ? 15 - x : x;
-                    int pen = _graphics.GetSpritePen(code, px, py);
+                    int pen = _graphics.GetMappedSpritePen(mappedCode, px, py);
                     if (pen != TransparentPen && _spritePriority[row + dx] == 0)
                     {
                         _pixels[row + dx] = (ushort)(baseColor + pen);
@@ -1847,9 +2009,16 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             _tiles32 = Decode(gfx, 32, 32, 512, 0);
         }
 
-        public int GetScroll1Pen(int code, bool rightHalf, int x, int y)
+        public int MapSpriteCode(int code) => MapCode(Cps1GfxLayer.Sprites, code);
+
+        public int MapScroll1Code(int code) => MapCode(Cps1GfxLayer.Scroll1, code);
+
+        public int MapScroll2Code(int code) => MapCode(Cps1GfxLayer.Scroll2, code);
+
+        public int MapScroll3Code(int code) => MapCode(Cps1GfxLayer.Scroll3, code);
+
+        public int GetMappedScroll1Pen(int code, bool rightHalf, int x, int y)
         {
-            code = MapCode(Cps1GfxLayer.Scroll1, code);
             if (code < 0)
                 return 15;
             byte[] data = rightHalf ? _scroll1Right : _scroll1Left;
@@ -1857,22 +2026,21 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             return (uint)offset < data.Length ? data[offset] : 15;
         }
 
-        public int GetSpritePen(int code, int x, int y)
-            => GetTile16Pen(MapCode(Cps1GfxLayer.Sprites, code), x, y);
+        public int GetMappedSpritePen(int code, int x, int y)
+            => GetMappedTile16Pen(code, x, y);
 
-        public int GetScroll2Pen(int code, int x, int y)
-            => GetTile16Pen(MapCode(Cps1GfxLayer.Scroll2, code), x, y);
+        public int GetMappedScroll2Pen(int code, int x, int y)
+            => GetMappedTile16Pen(code, x, y);
 
-        public int GetScroll3Pen(int code, int x, int y)
+        public int GetMappedScroll3Pen(int code, int x, int y)
         {
-            code = MapCode(Cps1GfxLayer.Scroll3, code);
             if (code < 0)
                 return 15;
             int offset = code * 1024 + y * 32 + x;
             return (uint)offset < _tiles32.Length ? _tiles32[offset] : 15;
         }
 
-        private int GetTile16Pen(int code, int x, int y)
+        private int GetMappedTile16Pen(int code, int x, int y)
         {
             if (code < 0)
                 return 15;
