@@ -487,6 +487,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         private readonly Cps1Oki6295 _oki = new();
         private readonly Cps1Ym2151 _ym2151 = new();
         private readonly Cps1SerialEeprom _eeprom = new();
+        private readonly Cps1SerialEeprom16 _pang3Eeprom = new();
         private Cps1VideoConfig _videoConfig = Cps1VideoConfig.QSound2;
         private Cps1AudioHardware _audioHardware = Cps1AudioHardware.QSound;
         private bool _hasQSoundProtectionRom;
@@ -494,6 +495,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         private bool _useSf2HackInputRead;
         private bool _useDinoHuntSoundRead;
         private bool _useDinopicBootlegVideo;
+        private bool _usePang3EepromPort;
 
         private ArcadeInputState _input;
         private byte _soundLatch0 = 0xff;
@@ -568,6 +570,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             _useSf2HackInputRead = roms.UseSf2HackInputRead;
             _useDinoHuntSoundRead = UsesDinoHuntSoundRead(roms.SetName);
             _useDinopicBootlegVideo = UsesDinopicBootlegVideo(roms.SetName);
+            _usePang3EepromPort = UsesPang3EepromPort(roms.SetName);
             _audioCpuClockHz = roms.AudioCpuClockHz;
             _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
             if (roms.AudioHardware == Cps1AudioHardware.QSound)
@@ -576,6 +579,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 _qsound.Reset();
             _oki.Load(roms.Oki);
             _eeprom.ResetPins();
+            _pang3Eeprom.ResetPins();
             ResetVideoRegisters();
             ResetAudioState();
             _interruptLevel = 0;
@@ -594,6 +598,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_cpsA);
             Array.Clear(_cpsB);
             _eeprom.ResetPins();
+            _pang3Eeprom.ResetPins();
             ResetVideoRegisters();
             ResetAudioState();
             _interruptLevel = 0;
@@ -603,7 +608,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         {
             ArgumentNullException.ThrowIfNull(writer);
 
-            writer.Write(3);
+            writer.Write(4);
             WriteByteArray(writer, _mainRam);
             WriteByteArray(writer, _classicAudioRam);
             WriteByteArray(writer, _qsoundShared0);
@@ -625,6 +630,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             writer.Write(_audioCpuClockHz);
             writer.Write(_okiOnlyVoiceCursor);
             StateBinarySerializer.WriteInto(writer, _eeprom);
+            StateBinarySerializer.WriteInto(writer, _pang3Eeprom);
             _qsound.SaveState(writer);
             _oki.SaveState(writer);
             _ym2151.SaveState(writer);
@@ -635,7 +641,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             ArgumentNullException.ThrowIfNull(reader);
 
             int version = reader.ReadInt32();
-            if (version is not (1 or 2 or 3))
+            if (version is not (1 or 2 or 3 or 4))
                 throw new InvalidDataException($"Unsupported CPS1 bus savestate version: {version}.");
 
             ReadByteArray(reader, _mainRam);
@@ -662,6 +668,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             _audioCpuClockHz = reader.ReadDouble();
             _okiOnlyVoiceCursor = version >= 3 ? reader.ReadInt32() : 0;
             StateBinarySerializer.ReadInto(reader, _eeprom);
+            if (version >= 4)
+                StateBinarySerializer.ReadInto(reader, _pang3Eeprom);
+            else
+                _pang3Eeprom.ResetPins();
             _qsound.LoadState(reader);
             _oki.LoadState(reader);
             _ym2151.LoadState(reader);
@@ -691,6 +701,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             => string.Equals(setName, "dinopic", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(setName, "dinopic2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(setName, "dinopic3", StringComparison.OrdinalIgnoreCase);
+
+        private static bool UsesPang3EepromPort(string setName)
+            => IsPang3FamilySet(setName)
+               && !string.Equals(setName, "pang3b4", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsPang3FamilySet(string setName)
+            => setName.StartsWith("pang3", StringComparison.OrdinalIgnoreCase);
 
         public void SetInput(ArcadeInputState input) => _input = input;
 
@@ -1078,6 +1095,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                     LatchPalette();
                 return;
             }
+            if (_usePang3EepromPort && address >= 0x80017a && address <= 0x80017b)
+            {
+                _pang3Eeprom.Write(value);
+                return;
+            }
             if (address >= 0x800140 && address <= 0x80017f)
             {
                 int index = (int)((address - 0x800140) >> 1);
@@ -1142,6 +1164,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 _cpsA[index] = value;
                 if (index == Cps1Regs.PaletteBase)
                     LatchPalette();
+                return;
+            }
+            if (_usePang3EepromPort && address >= 0x80017a && address <= 0x80017b)
+            {
+                _pang3Eeprom.Write((byte)value);
                 return;
             }
             if (address >= 0x800140 && address <= 0x80017f)
@@ -1342,6 +1369,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return 0xffff;
 
             int address = offset * 2;
+            if (_usePang3EepromPort && address == 0x3a)
+                return (ushort)(_pang3Eeprom.DataOut ? 0x0001 : 0x0000);
             if (_videoConfig.CpsBAddress == address)
                 return _videoConfig.CpsBValue;
             if (_videoConfig.MultResultLo == address)
@@ -1664,6 +1693,215 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         {
             _dataOut = ((_output >> 7) & 1) != 0;
             _output = (_output << 1) & 0xff;
+            _outputBits--;
+        }
+
+        private void ResetTransfer()
+        {
+            _shift = 0;
+            _bits = 0;
+            _output = 0;
+            _outputBits = 0;
+            _waitingForStartBit = true;
+            _readingData = false;
+            _receivingWriteData = false;
+            _receivingWriteAllData = false;
+            _ignoreUntilChipDeselect = false;
+            _writeAddress = 0;
+            _writeData = 0;
+            _writeBits = 0;
+        }
+    }
+
+    private sealed class Cps1SerialEeprom16
+    {
+        private readonly ushort[] _data = new ushort[64];
+        private bool _chipSelect;
+        private bool _clock;
+        private bool _dataIn;
+        private bool _dataOut = true;
+        private int _shift;
+        private int _bits;
+        private int _output;
+        private int _outputBits;
+        private bool _waitingForStartBit = true;
+        private bool _readingData;
+        private bool _receivingWriteData;
+        private bool _receivingWriteAllData;
+        private bool _locked = true;
+        private bool _ignoreUntilChipDeselect;
+        private int _writeAddress;
+        private int _writeData;
+        private int _writeBits;
+
+        public Cps1SerialEeprom16()
+        {
+            Array.Fill(_data, (ushort)0xffff);
+        }
+
+        public bool DataOut => _chipSelect ? _dataOut : true;
+
+        public void ResetPins()
+        {
+            _chipSelect = false;
+            _clock = false;
+            _dataIn = false;
+            _dataOut = true;
+            ResetTransfer();
+        }
+
+        public void Write(byte value)
+        {
+            bool dataIn = (value & 0x01) != 0;
+            bool clock = (value & 0x40) != 0;
+            bool chipSelect = (value & 0x80) != 0;
+
+            if (!chipSelect)
+            {
+                _chipSelect = false;
+                _clock = clock;
+                _dataIn = dataIn;
+                _dataOut = true;
+                ResetTransfer();
+                return;
+            }
+
+            bool risingClock = chipSelect && _chipSelect && !_clock && clock;
+            _chipSelect = true;
+            _clock = clock;
+            _dataIn = dataIn;
+
+            if (risingClock)
+                ClockBit(dataIn);
+        }
+
+        private void ClockBit(bool bit)
+        {
+            if (_ignoreUntilChipDeselect)
+                return;
+
+            if (_readingData)
+            {
+                if (_outputBits > 0)
+                    ShiftOutputBit();
+                else
+                    _dataOut = true;
+                return;
+            }
+
+            if (_receivingWriteData)
+            {
+                _writeData = ((_writeData << 1) | (bit ? 1 : 0)) & 0xffff;
+                _writeBits++;
+                if (_writeBits == 16)
+                {
+                    if (!_locked)
+                        _data[_writeAddress & 0x3f] = (ushort)_writeData;
+                    FinishCommand();
+                }
+                return;
+            }
+
+            if (_receivingWriteAllData)
+            {
+                _writeData = ((_writeData << 1) | (bit ? 1 : 0)) & 0xffff;
+                _writeBits++;
+                if (_writeBits == 16)
+                {
+                    if (!_locked)
+                        Array.Fill(_data, (ushort)_writeData);
+                    FinishCommand();
+                    _dataOut = true;
+                }
+                return;
+            }
+
+            if (_waitingForStartBit)
+            {
+                if (!bit)
+                    return;
+
+                _waitingForStartBit = false;
+                _shift = 0;
+                _bits = 0;
+                return;
+            }
+
+            _shift = ((_shift << 1) | (bit ? 1 : 0)) & 0xff;
+            _bits++;
+            if (_bits < 8)
+                return;
+
+            int op = (_shift >> 6) & 0x03;
+            int address = _shift & 0x3f;
+            ResetTransfer();
+
+            switch (op)
+            {
+                case 0x00:
+                    ExecuteControlCommand(address);
+                    break;
+                case 0x01:
+                    _receivingWriteData = true;
+                    _writeAddress = address;
+                    _writeData = 0;
+                    _writeBits = 0;
+                    break;
+                case 0x02:
+                    StartOutput(_data[address]);
+                    break;
+                case 0x03:
+                    if (!_locked)
+                        _data[address] = 0xffff;
+                    FinishCommand();
+                    break;
+            }
+        }
+
+        private void ExecuteControlCommand(int address)
+        {
+            switch (address >> 4)
+            {
+                case 0:
+                    _locked = true;
+                    FinishCommand();
+                    break;
+                case 1:
+                    _receivingWriteAllData = true;
+                    _writeData = 0;
+                    _writeBits = 0;
+                    break;
+                case 2:
+                    if (!_locked)
+                        Array.Fill(_data, (ushort)0xffff);
+                    FinishCommand();
+                    break;
+                case 0x03:
+                    _locked = false;
+                    FinishCommand();
+                    break;
+            }
+        }
+
+        private void StartOutput(ushort value)
+        {
+            _output = value;
+            _outputBits = 16;
+            _readingData = true;
+            _dataOut = false;
+        }
+
+        private void FinishCommand()
+        {
+            ResetTransfer();
+            _ignoreUntilChipDeselect = true;
+            _dataOut = true;
+        }
+
+        private void ShiftOutputBit()
+        {
+            _dataOut = ((_output >> 15) & 1) != 0;
+            _output = (_output << 1) & 0xffff;
             _outputBits--;
         }
 
@@ -2233,6 +2471,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.S222B && TryMapS222B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
+            if (_mapper == Cps1GfxMapper.O224B && TryMapO224B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
             if (_mapper == Cps1GfxMapper.ST24M1 && TryMapST24M1(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.ST22B && TryMapST22B(layer, expandedCode, shift, out mappedCode))
@@ -2456,6 +2696,63 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
             int bank = expandedCode <= 0x3fff ? 0 : 1;
             mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapO224B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Scroll1:
+                    bank = 0;
+                    inRange = expandedCode >= 0x0000 && expandedCode <= 0x0bff;
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    if (expandedCode >= 0x0c00 && expandedCode <= 0x3bff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 1;
+                        inRange = expandedCode >= 0xa800 && expandedCode <= 0xb7ff;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    if (expandedCode >= 0x3c00 && expandedCode <= 0x4bff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 1;
+                        inRange = expandedCode >= 0xb800 && expandedCode <= 0xbfff;
+                    }
+                    break;
+                default:
+                    if (expandedCode >= 0x4c00 && expandedCode <= 0x7fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 1;
+                        inRange = expandedCode >= 0x8000 && expandedCode <= 0xa7ff;
+                    }
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = MapBankedCode(expandedCode, shift, bank, 0x8000, 0x4000);
             return true;
         }
 
@@ -3068,6 +3365,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         LW621,
         S224B,
         S222B,
+        O224B,
         ST24M1,
         ST22B,
         WL24B,
@@ -3137,11 +3435,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         public static readonly Cps1VideoConfig QSound4 = new(0x16, 0x00, 0x02, 0x28, 0x2a, 0x2c, 0x2e, 0x0c01);
         public static readonly Cps1VideoConfig QSound5 = new(0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x1c, 0x1e, 0x0c02);
         public static readonly Cps1VideoConfig CpsB02 = new(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22, 0x20, 0x0002);
+        public static readonly Cps1VideoConfig CpsB12 = new(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22, 0x20, 0x0402);
         public static readonly Cps1VideoConfig CpsB04 = new(0x2e, 0x26, 0x30, 0x28, 0x32, 0x2a, 0x20, 0x0004);
         public static readonly Cps1VideoConfig CpsB05 = new(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x20, 0x0005);
         public static readonly Cps1VideoConfig CpsB14 = new(0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c, 0x1e, 0x0404);
         public static readonly Cps1VideoConfig CpsB15 = new(0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c, 0x0e, 0x0405, LayerEnable0: 0x04, LayerEnable1: 0x02, LayerEnable2: 0x20);
         public static readonly Cps1VideoConfig CpsB16 = new(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00, 0x0406);
+        public static readonly Cps1VideoConfig CpsB21Def = new(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32, 0xffff, 0x04, 0x06, 0x00, 0x02, 0x02, 0x04, 0x08);
         public static readonly Cps1VideoConfig CpsB21Bt1 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x30, 0x32, 0x0800, 0x0a, 0x08, 0x0e, 0x0c);
         public static readonly Cps1VideoConfig CpsB21Bt2 = new(0x20, 0x2e, 0x2c, 0x2a, 0x28, 0x30, MultResultLo: 0x1a, MultResultHi: 0x18, MultFactor1: 0x1e, MultFactor2: 0x1c, LayerEnable0: 0x30, LayerEnable1: 0x08, LayerEnable2: 0x30);
         public static readonly Cps1VideoConfig HackB2 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x22);
@@ -3323,6 +3623,14 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             "ffightj4"
         };
 
+        private static readonly HashSet<string> O224BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "mercs",
+            "mercsj",
+            "mercsu",
+            "mercsur1"
+        };
+
         private static readonly HashSet<string> ST24M1MapperSets = new(StringComparer.OrdinalIgnoreCase)
         {
             "strider",
@@ -3416,7 +3724,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             ["dynwaru"] = "dynwara",
             ["forgott1"] = "forgottn",
             ["knightsh"] = "knights",
-            ["mercsua"] = "mercsur1",
+            ["mercsua"] = "mercsu",
             ["punishru"] = "punisheru",
             ["punishrj"] = "punisherj",
             ["qadj"] = "qadjr",
@@ -3658,6 +3966,43 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         private static void ApplyClassicProgramPatches(string setName, byte[] program)
         {
+            if (IsPang3EncryptedSet(setName)
+                && IsPang3EncryptedProgram(program))
+            {
+                DecryptPang3Program(program);
+            }
+        }
+
+        private static bool IsPang3EncryptedSet(string setName)
+            => setName.StartsWith("pang3", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(setName, "pang3b", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(setName, "pang3b4", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsPang3EncryptedProgram(byte[] program)
+        {
+            if (program.Length < 0x80000)
+                return false;
+
+            uint firstProgramCrc = ComputeCrc32(program.AsSpan(0, 0x80000));
+            return firstProgramCrc != 0xd3d293bfu;
+        }
+
+        private static void DecryptPang3Program(byte[] program)
+        {
+            for (int address = 0x80000; address < 0x100000 && address + 1 < program.Length; address += 2)
+            {
+                int source = program[address + 1];
+                int decoded = 0;
+                if ((source & 0x01) != 0) decoded ^= 0x04;
+                if ((source & 0x02) != 0) decoded ^= 0x21;
+                if ((source & 0x04) != 0) decoded ^= 0x01;
+                if ((source & 0x08) == 0) decoded ^= 0x50;
+                if ((source & 0x10) != 0) decoded ^= 0x40;
+                if ((source & 0x20) != 0) decoded ^= 0x06;
+                if ((source & 0x40) != 0) decoded ^= 0x08;
+                if ((source & 0x80) == 0) decoded ^= 0x88;
+                program[address + 1] = (byte)decoded;
+            }
         }
 
         private static void PatchWord(byte[] destination, int offset, ushort value)
@@ -3690,6 +4035,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return Cps1GfxMapper.S224B;
             if (S222BMapperSets.Contains(setName))
                 return Cps1GfxMapper.S222B;
+            if (O224BMapperSets.Contains(setName))
+                return Cps1GfxMapper.O224B;
             if (ST24M1MapperSets.Contains(setName))
                 return Cps1GfxMapper.ST24M1;
             if (ST22BMapperSets.Contains(setName))
@@ -5459,7 +5806,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["mercs"] = new Cps1ClassicDefinition(
                 "mercs",
                 null,
-                new Cps1VideoConfig(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22),
+                Cps1VideoConfig.CpsB12,
                 0x300000,
                 0x40000,
                 new[]
@@ -5498,7 +5845,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["mercsj"] = new Cps1ClassicDefinition(
                 "mercsj",
                 null,
-                new Cps1VideoConfig(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22),
+                Cps1VideoConfig.CpsB12,
                 0x300000,
                 0x40000,
                 new[]
@@ -5552,15 +5899,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["mercsu"] = new Cps1ClassicDefinition(
                 "mercsu",
                 null,
-                new Cps1VideoConfig(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22),
+                Cps1VideoConfig.CpsB12,
                 0x300000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "so2_30a.11f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "so2_35a.11h"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "so2_31a.12f"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "so2_36a.12h"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "so2_30a.11f", "so2_30.11f"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "so2_35a.11h", "so2_35.11h", "s02_35.11h"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "so2_31a.12f", "so2_31.12f"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "so2_36a.12h", "so2_36.12h"),
                     Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "so2-32m.8h"),
                 },
                 new[]
@@ -5591,13 +5938,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["mercsur1"] = new Cps1ClassicDefinition(
                 "mercsur1",
                 null,
-                new Cps1VideoConfig(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22),
+                Cps1VideoConfig.CpsB12,
                 0x300000,
                 0x40000,
                 new[]
                 {
                     Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "so2_30.11f"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "so2_35.11h"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "so2_35.11h", "s02_35.11h"),
                     Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "so2_31.12f"),
                     Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "so2_36.12h"),
                     Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "so2-32m.8h"),
@@ -5877,13 +6224,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["pang3"] = new Cps1ClassicDefinition(
                 "pang3",
                 null,
-                Cps1VideoConfig.Default,
+                Cps1VideoConfig.CpsB21Def,
                 0x400000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "pa3e_17a.11l"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "pa3e_16a.10l"),
+                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "pa3e_17a.11l", "pa3e_17.11l", "pa3j_17.11l", "pa3w_17.11l"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "pa3e_16a.10l", "pa3e_16.10l", "pa3j_16.10l", "pa3w_16.10l"),
                 },
                 new[]
                 {
@@ -5904,7 +6251,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["pang3j"] = new Cps1ClassicDefinition(
                 "pang3j",
                 null,
-                Cps1VideoConfig.Default,
+                Cps1VideoConfig.CpsB21Def,
                 0x400000,
                 0x40000,
                 new[]
@@ -11834,6 +12181,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private static uint ComputeCrc32(byte[] data)
+            => ComputeCrc32(data.AsSpan());
+
+        private static uint ComputeCrc32(ReadOnlySpan<byte> data)
         {
             uint crc = 0xffff_ffffu;
             foreach (byte value in data)
