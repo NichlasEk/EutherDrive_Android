@@ -115,8 +115,12 @@ internal sealed class Sega32XSh2Cpu
 
         for (ulong i = 0; i < ticks; i++)
         {
+            if (bus.ShouldStopExecution)
+                return;
             if (!bus.TryTickDma())
                 break;
+            if (bus.ShouldStopExecution)
+                return;
         }
 
         if (Registers.NextInstructionInDelaySlot)

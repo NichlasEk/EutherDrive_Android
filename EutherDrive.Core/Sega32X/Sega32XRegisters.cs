@@ -85,9 +85,9 @@ internal sealed class Sega32XSh2Interrupts
     {
         CurrentInterruptLevel = ResetPending ? (byte)14
             : VPending && VEnabled ? (byte)12
-            : HPending ? (byte)10
+            : HPending && HEnabled ? (byte)10
             : CommandPending && CommandEnabled ? (byte)8
-            : PwmPending ? (byte)6
+            : PwmPending && PwmEnabled ? (byte)6
             : (byte)0;
     }
 
@@ -517,6 +517,17 @@ internal sealed class Sega32XSystemRegisters
 
     private ushort ReadSh2DreqFifo()
     {
+        if (Dma.Fifo.Sh2IsEmpty)
+        {
+            if (TraceDreq)
+            {
+                Console.WriteLine(
+                    $"[S32X-DREQ-SH2-POP-EMPTY] len=0x{Dma.Length:X4} " +
+                    $"active={(Dma.Active ? 1 : 0)} full={(Dma.Fifo.IsFull ? 1 : 0)}");
+            }
+            return 0;
+        }
+
         ushort value = Dma.Fifo.Pop();
         Dma.Length = (ushort)(Dma.Length - 1);
         if (Dma.Length == 0)

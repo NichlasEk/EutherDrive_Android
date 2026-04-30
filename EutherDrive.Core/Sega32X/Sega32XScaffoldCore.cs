@@ -113,10 +113,6 @@ internal sealed class Sega32XScaffoldCore
         Registers.Reset();
         Bus.Vdp.Reset();
         Bus.Pwm.Reset();
-        // Until the Genesis / 68000 side is wired in, bootstrap the 32X adapter into the
-        // enabled state so the SH-2 boot ROMs can progress past the initial "adapter disabled"
-        // sleep path.
-        Registers.M68kWrite(0xA15100, 0x0003);
         MasterSh2.RequestReset();
         SlaveSh2.RequestReset();
         MasterSh2.ResetTimingState();
@@ -217,22 +213,37 @@ internal sealed class Sega32XScaffoldCore
 
     private void RunSh2sToGlobalCycle()
     {
+        ulong targetCycles = Math.Min(
+            _globalSh2Cycles,
+            Math.Min(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultSh2ExecutionSliceLength);
+
         if (SlaveFirstSh2Scheduling)
         {
-            while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
+            while (_slaveBus.SchedulerCycleCounter < targetCycles)
                 SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
 
-            while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
+            while (_masterBus.SchedulerCycleCounter < targetCycles)
                 MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
 
             return;
         }
 
-        while (_masterBus.SchedulerCycleCounter < _globalSh2Cycles)
-            MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+        if (_slaveBus.SchedulerCycleCounter < _masterBus.SchedulerCycleCounter)
+        {
+            while (_slaveBus.SchedulerCycleCounter < targetCycles)
+                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
 
-        while (_slaveBus.SchedulerCycleCounter < _globalSh2Cycles)
-            SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+            while (_masterBus.SchedulerCycleCounter < targetCycles)
+                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+        }
+        else
+        {
+            while (_masterBus.SchedulerCycleCounter < targetCycles)
+                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+
+            while (_slaveBus.SchedulerCycleCounter < targetCycles)
+                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+        }
     }
 
     public bool BeginCommPortSync()
@@ -435,10 +446,10 @@ internal sealed class Sega32XScaffoldCore
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
             return parsed;
 
-        // A moderately larger default slice reduces scheduler overhead now that global deadlines
-        // use nominal SH-2 cycles again. 20k preserved VF/Cosmic/Zaxxon bring-up in headless
-        // tests while trimming 32XSlice cost versus the older 5k default.
-        return 20_000;
+        // Match jgenesis' short SH-2 execution slice. 32X code depends heavily on tight
+        // interrupt/DMA/comm-port interleaving; larger slices tend to produce alive-but-wrong
+        // frame buffer contents in games such as Knuckles' Chaotix.
+        return 50;
     }
 
     private static ulong ParseM68kCommSyncSliceLength()
@@ -458,7 +469,10 @@ internal sealed class Sega32XScaffoldCore
         if (ulong.TryParse(raw, out ulong parsed))
             return parsed;
 
-        return 0;
+        // The current MD-host bridge does not yet run both SH-2s and the 68000 on a fully shared
+        // sub-instruction timeline. Keep very recent mailbox writes visible for one read so tight
+        // write-clear polling handshakes are not lost between interleave slices.
+        return 512;
     }
 
     private static bool ParseBoolEnv(string name)

@@ -21,6 +21,7 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
     private string? _romSummary;
     private long _frameCounter;
     private ConsoleRegion _regionOverride = ConsoleRegion.Auto;
+    private ConsoleRegion? _romRegionHint;
 
     public string? RomSummary => _romSummary;
     public RomIdentity? RomIdentity => _romIdentity;
@@ -28,15 +29,12 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
     public uint? DebugMasterProgramCounter => _core?.MasterSh2.Registers.ProgramCounter;
     public uint? DebugSlaveProgramCounter => _core?.SlaveSh2.Registers.ProgramCounter;
 
-    public double GetTargetFps() => _regionOverride == ConsoleRegion.EU ? 50.0 : 60.0;
+    public double GetTargetFps() => GetEffectiveRegion() == ConsoleRegion.EU ? 50.0 : 60.0;
 
     public void SetRegionOverride(ConsoleRegion region)
     {
         _regionOverride = region;
-        if (_core != null)
-        {
-            _core.SetRegionOverride(region);
-        }
+        ApplyEffectiveRegionToCore();
     }
 
     public void LoadRom(string path)
@@ -51,8 +49,10 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
         lock (_stateLock)
         {
             _romData = romData;
+            _romRegionHint = Sega32X.Sega32XRomDetector.DetectRegion(romData, out _);
             _core = new Sega32X.Sega32XScaffoldCore(romData);
             _core.Reset();
+            ApplyEffectiveRegionToCore();
             // Bootstrap standalone adapter into enabled state since there's no M68K to do it
             _core.Registers.M68kWrite(0xA15100, 0x0003);
             _romPath = path;
@@ -73,6 +73,7 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
         {
             _frameCounter = 0;
             _core?.Reset();
+            ApplyEffectiveRegionToCore();
             // Bootstrap standalone adapter into enabled state since there's no M68K to do it
             _core?.Registers.M68kWrite(0xA15100, 0x0003);
             ClearFrameBuffer();
@@ -170,7 +171,9 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
             _romData = romLength > 0 ? reader.ReadBytes(romLength) : null;
             if (_romData != null)
             {
+                _romRegionHint = Sega32X.Sega32XRomDetector.DetectRegion(_romData, out _);
                 _core = new Sega32X.Sega32XScaffoldCore(_romData);
+                ApplyEffectiveRegionToCore();
                 _romIdentity = new RomIdentity(
                     Path.GetFileName(string.IsNullOrWhiteSpace(_romPath) ? "unknown.32x" : _romPath),
                     RomIdentity.ComputeSha256(_romData),
@@ -180,6 +183,7 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
             else
             {
                 _core = null;
+                _romRegionHint = null;
                 _romIdentity = null;
                 _romSummary = null;
             }
@@ -189,6 +193,11 @@ public sealed class Sega32XAdapter : IEmulatorCore, ISavestateCapable
                 RenderFrame();
         }
     }
+
+    private ConsoleRegion GetEffectiveRegion() =>
+        _regionOverride != ConsoleRegion.Auto ? _regionOverride : (_romRegionHint ?? ConsoleRegion.US);
+
+    private void ApplyEffectiveRegionToCore() => _core?.SetRegionOverride(GetEffectiveRegion());
 
     private void ClearFrameBuffer() => Array.Clear(_frameBuffer);
 

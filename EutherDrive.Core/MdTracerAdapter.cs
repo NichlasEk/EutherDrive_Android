@@ -1349,7 +1349,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         _regionOverride = region;
         if (md_main.g_md_io != null)
             md_main.g_md_io.SetRegionOverride(region);
-        _sega32XCore?.SetRegionOverride(region);
+        _sega32XCore?.SetRegionOverride(GetEffectiveRegion());
     }
 
     public void RunInterlaceMode2Test()
@@ -1547,7 +1547,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 string header = TryReadSegaString(vecRom);
                 _bus.Write32(0xFF0000, 0x1234ABCD);
                 uint wramProbe = _bus.Read32(0xFF0000);
-                ConsoleRegion? regionHint = md_rom_utils.DetectRegionFromHeader(vecRom, out string regionRaw);
+                ConsoleRegion? regionHint;
+                string regionRaw;
+                if (_isSega32XRom)
+                    regionHint = Sega32XRomDetector.DetectRegion(vecRom, out regionRaw);
+                else
+                    regionHint = md_rom_utils.DetectRegionFromHeader(vecRom, out regionRaw);
                 string serial = md_main.g_md_cartridge?.g_serial_number ?? string.Empty;
                 regionHint = AdjustRegionHint(regionHint, regionRaw, serial);
                 RomInfo.RegionHint = regionHint;
@@ -2198,6 +2203,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         // Nollställ RAM
         _bus?.Reset();
         _sega32XCore?.Reset();
+        _sega32XCore?.SetRegionOverride(GetEffectiveRegion());
         md_main.g_md_bus?.Reset();
         md_main.ResetZ80WaitState();
         _vdp.reset();

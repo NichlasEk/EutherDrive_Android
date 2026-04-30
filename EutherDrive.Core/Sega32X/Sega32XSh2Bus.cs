@@ -27,6 +27,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private const ulong Sh2VdpCycles = 4;
     private const ulong Sh2SdramReadCycles = 9;
     private const ulong Sh2SdramWriteCycles = 0;
+    private const uint Sh2ExternalAddressMask = 0x1FFF_FFFF;
     private static readonly ulong CommPortSyncChunkSize = ParseCommPortSyncChunkSize();
     private static readonly bool AggressiveCommReadSyncEnabled = ParseAggressiveCommReadSyncEnabled();
     private static readonly uint? TracePcWatchStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_PCWATCH_START");
@@ -207,12 +208,11 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
                 if (!dmaRequest)
                     continue;
-                    
-                if (channel == 1)
-                    _core.Bus.Pwm.AcknowledgeDreq1();
             }
 
             TickDmaChannel(channel);
+            if (!autoRequest && channel == 1)
+                _core.Bus.Pwm.AcknowledgeDreq1();
             return true;
         }
 
@@ -553,7 +553,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
             CycleCounter += 1;
-            SyncIfCommPortAccessed(masked, isRead: true);
+            SyncIfCommPortAccessed(masked, isRead: false);
             ushort word = IsSh2VdpRegister(masked)
                 ? _core.Bus.Vdp.ReadRegister(masked & ~1u)
                 : _core.Registers.Sh2Read(masked & ~1u, _whichCpu, _core.Bus.Vdp);
@@ -678,7 +678,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
             CycleCounter += 1;
-            SyncIfCommPortAccessed(masked, isRead: true);
+            SyncIfCommPortAccessed(masked, isRead: false);
             if (IsSh2VdpRegister(masked))
             {
                 CycleCounter += Sh2VdpCycles;
@@ -1335,21 +1335,15 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private void TickDmaChannel(int channel)
     {
         uint count = _dmaTransferCount[channel] & 0x00FF_FFFFu;
-        if (count == 0)
-        {
-            _dmaChannelControl[channel] |= 0x0002;
-            return;
-        }
-
         DmaTransferUnit transferUnit = GetDmaTransferUnit(_dmaChannelControl[channel]);
         switch (transferUnit)
         {
             case DmaTransferUnit.Byte:
             {
-                uint source = _dmaSourceAddress[channel];
+                uint source = _dmaSourceAddress[channel] & Sh2ExternalAddressMask;
                 byte data = ReadByte(source, Sega32XSh2AccessContext.Data);
                 ApplyDmaSourceAddressMode(channel, 1);
-                uint destination = _dmaDestinationAddress[channel];
+                uint destination = _dmaDestinationAddress[channel] & Sh2ExternalAddressMask;
                 WriteByte(destination, data, Sega32XSh2AccessContext.Data);
                 ApplyDmaDestinationAddressMode(channel, 1);
                 _dmaTransferCount[channel] = (count - 1) & 0x00FF_FFFFu;
@@ -1357,10 +1351,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             }
             case DmaTransferUnit.Word:
             {
-                uint source = _dmaSourceAddress[channel];
+                uint source = _dmaSourceAddress[channel] & Sh2ExternalAddressMask;
                 ushort data = ReadWord(source, Sega32XSh2AccessContext.Data);
                 ApplyDmaSourceAddressMode(channel, 2);
-                uint destination = _dmaDestinationAddress[channel];
+                uint destination = _dmaDestinationAddress[channel] & Sh2ExternalAddressMask;
                 WriteWord(destination, data, Sega32XSh2AccessContext.Data);
                 ApplyDmaDestinationAddressMode(channel, 2);
                 _dmaTransferCount[channel] = (count - 1) & 0x00FF_FFFFu;
@@ -1368,10 +1362,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             }
             case DmaTransferUnit.Longword:
             {
-                uint source = _dmaSourceAddress[channel];
+                uint source = _dmaSourceAddress[channel] & Sh2ExternalAddressMask;
                 uint data = ReadLongword(source, Sega32XSh2AccessContext.Data);
                 ApplyDmaSourceAddressMode(channel, 4);
-                uint destination = _dmaDestinationAddress[channel];
+                uint destination = _dmaDestinationAddress[channel] & Sh2ExternalAddressMask;
                 WriteLongword(destination, data, Sega32XSh2AccessContext.Data);
                 ApplyDmaDestinationAddressMode(channel, 4);
                 _dmaTransferCount[channel] = (count - 1) & 0x00FF_FFFFu;
@@ -1379,13 +1373,13 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             }
             case DmaTransferUnit.SixteenByte:
             {
-                int transfers = (int)Math.Min(count, 4);
+                int transfers = count == 0 ? 4 : (int)Math.Min(count, 4);
                 for (int i = 0; i < transfers; i++)
                 {
-                    uint source = _dmaSourceAddress[channel];
+                    uint source = _dmaSourceAddress[channel] & Sh2ExternalAddressMask;
                     uint data = ReadLongword(source, Sega32XSh2AccessContext.Data);
                     _dmaSourceAddress[channel] += 4;
-                    uint destination = _dmaDestinationAddress[channel];
+                    uint destination = _dmaDestinationAddress[channel] & Sh2ExternalAddressMask;
                     WriteLongword(destination, data, Sega32XSh2AccessContext.Data);
                     ApplyDmaDestinationAddressMode(channel, 4);
                     count--;
@@ -1668,7 +1662,20 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         // The SH-2 cache is controlled by A29-A31 internally. Area 0 accesses can be cached even
         // when the external address does not map to ROM/SDRAM; some 32X games use those cached
         // aliases as scratch storage and expect write-through hits to be readable later.
-        return (address >> 29) == 0;
+        if ((address >> 29) != 0)
+            return false;
+
+        uint masked = address & Sh2ExternalAddressMask;
+        return !IsVolatileSh2ExternalAddress(masked);
+    }
+
+    private static bool IsVolatileSh2ExternalAddress(uint masked)
+    {
+        return IsSh2SystemRegister(masked)
+            || IsSh2VdpRegister(masked)
+            || (masked >= 0x00004030 && masked <= 0x0000403F)
+            || (masked >= 0x00004200 && masked <= 0x000043FF)
+            || (masked >= 0x04000000 && masked < 0x06000000);
     }
 
     private byte ReadBackingByte(uint masked, Sega32XSh2AccessContext context)
@@ -1925,7 +1932,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     {
         if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
         {
-            SyncIfCommPortAccessed(masked, isRead: true);
+            SyncIfCommPortAccessed(masked, isRead: false);
             if (IsSh2VdpRegister(masked))
             {
                 if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)

@@ -17,6 +17,8 @@ internal sealed class Sega32XBus
     private static readonly int TraceCramWriteLimit = ParseTraceCramWriteLimit();
     public const uint M68kVectorsStart = 0x000000;
     public const uint M68kVectorsEnd = 0x0000FF;
+    private const uint M68kHInterruptVectorStart = 0x000070;
+    private const uint M68kHInterruptVectorEnd = 0x000073;
     public const uint M68kCartridgeStart = 0x000000;
     public const uint M68kCartridgeEnd = 0x3FFFFF;
     public const uint M68kFrameBufferStart = 0x840000;
@@ -202,6 +204,12 @@ internal sealed class Sega32XBus
         uint aligned = address & ~1u;
         SyncSh2sIfTimingSensitiveRegisterAccessed(aligned);
 
+        if (address >= M68kHInterruptVectorStart && address <= M68kHInterruptVectorEnd)
+        {
+            _m68kVectors[(int)address] = value;
+            return;
+        }
+
         bool isSystemRegister = address >= M68kSystemRegistersStart && address <= M68kSystemRegistersEnd;
         bool isPwmRegister = address >= M68kPwmRegistersStart && address <= M68kPwmRegistersEnd;
         bool isVdpRegister = address >= M68kVdpRegistersStart && address <= M68kVdpRegistersEnd;
@@ -250,6 +258,25 @@ internal sealed class Sega32XBus
                 : (ushort)((current & 0xFF00) | value);
             Vdp.WriteCramWord(address - M68kCramStart, merged);
             TraceM68kCramWrite("write8", address, value, merged);
+            return;
+        }
+
+        if (address >= M68kCartridgeStart && address <= M68kCartridgeEnd)
+        {
+            WriteCartridgeByte(address, value);
+            return;
+        }
+
+        if (address >= M68kFirstCartBankStart && address <= M68kFirstCartBankEnd)
+        {
+            WriteCartridgeByte(address & 0x7FFFF, value);
+            return;
+        }
+
+        if (address >= M68kMappableCartBankStart && address <= M68kMappableCartBankEnd)
+        {
+            uint romAddress = (uint)(Registers.M68kRomBank << 20) | (address & 0xFFFFF);
+            WriteCartridgeByte(romAddress, value);
         }
     }
 
@@ -257,6 +284,14 @@ internal sealed class Sega32XBus
     {
         uint aligned = address & ~1u;
         SyncSh2sIfTimingSensitiveRegisterAccessed(aligned);
+
+        if (aligned >= M68kHInterruptVectorStart && aligned <= M68kHInterruptVectorEnd)
+        {
+            _m68kVectors[(int)aligned] = (byte)(value >> 8);
+            if (aligned + 1 <= M68kHInterruptVectorEnd)
+                _m68kVectors[(int)(aligned + 1)] = (byte)value;
+            return;
+        }
 
         if ((aligned >= M68kSystemRegistersStart && aligned <= M68kSystemRegistersEnd)
             || (aligned >= M68kVdpRegistersStart && aligned <= M68kVdpRegistersEnd))
@@ -301,6 +336,25 @@ internal sealed class Sega32XBus
             }
             Vdp.WriteCramWord(address - M68kCramStart, value);
             TraceM68kCramWrite("write16", aligned, value, value);
+            return;
+        }
+
+        if (aligned >= M68kCartridgeStart && aligned <= M68kCartridgeEnd)
+        {
+            WriteCartridgeWord(aligned, value);
+            return;
+        }
+
+        if (aligned >= M68kFirstCartBankStart && aligned <= M68kFirstCartBankEnd)
+        {
+            WriteCartridgeWord(aligned & 0x7FFFF, value);
+            return;
+        }
+
+        if (aligned >= M68kMappableCartBankStart && aligned <= M68kMappableCartBankEnd)
+        {
+            uint romAddress = (uint)(Registers.M68kRomBank << 20) | (aligned & 0xFFFFF);
+            WriteCartridgeWord(romAddress, value);
         }
     }
 
@@ -337,19 +391,34 @@ internal sealed class Sega32XBus
         return (ushort)((msb << 8) | lsb);
     }
 
-    private void SyncSh2sIfTimingSensitiveRegisterAccessed(uint alignedAddress)
+    private void WriteCartridgeByte(uint romAddress, byte value)
     {
-        if (alignedAddress < M68kSystemRegistersStart || alignedAddress > M68kSystemRegistersEnd)
-            return;
-        if (alignedAddress == 0xA15102)
-        {
-            _syncSh2sForM68kCommAccess?.Invoke();
-            return;
-        }
-        if (alignedAddress < 0xA15120 || alignedAddress > 0xA1512F)
+        if (_cartridgeRom.Length == 0)
             return;
 
-        _syncSh2sForM68kCommAccess?.Invoke();
+        uint index = romAddress % (uint)_cartridgeRom.Length;
+        _cartridgeRom[index] = value;
+    }
+
+    private void WriteCartridgeWord(uint romAddress, ushort value)
+    {
+        WriteCartridgeByte(romAddress, (byte)(value >> 8));
+        WriteCartridgeByte(romAddress + 1, (byte)value);
+    }
+
+    private void SyncSh2sIfTimingSensitiveRegisterAccessed(uint alignedAddress)
+    {
+        if (IsTimingSensitiveM68kSystemRegister(alignedAddress))
+            _syncSh2sForM68kCommAccess?.Invoke();
+    }
+
+    private static bool IsTimingSensitiveM68kSystemRegister(uint alignedAddress)
+    {
+        if (alignedAddress < M68kSystemRegistersStart || alignedAddress > M68kSystemRegistersEnd)
+            return false;
+
+        return alignedAddress == 0xA15102
+            || (alignedAddress >= 0xA15120 && alignedAddress <= 0xA1512F);
     }
 
     public byte ReadSh2CartridgeByte(uint romAddress) => ReadCartridgeByte(romAddress);
@@ -358,17 +427,22 @@ internal sealed class Sega32XBus
 
     public void WriteSh2CartridgeByte(uint romAddress, byte value)
     {
+        WriteCartridgeByte(romAddress & 0x003FFFFF, value);
         if (TraceSh2CartridgeWrites)
         {
             Console.WriteLine(
-                $"[S32X-CART-WRITE-IGNORED] addr=0x{(romAddress & 0x003FFFFF):X6} value=0x{value:X2}");
+                $"[S32X-CART-WRITE] addr=0x{(romAddress & 0x003FFFFF):X6} value=0x{value:X2}");
         }
     }
 
     public void WriteSh2CartridgeWord(uint romAddress, ushort value)
     {
-        WriteSh2CartridgeByte(romAddress, (byte)(value >> 8));
-        WriteSh2CartridgeByte(romAddress + 1, (byte)value);
+        WriteCartridgeWord(romAddress & 0x003FFFFE, value);
+        if (TraceSh2CartridgeWrites)
+        {
+            Console.WriteLine(
+                $"[S32X-CART-WRITE] addr=0x{(romAddress & 0x003FFFFE):X6} value=0x{value:X4}");
+        }
     }
 
     private static ushort ReadBigEndianWord(byte[] buffer, int offset)
