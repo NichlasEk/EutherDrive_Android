@@ -1922,14 +1922,19 @@ class Program
 
     private static int RunCps1Headless(string romPath, int framesToRun, string dumpDir, byte[]? statePayload)
     {
+        long loadStart = Stopwatch.GetTimestamp();
         var cps1 = new Cps1DinoAdapter();
         cps1.LoadRom(romPath);
+        long loadTicks = Stopwatch.GetTimestamp() - loadStart;
 
+        long stateLoadTicks = 0;
         if (statePayload != null)
         {
+            long stateLoadStart = Stopwatch.GetTimestamp();
             using var stateStream = new MemoryStream(statePayload, writable: false);
             using var stateReader = new BinaryReader(stateStream);
             cps1.LoadState(stateReader);
+            stateLoadTicks = Stopwatch.GetTimestamp() - stateLoadStart;
         }
 
         bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
@@ -1937,6 +1942,9 @@ class Program
         var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
         ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
         int unchangedFrames = 0;
+        long runTicksTotal = 0;
+        long runTicksMin = long.MaxValue;
+        long runTicksMax = 0;
 
         Console.WriteLine($"[HEADLESS] CPS1 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
         DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
@@ -1957,7 +1965,12 @@ class Program
                 z: false,
                 mode: false,
                 padType: PadType.SixButton);
+            long runStart = Stopwatch.GetTimestamp();
             cps1.RunFrame();
+            long runTicks = Stopwatch.GetTimestamp() - runStart;
+            runTicksTotal += runTicks;
+            runTicksMin = Math.Min(runTicksMin, runTicks);
+            runTicksMax = Math.Max(runTicksMax, runTicks);
 
             ReadOnlySpan<byte> fb = cps1.GetFrameBuffer(out int w, out int h, out int s);
             var stats = GetFrameStats(fb, w, h, s);
@@ -1979,6 +1992,21 @@ class Program
         ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
         Console.WriteLine($"[HEADLESS] CPS1 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
         DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+        if (framesToRun > 0 && runTicksTotal > 0)
+        {
+            double tickMs = 1000.0 / Stopwatch.Frequency;
+            double loadMs = loadTicks * tickMs;
+            double stateLoadMs = stateLoadTicks * tickMs;
+            double avgMs = (runTicksTotal * tickMs) / framesToRun;
+            double minMs = runTicksMin * tickMs;
+            double maxMs = runTicksMax * tickMs;
+            double capacityFps = framesToRun * Stopwatch.Frequency / (double)runTicksTotal;
+            double targetFps = cps1.GetTargetFps();
+            double headroomFps = capacityFps - targetFps;
+            double headroomPercent = targetFps > 0 ? capacityFps / targetFps * 100.0 : 0.0;
+            Console.WriteLine(
+                $"[HEADLESS][CPS1-PERF] load_ms={loadMs:0.###} state_load_ms={stateLoadMs:0.###} frames={framesToRun} run_avg_ms={avgMs:0.###} run_min_ms={minMs:0.###} run_max_ms={maxMs:0.###} capacity_fps={capacityFps:0.###} target_fps={targetFps:0.###} headroom_fps={headroomFps:+0.###;-0.###;0.###} headroom_pct={headroomPercent:0.#}");
+        }
         Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
         return 0;
     }
