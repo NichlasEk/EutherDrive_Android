@@ -348,7 +348,7 @@ internal sealed class System32RomSet
 
     private static Dictionary<string, byte[]> ReadArchive(string path)
     {
-        using IArchive archive = ArchiveFactory.Open(path);
+        using IArchive archive = RomArchiveExtractor.OpenArchive(path);
         var entries = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         foreach (IArchiveEntry entry in archive.Entries)
         {

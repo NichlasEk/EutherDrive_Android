@@ -139,7 +139,7 @@ public sealed class System32Adapter : IEmulatorCore
     {
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("Sega System 32 ROM path is empty.", nameof(path));
-        if (!File.Exists(path))
+        if (!RomArchiveExtractor.FileExists(path))
             throw new FileNotFoundException("Sega System 32 ROM archive not found.", path);
 
         _roms = System32RomSet.Load(path);

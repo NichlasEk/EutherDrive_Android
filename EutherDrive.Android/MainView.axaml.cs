@@ -1457,7 +1457,11 @@ public partial class MainView : UserControl
         bool forceOpaque = _core is PsxAdapter
             || _core is SnesAdapter
             || _core is MdTracerAdapter
-            || _core is PceCdAdapter;
+            || _core is PceCdAdapter
+            || _core is EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter
+            || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
+            || _core is EutherDrive.Core.Arcade.System32.System32Adapter
+            || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
 
         if (_renderSurface is AndroidNativeGlRenderSurface
@@ -2230,6 +2234,14 @@ public partial class MainView : UserControl
                 return virtualImport.PrimaryPath;
             }
 
+            if (!isSystemFile
+                && await TryRegisterVirtualArcadeArchiveBundleAsync(storageProvider, file, source) is { } arcadeImport)
+            {
+                transferredToVirtualFile = true;
+                TrackSelectedVirtualPaths(arcadeImport.RegisteredPaths);
+                return arcadeImport.PrimaryPath;
+            }
+
             if (!isSystemFile && source.CanSeek && source.Length > 128L * 1024 * 1024)
             {
                 throw new InvalidOperationException("This ROM is too large for temporary Android caching. Disc images need direct streaming support instead.");
@@ -2324,6 +2336,81 @@ public partial class MainView : UserControl
 
         candidate = candidate.Trim();
         return string.IsNullOrWhiteSpace(candidate) ? fallback : candidate;
+    }
+
+    private async Task<VirtualRomImport?> TryRegisterVirtualArcadeArchiveBundleAsync(IStorageProvider? storageProvider, IStorageFile file, Stream source)
+    {
+        string ext = Path.GetExtension(file.Name).ToLowerInvariant();
+        if (ext is not ".zip" and not ".7z" || !IsDirectStreamArcadeArchiveName(file.Name))
+        {
+            return null;
+        }
+
+        if (!source.CanSeek)
+        {
+            throw new InvalidOperationException("Android arcade archive streaming needs a seekable ROM stream from the picker.");
+        }
+
+        string bundleRoot = Path.Combine("/__eutherdrive_virtual__", $"arcade_{Guid.NewGuid():N}");
+        string primaryPath = VirtualFileSystem.RegisterSharedStreamAtPath(
+            Path.Combine(bundleRoot, file.Name),
+            file.Name,
+            source,
+            ownsStream: true);
+        var registeredPaths = new List<string> { primaryPath };
+
+        try
+        {
+            if (storageProvider != null)
+            {
+                var folders = await storageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+                {
+                    Title = "Choose the folder containing arcade parent ROM zips",
+                    AllowMultiple = false
+                });
+
+                if (folders.Count != 0)
+                {
+                    await foreach (IStorageItem folderItem in folders[0].GetItemsAsync())
+                    {
+                        if (folderItem is not IStorageFile candidateFile)
+                            continue;
+
+                        string candidateName = candidateFile.Name;
+                        if (string.Equals(candidateName, file.Name, StringComparison.OrdinalIgnoreCase)
+                            || !ShouldRegisterArcadeSibling(candidateName))
+                        {
+                            continue;
+                        }
+
+                        Stream candidateStream = await candidateFile.OpenReadAsync();
+                        if (!candidateStream.CanSeek)
+                        {
+                            await candidateStream.DisposeAsync();
+                            continue;
+                        }
+
+                        string virtualPath = VirtualFileSystem.RegisterSharedStreamAtPath(
+                            Path.Combine(bundleRoot, candidateName),
+                            candidateName,
+                            candidateStream,
+                            ownsStream: true);
+                        registeredPaths.Add(virtualPath);
+                    }
+                }
+            }
+
+            return new VirtualRomImport(primaryPath, registeredPaths);
+        }
+        catch
+        {
+            foreach (string path in registeredPaths)
+            {
+                VirtualFileSystem.Unregister(path);
+            }
+
+            throw;
+        }
     }
 
     private async Task<VirtualRomImport?> TryRegisterVirtualDiscSourceAsync(IStorageProvider? storageProvider, IStorageFile file, Stream source)
@@ -2481,6 +2568,34 @@ public partial class MainView : UserControl
         }
 
         _selectedVirtualPaths.Clear();
+    }
+
+    private static bool ShouldRegisterArcadeSibling(string fileName)
+    {
+        string ext = Path.GetExtension(fileName).ToLowerInvariant();
+        if (ext is not ".zip" and not ".7z" and not ".bin")
+            return false;
+
+        if (fileName.Equals("dl-1425.bin", StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals("qsound.zip", StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals("qsound.7z", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return IsDirectStreamArcadeArchiveName(fileName);
+    }
+
+    private static bool IsDirectStreamArcadeArchiveName(string fileName)
+    {
+        string ext = Path.GetExtension(fileName).ToLowerInvariant();
+        if (ext is not ".zip" and not ".7z")
+            return false;
+
+        string pseudoPath = Path.Combine("/__eutherdrive_probe__", fileName);
+        return EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath);
     }
 
     private async Task PickSystemFileAsync(string key, string title, string[] patterns)
@@ -3873,6 +3988,16 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter();
         }
 
+        if (EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter();
+        }
+
+        if (EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.System32.System32Adapter();
+        }
+
         if (EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
         {
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
@@ -3981,6 +4106,8 @@ public partial class MainView : UserControl
             PceCdAdapter => "PC Engine CD",
             N64Adapter => "Nintendo 64",
             EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter => "Arcade",
+            EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter => "Arcade CPS2",
+            EutherDrive.Core.Arcade.System32.System32Adapter => "Sega System 32",
             EutherDrive.Core.Arcade.McsArcadeAdapter => "MAME",
             GbAdapter => GetEffectiveRomExtension(romPath) == ".gbc" ? "Game Boy Color" : "Game Boy",
             GbaAdapter => "Game Boy Advance",

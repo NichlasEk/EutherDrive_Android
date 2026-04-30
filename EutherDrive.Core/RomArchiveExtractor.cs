@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using ProjectPSX.IO;
 using SharpCompress.Archives;
 
 namespace EutherDrive.Core;
@@ -26,12 +27,32 @@ public static class RomArchiveExtractor
                ext.Equals(".7z", StringComparison.OrdinalIgnoreCase);
     }
 
+    internal static bool FileExists(string path) => VirtualFileSystem.Exists(path);
+
+    internal static Stream OpenRead(string path) => VirtualFileSystem.OpenRead(path);
+
+    internal static byte[] ReadAllBytes(string path) => VirtualFileSystem.ReadAllBytes(path);
+
+    internal static IArchive OpenArchive(string path)
+    {
+        Stream stream = VirtualFileSystem.OpenRead(path);
+        try
+        {
+            return ArchiveFactory.Open(stream);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
     internal static bool HasArchiveHeader(string path)
     {
         Span<byte> header = stackalloc byte[6];
         try
         {
-            using var fs = File.OpenRead(path);
+            using var fs = OpenRead(path);
             int read = fs.Read(header);
             header = header[..read];
         }
@@ -52,7 +73,7 @@ public static class RomArchiveExtractor
 
         try
         {
-            using var archive = ArchiveFactory.Open(archivePath);
+            using var archive = OpenArchive(archivePath);
             IArchiveEntry? best = null;
             int bestPriority = int.MaxValue;
             long bestSize = -1;

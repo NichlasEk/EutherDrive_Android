@@ -77,11 +77,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
     {
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("CPS1 ROM path is empty.", nameof(path));
-        if (!File.Exists(path))
+        if (!RomArchiveExtractor.FileExists(path))
             throw new FileNotFoundException("CPS1 ROM archive not found.", path);
 
         byte[] romHash;
-        using (FileStream stream = File.OpenRead(path))
+        using (Stream stream = RomArchiveExtractor.OpenRead(path))
             romHash = RomIdentity.ComputeSha256(stream);
 
         Cps1DinoRomSet roms = Cps1DinoRomSet.Load(path);
@@ -724,7 +724,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         public void LatchSprites()
         {
-            if (_useDinopicBootlegVideo)
+            if (_useDinopicBootlegVideo || _usePunipicBootlegVideo)
             {
                 LatchDinopicSprites();
                 return;
@@ -1089,6 +1089,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 WriteWordByte(ref _gfxRam[index], address, value);
                 return;
             }
+            if (_usePunipicBootlegVideo && IsPunipicSpriteRamNoop(address))
+                return;
             if ((_useDinopicBootlegVideo || _usePunipicBootlegVideo) && address >= 0x990000 && address <= 0x993fff)
             {
                 WriteWordByte(ref _bootlegSpriteRam[(int)((address - 0x990000) >> 1)], address, value);
@@ -1214,6 +1216,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 WritePunipicLayerRegister((int)((address - 0x980000) >> 1), value);
                 return;
             }
+            if (_usePunipicBootlegVideo && IsPunipicSpriteRamNoop(address))
+                return;
             if ((_useDinopicBootlegVideo || _usePunipicBootlegVideo) && address >= 0x990000 && address <= 0x993fff)
             {
                 _bootlegSpriteRam[(int)((address - 0x990000) >> 1)] = value;
@@ -1511,6 +1515,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 ? (ushort)((word & 0x00ff) | (value << 8))
                 : (ushort)((word & 0xff00) | value);
         }
+
+        private static bool IsPunipicSpriteRamNoop(uint address) =>
+            address is >= 0x990000 and <= 0x990001 or >= 0x991000 and <= 0x991017;
 
         private static void WriteByteArray(BinaryWriter writer, byte[] data)
         {
@@ -2505,7 +2512,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             };
             int expandedCode = code << shift;
 
-            if (_mapper == Cps1GfxMapper.S9263B && TryMapS9263B(layer, expandedCode, shift, out int mappedCode))
+            if (_mapper == Cps1GfxMapper.PS63B && TryMapPS63B(layer, expandedCode, shift, out int mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.S9263B && TryMapS9263B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.WL24B && TryMapWL24B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
@@ -2520,6 +2529,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             if (_mapper == Cps1GfxMapper.S222B && TryMapS222B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.O224B && TryMapO224B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
+            if (_mapper == Cps1GfxMapper.STF29 && TryMapSTF29(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.ST24M1 && TryMapST24M1(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
@@ -2549,6 +2560,19 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return mappedCode;
 
             return _mapper == Cps1GfxMapper.Linear ? code : -1;
+        }
+
+        private static bool TryMapPS63B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            if (expandedCode is < 0x00000 or > 0x0ffff)
+                return false;
+
+            int bank = expandedCode >= 0x08000 ? 1 : 0;
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
         }
 
         private static bool TryMapKD29B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
@@ -2702,6 +2726,58 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return false;
 
             int bank = layer is Cps1GfxLayer.Sprites or Cps1GfxLayer.Scroll1 ? 0 : 1;
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
+        }
+
+        private static bool TryMapSTF29(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+            int bank;
+            bool inRange;
+
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    if (expandedCode >= 0x00000 && expandedCode <= 0x07fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x08000 && expandedCode <= 0x0ffff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x10000 && expandedCode <= 0x11fff)
+                    {
+                        bank = 2;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll3:
+                    bank = 2;
+                    inRange = expandedCode >= 0x02000 && expandedCode <= 0x03fff;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 2;
+                    inRange = expandedCode >= 0x04000 && expandedCode <= 0x04fff;
+                    break;
+                default:
+                    bank = 2;
+                    inRange = expandedCode >= 0x05000 && expandedCode <= 0x07fff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
             mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
             return true;
         }
@@ -3409,11 +3485,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
     private enum Cps1GfxMapper
     {
         Linear,
+        PS63B,
         S9263B,
         LW621,
         S224B,
         S222B,
         O224B,
+        STF29,
         ST24M1,
         ST22B,
         WL24B,
@@ -3486,6 +3564,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         public static readonly Cps1VideoConfig CpsB12 = new(0x2c, 0x2a, 0x28, 0x26, 0x24, 0x22, 0x20, 0x0402);
         public static readonly Cps1VideoConfig CpsB04 = new(0x2e, 0x26, 0x30, 0x28, 0x32, 0x2a, 0x20, 0x0004);
         public static readonly Cps1VideoConfig CpsB05 = new(0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x20, 0x0005);
+        public static readonly Cps1VideoConfig CpsB11 = new(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30, 0x32, 0x0401, LayerEnable0: 0x08, LayerEnable1: 0x10, LayerEnable2: 0x20);
         public static readonly Cps1VideoConfig CpsB14 = new(0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c, 0x1e, 0x0404);
         public static readonly Cps1VideoConfig CpsB15 = new(0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c, 0x0e, 0x0405, LayerEnable0: 0x04, LayerEnable1: 0x02, LayerEnable2: 0x20);
         public static readonly Cps1VideoConfig CpsB16 = new(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00, 0x0406);
@@ -3602,6 +3681,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             "sf2m8",
             "sf2m9",
             "sf2m10",
+            "sf2mdt",
             "sf2mkot",
             "sf2rb",
             "sf2rb2",
@@ -3609,8 +3689,52 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             "sf2red",
             "sf2reda",
             "sf2redp2",
+            "sf2toryu",
+            "sf2turyu",
+            "sf2turyu1",
             "sf2v004",
             "sf2yyc"
+        };
+
+        private static readonly HashSet<string> PS63BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "punipic",
+            "punipic2",
+            "punipic3",
+            "punisher",
+            "punisherh",
+            "punisherj",
+            "punisheru"
+        };
+
+        private static readonly HashSet<string> STF29MapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "sf2",
+            "sf2ea",
+            "sf2eb",
+            "sf2ed",
+            "sf2ee",
+            "sf2ef",
+            "sf2em",
+            "sf2en",
+            "sf2ua",
+            "sf2ub",
+            "sf2uc",
+            "sf2ud",
+            "sf2ue",
+            "sf2uf",
+            "sf2ug",
+            "sf2uh",
+            "sf2ui",
+            "sf2uk",
+            "sf2um",
+            "sf2j",
+            "sf2j17",
+            "sf2ja",
+            "sf2jc",
+            "sf2jf",
+            "sf2jh",
+            "sf2jl"
         };
 
         private static readonly HashSet<string> WL24BMapperSets = new(StringComparer.OrdinalIgnoreCase)
@@ -3965,6 +4089,23 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return definition with { GraphicsLoads = ForgottenWorldsMixedGraphicsLoads() };
             }
 
+            if (string.Equals(setName, "sf2m6", StringComparison.OrdinalIgnoreCase)
+                && TryFind(entries, out _, "u222-6b")
+                && TryFind(entries, out _, "u196-6b"))
+            {
+                return definition with
+                {
+                    ProgramLoads = new[]
+                    {
+                        Load(RomLoadKind.Byte, 0x0, 0x0, 0x80000, "u222-6b"),
+                        Load(RomLoadKind.Byte, 0x1, 0x0, 0x80000, "u196-6b"),
+                    },
+                    GraphicsLoads = Sf2CeBinGraphicsLoads(),
+                    AudioCpuLoads = Sf2CeBinAudioCpuLoads(),
+                    OkiLoads = Sf2CeBinOkiLoads()
+                };
+            }
+
             return definition;
         }
 
@@ -4089,6 +4230,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         private static Cps1GfxMapper GetGfxMapper(string setName)
         {
+            if (PS63BMapperSets.Contains(setName))
+                return Cps1GfxMapper.PS63B;
+            if (STF29MapperSets.Contains(setName))
+                return Cps1GfxMapper.STF29;
             if (S9263BMapperSets.Contains(setName))
                 return Cps1GfxMapper.S9263B;
             if (WL24BMapperSets.Contains(setName))
@@ -6527,7 +6672,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["sf2"] = new Cps1ClassicDefinition(
                 "sf2",
                 null,
-                new Cps1VideoConfig(0x26, 0x28, 0x2a, 0x2c, 0x2e, 0x30),
+                Cps1VideoConfig.CpsB11,
                 0x600000,
                 0x40000,
                 new[]
@@ -6611,9 +6756,9 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "s92e_23b.8f"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "s92_22b.7f"),
-                    Load(RomLoadKind.WordSwap, 0x100000, 0x0, 0x80000, "s92_21a.6f"),
+                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "s92e_23b.8f", "s92e_23a.8f", "sf2ce.23"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "s92_22b.7f", "s92_22a.7f", "sf2ce.22"),
+                    Load(RomLoadKind.WordSwap, 0x100000, 0x0, 0x80000, "s92_21a.6f", "s92_21a.bin"),
                 },
                 new[]
                 {
@@ -6832,15 +6977,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 });
             definitions["sf2hf"] = new Cps1ClassicDefinition(
                 "sf2hf",
-                null,
+                "sf2ce",
                 Cps1VideoConfig.Default,
                 0x600000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "s2te_23.8f"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "s2te_22.7f"),
-                    Load(RomLoadKind.WordSwap, 0x100000, 0x0, 0x80000, "s2te_21.6f"),
+                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "s2te_23.8f", "s92e_23a.bin", "sf2.23"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "s2te_22.7f", "sf2_22.bin"),
+                    Load(RomLoadKind.WordSwap, 0x100000, 0x0, 0x80000, "s2te_21.6f", "sf2_21.bin"),
                 },
                 new[]
                 {
@@ -6869,15 +7014,15 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 });
             definitions["sf2hfj"] = new Cps1ClassicDefinition(
                 "sf2hfj",
-                null,
+                "sf2ce",
                 Cps1VideoConfig.Default,
                 0x600000,
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "s2tj_23.8f"),
-                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "s2tj_22.7f"),
-                    Load(RomLoadKind.WordSwap, 0x100000, 0x0, 0x80000, "s2tj_21.6f"),
+                    Load(RomLoadKind.WordSwap, 0x0, 0x0, 0x80000, "s2tj_23.8f", "s2tj_23.bin"),
+                    Load(RomLoadKind.WordSwap, 0x80000, 0x0, 0x80000, "s2tj_22.7f", "s2t_22.bin"),
+                    Load(RomLoadKind.WordSwap, 0x100000, 0x0, 0x80000, "s2tj_21.6f", "s2t_21.bin"),
                 },
                 new[]
                 {
@@ -7337,6 +7482,85 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                     Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "s92_18.bin"),
                     Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "s92_19.bin"),
                 });
+            definitions["sf2mdt"] = new Cps1ClassicDefinition(
+                "sf2mdt",
+                null,
+                Cps1VideoConfig.CpsB21Def,
+                0x600000,
+                0,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x80000, "3.ic172"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x80000, "1.ic171"),
+                    Load(RomLoadKind.Byte, 0x100000, 0x0, 0x20000, "4.ic176"),
+                    Load(RomLoadKind.Byte, 0x100001, 0x0, 0x20000, "2.ic175"),
+                },
+                new[]
+                {
+                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "7.ic90"),
+                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "10.ic88"),
+                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "13.ic89"),
+                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "16.ic87"),
+                    Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "6.ic91"),
+                    Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "9.ic93"),
+                    Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "12.ic92"),
+                    Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "15.ic94"),
+                    Load(RomLoadKind.Graphics64Word, 0x400000, 0x0, 0x80000, "8.ic86"),
+                    Load(RomLoadKind.Graphics64Word, 0x400002, 0x0, 0x80000, "11.ic84"),
+                    Load(RomLoadKind.Graphics64Word, 0x400004, 0x0, 0x80000, "14.ic85"),
+                    Load(RomLoadKind.Graphics64Word, 0x400006, 0x0, 0x80000, "17.ic83"),
+                },
+                Array.Empty<RomLoad>(),
+                Array.Empty<RomLoad>(),
+                Cps1AudioHardware.None);
+            definitions["sf2toryu"] = new Cps1ClassicDefinition(
+                "sf2toryu",
+                "sf2ce",
+                Cps1VideoConfig.Default,
+                0x600000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x80000, "tl4m.2"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x80000, "tl4mt.1"),
+                    Load(RomLoadKind.Byte, 0x100000, 0x0, 0x20000, "u221t.1m"),
+                    Load(RomLoadKind.Byte, 0x100001, 0x0, 0x20000, "u195t.1m"),
+                },
+                Sf2CeBinGraphicsLoads(),
+                Sf2CeBinAudioCpuLoads(),
+                Sf2CeBinOkiLoads());
+            definitions["sf2turyu"] = new Cps1ClassicDefinition(
+                "sf2turyu",
+                "sf2ce",
+                Cps1VideoConfig.Default,
+                0x600000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x100000, "u222-f83.040"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x100000, "u196-99d.040"),
+                    Load(RomLoadKind.Byte, 0x100000, 0x0, 0x40000, "u221-59e.010"),
+                    Load(RomLoadKind.Byte, 0x100001, 0x0, 0x40000, "u195-472.010"),
+                },
+                Sf2CeBinGraphicsLoads(),
+                Sf2CeBinAudioCpuLoads(),
+                Sf2CeBinOkiLoads());
+            definitions["sf2turyu1"] = new Cps1ClassicDefinition(
+                "sf2turyu1",
+                "sf2ce",
+                Cps1VideoConfig.Default,
+                0x600000,
+                0x40000,
+                new[]
+                {
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x80000, "tl4m2"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x80000, "tl4m1"),
+                    Load(RomLoadKind.Byte, 0x100000, 0x0, 0x20000, "221.rom"),
+                    Load(RomLoadKind.Byte, 0x100001, 0x0, 0x20000, "195.rom"),
+                },
+                Sf2CeBinGraphicsLoads(),
+                Sf2CeBinAudioCpuLoads(),
+                Sf2CeBinOkiLoads());
             definitions["sf2rb"] = new Cps1ClassicDefinition(
                 "sf2rb",
                 null,
@@ -11949,7 +12173,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         private static Dictionary<string, byte[]> ReadArchive(string path)
         {
-            using IArchive archive = ArchiveFactory.Open(path);
+            using IArchive archive = RomArchiveExtractor.OpenArchive(path);
             var entries = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
             foreach (IArchiveEntry entry in archive.Entries)
             {
@@ -12029,6 +12253,37 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 Load(RomLoadKind.Raw, 0x10000, 0x8000, -1, names)
             };
 
+        private static RomLoad[] Sf2CeBinGraphicsLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "s92_01.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "s92_02.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "s92_03.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "s92_04.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "s92_05.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "s92_06.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "s92_07.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "s92_08.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x400000, 0x0, 0x80000, "s92_10.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x400002, 0x0, 0x80000, "s92_11.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x400004, 0x0, 0x80000, "s92_12.bin"),
+                Load(RomLoadKind.Graphics64Word, 0x400006, 0x0, 0x80000, "s92_13.bin"),
+            };
+
+        private static RomLoad[] Sf2CeBinAudioCpuLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "s92_09.bin"),
+                Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "s92_09.bin"),
+            };
+
+        private static RomLoad[] Sf2CeBinOkiLoads()
+            => new[]
+            {
+                Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "s92_18.bin"),
+                Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "s92_19.bin"),
+            };
+
         private static RomLoad[] QSoundBanks(params string[] banks)
         {
             var loads = new RomLoad[banks.Length];
@@ -12047,7 +12302,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return;
 
             string parentPath = Path.Combine(directory, parentSetName + ".zip");
-            if (!File.Exists(parentPath))
+            if (!RomArchiveExtractor.FileExists(parentPath))
                 return;
 
             Dictionary<string, byte[]> parentEntries = ReadArchive(parentPath);
@@ -12262,11 +12517,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             if (!string.IsNullOrWhiteSpace(directory))
             {
                 string dspPath = Path.Combine(directory, "dl-1425.bin");
-                if (File.Exists(dspPath))
-                    return NormalizeQSoundDsp(File.ReadAllBytes(dspPath));
+                if (RomArchiveExtractor.FileExists(dspPath))
+                    return NormalizeQSoundDsp(RomArchiveExtractor.ReadAllBytes(dspPath));
 
                 string qsoundZip = Path.Combine(directory, "qsound.zip");
-                if (File.Exists(qsoundZip))
+                if (RomArchiveExtractor.FileExists(qsoundZip))
                 {
                     Dictionary<string, byte[]> qsoundEntries = ReadArchive(qsoundZip);
                     if (TryFind(qsoundEntries, out byte[] fromZip, "dl-1425.bin"))

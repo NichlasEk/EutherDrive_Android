@@ -61,7 +61,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
     {
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("CPS2 ROM path is empty.", nameof(path));
-        if (!File.Exists(path))
+        if (!RomArchiveExtractor.FileExists(path))
             throw new FileNotFoundException("CPS2 ROM archive not found.", path);
 
         Cps2DdsomRomSet roms = Cps2DdsomRomSet.Load(path);
@@ -1879,7 +1879,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
         private static Dictionary<string, byte[]> ReadArchive(string path)
         {
-            using IArchive archive = ArchiveFactory.Open(path);
+            using IArchive archive = RomArchiveExtractor.OpenArchive(path);
             var entries = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
             foreach (IArchiveEntry entry in archive.Entries)
             {
@@ -1904,7 +1904,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             foreach (string parentArchive in ParentArchiveCandidates(setName).Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 string parentPath = Path.Combine(directory, parentArchive);
-                if (!File.Exists(parentPath))
+                if (!RomArchiveExtractor.FileExists(parentPath))
                     continue;
 
                 foreach (KeyValuePair<string, byte[]> entry in ReadArchive(parentPath))
@@ -2270,12 +2270,12 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             if (!string.IsNullOrWhiteSpace(directory))
             {
                 string dspPath = Path.Combine(directory, "dl-1425.bin");
-                if (File.Exists(dspPath))
-                    return NormalizeQSoundDsp(File.ReadAllBytes(dspPath));
+                if (RomArchiveExtractor.FileExists(dspPath))
+                    return NormalizeQSoundDsp(RomArchiveExtractor.ReadAllBytes(dspPath));
 
                 string? qsoundArchive = new[] { "qsound.zip", "qsound.7z" }
                     .Select(fileName => Path.Combine(directory, fileName))
-                    .FirstOrDefault(File.Exists);
+                    .FirstOrDefault(RomArchiveExtractor.FileExists);
                 if (!string.IsNullOrWhiteSpace(qsoundArchive))
                 {
                     Dictionary<string, byte[]> qsoundEntries = ReadArchive(qsoundArchive);
