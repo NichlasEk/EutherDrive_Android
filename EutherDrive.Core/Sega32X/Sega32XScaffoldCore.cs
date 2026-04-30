@@ -153,7 +153,6 @@ internal sealed class Sega32XScaffoldCore
                 eventTicks = 1;
 
             ulong slice = Math.Min(remaining, Math.Min(DefaultSh2ExecutionSliceLength, eventTicks));
-            Bus.Vdp.AdvanceFrameTiming(slice, DefaultSh2InstructionsPerFrame, Registers);
             _globalSh2Cycles += slice;
             _slaveBus.CycleLimit = _globalSh2Cycles;
             _masterBus.CycleLimit = _globalSh2Cycles;
@@ -164,6 +163,7 @@ internal sealed class Sega32XScaffoldCore
             _masterBus.TickPeripherals(slice);
             _slaveBus.TickPeripherals(slice);
             Bus.Pwm.Tick(slice, Registers);
+            Bus.Vdp.AdvanceFrameTiming(slice, DefaultSh2InstructionsPerFrame, Registers);
             remaining -= slice;
         }
     }
