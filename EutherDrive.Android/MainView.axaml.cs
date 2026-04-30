@@ -1891,6 +1891,10 @@ public partial class MainView : UserControl
         {
             perfSummary = $"{perfSummary}\n{gbaFramePerf}";
         }
+        else if (_core is EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1 && cps1.TryGetFramePerfSummary(out string cps1FramePerf))
+        {
+            perfSummary = $"{perfSummary}\n{cps1FramePerf}";
+        }
 
         _latestPerfSummary = perfSummary;
 
@@ -3512,6 +3516,30 @@ public partial class MainView : UserControl
                 _lastFrameWidth = mdWidth;
                 _lastFrameHeight = mdHeight;
                 _lastFrameStride = mdStride;
+                _lastFrameIsPsx = false;
+                _lastPsxInterlaceBlend = false;
+                _lastPsxInterlaceFieldParity = -1;
+                _lastPsxFrameInfo = default;
+                _lastPresentationWidth = 0;
+                _lastPresentationHeight = 0;
+                (_captureFrameBuffer, _latestFrameBuffer) = (_latestFrameBuffer, _captureFrameBuffer);
+                _emulatedFrames++;
+                _latestFrameSerial++;
+            }
+
+            QueuePresentLatestFrame();
+            return;
+        }
+
+        if (core is EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1
+            && cps1.TrySwapPresentationBuffer(ref _captureFrameBuffer, out int cps1Width, out int cps1Height, out int cps1Stride))
+        {
+            _psxInterlaceReconstructor.Reset();
+            lock (_frameSync)
+            {
+                _lastFrameWidth = cps1Width;
+                _lastFrameHeight = cps1Height;
+                _lastFrameStride = cps1Stride;
                 _lastFrameIsPsx = false;
                 _lastPsxInterlaceBlend = false;
                 _lastPsxInterlaceFieldParity = -1;

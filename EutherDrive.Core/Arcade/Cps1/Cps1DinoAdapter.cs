@@ -30,7 +30,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
     private static readonly bool TraceCps1PerfDetailed =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_CPS1_PERF_DETAILED"), "1", StringComparison.Ordinal);
 
-    private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
+    private byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly Cps1Bus _bus = new();
     private readonly Cps1AudioBus _audioBus;
     private readonly M68000 _mainCpu = M68000.CreateBuilder()
@@ -300,6 +300,23 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         return _frameBuffer;
     }
 
+    public bool TrySwapPresentationBuffer(ref byte[] buffer, out int width, out int height, out int stride)
+    {
+        width = FrameWidth;
+        height = FrameHeight;
+        stride = FrameStride;
+
+        const int requiredBytes = FrameHeight * FrameStride;
+        if (_frameBuffer.Length < requiredBytes)
+            return false;
+
+        if (buffer.Length < requiredBytes)
+            buffer = new byte[requiredBytes];
+
+        (_frameBuffer, buffer) = (buffer, _frameBuffer);
+        return true;
+    }
+
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
         sampleRate = OutputSampleRate;
@@ -480,6 +497,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         private readonly ushort[] _gfxRam = new ushort[GfxRamWords];
         private readonly ushort[] _bootlegSpriteRam = new ushort[0x2000];
         private readonly ushort[] _paletteRam = new ushort[PaletteEntries];
+        private int _paletteVersion;
         private readonly ushort[] _bufferedObj = new ushort[ObjWords];
         private readonly ushort[] _cpsA = new ushort[0x20];
         private readonly ushort[] _cpsB = new ushort[0x20];
@@ -516,6 +534,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         public ReadOnlySpan<ushort> GfxRam => _gfxRam;
         public ReadOnlySpan<ushort> PaletteRam => _paletteRam;
+        public int PaletteVersion => _paletteVersion;
         public ReadOnlySpan<ushort> BufferedObj => _bufferedObj;
         public ReadOnlySpan<ushort> CpsA => _cpsA;
         public ReadOnlySpan<ushort> CpsB => _cpsB;
@@ -540,6 +559,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_gfxRam);
             Array.Clear(_bootlegSpriteRam);
             Array.Clear(_paletteRam);
+            _paletteVersion = 0;
             Array.Clear(_bufferedObj);
             Array.Clear(_cpsA);
             Array.Clear(_cpsB);
@@ -596,6 +616,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_gfxRam);
             Array.Clear(_bootlegSpriteRam);
             Array.Clear(_paletteRam);
+            _paletteVersion++;
             Array.Clear(_bufferedObj);
             Array.Clear(_cpsA);
             Array.Clear(_cpsB);
@@ -656,6 +677,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             else
                 Array.Clear(_bootlegSpriteRam);
             ReadUshortArray(reader, _paletteRam);
+            _paletteVersion++;
             ReadUshortArray(reader, _bufferedObj);
             ReadUshortArray(reader, _cpsA);
             ReadUshortArray(reader, _cpsB);
@@ -1370,6 +1392,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             int source = Cps1Base(Cps1Regs.PaletteBase, PaletteAlignBytes);
             int cursor = source;
             ushort control = _cpsB[_videoConfig.PaletteControl / 2];
+            bool changed = false;
 
             for (int page = 0; page < 6; page++)
             {
@@ -1377,13 +1400,24 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 {
                     int destination = page * 0x200;
                     for (int offset = 0; offset < 0x200; offset++)
-                        _paletteRam[destination + offset] = ReadGfxWord(cursor++);
+                    {
+                        ushort value = ReadGfxWord(cursor++);
+                        int index = destination + offset;
+                        if (_paletteRam[index] != value)
+                        {
+                            _paletteRam[index] = value;
+                            changed = true;
+                        }
+                    }
                 }
                 else if (cursor != source)
                 {
                     cursor += 0x200;
                 }
             }
+
+            if (changed)
+                _paletteVersion++;
         }
 
         private ushort ReadDsw(int offset)
@@ -2096,6 +2130,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         private readonly ushort[] _pixels = new ushort[InternalWidth * InternalHeight];
         private readonly byte[] _spritePriority = new byte[InternalWidth * InternalHeight];
         private readonly uint[] _palette = new uint[PaletteEntries];
+        private int _lastPaletteVersion = -1;
 
         public Cps1Video(Cps1Bus bus, byte[] gfxRom, Cps1GfxMapper gfxMapper)
         {
@@ -2143,6 +2178,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         private void BuildPalette()
         {
+            int paletteVersion = _bus.PaletteVersion;
+            if (_lastPaletteVersion == paletteVersion)
+                return;
+
             ReadOnlySpan<ushort> paletteRam = _bus.PaletteRam;
             for (int offset = 0; offset < paletteRam.Length; offset++)
             {
@@ -2153,6 +2192,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 int b = (value & 0x0f) * 0x11 * bright / 0x2d;
                 _palette[offset] = 0xff000000u | ((uint)r << 16) | ((uint)g << 8) | (uint)b;
             }
+            _lastPaletteVersion = paletteVersion;
         }
 
         private void DrawLayer(int layer)
