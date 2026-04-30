@@ -1815,7 +1815,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         public void Render(byte[] frameBuffer)
         {
             BuildPalette();
-            Array.Clear(_pixels);
+            Array.Fill(_pixels, (ushort)0x0bff);
             Array.Clear(_spritePriority);
 
             Cps1VideoConfig config = _bus.VideoConfig;
@@ -3143,6 +3143,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         public static readonly Cps1VideoConfig CpsB15 = new(0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c, 0x0e, 0x0405, LayerEnable0: 0x04, LayerEnable1: 0x02, LayerEnable2: 0x20);
         public static readonly Cps1VideoConfig CpsB16 = new(0x0c, 0x0a, 0x08, 0x06, 0x04, 0x02, 0x00, 0x0406);
         public static readonly Cps1VideoConfig CpsB21Bt1 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x30, 0x32, 0x0800, 0x0a, 0x08, 0x0e, 0x0c);
+        public static readonly Cps1VideoConfig CpsB21Bt2 = new(0x20, 0x2e, 0x2c, 0x2a, 0x28, 0x30, MultResultLo: 0x1a, MultResultHi: 0x18, MultFactor1: 0x1e, MultFactor2: 0x1c, LayerEnable0: 0x30, LayerEnable1: 0x08, LayerEnable2: 0x30);
         public static readonly Cps1VideoConfig HackB2 = new(0x28, 0x26, 0x24, 0x22, 0x20, 0x22);
 
         public int PriorityMask(int group) => group switch
@@ -5271,7 +5272,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["kod"] = new Cps1ClassicDefinition(
                 "kod",
                 null,
-                new Cps1VideoConfig(0x20, 0x2e, 0x2c, 0x2a, 0x28, 0x30),
+                Cps1VideoConfig.CpsB21Bt2,
                 0x400000,
                 0x40000,
                 new[]
@@ -5309,7 +5310,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["kodj"] = new Cps1ClassicDefinition(
                 "kodj",
                 null,
-                new Cps1VideoConfig(0x20, 0x2e, 0x2c, 0x2a, 0x28, 0x30),
+                Cps1VideoConfig.CpsB21Bt2,
                 0x400000,
                 0x40000,
                 new[]
@@ -5344,7 +5345,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             definitions["kodu"] = new Cps1ClassicDefinition(
                 "kodu",
                 null,
-                new Cps1VideoConfig(0x20, 0x2e, 0x2c, 0x2a, 0x28, 0x30),
+                Cps1VideoConfig.CpsB21Bt2,
                 0x400000,
                 0x40000,
                 new[]
