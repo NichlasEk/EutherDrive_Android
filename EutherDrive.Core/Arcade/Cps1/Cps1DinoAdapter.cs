@@ -2253,12 +2253,61 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.DAM63B && TryMapDAM63B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
+            if (_mapper == Cps1GfxMapper.KD29B && TryMapKD29B(layer, expandedCode, shift, out mappedCode))
+                return mappedCode;
             if (_mapper == Cps1GfxMapper.TK24B1 && TryMapTK24B1(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
             if (_mapper == Cps1GfxMapper.TK22B && TryMapTK22B(layer, expandedCode, shift, out mappedCode))
                 return mappedCode;
 
             return _mapper == Cps1GfxMapper.Linear ? code : -1;
+        }
+
+        private static bool TryMapKD29B(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
+        {
+            const int bankSize = 0x8000;
+            mappedCode = -1;
+
+            int bank;
+            bool inRange;
+            switch (layer)
+            {
+                case Cps1GfxLayer.Sprites:
+                    if (expandedCode >= 0x0000 && expandedCode <= 0x7fff)
+                    {
+                        bank = 0;
+                        inRange = true;
+                    }
+                    else if (expandedCode >= 0x8000 && expandedCode <= 0x8fff)
+                    {
+                        bank = 1;
+                        inRange = true;
+                    }
+                    else
+                    {
+                        bank = 0;
+                        inRange = false;
+                    }
+                    break;
+                case Cps1GfxLayer.Scroll2:
+                    bank = 1;
+                    inRange = expandedCode >= 0x9000 && expandedCode <= 0xbfff;
+                    break;
+                case Cps1GfxLayer.Scroll1:
+                    bank = 1;
+                    inRange = expandedCode >= 0xc000 && expandedCode <= 0xd7ff;
+                    break;
+                default:
+                    bank = 1;
+                    inRange = expandedCode >= 0xd800 && expandedCode <= 0xffff;
+                    break;
+            }
+
+            if (!inRange)
+                return false;
+
+            mappedCode = (bank * bankSize + (expandedCode & (bankSize - 1))) >> shift;
+            return true;
         }
 
         private static bool TryMapST24M1(Cps1GfxLayer layer, int expandedCode, int shift, out int mappedCode)
@@ -3032,6 +3081,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         DM620,
         DM22A,
         DAM63B,
+        KD29B,
         TK24B1,
         TK22B
     }
@@ -3328,6 +3378,16 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         private static readonly HashSet<string> DAM63BMapperSets = new(StringComparer.OrdinalIgnoreCase)
         {
             "daimakair"
+        };
+
+        private static readonly HashSet<string> KD29BMapperSets = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "kod",
+            "kodb",
+            "kodj",
+            "kodr1",
+            "kodr2",
+            "kodu"
         };
 
         private static readonly HashSet<string> TK24B1MapperSets = new(StringComparer.OrdinalIgnoreCase)
@@ -3649,6 +3709,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return Cps1GfxMapper.DM22A;
             if (DAM63BMapperSets.Contains(setName))
                 return Cps1GfxMapper.DAM63B;
+            if (KD29BMapperSets.Contains(setName))
+                return Cps1GfxMapper.KD29B;
             if (TK24B1MapperSets.Contains(setName))
                 return Cps1GfxMapper.TK24B1;
             if (TK22BMapperSets.Contains(setName))
