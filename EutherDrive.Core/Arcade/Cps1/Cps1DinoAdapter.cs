@@ -495,6 +495,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         private bool _useSf2HackInputRead;
         private bool _useDinoHuntSoundRead;
         private bool _useDinopicBootlegVideo;
+        private bool _usePunipicBootlegVideo;
         private bool _usePang3EepromPort;
 
         private ArcadeInputState _input;
@@ -521,7 +522,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         public Cps1VideoConfig VideoConfig => _videoConfig;
         public bool ReverseSpriteOrder => (_bootlegKludge & 0x40) != 0;
         public bool UseSf2BootlegVideoKludge => (_bootlegKludge & 0x0f) == 1;
-        public bool UseDinopicBootlegVideo => _useDinopicBootlegVideo;
+        public bool UseDinopicBootlegVideo => _useDinopicBootlegVideo || _usePunipicBootlegVideo;
         public bool InterruptAsserted => _interruptLevel != 0;
         public BusSignals Signals => new(false);
         public ushort CurrentOpcode => 0;
@@ -570,6 +571,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             _useSf2HackInputRead = roms.UseSf2HackInputRead;
             _useDinoHuntSoundRead = UsesDinoHuntSoundRead(roms.SetName);
             _useDinopicBootlegVideo = UsesDinopicBootlegVideo(roms.SetName);
+            _usePunipicBootlegVideo = UsesPunipicBootlegVideo(roms.SetName);
             _usePang3EepromPort = UsesPang3EepromPort(roms.SetName);
             _audioCpuClockHz = roms.AudioCpuClockHz;
             _audioCpuCyclesPerFrame = Math.Max(1, (int)Math.Round(roms.AudioCpuClockHz / TargetFps));
@@ -701,6 +703,11 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             => string.Equals(setName, "dinopic", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(setName, "dinopic2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(setName, "dinopic3", StringComparison.OrdinalIgnoreCase);
+
+        private static bool UsesPunipicBootlegVideo(string setName)
+            => string.Equals(setName, "punipic", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(setName, "punipic2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(setName, "punipic3", StringComparison.OrdinalIgnoreCase);
 
         private static bool UsesPang3EepromPort(string setName)
             => IsPang3FamilySet(setName)
@@ -1011,7 +1018,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return _mainRom[address];
             if (address >= 0x900000 && address <= 0x92ffff)
                 return ReadWordByte(ReadGfxWord((int)((address - 0x900000) >> 1)), address);
-            if (_useDinopicBootlegVideo && address >= 0x990000 && address <= 0x993fff)
+            if ((_useDinopicBootlegVideo || _usePunipicBootlegVideo) && address >= 0x990000 && address <= 0x993fff)
                 return ReadWordByte(_bootlegSpriteRam[(int)((address - 0x990000) >> 1)], address);
             if (address >= 0xff0000)
                 return _mainRam[address & 0xffff];
@@ -1041,7 +1048,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 return ReadCpsB((int)((address - 0x800140) >> 1));
             if (address >= 0x900000 && address <= 0x92ffff)
                 return ReadGfxWord((int)((address - 0x900000) >> 1));
-            if (_useDinopicBootlegVideo && address >= 0x990000 && address <= 0x993fff)
+            if ((_useDinopicBootlegVideo || _usePunipicBootlegVideo) && address >= 0x990000 && address <= 0x993fff)
                 return _bootlegSpriteRam[(int)((address - 0x990000) >> 1)];
             if (address >= 0xf00000 && address <= 0xf0ffff)
                 return ReadQSoundRom((int)((address - 0xf00000) >> 1));
@@ -1082,7 +1089,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 WriteWordByte(ref _gfxRam[index], address, value);
                 return;
             }
-            if (_useDinopicBootlegVideo && address >= 0x990000 && address <= 0x993fff)
+            if ((_useDinopicBootlegVideo || _usePunipicBootlegVideo) && address >= 0x990000 && address <= 0x993fff)
             {
                 WriteWordByte(ref _bootlegSpriteRam[(int)((address - 0x990000) >> 1)], address, value);
                 return;
@@ -1202,7 +1209,12 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 WriteDinopicLayerRegister((int)((address - 0x980000) >> 1), value);
                 return;
             }
-            if (_useDinopicBootlegVideo && address >= 0x990000 && address <= 0x993fff)
+            if (_usePunipicBootlegVideo && address >= 0x980000 && address <= 0x98000f)
+            {
+                WritePunipicLayerRegister((int)((address - 0x980000) >> 1), value);
+                return;
+            }
+            if ((_useDinopicBootlegVideo || _usePunipicBootlegVideo) && address >= 0x990000 && address <= 0x993fff)
             {
                 _bootlegSpriteRam[(int)((address - 0x990000) >> 1)] = value;
                 return;
@@ -1252,6 +1264,42 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                     break;
                 case 5:
                     _cpsA[0x14 / 2] = value;
+                    break;
+            }
+        }
+
+        private void WritePunipicLayerRegister(int offset, ushort value)
+        {
+            _cpsA[0x08 / 2] = 0;
+
+            switch (offset)
+            {
+                case 0:
+                    _cpsA[0x0e / 2] = value;
+                    break;
+                case 1:
+                    _cpsA[0x0c / 2] = value;
+                    break;
+                case 2:
+                    _cpsA[0x12 / 2] = value;
+                    _cpsA[Cps1Regs.RowScrollOffset] = value;
+                    break;
+                case 3:
+                    _cpsA[0x10 / 2] = (ushort)(value + 0xffc0);
+                    break;
+                case 4:
+                    _cpsA[0x16 / 2] = value;
+                    break;
+                case 5:
+                    _cpsA[0x14 / 2] = value;
+                    break;
+                case 6:
+                    if (value is 0x14 or 0x54)
+                        _cpsA[0x04 / 2] = 0x9100;
+                    else if (value is 0x24 or 0x64)
+                        _cpsA[0x04 / 2] = 0x90c0;
+                    else if (value is 0x3c or 0x7c)
+                        _cpsA[0x04 / 2] = 0x9180;
                     break;
             }
         }
@@ -3775,7 +3823,10 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             ["ffightj2"] = FinalFightJapanDefinition("ffightj2", null),
 
             ["dinopic"] = DinopicDefinition("dinopic"),
-            ["dinopic2"] = Dinopic2Definition("dinopic2")
+            ["dinopic2"] = Dinopic2Definition("dinopic2"),
+            ["punipic"] = PunipicDefinition("punipic"),
+            ["punipic2"] = Punipic2Definition("punipic2"),
+            ["punipic3"] = Punipic3Definition("punipic3")
         };
 
         private static readonly Dictionary<string, Cps1QSoundDefinition> GeneratedQSoundDefinitions = BuildGeneratedQSoundDefinitions();
@@ -3970,6 +4021,23 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 && IsPang3EncryptedProgram(program))
             {
                 DecryptPang3Program(program);
+            }
+
+            if (string.Equals(setName, "punipic", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(setName, "punipic2", StringComparison.OrdinalIgnoreCase))
+            {
+                PatchWord(program, 0x05a8, 0x4e71);
+                PatchWord(program, 0x4df0, 0x33ed);
+                PatchWord(program, 0x4df2, 0xdb2e);
+                PatchWord(program, 0x4df4, 0x0080);
+                PatchWord(program, 0x4df6, 0x0152);
+                PatchWord(program, 0x4df8, 0x4e75);
+            }
+
+            if (string.Equals(setName, "punipic3", StringComparison.OrdinalIgnoreCase))
+            {
+                PatchWord(program, 0x05a6, 0x4e71);
+                PatchWord(program, 0x05a8, 0x4e71);
             }
         }
 
@@ -11704,6 +11772,107 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                     Load(RomLoadKind.Raw, 0x00000, 0, 0x80000, "27c4000-m12623.bin")
                 },
                 Cps1AudioHardware.OkiOnly);
+
+        private static Cps1ClassicDefinition PunipicDefinition(string setName)
+            => new(
+                setName,
+                null,
+                Cps1VideoConfig.QSound3,
+                0x40_0000,
+                0x08_0000,
+                new[]
+                {
+                    Byte(0x000000, "cpu5.bin"),
+                    Byte(0x000001, "cpu3.bin"),
+                    Byte(0x100000, "cpu4.bin"),
+                    Byte(0x100001, "cpu2.bin")
+                },
+                new[]
+                {
+                    Load(RomLoadKind.Graphics64Byte, 0x000000, 0x00000, 0x40000, "gfx9.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x000004, 0x40000, 0x40000, "gfx9.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x000001, 0x00000, 0x40000, "gfx8.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x000005, 0x40000, 0x40000, "gfx8.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x000002, 0x00000, 0x40000, "gfx7.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x000006, 0x40000, 0x40000, "gfx7.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x000003, 0x00000, 0x40000, "gfx6.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x000007, 0x40000, 0x40000, "gfx6.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200000, 0x00000, 0x40000, "gfx13.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200004, 0x40000, 0x40000, "gfx13.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200001, 0x00000, 0x40000, "gfx12.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200005, 0x40000, 0x40000, "gfx12.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200002, 0x00000, 0x40000, "gfx11.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200006, 0x40000, 0x40000, "gfx11.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200003, 0x00000, 0x40000, "gfx10.bin"),
+                    Load(RomLoadKind.Graphics64Byte, 0x200007, 0x40000, 0x40000, "gfx10.bin")
+                },
+                Array.Empty<RomLoad>(),
+                new[]
+                {
+                    Load(RomLoadKind.Raw, 0x00000, 0, 0x80000, "sound.bin")
+                },
+                Cps1AudioHardware.OkiOnly);
+
+        private static Cps1ClassicDefinition Punipic2Definition(string setName)
+            => new(
+                setName,
+                null,
+                Cps1VideoConfig.QSound3,
+                0x40_0000,
+                0x08_0000,
+                new[]
+                {
+                    Byte(0x000000, "prg4.bin"),
+                    Byte(0x000001, "prg3.bin"),
+                    Byte(0x100000, "prg2.bin"),
+                    Byte(0x100001, "prg1.bin")
+                },
+                new[]
+                {
+                    Load(RomLoadKind.Graphics64Word, 0x000000, 0x000000, 0x80000, "pu11256.bin"),
+                    Load(RomLoadKind.Graphics64Word, 0x200000, 0x080000, 0x80000, "pu11256.bin"),
+                    Load(RomLoadKind.Graphics64Word, 0x000004, 0x100000, 0x80000, "pu11256.bin"),
+                    Load(RomLoadKind.Graphics64Word, 0x200004, 0x180000, 0x80000, "pu11256.bin"),
+                    Load(RomLoadKind.Graphics64Word, 0x000002, 0x000000, 0x80000, "pu13478.bin"),
+                    Load(RomLoadKind.Graphics64Word, 0x200002, 0x080000, 0x80000, "pu13478.bin"),
+                    Load(RomLoadKind.Graphics64Word, 0x000006, 0x100000, 0x80000, "pu13478.bin"),
+                    Load(RomLoadKind.Graphics64Word, 0x200006, 0x180000, 0x80000, "pu13478.bin")
+                },
+                Array.Empty<RomLoad>(),
+                new[]
+                {
+                    Load(RomLoadKind.Raw, 0x00000, 0, 0x80000, "sound.bin")
+                },
+                Cps1AudioHardware.OkiOnly);
+
+        private static Cps1ClassicDefinition Punipic3Definition(string setName)
+            => new(
+                setName,
+                null,
+                Cps1VideoConfig.QSound3,
+                0x40_0000,
+                0,
+                new[]
+                {
+                    Byte(0x000000, "psb5b.rom"),
+                    Byte(0x000001, "psb3b.rom"),
+                    Byte(0x100000, "psb4a.rom"),
+                    Byte(0x100001, "psb2a.rom")
+                },
+                new[]
+                {
+                    Load(RomLoadKind.Graphics64Word, 0x000000, 0x000000, 0x80000, "psb-a.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x000004, 0x080000, 0x80000, "psb-a.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200000, 0x100000, 0x80000, "psb-a.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200004, 0x180000, 0x80000, "psb-a.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x000002, 0x000000, 0x80000, "psb-b.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x000006, 0x080000, 0x80000, "psb-b.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200002, 0x100000, 0x80000, "psb-b.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200006, 0x180000, 0x80000, "psb-b.rom")
+                },
+                Array.Empty<RomLoad>(),
+                Array.Empty<RomLoad>(),
+                Cps1AudioHardware.None);
 
         private static Cps1ClassicDefinition FinalFightDefinition(string setName, string? parentSetName)
             => new(
