@@ -1946,6 +1946,9 @@ class Program
         long runTicksTotal = 0;
         long runTicksMin = long.MaxValue;
         long runTicksMax = 0;
+        long audioSamples = 0;
+        long nonZeroAudioSamples = 0;
+        int maxAbsAudioSample = 0;
 
         Console.WriteLine($"[HEADLESS] CPS1 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
         DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
@@ -1973,6 +1976,18 @@ class Program
             runTicksMin = Math.Min(runTicksMin, runTicks);
             runTicksMax = Math.Max(runTicksMax, runTicks);
 
+            ReadOnlySpan<short> audio = cps1.GetAudioBuffer(out _, out _);
+            audioSamples += audio.Length;
+            for (int i = 0; i < audio.Length; i++)
+            {
+                int sample = audio[i];
+                if (sample != 0)
+                    nonZeroAudioSamples++;
+                int abs = sample == short.MinValue ? short.MaxValue : Math.Abs(sample);
+                if (abs > maxAbsAudioSample)
+                    maxAbsAudioSample = abs;
+            }
+
             ReadOnlySpan<byte> fb = cps1.GetFrameBuffer(out int w, out int h, out int s);
             var stats = GetFrameStats(fb, w, h, s);
             ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
@@ -1994,6 +2009,7 @@ class Program
         var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
         ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
         Console.WriteLine($"[HEADLESS] CPS1 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+        Console.WriteLine($"[HEADLESS] CPS1 audio samples={audioSamples} nonzero_samples={nonZeroAudioSamples} max_abs={maxAbsAudioSample}");
         DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
         if (framesToRun > 0 && runTicksTotal > 0)
         {
