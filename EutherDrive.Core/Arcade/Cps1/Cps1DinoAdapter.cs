@@ -5214,35 +5214,35 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
                 0x40000,
                 new[]
                 {
-                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "kde_30a.11e"),
-                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "kde_37a.11f"),
-                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "kde_31a.12e"),
-                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "kde_38a.12f"),
-                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "kd_28.9e"),
-                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "kd_35.9f"),
-                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "kd_29.10e"),
-                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "kd_36a.10f"),
+                    Load(RomLoadKind.Byte, 0x0, 0x0, 0x20000, "kde_30a.11e", "kde_30.11e", "kod30.rom"),
+                    Load(RomLoadKind.Byte, 0x1, 0x0, 0x20000, "kde_37a.11f", "kde_37.11f", "kod37.rom"),
+                    Load(RomLoadKind.Byte, 0x40000, 0x0, 0x20000, "kde_31a.12e", "kde_31.12e", "kod31.rom"),
+                    Load(RomLoadKind.Byte, 0x40001, 0x0, 0x20000, "kde_38a.12f", "kde_38.12f", "kod38.rom"),
+                    Load(RomLoadKind.Byte, 0x80000, 0x0, 0x20000, "kd_28.9e", "kde_28.9e", "kod28.rom"),
+                    Load(RomLoadKind.Byte, 0x80001, 0x0, 0x20000, "kd_35.9f", "kde_35.9f", "kod35.rom"),
+                    Load(RomLoadKind.Byte, 0xc0000, 0x0, 0x20000, "kd_29.10e", "kde_29.10e", "kod29.rom"),
+                    Load(RomLoadKind.Byte, 0xc0001, 0x0, 0x20000, "kd_36a.10f", "kde_36.10f", "kod36.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "kd-5m.4a"),
-                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "kd-7m.6a"),
-                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "kd-1m.3a"),
-                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "kd-3m.5a"),
-                    Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "kd-6m.4c"),
-                    Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "kd-8m.6c"),
-                    Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "kd-2m.3c"),
-                    Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "kd-4m.5c"),
+                    Load(RomLoadKind.Graphics64Word, 0x0, 0x0, 0x80000, "kd-5m.4a", "kod02.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x2, 0x0, 0x80000, "kd-7m.6a", "kod04.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x4, 0x0, 0x80000, "kd-1m.3a", "kod01.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x6, 0x0, 0x80000, "kd-3m.5a", "kod03.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200000, 0x0, 0x80000, "kd-6m.4c", "kod11.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200002, 0x0, 0x80000, "kd-8m.6c", "kod13.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200004, 0x0, 0x80000, "kd-2m.3c", "kod10.rom"),
+                    Load(RomLoadKind.Graphics64Word, 0x200006, 0x0, 0x80000, "kd-4m.5c", "kod12.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "kd_9.12a"),
-                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "kd_9.12a"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x8000, "kd_9.12a", "kod09.rom"),
+                    Load(RomLoadKind.Raw, 0x10000, 0x8000, 0x8000, "kd_9.12a", "kod09.rom"),
                 },
                 new[]
                 {
-                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "kd_18.11c"),
-                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "kd_19.12c"),
+                    Load(RomLoadKind.Raw, 0x0, 0x0, 0x20000, "kd_18.11c", "kod18.rom"),
+                    Load(RomLoadKind.Raw, 0x20000, 0x0, 0x20000, "kd_19.12c", "kod19.rom"),
                 });
             definitions["kodj"] = new Cps1ClassicDefinition(
                 "kodj",
