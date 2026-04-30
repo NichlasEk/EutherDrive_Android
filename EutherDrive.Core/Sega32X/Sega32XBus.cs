@@ -232,7 +232,7 @@ internal sealed class Sega32XBus
             else
                 Registers.M68kWrite(aligned, word);
 
-            if (aligned == 0xA15102)
+            if (aligned == 0xA15102 || IsM68kDreqRegister(aligned))
                 _syncSh2sForM68kCommAccess?.Invoke();
             return;
         }
@@ -305,7 +305,7 @@ internal sealed class Sega32XBus
             else
                 Registers.M68kWrite(aligned, value);
 
-            if (aligned == 0xA15102)
+            if (aligned == 0xA15102 || IsM68kDreqRegister(aligned))
                 _syncSh2sForM68kCommAccess?.Invoke();
             return;
         }
@@ -418,8 +418,12 @@ internal sealed class Sega32XBus
             return false;
 
         return alignedAddress == 0xA15102
+            || IsM68kDreqRegister(alignedAddress)
             || (alignedAddress >= 0xA15120 && alignedAddress <= 0xA1512F);
     }
+
+    private static bool IsM68kDreqRegister(uint alignedAddress) =>
+        alignedAddress is >= 0xA15106 and <= 0xA15112;
 
     public byte ReadSh2CartridgeByte(uint romAddress) => ReadCartridgeByte(romAddress);
 

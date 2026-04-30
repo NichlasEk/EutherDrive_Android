@@ -314,6 +314,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
     private Sega32XSh2Cpu CurrentCpu => _whichCpu == Sega32XCpu.Master ? _core.MasterSh2 : _core.SlaveSh2;
 
     private byte SciPriority => (byte)(_iprb >> 12);
+    private byte DmacPriority => (byte)((_ipra >> 8) & 0x0F);
     private byte WdtPriority => (byte)((_ipra >> 4) & 0x0F);
     private byte SciRxOkVector => (byte)(_vcra & 0x7F);
     private byte WdtVector => (byte)((_vcrwdt >> 8) & 0x7F);
@@ -323,7 +324,22 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         byte level = 0;
         byte vectorNumber = 0;
 
-        if (_serial.RxInterruptPending)
+        byte dmacPriority = DmacPriority;
+        if (dmacPriority != 0)
+        {
+            if (DmaInterruptPending(0))
+            {
+                level = dmacPriority;
+                vectorNumber = (byte)_dmaVector0;
+            }
+            else if (DmaInterruptPending(1))
+            {
+                level = dmacPriority;
+                vectorNumber = (byte)_dmaVector1;
+            }
+        }
+
+        if (_serial.RxInterruptPending && SciPriority > level)
         {
             level = SciPriority;
             vectorNumber = SciRxOkVector;
@@ -337,6 +353,9 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         return (level, vectorNumber);
     }
+
+    private bool DmaInterruptPending(int channel) =>
+        (_dmaChannelControl[channel] & 0x0007) == 0x0007;
 
     private void QueueSerialReceive(byte value)
     {
