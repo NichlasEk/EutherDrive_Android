@@ -873,6 +873,15 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         return false;
     }
 
+    public byte ReadExternalByteUncached(uint address, Sega32XSh2AccessContext context)
+    {
+        uint masked = address & Sh2ExternalAddressMask;
+        byte value = ReadBackingByte(masked, context);
+        TracePcWatch("read8-uncached", masked, value, context);
+        TraceAddressWatch("read8-uncached", masked, value, context);
+        return value;
+    }
+
     public ushort DebugReadCacheDataArrayWord(uint address) => ReadCacheDataArrayWord(address);
 
     private byte ReadCacheDataArrayByte(uint address)
@@ -957,7 +966,8 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
             0xFFFFFE92 => _cacheControl,
             0xFFFFFEE2 => _ipra,
             0xFFFFFEE4 => _vcrwdt,
-            0xFFFFFF08 => (ushort)_divuControl,
+            0xFFFFFF08 => (ushort)(_divuControl >> 16),
+            0xFFFFFF0A => (ushort)_divuControl,
             0xFFFFFF40 => (ushort)(_breakAddressA >> 16),
             0xFFFFFF42 => (ushort)_breakAddressA,
             0xFFFFFF60 => (ushort)(_breakAddressB >> 16),
@@ -976,10 +986,10 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         uint value = address switch
         {
-            >= 0xFFFFFF00 and <= 0xFFFFFF03 => _divuDividendHigh,
-            >= 0xFFFFFF04 and <= 0xFFFFFF07 => _divuDividendLow,
-            >= 0xFFFFFF08 and <= 0xFFFFFF0B => _divuControl,
-            >= 0xFFFFFF10 and <= 0xFFFFFF13 => _divuDivisor,
+            0xFFFFFF00 => _divuDivisor,
+            0xFFFFFF04 or 0xFFFFFF14 or 0xFFFFFF1C => _divuDividendLow,
+            0xFFFFFF08 => _divuControl,
+            0xFFFFFF10 or 0xFFFFFF18 => _divuDividendHigh,
             0xFFFFFF40 => _breakAddressA,
             0xFFFFFF60 => _breakAddressB,
             >= 0xFFFFFF80 and <= 0xFFFFFF9F or 0xFFFFFFB0 => _dmaRegister,
@@ -1088,7 +1098,7 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 _vcrwdt = value;
                 break;
             case 0xFFFFFF08:
-                _divuControl = (_divuControl & 0xFFFF0000u) | value;
+                _divuControl = value;
                 break;
             case 0xFFFFFF40:
                 _breakAddressA = (_breakAddressA & 0x0000FFFFu) | ((uint)value << 16);
@@ -1114,36 +1124,22 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
 
         switch (address)
         {
-            case >= 0xFFFFFF00 and <= 0xFFFFFF03:
-                _divuDividendHigh = value;
+            case 0xFFFFFF00:
+                _divuDivisor = value;
                 break;
-            case >= 0xFFFFFF04 and <= 0xFFFFFF07:
-                _divuDividendLow = value;
+            case 0xFFFFFF04:
+                ExecuteDivu32(value);
                 break;
-            case >= 0xFFFFFF08 and <= 0xFFFFFF0B:
+            case 0xFFFFFF08:
                 _divuControl = value;
                 break;
-            case >= 0xFFFFFF10 and <= 0xFFFFFF13:
-                _divuDivisor = value;
-                if (_divuDivisor == 0)
-                {
-                    _divuControl |= 0x00000001u; // Set overflow bit on divide by zero
-                }
-                else
-                {
-                    long dividend = ((long)(int)_divuDividendHigh << 32) | _divuDividendLow;
-                    long quotient = dividend / (int)_divuDivisor;
-                    long remainder = dividend % (int)_divuDivisor;
-                    
-                    _divuDividendHigh = (uint)(remainder >> 32); // SH-2 docs say high bits are updated
-                    _divuDividendLow = (uint)quotient;
-                    
-                    // Actually SH-2 DIVU works like this:
-                    // DVDNTL / DVSR -> DVDNTL (quotient), DVDNTH (remainder)
-                    // Let's match typical emu logic:
-                    _divuDividendLow = (uint)quotient;
-                    _divuDividendHigh = (uint)remainder;
-                }
+            case 0xFFFFFF10:
+            case 0xFFFFFF18:
+                _divuDividendHigh = value;
+                break;
+            case 0xFFFFFF14:
+            case 0xFFFFFF1C:
+                ExecuteDivu64(value);
                 break;
             case 0xFFFFFF40:
                 _breakAddressA = value;
@@ -1174,6 +1170,47 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
                 break;
         }
     }
+
+    private void ExecuteDivu32(uint dividendValue)
+    {
+        int dividend = unchecked((int)dividendValue);
+        int divisor = unchecked((int)_divuDivisor);
+        if (divisor == 0)
+        {
+            _divuDividendLow = DivuOverflowResult(dividend);
+            _divuControl |= 0x00000001u;
+            return;
+        }
+
+        long quotient = (long)dividend / divisor;
+        long remainder = (long)dividend % divisor;
+        _divuDividendLow = unchecked((uint)(int)quotient);
+        _divuDividendHigh = unchecked((uint)(int)remainder);
+    }
+
+    private void ExecuteDivu64(uint lowDividend)
+    {
+        long dividend = unchecked((long)(((ulong)_divuDividendHigh << 32) | lowDividend));
+        int divisor = unchecked((int)_divuDivisor);
+        if (divisor == 0)
+        {
+            _divuDividendLow = DivuOverflowResult(dividend);
+            _divuControl |= 0x00000001u;
+            return;
+        }
+
+        long quotient = dividend / divisor;
+        long remainder = dividend % divisor;
+        long clampedQuotient = Math.Clamp(quotient, int.MinValue, int.MaxValue);
+        if (clampedQuotient != quotient)
+            _divuControl |= 0x00000001u;
+
+        _divuDividendLow = unchecked((uint)(int)clampedQuotient);
+        _divuDividendHigh = unchecked((uint)(int)remainder);
+    }
+
+    private static uint DivuOverflowResult(long dividend) =>
+        dividend >= 0 ? 0x7FFFFFFFu : 0x80000000u;
 
     private void MaybeTraceDmaRegisterAccess(string op, uint address, uint value)
     {

@@ -728,7 +728,7 @@ internal sealed class Sega32XSh2Cpu
                     case 0x4023: // STC.L VBR, @-Rn
                         Registers.GeneralPurposeRegisters[n] -= 4; bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.VectorBaseRegister, Sega32XSh2AccessContext.Data); return true;
                     case 0x401B: // TAS.B @Rn
-                        { uint addr = Registers.GeneralPurposeRegisters[n]; byte val = bus.ReadByte(addr, Sega32XSh2AccessContext.Data); bus.WriteByte(addr, (byte)(val | 0x80), Sega32XSh2AccessContext.Data); Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = val == 0; Registers.StatusRegister = sr; bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
+                        { uint addr = Registers.GeneralPurposeRegisters[n]; byte val = bus.ReadExternalByteUncached(addr, Sega32XSh2AccessContext.Data); bus.WriteByte(addr, (byte)(val | 0x80), Sega32XSh2AccessContext.Data); Sega32XSh2StatusRegister sr = Registers.StatusRegister; sr.T = val == 0; Registers.StatusRegister = sr; bus.IncrementCycleCounter(3); CycleCounter += 3; return true; }
                 }
                 break;
             case 0x0000:
@@ -920,6 +920,7 @@ internal interface ISega32XSh2Bus
     byte InterruptLevel { get; }
     byte InternalInterruptLevel { get; }
     byte InternalInterruptVectorNumber { get; }
+    byte ReadExternalByteUncached(uint address, Sega32XSh2AccessContext context);
     byte ReadByte(uint address, Sega32XSh2AccessContext context);
     ushort ReadWord(uint address, Sega32XSh2AccessContext context);
     uint ReadLongword(uint address, Sega32XSh2AccessContext context);
