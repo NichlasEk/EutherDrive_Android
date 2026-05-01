@@ -5,14 +5,16 @@ namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Cpu
 {
-    private const int MaxUnsupportedLogs = 100_000;
+    private const int MaxUnsupportedLogs = 256;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
     public uint CurrentInstructionPc { get; private set; }
     public ulong CycleCounter { get; private set; }
     public bool ResetPending { get; set; } = true;
     private int _unsupportedLogCount;
+    private bool _unsupportedLogSuppressed;
     [NonSerialized] private readonly Dictionary<uint, ulong> _pcSampleTicks = new();
+    [NonSerialized] private readonly HashSet<ulong> _unsupportedOpcodeSites = new();
 
     private static readonly byte ResetInterruptMask = 0x0F;
     private static readonly bool TraceBootLoop =
@@ -52,6 +54,9 @@ internal sealed class Sega32XSh2Cpu
         CycleCounter = 0;
         _traceInstructionLogs = 0;
         _pcSampleTicks.Clear();
+        _unsupportedOpcodeSites.Clear();
+        _unsupportedLogCount = 0;
+        _unsupportedLogSuppressed = false;
     }
 
     public string? BuildAndResetPerfPcSummary(int maxEntries = 4)
@@ -334,10 +339,16 @@ internal sealed class Sega32XSh2Cpu
                 return;
             }
 
-            if (_unsupportedLogCount < MaxUnsupportedLogs)
+            ulong unsupportedKey = ((ulong)pc << 16) | opcode;
+            if (_unsupportedOpcodeSites.Add(unsupportedKey) && _unsupportedLogCount < MaxUnsupportedLogs)
             {
                 _unsupportedLogCount++;
                 EmitTraceLine($"[S32X-SH2-{Name}] illegal opcode 0x{opcode:X4} at PC=0x{pc:X8}");
+            }
+            else if (_unsupportedLogCount >= MaxUnsupportedLogs && !_unsupportedLogSuppressed)
+            {
+                _unsupportedLogSuppressed = true;
+                EmitTraceLine($"[S32X-SH2-{Name}] further illegal opcode logs suppressed");
             }
 
             Registers.ProgramCounter = pc;
@@ -442,6 +453,35 @@ internal sealed class Sega32XSh2Cpu
     {
         Registers.MacLow = unchecked((uint)value);
         Registers.MacHigh = unchecked((uint)(value >> 32));
+    }
+
+    private static bool CompareStringBytes(uint lhs, uint rhs)
+    {
+        uint xor = lhs ^ rhs;
+        return (xor & 0xFF000000) == 0
+            || (xor & 0x00FF0000) == 0
+            || (xor & 0x0000FF00) == 0
+            || (xor & 0x000000FF) == 0;
+    }
+
+    private static uint DynamicLogicalShift(uint value, uint amount)
+    {
+        if ((amount & 0x80000000) == 0)
+            return value << (int)(amount & 0x1F);
+
+        int shift = (int)((~amount & 0x1F) + 1);
+        return shift == 32 ? 0 : value >> shift;
+    }
+
+    private static uint DynamicArithmeticShift(uint value, uint amount)
+    {
+        if ((amount & 0x80000000) == 0)
+            return value << (int)(amount & 0x1F);
+
+        int shift = (int)((~amount & 0x1F) + 1);
+        return shift == 32
+            ? ((value & 0x80000000) != 0 ? 0xFFFFFFFFu : 0)
+            : (uint)((int)value >> shift);
     }
 
     private bool TryExecute(ushort opcode, Sega32XSh2Bus bus)
@@ -612,6 +652,13 @@ internal sealed class Sega32XSh2Cpu
                     case 0x200B: // OR Rm, Rn
                         Registers.GeneralPurposeRegisters[n] |= Registers.GeneralPurposeRegisters[m];
                         return true;
+                    case 0x200C: // CMP/STR Rm, Rn
+                        {
+                            Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+                            sr.T = CompareStringBytes(Registers.GeneralPurposeRegisters[n], Registers.GeneralPurposeRegisters[m]);
+                            Registers.StatusRegister = sr;
+                            return true;
+                        }
                     case 0x200D: // XTRACT Rm, Rn
                         Registers.GeneralPurposeRegisters[n] = (Registers.GeneralPurposeRegisters[m] << 16) | (Registers.GeneralPurposeRegisters[n] >> 16);
                         return true;
@@ -794,6 +841,20 @@ internal sealed class Sega32XSh2Cpu
                     else SetMac(GetMac() + product);
                     return true;
                 }
+                if ((opcode & 0xF00F) == 0x400C) // SHAD Rm, Rn
+                {
+                    Registers.GeneralPurposeRegisters[n] = DynamicArithmeticShift(
+                        Registers.GeneralPurposeRegisters[n],
+                        Registers.GeneralPurposeRegisters[m]);
+                    return true;
+                }
+                if ((opcode & 0xF00F) == 0x400D) // SHLD Rm, Rn
+                {
+                    Registers.GeneralPurposeRegisters[n] = DynamicLogicalShift(
+                        Registers.GeneralPurposeRegisters[n],
+                        Registers.GeneralPurposeRegisters[m]);
+                    return true;
+                }
 
                 switch (opcode & 0xF0FF)
                 {
@@ -914,6 +975,8 @@ internal sealed class Sega32XSh2Cpu
                         Registers.GeneralPurposeRegisters[n] = Registers.MacLow; return true;
                     case 0x002A: // STS PR, Rn
                         Registers.GeneralPurposeRegisters[n] = Registers.ProcedureRegister; return true;
+                    case 0x00C3: // MOVCA.L R0, @Rn
+                        bus.WriteLongword(Registers.GeneralPurposeRegisters[n], Registers.GeneralPurposeRegisters[0], Sega32XSh2AccessContext.Data); return true;
                     case 0x0003: // BSRF Rn
                         Registers.ProcedureRegister = Registers.NextProgramCounter; Registers.NextProgramCounter = Registers.NextProgramCounter + Registers.GeneralPurposeRegisters[n]; Registers.NextInstructionInDelaySlot = true; return true;
                     case 0x0023: // BRAF Rn
