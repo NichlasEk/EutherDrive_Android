@@ -10,8 +10,12 @@ EutherDrive currently has active UI integration for:
 
 - Mega Drive / Genesis
 - Sega CD
+- Sega 32X
 - Master System
 - Game Gear
+- CPS1 arcade
+- CPS2 arcade
+- Sega System 32 arcade
 - Game Boy
 - Game Boy Color
 - Game Boy Advance
@@ -23,6 +27,7 @@ EutherDrive currently has active UI integration for:
 - PSX
 
 The most mature paths right now are the Mega Drive family, Master System / Game Gear, Game Boy / Game Boy Color, Game Boy Advance, PSX, and the desktop/Android frontend itself.
+Sega 32X support is also improving and now boots and runs more titles than earlier builds, though it remains an active compatibility area.
 
 ## Frontends
 - Desktop frontend: Avalonia UI on Linux / Windows / macOS
@@ -41,6 +46,8 @@ The most mature paths right now are the Mega Drive family, Master System / Game 
 
 ## System Notes
 - Mega Drive / Genesis remains the original core path and still forms the base for several Sega-family integrations
+- Sega 32X is integrated on top of the Mega Drive path and has seen recent SH2, bus, and timing fixes; compatibility is better than before but still not final
+- CPS1, CPS2, and Sega System 32 arcade support is integrated for desktop and Android through the arcade adapter paths. These systems work on a best-effort basis with the ROM sets and drivers currently covered, and unsupported boards, bootlegs, protection devices, or unusual mapper cases may still need per-game work
 - Master System and Game Gear are integrated through the newer `SmsGgAdapter` path
 - Game Boy / Game Boy Color are integrated through `GbAdapter`, with the adopted core based on `gameboy_sharp`
 - Game Boy Advance is integrated with BIOS support and software-renderer optimizations
@@ -184,7 +191,7 @@ dotnet run --project EutherDrive.UI
 The Android version lives in `EutherDrive.Android/`.
 
 - It is kept separate from the default desktop solution so normal desktop builds do not require Android workloads
-- The Android app now includes its own ROM picker flow, settings, GB/GBC/GBA/PCE BIOS handling where applicable, savestates, and Android-specific audio/render paths
+- The Android app now includes its own ROM picker flow, settings, GB/GBC/GBA/PCE BIOS handling where applicable, savestates, Android-specific audio/render paths, and the shared CPS1/CPS2/Sega System 32 arcade adapter paths
 
 Install the .NET Android workload first:
 
@@ -199,6 +206,13 @@ Then build the Android head:
 ```bash
 scripts/build-android.sh
 ```
+
+## Third-Party Licenses
+Several bundled or adapted emulator components come from third-party projects and keep their original license notices in `Third_party/`.
+
+- CPS1, CPS2, and Sega System 32 arcade work depends on the bundled MCS/MAME-derived code under `Third_party/MCS/`
+- The relevant BSD license notice is included at `Third_party/MCS/LICENSE.md`
+- Other adopted cores keep their own license files beside their source trees
 
 ## References
 - https://github.com/sasayaki-japan/MDTracer-Genesis-megadrive-Emulator
