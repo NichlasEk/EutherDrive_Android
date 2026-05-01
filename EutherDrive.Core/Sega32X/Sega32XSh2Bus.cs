@@ -1950,9 +1950,7 @@ internal sealed class Sega32XSh2Bus
             CycleCounter += 2 * (1 + Sh2FrameBufferReadCycles);
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return 0xFFFFFFFF;
-            ushort highWord = _core.Bus.Vdp.ReadFrameBufferWord(masked - 0x04000000);
-            ushort lowWord = _core.Bus.Vdp.ReadFrameBufferWord((masked - 0x04000000) | 2);
-            uint value = ((uint)highWord << 16) | lowWord;
+            uint value = _core.Bus.Vdp.ReadFrameBufferLongword(masked - 0x04000000);
             TracePcWatch("read32", masked, value, context);
             TraceAddressWatch("read32", masked, value, context);
             return value;
@@ -1961,10 +1959,7 @@ internal sealed class Sega32XSh2Bus
         if (masked >= 0x02000000 && masked < 0x02400000)
         {
             CycleCounter += 2 * (1 + Sh2CartridgeCycles);
-            uint romAddress = masked & 0x003FFFFC;
-            ushort highWord = _core.Bus.ReadSh2CartridgeWord(romAddress);
-            ushort lowWord = _core.Bus.ReadSh2CartridgeWord(romAddress | 2);
-            return ((uint)highWord << 16) | lowWord;
+            return _core.Bus.ReadSh2CartridgeLongword(masked & 0x003FFFFC);
         }
 
         ushort high = ReadBackingWord(masked & ~1u, context);
@@ -2091,7 +2086,9 @@ internal sealed class Sega32XSh2Bus
             CycleCounter += 1 + Sh2SdramWriteCycles;
             int wordIndex = (int)((masked - 0x06000000) >> 1);
             if ((uint)wordIndex < _core.Bus.Sdram.Length)
+            {
                 _core.Bus.Sdram[wordIndex] = value;
+            }
             return;
         }
 

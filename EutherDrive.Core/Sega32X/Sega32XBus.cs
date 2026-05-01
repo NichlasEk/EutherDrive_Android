@@ -1,4 +1,5 @@
 using EutherDrive.Core.Savestates;
+using System.Runtime.CompilerServices;
 
 namespace EutherDrive.Core.Sega32X;
 
@@ -425,9 +426,45 @@ internal sealed class Sega32XBus
     private static bool IsM68kDreqRegister(uint alignedAddress) =>
         alignedAddress is >= 0xA15106 and <= 0xA15112;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte ReadSh2CartridgeByte(uint romAddress) => ReadCartridgeByte(romAddress);
 
-    public ushort ReadSh2CartridgeWord(uint romAddress) => ReadCartridgeWord(romAddress);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ushort ReadSh2CartridgeWord(uint romAddress)
+    {
+        if (_cartridgeRom.Length == 0)
+            return 0xFFFF;
+
+        uint index = romAddress % (uint)_cartridgeRom.Length;
+        byte msb = _cartridgeRom[index];
+        byte lsb = index + 1 < _cartridgeRom.Length
+            ? _cartridgeRom[index + 1]
+            : _cartridgeRom[0];
+        return (ushort)((msb << 8) | lsb);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public uint ReadSh2CartridgeLongword(uint romAddress)
+    {
+        if (_cartridgeRom.Length == 0)
+            return 0xFFFFFFFF;
+
+        uint index = romAddress % (uint)_cartridgeRom.Length;
+        uint length = (uint)_cartridgeRom.Length;
+        if (index + 3 < length)
+        {
+            return ((uint)_cartridgeRom[index] << 24)
+                | ((uint)_cartridgeRom[index + 1] << 16)
+                | ((uint)_cartridgeRom[index + 2] << 8)
+                | _cartridgeRom[index + 3];
+        }
+
+        byte b0 = _cartridgeRom[index];
+        byte b1 = _cartridgeRom[(index + 1) % length];
+        byte b2 = _cartridgeRom[(index + 2) % length];
+        byte b3 = _cartridgeRom[(index + 3) % length];
+        return ((uint)b0 << 24) | ((uint)b1 << 16) | ((uint)b2 << 8) | b3;
+    }
 
     public void WriteSh2CartridgeByte(uint romAddress, byte value)
     {

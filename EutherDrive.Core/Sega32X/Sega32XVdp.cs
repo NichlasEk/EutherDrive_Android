@@ -48,6 +48,8 @@ internal sealed class Sega32XVdp
     private readonly ushort[] _frameBuffer1 = new ushort[WordsPerBuffer];
     private readonly ushort[] _cram = new ushort[0x200 / 2];
     [NonSerialized] private readonly uint[] _renderedFrame = new uint[FrameWidth * FrameHeight];
+    [NonSerialized] private readonly uint[] _renderedCram = new uint[0x200 / 2];
+    [NonSerialized] private readonly uint[] _renderedCramPriorityInverted = new uint[0x200 / 2];
 
     [NonSerialized] private int _hostDisplayWidth = FrameWidth;
     private bool _displayFrameBuffer;
@@ -127,7 +129,11 @@ internal sealed class Sega32XVdp
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
 
-    public void LoadState(BinaryReader reader) => StateBinarySerializer.ReadInto(reader, this);
+    public void LoadState(BinaryReader reader)
+    {
+        StateBinarySerializer.ReadInto(reader, this);
+        RebuildRenderedCramCache();
+    }
 
     public void DumpRawMemory(string prefix)
     {
@@ -221,6 +227,8 @@ internal sealed class Sega32XVdp
         Array.Clear(_frameBuffer0);
         Array.Clear(_frameBuffer1);
         Array.Clear(_cram);
+        Array.Clear(_renderedCram);
+        Array.Clear(_renderedCramPriorityInverted);
         _displayFrameBuffer = false;
         _writeFrameBuffer = true;
         _scanlineMclk = 0;
@@ -364,7 +372,14 @@ internal sealed class Sega32XVdp
     public ushort ReadFrameBufferWord(uint address)
     {
         ushort[] frameBuffer = GetWriteBuffer();
-        return frameBuffer[((address & 0x1FFFF) >> 1) % frameBuffer.Length];
+        return frameBuffer[(address & 0x1FFFF) >> 1];
+    }
+
+    public uint ReadFrameBufferLongword(uint address)
+    {
+        ushort[] frameBuffer = GetWriteBuffer();
+        int index = (int)(((address & 0x1FFFF) >> 1) & ~1u);
+        return ((uint)frameBuffer[index] << 16) | frameBuffer[index + 1];
     }
 
     public ulong FrameBufferWriteLatency(ulong cycles)
@@ -415,7 +430,7 @@ internal sealed class Sega32XVdp
             return;
 
         ushort[] frameBuffer = GetWriteBuffer();
-        int index = (int)(((address & 0x1FFFF) >> 1) % frameBuffer.Length);
+        int index = (int)((address & 0x1FFFF) >> 1);
         ushort current = frameBuffer[index];
         ushort merged = (address & 1) == 0
             ? (ushort)((current & 0x00FF) | (value << 8))
@@ -427,7 +442,7 @@ internal sealed class Sega32XVdp
     public void WriteFrameBufferWord(uint address, ushort value)
     {
         ushort[] frameBuffer = GetWriteBuffer();
-        int index = (int)(((address & 0x1FFFF) >> 1) % frameBuffer.Length);
+        int index = (int)((address & 0x1FFFF) >> 1);
         frameBuffer[index] = value;
         TraceFrameBufferWriteIfEnabled("word", address, value, frameBuffer);
     }
@@ -435,7 +450,7 @@ internal sealed class Sega32XVdp
     public void OverwriteFrameBufferWord(uint address, ushort value)
     {
         ushort[] frameBuffer = GetWriteBuffer();
-        int index = (int)(((address & 0x1FFFF) >> 1) % frameBuffer.Length);
+        int index = (int)((address & 0x1FFFF) >> 1);
         ushort current = frameBuffer[index];
         byte msb = (byte)(value >> 8);
         byte lsb = (byte)value;
@@ -449,12 +464,15 @@ internal sealed class Sega32XVdp
 
     public ushort ReadCramWord(uint address)
     {
-        return _cram[((address & 0x1FF) >> 1) % _cram.Length];
+        return _cram[(address & 0x1FF) >> 1];
     }
 
     public void WriteCramWord(uint address, ushort value)
     {
-        _cram[((address & 0x1FF) >> 1) % _cram.Length] = value;
+        int index = (int)((address & 0x1FF) >> 1);
+        _cram[index] = value;
+        _renderedCram[index] = BuildRenderedPixel(value, invertPriority: false);
+        _renderedCramPriorityInverted[index] = BuildRenderedPixel(value, invertPriority: true);
     }
 
     public void RenderBgra(byte[] output, int stride)
@@ -620,6 +638,7 @@ internal sealed class Sega32XVdp
     private void RenderPackedScanline(ushort[] frameBuffer, int line, int width, int row)
     {
         ushort lineAddress = frameBuffer[line & 0xFF];
+        uint[] renderedCram = GetRenderedCramCache();
         if ((_latchedScreenShift & 0x0001) != 0)
         {
             for (int x = 0; x < width; x++)
@@ -627,7 +646,7 @@ internal sealed class Sega32XVdp
                 int sourcePixel = x + 1;
                 ushort word = frameBuffer[(lineAddress + (sourcePixel >> 1)) & 0xFFFF];
                 int paletteIndex = ((sourcePixel & 1) == 0) ? ((word >> 8) & 0xFF) : (word & 0xFF);
-                _renderedFrame[row + x] = BuildRenderedPixel(_cram[paletteIndex]);
+                _renderedFrame[row + x] = renderedCram[paletteIndex];
             }
         }
         else
@@ -637,9 +656,9 @@ internal sealed class Sega32XVdp
                 ushort word = frameBuffer[(lineAddress + (x >> 1)) & 0xFFFF];
                 int p1 = (word >> 8) & 0xFF;
                 int p2 = word & 0xFF;
-                _renderedFrame[row + x] = BuildRenderedPixel(_cram[p1]);
+                _renderedFrame[row + x] = renderedCram[p1];
                 if (x + 1 < width)
-                    _renderedFrame[row + x + 1] = BuildRenderedPixel(_cram[p2]);
+                    _renderedFrame[row + x + 1] = renderedCram[p2];
             }
         }
     }
@@ -658,13 +677,14 @@ internal sealed class Sega32XVdp
     {
         int x = 0;
         int readIndex = frameBuffer[line & 0xFF];
+        uint[] renderedCram = GetRenderedCramCache();
         while (x < width)
         {
             ushort word = frameBuffer[readIndex & 0xFFFF];
             readIndex++;
             int runLength = ((word >> 8) & 0xFF) + 1;
             int paletteIndex = word & 0xFF;
-            uint pixel = BuildRenderedPixel(_cram[paletteIndex]);
+            uint pixel = renderedCram[paletteIndex];
             while (x < width && runLength-- > 0)
             {
                 _renderedFrame[row + x] = pixel;
@@ -729,7 +749,7 @@ internal sealed class Sega32XVdp
         }
 
         ushort color = _cram[paletteIndex];
-        return BuildRenderedPixel(color);
+        return GetRenderedCramCache()[paletteIndex];
     }
 
     private uint GetDirectColorPixel(ushort[] frameBuffer, int line, int x)
@@ -759,17 +779,32 @@ internal sealed class Sega32XVdp
 
     private uint BuildRenderedPixel(ushort color)
     {
-        ushort priorityColor = ApplyPriorityMask(color);
+        return BuildRenderedPixel(color, (_latchedDisplayMode & 0x0080) != 0);
+    }
+
+    private static uint BuildRenderedPixel(ushort color, bool invertPriority)
+    {
+        ushort priorityColor = invertPriority ? (ushort)(color ^ 0x8000) : color;
         uint rgb = ToBgra(priorityColor) & 0x00FF_FFFFu;
         uint flags = ((priorityColor & 0x8000u) != 0) ? RenderedPixelPriorityFlag : 0u;
         return rgb | flags;
     }
 
-    private ushort ApplyPriorityMask(ushort pixel)
+    private uint[] GetRenderedCramCache()
     {
-        if ((_latchedDisplayMode & 0x0080) != 0)
-            return (ushort)(pixel ^ 0x8000);
-        return pixel;
+        return (_latchedDisplayMode & 0x0080) != 0
+            ? _renderedCramPriorityInverted
+            : _renderedCram;
+    }
+
+    private void RebuildRenderedCramCache()
+    {
+        for (int i = 0; i < _cram.Length; i++)
+        {
+            ushort color = _cram[i];
+            _renderedCram[i] = BuildRenderedPixel(color, invertPriority: false);
+            _renderedCramPriorityInverted[i] = BuildRenderedPixel(color, invertPriority: true);
+        }
     }
 
     private void RenderDirectColorLine(byte[] output, int row, int width, ushort[] frameBuffer, int line)
