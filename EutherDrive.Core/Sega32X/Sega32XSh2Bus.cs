@@ -930,6 +930,19 @@ internal sealed class Sega32XSh2Bus
             || (masked >= 0x00004020 && masked <= 0x0000402F);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsSimpleSdramWordAddress(uint address)
+    {
+        uint addressSpace = address >> 29;
+        if (addressSpace is not 0 and not 1)
+            return false;
+
+        uint masked = address & Sh2ExternalAddressMask;
+        return (masked & 1) == 0
+            && masked >= 0x06000000
+            && masked < 0x06040000;
+    }
+
     public byte ReadExternalByteUncached(uint address, Sega32XSh2AccessContext context)
     {
         uint masked = address & Sh2ExternalAddressMask;

@@ -13,6 +13,8 @@ internal sealed class Sega32XSh2Cpu
     }
 
     private const int MaxUnsupportedLogs = 256;
+    private const byte BlockJitHotThreshold = 16;
+    private const int MaxBlockJitCacheEntries = 256;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
     public uint CurrentInstructionPc { get; private set; }
@@ -22,6 +24,8 @@ internal sealed class Sega32XSh2Cpu
     private bool _unsupportedLogSuppressed;
     [NonSerialized] private readonly Dictionary<uint, ulong> _pcSampleTicks = new();
     [NonSerialized] private readonly HashSet<ulong> _unsupportedOpcodeSites = new();
+    [NonSerialized] private readonly Dictionary<uint, byte> _blockJitProbeCounts = new();
+    [NonSerialized] private readonly Dictionary<uint, CompiledWaitBlock?> _blockJitCache = new();
 
     private static readonly byte ResetInterruptMask = 0x0F;
     private static readonly bool TraceBootLoop =
@@ -43,7 +47,18 @@ internal sealed class Sega32XSh2Cpu
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_POLL_LOOP_ACCEL"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool DisableBlockJit =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_BLOCK_JIT"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool TraceBlockJit =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_BLOCK_JIT"),
+            "1",
+            StringComparison.Ordinal);
     private int _traceInstructionLogs;
+    private int _blockJitTraceLogs;
 
     public Sega32XSh2Cpu(string name)
     {
@@ -67,8 +82,11 @@ internal sealed class Sega32XSh2Cpu
         _traceInstructionLogs = 0;
         _pcSampleTicks.Clear();
         _unsupportedOpcodeSites.Clear();
+        _blockJitProbeCounts.Clear();
+        _blockJitCache.Clear();
         _unsupportedLogCount = 0;
         _unsupportedLogSuppressed = false;
+        _blockJitTraceLogs = 0;
     }
 
     public string? BuildAndResetPerfPcSummary(int maxEntries = 4)
@@ -197,6 +215,15 @@ internal sealed class Sega32XSh2Cpu
 
             if (!DisablePollingLoopAcceleration &&
                 TryExecutePollingLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (!DisableBlockJit &&
+                TryExecuteCompiledWaitBlock(bus, remainingInstructions, pc, opcode, out consumedInstructions))
             {
                 remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
                 if (bus.ShouldStopExecution)
@@ -462,6 +489,247 @@ internal sealed class Sega32XSh2Cpu
         AccumulatePcSample(loopStartPc, cyclesToConsume);
         consumedInstructions = cyclesToConsume;
         return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteCompiledWaitBlock(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint pc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        if ((firstOpcode & 0xF00F) != 0x6001 || ((firstOpcode >> 8) & 0xF) != 0)
+            return false;
+        if (TraceInstructionStart.HasValue || TraceInstructionEnd.HasValue)
+            return false;
+        if (remainingInstructions < CompiledWaitBlock.InstructionsPerIteration || bus.CycleLimit == ulong.MaxValue)
+            return false;
+
+        if (_blockJitCache.TryGetValue(pc, out CompiledWaitBlock? cachedBlock))
+            return cachedBlock != null && cachedBlock.TryExecute(this, bus, remainingInstructions, out consumedInstructions);
+
+        byte probes = _blockJitProbeCounts.GetValueOrDefault(pc);
+        if (probes < BlockJitHotThreshold)
+        {
+            _blockJitProbeCounts[pc] = (byte)(probes + 1);
+            return false;
+        }
+
+        if (_blockJitCache.Count >= MaxBlockJitCacheEntries)
+        {
+            _blockJitCache.Clear();
+            _blockJitProbeCounts.Clear();
+            return false;
+        }
+
+        CompiledWaitBlock? block = TryCompileWaitBlock(bus, pc);
+        _blockJitCache[pc] = block;
+        if (block == null)
+            return false;
+
+        if (TraceBlockJit && _blockJitTraceLogs < 32)
+        {
+            _blockJitTraceLogs++;
+            Console.WriteLine($"[S32X-BLOCK-JIT-{Name}] compiled increment-poll loop pc=0x{pc:X8}");
+        }
+
+        return block.TryExecute(this, bus, remainingInstructions, out consumedInstructions);
+    }
+
+    private static CompiledWaitBlock? TryCompileWaitBlock(Sega32XSh2Bus bus, uint loopStartPc)
+    {
+        Span<ushort> opcodes = stackalloc ushort[CompiledWaitBlock.InstructionsPerIteration];
+        for (int i = 0; i < opcodes.Length; i++)
+        {
+            if (!bus.TryPeekInstructionWord(loopStartPc + (uint)(i << 1), out opcodes[i]))
+                return null;
+        }
+
+        ushort loadCounterOpcode = opcodes[0];
+        if ((loadCounterOpcode & 0xF00F) != 0x6001 || ((loadCounterOpcode >> 8) & 0xF) != 0)
+            return null;
+        int counterAddressRegister = (loadCounterOpcode >> 4) & 0xF;
+
+        ushort addCounterOpcode = opcodes[1];
+        if ((addCounterOpcode & 0xFF00) != 0x7000)
+            return null;
+        sbyte counterDelta = unchecked((sbyte)(addCounterOpcode & 0xFF));
+        if (counterDelta == 0)
+            return null;
+
+        ushort storeCounterOpcode = opcodes[2];
+        if ((storeCounterOpcode & 0xF00F) != 0x2001 || ((storeCounterOpcode >> 4) & 0xF) != 0)
+            return null;
+        if (((storeCounterOpcode >> 8) & 0xF) != counterAddressRegister)
+            return null;
+
+        ushort loadPollOpcode = opcodes[3];
+        if ((loadPollOpcode & 0xFF00) is not 0xC400 and not 0xC500 and not 0xC600)
+            return null;
+
+        PollingLoadSize pollingLoadSize = (loadPollOpcode & 0xFF00) switch
+        {
+            0xC400 => PollingLoadSize.Byte,
+            0xC500 => PollingLoadSize.Word,
+            _ => PollingLoadSize.Longword,
+        };
+        uint pollingDisplacement = pollingLoadSize switch
+        {
+            PollingLoadSize.Byte => (uint)(loadPollOpcode & 0xFF),
+            PollingLoadSize.Word => (uint)((loadPollOpcode & 0xFF) << 1),
+            _ => (uint)((loadPollOpcode & 0xFF) << 2),
+        };
+
+        ushort compareOpcode = opcodes[4];
+        if ((compareOpcode & 0xFF00) != 0x8800)
+            return null;
+        uint compareImmediate = unchecked((uint)(sbyte)(compareOpcode & 0xFF));
+
+        ushort branchOpcode = opcodes[5];
+        bool branchOnTrue;
+        switch (branchOpcode & 0xFF00)
+        {
+            case 0x8900:
+                branchOnTrue = true;
+                break;
+            case 0x8B00:
+                branchOnTrue = false;
+                break;
+            default:
+                return null;
+        }
+
+        uint branchPc = loopStartPc + 10;
+        uint branchTarget = unchecked(branchPc + 4u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        if (branchTarget != loopStartPc)
+            return null;
+
+        return new CompiledWaitBlock(
+            loopStartPc,
+            opcodes.ToArray(),
+            counterAddressRegister,
+            counterDelta,
+            pollingDisplacement,
+            pollingLoadSize,
+            compareImmediate,
+            branchOnTrue);
+    }
+
+    private sealed class CompiledWaitBlock
+    {
+        public const int InstructionsPerIteration = 6;
+        private const uint ExitOffset = InstructionsPerIteration * 2u;
+
+        private readonly uint _loopStartPc;
+        private readonly ushort[] _opcodes;
+        private readonly int _counterAddressRegister;
+        private readonly sbyte _counterDelta;
+        private readonly uint _pollingDisplacement;
+        private readonly PollingLoadSize _pollingLoadSize;
+        private readonly uint _compareImmediate;
+        private readonly bool _branchOnTrue;
+
+        public CompiledWaitBlock(
+            uint loopStartPc,
+            ushort[] opcodes,
+            int counterAddressRegister,
+            sbyte counterDelta,
+            uint pollingDisplacement,
+            PollingLoadSize pollingLoadSize,
+            uint compareImmediate,
+            bool branchOnTrue)
+        {
+            _loopStartPc = loopStartPc;
+            _opcodes = opcodes;
+            _counterAddressRegister = counterAddressRegister;
+            _counterDelta = counterDelta;
+            _pollingDisplacement = pollingDisplacement;
+            _pollingLoadSize = pollingLoadSize;
+            _compareImmediate = compareImmediate;
+            _branchOnTrue = branchOnTrue;
+        }
+
+        public bool TryExecute(
+            Sega32XSh2Cpu cpu,
+            Sega32XSh2Bus bus,
+            ulong remainingInstructions,
+            out ulong consumedInstructions)
+        {
+            consumedInstructions = 0;
+            if (remainingInstructions < InstructionsPerIteration)
+                return false;
+
+            ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+                ? bus.CycleLimit - bus.SchedulerCycleCounter
+                : 0;
+            if (remainingCycles < InstructionsPerIteration)
+                return false;
+
+            for (int i = 0; i < _opcodes.Length; i++)
+            {
+                if (!bus.TryPeekInstructionWord(_loopStartPc + (uint)(i << 1), out ushort opcode) || opcode != _opcodes[i])
+                    return false;
+            }
+
+            uint counterAddress = cpu.Registers.GeneralPurposeRegisters[_counterAddressRegister];
+            if (!bus.IsSimpleSdramWordAddress(counterAddress))
+                return false;
+
+            uint pollingAddress = cpu.Registers.GlobalBaseRegister + _pollingDisplacement;
+            if (!bus.IsFastPollingRegister(pollingAddress))
+                return false;
+
+            ushort initialCounter = bus.ReadWord(counterAddress, Sega32XSh2AccessContext.Data);
+            uint pollingValue = ReadPollingLoadValue(bus, pollingAddress, _pollingLoadSize);
+            bool testResult = pollingValue == _compareImmediate;
+            bool branchTaken = _branchOnTrue ? testResult : !testResult;
+
+            ulong iterations = 1;
+            if (branchTaken)
+            {
+                iterations = Math.Min(
+                    remainingInstructions / InstructionsPerIteration,
+                    remainingCycles / InstructionsPerIteration);
+            }
+
+            if (iterations == 0)
+                return false;
+
+            int delta = _counterDelta;
+            uint totalDelta = (uint)(iterations * (ulong)Math.Abs(delta));
+            ushort finalCounter = delta >= 0
+                ? (ushort)(initialCounter + totalDelta)
+                : (ushort)(initialCounter - totalDelta);
+            bus.WriteWord(counterAddress, finalCounter, Sega32XSh2AccessContext.Data);
+
+            cpu.Registers.GeneralPurposeRegisters[0] = pollingValue;
+            Sega32XSh2StatusRegister sr = cpu.Registers.StatusRegister;
+            sr.T = testResult;
+            cpu.Registers.StatusRegister = sr;
+
+            if (branchTaken)
+            {
+                cpu.Registers.ProgramCounter = _loopStartPc;
+                cpu.Registers.NextProgramCounter = _loopStartPc + 2;
+            }
+            else
+            {
+                uint exitPc = _loopStartPc + ExitOffset;
+                cpu.Registers.ProgramCounter = exitPc;
+                cpu.Registers.NextProgramCounter = exitPc + 2;
+            }
+            cpu.Registers.NextInstructionInDelaySlot = false;
+
+            ulong cycles = iterations * InstructionsPerIteration;
+            bus.IncrementCycleCounter(cycles);
+            cpu.CycleCounter += cycles;
+            cpu.AccumulatePcSample(_loopStartPc, cycles);
+            consumedInstructions = cycles;
+            return true;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
