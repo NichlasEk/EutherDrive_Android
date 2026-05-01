@@ -67,6 +67,11 @@ internal sealed class Sega32XSh2Bus
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_WIDE_FB_BUS"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool PreciseSh2DataCache =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_PRECISE_SH2_DATA_CACHE"),
+            "1",
+            StringComparison.Ordinal);
     private static readonly bool TraceFrameBufferBusWrites =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_FB_WRITES"),
@@ -505,6 +510,23 @@ internal sealed class Sega32XSh2Bus
                 return ReadInternalRegisterWord(address);
         }
 
+        if (!PreciseSh2DataCache && context == Sega32XSh2AccessContext.Data && addressSpace is 0 or 1)
+        {
+            uint fastMasked = address & Sh2ExternalAddressMask;
+            if (fastMasked >= 0x06000000 && fastMasked < 0x06040000)
+            {
+                CycleCounter += 1 + Sh2SdramReadCycles;
+                int wordIndex = (int)((fastMasked - 0x06000000) >> 1);
+                return (uint)wordIndex < _core.Bus.Sdram.Length ? _core.Bus.Sdram[wordIndex] : (ushort)0;
+            }
+
+            if (fastMasked >= 0x02000000 && fastMasked < 0x02400000)
+            {
+                CycleCounter += 1 + Sh2CartridgeCycles;
+                return _core.Bus.ReadSh2CartridgeWord(fastMasked & 0x003FFFFE);
+            }
+        }
+
         if (addressSpace == 0 && TryReadCachedWord(address, out ushort cachedWord))
         {
             CycleCounter += 1;
@@ -632,6 +654,25 @@ internal sealed class Sega32XSh2Bus
             case 7:
                 CycleCounter += 1;
                 return ReadInternalRegisterLongword(address);
+        }
+
+        if (!PreciseSh2DataCache && context == Sega32XSh2AccessContext.Data && addressSpace is 0 or 1)
+        {
+            uint fastMasked = address & Sh2ExternalAddressMask;
+            if (fastMasked >= 0x06000000 && fastMasked < 0x06040000)
+            {
+                CycleCounter += 1 + Sh2SdramReadCycles;
+                int wordIndex = (int)(((fastMasked - 0x06000000) >> 1) & ~1u);
+                if ((uint)(wordIndex + 1) < _core.Bus.Sdram.Length)
+                    return ((uint)_core.Bus.Sdram[wordIndex] << 16) | _core.Bus.Sdram[wordIndex + 1];
+                return 0;
+            }
+
+            if (fastMasked >= 0x02000000 && fastMasked < 0x02400000)
+            {
+                CycleCounter += 2 * (1 + Sh2CartridgeCycles);
+                return _core.Bus.ReadSh2CartridgeLongword(fastMasked & 0x003FFFFC);
+            }
         }
 
         if (addressSpace == 0 && TryReadCachedLongword(address, out uint cachedLong))
