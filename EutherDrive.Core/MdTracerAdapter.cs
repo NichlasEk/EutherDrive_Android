@@ -87,6 +87,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private Sega32XScaffoldCore? _sega32XCore;
     private bool _isSega32XRom;
     private int _s32xAccessDrivenM68kCycles;
+    private int _s32xLineBatchCooldownCycles;
 
     // Framebuffer analyzer for live debugging
     public FramebufferAnalyzer FbAnalyzer { get; } = null!;
@@ -143,7 +144,13 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly int S32xPeripheralAccessWordCycles =
         Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_ACCESS_SYNC_CYCLES", 4));
     private static readonly int S32xM68kInterleaveSliceCycles =
-        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 69));
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 67));
+    private static readonly bool S32xAccessDrivenLineBatch =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_ACCESS_DRIVEN_LINE_BATCH"), "1", StringComparison.Ordinal);
+    private static readonly int S32xLineBatchBootSafeFrames =
+        ParseNonNegativeInt("EUTHERDRIVE_S32X_LINE_BATCH_BOOT_SAFE_FRAMES", 600);
+    private static readonly int S32xLineBatchIoCooldownCycles =
+        ParseNonNegativeInt("EUTHERDRIVE_S32X_LINE_BATCH_IO_COOLDOWN_CYCLES", 2048);
     private static readonly bool S32xLegacyFrameBudgetTiming =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_LEGACY_FRAME_BUDGET"), "1", StringComparison.Ordinal);
     private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
@@ -3140,6 +3147,45 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         if (_cpu == null || _sega32XCore == null)
             return;
 
+        if (CanUseS32xAccessDrivenLineBatch())
+        {
+            int accessCyclesBeforeLine = _s32xAccessDrivenM68kCycles;
+
+            if (TracePerf)
+            {
+                long cpuStart = Stopwatch.GetTimestamp();
+                _cpu.RunSome(budget: cpuBudget);
+                cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+            }
+            else
+            {
+                _cpu.RunSome(budget: cpuBudget);
+            }
+
+            int accessDrivenCycles = _s32xAccessDrivenM68kCycles - accessCyclesBeforeLine;
+            int remaining32XCycles = cpuBudget - Math.Max(0, accessDrivenCycles);
+            if (remaining32XCycles > 0)
+            {
+                if (TracePerf)
+                {
+                    long s32xStart = Stopwatch.GetTimestamp();
+                    Run32XInterleavedLine((ulong)remaining32XCycles);
+                    s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+                }
+                else
+                {
+                    Run32XInterleavedLine((ulong)remaining32XCycles);
+                }
+            }
+
+            _s32xAccessDrivenM68kCycles = 0;
+            md_main.AdvanceSystemCycles(cpuBudget, flushAudio: false);
+            return;
+        }
+
+        if (_s32xLineBatchCooldownCycles > 0)
+            _s32xLineBatchCooldownCycles = Math.Max(0, _s32xLineBatchCooldownCycles - cpuBudget);
+
         int remaining = cpuBudget;
         while (remaining > 0)
         {
@@ -3179,6 +3225,17 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         }
     }
 
+    private bool CanUseS32xAccessDrivenLineBatch()
+    {
+        if (!S32xAccessDrivenLineBatch || _sega32XCore == null)
+            return false;
+
+        if (S32xLineBatchBootSafeFrames > 0 && _sega32XCore.FrameCounter < S32xLineBatchBootSafeFrames)
+            return false;
+
+        return _s32xLineBatchCooldownCycles == 0;
+    }
+
     private void Run32XInterleavedLine(int line, ulong baseTicksPerLine, ulong remainderTicks)
     {
         if (_sega32XCore == null)
@@ -3213,6 +3270,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
 
         _sega32XCore.RunM68kCycles((ulong)accessCycles);
         _s32xAccessDrivenM68kCycles += accessCycles;
+        _s32xLineBatchCooldownCycles = Math.Max(_s32xLineBatchCooldownCycles, S32xLineBatchIoCooldownCycles);
     }
 
     private static int EstimateS32xPeripheralAccessCycles(uint addr, int sizeBytes, bool write)

@@ -110,6 +110,12 @@ public sealed class MegaDriveBus
             _beforeM68k32XAccess?.Invoke(addr, sizeBytes, write);
     }
 
+    private void OnBeforeM68kTimingSensitiveAccess(uint addr, int sizeBytes, bool write)
+    {
+        if (_s32xBus != null)
+            _beforeM68k32XAccess?.Invoke(addr, sizeBytes, write);
+    }
+
     public void Reset()
     {
         Array.Clear(_wram, 0, _wram.Length);
@@ -219,7 +225,10 @@ public sealed class MegaDriveBus
         }
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
+        {
+            OnBeforeM68kTimingSensitiveAccess(addr, 1, write: false);
             return md_main.g_md_vdp.read8(addr);
+        }
 
         if (IsIoPort(addr) && md_main.g_md_io != null)
         {
@@ -290,6 +299,7 @@ public sealed class MegaDriveBus
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            OnBeforeM68kTimingSensitiveAccess(addr, 2, write: false);
             if (MegaDriveBusProfiler.Enabled)
             {
                 long start = Stopwatch.GetTimestamp();
@@ -387,6 +397,7 @@ public sealed class MegaDriveBus
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            OnBeforeM68kTimingSensitiveAccess(addr, 4, write: false);
             if (MegaDriveBusProfiler.Enabled)
             {
                 long start = Stopwatch.GetTimestamp();
@@ -527,6 +538,7 @@ public sealed class MegaDriveBus
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            OnBeforeM68kTimingSensitiveAccess(addr, 1, write: true);
             LogVdpWrite(addr, addr, 8, value, "VDP");
             md_main.g_md_vdp.write8(addr, value);
             md_m68k.RecordBusAccess(addr, 1, true, value);
@@ -644,6 +656,7 @@ public sealed class MegaDriveBus
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            OnBeforeM68kTimingSensitiveAccess(addr, 2, write: true);
             LogVdpWrite(addr, addr, 16, value, "VDP");
             md_main.g_md_vdp.write16(addr, value);
             md_m68k.RecordBusAccess(addr, 2, true, value);
@@ -748,6 +761,7 @@ public sealed class MegaDriveBus
 
         if (IsVdpPort(addr) && md_main.g_md_vdp != null)
         {
+            OnBeforeM68kTimingSensitiveAccess(addr, 4, write: true);
             LogVdpWrite(addr, addr, 32, value, "VDP");
             md_main.g_md_vdp.write32(addr, value);
             md_m68k.RecordBusAccess(addr, 4, true, value);
