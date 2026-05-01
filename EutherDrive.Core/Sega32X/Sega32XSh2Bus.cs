@@ -62,6 +62,11 @@ internal sealed class Sega32XSh2Bus
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_VDP_WRITES"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool WideFrameBufferBus =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_WIDE_FB_BUS"),
+            "1",
+            StringComparison.Ordinal);
     private static readonly bool TraceFrameBufferBusWrites =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_FB_WRITES"),
@@ -74,6 +79,8 @@ internal sealed class Sega32XSh2Bus
     private readonly uint[] _cacheAddressTags = new uint[CacheEntries * 4];
     private readonly ulong[] _cacheAddressValidBits = new ulong[4];
     private readonly byte[] _cacheAddressLruBits = new byte[CacheEntries];
+    private ulong _executableVersion;
+    private readonly ulong[] _sdramExecutablePageVersions = new ulong[64];
     private readonly Sega32XSh2SerialInterface _serial = new();
     private readonly Sega32XSh2WatchdogTimer _watchdog = new();
     private readonly Sega32XSh2FreeRunTimer _freeRunTimer = new();
@@ -109,6 +116,15 @@ internal sealed class Sega32XSh2Bus
 
     public ulong CycleCounter { get; private set; }
     public ulong SchedulerCycleCounter => _schedulerCycleCounter;
+    public ulong ExecutableVersion => _executableVersion;
+    public ulong GetExecutableVersion(uint address)
+    {
+        uint masked = address & Sh2ExternalAddressMask;
+        ulong version = _executableVersion;
+        if (masked >= 0x06000000 && masked < 0x06040000)
+            version ^= _sdramExecutablePageVersions[(masked - 0x06000000) >> 12];
+        return version;
+    }
     [field: NonSerialized]
     public ulong CycleLimit { get; set; } = ulong.MaxValue;
     public bool ShouldStopExecution => _schedulerCycleCounter >= CycleLimit;
@@ -145,10 +161,12 @@ internal sealed class Sega32XSh2Bus
 
     public void ResetState()
     {
+        InvalidateExecutableBlocks();
         Array.Clear(_cacheDataArray, 0, _cacheDataArray.Length);
         Array.Clear(_cacheAddressTags, 0, _cacheAddressTags.Length);
         Array.Clear(_cacheAddressValidBits, 0, _cacheAddressValidBits.Length);
         Array.Clear(_cacheAddressLruBits, 0, _cacheAddressLruBits.Length);
+        Array.Clear(_sdramExecutablePageVersions, 0, _sdramExecutablePageVersions.Length);
         Array.Clear(_dmaSourceAddress, 0, _dmaSourceAddress.Length);
         Array.Clear(_dmaDestinationAddress, 0, _dmaDestinationAddress.Length);
         Array.Clear(_dmaTransferCount, 0, _dmaTransferCount.Length);
@@ -175,6 +193,19 @@ internal sealed class Sega32XSh2Bus
         _cramWriteTraceCount = 0;
         _vdpBusWriteTraceCount = 0;
         ResetTimingState();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void InvalidateExecutableBlocks()
+    {
+        _executableVersion++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void InvalidateExecutableSdramPage(uint masked)
+    {
+        if (masked >= 0x06000000 && masked < 0x06040000)
+            _sdramExecutablePageVersions[(masked - 0x06000000) >> 12]++;
     }
 
     public void TickPeripherals(ulong cycles)
@@ -411,6 +442,7 @@ internal sealed class Sega32XSh2Bus
             case 2:
                 CycleCounter += 1;
                 AssociativePurge(address);
+                InvalidateExecutableBlocks();
                 return 0;
             case 3:
                 CycleCounter += 1;
@@ -456,6 +488,7 @@ internal sealed class Sega32XSh2Bus
             case 2:
                 CycleCounter += 1;
                 AssociativePurge(address);
+                InvalidateExecutableBlocks();
                 return 0;
             case 3:
                 CycleCounter += 1;
@@ -507,6 +540,7 @@ internal sealed class Sega32XSh2Bus
             case 2:
                 CycleCounter += 1;
                 AssociativePurge(address);
+                InvalidateExecutableBlocks();
                 return 0;
             case 3:
                 CycleCounter += 1;
@@ -539,6 +573,42 @@ internal sealed class Sega32XSh2Bus
         return ReadBackingWord(address & 0x1FFFFFFF, Sega32XSh2AccessContext.Fetch);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ushort ReadOpcodeFast(uint address)
+    {
+        if (TracePcWatchStart.HasValue || TraceAddressWatchStart.HasValue)
+            return ReadOpcode(address);
+
+        uint addressSpace = address >> 29;
+        if (addressSpace is not 0 and not 1)
+            return ReadOpcode(address);
+
+        uint masked = address & Sh2ExternalAddressMask;
+        if (masked >= 0x06000000 && masked < 0x06040000)
+        {
+            CycleCounter += 1 + Sh2SdramReadCycles;
+            int wordIndex = (int)((masked - 0x06000000) >> 1);
+            return (uint)wordIndex < _core.Bus.Sdram.Length ? _core.Bus.Sdram[wordIndex] : (ushort)0;
+        }
+
+        if (masked >= 0x02000000 && masked < 0x02400000)
+        {
+            CycleCounter += 1 + Sh2CartridgeCycles;
+            return _core.Bus.ReadSh2CartridgeWord(masked & 0x003FFFFE);
+        }
+
+        if (masked <= 0x00003FFF)
+        {
+            CycleCounter += 1;
+            ReadOnlySpan<byte> bootRom = _whichCpu == Sega32XCpu.Master ? _core.MasterBootRom : _core.SlaveBootRom;
+            if (masked + 1 < bootRom.Length)
+                return (ushort)((bootRom[(int)masked] << 8) | bootRom[(int)masked + 1]);
+            return 0;
+        }
+
+        return ReadOpcode(address);
+    }
+
     public uint ReadLongword(uint address, Sega32XSh2AccessContext context)
     {
         uint addressSpace = address >> 29;
@@ -547,6 +617,7 @@ internal sealed class Sega32XSh2Bus
             case 2:
                 CycleCounter += 1;
                 AssociativePurge(address);
+                InvalidateExecutableBlocks();
                 return 0;
             case 3:
                 CycleCounter += 1;
@@ -592,6 +663,7 @@ internal sealed class Sega32XSh2Bus
             case 2:
                 CycleCounter += 1;
                 AssociativePurge(address);
+                InvalidateExecutableBlocks();
                 return;
             case 3:
                 CycleCounter += 1;
@@ -603,6 +675,7 @@ internal sealed class Sega32XSh2Bus
             case 6:
                 CycleCounter += 1;
                 WriteCacheDataArrayByte(address, value);
+                InvalidateExecutableBlocks();
                 return;
             case 7:
                 CycleCounter += 1;
@@ -651,6 +724,7 @@ internal sealed class Sega32XSh2Bus
                     ? (ushort)((current & 0x00FF) | (value << 8))
                     : (ushort)((current & 0xFF00) | value);
                 _core.Bus.Sdram[wordIndex] = next;
+                InvalidateExecutableSdramPage(masked);
                 TracePcWatch("write8", masked, value, context);
                 TraceAddressWatch("write8", masked, value, context);
             }
@@ -661,7 +735,7 @@ internal sealed class Sega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
-            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+            CycleCounter += WideFrameBufferBus ? 1 : _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             uint frameBufferAddress = masked - 0x04000000;
             _core.Bus.Vdp.WriteFrameBufferByte(frameBufferAddress, value, IsFrameBufferOverwrite(masked));
             TraceVdpBusWrite("write8-fb", masked, value, context);
@@ -716,6 +790,7 @@ internal sealed class Sega32XSh2Bus
             case 2:
                 CycleCounter += 1;
                 AssociativePurge(address);
+                InvalidateExecutableBlocks();
                 return;
             case 3:
                 CycleCounter += 1;
@@ -727,6 +802,7 @@ internal sealed class Sega32XSh2Bus
             case 6:
                 CycleCounter += 1;
                 WriteCacheDataArrayWord(address, value);
+                InvalidateExecutableBlocks();
                 return;
             case 7:
                 CycleCounter += 1;
@@ -765,6 +841,7 @@ internal sealed class Sega32XSh2Bus
             if ((uint)wordIndex < _core.Bus.Sdram.Length)
             {
                 _core.Bus.Sdram[wordIndex] = value;
+                InvalidateExecutableSdramPage(masked);
                 TracePcWatch("write16", masked, value, context);
                 TraceAddressWatch("write16", masked, value, context);
             }
@@ -775,7 +852,7 @@ internal sealed class Sega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
-            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+            CycleCounter += WideFrameBufferBus ? 1 : _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             uint frameBufferAddress = masked - 0x04000000;
             if (IsFrameBufferOverwrite(masked))
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, value);
@@ -825,10 +902,12 @@ internal sealed class Sega32XSh2Bus
             case 2:
                 CycleCounter += 1;
                 AssociativePurge(address);
+                InvalidateExecutableBlocks();
                 return;
             case 3:
                 CycleCounter += 1;
                 WriteAddressArrayLongword(address, value);
+                InvalidateExecutableBlocks();
                 return;
             case 4:
             case 5:
@@ -837,6 +916,7 @@ internal sealed class Sega32XSh2Bus
             case 6:
                 CycleCounter += 1;
                 WriteCacheDataArrayLongword(address, value);
+                InvalidateExecutableBlocks();
                 return;
             case 7:
                 CycleCounter += 1;
@@ -1113,6 +1193,7 @@ internal sealed class Sega32XSh2Bus
                 _cacheControl = value;
                 if ((value & 0x10) != 0)
                     PurgeAllCache();
+                InvalidateExecutableBlocks();
                 break;
             case >= 0xFFFFFE93 and <= 0xFFFFFE9F:
                 break;
@@ -1159,6 +1240,7 @@ internal sealed class Sega32XSh2Bus
                 _cacheControl = (byte)value;
                 if ((value & 0x10) != 0)
                     PurgeAllCache();
+                InvalidateExecutableBlocks();
                 break;
             case 0xFFFFFEE2:
                 _ipra = value;
@@ -1236,6 +1318,7 @@ internal sealed class Sega32XSh2Bus
                 _cacheControl = (byte)value;
                 if ((value & 0x10) != 0)
                     PurgeAllCache();
+                InvalidateExecutableBlocks();
                 break;
         }
     }
@@ -2012,6 +2095,7 @@ internal sealed class Sega32XSh2Bus
             {
                 _core.Bus.Sdram[wordIndex] = (ushort)(value >> 16);
                 _core.Bus.Sdram[wordIndex + 1] = (ushort)value;
+                InvalidateExecutableSdramPage(masked);
             }
             return;
         }
@@ -2022,19 +2106,32 @@ internal sealed class Sega32XSh2Bus
                 return;
             uint frameBufferAddress = masked - 0x04000000;
 
-            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
-            if (IsFrameBufferOverwrite(masked))
-                _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+            bool overwrite = IsFrameBufferOverwrite(masked);
+            if (WideFrameBufferBus)
+            {
+                CycleCounter += 1;
+                if (overwrite)
+                    _core.Bus.Vdp.OverwriteFrameBufferLongword(frameBufferAddress, value);
+                else
+                    _core.Bus.Vdp.WriteFrameBufferLongword(frameBufferAddress, value);
+                TraceVdpBusWrite(overwrite ? "write32-fb-ovr-wide" : "write32-fb-wide", masked, value, context);
+            }
             else
-                _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
-            TraceVdpBusWrite(IsFrameBufferOverwrite(masked) ? "write32-fb-hi-ovr" : "write32-fb-hi", masked, value >> 16, context);
+            {
+                CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+                if (overwrite)
+                    _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+                else
+                    _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+                TraceVdpBusWrite(overwrite ? "write32-fb-hi-ovr" : "write32-fb-hi", masked, value >> 16, context);
 
-            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
-            if (IsFrameBufferOverwrite(masked))
-                _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
-            else
-                _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
-            TraceVdpBusWrite(IsFrameBufferOverwrite(masked) ? "write32-fb-lo-ovr" : "write32-fb-lo", masked | 2, value, context);
+                CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+                if (overwrite)
+                    _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
+                else
+                    _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
+                TraceVdpBusWrite(overwrite ? "write32-fb-lo-ovr" : "write32-fb-lo", masked | 2, value, context);
+            }
             TracePcWatch("write32", masked, value, context);
             TraceAddressWatch("write32", masked, value, context);
             return;
@@ -2088,6 +2185,7 @@ internal sealed class Sega32XSh2Bus
             if ((uint)wordIndex < _core.Bus.Sdram.Length)
             {
                 _core.Bus.Sdram[wordIndex] = value;
+                InvalidateExecutableSdramPage(masked);
             }
             return;
         }
@@ -2096,7 +2194,7 @@ internal sealed class Sega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
-            CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+            CycleCounter += WideFrameBufferBus ? 1 : _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             uint frameBufferAddress = masked - 0x04000000;
             if (IsFrameBufferOverwrite(masked))
                 _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, value);

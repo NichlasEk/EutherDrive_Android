@@ -15,6 +15,9 @@ internal sealed class Sega32XSh2Cpu
     private const int MaxUnsupportedLogs = 256;
     private const byte BlockJitHotThreshold = 16;
     private const int MaxBlockJitCacheEntries = 256;
+    private const int MinDecodedBlockOps = 4;
+    private const int MaxDecodedBlockOps = 32;
+    private const uint DecodedBlockPageMask = 0xFFFF_F000;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
     public uint CurrentInstructionPc { get; private set; }
@@ -26,6 +29,15 @@ internal sealed class Sega32XSh2Cpu
     [NonSerialized] private readonly HashSet<ulong> _unsupportedOpcodeSites = new();
     [NonSerialized] private readonly Dictionary<uint, byte> _blockJitProbeCounts = new();
     [NonSerialized] private readonly Dictionary<uint, CompiledWaitBlock?> _blockJitCache = new();
+    [NonSerialized] private readonly Dictionary<uint, DecodedBlock?> _decodedBlockCache = new();
+    private ulong _decodedBlocksCompiled;
+    private ulong _decodedBlockHits;
+    private ulong _decodedBlockMisses;
+    private ulong _decodedBlockInvalidations;
+    private ulong _decodedBlockFallbackInstructions;
+    private ulong _decodedBlockCompiledOps;
+    private ulong _memLoopFusionHits;
+    private ulong _memLoopFusionIterations;
 
     private static readonly byte ResetInterruptMask = 0x0F;
     private static readonly bool TraceBootLoop =
@@ -52,13 +64,36 @@ internal sealed class Sega32XSh2Cpu
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_BLOCK_JIT"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool FastCoreEnabled =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_FAST_CORE"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly DecodedOp[] FastOpcodeTable = BuildFastOpcodeTable();
+    private static readonly bool MemLoopFusionEnabled =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_MEM_LOOP_FUSION"),
+            "1",
+            StringComparison.Ordinal);
     private static readonly bool TraceBlockJit =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_BLOCK_JIT"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool BlockInterpreterEnabled =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_32X_BLOCK_INTERP"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool AggressiveBlockInterpreter =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_32X_BLOCK_INTERP_AGGRESSIVE"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly int BlockInterpreterCompareInstructions = ParseBlockInterpreterCompareInstructions();
     private int _traceInstructionLogs;
     private int _blockJitTraceLogs;
+    private int _blockInterpreterCompareLogs;
 
     public Sega32XSh2Cpu(string name)
     {
@@ -84,26 +119,38 @@ internal sealed class Sega32XSh2Cpu
         _unsupportedOpcodeSites.Clear();
         _blockJitProbeCounts.Clear();
         _blockJitCache.Clear();
+        _decodedBlockCache.Clear();
         _unsupportedLogCount = 0;
         _unsupportedLogSuppressed = false;
         _blockJitTraceLogs = 0;
+        _blockInterpreterCompareLogs = 0;
+        _decodedBlocksCompiled = 0;
+        _decodedBlockHits = 0;
+        _decodedBlockMisses = 0;
+        _decodedBlockInvalidations = 0;
+        _decodedBlockFallbackInstructions = 0;
+        _decodedBlockCompiledOps = 0;
+        _memLoopFusionHits = 0;
+        _memLoopFusionIterations = 0;
     }
 
     public string? BuildAndResetPerfPcSummary(int maxEntries = 4)
     {
-        if (!PerfPcHistogramEnabled || _pcSampleTicks.Count == 0)
+        if ((!PerfPcHistogramEnabled || _pcSampleTicks.Count == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0)
             return null;
 
-        KeyValuePair<uint, ulong>[] top = _pcSampleTicks
-            .OrderByDescending(static pair => pair.Value)
-            .Take(maxEntries)
-            .ToArray();
+        KeyValuePair<uint, ulong>[] top = PerfPcHistogramEnabled
+            ? _pcSampleTicks
+                .OrderByDescending(static pair => pair.Value)
+                .Take(maxEntries)
+                .ToArray()
+            : Array.Empty<KeyValuePair<uint, ulong>>();
         ulong total = 0;
         foreach (ulong ticks in _pcSampleTicks.Values)
             total += ticks;
 
         _pcSampleTicks.Clear();
-        if (top.Length == 0 || total == 0)
+        if ((top.Length == 0 || total == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0)
             return null;
 
         var sb = new System.Text.StringBuilder();
@@ -119,6 +166,38 @@ internal sealed class Sega32XSh2Cpu
             sb.Append(' ');
             sb.Append(percent.ToString("0.0"));
             sb.Append('%');
+        }
+
+        if (BlockInterpreterEnabled)
+        {
+            double avgOps = _decodedBlocksCompiled == 0
+                ? 0
+                : _decodedBlockCompiledOps / (double)_decodedBlocksCompiled;
+            sb.Append(" block_interp=");
+            sb.Append("compiled=");
+            sb.Append(_decodedBlocksCompiled);
+            sb.Append(" hits=");
+            sb.Append(_decodedBlockHits);
+            sb.Append(" misses=");
+            sb.Append(_decodedBlockMisses);
+            sb.Append(" invalidations=");
+            sb.Append(_decodedBlockInvalidations);
+            sb.Append(" fallbacks=");
+            sb.Append(_decodedBlockFallbackInstructions);
+            sb.Append(" avg_ops=");
+            sb.Append(avgOps.ToString("0.0"));
+        }
+
+        if (_memLoopFusionHits != 0)
+        {
+            double avgIterations = _memLoopFusionIterations / (double)_memLoopFusionHits;
+            sb.Append(" mem_loop_fusion=");
+            sb.Append("hits=");
+            sb.Append(_memLoopFusionHits);
+            sb.Append(" iterations=");
+            sb.Append(_memLoopFusionIterations);
+            sb.Append(" avg_iter=");
+            sb.Append(avgIterations.ToString("0.0"));
         }
 
         return sb.ToString();
@@ -193,7 +272,7 @@ internal sealed class Sega32XSh2Cpu
         while (remainingInstructions > 0)
         {
             uint pc = Registers.ProgramCounter;
-            ushort opcode = bus.ReadOpcode(pc);
+            ushort opcode = bus.ReadOpcodeFast(pc);
 
             if (!DisableTightDelayLoopBatching &&
                 TryExecuteTightDelayLoop(bus, remainingInstructions, pc, opcode, out ulong consumedInstructions))
@@ -222,6 +301,24 @@ internal sealed class Sega32XSh2Cpu
                 continue;
             }
 
+            if (MemLoopFusionEnabled &&
+                TryExecuteMemoryTransferLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (BlockInterpreterEnabled &&
+                TryExecuteDecodedBlock(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
             if (!DisableBlockJit &&
                 TryExecuteCompiledWaitBlock(bus, remainingInstructions, pc, opcode, out consumedInstructions))
             {
@@ -238,7 +335,1507 @@ internal sealed class Sega32XSh2Cpu
         }
     }
 
+    public bool IsAtBatchableWaitLoop(Sega32XSh2Bus bus)
+    {
+        if (Registers.NextInstructionInDelaySlot ||
+            TraceInstructionStart.HasValue ||
+            TraceInstructionEnd.HasValue ||
+            HasPendingInterrupt(bus))
+        {
+            return false;
+        }
+
+        uint pc = Registers.ProgramCounter;
+        if (!bus.TryPeekInstructionWord(pc, out ushort firstOpcode))
+            return false;
+
+        if ((firstOpcode & 0xF000) == 0xA000 &&
+            bus.TryPeekInstructionWord(pc + 2, out ushort braDelayOpcode) &&
+            braDelayOpcode == 0x0009)
+        {
+            int displacement = ((short)(firstOpcode << 4)) >> 4;
+            uint target = unchecked(pc + 4u + (uint)(displacement << 1));
+            if (target == pc)
+                return true;
+        }
+
+        if ((firstOpcode & 0xF00F) == 0x2008)
+        {
+            int n = (firstOpcode >> 8) & 0xF;
+            int m = (firstOpcode >> 4) & 0xF;
+            if (n == m &&
+                bus.TryPeekInstructionWord(pc + 2, out ushort branchOpcode) &&
+                bus.TryPeekInstructionWord(pc + 4, out ushort bfsDelayOpcode) &&
+                (branchOpcode & 0xFF00) == 0x8F00 &&
+                (bfsDelayOpcode & 0xF000) == 0x7000 &&
+                ((bfsDelayOpcode >> 8) & 0xF) == n &&
+                unchecked((sbyte)(bfsDelayOpcode & 0xFF)) == -1)
+            {
+                uint branchTarget = unchecked(pc + 6u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+                if (branchTarget == pc)
+                    return true;
+            }
+        }
+
+        return TryMatchDelayLoop(bus, pc, firstOpcode, out _, out _, out _);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteDecodedBlock(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint pc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        if (remainingInstructions < 2 ||
+            Registers.NextInstructionInDelaySlot ||
+            TraceInstructionStart.HasValue ||
+            TraceInstructionEnd.HasValue ||
+            HasPendingInterrupt(bus))
+        {
+            return false;
+        }
+
+        if (IsSdramExecutableAddress(pc))
+            return false;
+
+        if (!CanStartDecodedBlock(firstOpcode))
+            return false;
+
+        bool blockCompiledNow = false;
+        if (_decodedBlockCache.TryGetValue(pc, out DecodedBlock? block))
+        {
+            if (block == null)
+            {
+                _decodedBlockMisses++;
+                return false;
+            }
+
+            if (block.ExecutableVersion != bus.GetExecutableVersion(pc))
+            {
+                _decodedBlockCache.Remove(pc);
+                _decodedBlockInvalidations++;
+                block = null;
+            }
+        }
+
+        if (block == null)
+        {
+            _decodedBlockMisses++;
+            block = TryCompileDecodedBlock(bus, pc, firstOpcode);
+            _decodedBlockCache[pc] = block;
+            if (block == null)
+                return false;
+            blockCompiledNow = true;
+        }
+        else
+        {
+            _decodedBlockHits++;
+        }
+
+        int opLimit = (int)Math.Min((ulong)block.Operations.Length, remainingInstructions);
+        for (int i = 0; i < opLimit; i++)
+        {
+            if (HasPendingInterrupt(bus))
+                return consumedInstructions != 0;
+
+            DecodedOp op = block.Operations[i];
+            ushort fetched = i == 0
+                ? firstOpcode
+                : blockCompiledNow || AggressiveBlockInterpreter ? op.Opcode : bus.ReadOpcode(op.Pc);
+            if (fetched != op.Opcode || Registers.ProgramCounter != op.Pc)
+            {
+                _decodedBlockInvalidations++;
+                _decodedBlockFallbackInstructions++;
+                _decodedBlockCache.Remove(pc);
+                if (consumedInstructions != 0)
+                    return true;
+
+                ExecuteFetchedInstruction(bus, op.Pc, fetched);
+                consumedInstructions = 1;
+                return true;
+            }
+
+            if (IsDecodedCompareSafe(op.Kind) &&
+                BlockInterpreterCompareInstructions > 0 &&
+                _blockInterpreterCompareLogs < BlockInterpreterCompareInstructions)
+            {
+                CompareDecodedOpWithInterpreter(op);
+            }
+
+            ExecuteDecodedFetchedInstruction(bus, op);
+            consumedInstructions++;
+            if (bus.ShouldStopExecution || Registers.NextInstructionInDelaySlot)
+                return true;
+        }
+
+        return consumedInstructions != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteMemoryTransferLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        if (TraceInstructionStart.HasValue || TraceInstructionEnd.HasValue ||
+            Registers.NextInstructionInDelaySlot ||
+            HasPendingInterrupt(bus) ||
+            bus.CycleLimit == ulong.MaxValue)
+        {
+            return false;
+        }
+
+        if (TryExecuteCopyPostIncrementLoop(
+                bus,
+                remainingInstructions,
+                loopStartPc,
+                firstOpcode,
+                isLongword: true,
+                out consumedInstructions))
+        {
+            return true;
+        }
+
+        if (TryExecuteCopyPostIncrementLoop(
+                bus,
+                remainingInstructions,
+                loopStartPc,
+                firstOpcode,
+                isLongword: false,
+                out consumedInstructions))
+        {
+            return true;
+        }
+
+        if (TryExecuteFillIncrementLoop(
+                bus,
+                remainingInstructions,
+                loopStartPc,
+                firstOpcode,
+                isLongword: true,
+                out consumedInstructions))
+        {
+            return true;
+        }
+
+        return TryExecuteFillIncrementLoop(
+            bus,
+            remainingInstructions,
+            loopStartPc,
+            firstOpcode,
+            isLongword: false,
+            out consumedInstructions);
+    }
+
+    private bool TryExecuteCopyPostIncrementLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        bool isLongword,
+        out ulong consumedInstructions)
+    {
+        const int InstructionsPerIteration = 5;
+        consumedInstructions = 0;
+
+        if (remainingInstructions < InstructionsPerIteration)
+            return false;
+
+        ushort loadMask = isLongword ? (ushort)0x6006 : (ushort)0x6005; // MOV.L/W @Rm+, Rn
+        ushort storeMask = isLongword ? (ushort)0x2002 : (ushort)0x2001; // MOV.L/W Rm, @Rn
+        int transferSize = isLongword ? 4 : 2;
+        if ((firstOpcode & 0xF00F) != loadMask)
+            return false;
+
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort storeOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort addOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort dtOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 8, out ushort branchOpcode))
+        {
+            return false;
+        }
+
+        if ((storeOpcode & 0xF00F) != storeMask ||
+            (addOpcode & 0xF000) != 0x7000 ||
+            (dtOpcode & 0xF0FF) != 0x4010 ||
+            (branchOpcode & 0xFF00) != 0x8B00)
+        {
+            return false;
+        }
+
+        int tempRegister = (firstOpcode >> 8) & 0xF;
+        int sourceRegister = (firstOpcode >> 4) & 0xF;
+        int destinationRegister = (storeOpcode >> 8) & 0xF;
+        int storedRegister = (storeOpcode >> 4) & 0xF;
+        int addRegister = (addOpcode >> 8) & 0xF;
+        int counterRegister = (dtOpcode >> 8) & 0xF;
+        uint branchTarget = unchecked(loopStartPc + 12u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+
+        if (storedRegister != tempRegister ||
+            addRegister != destinationRegister ||
+            unchecked((sbyte)(addOpcode & 0xFF)) != transferSize ||
+            branchTarget != loopStartPc)
+        {
+            return false;
+        }
+
+        if (tempRegister == sourceRegister ||
+            tempRegister == destinationRegister ||
+            tempRegister == counterRegister ||
+            sourceRegister == destinationRegister ||
+            sourceRegister == counterRegister ||
+            destinationRegister == counterRegister)
+        {
+            return false;
+        }
+
+        return ExecuteMemoryLoopIterations(
+            bus,
+            remainingInstructions,
+            loopStartPc,
+            InstructionsPerIteration,
+            counterRegister,
+            transferSize,
+            (iterations) =>
+            {
+                uint source = Registers.GeneralPurposeRegisters[sourceRegister];
+                uint destination = Registers.GeneralPurposeRegisters[destinationRegister];
+                uint value = Registers.GeneralPurposeRegisters[tempRegister];
+
+                for (ulong i = 0; i < iterations; i++)
+                {
+                    if (isLongword)
+                    {
+                        value = bus.ReadLongword(source, Sega32XSh2AccessContext.Data);
+                        bus.WriteLongword(destination, value, Sega32XSh2AccessContext.Data);
+                    }
+                    else
+                    {
+                        value = unchecked((uint)(short)bus.ReadWord(source, Sega32XSh2AccessContext.Data));
+                        bus.WriteWord(destination, (ushort)value, Sega32XSh2AccessContext.Data);
+                    }
+
+                    source += (uint)transferSize;
+                    destination += (uint)transferSize;
+                }
+
+                Registers.GeneralPurposeRegisters[tempRegister] = value;
+                Registers.GeneralPurposeRegisters[sourceRegister] = source;
+                Registers.GeneralPurposeRegisters[destinationRegister] = destination;
+            },
+            out consumedInstructions);
+    }
+
+    private bool TryExecuteFillIncrementLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        bool isLongword,
+        out ulong consumedInstructions)
+    {
+        const int InstructionsPerIteration = 4;
+        consumedInstructions = 0;
+
+        if (remainingInstructions < InstructionsPerIteration)
+            return false;
+
+        ushort storeMask = isLongword ? (ushort)0x2002 : (ushort)0x2001; // MOV.L/W Rm, @Rn
+        int transferSize = isLongword ? 4 : 2;
+        if ((firstOpcode & 0xF00F) != storeMask)
+            return false;
+
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort addOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort dtOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort branchOpcode))
+        {
+            return false;
+        }
+
+        if ((addOpcode & 0xF000) != 0x7000 ||
+            (dtOpcode & 0xF0FF) != 0x4010 ||
+            (branchOpcode & 0xFF00) != 0x8B00)
+        {
+            return false;
+        }
+
+        int destinationRegister = (firstOpcode >> 8) & 0xF;
+        int valueRegister = (firstOpcode >> 4) & 0xF;
+        int addRegister = (addOpcode >> 8) & 0xF;
+        int counterRegister = (dtOpcode >> 8) & 0xF;
+        uint branchTarget = unchecked(loopStartPc + 10u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+
+        if (addRegister != destinationRegister ||
+            unchecked((sbyte)(addOpcode & 0xFF)) != transferSize ||
+            branchTarget != loopStartPc)
+        {
+            return false;
+        }
+
+        if (valueRegister == destinationRegister ||
+            valueRegister == counterRegister ||
+            destinationRegister == counterRegister)
+        {
+            return false;
+        }
+
+        return ExecuteMemoryLoopIterations(
+            bus,
+            remainingInstructions,
+            loopStartPc,
+            InstructionsPerIteration,
+            counterRegister,
+            transferSize,
+            (iterations) =>
+            {
+                uint destination = Registers.GeneralPurposeRegisters[destinationRegister];
+                uint value = Registers.GeneralPurposeRegisters[valueRegister];
+
+                for (ulong i = 0; i < iterations; i++)
+                {
+                    if (isLongword)
+                        bus.WriteLongword(destination, value, Sega32XSh2AccessContext.Data);
+                    else
+                        bus.WriteWord(destination, (ushort)value, Sega32XSh2AccessContext.Data);
+
+                    destination += (uint)transferSize;
+                }
+
+                Registers.GeneralPurposeRegisters[destinationRegister] = destination;
+            },
+            out consumedInstructions);
+    }
+
+    private bool ExecuteMemoryLoopIterations(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        int instructionsPerIteration,
+        int counterRegister,
+        int transferSize,
+        Action<ulong> executeBody,
+        out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        uint counter = Registers.GeneralPurposeRegisters[counterRegister];
+        if (counter == 0)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        ulong maxIterations = Math.Min(
+            remainingInstructions / (ulong)instructionsPerIteration,
+            remainingCycles / (ulong)instructionsPerIteration);
+        maxIterations = Math.Min(maxIterations, counter);
+        if (maxIterations == 0)
+            return false;
+
+        CurrentInstructionPc = loopStartPc;
+        try
+        {
+            executeBody(maxIterations);
+        }
+        finally
+        {
+            CurrentInstructionPc = 0;
+        }
+
+        Registers.GeneralPurposeRegisters[counterRegister] = unchecked(counter - (uint)maxIterations);
+        bool loopFinished = Registers.GeneralPurposeRegisters[counterRegister] == 0;
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = loopFinished;
+        Registers.StatusRegister = sr;
+
+        ulong instructionCycles = maxIterations * (ulong)instructionsPerIteration;
+        bus.IncrementCycleCounter(instructionCycles);
+        CycleCounter += instructionCycles;
+        AccumulatePcSample(loopStartPc, instructionCycles);
+
+        if (loopFinished)
+        {
+            uint exitPc = loopStartPc + (uint)(instructionsPerIteration << 1);
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        else
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+
+        Registers.NextInstructionInDelaySlot = false;
+        _memLoopFusionHits++;
+        _memLoopFusionIterations += maxIterations;
+        consumedInstructions = instructionCycles;
+        return true;
+    }
+
+    private DecodedBlock? TryCompileDecodedBlock(Sega32XSh2Bus bus, uint startPc, ushort firstOpcode)
+    {
+        DecodedOp[] ops = new DecodedOp[MaxDecodedBlockOps];
+        int count = 0;
+        uint pc = startPc;
+        uint page = startPc & DecodedBlockPageMask;
+
+        while (count < ops.Length)
+        {
+            if ((pc & DecodedBlockPageMask) != page)
+                break;
+
+            ushort opcode;
+            if (count == 0)
+            {
+                opcode = firstOpcode;
+            }
+            else
+            {
+                if (!bus.TryPeekInstructionWord(pc, out opcode) ||
+                    !TryDecodeBlockOp(pc, opcode, out _))
+                {
+                    break;
+                }
+                opcode = bus.ReadOpcodeFast(pc);
+            }
+            if (!TryDecodeBlockOp(pc, opcode, out DecodedOp op))
+                break;
+
+            ops[count++] = op;
+            if (IsDecodedBlockTerminator(opcode))
+                break;
+
+            pc += 2;
+        }
+
+        if (count < MinDecodedBlockOps)
+            return null;
+
+        Array.Resize(ref ops, count);
+        _decodedBlocksCompiled++;
+        _decodedBlockCompiledOps += (ulong)count;
+        return new DecodedBlock(startPc, bus.GetExecutableVersion(startPc), ops);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool CanStartDecodedBlock(ushort opcode)
+    {
+        return (opcode & 0xF000) switch
+        {
+            0x1000 or 0x5000 or 0x9000 or 0xD000 => AggressiveBlockInterpreter && TryDecodeBlockOp(0, opcode, out _),
+            0xE000 or 0x7000 or 0x6000 or 0x2000 or 0x3000 or 0x4000 or 0x0000 or 0x8000 or 0xC000
+                => TryDecodeBlockOp(0, opcode, out _),
+            _ => false,
+        };
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsSdramExecutableAddress(uint pc)
+    {
+        uint masked = pc & 0x1FFF_FFFF;
+        return masked >= 0x0600_0000 && masked < 0x0604_0000;
+    }
+
+    private bool HasPendingInterrupt(Sega32XSh2Bus bus)
+    {
+        if (Registers.NextInstructionInDelaySlot)
+            return false;
+
+        byte interruptMask = Registers.StatusRegister.InterruptMask;
+        return bus.InterruptLevel > interruptMask || bus.InternalInterruptLevel > interruptMask;
+    }
+
+    private void ExecuteDecodedFetchedInstruction(Sega32XSh2Bus bus, DecodedOp op)
+    {
+        MaybeTraceInstruction(op.Pc, op.Opcode);
+
+        ApplyFetchedInstructionPrelude();
+
+        CurrentInstructionPc = op.Pc;
+        try
+        {
+            ExecuteDecodedOp(op, bus);
+            bus.IncrementCycleCounter(1);
+            CycleCounter += 1;
+            AccumulatePcSample(op.Pc, 1);
+        }
+        finally
+        {
+            CurrentInstructionPc = 0;
+        }
+    }
+
+    private void ExecuteDecodedOp(DecodedOp op, Sega32XSh2Bus bus)
+    {
+        uint[] r = Registers.GeneralPurposeRegisters;
+        int n = op.N;
+        int m = op.M;
+        Sega32XSh2StatusRegister sr;
+
+        switch (op.Kind)
+        {
+            case DecodedOpKind.Nop:
+                return;
+            case DecodedOpKind.Sleep:
+                return;
+            case DecodedOpKind.MovImm:
+                r[n] = unchecked((uint)op.Imm);
+                return;
+            case DecodedOpKind.AddImm:
+                r[n] = unchecked(r[n] + (uint)op.Imm);
+                return;
+            case DecodedOpKind.MovReg:
+                r[n] = r[m];
+                return;
+            case DecodedOpKind.Not:
+                r[n] = ~r[m];
+                return;
+            case DecodedOpKind.Neg:
+                r[n] = unchecked(0u - r[m]);
+                return;
+            case DecodedOpKind.ExtuB:
+                r[n] = r[m] & 0xFF;
+                return;
+            case DecodedOpKind.ExtuW:
+                r[n] = r[m] & 0xFFFF;
+                return;
+            case DecodedOpKind.ExtsB:
+                r[n] = unchecked((uint)(sbyte)r[m]);
+                return;
+            case DecodedOpKind.ExtsW:
+                r[n] = unchecked((uint)(short)r[m]);
+                return;
+            case DecodedOpKind.SwapB:
+                {
+                    uint value = r[m];
+                    r[n] = (value & 0xFFFF0000) | ((value & 0x000000FF) << 8) | ((value & 0x0000FF00) >> 8);
+                    return;
+                }
+            case DecodedOpKind.SwapW:
+                {
+                    uint value = r[m];
+                    r[n] = (value << 16) | (value >> 16);
+                    return;
+                }
+            case DecodedOpKind.And:
+                r[n] &= r[m];
+                return;
+            case DecodedOpKind.Or:
+                r[n] |= r[m];
+                return;
+            case DecodedOpKind.Xor:
+                r[n] ^= r[m];
+                return;
+            case DecodedOpKind.Tst:
+                sr = Registers.StatusRegister;
+                sr.T = (r[m] & r[n]) == 0;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpEq:
+                sr = Registers.StatusRegister;
+                sr.T = r[n] == r[m];
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpHs:
+                sr = Registers.StatusRegister;
+                sr.T = r[n] >= r[m];
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpGe:
+                sr = Registers.StatusRegister;
+                sr.T = (int)r[n] >= (int)r[m];
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpHi:
+                sr = Registers.StatusRegister;
+                sr.T = r[n] > r[m];
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpGt:
+                sr = Registers.StatusRegister;
+                sr.T = (int)r[n] > (int)r[m];
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpEqImm:
+                sr = Registers.StatusRegister;
+                sr.T = r[0] == unchecked((uint)op.Imm);
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.TstImm:
+                sr = Registers.StatusRegister;
+                sr.T = (r[0] & (uint)(byte)op.Imm) == 0;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.AndImm:
+                r[0] &= (uint)(byte)op.Imm;
+                return;
+            case DecodedOpKind.OrImm:
+                r[0] |= (uint)(byte)op.Imm;
+                return;
+            case DecodedOpKind.XorImm:
+                r[0] ^= (uint)(byte)op.Imm;
+                return;
+            case DecodedOpKind.Add:
+                r[n] = unchecked(r[n] + r[m]);
+                return;
+            case DecodedOpKind.Sub:
+                r[n] = unchecked(r[n] - r[m]);
+                return;
+            case DecodedOpKind.MulU:
+                Registers.MacLow = (r[m] & 0xFFFF) * (r[n] & 0xFFFF);
+                return;
+            case DecodedOpKind.MulS:
+                Registers.MacLow = unchecked((uint)((short)r[m] * (short)r[n]));
+                return;
+            case DecodedOpKind.MulL:
+                Registers.MacLow = unchecked(r[n] * r[m]);
+                return;
+            case DecodedOpKind.MovT:
+                r[n] = Registers.StatusRegister.T ? 1u : 0u;
+                return;
+            case DecodedOpKind.ClrT:
+                sr = Registers.StatusRegister;
+                sr.T = false;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.SetT:
+                sr = Registers.StatusRegister;
+                sr.T = true;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.ClrMac:
+                Registers.MacLow = 0;
+                Registers.MacHigh = 0;
+                return;
+            case DecodedOpKind.Div0U:
+                sr = Registers.StatusRegister;
+                sr.M = false;
+                sr.Q = false;
+                sr.T = false;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.Shll:
+                sr = Registers.StatusRegister;
+                sr.T = (r[n] & 0x80000000) != 0;
+                r[n] <<= 1;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.Shlr:
+                sr = Registers.StatusRegister;
+                sr.T = (r[n] & 1) != 0;
+                r[n] >>= 1;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.Shar:
+                sr = Registers.StatusRegister;
+                sr.T = (r[n] & 1) != 0;
+                r[n] = (uint)((int)r[n] >> 1);
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.RotL:
+                sr = Registers.StatusRegister;
+                sr.T = (r[n] & 0x80000000) != 0;
+                r[n] = (r[n] << 1) | (sr.T ? 1u : 0u);
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.RotR:
+                sr = Registers.StatusRegister;
+                sr.T = (r[n] & 1) != 0;
+                r[n] = (r[n] >> 1) | (sr.T ? 0x80000000u : 0u);
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.Shll2:
+                r[n] <<= 2;
+                return;
+            case DecodedOpKind.Shlr2:
+                r[n] >>= 2;
+                return;
+            case DecodedOpKind.Shll8:
+                r[n] <<= 8;
+                return;
+            case DecodedOpKind.Shlr8:
+                r[n] >>= 8;
+                return;
+            case DecodedOpKind.Shll16:
+                r[n] <<= 16;
+                return;
+            case DecodedOpKind.Shlr16:
+                r[n] >>= 16;
+                return;
+            case DecodedOpKind.MovLDispPc:
+                r[n] = bus.ReadLongword(((op.Pc + 4) & ~3u) + (uint)op.Imm, Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovWDispPc:
+                r[n] = unchecked((uint)(short)bus.ReadWord(op.Pc + 4 + (uint)op.Imm, Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovLDispRm:
+                r[n] = bus.ReadLongword(r[m] + (uint)op.Imm, Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovLStoreDispRn:
+                bus.WriteLongword(r[n] + (uint)op.Imm, r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBLoad:
+                r[n] = unchecked((uint)(sbyte)bus.ReadByte(r[m], Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovWLoad:
+                r[n] = unchecked((uint)(short)bus.ReadWord(r[m], Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovLLoad:
+                r[n] = bus.ReadLongword(r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBLoadPost:
+                r[n] = unchecked((uint)(sbyte)bus.ReadByte(r[m], Sega32XSh2AccessContext.Data));
+                if (n != m)
+                    r[m]++;
+                return;
+            case DecodedOpKind.MovWLoadPost:
+                r[n] = unchecked((uint)(short)bus.ReadWord(r[m], Sega32XSh2AccessContext.Data));
+                if (n != m)
+                    r[m] += 2;
+                return;
+            case DecodedOpKind.MovLLoadPost:
+                r[n] = bus.ReadLongword(r[m], Sega32XSh2AccessContext.Data);
+                if (n != m)
+                    r[m] += 4;
+                return;
+            case DecodedOpKind.MovBStore:
+                bus.WriteByte(r[n], (byte)r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovWStore:
+                bus.WriteWord(r[n], (ushort)r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovLStore:
+                bus.WriteLongword(r[n], r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBStorePre:
+                r[n]--;
+                bus.WriteByte(r[n], (byte)r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovWStorePre:
+                r[n] -= 2;
+                bus.WriteWord(r[n], (ushort)r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovLStorePre:
+                r[n] -= 4;
+                bus.WriteLongword(r[n], r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBStoreR0Rn:
+                bus.WriteByte(r[0] + r[n], (byte)r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovWStoreR0Rn:
+                bus.WriteWord(r[0] + r[n], (ushort)r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovLStoreR0Rn:
+                bus.WriteLongword(r[0] + r[n], r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBLoadR0Rm:
+                r[n] = unchecked((uint)(sbyte)bus.ReadByte(r[0] + r[m], Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovWLoadR0Rm:
+                r[n] = unchecked((uint)(short)bus.ReadWord(r[0] + r[m], Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovLLoadR0Rm:
+                r[n] = bus.ReadLongword(r[0] + r[m], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBStoreDispRm:
+                bus.WriteByte(r[m] + (uint)op.Imm, (byte)r[0], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovWStoreDispRm:
+                bus.WriteWord(r[m] + (uint)op.Imm, (ushort)r[0], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBLoadDispRm:
+                r[0] = unchecked((uint)(sbyte)bus.ReadByte(r[m] + (uint)op.Imm, Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovWLoadDispRm:
+                r[0] = unchecked((uint)(short)bus.ReadWord(r[m] + (uint)op.Imm, Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovBStoreGbr:
+                bus.WriteByte(Registers.GlobalBaseRegister + (uint)op.Imm, (byte)r[0], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovWStoreGbr:
+                bus.WriteWord(Registers.GlobalBaseRegister + (uint)op.Imm, (ushort)r[0], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovLStoreGbr:
+                bus.WriteLongword(Registers.GlobalBaseRegister + (uint)op.Imm, r[0], Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovBLoadGbr:
+                r[0] = unchecked((uint)(sbyte)bus.ReadByte(Registers.GlobalBaseRegister + (uint)op.Imm, Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovWLoadGbr:
+                r[0] = unchecked((uint)(short)bus.ReadWord(Registers.GlobalBaseRegister + (uint)op.Imm, Sega32XSh2AccessContext.Data));
+                return;
+            case DecodedOpKind.MovLLoadGbr:
+                r[0] = bus.ReadLongword(Registers.GlobalBaseRegister + (uint)op.Imm, Sega32XSh2AccessContext.Data);
+                return;
+            case DecodedOpKind.MovA:
+                r[0] = ((op.Pc + 4) & ~3u) + (uint)op.Imm;
+                return;
+            case DecodedOpKind.Dt:
+                r[n]--;
+                sr = Registers.StatusRegister;
+                sr.T = r[n] == 0;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpPz:
+                sr = Registers.StatusRegister;
+                sr.T = (int)r[n] >= 0;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.CmpPl:
+                sr = Registers.StatusRegister;
+                sr.T = (int)r[n] > 0;
+                Registers.StatusRegister = sr;
+                return;
+            case DecodedOpKind.Bra:
+                Registers.NextProgramCounter = unchecked(Registers.NextProgramCounter + (uint)(op.Imm << 1));
+                Registers.NextInstructionInDelaySlot = true;
+                return;
+            case DecodedOpKind.Bsr:
+                Registers.ProcedureRegister = Registers.NextProgramCounter;
+                Registers.NextProgramCounter = unchecked(Registers.NextProgramCounter + (uint)(op.Imm << 1));
+                Registers.NextInstructionInDelaySlot = true;
+                return;
+            case DecodedOpKind.Bt:
+                if (Registers.StatusRegister.T)
+                {
+                    Registers.ProgramCounter = unchecked(Registers.NextProgramCounter + (uint)(op.Imm << 1));
+                    Registers.NextProgramCounter = Registers.ProgramCounter + 2;
+                }
+                return;
+            case DecodedOpKind.Bf:
+                if (!Registers.StatusRegister.T)
+                {
+                    Registers.ProgramCounter = unchecked(Registers.NextProgramCounter + (uint)(op.Imm << 1));
+                    Registers.NextProgramCounter = Registers.ProgramCounter + 2;
+                }
+                return;
+            case DecodedOpKind.BtS:
+                if (Registers.StatusRegister.T)
+                {
+                    Registers.NextProgramCounter = unchecked(Registers.NextProgramCounter + (uint)(op.Imm << 1));
+                    Registers.NextInstructionInDelaySlot = true;
+                }
+                return;
+            case DecodedOpKind.BfS:
+                if (!Registers.StatusRegister.T)
+                {
+                    Registers.NextProgramCounter = unchecked(Registers.NextProgramCounter + (uint)(op.Imm << 1));
+                    Registers.NextInstructionInDelaySlot = true;
+                }
+                return;
+            case DecodedOpKind.Rts:
+                Registers.NextProgramCounter = Registers.ProcedureRegister;
+                Registers.NextInstructionInDelaySlot = true;
+                return;
+            case DecodedOpKind.Jmp:
+                Registers.NextProgramCounter = r[n];
+                Registers.NextInstructionInDelaySlot = true;
+                bus.IncrementCycleCounter(1);
+                CycleCounter += 1;
+                return;
+            case DecodedOpKind.Jsr:
+                Registers.ProcedureRegister = Registers.NextProgramCounter;
+                Registers.NextProgramCounter = r[n];
+                Registers.NextInstructionInDelaySlot = true;
+                bus.IncrementCycleCounter(1);
+                CycleCounter += 1;
+                return;
+            case DecodedOpKind.Braf:
+                Registers.NextProgramCounter = unchecked(Registers.NextProgramCounter + r[n]);
+                Registers.NextInstructionInDelaySlot = true;
+                return;
+            case DecodedOpKind.Bsrf:
+                Registers.ProcedureRegister = Registers.NextProgramCounter;
+                Registers.NextProgramCounter = unchecked(Registers.NextProgramCounter + r[n]);
+                Registers.NextInstructionInDelaySlot = true;
+                return;
+            case DecodedOpKind.LoadPr:
+                Registers.ProcedureRegister = r[n];
+                return;
+        }
+    }
+
+    private static bool IsDecodedCompareSafe(DecodedOpKind kind)
+    {
+        return kind is not (
+            DecodedOpKind.MovLDispPc or DecodedOpKind.MovWDispPc or DecodedOpKind.MovLDispRm or
+            DecodedOpKind.MovLStoreDispRn or DecodedOpKind.MovBLoad or DecodedOpKind.MovWLoad or
+            DecodedOpKind.MovLLoad or DecodedOpKind.MovBLoadPost or DecodedOpKind.MovWLoadPost or
+            DecodedOpKind.MovLLoadPost or DecodedOpKind.MovBStore or DecodedOpKind.MovWStore or
+            DecodedOpKind.MovLStore or DecodedOpKind.MovBStorePre or DecodedOpKind.MovWStorePre or
+            DecodedOpKind.MovLStorePre or DecodedOpKind.MovBStoreR0Rn or DecodedOpKind.MovWStoreR0Rn or
+            DecodedOpKind.MovLStoreR0Rn or DecodedOpKind.MovBLoadR0Rm or DecodedOpKind.MovWLoadR0Rm or
+            DecodedOpKind.MovLLoadR0Rm or DecodedOpKind.MovBStoreDispRm or DecodedOpKind.MovWStoreDispRm or
+            DecodedOpKind.MovBLoadDispRm or DecodedOpKind.MovWLoadDispRm or DecodedOpKind.MovBStoreGbr or
+            DecodedOpKind.MovWStoreGbr or DecodedOpKind.MovLStoreGbr or DecodedOpKind.MovBLoadGbr or
+            DecodedOpKind.MovWLoadGbr or DecodedOpKind.MovLLoadGbr);
+    }
+
+    private void CompareDecodedOpWithInterpreter(DecodedOp op)
+    {
+        _blockInterpreterCompareLogs++;
+        CpuSnapshot before = CaptureSnapshot();
+
+        ApplyFetchedInstructionPrelude();
+        ExecuteDecodedOp(op, null!);
+        CpuSnapshot decoded = CaptureSnapshot();
+
+        RestoreSnapshot(before);
+        ApplyFetchedInstructionPrelude();
+        bool interpreted = TryExecute(op.Opcode, null!);
+        CpuSnapshot fallback = CaptureSnapshot();
+
+        RestoreSnapshot(before);
+
+        if (!interpreted || !decoded.Equals(fallback))
+        {
+            Console.WriteLine(
+                $"[S32X-BLOCK-INTERP-{Name}] compare divergence pc=0x{op.Pc:X8} op=0x{op.Opcode:X4} " +
+                $"decoded_pc=0x{decoded.ProgramCounter:X8} fallback_pc=0x{fallback.ProgramCounter:X8}");
+            _blockInterpreterCompareLogs = BlockInterpreterCompareInstructions;
+        }
+        else if (_blockInterpreterCompareLogs == BlockInterpreterCompareInstructions)
+        {
+            Console.WriteLine($"[S32X-BLOCK-INTERP-{Name}] compare sampled {BlockInterpreterCompareInstructions} decoded ops without divergence");
+        }
+    }
+
+    private void ApplyFetchedInstructionPrelude()
+    {
+        Registers.ProgramCounter = Registers.NextProgramCounter;
+        Registers.NextProgramCounter = Registers.ProgramCounter + 2;
+        Registers.NextInstructionInDelaySlot = false;
+    }
+
+    private CpuSnapshot CaptureSnapshot() => new(Registers, CycleCounter);
+
+    private void RestoreSnapshot(CpuSnapshot snapshot)
+    {
+        Array.Copy(snapshot.GeneralPurposeRegisters, Registers.GeneralPurposeRegisters, Registers.GeneralPurposeRegisters.Length);
+        Registers.StatusRegister = snapshot.StatusRegister;
+        Registers.GlobalBaseRegister = snapshot.GlobalBaseRegister;
+        Registers.VectorBaseRegister = snapshot.VectorBaseRegister;
+        Registers.MacLow = snapshot.MacLow;
+        Registers.MacHigh = snapshot.MacHigh;
+        Registers.ProcedureRegister = snapshot.ProcedureRegister;
+        Registers.ProgramCounter = snapshot.ProgramCounter;
+        Registers.NextProgramCounter = snapshot.NextProgramCounter;
+        Registers.NextInstructionInDelaySlot = snapshot.NextInstructionInDelaySlot;
+        CycleCounter = snapshot.CycleCounter;
+    }
+
+    private static bool TryDecodeBlockOp(uint pc, ushort opcode, out DecodedOp op)
+    {
+        int n = (opcode >> 8) & 0xF;
+        int m = (opcode >> 4) & 0xF;
+        op = new DecodedOp(pc, opcode, DecodedOpKind.Nop, n, m, 0);
+
+        switch (opcode & 0xF000)
+        {
+            case 0x1000:
+                if (!AggressiveBlockInterpreter)
+                    return false;
+                op = new DecodedOp(pc, opcode, DecodedOpKind.MovLStoreDispRn, n, m, (opcode & 0xF) << 2);
+                return true;
+            case 0x5000:
+                if (!AggressiveBlockInterpreter)
+                    return false;
+                op = new DecodedOp(pc, opcode, DecodedOpKind.MovLDispRm, n, m, (opcode & 0xF) << 2);
+                return true;
+            case 0x9000:
+                if (!AggressiveBlockInterpreter)
+                    return false;
+                op = new DecodedOp(pc, opcode, DecodedOpKind.MovWDispPc, n, m, (opcode & 0xFF) << 1);
+                return true;
+            case 0xD000:
+                if (!AggressiveBlockInterpreter)
+                    return false;
+                op = new DecodedOp(pc, opcode, DecodedOpKind.MovLDispPc, n, m, (opcode & 0xFF) << 2);
+                return true;
+            case 0xE000:
+                op = new DecodedOp(pc, opcode, DecodedOpKind.MovImm, n, m, (sbyte)(opcode & 0xFF));
+                return true;
+            case 0x7000:
+                op = new DecodedOp(pc, opcode, DecodedOpKind.AddImm, n, m, (sbyte)(opcode & 0xFF));
+                return true;
+            case 0x6000:
+                return TryDecodeBlockOp6(pc, opcode, n, m, out op);
+            case 0x2000:
+                return TryDecodeBlockOp2(pc, opcode, n, m, out op);
+            case 0x3000:
+                return TryDecodeBlockOp3(pc, opcode, n, m, out op);
+            case 0x4000:
+                return TryDecodeBlockOp4(pc, opcode, n, out op);
+            case 0x0000:
+                return TryDecodeBlockOp0(pc, opcode, n, out op);
+            case 0x8000:
+                if (TryDecodeBlockOp8(pc, opcode, n, m, out op))
+                    return true;
+                if ((opcode & 0xFF00) == 0x8800)
+                {
+                    op = new DecodedOp(pc, opcode, DecodedOpKind.CmpEqImm, n, m, (sbyte)(opcode & 0xFF));
+                    return true;
+                }
+                return false;
+            case 0xC000:
+                return TryDecodeBlockOpC(pc, opcode, n, m, out op);
+            default:
+                return false;
+        }
+    }
+
+    private static DecodedOp[] BuildFastOpcodeTable()
+    {
+        DecodedOp[] table = new DecodedOp[ushort.MaxValue + 1];
+        for (int opcode = 0; opcode < table.Length; opcode++)
+        {
+            if (TryDecodeFastOpcode((ushort)opcode, out DecodedOp op))
+                table[opcode] = op;
+        }
+
+        return table;
+    }
+
+    private static bool TryDecodeFastOpcode(ushort opcode, out DecodedOp op)
+    {
+        int n = (opcode >> 8) & 0xF;
+        int m = (opcode >> 4) & 0xF;
+
+        switch (opcode & 0xF000)
+        {
+            case 0x1000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.MovLStoreDispRn, n, m, (opcode & 0xF) << 2);
+                return true;
+            case 0x5000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.MovLDispRm, n, m, (opcode & 0xF) << 2);
+                return true;
+            case 0x9000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.MovWDispPc, n, m, (opcode & 0xFF) << 1);
+                return true;
+            case 0xD000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.MovLDispPc, n, m, (opcode & 0xFF) << 2);
+                return true;
+            case 0xE000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.MovImm, n, m, (sbyte)(opcode & 0xFF));
+                return true;
+            case 0x7000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.AddImm, n, m, (sbyte)(opcode & 0xFF));
+                return true;
+            case 0xA000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.Bra, n, m, ((short)(opcode << 4)) >> 4);
+                return true;
+            case 0xB000:
+                op = new DecodedOp(0, opcode, DecodedOpKind.Bsr, n, m, ((short)(opcode << 4)) >> 4);
+                return true;
+            case 0x6000:
+                return TryDecodeFastOpcode6(opcode, n, m, out op);
+            case 0x2000:
+                return TryDecodeFastOpcode2(opcode, n, m, out op);
+            case 0x3000:
+                return TryDecodeFastOpcode3(opcode, n, m, out op);
+            case 0x4000:
+                return TryDecodeFastOpcode4(opcode, n, m, out op);
+            case 0x0000:
+                return TryDecodeFastOpcode0(opcode, n, m, out op);
+            case 0x8000:
+                return TryDecodeFastOpcode8(opcode, n, m, out op);
+            case 0xC000:
+                return TryDecodeFastOpcodeC(opcode, n, m, out op);
+            default:
+                op = default;
+                return false;
+        }
+    }
+
+    private static bool TryDecodeFastOpcode6(ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF00F) switch
+        {
+            0x6000 => DecodedOpKind.MovBLoad,
+            0x6001 => DecodedOpKind.MovWLoad,
+            0x6002 => DecodedOpKind.MovLLoad,
+            0x6003 => DecodedOpKind.MovReg,
+            0x6004 => DecodedOpKind.MovBLoadPost,
+            0x6005 => DecodedOpKind.MovWLoadPost,
+            0x6006 => DecodedOpKind.MovLLoadPost,
+            0x6007 => DecodedOpKind.Not,
+            0x6008 => DecodedOpKind.SwapB,
+            0x6009 => DecodedOpKind.SwapW,
+            0x600B => DecodedOpKind.Neg,
+            0x600C => DecodedOpKind.ExtuB,
+            0x600D => DecodedOpKind.ExtuW,
+            0x600E => DecodedOpKind.ExtsB,
+            0x600F => DecodedOpKind.ExtsW,
+            _ => DecodedOpKind.Invalid,
+        };
+        op = new DecodedOp(0, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeFastOpcode2(ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF00F) switch
+        {
+            0x2000 => DecodedOpKind.MovBStore,
+            0x2001 => DecodedOpKind.MovWStore,
+            0x2002 => DecodedOpKind.MovLStore,
+            0x2004 => DecodedOpKind.MovBStorePre,
+            0x2005 => DecodedOpKind.MovWStorePre,
+            0x2006 => DecodedOpKind.MovLStorePre,
+            0x2008 => DecodedOpKind.Tst,
+            0x2009 => DecodedOpKind.And,
+            0x200A => DecodedOpKind.Xor,
+            0x200B => DecodedOpKind.Or,
+            0x200E => DecodedOpKind.MulU,
+            0x200F => DecodedOpKind.MulS,
+            _ => DecodedOpKind.Invalid,
+        };
+        op = new DecodedOp(0, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeFastOpcode3(ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF00F) switch
+        {
+            0x3000 => DecodedOpKind.CmpEq,
+            0x3002 => DecodedOpKind.CmpHs,
+            0x3003 => DecodedOpKind.CmpGe,
+            0x3006 => DecodedOpKind.CmpHi,
+            0x3007 => DecodedOpKind.CmpGt,
+            0x3008 => DecodedOpKind.Sub,
+            0x300C => DecodedOpKind.Add,
+            _ => DecodedOpKind.Invalid,
+        };
+        op = new DecodedOp(0, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeFastOpcode4(ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF0FF) switch
+        {
+            0x4000 or 0x4020 => DecodedOpKind.Shll,
+            0x4001 => DecodedOpKind.Shlr,
+            0x4010 => DecodedOpKind.Dt,
+            0x4011 => DecodedOpKind.CmpPz,
+            0x4015 => DecodedOpKind.CmpPl,
+            0x4021 => DecodedOpKind.Shar,
+            0x4004 => DecodedOpKind.RotL,
+            0x4005 => DecodedOpKind.RotR,
+            0x4008 => DecodedOpKind.Shll2,
+            0x4009 => DecodedOpKind.Shlr2,
+            0x4018 => DecodedOpKind.Shll8,
+            0x4019 => DecodedOpKind.Shlr8,
+            0x4028 => DecodedOpKind.Shll16,
+            0x4029 => DecodedOpKind.Shlr16,
+            0x400B => DecodedOpKind.Jsr,
+            0x402B => DecodedOpKind.Jmp,
+            0x402A => DecodedOpKind.LoadPr,
+            _ => DecodedOpKind.Invalid,
+        };
+        op = new DecodedOp(0, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeFastOpcode0(ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = opcode switch
+        {
+            0x0008 => DecodedOpKind.ClrT,
+            0x0018 => DecodedOpKind.SetT,
+            0x0028 => DecodedOpKind.ClrMac,
+            0x0019 => DecodedOpKind.Div0U,
+            0x0009 => DecodedOpKind.Nop,
+            0x000B => DecodedOpKind.Rts,
+            0x001B => DecodedOpKind.Sleep,
+            _ => DecodedOpKind.Invalid,
+        };
+        if ((opcode & 0xF00F) == 0x0004)
+            kind = DecodedOpKind.MovBStoreR0Rn;
+        else if ((opcode & 0xF00F) == 0x0005)
+            kind = DecodedOpKind.MovWStoreR0Rn;
+        else if ((opcode & 0xF00F) == 0x0006)
+            kind = DecodedOpKind.MovLStoreR0Rn;
+        else if ((opcode & 0xF00F) == 0x000C)
+            kind = DecodedOpKind.MovBLoadR0Rm;
+        else if ((opcode & 0xF00F) == 0x000D)
+            kind = DecodedOpKind.MovWLoadR0Rm;
+        else if ((opcode & 0xF00F) == 0x000E)
+            kind = DecodedOpKind.MovLLoadR0Rm;
+        else if ((opcode & 0xF00F) == 0x0007)
+            kind = DecodedOpKind.MulL;
+        else if ((opcode & 0xF0FF) == 0x0029)
+            kind = DecodedOpKind.MovT;
+        else if ((opcode & 0xF0FF) == 0x0003)
+            kind = DecodedOpKind.Bsrf;
+        else if ((opcode & 0xF0FF) == 0x0023)
+            kind = DecodedOpKind.Braf;
+
+        op = new DecodedOp(0, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeFastOpcode8(ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = ((opcode >> 8) & 0xF) switch
+        {
+            0x0 => DecodedOpKind.MovBStoreDispRm,
+            0x1 => DecodedOpKind.MovWStoreDispRm,
+            0x4 => DecodedOpKind.MovBLoadDispRm,
+            0x5 => DecodedOpKind.MovWLoadDispRm,
+            0x8 => DecodedOpKind.CmpEqImm,
+            0x9 => DecodedOpKind.Bt,
+            0xB => DecodedOpKind.Bf,
+            0xD => DecodedOpKind.BtS,
+            0xF => DecodedOpKind.BfS,
+            _ => DecodedOpKind.Invalid,
+        };
+
+        int imm = opcode & 0xFF;
+        if (kind is DecodedOpKind.MovBStoreDispRm or DecodedOpKind.MovBLoadDispRm)
+            imm = opcode & 0xF;
+        else if (kind is DecodedOpKind.MovWStoreDispRm or DecodedOpKind.MovWLoadDispRm)
+            imm = (opcode & 0xF) << 1;
+        else if (kind is DecodedOpKind.CmpEqImm or DecodedOpKind.Bt or DecodedOpKind.Bf or DecodedOpKind.BtS or DecodedOpKind.BfS)
+            imm = (sbyte)(opcode & 0xFF);
+
+        op = new DecodedOp(0, opcode, kind, n, m, imm);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeFastOpcodeC(ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xFF00) switch
+        {
+            0xC000 => DecodedOpKind.MovBStoreGbr,
+            0xC100 => DecodedOpKind.MovWStoreGbr,
+            0xC200 => DecodedOpKind.MovLStoreGbr,
+            0xC400 => DecodedOpKind.MovBLoadGbr,
+            0xC500 => DecodedOpKind.MovWLoadGbr,
+            0xC600 => DecodedOpKind.MovLLoadGbr,
+            0xC700 => DecodedOpKind.MovA,
+            0xC800 => DecodedOpKind.TstImm,
+            0xC900 => DecodedOpKind.AndImm,
+            0xCA00 => DecodedOpKind.XorImm,
+            0xCB00 => DecodedOpKind.OrImm,
+            _ => DecodedOpKind.Invalid,
+        };
+
+        int displacement = opcode & 0xFF;
+        if (kind is DecodedOpKind.MovWStoreGbr or DecodedOpKind.MovWLoadGbr)
+            displacement <<= 1;
+        else if (kind is DecodedOpKind.MovLStoreGbr or DecodedOpKind.MovLLoadGbr or DecodedOpKind.MovA)
+            displacement <<= 2;
+
+        op = new DecodedOp(0, opcode, kind, n, m, displacement);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeBlockOp6(uint pc, ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF00F) switch
+        {
+            0x6000 => DecodedOpKind.MovBLoad,
+            0x6001 => DecodedOpKind.MovWLoad,
+            0x6002 => DecodedOpKind.MovLLoad,
+            0x6003 => DecodedOpKind.MovReg,
+            0x6004 => DecodedOpKind.MovBLoadPost,
+            0x6005 => DecodedOpKind.MovWLoadPost,
+            0x6006 => DecodedOpKind.MovLLoadPost,
+            0x6007 => DecodedOpKind.Not,
+            0x6008 => DecodedOpKind.SwapB,
+            0x6009 => DecodedOpKind.SwapW,
+            0x600B => DecodedOpKind.Neg,
+            0x600C => DecodedOpKind.ExtuB,
+            0x600D => DecodedOpKind.ExtuW,
+            0x600E => DecodedOpKind.ExtsB,
+            0x600F => DecodedOpKind.ExtsW,
+            _ => DecodedOpKind.Invalid,
+        };
+        if (!AggressiveBlockInterpreter && IsAggressiveOnlyDecodedKind(kind))
+            kind = DecodedOpKind.Invalid;
+        op = new DecodedOp(pc, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeBlockOp2(uint pc, ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF00F) switch
+        {
+            0x2000 => DecodedOpKind.MovBStore,
+            0x2001 => DecodedOpKind.MovWStore,
+            0x2002 => DecodedOpKind.MovLStore,
+            0x2004 => DecodedOpKind.MovBStorePre,
+            0x2005 => DecodedOpKind.MovWStorePre,
+            0x2006 => DecodedOpKind.MovLStorePre,
+            0x2008 => DecodedOpKind.Tst,
+            0x2009 => DecodedOpKind.And,
+            0x200A => DecodedOpKind.Xor,
+            0x200B => DecodedOpKind.Or,
+            0x200E => DecodedOpKind.MulU,
+            0x200F => DecodedOpKind.MulS,
+            _ => DecodedOpKind.Invalid,
+        };
+        if (!AggressiveBlockInterpreter && IsAggressiveOnlyDecodedKind(kind))
+            kind = DecodedOpKind.Invalid;
+        op = new DecodedOp(pc, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeBlockOp3(uint pc, ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF00F) switch
+        {
+            0x3000 => DecodedOpKind.CmpEq,
+            0x3002 => DecodedOpKind.CmpHs,
+            0x3003 => DecodedOpKind.CmpGe,
+            0x3006 => DecodedOpKind.CmpHi,
+            0x3007 => DecodedOpKind.CmpGt,
+            0x3008 => DecodedOpKind.Sub,
+            0x300C => DecodedOpKind.Add,
+            _ => DecodedOpKind.Invalid,
+        };
+        op = new DecodedOp(pc, opcode, kind, n, m, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeBlockOp4(uint pc, ushort opcode, int n, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xF0FF) switch
+        {
+            0x4000 => DecodedOpKind.Shll,
+            0x4001 => DecodedOpKind.Shlr,
+            0x4010 => DecodedOpKind.Dt,
+            0x4011 => DecodedOpKind.CmpPz,
+            0x4015 => DecodedOpKind.CmpPl,
+            0x4021 => DecodedOpKind.Shar,
+            0x4004 => DecodedOpKind.RotL,
+            0x4005 => DecodedOpKind.RotR,
+            0x4008 => DecodedOpKind.Shll2,
+            0x4009 => DecodedOpKind.Shlr2,
+            0x4018 => DecodedOpKind.Shll8,
+            0x4019 => DecodedOpKind.Shlr8,
+            0x4028 => DecodedOpKind.Shll16,
+            0x4029 => DecodedOpKind.Shlr16,
+            _ => DecodedOpKind.Invalid,
+        };
+        if (!AggressiveBlockInterpreter && IsAggressiveOnlyDecodedKind(kind))
+            kind = DecodedOpKind.Invalid;
+        op = new DecodedOp(pc, opcode, kind, n, 0, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeBlockOp0(uint pc, ushort opcode, int n, out DecodedOp op)
+    {
+        DecodedOpKind kind = opcode switch
+        {
+            0x0004 => DecodedOpKind.MovBStoreR0Rn,
+            0x0005 => DecodedOpKind.MovWStoreR0Rn,
+            0x0006 => DecodedOpKind.MovLStoreR0Rn,
+            0x000C => DecodedOpKind.MovBLoadR0Rm,
+            0x000D => DecodedOpKind.MovWLoadR0Rm,
+            0x000E => DecodedOpKind.MovLLoadR0Rm,
+            0x0008 => DecodedOpKind.ClrT,
+            0x0018 => DecodedOpKind.SetT,
+            0x0028 => DecodedOpKind.ClrMac,
+            0x0019 => DecodedOpKind.Div0U,
+            0x0009 => DecodedOpKind.Nop,
+            _ => DecodedOpKind.Invalid,
+        };
+        if ((opcode & 0xF0FF) == 0x0029)
+            kind = DecodedOpKind.MovT;
+        if ((opcode & 0xF00F) == 0x0007)
+            kind = DecodedOpKind.MulL;
+        if (!AggressiveBlockInterpreter && IsAggressiveOnlyDecodedKind(kind))
+            kind = DecodedOpKind.Invalid;
+        op = new DecodedOp(pc, opcode, kind, n, (opcode >> 4) & 0xF, 0);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeBlockOp8(uint pc, ushort opcode, int n, int m, out DecodedOp op)
+    {
+        if (!AggressiveBlockInterpreter)
+        {
+            op = new DecodedOp(pc, opcode, DecodedOpKind.Invalid, n, m, 0);
+            return false;
+        }
+
+        DecodedOpKind kind = ((opcode >> 8) & 0xF) switch
+        {
+            0x0 => DecodedOpKind.MovBStoreDispRm,
+            0x1 => DecodedOpKind.MovWStoreDispRm,
+            0x4 => DecodedOpKind.MovBLoadDispRm,
+            0x5 => DecodedOpKind.MovWLoadDispRm,
+            _ => DecodedOpKind.Invalid,
+        };
+        int displacement = opcode & 0xF;
+        if (kind is DecodedOpKind.MovWStoreDispRm or DecodedOpKind.MovWLoadDispRm)
+            displacement <<= 1;
+        op = new DecodedOp(pc, opcode, kind, n, m, displacement);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool TryDecodeBlockOpC(uint pc, ushort opcode, int n, int m, out DecodedOp op)
+    {
+        DecodedOpKind kind = (opcode & 0xFF00) switch
+        {
+            0xC000 => DecodedOpKind.MovBStoreGbr,
+            0xC100 => DecodedOpKind.MovWStoreGbr,
+            0xC200 => DecodedOpKind.MovLStoreGbr,
+            0xC400 => DecodedOpKind.MovBLoadGbr,
+            0xC500 => DecodedOpKind.MovWLoadGbr,
+            0xC600 => DecodedOpKind.MovLLoadGbr,
+            0xC700 => DecodedOpKind.MovA,
+            0xC800 => DecodedOpKind.TstImm,
+            0xC900 => DecodedOpKind.AndImm,
+            0xCA00 => DecodedOpKind.XorImm,
+            0xCB00 => DecodedOpKind.OrImm,
+            _ => DecodedOpKind.Invalid,
+        };
+        if (!AggressiveBlockInterpreter && IsAggressiveOnlyDecodedKind(kind))
+            kind = DecodedOpKind.Invalid;
+        int displacement = opcode & 0xFF;
+        if (kind is DecodedOpKind.MovWStoreGbr or DecodedOpKind.MovWLoadGbr)
+            displacement <<= 1;
+        else if (kind is DecodedOpKind.MovLStoreGbr or DecodedOpKind.MovLLoadGbr or DecodedOpKind.MovA)
+            displacement <<= 2;
+        op = new DecodedOp(pc, opcode, kind, n, m, displacement);
+        return kind != DecodedOpKind.Invalid;
+    }
+
+    private static bool IsAggressiveOnlyDecodedKind(DecodedOpKind kind)
+    {
+        return kind is
+            DecodedOpKind.MovLDispPc or DecodedOpKind.MovWDispPc or DecodedOpKind.MovLDispRm or
+            DecodedOpKind.MovLStoreDispRn or DecodedOpKind.MovBLoad or DecodedOpKind.MovWLoad or
+            DecodedOpKind.MovLLoad or DecodedOpKind.MovBLoadPost or DecodedOpKind.MovWLoadPost or
+            DecodedOpKind.MovLLoadPost or DecodedOpKind.MovBStore or DecodedOpKind.MovWStore or
+            DecodedOpKind.MovLStore or DecodedOpKind.MovBStorePre or DecodedOpKind.MovWStorePre or
+            DecodedOpKind.MovLStorePre or DecodedOpKind.MovBStoreR0Rn or DecodedOpKind.MovWStoreR0Rn or
+            DecodedOpKind.MovLStoreR0Rn or DecodedOpKind.MovBLoadR0Rm or DecodedOpKind.MovWLoadR0Rm or
+            DecodedOpKind.MovLLoadR0Rm or DecodedOpKind.MovBStoreDispRm or DecodedOpKind.MovWStoreDispRm or
+            DecodedOpKind.MovBLoadDispRm or DecodedOpKind.MovWLoadDispRm or DecodedOpKind.MovBStoreGbr or
+            DecodedOpKind.MovWStoreGbr or DecodedOpKind.MovLStoreGbr or DecodedOpKind.MovBLoadGbr or
+            DecodedOpKind.MovWLoadGbr or DecodedOpKind.MovLLoadGbr or DecodedOpKind.MovA or
+            DecodedOpKind.Dt or DecodedOpKind.CmpPz or DecodedOpKind.CmpPl;
+    }
+
+    private static bool IsDecodedBlockTerminator(ushort opcode)
+    {
+        // This first conservative block interpreter never decodes control-flow instructions, so a
+        // decoded opcode is currently never a terminator. Keep the hook explicit for future growth.
+        return false;
+    }
+
     private bool TryExecuteTightDelayLoop(
         Sega32XSh2Bus bus,
         ulong remainingInstructions,
@@ -971,7 +2568,7 @@ internal sealed class Sega32XSh2Cpu
     private void ExecuteSingleInstruction(Sega32XSh2Bus bus)
     {
         uint pc = Registers.ProgramCounter;
-        ushort opcode = bus.ReadOpcode(pc);
+        ushort opcode = bus.ReadOpcodeFast(pc);
         ExecuteFetchedInstruction(bus, pc, opcode);
     }
 
@@ -997,7 +2594,7 @@ internal sealed class Sega32XSh2Cpu
         CurrentInstructionPc = pc;
         try
         {
-            if (TryExecute(opcode, bus))
+            if ((FastCoreEnabled && TryExecuteFastCore(pc, opcode, bus)) || TryExecute(opcode, bus))
             {
                 bus.IncrementCycleCounter(1);
                 CycleCounter += 1;
@@ -1029,6 +2626,17 @@ internal sealed class Sega32XSh2Cpu
         {
             CurrentInstructionPc = 0;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteFastCore(uint pc, ushort opcode, Sega32XSh2Bus bus)
+    {
+        DecodedOp op = FastOpcodeTable[opcode];
+        if (op.Kind == DecodedOpKind.Invalid)
+            return false;
+
+        ExecuteDecodedOp(new DecodedOp(pc, opcode, op.Kind, op.N, op.M, op.Imm), bus);
+        return true;
     }
 
     private void HandleException(byte? interruptLevel, uint vectorNumber, Sega32XSh2Bus bus)
@@ -1090,6 +2698,12 @@ internal sealed class Sega32XSh2Cpu
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TRACE_SH2_INST_MAX");
         return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : 256;
+    }
+
+    private static int ParseBlockInterpreterCompareInstructions()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_32X_BLOCK_INTERP_COMPARE");
+        return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : 0;
     }
 
     private void MaybeTraceInstruction(uint pc, ushort opcode)
@@ -1722,6 +3336,192 @@ internal sealed class Sega32XSh2Cpu
         }
 
         return false;
+    }
+}
+
+internal enum DecodedOpKind : byte
+{
+    Invalid,
+    Nop,
+    Sleep,
+    MovImm,
+    AddImm,
+    MovReg,
+    Not,
+    Neg,
+    ExtuB,
+    ExtuW,
+    ExtsB,
+    ExtsW,
+    SwapB,
+    SwapW,
+    And,
+    Or,
+    Xor,
+    Tst,
+    CmpEq,
+    CmpHs,
+    CmpGe,
+    CmpHi,
+    CmpGt,
+    CmpEqImm,
+    TstImm,
+    AndImm,
+    OrImm,
+    XorImm,
+    Add,
+    Sub,
+    MulU,
+    MulS,
+    MulL,
+    MovT,
+    ClrT,
+    SetT,
+    ClrMac,
+    Div0U,
+    Shll,
+    Shlr,
+    Shar,
+    RotL,
+    RotR,
+    Shll2,
+    Shlr2,
+    Shll8,
+    Shlr8,
+    Shll16,
+    Shlr16,
+    MovLDispPc,
+    MovWDispPc,
+    MovLDispRm,
+    MovLStoreDispRn,
+    MovBLoad,
+    MovWLoad,
+    MovLLoad,
+    MovBLoadPost,
+    MovWLoadPost,
+    MovLLoadPost,
+    MovBStore,
+    MovWStore,
+    MovLStore,
+    MovBStorePre,
+    MovWStorePre,
+    MovLStorePre,
+    MovBStoreR0Rn,
+    MovWStoreR0Rn,
+    MovLStoreR0Rn,
+    MovBLoadR0Rm,
+    MovWLoadR0Rm,
+    MovLLoadR0Rm,
+    MovBStoreDispRm,
+    MovWStoreDispRm,
+    MovBLoadDispRm,
+    MovWLoadDispRm,
+    MovBStoreGbr,
+    MovWStoreGbr,
+    MovLStoreGbr,
+    MovBLoadGbr,
+    MovWLoadGbr,
+    MovLLoadGbr,
+    MovA,
+    Dt,
+    CmpPz,
+    CmpPl,
+    Bra,
+    Bsr,
+    Bt,
+    Bf,
+    BtS,
+    BfS,
+    Rts,
+    Jmp,
+    Jsr,
+    Braf,
+    Bsrf,
+    LoadPr,
+}
+
+internal readonly struct DecodedOp
+{
+    public readonly uint Pc;
+    public readonly ushort Opcode;
+    public readonly DecodedOpKind Kind;
+    public readonly byte N;
+    public readonly byte M;
+    public readonly int Imm;
+
+    public DecodedOp(uint pc, ushort opcode, DecodedOpKind kind, int n, int m, int imm)
+    {
+        Pc = pc;
+        Opcode = opcode;
+        Kind = kind;
+        N = (byte)n;
+        M = (byte)m;
+        Imm = imm;
+    }
+}
+
+internal sealed class DecodedBlock
+{
+    public DecodedBlock(uint startPc, ulong executableVersion, DecodedOp[] operations)
+    {
+        StartPc = startPc;
+        ExecutableVersion = executableVersion;
+        Operations = operations;
+    }
+
+    public uint StartPc { get; }
+    public ulong ExecutableVersion { get; }
+    public DecodedOp[] Operations { get; }
+}
+
+internal readonly struct CpuSnapshot : IEquatable<CpuSnapshot>
+{
+    public readonly uint[] GeneralPurposeRegisters;
+    public readonly Sega32XSh2StatusRegister StatusRegister;
+    public readonly uint GlobalBaseRegister;
+    public readonly uint VectorBaseRegister;
+    public readonly uint MacLow;
+    public readonly uint MacHigh;
+    public readonly uint ProcedureRegister;
+    public readonly uint ProgramCounter;
+    public readonly uint NextProgramCounter;
+    public readonly bool NextInstructionInDelaySlot;
+    public readonly ulong CycleCounter;
+
+    public CpuSnapshot(Sega32XSh2Registers registers, ulong cycleCounter)
+    {
+        GeneralPurposeRegisters = new uint[16];
+        Array.Copy(registers.GeneralPurposeRegisters, GeneralPurposeRegisters, GeneralPurposeRegisters.Length);
+        StatusRegister = registers.StatusRegister;
+        GlobalBaseRegister = registers.GlobalBaseRegister;
+        VectorBaseRegister = registers.VectorBaseRegister;
+        MacLow = registers.MacLow;
+        MacHigh = registers.MacHigh;
+        ProcedureRegister = registers.ProcedureRegister;
+        ProgramCounter = registers.ProgramCounter;
+        NextProgramCounter = registers.NextProgramCounter;
+        NextInstructionInDelaySlot = registers.NextInstructionInDelaySlot;
+        CycleCounter = cycleCounter;
+    }
+
+    public bool Equals(CpuSnapshot other)
+    {
+        for (int i = 0; i < GeneralPurposeRegisters.Length; i++)
+        {
+            if (GeneralPurposeRegisters[i] != other.GeneralPurposeRegisters[i])
+                return false;
+        }
+
+        return StatusRegister.ToUInt32() == other.StatusRegister.ToUInt32()
+            && GlobalBaseRegister == other.GlobalBaseRegister
+            && VectorBaseRegister == other.VectorBaseRegister
+            && MacLow == other.MacLow
+            && MacHigh == other.MacHigh
+            && ProcedureRegister == other.ProcedureRegister
+            && ProgramCounter == other.ProgramCounter
+            && NextProgramCounter == other.NextProgramCounter
+            && NextInstructionInDelaySlot == other.NextInstructionInDelaySlot
+            && CycleCounter == other.CycleCounter;
     }
 }
 

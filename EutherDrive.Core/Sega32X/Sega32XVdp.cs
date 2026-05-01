@@ -447,6 +447,16 @@ internal sealed class Sega32XVdp
         TraceFrameBufferWriteIfEnabled("word", address, value, frameBuffer);
     }
 
+    public void WriteFrameBufferLongword(uint address, uint value)
+    {
+        ushort[] frameBuffer = GetWriteBuffer();
+        int index = (int)(((address & 0x1FFFF) >> 1) & ~1u);
+        frameBuffer[index] = (ushort)(value >> 16);
+        frameBuffer[index + 1] = (ushort)value;
+        TraceFrameBufferWriteIfEnabled("long-hi", address, frameBuffer[index], frameBuffer);
+        TraceFrameBufferWriteIfEnabled("long-lo", address + 2, frameBuffer[index + 1], frameBuffer);
+    }
+
     public void OverwriteFrameBufferWord(uint address, ushort value)
     {
         ushort[] frameBuffer = GetWriteBuffer();
@@ -460,6 +470,30 @@ internal sealed class Sega32XVdp
             current = (ushort)((current & 0xFF00) | lsb);
         frameBuffer[index] = current;
         TraceFrameBufferWriteIfEnabled("ovr", address, current, frameBuffer);
+    }
+
+    public void OverwriteFrameBufferLongword(uint address, uint value)
+    {
+        ushort[] frameBuffer = GetWriteBuffer();
+        int index = (int)(((address & 0x1FFFF) >> 1) & ~1u);
+        ushort high = frameBuffer[index];
+        ushort low = frameBuffer[index + 1];
+        byte b0 = (byte)(value >> 24);
+        byte b1 = (byte)(value >> 16);
+        byte b2 = (byte)(value >> 8);
+        byte b3 = (byte)value;
+        if (b0 != 0)
+            high = (ushort)((high & 0x00FF) | (b0 << 8));
+        if (b1 != 0)
+            high = (ushort)((high & 0xFF00) | b1);
+        if (b2 != 0)
+            low = (ushort)((low & 0x00FF) | (b2 << 8));
+        if (b3 != 0)
+            low = (ushort)((low & 0xFF00) | b3);
+        frameBuffer[index] = high;
+        frameBuffer[index + 1] = low;
+        TraceFrameBufferWriteIfEnabled("ovr-long-hi", address, high, frameBuffer);
+        TraceFrameBufferWriteIfEnabled("ovr-long-lo", address + 2, low, frameBuffer);
     }
 
     public ushort ReadCramWord(uint address)

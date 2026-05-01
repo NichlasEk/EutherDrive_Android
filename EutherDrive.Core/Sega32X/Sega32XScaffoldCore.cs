@@ -9,6 +9,7 @@ internal sealed class Sega32XScaffoldCore
     private static readonly bool ExperimentalSharedTimebaseEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_EXPERIMENTAL_SHARED_TIMEBASE");
     private static readonly bool BrutalLoopWatchEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_BRUTAL_WATCH");
     private static readonly bool SlaveFirstSh2Scheduling = ParseBoolEnv("EUTHERDRIVE_S32X_SH2_SLAVE_FIRST");
+    private static readonly bool WaitLoopFastForwardEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_WAIT_FAST_FORWARD");
     private static readonly ulong DefaultSh2InstructionsPerFrame = ParseInstructionBudget();
     private static readonly ulong DefaultM68kCyclesPerFrame = ParseM68kCycleBudget();
     private const ulong NativeM68kDivider = 7;
@@ -220,10 +221,10 @@ internal sealed class Sega32XScaffoldCore
         if (SlaveFirstSh2Scheduling)
         {
             while (_slaveBus.SchedulerCycleCounter < targetCycles)
-                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+                ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
 
             while (_masterBus.SchedulerCycleCounter < targetCycles)
-                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+                ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
 
             return;
         }
@@ -231,19 +232,36 @@ internal sealed class Sega32XScaffoldCore
         if (_slaveBus.SchedulerCycleCounter < _masterBus.SchedulerCycleCounter)
         {
             while (_slaveBus.SchedulerCycleCounter < targetCycles)
-                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+                ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
 
             while (_masterBus.SchedulerCycleCounter < targetCycles)
-                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+                ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
         }
         else
         {
             while (_masterBus.SchedulerCycleCounter < targetCycles)
-                MasterSh2.Execute(DefaultSh2ExecutionSliceLength, _masterBus);
+                ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
 
             while (_slaveBus.SchedulerCycleCounter < targetCycles)
-                SlaveSh2.Execute(DefaultSh2ExecutionSliceLength, _slaveBus);
+                ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
         }
+    }
+
+    private static void ExecuteSh2SchedulerSlice(Sega32XSh2Cpu cpu, Sega32XSh2Bus bus, ulong targetCycles)
+    {
+        ulong remaining = targetCycles > bus.SchedulerCycleCounter
+            ? targetCycles - bus.SchedulerCycleCounter
+            : 0;
+        if (remaining == 0)
+            return;
+
+        ulong slice = DefaultSh2ExecutionSliceLength;
+        if (WaitLoopFastForwardEnabled && cpu.IsAtBatchableWaitLoop(bus))
+            slice = remaining;
+        else if (slice > remaining)
+            slice = remaining;
+
+        cpu.Execute(slice, bus);
     }
 
     public bool BeginCommPortSync()
