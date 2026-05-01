@@ -2,7 +2,7 @@ using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core.Sega32X;
 
-internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
+internal sealed class Sega32XSh2Bus
 {
     private enum DmaAddressMode : uint
     {
@@ -493,6 +493,49 @@ internal sealed class Sega32XSh2Bus : ISega32XSh2Bus
         TracePcWatch("read16", masked, value, context);
         TraceAddressWatch("read16", masked, value, context);
         return value;
+    }
+
+    public ushort ReadOpcode(uint address)
+    {
+        if (TracePcWatchStart.HasValue || TraceAddressWatchStart.HasValue)
+            return ReadWord(address, Sega32XSh2AccessContext.Fetch);
+
+        uint addressSpace = address >> 29;
+        switch (addressSpace)
+        {
+            case 2:
+                CycleCounter += 1;
+                AssociativePurge(address);
+                return 0;
+            case 3:
+                CycleCounter += 1;
+                return 0;
+            case 4:
+            case 5:
+                CycleCounter += 1;
+                return 0;
+            case 6:
+                CycleCounter += 1;
+                return ReadCacheDataArrayWord(address);
+            case 7:
+                CycleCounter += 1;
+                return ReadInternalRegisterWord(address);
+        }
+
+        if (addressSpace == 0 && TryReadCachedWord(address, out ushort cachedWord))
+        {
+            CycleCounter += 1;
+            return cachedWord;
+        }
+
+        if (addressSpace == 0 && TryReplaceCache(address, Sega32XSh2AccessContext.Fetch, out uint cacheLineLongword))
+        {
+            return ((address >> 1) & 1) == 0
+                ? (ushort)(cacheLineLongword >> 16)
+                : (ushort)cacheLineLongword;
+        }
+
+        return ReadBackingWord(address & 0x1FFFFFFF, Sega32XSh2AccessContext.Fetch);
     }
 
     public uint ReadLongword(uint address, Sega32XSh2AccessContext context)

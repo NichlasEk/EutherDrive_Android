@@ -23,6 +23,11 @@ internal sealed class Sega32XSh2Cpu
     private static readonly uint? TraceInstructionStart = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_INST_START");
     private static readonly uint? TraceInstructionEnd = ParseOptionalHex("EUTHERDRIVE_S32X_TRACE_SH2_INST_END");
     private static readonly int TraceInstructionMaxLogs = ParseTraceInstructionMaxLogs();
+    private static readonly bool DisableTightDelayLoopBatching =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_TIGHT_DELAY_BATCH"),
+            "1",
+            StringComparison.Ordinal);
     private int _traceInstructionLogs;
 
     public Sega32XSh2Cpu(string name)
@@ -83,7 +88,7 @@ internal sealed class Sega32XSh2Cpu
         return sb.ToString();
     }
 
-    public void Execute(ulong ticks, ISega32XSh2Bus bus)
+    public void Execute(ulong ticks, Sega32XSh2Bus bus)
     {
         if (ticks == 0)
             return;
@@ -151,6 +156,15 @@ internal sealed class Sega32XSh2Cpu
         ulong remainingInstructions = ticks;
         while (remainingInstructions > 0)
         {
+            if (!DisableTightDelayLoopBatching &&
+                TryExecuteTightDelayLoop(bus, remainingInstructions, out ulong consumedInstructions))
+            {
+                remainingInstructions -= consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
             ExecuteSingleInstruction(bus);
             remainingInstructions--;
             if (bus.ShouldStopExecution)
@@ -158,10 +172,121 @@ internal sealed class Sega32XSh2Cpu
         }
     }
 
-    private void ExecuteSingleInstruction(ISega32XSh2Bus bus)
+    private bool TryExecuteTightDelayLoop(Sega32XSh2Bus bus, ulong remainingInstructions, out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        if (remainingInstructions < 2 || bus.CycleLimit == ulong.MaxValue)
+            return false;
+
+        uint loopStartPc = Registers.ProgramCounter;
+        if (!TryMatchDelayLoop(bus, loopStartPc, out int instructionsPerIteration, out uint exitPc, out int registerIndex))
+            return false;
+
+        uint counter = Registers.GeneralPurposeRegisters[registerIndex];
+        if (counter == 0)
+            return false;
+
+        ulong maxIterationsByInstructions = remainingInstructions / (ulong)instructionsPerIteration;
+        if (maxIterationsByInstructions == 0)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        ulong maxIterationsByCycles = remainingCycles / (ulong)instructionsPerIteration;
+        if (maxIterationsByCycles == 0)
+            return false;
+
+        ulong iterations = Math.Min(maxIterationsByInstructions, maxIterationsByCycles);
+        iterations = Math.Min(iterations, counter);
+        if (iterations == 0)
+            return false;
+
+        Registers.GeneralPurposeRegisters[registerIndex] -= (uint)iterations;
+        bool loopFinished = Registers.GeneralPurposeRegisters[registerIndex] == 0;
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = loopFinished;
+        Registers.StatusRegister = sr;
+
+        ulong schedulerCycles = iterations * (ulong)instructionsPerIteration;
+        bus.IncrementCycleCounter(schedulerCycles);
+        // Fetches still cost detail cycles even though the interpreter is batching the loop body.
+        bus.IncrementDetailCycleCounter(schedulerCycles);
+        CycleCounter += schedulerCycles;
+
+        if (loopFinished)
+        {
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        else
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+
+        Registers.NextInstructionInDelaySlot = false;
+        consumedInstructions = schedulerCycles;
+        return true;
+    }
+
+    private static bool TryMatchDelayLoop(Sega32XSh2Bus bus, uint loopStartPc, out int instructionsPerIteration, out uint exitPc, out int registerIndex)
+    {
+        instructionsPerIteration = 0;
+        exitPc = 0;
+        registerIndex = 0;
+
+        if (!bus.TryPeekInstructionWord(loopStartPc, out ushort firstOpcode))
+            return false;
+
+        if (firstOpcode == 0x0009)
+        {
+            if (!TryMatchDtBfBackLoop(bus, loopStartPc + 2, loopStartPc + 4, loopStartPc, out registerIndex))
+                return false;
+
+            instructionsPerIteration = 3;
+            exitPc = loopStartPc + 6;
+            return true;
+        }
+
+        if (!TryMatchDtBfBackLoop(bus, loopStartPc, loopStartPc + 2, loopStartPc, out registerIndex))
+            return false;
+
+        instructionsPerIteration = 2;
+        exitPc = loopStartPc + 4;
+        return true;
+    }
+
+    private static bool TryMatchDtBfBackLoop(Sega32XSh2Bus bus, uint dtPc, uint branchPc, uint branchTargetPc, out int registerIndex)
+    {
+        registerIndex = 0;
+
+        if (!bus.TryPeekInstructionWord(dtPc, out ushort dtOpcode) ||
+            !bus.TryPeekInstructionWord(branchPc, out ushort branchOpcode))
+        {
+            return false;
+        }
+
+        if ((dtOpcode & 0xF0FF) != 0x4010)
+            return false;
+
+        if ((branchOpcode & 0xFF00) != 0x8B00)
+            return false;
+
+        int displacement = (sbyte)(branchOpcode & 0xFF) << 1;
+        uint target = unchecked(branchPc + 4 + (uint)displacement);
+        if (target != branchTargetPc)
+            return false;
+
+        registerIndex = (dtOpcode >> 8) & 0xF;
+        return true;
+    }
+
+    private void ExecuteSingleInstruction(Sega32XSh2Bus bus)
     {
         uint pc = Registers.ProgramCounter;
-        ushort opcode = bus.ReadWord(pc, Sega32XSh2AccessContext.Fetch);
+        ushort opcode = bus.ReadOpcode(pc);
 
         MaybeTraceInstruction(pc, opcode);
 
@@ -211,7 +336,7 @@ internal sealed class Sega32XSh2Cpu
         }
     }
 
-    private void HandleException(byte? interruptLevel, uint vectorNumber, ISega32XSh2Bus bus)
+    private void HandleException(byte? interruptLevel, uint vectorNumber, Sega32XSh2Bus bus)
     {
         uint faultPc = Registers.ProgramCounter;
         uint sp = Registers.StackPointer - 4;
@@ -301,7 +426,7 @@ internal sealed class Sega32XSh2Cpu
         Registers.MacHigh = unchecked((uint)(value >> 32));
     }
 
-    private bool TryExecute(ushort opcode, ISega32XSh2Bus bus)
+    private bool TryExecute(ushort opcode, Sega32XSh2Bus bus)
     {
         int n = (opcode >> 8) & 0xF;
         int m = (opcode >> 4) & 0xF;
@@ -908,28 +1033,4 @@ internal enum Sega32XSh2AccessContext
     Fetch,
     Data,
     InterruptVector,
-}
-
-internal interface ISega32XSh2Bus
-{
-    ulong CycleCounter { get; }
-    ulong SchedulerCycleCounter { get; }
-    ulong CycleLimit { get; }
-    bool ShouldStopExecution { get; }
-    bool ResetAsserted { get; }
-    byte InterruptLevel { get; }
-    byte InternalInterruptLevel { get; }
-    byte InternalInterruptVectorNumber { get; }
-    byte ReadExternalByteUncached(uint address, Sega32XSh2AccessContext context);
-    byte ReadByte(uint address, Sega32XSh2AccessContext context);
-    ushort ReadWord(uint address, Sega32XSh2AccessContext context);
-    uint ReadLongword(uint address, Sega32XSh2AccessContext context);
-    void WriteByte(uint address, byte value, Sega32XSh2AccessContext context);
-    void WriteWord(uint address, ushort value, Sega32XSh2AccessContext context);
-    void WriteLongword(uint address, uint value, Sega32XSh2AccessContext context);
-    bool TryTickDma();
-    void TickPeripherals(ulong cycles);
-    void IncrementCycleCounter(ulong cycles);
-    void IncrementDetailCycleCounter(ulong cycles);
-    bool TryPeekInstructionWord(uint address, out ushort value);
 }
