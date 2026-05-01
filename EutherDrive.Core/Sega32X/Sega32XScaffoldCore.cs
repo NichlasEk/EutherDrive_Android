@@ -1,4 +1,5 @@
 using EutherDrive.Core.Savestates;
+using System.Globalization;
 
 namespace EutherDrive.Core.Sega32X;
 
@@ -10,6 +11,7 @@ internal sealed class Sega32XScaffoldCore
     private static readonly bool BrutalLoopWatchEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_BRUTAL_WATCH");
     private static readonly bool SlaveFirstSh2Scheduling = ParseBoolEnv("EUTHERDRIVE_S32X_SH2_SLAVE_FIRST");
     private static readonly bool WaitLoopFastForwardEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_WAIT_FAST_FORWARD");
+    private static readonly double Sh2BudgetScale = ParseSh2BudgetScale();
     private static readonly ulong DefaultSh2InstructionsPerFrame = ParseInstructionBudget();
     private static readonly ulong DefaultM68kCyclesPerFrame = ParseM68kCycleBudget();
     private const ulong NativeM68kDivider = 7;
@@ -180,7 +182,7 @@ internal sealed class Sega32XScaffoldCore
                 eventM68kCycles = 1;
 
             ulong sliceM68kCycles = Math.Min(remaining, eventM68kCycles);
-            ulong elapsedSh2Cycles = sliceM68kCycles * NativeSh2Multiplier;
+            ulong elapsedSh2Cycles = ScaleCycleBudget(sliceM68kCycles * NativeSh2Multiplier);
             _globalSh2Cycles += elapsedSh2Cycles;
             _slaveBus.CycleLimit = _globalSh2Cycles;
             _masterBus.CycleLimit = _globalSh2Cycles;
@@ -451,22 +453,51 @@ internal sealed class Sega32XScaffoldCore
     private static ulong ParseM68kCycleBudget()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_SCAFFOLD_SH2_BUDGET");
-        if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
-            return Math.Max(1, parsed / NativeSh2Multiplier);
+        ulong sh2Budget = ulong.TryParse(raw, out ulong parsed) && parsed > 0
+            ? parsed
+            : DefaultNominalSh2CyclesPerFrame;
 
-        return Math.Max(1, DefaultNominalSh2CyclesPerFrame / NativeSh2Multiplier);
+        return Math.Max(1, ScaleCycleBudget(sh2Budget) / NativeSh2Multiplier);
     }
 
     private static ulong ParseInstructionBudget()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_SCAFFOLD_SH2_BUDGET");
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
-            return parsed;
+            return ScaleCycleBudget(parsed);
 
         // Drive the global scheduler in nominal SH-2 cycles. The bus still tracks detailed
         // wait-state timing separately for VDP/timer effects, but frame pacing and cross-CPU
         // deadlines should not slow down just because the current bus model charges extra detail.
-        return DefaultNominalSh2CyclesPerFrame;
+        return ScaleCycleBudget(DefaultNominalSh2CyclesPerFrame);
+    }
+
+    private static ulong ScaleCycleBudget(ulong cycles)
+    {
+        double scaled = Math.Round(cycles * Sh2BudgetScale);
+        if (scaled < 1)
+            return 1;
+        if (scaled >= ulong.MaxValue)
+            return ulong.MaxValue;
+        return (ulong)scaled;
+    }
+
+    private static double ParseSh2BudgetScale()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_SH2_BUDGET_SCALE");
+        if (string.IsNullOrWhiteSpace(raw))
+            return 1.0;
+
+        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) &&
+            !double.TryParse(raw, NumberStyles.Float, CultureInfo.CurrentCulture, out parsed))
+        {
+            return 1.0;
+        }
+
+        if (!double.IsFinite(parsed) || parsed <= 0)
+            return 1.0;
+
+        return Math.Clamp(parsed, 0.10, 2.00);
     }
 
     private static ulong ParseExecutionSliceLength()
