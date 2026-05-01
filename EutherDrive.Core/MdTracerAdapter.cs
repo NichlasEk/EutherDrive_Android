@@ -144,11 +144,11 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly int S32xPeripheralAccessWordCycles =
         Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_ACCESS_SYNC_CYCLES", 4));
     private static readonly int S32xM68kInterleaveSliceCycles =
-        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 67));
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 224));
     private static readonly bool S32xAccessDrivenLineBatch =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_ACCESS_DRIVEN_LINE_BATCH"), "1", StringComparison.Ordinal);
+        ParseBoolEnvDefault("EUTHERDRIVE_S32X_ACCESS_DRIVEN_LINE_BATCH", true);
     private static readonly int S32xLineBatchBootSafeFrames =
-        ParseNonNegativeInt("EUTHERDRIVE_S32X_LINE_BATCH_BOOT_SAFE_FRAMES", 600);
+        ParseNonNegativeInt("EUTHERDRIVE_S32X_LINE_BATCH_BOOT_SAFE_FRAMES", 8);
     private static readonly int S32xLineBatchIoCooldownCycles =
         ParseNonNegativeInt("EUTHERDRIVE_S32X_LINE_BATCH_IO_COOLDOWN_CYCLES", 2048);
     private static readonly bool S32xLegacyFrameBudgetTiming =
@@ -2045,6 +2045,21 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             return false;
         raw = raw.Trim();
         return raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ParseBoolEnvDefault(string name, bool fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        raw = raw.Trim();
+        if (raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase) || raw.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (raw == "0" || raw.Equals("false", StringComparison.OrdinalIgnoreCase) || raw.Equals("no", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return fallback;
     }
 
     private static readonly int TraceZ80FrameCyclesEvery =

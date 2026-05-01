@@ -67,6 +67,9 @@ internal sealed class Sega32XSh2Bus
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_WIDE_FB_BUS"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool BusProfilerEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_BUS_PROF"), "1", StringComparison.Ordinal)
+        || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PERF"), "1", StringComparison.Ordinal);
     private static readonly bool PreciseSh2DataCache =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_PRECISE_SH2_DATA_CACHE"),
@@ -112,6 +115,7 @@ internal sealed class Sega32XSh2Bus
     [NonSerialized] private ulong _schedulerCycleCounter;
     [NonSerialized] private int _cramWriteTraceCount;
     [NonSerialized] private int _vdpBusWriteTraceCount;
+    [NonSerialized] private BusProfileCounters _profileCounters;
 
     public Sega32XSh2Bus(Sega32XScaffoldCore core, Sega32XCpu whichCpu)
     {
@@ -155,6 +159,26 @@ internal sealed class Sega32XSh2Bus
         CycleCounter = 0;
         _schedulerCycleCounter = 0;
         CycleLimit = ulong.MaxValue;
+        _profileCounters = default;
+    }
+
+    public string? BuildAndResetBusProfileSummary()
+    {
+        if (!BusProfilerEnabled)
+            return null;
+
+        BusProfileCounters counters = _profileCounters;
+        _profileCounters = default;
+
+        ulong total = counters.OpcodeFetches + counters.SdramReads + counters.SdramWrites +
+            counters.FrameBufferReads + counters.FrameBufferWrites + counters.RegisterReads +
+            counters.RegisterWrites + counters.CartridgeReads + counters.OtherReads + counters.OtherWrites;
+        if (total == 0)
+            return null;
+
+        return $"{_whichCpu}: op={counters.OpcodeFetches} cartR={counters.CartridgeReads} " +
+            $"sdramR/W={counters.SdramReads}/{counters.SdramWrites} fbR/W={counters.FrameBufferReads}/{counters.FrameBufferWrites} " +
+            $"regR/W={counters.RegisterReads}/{counters.RegisterWrites} otherR/W={counters.OtherReads}/{counters.OtherWrites}";
     }
 
     public void ResyncTimingFromCpu()
@@ -554,6 +578,7 @@ internal sealed class Sega32XSh2Bus
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort ReadOpcode(uint address)
     {
+        CountOpcodeFetch();
         if (TracePcWatchStart.HasValue || TraceAddressWatchStart.HasValue)
             return ReadWord(address, Sega32XSh2AccessContext.Fetch);
 
@@ -599,12 +624,13 @@ internal sealed class Sega32XSh2Bus
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort ReadOpcodeFast(uint address)
     {
+        CountOpcodeFetch();
         if (TracePcWatchStart.HasValue || TraceAddressWatchStart.HasValue)
-            return ReadOpcode(address);
+            return ReadOpcodeTraced(address);
 
         uint addressSpace = address >> 29;
         if (addressSpace is not 0 and not 1)
-            return ReadOpcode(address);
+            return ReadOpcodeTraced(address);
 
         uint masked = address & Sh2ExternalAddressMask;
         if (masked >= 0x06000000 && masked < 0x06040000)
@@ -629,6 +655,12 @@ internal sealed class Sega32XSh2Bus
             return 0;
         }
 
+        return ReadOpcodeTraced(address);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ushort ReadOpcodeTraced(uint address)
+    {
         return ReadOpcode(address);
     }
 
@@ -856,28 +888,9 @@ internal sealed class Sega32XSh2Bus
         if (addressSpace == 0)
             WriteThroughCacheWord(address, value);
 
-        if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
-        {
-            CycleCounter += 1;
-            SyncIfCommPortAccessed(masked, isRead: false);
-            if (IsSh2VdpRegister(masked))
-            {
-                CycleCounter += Sh2VdpCycles;
-                if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
-                {
-                    TraceVdpBusWrite("write16-reg-denied", masked & ~1u, value, context);
-                    return;
-                }
-                _core.Bus.Vdp.WriteRegister(masked & ~1u, value);
-                TraceVdpBusWrite("write16-reg", masked & ~1u, value, context);
-            }
-            else
-                _core.Registers.Sh2Write(masked & ~1u, value, _whichCpu, _core.Bus.Vdp);
-            return;
-        }
-
         if (masked >= 0x06000000 && masked < 0x06040000)
         {
+            CountSdramWrite();
             CycleCounter += 1 + Sh2SdramWriteCycles;
             int wordIndex = (int)((masked - 0x06000000) >> 1);
             if ((uint)wordIndex < _core.Bus.Sdram.Length)
@@ -894,6 +907,7 @@ internal sealed class Sega32XSh2Bus
         {
             if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
                 return;
+            CountFrameBufferWrite();
             CycleCounter += WideFrameBufferBus ? 1 : _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
             uint frameBufferAddress = masked - 0x04000000;
             if (IsFrameBufferOverwrite(masked))
@@ -903,6 +917,27 @@ internal sealed class Sega32XSh2Bus
             TraceVdpBusWrite(IsFrameBufferOverwrite(masked) ? "write16-fb-ovr" : "write16-fb", masked, value, context);
             TracePcWatch("write16", masked, value, context);
             TraceAddressWatch("write16", masked, value, context);
+            return;
+        }
+
+        if (IsSh2SystemRegister(masked) || IsSh2VdpRegister(masked))
+        {
+            CountRegisterWrite();
+            CycleCounter += 1;
+            SyncIfCommPortAccessed(masked, isRead: false);
+            if (IsSh2VdpRegister(masked))
+            {
+                CycleCounter += Sh2VdpCycles;
+                if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                {
+                    TraceVdpBusWrite("write16-reg-denied", masked & ~1u, value, context);
+                    return;
+                }
+                _core.Bus.Vdp.WriteRegister(masked & ~1u, value);
+                TraceVdpBusWrite("write16-reg", masked & ~1u, value, context);
+            }
+            else
+                _core.Registers.Sh2Write(masked & ~1u, value, _whichCpu, _core.Bus.Vdp);
             return;
         }
 
@@ -972,6 +1007,60 @@ internal sealed class Sega32XSh2Bus
         if (addressSpace == 0 || addressSpace == 1)
         {
             uint masked = address & 0x1FFFFFFF;
+            if (masked >= 0x06000000 && masked < 0x06040000)
+            {
+                CountSdramWrite();
+                CycleCounter += 1 + Sh2SdramWriteCycles;
+                int wordIndex = (int)(((masked - 0x06000000) >> 1) & ~1u);
+                if ((uint)(wordIndex + 1) < _core.Bus.Sdram.Length)
+                {
+                    _core.Bus.Sdram[wordIndex] = (ushort)(value >> 16);
+                    _core.Bus.Sdram[wordIndex + 1] = (ushort)value;
+                    InvalidateExecutableSdramPage(masked);
+                }
+                TracePcWatch("write32", masked, value, context);
+                TraceAddressWatch("write32", masked, value, context);
+                return;
+            }
+
+            if (masked >= 0x04000000 && masked < 0x06000000)
+            {
+                if (_core.Registers.VdpAccess != Sega32XAccess.Sh2)
+                    return;
+
+                CountFrameBufferWrite();
+                uint frameBufferAddress = masked - 0x04000000;
+                bool overwrite = IsFrameBufferOverwrite(masked);
+                if (WideFrameBufferBus)
+                {
+                    CycleCounter += 1;
+                    if (overwrite)
+                        _core.Bus.Vdp.OverwriteFrameBufferLongword(frameBufferAddress, value);
+                    else
+                        _core.Bus.Vdp.WriteFrameBufferLongword(frameBufferAddress, value);
+                    TraceVdpBusWrite(overwrite ? "write32-fb-ovr-wide" : "write32-fb-wide", masked, value, context);
+                }
+                else
+                {
+                    CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+                    if (overwrite)
+                        _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+                    else
+                        _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress, (ushort)(value >> 16));
+                    TraceVdpBusWrite(overwrite ? "write32-fb-hi-ovr" : "write32-fb-hi", masked, value >> 16, context);
+
+                    CycleCounter += _core.Bus.Vdp.FrameBufferWriteLatency(CycleCounter);
+                    if (overwrite)
+                        _core.Bus.Vdp.OverwriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
+                    else
+                        _core.Bus.Vdp.WriteFrameBufferWord(frameBufferAddress | 2, (ushort)value);
+                    TraceVdpBusWrite(overwrite ? "write32-fb-lo-ovr" : "write32-fb-lo", masked | 2, value, context);
+                }
+                TracePcWatch("write32", masked, value, context);
+                TraceAddressWatch("write32", masked, value, context);
+                return;
+            }
+
             WriteBackingLongword(masked, value, context);
             TracePcWatch("write32", masked, value, context);
             TraceAddressWatch("write32", masked, value, context);
@@ -1062,6 +1151,118 @@ internal sealed class Sega32XSh2Bus
         return (masked & 1) == 0
             && masked >= 0x06000000
             && masked < 0x06040000;
+    }
+
+    public bool TryBulkFillSdram(uint address, uint value, bool isLongword, ulong iterations)
+    {
+        if (iterations == 0)
+            return false;
+
+        uint addressSpace = address >> 29;
+        if (addressSpace is not 0 and not 1)
+            return false;
+
+        uint masked = address & Sh2ExternalAddressMask;
+        if ((masked & 1) != 0 || masked < 0x06000000 || masked >= 0x06040000)
+            return false;
+
+        int wordsPerIteration = isLongword ? 2 : 1;
+        ulong totalWords = iterations * (ulong)wordsPerIteration;
+        int wordIndex = (int)((masked - 0x06000000) >> 1);
+        if ((ulong)wordIndex + totalWords > (ulong)_core.Bus.Sdram.Length)
+            return false;
+
+        ushort[] sdram = _core.Bus.Sdram;
+        if (isLongword)
+        {
+            ushort high = (ushort)(value >> 16);
+            ushort low = (ushort)value;
+            for (ulong i = 0; i < iterations; i++)
+            {
+                int index = wordIndex + (int)(i << 1);
+                sdram[index] = high;
+                sdram[index + 1] = low;
+            }
+        }
+        else
+        {
+            sdram.AsSpan(wordIndex, (int)iterations).Fill((ushort)value);
+        }
+
+        CountSdramWrite(iterations);
+        CycleCounter += iterations * (1 + Sh2SdramWriteCycles);
+        InvalidateExecutableSdramPage(masked);
+        return true;
+    }
+
+    public bool TryBulkCopySdram(uint sourceAddress, uint destinationAddress, bool isLongword, ulong iterations)
+    {
+        if (iterations == 0)
+            return false;
+
+        uint sourceSpace = sourceAddress >> 29;
+        uint destinationSpace = destinationAddress >> 29;
+        if (sourceSpace is not 0 and not 1 || destinationSpace is not 0 and not 1)
+            return false;
+
+        uint sourceMasked = sourceAddress & Sh2ExternalAddressMask;
+        uint destinationMasked = destinationAddress & Sh2ExternalAddressMask;
+        if ((sourceMasked & 1) != 0 ||
+            (destinationMasked & 1) != 0 ||
+            sourceMasked < 0x06000000 ||
+            sourceMasked >= 0x06040000 ||
+            destinationMasked < 0x06000000 ||
+            destinationMasked >= 0x06040000)
+        {
+            return false;
+        }
+
+        int wordsPerIteration = isLongword ? 2 : 1;
+        ulong totalWords = iterations * (ulong)wordsPerIteration;
+        int sourceIndex = (int)((sourceMasked - 0x06000000) >> 1);
+        int destinationIndex = (int)((destinationMasked - 0x06000000) >> 1);
+        if ((ulong)sourceIndex + totalWords > (ulong)_core.Bus.Sdram.Length ||
+            (ulong)destinationIndex + totalWords > (ulong)_core.Bus.Sdram.Length)
+        {
+            return false;
+        }
+
+        Array.Copy(_core.Bus.Sdram, sourceIndex, _core.Bus.Sdram, destinationIndex, (int)totalWords);
+        CountSdramRead(iterations);
+        CountSdramWrite(iterations);
+        CycleCounter += iterations * (1 + Sh2SdramReadCycles + 1 + Sh2SdramWriteCycles);
+        InvalidateExecutableSdramPage(destinationMasked);
+        return true;
+    }
+
+    public bool TryPeekSdramValueNoTiming(uint address, bool isLongword, out uint value)
+    {
+        value = 0;
+
+        uint addressSpace = address >> 29;
+        if (addressSpace is not 0 and not 1)
+            return false;
+
+        uint masked = address & Sh2ExternalAddressMask;
+        if ((masked & 1) != 0 || masked < 0x06000000 || masked >= 0x06040000)
+            return false;
+
+        int wordIndex = (int)((masked - 0x06000000) >> 1);
+        ushort[] sdram = _core.Bus.Sdram;
+        if (isLongword)
+        {
+            if ((uint)(wordIndex + 1) >= sdram.Length)
+                return false;
+
+            value = ((uint)sdram[wordIndex] << 16) | sdram[wordIndex + 1];
+            return true;
+        }
+
+        if ((uint)wordIndex >= sdram.Length)
+            return false;
+
+        value = unchecked((uint)(short)sdram[wordIndex]);
+        return true;
     }
 
     public byte ReadExternalByteUncached(uint address, Sega32XSh2AccessContext context)
@@ -2295,4 +2496,88 @@ internal sealed class Sega32XSh2Bus
     private static bool IsSh2VdpRegister(uint masked) => masked >= 0x00004100 && masked <= 0x000041FF;
 
     private static bool IsFrameBufferOverwrite(uint masked) => (masked & 0x00020000) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountOpcodeFetch()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.OpcodeFetches++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountSdramRead(ulong count = 1)
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.SdramReads += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountSdramWrite(ulong count = 1)
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.SdramWrites += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountFrameBufferRead()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.FrameBufferReads++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountFrameBufferWrite()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.FrameBufferWrites++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountRegisterRead()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.RegisterReads++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountRegisterWrite()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.RegisterWrites++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountCartridgeRead()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.CartridgeReads++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountOtherRead()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.OtherReads++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CountOtherWrite()
+    {
+        if (BusProfilerEnabled)
+            _profileCounters.OtherWrites++;
+    }
+
+    private struct BusProfileCounters
+    {
+        public ulong OpcodeFetches;
+        public ulong SdramReads;
+        public ulong SdramWrites;
+        public ulong FrameBufferReads;
+        public ulong FrameBufferWrites;
+        public ulong RegisterReads;
+        public ulong RegisterWrites;
+        public ulong CartridgeReads;
+        public ulong OtherReads;
+        public ulong OtherWrites;
+    }
 }

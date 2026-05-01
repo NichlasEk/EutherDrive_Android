@@ -254,6 +254,25 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_DBRA"), "1", StringComparison.Ordinal);
         private static long _lastDbraLogFrame = -1;
         private static bool _checksumDoneLogged;
+        private static readonly bool LeanInstructionLoop =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_LEAN_LOOP"), "0", StringComparison.Ordinal)
+            && !TraceM68kBoot
+            && !TraceM68kStack
+            && !TraceA7Write
+            && !TraceOp30FC
+            && !TraceOp4A38
+            && !TraceMdStall
+            && !TraceLastOpsOnIllegal
+            && !TracePcSample
+            && !TraceM68kStream
+            && !_pcWatchEnabled
+            && !_specialStageDebug
+            && !TraceDbra
+            && TracePcTapAddrs.Count == 0;
+        private static readonly bool BlockInterpreterEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_BLOCK_INTERP"), "1", StringComparison.Ordinal);
+        private static readonly int BlockInterpreterMaxOps =
+            Math.Clamp(ParseWatchLimit("EUTHERDRIVE_M68K_BLOCK_MAX_OPS"), 1, 16);
         // ... (alla dina fält osv som innan)
 
         // --- Headless trace helpers (ersätter Form_Code_Trace) ---
@@ -326,15 +345,28 @@ namespace EutherDrive.Core.MdTracerCore
                     break;
                 }
 
+                if (CanUseBlockInterpreter())
+                {
+                    int blockCycles = TryRunLeanBlock(g_clock_total - g_clock_now);
+                    if (blockCycles > 0)
+                    {
+                        g_clock_now += blockCycles;
+                        continue;
+                    }
+                }
+
                 // md_main.g_form_code_trace.CPU_Trace(g_reg_PC);
                 TraceCpu(g_reg_PC); // headless
-                MaybeLogPcTap(g_reg_PC);
-                
-                // Special Stage debugging
-                if (_specialStageDebug && md_main.g_md_vdp != null)
+                if (!LeanInstructionLoop)
                 {
-                    long frame = md_main.g_md_vdp.FrameCounter;
-                    TraceSpecialStage(g_reg_PC, frame);
+                    MaybeLogPcTap(g_reg_PC);
+                    
+                    // Special Stage debugging
+                    if (_specialStageDebug && md_main.g_md_vdp != null)
+                    {
+                        long frame = md_main.g_md_vdp.FrameCounter;
+                        TraceSpecialStage(g_reg_PC, frame);
+                    }
                 }
 
                 interrupt_chk();
@@ -342,8 +374,8 @@ namespace EutherDrive.Core.MdTracerCore
                 if (g_clock == 0)
                 {
                     uint pcBefore = g_reg_PC;
-                    uint spNow = g_reg_addr[7].l;
-                    if (_spZeroAsyncLogRemaining > 0 && spNow == 0 && _lastSpObserved != 0)
+                    uint spNow = LeanInstructionLoop ? 0 : g_reg_addr[7].l;
+                    if (!LeanInstructionLoop && _spZeroAsyncLogRemaining > 0 && spNow == 0 && _lastSpObserved != 0)
                     {
                         _spZeroAsyncLogRemaining--;
                         Console.WriteLine(
@@ -351,13 +383,14 @@ namespace EutherDrive.Core.MdTracerCore
                             $"lastOpPc=0x{_lastPcBeforeOp:X6} lastOp=0x{_lastOpBeforeOp:X4} " +
                             $"lastSp:0x{_lastSpBeforeOp:X8}->0x{_lastSpAfterOp:X8}");
                     }
-                    if (_pcZeroLogRemaining > 0 && (pcBefore == 0x000000 || pcBefore == 0x0000F4) && _lastPcAfter != 0)
+                    if (!LeanInstructionLoop && _pcZeroLogRemaining > 0 && (pcBefore == 0x000000 || pcBefore == 0x0000F4) && _lastPcAfter != 0)
                     {
                         _pcZeroLogRemaining--;
                         Console.WriteLine(
                             $"[m68k] PC jump pc=0x{pcBefore:X6} lastPc=0x{_lastPcAfter:X6} lastOp=0x{_lastOpAfter:X4} SP=0x{spNow:X8}");
                     }
-                    _lastSpObserved = spNow;
+                    if (!LeanInstructionLoop)
+                        _lastSpObserved = spNow;
                     if ((pcBefore & 1) != 0)
                     {
                         HandleAddressErrorOnFetch(pcBefore);
@@ -380,36 +413,38 @@ namespace EutherDrive.Core.MdTracerCore
                     g_op2 = (byte)((g_opcode >> 6) & 0x07);
                     g_op3 = (byte)((g_opcode >> 3) & 0x07);
                     g_op4 = (byte)(g_opcode & 0x07);
-                    uint spBefore = g_reg_addr[7].l;
-                    _lastSpBeforeOp = spBefore;
-                    _lastPcBeforeOp = pcBefore;
-                    _lastOpBeforeOp = g_opcode;
-                    RecordRecentOp(pcBefore, g_opcode);
-
-                    MaybeLogPcSample(g_reg_PC, g_opcode);
-
-                    if (g_reg_PC >= 0x000100 && g_reg_PC <= 0x000110 && _headerPcLogRemaining > 0)
+                    uint spBefore = LeanInstructionLoop ? 0 : g_reg_addr[7].l;
+                    if (!LeanInstructionLoop)
                     {
-                        _headerPcLogRemaining--;
-                        uint sp = g_reg_addr[7].l;
-                        uint ret0 = read32(sp);
-                        uint ret1 = read32(sp + 4);
-                        Console.WriteLine(
-                            $"[m68k] PC in header pc=0x{g_reg_PC:X6} op=0x{g_opcode:X4} prev=0x{pcBefore:X6} " +
-                            $"SP=0x{sp:X8} [SP]=0x{ret0:X8} [SP+4]=0x{ret1:X8}");
-                    }
+                        _lastSpBeforeOp = spBefore;
+                        _lastPcBeforeOp = pcBefore;
+                        _lastOpBeforeOp = g_opcode;
+                        RecordRecentOp(pcBefore, g_opcode);
 
+                        MaybeLogPcSample(g_reg_PC, g_opcode);
 
-                    if (g_opcode == 0x30FC && TraceOp30FC)
-                    {
-                        ushort imm = read16(g_reg_PC + 2);
-                        ushort addr = read16(g_reg_PC + 4);
-                        Console.WriteLine($"[m68k] OP30FC pc=0x{g_reg_PC:X6} imm=0x{imm:X4} addr.w=0x{addr:X4}");
-                    }
-                    if (g_opcode == 0x4A38 && TraceOp4A38)
-                    {
-                        ushort addr = read16(g_reg_PC + 2);
-                        Console.WriteLine($"[m68k] OP4A38 pc=0x{g_reg_PC:X6} addr.w=0x{addr:X4}");
+                        if (g_reg_PC >= 0x000100 && g_reg_PC <= 0x000110 && _headerPcLogRemaining > 0)
+                        {
+                            _headerPcLogRemaining--;
+                            uint sp = g_reg_addr[7].l;
+                            uint ret0 = read32(sp);
+                            uint ret1 = read32(sp + 4);
+                            Console.WriteLine(
+                                $"[m68k] PC in header pc=0x{g_reg_PC:X6} op=0x{g_opcode:X4} prev=0x{pcBefore:X6} " +
+                                $"SP=0x{sp:X8} [SP]=0x{ret0:X8} [SP+4]=0x{ret1:X8}");
+                        }
+
+                        if (g_opcode == 0x30FC && TraceOp30FC)
+                        {
+                            ushort imm = read16(g_reg_PC + 2);
+                            ushort addr = read16(g_reg_PC + 4);
+                            Console.WriteLine($"[m68k] OP30FC pc=0x{g_reg_PC:X6} imm=0x{imm:X4} addr.w=0x{addr:X4}");
+                        }
+                        if (g_opcode == 0x4A38 && TraceOp4A38)
+                        {
+                            ushort addr = read16(g_reg_PC + 2);
+                            Console.WriteLine($"[m68k] OP4A38 pc=0x{g_reg_PC:X6} addr.w=0x{addr:X4}");
+                        }
                     }
 
                     if (g_68k_stop) { g_clock_now = g_clock_total; break; }
@@ -469,11 +504,14 @@ namespace EutherDrive.Core.MdTracerCore
                         MdLog.WriteLine($"[m68k] PC=0x{g_reg_PC:X6} OP=0x{op0:X4} N1=0x{op1:X4} N2=0x{op2:X4} SR=0x{g_reg_SR:X4} SP=0x{g_reg_addr[7].l:X8}");
                     }
 
-                    MaybeLogPcWatch(g_reg_PC, g_opcode);
-                    MaybeLogStallWatch(g_reg_PC, g_opcode);
-                    MaybeLogStallBootWatch(g_reg_PC, g_opcode);
-                    MaybeLogStallMidWatch(g_reg_PC, g_opcode);
-                    MaybeLogStallLowWatch(g_reg_PC, g_opcode);
+                    if (!LeanInstructionLoop)
+                    {
+                        MaybeLogPcWatch(g_reg_PC, g_opcode);
+                        MaybeLogStallWatch(g_reg_PC, g_opcode);
+                        MaybeLogStallBootWatch(g_reg_PC, g_opcode);
+                        MaybeLogStallMidWatch(g_reg_PC, g_opcode);
+                        MaybeLogStallLowWatch(g_reg_PC, g_opcode);
+                    }
 
                     var opinfo = g_opcode_info != null ? g_opcode_info[g_opcode] : null;
                     if (opinfo?.opcode == null)
@@ -490,60 +528,63 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         opinfo.opcode();
                     }
-                    if (_oddPcAfterOpLogRemaining > 0 && (g_reg_PC & 1) != 0)
+                    if (!LeanInstructionLoop)
                     {
-                        _oddPcAfterOpLogRemaining--;
-                        string opname = opinfo?.opname_out ?? "unknown";
-                        Console.WriteLine(
-                            $"[m68k] odd PC after op prevPc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
-                            $"newPc=0x{g_reg_PC:X6} sp=0x{g_reg_addr[7].l:X8} sr=0x{g_reg_SR:X4}");
-                    }
-                    _lastPcAfter = g_reg_PC;
-                    _lastOpAfter = g_opcode;
-                    uint spAfter = g_reg_addr[7].l;
-                    if (_oddSpAfterOpLogRemaining > 0 && (spAfter & 1) != 0)
-                    {
-                        _oddSpAfterOpLogRemaining--;
-                        string opname = opinfo?.opname_out ?? "unknown";
-                        Console.WriteLine(
-                            $"[m68k] odd SP after op prevPc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
-                            $"SP:0x{spBefore:X8}->0x{spAfter:X8} pc_now=0x{g_reg_PC:X6} sr=0x{g_reg_SR:X4}");
-                    }
-                    _lastSpAfterOp = spAfter;
-                    if (_a7WriteLogRemaining > 0 && spAfter != spBefore)
-                    {
-                        _a7WriteLogRemaining--;
-                        string opname = opinfo?.opname_out ?? "unknown";
-                        Console.WriteLine(
-                            $"[m68k] A7 write pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
-                            $"A7:0x{spBefore:X8}->0x{spAfter:X8} USP=0x{g_reg_addr_usp.l:X8}");
-                    }
-                    if (_spZeroLogRemaining > 0 && spAfter == 0 && spBefore != 0)
-                    {
-                        _spZeroLogRemaining--;
-                        string opname = opinfo?.opname_out ?? "unknown";
-                        Console.WriteLine(
-                            $"[m68k] SP=0 pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
-                            $"SP:0x{spBefore:X8}->0x{spAfter:X8} USP=0x{g_reg_addr_usp.l:X8}");
-                    }
-                    if (_spWatchRemaining > 0 && spAfter != spBefore)
-                    {
-                        if (spAfter < 0x1000 || spAfter == 0)
+                        if (_oddPcAfterOpLogRemaining > 0 && (g_reg_PC & 1) != 0)
                         {
-                            _spWatchRemaining--;
+                            _oddPcAfterOpLogRemaining--;
                             string opname = opinfo?.opname_out ?? "unknown";
                             Console.WriteLine(
-                                $"[m68k] SP change pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
-                                $"S={(g_status_S ? 1 : 0)} SP:0x{spBefore:X8}->0x{spAfter:X8} USP=0x{g_reg_addr_usp.l:X8}");
+                                $"[m68k] odd PC after op prevPc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                                $"newPc=0x{g_reg_PC:X6} sp=0x{g_reg_addr[7].l:X8} sr=0x{g_reg_SR:X4}");
                         }
-                    }
-                    if (_spOverflowLogRemaining > 0 && spBefore <= g_stack_top && spAfter > g_stack_top)
-                    {
-                        _spOverflowLogRemaining--;
-                        string opname = opinfo?.opname_out ?? "unknown";
-                        Console.WriteLine(
-                            $"[m68k] SP overflow pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
-                            $"SP:0x{spBefore:X8}->0x{spAfter:X8} top=0x{g_stack_top:X8}");
+                        _lastPcAfter = g_reg_PC;
+                        _lastOpAfter = g_opcode;
+                        uint spAfter = g_reg_addr[7].l;
+                        if (_oddSpAfterOpLogRemaining > 0 && (spAfter & 1) != 0)
+                        {
+                            _oddSpAfterOpLogRemaining--;
+                            string opname = opinfo?.opname_out ?? "unknown";
+                            Console.WriteLine(
+                                $"[m68k] odd SP after op prevPc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                                $"SP:0x{spBefore:X8}->0x{spAfter:X8} pc_now=0x{g_reg_PC:X6} sr=0x{g_reg_SR:X4}");
+                        }
+                        _lastSpAfterOp = spAfter;
+                        if (_a7WriteLogRemaining > 0 && spAfter != spBefore)
+                        {
+                            _a7WriteLogRemaining--;
+                            string opname = opinfo?.opname_out ?? "unknown";
+                            Console.WriteLine(
+                                $"[m68k] A7 write pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                                $"A7:0x{spBefore:X8}->0x{spAfter:X8} USP=0x{g_reg_addr_usp.l:X8}");
+                        }
+                        if (_spZeroLogRemaining > 0 && spAfter == 0 && spBefore != 0)
+                        {
+                            _spZeroLogRemaining--;
+                            string opname = opinfo?.opname_out ?? "unknown";
+                            Console.WriteLine(
+                                $"[m68k] SP=0 pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                                $"SP:0x{spBefore:X8}->0x{spAfter:X8} USP=0x{g_reg_addr_usp.l:X8}");
+                        }
+                        if (_spWatchRemaining > 0 && spAfter != spBefore)
+                        {
+                            if (spAfter < 0x1000 || spAfter == 0)
+                            {
+                                _spWatchRemaining--;
+                                string opname = opinfo?.opname_out ?? "unknown";
+                                Console.WriteLine(
+                                    $"[m68k] SP change pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                                    $"S={(g_status_S ? 1 : 0)} SP:0x{spBefore:X8}->0x{spAfter:X8} USP=0x{g_reg_addr_usp.l:X8}");
+                            }
+                        }
+                        if (_spOverflowLogRemaining > 0 && spBefore <= g_stack_top && spAfter > g_stack_top)
+                        {
+                            _spOverflowLogRemaining--;
+                            string opname = opinfo?.opname_out ?? "unknown";
+                            Console.WriteLine(
+                                $"[m68k] SP overflow pc=0x{pcBefore:X6} op=0x{g_opcode:X4} {opname} " +
+                                $"SP:0x{spBefore:X8}->0x{spAfter:X8} top=0x{g_stack_top:X8}");
+                        }
                     }
                     if (TraceMdStall)
                         CheckForStall(pcBefore);
@@ -553,6 +594,174 @@ namespace EutherDrive.Core.MdTracerCore
                 }
                 g_clock_now += g_clock;
             }
+        }
+
+        private static bool CanUseBlockInterpreter()
+        {
+            return BlockInterpreterEnabled
+                && LeanInstructionLoop
+                && !g_68k_stop
+                && md_main.g_md_vdp != null
+                && g_opcode_info != null;
+        }
+
+        private int TryRunLeanBlock(int remainingCycles)
+        {
+            if (remainingCycles <= 0)
+                return 0;
+
+            uint startPc = g_reg_PC;
+            if (!IsLeanBlockExecutableAddress(startPc))
+                return 0;
+
+            interrupt_chk();
+            int dmaCycles = md_main.g_md_vdp.dma_status_update();
+            if (dmaCycles != 0)
+                return dmaCycles;
+
+            int totalCycles = 0;
+            uint expectedPc = startPc;
+            int ops = 0;
+            while (ops < BlockInterpreterMaxOps && totalCycles < remainingCycles)
+            {
+                if (g_68k_stop || g_reg_PC != expectedPc || !IsLeanBlockExecutableAddress(g_reg_PC))
+                    break;
+
+                ushort opcode = read16(g_reg_PC);
+                if (IsBlockTerminalOpcode(opcode))
+                {
+                    if (ops == 0)
+                    {
+                        int cycles = ExecuteOneLeanInstruction(opcode);
+                        return cycles > 0 ? cycles : 4;
+                    }
+                    break;
+                }
+
+                uint pcBefore = g_reg_PC;
+                int opCycles = ExecuteOneLeanInstruction(opcode);
+                if (opCycles <= 0)
+                    opCycles = 4;
+
+                totalCycles += opCycles;
+                ops++;
+
+                if (g_reg_PC <= pcBefore || (g_reg_PC & 1) != 0)
+                    break;
+
+                expectedPc = g_reg_PC;
+            }
+
+            return totalCycles;
+        }
+
+        private static bool IsLeanBlockExecutableAddress(uint pc)
+        {
+            uint logical = pc & 0x00FF_FFFF;
+            if ((logical & 1) != 0)
+                return false;
+
+            uint romLimit = md_main.g_md_cartridge?.g_file_size > 0 ? (uint)md_main.g_md_cartridge.g_file_size : 0;
+            if (romLimit != 0 && logical < romLimit)
+                return true;
+
+            // 32X games commonly execute M68K-side thunk/driver code from the
+            // cartridge-mapped 0x88xxxx area. It is normal memory from the
+            // interpreter's point of view, but blocking it is where After Burner
+            // spends its gameplay CPU time.
+            return logical >= 0x0088_0000 && logical < 0x0090_0000;
+        }
+
+        private static bool IsBlockTerminalOpcode(ushort opcode)
+        {
+            ushort high = (ushort)(opcode & 0xF000);
+            if (high == 0x6000) // Bcc/BSR/BRA
+                return true;
+            if ((opcode & 0xF0F8) == 0x50C8) // DBcc
+                return true;
+            if ((opcode & 0xFFC0) == 0x4EC0) // JMP
+                return true;
+            if ((opcode & 0xFFC0) == 0x4E80) // JSR
+                return true;
+
+            return opcode == 0x4E73 // RTE
+                || opcode == 0x4E75 // RTS
+                || opcode == 0x4E76 // TRAPV
+                || opcode == 0x4E77 // RTR
+                || opcode == 0x4E72 // STOP
+                || (opcode & 0xFFF0) == 0x4E40 // TRAP
+                || (opcode & 0xF000) == 0xA000
+                || (opcode & 0xF000) == 0xF000;
+        }
+
+        private int ExecuteOneLeanInstruction(ushort? prefetchedOpcode = null)
+        {
+            uint pcBefore = g_reg_PC;
+            if ((pcBefore & 1) != 0)
+            {
+                HandleAddressErrorOnFetch(pcBefore);
+                return g_clock != 0 ? g_clock : 50;
+            }
+
+            g_opcode = prefetchedOpcode ?? read16(g_reg_PC);
+            g_op = (byte)(g_opcode >> 12);
+            g_op1 = (byte)((g_opcode >> 9) & 0x07);
+            g_op2 = (byte)((g_opcode >> 6) & 0x07);
+            g_op3 = (byte)((g_opcode >> 3) & 0x07);
+            g_op4 = (byte)(g_opcode & 0x07);
+
+            if (g_68k_stop)
+                return 0;
+
+            if (g_opcode == 0x33FC)
+            {
+                ushort imm = read16(g_reg_PC + 2);
+                uint addr = read32(g_reg_PC + 4);
+                md_main.g_md_bus.write16(addr, imm);
+                g_reg_PC += 8;
+                g_clock = 12;
+                g_status_N = (imm & 0x8000) != 0;
+                g_status_Z = imm == 0;
+                g_status_V = false;
+                g_status_C = false;
+                return g_clock;
+            }
+
+            if (g_opcode == 0x33D8)
+            {
+                uint src = g_reg_addr[0].l;
+                ushort val = md_main.g_md_bus.read16(src);
+                g_reg_addr[0].l = src + 2;
+                uint addr = read32(g_reg_PC + 2);
+                md_main.g_md_bus.write16(addr, val);
+                g_reg_PC += 6;
+                g_clock = 12;
+                g_status_N = (val & 0x8000) != 0;
+                g_status_Z = val == 0;
+                g_status_V = false;
+                g_status_C = false;
+                return g_clock;
+            }
+
+            var opinfo = g_opcode_info != null ? g_opcode_info[g_opcode] : null;
+            if (opinfo?.opcode == null)
+            {
+                bool isLineEmu = (g_opcode & 0xF000) == 0xA000 || (g_opcode & 0xF000) == 0xF000;
+                if (_illegalOpLogRemaining > 0 && (!isLineEmu || TraceM68kLineEmu))
+                {
+                    _illegalOpLogRemaining--;
+                    Console.WriteLine($"[m68k] missing opcode handler op=0x{g_opcode:X4} pc=0x{g_reg_PC:X6}");
+                }
+                HandleIllegalOpcode(g_opcode);
+            }
+            else
+            {
+                opinfo.opcode();
+            }
+
+            if (g_clock == 0)
+                g_clock = 4;
+            return g_clock;
         }
 
         private void interrupt_chk()

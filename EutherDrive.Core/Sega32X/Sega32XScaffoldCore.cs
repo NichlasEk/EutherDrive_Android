@@ -11,6 +11,8 @@ internal sealed class Sega32XScaffoldCore
     private static readonly bool BrutalLoopWatchEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_BRUTAL_WATCH");
     private static readonly bool SlaveFirstSh2Scheduling = ParseBoolEnv("EUTHERDRIVE_S32X_SH2_SLAVE_FIRST");
     private static readonly bool WaitLoopFastForwardEnabled = ParseBoolEnv("EUTHERDRIVE_S32X_WAIT_FAST_FORWARD");
+    private static readonly bool SmartWaitSkipEnabled = ParseBoolEnvDefault("EUTHERDRIVE_S32X_SMART_WAIT_SKIP", true);
+    private static readonly ulong SmartWaitSkipBootSafeFrames = ParseNonNegativeUlong("EUTHERDRIVE_S32X_SMART_WAIT_BOOT_FRAMES", 8);
     private static readonly double Sh2BudgetScale = ParseSh2BudgetScale();
     private static readonly ulong DefaultSh2InstructionsPerFrame = ParseInstructionBudget();
     private static readonly ulong DefaultM68kCyclesPerFrame = ParseM68kCycleBudget();
@@ -86,13 +88,30 @@ internal sealed class Sega32XScaffoldCore
     {
         string? master = MasterSh2.BuildAndResetPerfPcSummary();
         string? slave = SlaveSh2.BuildAndResetPerfPcSummary();
+        string? masterBus = _masterBus.BuildAndResetBusProfileSummary();
+        string? slaveBus = _slaveBus.BuildAndResetBusProfileSummary();
 
+        string? cpu = null;
         if (string.IsNullOrWhiteSpace(master))
-            return string.IsNullOrWhiteSpace(slave) ? null : slave;
-        if (string.IsNullOrWhiteSpace(slave))
-            return master;
+            cpu = string.IsNullOrWhiteSpace(slave) ? null : slave;
+        else if (string.IsNullOrWhiteSpace(slave))
+            cpu = master;
+        else
+            cpu = $"{master} | {slave}";
 
-        return $"{master} | {slave}";
+        string? bus = null;
+        if (string.IsNullOrWhiteSpace(masterBus))
+            bus = string.IsNullOrWhiteSpace(slaveBus) ? null : slaveBus;
+        else if (string.IsNullOrWhiteSpace(slaveBus))
+            bus = masterBus;
+        else
+            bus = $"{masterBus} | {slaveBus}";
+
+        if (string.IsNullOrWhiteSpace(cpu))
+            return bus;
+        if (string.IsNullOrWhiteSpace(bus))
+            return cpu;
+        return $"{cpu} || bus {bus}";
     }
 
     public string? BuildAndResetBrutalLoopWatchSummary()
@@ -216,46 +235,61 @@ internal sealed class Sega32XScaffoldCore
 
     private void RunSh2sToGlobalCycle()
     {
-        ulong targetCycles = Math.Min(
-            _globalSh2Cycles,
-            Math.Min(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultSh2ExecutionSliceLength);
-
-        if (SlaveFirstSh2Scheduling)
+        while (Math.Min(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) < _globalSh2Cycles)
         {
-            while (_slaveBus.SchedulerCycleCounter < targetCycles)
-                ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
+            ulong previousMasterCycles = _masterBus.SchedulerCycleCounter;
+            ulong previousSlaveCycles = _slaveBus.SchedulerCycleCounter;
+            ulong targetCycles = Math.Min(
+                _globalSh2Cycles,
+                Math.Min(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultSh2ExecutionSliceLength);
 
-            while (_masterBus.SchedulerCycleCounter < targetCycles)
-                ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
+            if (SlaveFirstSh2Scheduling)
+            {
+                while (_slaveBus.SchedulerCycleCounter < targetCycles)
+                    ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
 
-            return;
-        }
+                while (_masterBus.SchedulerCycleCounter < targetCycles)
+                    ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
+            }
+            else if (_slaveBus.SchedulerCycleCounter < _masterBus.SchedulerCycleCounter)
+            {
+                while (_slaveBus.SchedulerCycleCounter < targetCycles)
+                    ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
 
-        if (_slaveBus.SchedulerCycleCounter < _masterBus.SchedulerCycleCounter)
-        {
-            while (_slaveBus.SchedulerCycleCounter < targetCycles)
-                ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
+                while (_masterBus.SchedulerCycleCounter < targetCycles)
+                    ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
+            }
+            else
+            {
+                while (_masterBus.SchedulerCycleCounter < targetCycles)
+                    ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
 
-            while (_masterBus.SchedulerCycleCounter < targetCycles)
-                ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
-        }
-        else
-        {
-            while (_masterBus.SchedulerCycleCounter < targetCycles)
-                ExecuteSh2SchedulerSlice(MasterSh2, _masterBus, targetCycles);
+                while (_slaveBus.SchedulerCycleCounter < targetCycles)
+                    ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
+            }
 
-            while (_slaveBus.SchedulerCycleCounter < targetCycles)
-                ExecuteSh2SchedulerSlice(SlaveSh2, _slaveBus, targetCycles);
+            if (_masterBus.SchedulerCycleCounter == previousMasterCycles &&
+                _slaveBus.SchedulerCycleCounter == previousSlaveCycles)
+            {
+                break;
+            }
         }
     }
 
-    private static void ExecuteSh2SchedulerSlice(Sega32XSh2Cpu cpu, Sega32XSh2Bus bus, ulong targetCycles)
+    private void ExecuteSh2SchedulerSlice(Sega32XSh2Cpu cpu, Sega32XSh2Bus bus, ulong targetCycles)
     {
         ulong remaining = targetCycles > bus.SchedulerCycleCounter
             ? targetCycles - bus.SchedulerCycleCounter
             : 0;
         if (remaining == 0)
             return;
+
+        if (SmartWaitSkipEnabled &&
+            FrameCounter >= (long)SmartWaitSkipBootSafeFrames &&
+            cpu.TryFastForwardKnownSchedulerIdleLoop(bus, targetCycles))
+        {
+            return;
+        }
 
         if (Sega32XSh2Cpu.SchedulerWaitLoopFastForwardEnabled &&
             cpu.TryFastForwardSchedulerWaitLoop(bus, targetCycles))
@@ -506,10 +540,9 @@ internal sealed class Sega32XScaffoldCore
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
             return parsed;
 
-        // Match jgenesis' short SH-2 execution slice. 32X code depends heavily on tight
-        // interrupt/DMA/comm-port interleaving; larger slices tend to produce alive-but-wrong
-        // frame buffer contents in games such as Knuckles' Chaotix.
-        return 50;
+        // Middle-ground slice: reduces dual-SH2 scheduler overhead without the Doom
+        // regression seen with much larger global slices.
+        return 96;
     }
 
     private static ulong ParseM68kCommSyncSliceLength()
@@ -539,6 +572,21 @@ internal sealed class Sega32XScaffoldCore
     {
         string? raw = Environment.GetEnvironmentVariable(name);
         return raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ParseBoolEnvDefault(string name, bool defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+
+        return raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ulong ParseNonNegativeUlong(string name, ulong defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        return ulong.TryParse(raw, out ulong parsed) ? parsed : defaultValue;
     }
 
     private void ObserveBrutalLoopState(ulong weight)
