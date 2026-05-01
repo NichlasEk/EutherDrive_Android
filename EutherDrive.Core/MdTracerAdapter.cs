@@ -143,7 +143,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly int S32xPeripheralAccessWordCycles =
         Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_ACCESS_SYNC_CYCLES", 4));
     private static readonly int S32xM68kInterleaveSliceCycles =
-        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 16));
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 69));
     private static readonly bool S32xLegacyFrameBudgetTiming =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_LEGACY_FRAME_BUDGET"), "1", StringComparison.Ordinal);
     private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
