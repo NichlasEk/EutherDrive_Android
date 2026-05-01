@@ -918,6 +918,18 @@ internal sealed class Sega32XSh2Bus
         return false;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsFastPollingRegister(uint address)
+    {
+        uint masked = (address & Sh2ExternalAddressMask) & ~1u;
+
+        // Keep this intentionally narrow. DREQ FIFO reads have side effects, while the comm
+        // ports and frame buffer control register are pure status/mailbox reads and dominate
+        // common SH-2 wait loops.
+        return masked == 0x0000410A
+            || (masked >= 0x00004020 && masked <= 0x0000402F);
+    }
+
     public byte ReadExternalByteUncached(uint address, Sega32XSh2AccessContext context)
     {
         uint masked = address & Sh2ExternalAddressMask;

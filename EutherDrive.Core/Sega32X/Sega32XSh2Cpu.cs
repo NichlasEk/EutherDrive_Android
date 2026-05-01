@@ -5,6 +5,13 @@ namespace EutherDrive.Core.Sega32X;
 
 internal sealed class Sega32XSh2Cpu
 {
+    private enum PollingLoadSize
+    {
+        Byte,
+        Word,
+        Longword,
+    }
+
     private const int MaxUnsupportedLogs = 256;
     public string Name { get; }
     public Sega32XSh2Registers Registers { get; } = new();
@@ -29,6 +36,11 @@ internal sealed class Sega32XSh2Cpu
     private static readonly bool DisableTightDelayLoopBatching =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_TIGHT_DELAY_BATCH"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool DisablePollingLoopAcceleration =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_POLL_LOOP_ACCEL"),
             "1",
             StringComparison.Ordinal);
     private int _traceInstructionLogs;
@@ -168,7 +180,25 @@ internal sealed class Sega32XSh2Cpu
             if (!DisableTightDelayLoopBatching &&
                 TryExecuteTightDelayLoop(bus, remainingInstructions, pc, opcode, out ulong consumedInstructions))
             {
-                remainingInstructions -= consumedInstructions;
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (!DisablePollingLoopAcceleration &&
+                TryExecuteIdleBranchLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (!DisablePollingLoopAcceleration &&
+                TryExecutePollingLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
                 if (bus.ShouldStopExecution)
                     return;
                 continue;
@@ -300,6 +330,288 @@ internal sealed class Sega32XSh2Cpu
 
         registerIndex = (dtOpcode >> 8) & 0xF;
         return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteIdleBranchLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        if (TraceInstructionStart.HasValue || TraceInstructionEnd.HasValue)
+            return false;
+        if (remainingInstructions < 2 || bus.CycleLimit == ulong.MaxValue)
+            return false;
+        if ((firstOpcode & 0xF000) != 0xA000) // BRA disp
+            return false;
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort delayOpcode) || delayOpcode != 0x0009)
+            return false;
+
+        int displacement = ((short)(firstOpcode << 4)) >> 4;
+        uint target = unchecked(loopStartPc + 4u + (uint)(displacement << 1));
+        if (target != loopStartPc)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        if (remainingCycles < 2)
+            return false;
+
+        ulong cyclesToConsume = Math.Min(remainingInstructions, remainingCycles);
+        if (cyclesToConsume < 2)
+            return false;
+
+        Registers.ProgramCounter = loopStartPc;
+        Registers.NextProgramCounter = loopStartPc + 2;
+        Registers.NextInstructionInDelaySlot = false;
+
+        bus.IncrementCycleCounter(cyclesToConsume);
+        CycleCounter += cyclesToConsume;
+        AccumulatePcSample(loopStartPc, cyclesToConsume);
+        consumedInstructions = cyclesToConsume;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecutePollingLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        if (TraceInstructionStart.HasValue || TraceInstructionEnd.HasValue)
+            return false;
+        if (remainingInstructions < 3 || bus.CycleLimit == ulong.MaxValue)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        if (remainingCycles < 3)
+            return false;
+
+        if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize))
+            return false;
+        if (!bus.IsFastPollingRegister(address))
+            return false;
+
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort testOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort branchOpcode))
+        {
+            return false;
+        }
+
+        bool branchOnTrue;
+        switch (branchOpcode & 0xFF00)
+        {
+            case 0x8900: // BT disp
+                branchOnTrue = true;
+                break;
+            case 0x8B00: // BF disp
+                branchOnTrue = false;
+                break;
+            default:
+                return false;
+        }
+
+        uint branchPc = loopStartPc + 4;
+        uint branchTarget = unchecked(branchPc + 4u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        if (branchTarget != loopStartPc)
+            return false;
+        if (!CanEvaluatePollingTest(testOpcode, loadRegister))
+            return false;
+
+        Registers.GeneralPurposeRegisters[loadRegister] = ReadPollingLoadValue(bus, address, loadSize);
+        if (!TryEvaluatePollingTest(testOpcode, loadRegister, out bool testResult))
+            return false;
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = testResult;
+        Registers.StatusRegister = sr;
+
+        bool branchTaken = branchOnTrue ? testResult : !testResult;
+        ulong cyclesToConsume = 3;
+        if (branchTaken)
+            cyclesToConsume = Math.Min(remainingInstructions, remainingCycles);
+        if (cyclesToConsume < 3)
+            return false;
+
+        if (branchTaken)
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+        else
+        {
+            uint exitPc = loopStartPc + 6;
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        Registers.NextInstructionInDelaySlot = false;
+
+        bus.IncrementCycleCounter(cyclesToConsume);
+        CycleCounter += cyclesToConsume;
+        AccumulatePcSample(loopStartPc, cyclesToConsume);
+        consumedInstructions = cyclesToConsume;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryDecodePollingLoad(ushort opcode, out int loadRegister, out uint address, out PollingLoadSize loadSize)
+    {
+        loadRegister = 0;
+        address = 0;
+        loadSize = PollingLoadSize.Word;
+
+        int n = (opcode >> 8) & 0xF;
+        int m = (opcode >> 4) & 0xF;
+        switch (opcode & 0xF00F)
+        {
+            case 0x000C: // MOV.B @(R0, Rm), Rn
+                loadRegister = n;
+                address = Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m];
+                loadSize = PollingLoadSize.Byte;
+                return true;
+            case 0x000D: // MOV.W @(R0, Rm), Rn
+                loadRegister = n;
+                address = Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m];
+                loadSize = PollingLoadSize.Word;
+                return true;
+            case 0x000E: // MOV.L @(R0, Rm), Rn
+                loadRegister = n;
+                address = Registers.GeneralPurposeRegisters[0] + Registers.GeneralPurposeRegisters[m];
+                loadSize = PollingLoadSize.Longword;
+                return true;
+            case 0x6000: // MOV.B @Rm, Rn
+                loadRegister = n;
+                address = Registers.GeneralPurposeRegisters[m];
+                loadSize = PollingLoadSize.Byte;
+                return true;
+            case 0x6001: // MOV.W @Rm, Rn
+                loadRegister = n;
+                address = Registers.GeneralPurposeRegisters[m];
+                loadSize = PollingLoadSize.Word;
+                return true;
+            case 0x6002: // MOV.L @Rm, Rn
+                loadRegister = n;
+                address = Registers.GeneralPurposeRegisters[m];
+                loadSize = PollingLoadSize.Longword;
+                return true;
+        }
+
+        if ((opcode & 0xF000) == 0x5000) // MOV.L @(disp, Rm), Rn
+        {
+            loadRegister = n;
+            address = Registers.GeneralPurposeRegisters[m] + (uint)((opcode & 0xF) << 2);
+            loadSize = PollingLoadSize.Longword;
+            return true;
+        }
+
+        switch (opcode & 0xFF00)
+        {
+            case 0xC400: // MOV.B @(disp, GBR), R0
+                loadRegister = 0;
+                address = Registers.GlobalBaseRegister + (uint)(opcode & 0xFF);
+                loadSize = PollingLoadSize.Byte;
+                return true;
+            case 0xC500: // MOV.W @(disp, GBR), R0
+                loadRegister = 0;
+                address = Registers.GlobalBaseRegister + (uint)((opcode & 0xFF) << 1);
+                loadSize = PollingLoadSize.Word;
+                return true;
+            case 0xC600: // MOV.L @(disp, GBR), R0
+                loadRegister = 0;
+                address = Registers.GlobalBaseRegister + (uint)((opcode & 0xFF) << 2);
+                loadSize = PollingLoadSize.Longword;
+                return true;
+            case 0x8400: // MOV.B @(disp, Rm), R0
+                loadRegister = 0;
+                address = Registers.GeneralPurposeRegisters[m] + (uint)(opcode & 0xF);
+                loadSize = PollingLoadSize.Byte;
+                return true;
+            case 0x8500: // MOV.W @(disp, Rm), R0
+                loadRegister = 0;
+                address = Registers.GeneralPurposeRegisters[m] + (uint)((opcode & 0xF) << 1);
+                loadSize = PollingLoadSize.Word;
+                return true;
+        }
+
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint ReadPollingLoadValue(Sega32XSh2Bus bus, uint address, PollingLoadSize loadSize)
+    {
+        return loadSize switch
+        {
+            PollingLoadSize.Byte => unchecked((uint)(sbyte)bus.ReadByte(address, Sega32XSh2AccessContext.Data)),
+            PollingLoadSize.Word => unchecked((uint)(short)bus.ReadWord(address, Sega32XSh2AccessContext.Data)),
+            _ => bus.ReadLongword(address, Sega32XSh2AccessContext.Data),
+        };
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool CanEvaluatePollingTest(ushort opcode, int loadedRegister)
+    {
+        int n = (opcode >> 8) & 0xF;
+        int m = (opcode >> 4) & 0xF;
+
+        return ((opcode & 0xF0FF) == 0x4011 && n == loadedRegister) // CMP/PZ Rn
+            || ((opcode & 0xF0FF) == 0x4015 && n == loadedRegister) // CMP/PL Rn
+            || ((opcode & 0xF00F) == 0x2008 && (n == loadedRegister || m == loadedRegister)) // TST Rm, Rn
+            || ((opcode & 0xF00F) == 0x3000 && (n == loadedRegister || m == loadedRegister)) // CMP/EQ Rm, Rn
+            || ((opcode & 0xFF00) == 0x8800 && loadedRegister == 0) // CMP/EQ #imm, R0
+            || ((opcode & 0xFF00) == 0xC800 && loadedRegister == 0); // TST #imm, R0
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryEvaluatePollingTest(ushort opcode, int loadedRegister, out bool result)
+    {
+        result = false;
+
+        int n = (opcode >> 8) & 0xF;
+        int m = (opcode >> 4) & 0xF;
+        switch (opcode & 0xF0FF)
+        {
+            case 0x4011 when n == loadedRegister: // CMP/PZ Rn
+                result = (int)Registers.GeneralPurposeRegisters[n] >= 0;
+                return true;
+            case 0x4015 when n == loadedRegister: // CMP/PL Rn
+                result = (int)Registers.GeneralPurposeRegisters[n] > 0;
+                return true;
+        }
+
+        switch (opcode & 0xF00F)
+        {
+            case 0x2008 when n == loadedRegister || m == loadedRegister: // TST Rm, Rn
+                result = (Registers.GeneralPurposeRegisters[m] & Registers.GeneralPurposeRegisters[n]) == 0;
+                return true;
+            case 0x3000 when n == loadedRegister || m == loadedRegister: // CMP/EQ Rm, Rn
+                result = Registers.GeneralPurposeRegisters[n] == Registers.GeneralPurposeRegisters[m];
+                return true;
+        }
+
+        if ((opcode & 0xFF00) == 0xC800 && loadedRegister == 0) // TST #imm, R0
+        {
+            result = (Registers.GeneralPurposeRegisters[0] & (uint)(opcode & 0xFF)) == 0;
+            return true;
+        }
+
+        if ((opcode & 0xFF00) == 0x8800 && loadedRegister == 0) // CMP/EQ #imm, R0
+        {
+            result = Registers.GeneralPurposeRegisters[0] == unchecked((uint)(sbyte)(opcode & 0xFF));
+            return true;
+        }
+
+        return false;
     }
 
     private void ExecuteSingleInstruction(Sega32XSh2Bus bus)
