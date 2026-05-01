@@ -211,8 +211,8 @@ internal sealed class Sega32XSystemRegisters
         Dma.Fifo.Clear();
         SegaTvBits = 0;
 
-        MasterInterrupts.ResetPending = true;
-        SlaveInterrupts.ResetPending = true;
+        MasterInterrupts.ResetPending = false;
+        SlaveInterrupts.ResetPending = false;
         UpdateInterruptLevels();
     }
 
@@ -249,6 +249,12 @@ internal sealed class Sega32XSystemRegisters
                 
                 if (oldAdapterEnabled != AdapterEnabled)
                     UpdateInterruptLevels();
+                if (!oldResetSh2 && ResetSh2)
+                {
+                    MasterInterrupts.ResetPending = true;
+                    SlaveInterrupts.ResetPending = true;
+                    UpdateInterruptLevels();
+                }
 
                 if (TraceM68kControlWrites)
                 {
