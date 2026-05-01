@@ -1,4 +1,5 @@
 using EutherDrive.Core.Savestates;
+using System.Runtime.CompilerServices;
 
 namespace EutherDrive.Core.Sega32X;
 
@@ -495,6 +496,7 @@ internal sealed class Sega32XSh2Bus
         return value;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort ReadOpcode(uint address)
     {
         if (TracePcWatchStart.HasValue || TraceAddressWatchStart.HasValue)
@@ -1578,10 +1580,13 @@ internal sealed class Sega32XSh2Bus
 
     private int CacheSelectedWay => (_cacheControl >> 6) & 0x3;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int CacheEntryIndex(uint address) => (int)((address >> 4) & 0x3F);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint TagAddress(uint address) => (address & 0x1FFFFFFF) >> 10;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int CacheRamWordIndex(int way, int entryIndex, uint address) =>
         (((way << 10) | (entryIndex << 4)) | ((int)address & 0xE)) >> 1;
 
@@ -1595,6 +1600,7 @@ internal sealed class Sega32XSh2Bus
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryReadCachedWord(uint address, out ushort value)
     {
         value = 0;
@@ -1614,6 +1620,7 @@ internal sealed class Sega32XSh2Bus
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryResolveCacheHit(uint address, out int way, out int entryIndex)
     {
         way = 0;
@@ -1637,6 +1644,7 @@ internal sealed class Sega32XSh2Bus
         return false;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryReplaceCache(uint address, Sega32XSh2AccessContext context, out uint requestedLongword)
     {
         requestedLongword = 0;
@@ -1688,6 +1696,7 @@ internal sealed class Sega32XSh2Bus
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int SelectReplacementWay(int entryIndex)
     {
         byte lru = _cacheAddressLruBits[entryIndex];
@@ -1702,6 +1711,7 @@ internal sealed class Sega32XSh2Bus
         return (lru & 1) != 0 ? 2 : 3;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateLruBits(int way, int entryIndex)
     {
         byte andMask;
@@ -1756,6 +1766,7 @@ internal sealed class Sega32XSh2Bus
         _cacheDataArray[idx + 1] = (ushort)value;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool IsCacheableAddress(uint address)
     {
         // The SH-2 cache is controlled by A29-A31 internally. Area 0 accesses can be cached even
@@ -1768,6 +1779,7 @@ internal sealed class Sega32XSh2Bus
         return !IsVolatileSh2ExternalAddress(masked);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool IsVolatileSh2ExternalAddress(uint masked)
     {
         return IsSh2SystemRegister(masked)

@@ -1,4 +1,5 @@
 using EutherDrive.Core.Savestates;
+using System.Runtime.CompilerServices;
 
 namespace EutherDrive.Core.Sega32X;
 
@@ -156,8 +157,11 @@ internal sealed class Sega32XSh2Cpu
         ulong remainingInstructions = ticks;
         while (remainingInstructions > 0)
         {
+            uint pc = Registers.ProgramCounter;
+            ushort opcode = bus.ReadOpcode(pc);
+
             if (!DisableTightDelayLoopBatching &&
-                TryExecuteTightDelayLoop(bus, remainingInstructions, out ulong consumedInstructions))
+                TryExecuteTightDelayLoop(bus, remainingInstructions, pc, opcode, out ulong consumedInstructions))
             {
                 remainingInstructions -= consumedInstructions;
                 if (bus.ShouldStopExecution)
@@ -165,22 +169,27 @@ internal sealed class Sega32XSh2Cpu
                 continue;
             }
 
-            ExecuteSingleInstruction(bus);
+            ExecuteFetchedInstruction(bus, pc, opcode);
             remainingInstructions--;
             if (bus.ShouldStopExecution)
                 return;
         }
     }
 
-    private bool TryExecuteTightDelayLoop(Sega32XSh2Bus bus, ulong remainingInstructions, out ulong consumedInstructions)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteTightDelayLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
     {
         consumedInstructions = 0;
 
         if (remainingInstructions < 2 || bus.CycleLimit == ulong.MaxValue)
             return false;
 
-        uint loopStartPc = Registers.ProgramCounter;
-        if (!TryMatchDelayLoop(bus, loopStartPc, out int instructionsPerIteration, out uint exitPc, out int registerIndex))
+        if (!TryMatchDelayLoop(bus, loopStartPc, firstOpcode, out int instructionsPerIteration, out uint exitPc, out int registerIndex))
             return false;
 
         uint counter = Registers.GeneralPurposeRegisters[registerIndex];
@@ -231,14 +240,18 @@ internal sealed class Sega32XSh2Cpu
         return true;
     }
 
-    private static bool TryMatchDelayLoop(Sega32XSh2Bus bus, uint loopStartPc, out int instructionsPerIteration, out uint exitPc, out int registerIndex)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryMatchDelayLoop(
+        Sega32XSh2Bus bus,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out int instructionsPerIteration,
+        out uint exitPc,
+        out int registerIndex)
     {
         instructionsPerIteration = 0;
         exitPc = 0;
         registerIndex = 0;
-
-        if (!bus.TryPeekInstructionWord(loopStartPc, out ushort firstOpcode))
-            return false;
 
         if (firstOpcode == 0x0009)
         {
@@ -258,6 +271,7 @@ internal sealed class Sega32XSh2Cpu
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool TryMatchDtBfBackLoop(Sega32XSh2Bus bus, uint dtPc, uint branchPc, uint branchTargetPc, out int registerIndex)
     {
         registerIndex = 0;
@@ -287,7 +301,11 @@ internal sealed class Sega32XSh2Cpu
     {
         uint pc = Registers.ProgramCounter;
         ushort opcode = bus.ReadOpcode(pc);
+        ExecuteFetchedInstruction(bus, pc, opcode);
+    }
 
+    private void ExecuteFetchedInstruction(Sega32XSh2Bus bus, uint pc, ushort opcode)
+    {
         MaybeTraceInstruction(pc, opcode);
 
         if (TraceBootLoop && pc >= 0x00000180 && pc <= 0x00000220)
