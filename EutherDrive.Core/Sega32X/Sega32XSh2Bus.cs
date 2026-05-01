@@ -273,10 +273,9 @@ internal sealed class Sega32XSh2Bus
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
             return parsed;
 
-        // jgenesis uses 50-cycle catch-up chunks for communication port accesses.
-        // Matching that keeps the close mailbox timing that games like Brutal need
-        // while avoiding the 10-cycle over-sync overhead that shows up in Chaotix.
-        return 50;
+        // Use coarse enough catch-up chunks to avoid spending most 32X time repeatedly entering
+        // the peer SH-2 on mailbox polls, while still keeping comm visibility bounded.
+        return 200;
     }
 
     private static bool ParseAggressiveCommReadSyncEnabled()
