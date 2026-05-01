@@ -251,6 +251,9 @@ internal sealed class Sega32XSh2Cpu
         if (remainingInstructions < 2 || bus.CycleLimit == ulong.MaxValue)
             return false;
 
+        if (TryExecuteTstBfsAddDelayLoop(bus, remainingInstructions, loopStartPc, firstOpcode, out consumedInstructions))
+            return true;
+
         if (!TryMatchDelayLoop(bus, loopStartPc, firstOpcode, out int instructionsPerIteration, out uint exitPc, out int registerIndex))
             return false;
 
@@ -288,6 +291,89 @@ internal sealed class Sega32XSh2Cpu
 
         if (loopFinished)
         {
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        else
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+
+        Registers.NextInstructionInDelaySlot = false;
+        consumedInstructions = schedulerCycles;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteTstBfsAddDelayLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        const int InstructionsPerIteration = 3;
+        consumedInstructions = 0;
+
+        if (remainingInstructions < InstructionsPerIteration)
+            return false;
+        if ((firstOpcode & 0xF00F) != 0x2008) // TST Rm, Rn
+            return false;
+
+        int n = (firstOpcode >> 8) & 0xF;
+        int m = (firstOpcode >> 4) & 0xF;
+        if (n != m)
+            return false;
+
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort branchOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort delayOpcode))
+        {
+            return false;
+        }
+
+        if ((branchOpcode & 0xFF00) != 0x8F00) // BF/S disp
+            return false;
+        uint branchTarget = unchecked(loopStartPc + 6u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        if (branchTarget != loopStartPc)
+            return false;
+
+        if ((delayOpcode & 0xF000) != 0x7000 || ((delayOpcode >> 8) & 0xF) != n)
+            return false;
+        sbyte delta = unchecked((sbyte)(delayOpcode & 0xFF));
+        if (delta != -1)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        ulong maxIterations = Math.Min(
+            remainingInstructions / InstructionsPerIteration,
+            remainingCycles / InstructionsPerIteration);
+        if (maxIterations == 0)
+            return false;
+
+        uint counter = Registers.GeneralPurposeRegisters[n];
+        ulong iterationsToExit = (ulong)counter + 1;
+        ulong iterations = Math.Min(maxIterations, iterationsToExit);
+        if (iterations == 0)
+            return false;
+
+        bool loopFinished = iterations == iterationsToExit;
+        Registers.GeneralPurposeRegisters[n] = unchecked(counter - (uint)iterations);
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = loopFinished;
+        Registers.StatusRegister = sr;
+
+        ulong schedulerCycles = iterations * InstructionsPerIteration;
+        bus.IncrementCycleCounter(schedulerCycles);
+        bus.IncrementDetailCycleCounter(schedulerCycles);
+        CycleCounter += schedulerCycles;
+
+        if (loopFinished)
+        {
+            uint exitPc = loopStartPc + 6;
             Registers.ProgramCounter = exitPc;
             Registers.NextProgramCounter = exitPc + 2;
         }
