@@ -84,6 +84,8 @@ public sealed class RomPickerDialog : Window
 
     public string? SelectedPath { get; private set; }
     public string? RomLibraryPath => _romLibraryPath;
+    public int SortIndex => _sortCombo.SelectedIndex;
+    public int StarsFilterIndex => _starsFilterCombo.SelectedIndex;
 
     public static void StartBackgroundBootCoverDeltaSync(string? romLibraryPath)
     {
@@ -110,7 +112,13 @@ public sealed class RomPickerDialog : Window
         }
     }
 
-    public RomPickerDialog(string? initialPath, string? romLibraryPath, double uiScale, Func<string, RomPickerStats> statsProvider)
+    public RomPickerDialog(
+        string? initialPath,
+        string? romLibraryPath,
+        double uiScale,
+        Func<string, RomPickerStats> statsProvider,
+        int initialSortIndex = 0,
+        int initialStarsFilterIndex = 0)
     {
         _uiScale = uiScale;
         _statsProvider = statsProvider;
@@ -191,7 +199,7 @@ public sealed class RomPickerDialog : Window
                 "Launch Count",
                 "Name"
             },
-            SelectedIndex = 0
+            SelectedIndex = Math.Clamp(initialSortIndex, 0, 3)
         };
         _sortCombo.SelectionChanged += (_, _) => ApplyFilters();
 
@@ -207,7 +215,7 @@ public sealed class RomPickerDialog : Window
                 "4+ stars",
                 "5+ stars"
             },
-            SelectedIndex = 0
+            SelectedIndex = Math.Clamp(initialStarsFilterIndex, 0, 5)
         };
         _starsFilterCombo.SelectionChanged += (_, _) => ApplyFilters();
 

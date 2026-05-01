@@ -204,6 +204,8 @@ public partial class MainWindow : Window
 
     private string? _romPath;
     private string? _romLibraryPath;
+    private int _romPickerSortIndex;
+    private int _romPickerStarsFilterIndex;
     private string? _pceBiosPath;
     private string? _gbaBiosPath;
     private string? _psxBiosPath;
@@ -2229,9 +2231,20 @@ public partial class MainWindow : Window
     private async void OnOpenRom(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         string? initialPickerPath = !string.IsNullOrWhiteSpace(_romPath) ? _romPath : _romLibraryPath;
-        var dialog = new RomPickerDialog(initialPickerPath, _romLibraryPath, _uiScale, GetRomPickerStats);
+        var dialog = new RomPickerDialog(
+            initialPickerPath,
+            _romLibraryPath,
+            _uiScale,
+            GetRomPickerStats,
+            _romPickerSortIndex,
+            _romPickerStarsFilterIndex);
         bool selected = await dialog.ShowDialog<bool>(this);
         bool romLibraryChanged = !string.Equals(_romLibraryPath, dialog.RomLibraryPath, StringComparison.OrdinalIgnoreCase);
+        bool romPickerViewChanged =
+            _romPickerSortIndex != dialog.SortIndex ||
+            _romPickerStarsFilterIndex != dialog.StarsFilterIndex;
+        _romPickerSortIndex = NormalizeRomPickerSortIndex(dialog.SortIndex);
+        _romPickerStarsFilterIndex = NormalizeRomPickerStarsFilterIndex(dialog.StarsFilterIndex);
         if (romLibraryChanged)
         {
             _romLibraryPath = dialog.RomLibraryPath;
@@ -2239,7 +2252,7 @@ public partial class MainWindow : Window
         }
         if (!selected || string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
-            if (romLibraryChanged)
+            if (romLibraryChanged || romPickerViewChanged)
                 SaveSettings();
             return;
         }
@@ -5583,6 +5596,8 @@ public partial class MainWindow : Window
         public string? LastRomPath { get; set; }
         public string? SelectedSkinPath { get; set; }
         public string? RomLibraryPath { get; set; }
+        public int RomPickerSortIndex { get; set; }
+        public int RomPickerStarsFilterIndex { get; set; }
         public string? MachineRoomMp3FolderPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
@@ -5634,6 +5649,8 @@ public partial class MainWindow : Window
         public string? LastRomPath { get; set; }
         public string? SelectedSkinPath { get; set; }
         public string? RomLibraryPath { get; set; }
+        public int RomPickerSortIndex { get; set; }
+        public int RomPickerStarsFilterIndex { get; set; }
         public string? MachineRoomMp3FolderPath { get; set; }
         public List<string>? RecentRomPaths { get; set; }
         public string? PceBiosPath { get; set; }
@@ -5769,6 +5786,8 @@ public partial class MainWindow : Window
         _romLibraryPath = !string.IsNullOrWhiteSpace(settings.RomLibraryPath)
             ? settings.RomLibraryPath
             : null;
+        _romPickerSortIndex = NormalizeRomPickerSortIndex(settings.RomPickerSortIndex);
+        _romPickerStarsFilterIndex = NormalizeRomPickerStarsFilterIndex(settings.RomPickerStarsFilterIndex);
         _machineRoomMp3FolderPath = !string.IsNullOrWhiteSpace(settings.MachineRoomMp3FolderPath)
             ? settings.MachineRoomMp3FolderPath
             : null;
@@ -5997,6 +6016,12 @@ public partial class MainWindow : Window
         return value;
     }
 
+    private static int NormalizeRomPickerSortIndex(int value)
+        => Math.Clamp(value, 0, 3);
+
+    private static int NormalizeRomPickerStarsFilterIndex(int value)
+        => Math.Clamp(value, 0, 5);
+
     private bool LoadLegacySettings()
     {
         bool loaded = false;
@@ -6024,6 +6049,8 @@ public partial class MainWindow : Window
                 ? null
                 : SkinManager.Instance.CurrentSkin.SourcePath,
             RomLibraryPath = _romLibraryPath,
+            RomPickerSortIndex = _romPickerSortIndex,
+            RomPickerStarsFilterIndex = _romPickerStarsFilterIndex,
             MachineRoomMp3FolderPath = _machineRoomMp3FolderPath,
             RecentRomPaths = _recentRomPaths.ToList(),
             PceBiosPath = _pceBiosPath,
@@ -6179,6 +6206,8 @@ public partial class MainWindow : Window
             LastRomPath = settings.LastRomPath,
             SelectedSkinPath = settings.SelectedSkinPath,
             RomLibraryPath = settings.RomLibraryPath,
+            RomPickerSortIndex = NormalizeRomPickerSortIndex(settings.RomPickerSortIndex),
+            RomPickerStarsFilterIndex = NormalizeRomPickerStarsFilterIndex(settings.RomPickerStarsFilterIndex),
             MachineRoomMp3FolderPath = settings.MachineRoomMp3FolderPath,
             RecentRomPaths = settings.RecentRomPaths,
             PceBiosPath = settings.PceBiosPath,
@@ -6290,6 +6319,8 @@ public partial class MainWindow : Window
             LastRomPath = raw.LastRomPath,
             SelectedSkinPath = raw.SelectedSkinPath,
             RomLibraryPath = raw.RomLibraryPath,
+            RomPickerSortIndex = NormalizeRomPickerSortIndex(raw.RomPickerSortIndex),
+            RomPickerStarsFilterIndex = NormalizeRomPickerStarsFilterIndex(raw.RomPickerStarsFilterIndex),
             MachineRoomMp3FolderPath = raw.MachineRoomMp3FolderPath,
             RecentRomPaths = raw.RecentRomPaths,
             PceBiosPath = raw.PceBiosPath,
