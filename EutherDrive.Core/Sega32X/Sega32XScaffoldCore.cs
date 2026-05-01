@@ -255,6 +255,12 @@ internal sealed class Sega32XScaffoldCore
         if (remaining == 0)
             return;
 
+        if (Sega32XSh2Cpu.SchedulerWaitLoopFastForwardEnabled &&
+            cpu.TryFastForwardSchedulerWaitLoop(bus, targetCycles))
+        {
+            return;
+        }
+
         ulong slice = DefaultSh2ExecutionSliceLength;
         if (WaitLoopFastForwardEnabled && cpu.IsAtBatchableWaitLoop(bus))
             slice = remaining;

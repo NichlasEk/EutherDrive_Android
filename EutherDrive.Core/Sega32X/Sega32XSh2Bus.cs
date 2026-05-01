@@ -209,8 +209,9 @@ internal sealed class Sega32XSh2Bus
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void InvalidateExecutableSdramPage(uint masked)
     {
-        if (masked >= 0x06000000 && masked < 0x06040000)
-            _sdramExecutablePageVersions[(masked - 0x06000000) >> 12]++;
+        // The current decoded/block fast paths deliberately avoid compiling SDRAM-resident SH-2
+        // code, and the exact interpreter fetches directly from SDRAM. Do not spend time tracking
+        // per-page executable versions for ordinary work RAM writes.
     }
 
     public void TickPeripherals(ulong cycles)

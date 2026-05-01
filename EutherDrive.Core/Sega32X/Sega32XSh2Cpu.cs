@@ -23,6 +23,7 @@ internal sealed class Sega32XSh2Cpu
     public uint CurrentInstructionPc { get; private set; }
     public ulong CycleCounter { get; private set; }
     public bool ResetPending { get; set; } = true;
+    public static bool SchedulerWaitLoopFastForwardEnabled => SchedulerWaitLoopFastForward;
     private int _unsupportedLogCount;
     private bool _unsupportedLogSuppressed;
     [NonSerialized] private readonly Dictionary<uint, ulong> _pcSampleTicks = new();
@@ -57,6 +58,16 @@ internal sealed class Sega32XSh2Cpu
     private static readonly bool DisablePollingLoopAcceleration =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_DISABLE_POLL_LOOP_ACCEL"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool SchedulerWaitLoopFastForward =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_SCHED_WAIT_FF"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool SchedulerPollingWaitLoopFastForward =
+        string.Equals(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_SCHED_POLL_WAIT_FF"),
             "1",
             StringComparison.Ordinal);
     private static readonly bool DisableBlockJit =
@@ -378,6 +389,134 @@ internal sealed class Sega32XSh2Cpu
         }
 
         return TryMatchDelayLoop(bus, pc, firstOpcode, out _, out _, out _);
+    }
+
+    public bool TryFastForwardSchedulerWaitLoop(Sega32XSh2Bus bus, ulong targetCycles)
+    {
+        if (!SchedulerWaitLoopFastForward ||
+            DisablePollingLoopAcceleration ||
+            ResetPending ||
+            Registers.NextInstructionInDelaySlot ||
+            TraceInstructionStart.HasValue ||
+            TraceInstructionEnd.HasValue ||
+            HasPendingInterrupt(bus))
+        {
+            return false;
+        }
+
+        ulong remainingCycles = targetCycles > bus.SchedulerCycleCounter
+            ? targetCycles - bus.SchedulerCycleCounter
+            : 0;
+        if (remainingCycles < 2)
+            return false;
+
+        uint pc = Registers.ProgramCounter;
+        if (!bus.TryPeekInstructionWord(pc, out ushort firstOpcode))
+            return false;
+
+        if (TryFastForwardSchedulerIdleBranch(bus, remainingCycles, pc, firstOpcode))
+            return true;
+
+        return SchedulerPollingWaitLoopFastForward &&
+            TryFastForwardSchedulerPollingLoop(bus, remainingCycles, pc, firstOpcode);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryFastForwardSchedulerIdleBranch(
+        Sega32XSh2Bus bus,
+        ulong remainingCycles,
+        uint loopStartPc,
+        ushort firstOpcode)
+    {
+        if (remainingCycles < 2 || (firstOpcode & 0xF000) != 0xA000)
+            return false;
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort delayOpcode) || delayOpcode != 0x0009)
+            return false;
+
+        int displacement = ((short)(firstOpcode << 4)) >> 4;
+        uint target = unchecked(loopStartPc + 4u + (uint)(displacement << 1));
+        if (target != loopStartPc)
+            return false;
+
+        Registers.ProgramCounter = loopStartPc;
+        Registers.NextProgramCounter = loopStartPc + 2;
+        Registers.NextInstructionInDelaySlot = false;
+
+        bus.IncrementCycleCounter(remainingCycles);
+        CycleCounter += remainingCycles;
+        AccumulatePcSample(loopStartPc, remainingCycles);
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryFastForwardSchedulerPollingLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingCycles,
+        uint loopStartPc,
+        ushort firstOpcode)
+    {
+        if (remainingCycles < 3)
+            return false;
+
+        if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize))
+            return false;
+        if (!bus.IsFastPollingRegister(address))
+            return false;
+
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort testOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort branchOpcode))
+        {
+            return false;
+        }
+
+        bool branchOnTrue;
+        switch (branchOpcode & 0xFF00)
+        {
+            case 0x8900:
+                branchOnTrue = true;
+                break;
+            case 0x8B00:
+                branchOnTrue = false;
+                break;
+            default:
+                return false;
+        }
+
+        uint branchPc = loopStartPc + 4;
+        uint branchTarget = unchecked(branchPc + 4u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        if (branchTarget != loopStartPc || !CanEvaluatePollingTest(testOpcode, loadRegister))
+            return false;
+
+        Registers.GeneralPurposeRegisters[loadRegister] = ReadPollingLoadValue(bus, address, loadSize);
+        if (!TryEvaluatePollingTest(testOpcode, loadRegister, out bool testResult))
+            return false;
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = testResult;
+        Registers.StatusRegister = sr;
+
+        bool branchTaken = branchOnTrue ? testResult : !testResult;
+        ulong cyclesToConsume = branchTaken ? remainingCycles : 3;
+        if (cyclesToConsume < 3)
+            return false;
+
+        if (branchTaken)
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+        else
+        {
+            uint exitPc = loopStartPc + 6;
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        Registers.NextInstructionInDelaySlot = false;
+
+        bus.IncrementCycleCounter(cyclesToConsume);
+        CycleCounter += cyclesToConsume;
+        AccumulatePcSample(loopStartPc, cyclesToConsume);
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
