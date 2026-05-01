@@ -277,7 +277,12 @@ internal sealed class Sega32XScaffoldCore
 
         try
         {
-            ulong syncLimit = Math.Max(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultM68kCommSyncSliceLength;
+            ulong syncLimit = Math.Min(
+                _globalSh2Cycles,
+                Math.Max(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultM68kCommSyncSliceLength);
+            if (syncLimit <= Math.Min(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter))
+                return;
+
             _masterBus.CycleLimit = syncLimit;
             _slaveBus.CycleLimit = syncLimit;
             // Kör master först så att den hinner skriva till comm-portarna
