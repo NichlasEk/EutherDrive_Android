@@ -129,11 +129,23 @@ public sealed class System32Adapter : IEmulatorCore
             return false;
 
         string name = System32RomSet.CanonicalDriverName(Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant());
-        return name is "ga2" or "ga2u" or "ga2j"
+        return name is "alien3"
+            or "ga2" or "ga2u" or "ga2j"
+            or "arescue"
             or "arabfgt" or "arabfgtu" or "arabfgtj"
+            or "brival"
             or "darkedge" or "darkedgej"
+            or "dbzvrvs"
+            or "f1en"
+            or "f1lap"
+            or "holo"
+            or "jpark"
+            or "kokoroj2"
+            or "radm"
+            or "radr"
             or "spidman" or "spidmanu" or "spidmanj"
             or "sonic" or "sonicp"
+            or "svf"
             or "orunners" or "orunnersu" or "orunnersj";
     }
 
