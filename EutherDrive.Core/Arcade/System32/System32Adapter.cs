@@ -892,10 +892,10 @@ public sealed class System32Adapter : IEmulatorCore
 
     private static int SignExtendBits(ushort value, int bits)
     {
-        int sign = 1 << bits;
-        int mask = (sign << 1) - 1;
+        int sign = 1 << (bits - 1);
+        int mask = (1 << bits) - 1;
         int result = value & mask;
-        return (result & sign) != 0 ? result - (sign << 1) : result;
+        return (result & sign) != 0 ? result - (1 << bits) : result;
     }
 
     private void RenderTextLayer()
@@ -1278,12 +1278,28 @@ public sealed class System32Adapter : IEmulatorCore
     private int[,] BuildRgbOffsets()
     {
         var offsets = new int[3, 3];
-        offsets[0, 0] = SignExtendBits(_bus.ReadMixerWord(0x40), 6);
-        offsets[0, 1] = SignExtendBits(_bus.ReadMixerWord(0x42), 6);
-        offsets[0, 2] = SignExtendBits(_bus.ReadMixerWord(0x44), 6);
-        offsets[1, 0] = SignExtendBits(_bus.ReadMixerWord(0x46), 6);
-        offsets[1, 1] = SignExtendBits(_bus.ReadMixerWord(0x48), 6);
-        offsets[1, 2] = SignExtendBits(_bus.ReadMixerWord(0x4a), 6);
+        ushort r0 = _bus.ReadMixerWord(0x40);
+        ushort g0 = _bus.ReadMixerWord(0x42);
+        ushort b0 = _bus.ReadMixerWord(0x44);
+        ushort r1 = _bus.ReadMixerWord(0x46);
+        ushort g1 = _bus.ReadMixerWord(0x48);
+        ushort b1 = _bus.ReadMixerWord(0x4a);
+        ushort mixerControl = _bus.ReadMixerWord(0x4e);
+
+        // Dark Edge drives this during gameplay; treating 0x20 as signed black hides the whole scene.
+        if ((mixerControl & 0x0c00) == 0x0c00
+            && (r0 & 0x3f) == 0x20 && (g0 & 0x3f) == 0x20 && (b0 & 0x3f) == 0x20
+            && (r1 & 0x3f) == 0x20 && (g1 & 0x3f) == 0x20 && (b1 & 0x3f) == 0x20)
+        {
+            return offsets;
+        }
+
+        offsets[0, 0] = SignExtendBits(r0, 6);
+        offsets[0, 1] = SignExtendBits(g0, 6);
+        offsets[0, 2] = SignExtendBits(b0, 6);
+        offsets[1, 0] = SignExtendBits(r1, 6);
+        offsets[1, 1] = SignExtendBits(g1, 6);
+        offsets[1, 2] = SignExtendBits(b1, 6);
         return offsets;
     }
 
