@@ -52,10 +52,12 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     private short _trackballHeldDy;
     private System32RomSet? _roms;
     private System32Sound? _sound;
+    private bool _darkEdgeProtection;
 
     public void Load(System32RomSet roms)
     {
         _roms = roms ?? throw new ArgumentNullException(nameof(roms));
+        _darkEdgeProtection = IsDarkEdgeDriver(roms.DriverName);
         Reset();
     }
 
@@ -258,6 +260,8 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             return _sharedRam[(address - 0x70_0000) & 0x1fff];
         if (address is >= 0x80_0000 and <= 0x80_0fff)
             return _commShare[address - 0x80_0000];
+        if (_darkEdgeProtection && address is >= 0xa0_0000 and <= 0xa7_ffff)
+            return 0xff;
         if (address is >= 0xa0_0000 and <= 0xa0_0fff)
             return ReadMainDpram(address);
         if (IsSegaSonicTrackballAddress(address))
@@ -299,6 +303,9 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
             _sharedRam[(address - 0x70_0000) & 0x1fff] = value;
         else if (address is >= 0x80_0000 and <= 0x80_0fff)
             _commShare[address - 0x80_0000] = value;
+        else if (_darkEdgeProtection && address is >= 0xa0_0000 and <= 0xa7_ffff)
+        {
+        }
         else if (address is >= 0xa0_0000 and <= 0xa0_0fff)
             WriteMainDpram(address, value);
         else if (IsSegaSonicTrackballAddress(address))
@@ -342,6 +349,7 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     public void SignalVblankStartIrq()
     {
         SignalV60Irq(MainIrqVblankStart);
+        ApplyDarkEdgeVblankProtection();
     }
 
     public void SignalVblankStopIrq()
@@ -401,6 +409,23 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
         uint offset = address - 0xa0_0000;
         if ((offset & 1) == 0)
             _dpram[(offset >> 1) & 0x07ff] = value;
+    }
+
+    private void ApplyDarkEdgeVblankProtection()
+    {
+        if (!_darkEdgeProtection)
+            return;
+
+        WriteWorkRamWord(0x00f072, 0);
+        WriteWorkRamWord(0x00f082, 0);
+
+        int timerOffset = 0x00a12c & WorkRamMask;
+        if (_workRam[timerOffset] == 0)
+            return;
+
+        _workRam[timerOffset]--;
+        if (_workRam[timerOffset] == 0)
+            _workRam[0x00a12e & WorkRamMask] = 1;
     }
 
     public byte EndFrame()
@@ -826,6 +851,12 @@ internal sealed class System32Bus : IV60Bus, IV25Bus
     {
         data[byteOffset] = (byte)value;
         data[byteOffset + 1] = (byte)(value >> 8);
+    }
+
+    private static bool IsDarkEdgeDriver(string driverName)
+    {
+        return string.Equals(driverName, "darkedge", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(driverName, "darkedgej", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int CountNonZero(byte[] data)

@@ -634,6 +634,7 @@ public sealed class System32Adapter : IEmulatorCore
             int minY = _bus.ReadVideoWord(0x1ff62 + i * 8) & 0x0ff;
             int maxX = _bus.ReadVideoWord(0x1ff64 + i * 8) & 0x1ff;
             int maxY = _bus.ReadVideoWord(0x1ff66 + i * 8) & 0x0ff;
+            ApplyGlobalClipFlip(ref minX, ref minY, ref maxX, ref maxY);
             if (x >= minX && x <= maxX && y >= minY && y <= maxY)
             {
                 inside = true;
@@ -642,6 +643,22 @@ public sealed class System32Adapter : IEmulatorCore
         }
 
         return clipOut ? !inside : inside;
+    }
+
+    private void ApplyGlobalClipFlip(ref int minX, ref int minY, ref int maxX, ref int maxY)
+    {
+        if ((_bus.ReadVideoWord(0x1ff00) & 0x0200) == 0)
+            return;
+
+        int visibleMaxX = _visibleWidth - 1;
+        int flippedMinX = visibleMaxX - maxX;
+        int flippedMaxX = visibleMaxX - minX;
+        int flippedMinY = FrameHeight - 1 - maxY;
+        int flippedMaxY = FrameHeight - 1 - minY;
+        minX = Math.Max(0, flippedMinX);
+        maxX = Math.Min(visibleMaxX, flippedMaxX);
+        minY = Math.Max(0, flippedMinY);
+        maxY = Math.Min(FrameHeight - 1, flippedMaxY);
     }
 
     private void ProcessSpriteEndOfVblank(byte spriteCommand)
@@ -1019,6 +1036,7 @@ public sealed class System32Adapter : IEmulatorCore
         int minY = _bus.ReadVideoWord(0x1ff62 + 4 * 8) & 0x0ff;
         int maxX = _bus.ReadVideoWord(0x1ff64 + 4 * 8) & 0x1ff;
         int maxY = _bus.ReadVideoWord(0x1ff66 + 4 * 8) & 0x0ff;
+        ApplyGlobalClipFlip(ref minX, ref minY, ref maxX, ref maxY);
         bool inside = x >= minX && x <= maxX && y >= minY && y <= maxY;
         return clipOut ? !inside : inside;
     }
