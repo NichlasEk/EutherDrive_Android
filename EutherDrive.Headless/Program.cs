@@ -27,6 +27,7 @@ using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.Cps2;
+using EutherDrive.Core.Arcade.Konami;
 using EutherDrive.Core.Arcade.System32;
 using EutherDrive.Audio;
 using EutherDrive.Core.Cpu.M68000Emu;
@@ -357,6 +358,9 @@ class Program
                 || string.Equals(coreOverride, "s32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "sega-system32", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && System32Adapter.IsSupportedArchive(romPath));
+            bool useTmnt = string.Equals(coreOverride, "tmnt", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -372,6 +376,7 @@ class Program
                 useCps1 = false;
                 useCps2 = false;
                 useSystem32 = false;
+                useTmnt = false;
             }
 
             if (useCps1)
@@ -432,6 +437,37 @@ class Program
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] CPS2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useTmnt)
+            {
+                Console.WriteLine("[HEADLESS] Using Konami TMNT core");
+                var tmnt = new TmntAdapter();
+                tmnt.LoadRom(romPath);
+                ReadOnlySpan<byte> fbIn = tmnt.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                Console.WriteLine($"[HEADLESS] TMNT fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY})");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    tmnt.SetInputState(false, false, false, false, false, false, false, false, false, false, false, false, PadType.SixButton);
+                    tmnt.RunFrame();
+                    if (frame == 0 || frame == 5 || frame == 10)
+                    {
+                        ReadOnlySpan<byte> fb = tmnt.GetFrameBuffer(out int w, out int h, out int s);
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = tmnt.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] TMNT final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] TMNT debug {tmnt.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;

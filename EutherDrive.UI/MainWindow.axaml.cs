@@ -776,6 +776,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.System32.System32Adapter();
+        if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Konami.TmntAdapter.IsSupportedArchive(path))
+            return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
