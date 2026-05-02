@@ -397,7 +397,7 @@ public sealed class N64Adapter : IEmulatorCore
             // Score non-black RGB values (ignore alpha bit).
             if ((pNormal & 0xFFFE) != 0)
                 normalScore++;
-            if ((pSwapped & 0xFFFE) != 0)
+            if ((pSwapped & 0xFFFE) != 0 && pNormal != 0x0001)
                 swappedScore++;
         }
 

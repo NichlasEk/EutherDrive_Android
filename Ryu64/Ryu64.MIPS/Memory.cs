@@ -72,6 +72,7 @@ namespace Ryu64.MIPS
         private static int _traceRspDescriptorWriteLogCount;
         private static int _traceRdpSummaryCount;
         private static int _traceRdpTexRectCount;
+        private static int _traceRdpTexRectWriteCount;
         private static int _traceRdpTextureLoadCount;
         private static int _traceRdpTriangleCount;
         private const int TraceWatchRangeLogLimit = 512;
@@ -81,6 +82,7 @@ namespace Ryu64.MIPS
         private const int TraceRspDescriptorWriteLogLimit = 512;
         private const int TraceRdpSummaryLimit = 2048;
         private const int TraceRdpTexRectLimit = 128;
+        private const int TraceRdpTexRectWriteLimit = 64;
         private const int TraceRdpTextureLoadLimit = 128;
         private const int TraceRdpTriangleLimit = 128;
         private static bool _warnedRspTaskStub;
@@ -1520,6 +1522,10 @@ namespace Ryu64.MIPS
             double stepS = dsdxFixed == 0 ? 1.0 : dsdxFixed / 1024.0;
             double stepT = dtdyFixed == 0 ? 1.0 : dtdyFixed / 1024.0;
             bool wroteAny = false;
+            uint sampleMisses = 0;
+            uint sampleHits = 0;
+            uint firstAddress = 0;
+            uint firstRgba = 0;
 
             for (uint y = y0; y <= y1; y++)
             {
@@ -1530,15 +1536,36 @@ namespace Ryu64.MIPS
                     int sampleS = (int)Math.Floor(startS + x * stepS);
                     int sampleT = (int)Math.Floor(startT + (y - y0) * stepT);
                     if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
+                    {
+                        sampleMisses++;
                         continue;
+                    }
 
                     uint address = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0 + x) * bytesPerPixel);
+                    if (!wroteAny)
+                    {
+                        firstAddress = address;
+                        firstRgba = rgba;
+                    }
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
+                    sampleHits++;
                     wroteAny = true;
                 }
 
                 if (wroteAny)
                     NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
+            }
+
+            if (TraceRdpTextureRectangles && _traceRdpTexRectWriteCount < TraceRdpTexRectWriteLimit)
+            {
+                uint firstStored = firstAddress + 1u < RDRAM.Length
+                    ? (uint)((RDRAM[firstAddress] << 8) | RDRAM[firstAddress + 1u])
+                    : 0u;
+                Common.Logger.PrintWarningLine(
+                    $"[N64RDP] texrect-write ci=0x{_rdpColorImageAddress:x8} rect=({x0},{y0})-({x1},{y1}) tile={tileIndex} " +
+                    $"hits={sampleHits} misses={sampleMisses} firstAddr=0x{firstAddress:x8} firstRgba=0x{firstRgba:x8} firstStored=0x{firstStored:x4} " +
+                    $"tileSizeSet={tile.TileSizeSet} tile=fmt{tile.Format}:sz{tile.Size}:line{tile.Line}:tmem0x{tile.Tmem:x}:uls{tile.Uls}:ult{tile.Ult}:lrs{tile.Lrs}:lrt{tile.Lrt}");
+                _traceRdpTexRectWriteCount++;
             }
 
             if (wroteAny)
