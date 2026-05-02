@@ -71,6 +71,7 @@ internal sealed class System32RomSet
         {
             "ga2" or "ga2u" or "ga2j" => LoadGoldenAxe2(path, driverName),
             "arabfgt" or "arabfgtu" or "arabfgtj" => LoadArabianFight(path, driverName),
+            "darkedge" or "darkedgej" => LoadDarkEdge(path, driverName),
             "spidman" or "spidmanu" or "spidmanj" => LoadSpiderMan(path, driverName),
             "sonic" or "sonicp" => LoadSegaSonic(path, driverName),
             "orunners" or "orunnersu" or "orunnersj" => LoadOutRunners(path, driverName),
@@ -170,6 +171,50 @@ internal sealed class System32RomSet
         Load64Word(entries, sprites, 0x800006, "mpr-14607.ic25");
 
         return new System32RomSet(driverName, mainCpu, soundCpu, Array.Empty<byte>(), mcu, ArabianFightOpcodeTable, tiles, sprites);
+    }
+
+    private static System32RomSet LoadDarkEdge(string path, string driverName)
+    {
+        string mainProgram = driverName switch
+        {
+            "darkedge" => "epr-15246.ic8",
+            "darkedgej" => "epr-15244.ic8",
+            _ => throw new NotSupportedException($"Unsupported Dark Edge driver '{driverName}'.")
+        };
+
+        Dictionary<string, byte[]> entries = ReadArchive(path);
+        byte[] mainCpu = new byte[0x20_0000];
+        LoadX4(entries, mainCpu, 0x000000, mainProgram);
+
+        byte[] soundCpu = new byte[0x40_0000];
+        LoadX16(entries, soundCpu, 0x000000, "epr-15243.ic36");
+        LoadLinear(entries, soundCpu, 0x100000, "mpr-15242.ic35");
+        LoadLinear(entries, soundCpu, 0x200000, "mpr-15241.ic34");
+        LoadLinear(entries, soundCpu, 0x300000, "mpr-15240.ic24");
+
+        byte[] tiles = new byte[0x10_0000];
+        Load16Byte(entries, tiles, 0x000000, "mpr-15248.ic14");
+        Load16Byte(entries, tiles, 0x000001, "mpr-15247.ic5");
+
+        byte[] sprites = new byte[0x100_0000];
+        Load64Word(entries, sprites, 0x000000, "mpr-15249.ic32");
+        Load64Word(entries, sprites, 0x000002, "mpr-15251.ic30");
+        Load64Word(entries, sprites, 0x000004, "mpr-15253.ic28");
+        Load64Word(entries, sprites, 0x000006, "mpr-15255.ic26");
+        Load64Word(entries, sprites, 0x800000, "mpr-15250.ic31");
+        Load64Word(entries, sprites, 0x800002, "mpr-15252.ic29");
+        Load64Word(entries, sprites, 0x800004, "mpr-15254.ic27");
+        Load64Word(entries, sprites, 0x800006, "mpr-15256.ic25");
+
+        return new System32RomSet(
+            driverName,
+            mainCpu,
+            soundCpu,
+            Array.Empty<byte>(),
+            Array.Empty<byte>(),
+            V25.GoldenAxe2OpcodeTable,
+            tiles,
+            sprites);
     }
 
     private static System32RomSet LoadSpiderMan(string path, string driverName)

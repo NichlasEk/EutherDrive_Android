@@ -75,6 +75,7 @@ public sealed class System32Adapter : IEmulatorCore
     private bool _traceMcu;
     private bool _traceTail;
     private bool _videoStats;
+    private bool _mixerStats;
     private int _frameCounter;
     private int _lastTextTiles;
     private int _lastTextPixels;
@@ -130,6 +131,7 @@ public sealed class System32Adapter : IEmulatorCore
         string name = System32RomSet.CanonicalDriverName(Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant());
         return name is "ga2" or "ga2u" or "ga2j"
             or "arabfgt" or "arabfgtu" or "arabfgtj"
+            or "darkedge" or "darkedgej"
             or "spidman" or "spidmanu" or "spidmanj"
             or "sonic" or "sonicp"
             or "orunners" or "orunnersu" or "orunnersj";
@@ -150,6 +152,7 @@ public sealed class System32Adapter : IEmulatorCore
         _traceMcu = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_MCU");
         _traceTail = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_TRACE_TAIL");
         _videoStats = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_VIDEO_STATS");
+        _mixerStats = ReadBoolEnv("EUTHERDRIVE_SYSTEM32_MIXER_STATS");
         _mainCpuVisibleCycles = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_MAINCPU_VISIBLE_CYCLES", MainCpuVisibleCyclesDefault);
         _vblankCycles = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_VBLANK_CYCLES", MainCpuVblankCyclesDefault);
         _spriteUpdateDelayCycles = ReadPositiveIntEnv("EUTHERDRIVE_SYSTEM32_SPRITE_DELAY_CYCLES", SpriteUpdateDelayCyclesDefault);
@@ -369,6 +372,13 @@ public sealed class System32Adapter : IEmulatorCore
         Console.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
             $"[System32 Video] frame={_frameCounter} pc=0x{_mainCpu.Pc:X8} r0=0x{_mainCpu.DebugRegister(0):X8} r7=0x{_mainCpu.DebugRegister(7):X8} r10=0x{_mainCpu.DebugRegister(10):X8} r11=0x{_mainCpu.DebugRegister(11):X8} vram={stats.VideoBytes} pal={stats.PaletteBytes} spr={stats.SpriteBytes} screen=0x{stats.ScreenControl:X4} layer=0x{_bus.ReadVideoWord(0x1ff02):X4} pages={_bus.ReadVideoWord(0x1ff40):X4}/{_bus.ReadVideoWord(0x1ff42):X4}/{_bus.ReadVideoWord(0x1ff44):X4}/{_bus.ReadVideoWord(0x1ff46):X4} spr0={_bus.ReadSpriteWord(0):X4}/{_bus.ReadSpriteWord(1):X4}/{_bus.ReadSpriteWord(2):X4}/{_bus.ReadSpriteWord(3):X4} spr1={_bus.ReadSpriteWord(8):X4}/{_bus.ReadSpriteWord(9):X4}/{_bus.ReadSpriteWord(10):X4}/{_bus.ReadSpriteWord(11):X4} spr2={_bus.ReadSpriteWord(16):X4}/{_bus.ReadSpriteWord(17):X4}/{_bus.ReadSpriteWord(18):X4}/{_bus.ReadSpriteWord(19):X4} text=0x{stats.TextControl:X4} dpr80=0x{_bus.ReadDpramWord(0x80):X4} dpr100='{_bus.ReadDpramAscii(0x100, 24)}' tile_px={_lastTilePixels} spr_px={_lastSpritePixels} text_tiles={_lastTextTiles} text_px={_lastTextPixels}"));
+
+        if (_mixerStats)
+        {
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"[System32 Mixer] 00={_bus.ReadMixerWord(0x00):X4}/{_bus.ReadMixerWord(0x02):X4}/{_bus.ReadMixerWord(0x04):X4}/{_bus.ReadMixerWord(0x06):X4} 20={_bus.ReadMixerWord(0x20):X4}/{_bus.ReadMixerWord(0x22):X4}/{_bus.ReadMixerWord(0x24):X4}/{_bus.ReadMixerWord(0x26):X4}/{_bus.ReadMixerWord(0x28):X4}/{_bus.ReadMixerWord(0x2A):X4}/{_bus.ReadMixerWord(0x2C):X4}/{_bus.ReadMixerWord(0x2E):X4} 30={_bus.ReadMixerWord(0x30):X4}/{_bus.ReadMixerWord(0x32):X4}/{_bus.ReadMixerWord(0x34):X4}/{_bus.ReadMixerWord(0x36):X4}/{_bus.ReadMixerWord(0x38):X4}/{_bus.ReadMixerWord(0x3A):X4}/{_bus.ReadMixerWord(0x3C):X4}/{_bus.ReadMixerWord(0x3E):X4} 40={_bus.ReadMixerWord(0x40):X4}/{_bus.ReadMixerWord(0x42):X4}/{_bus.ReadMixerWord(0x44):X4}/{_bus.ReadMixerWord(0x46):X4}/{_bus.ReadMixerWord(0x48):X4}/{_bus.ReadMixerWord(0x4A):X4}/{_bus.ReadMixerWord(0x4C):X4}/{_bus.ReadMixerWord(0x4E):X4}"));
+        }
     }
 
     private void ClearLayerBuffers()
@@ -870,10 +880,10 @@ public sealed class System32Adapter : IEmulatorCore
 
     private static int SignExtendBits(ushort value, int bits)
     {
-        int mask = (1 << bits) - 1;
-        int sign = 1 << (bits - 1);
+        int sign = 1 << bits;
+        int mask = (sign << 1) - 1;
         int result = value & mask;
-        return (result & sign) != 0 ? result - (1 << bits) : result;
+        return (result & sign) != 0 ? result - (sign << 1) : result;
     }
 
     private void RenderTextLayer()
