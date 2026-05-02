@@ -181,6 +181,12 @@ public sealed class TmntAdapter : IEmulatorCore
         public ushort CurrentOpcode => 0;
         private int _k052109Writes;
         private int _k052109Reads;
+        private int _k052ColorWrites;
+        private int _k052CodeLowWrites;
+        private int _k052CodeHighWrites;
+        private int _k052RegisterWrites;
+        private int _k052EvenByteWrites;
+        private int _k052OddByteWrites;
         private int _spriteWrites;
         private int _paletteWrites;
 
@@ -212,6 +218,12 @@ public sealed class TmntAdapter : IEmulatorCore
             _priority = 0;
             _k052109Writes = 0;
             _k052109Reads = 0;
+            _k052ColorWrites = 0;
+            _k052CodeLowWrites = 0;
+            _k052CodeHighWrites = 0;
+            _k052RegisterWrites = 0;
+            _k052EvenByteWrites = 0;
+            _k052OddByteWrites = 0;
             _spriteWrites = 0;
             _paletteWrites = 0;
         }
@@ -333,8 +345,12 @@ public sealed class TmntAdapter : IEmulatorCore
             if (address >= 0x100000 && address <= 0x107fff)
             {
                 _k052109Writes++;
+                if ((address & 1) == 0)
+                    _k052EvenByteWrites++;
+                else
+                    _k052OddByteWrites++;
                 int offset = NoA12Offset(address);
-                _k052109.Write((address & 1) == 0 ? offset : offset + 0x2000, value);
+                WriteK052109((address & 1) == 0 ? offset : offset + 0x2000, value);
                 return;
             }
             if (address >= 0x140000 && address <= 0x140007)
@@ -387,7 +403,7 @@ public sealed class TmntAdapter : IEmulatorCore
             {
                 int offset = NoA12Offset(address);
                 _k052109Writes++;
-                _k052109.Write(offset, (byte)(value >> 8));
+                WriteK052109(offset, (byte)(value >> 8));
                 return;
             }
             if (address >= 0x140000 && address <= 0x140007)
@@ -455,7 +471,36 @@ public sealed class TmntAdapter : IEmulatorCore
         public string DebugSummary(uint pc)
             => $"pc=0x{pc:X6} irq5={_irq5Enabled} pri={_priority} sound=0x{_soundLatch:X2} "
                + $"palW={_paletteWrites} k052W={_k052109Writes} k052R={_k052109Reads} sprW={_spriteWrites} "
+               + $"k052Seg={_k052ColorWrites}/{_k052CodeLowWrites}/{_k052CodeHighWrites}/{_k052RegisterWrites} "
+               + $"k052Byte={_k052EvenByteWrites}/{_k052OddByteWrites} "
                + _k052109.DebugSummary();
+
+        private void WriteK052109(int offset, byte value)
+        {
+            int mappedOffset = offset % 0x6000;
+            CountK052109Write(mappedOffset);
+            _k052109.Write(mappedOffset, value);
+        }
+
+        private void CountK052109Write(int offset)
+        {
+            if ((uint)offset < 0x1800)
+            {
+                _k052ColorWrites++;
+            }
+            else if ((uint)(offset - 0x2000) < 0x1800)
+            {
+                _k052CodeLowWrites++;
+            }
+            else if ((uint)(offset - 0x4000) < 0x1800)
+            {
+                _k052CodeHighWrites++;
+            }
+            else
+            {
+                _k052RegisterWrites++;
+            }
+        }
 
         private void WriteControl0a0000(byte data)
         {
@@ -552,7 +597,7 @@ public sealed class TmntAdapter : IEmulatorCore
 
         public byte Read(int offset)
         {
-            offset &= 0x5fff;
+            offset = WrapRamOffset(offset);
             if (Rmrd)
                 return ReadCharRom(offset);
             return _ram[offset];
@@ -560,7 +605,7 @@ public sealed class TmntAdapter : IEmulatorCore
 
         public void Write(int offset, byte data)
         {
-            offset &= 0x5fff;
+            offset = WrapRamOffset(offset);
             _ram[offset] = data;
             switch (offset)
             {
@@ -595,6 +640,8 @@ public sealed class TmntAdapter : IEmulatorCore
                     break;
             }
         }
+
+        private static int WrapRamOffset(int offset) => offset % 0x6000;
 
         public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque)
         {
