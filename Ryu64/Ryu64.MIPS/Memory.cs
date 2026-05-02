@@ -51,6 +51,9 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
         private static readonly bool TraceSm64SlotWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_SLOT_WRITES"), "1", StringComparison.Ordinal);
+        private static readonly ushort N64ControllerButtons = ParseN64ControllerButtons();
+        private static readonly sbyte N64ControllerAnalogX = ParseSByteEnvironment("EUTHERDRIVE_N64_ANALOG_X");
+        private static readonly sbyte N64ControllerAnalogY = ParseSByteEnvironment("EUTHERDRIVE_N64_ANALOG_Y");
         private static readonly bool AutoCompleteRspTaskOnHaltClear =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_SP_AUTOCOMPLETE"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRspTaskHleDispatcher =
@@ -70,14 +73,16 @@ namespace Ryu64.MIPS
         private static int _traceRdpSummaryCount;
         private static int _traceRdpTexRectCount;
         private static int _traceRdpTextureLoadCount;
+        private static int _traceRdpTriangleCount;
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
         private const int TraceLowRamMutationWriteLimit = 1024;
         private const int TraceRspDmaWindowLogLimit = 128;
         private const int TraceRspDescriptorWriteLogLimit = 512;
-        private const int TraceRdpSummaryLimit = 64;
+        private const int TraceRdpSummaryLimit = 2048;
         private const int TraceRdpTexRectLimit = 128;
         private const int TraceRdpTextureLoadLimit = 128;
+        private const int TraceRdpTriangleLimit = 128;
         private static bool _warnedRspTaskStub;
         private const uint SpStatusHalt = 0x00000001u;
         private const uint SpStatusBroke = 0x00000002u;
@@ -120,6 +125,51 @@ namespace Ryu64.MIPS
                 return parsed;
 
             return null;
+        }
+
+        private static sbyte ParseSByteEnvironment(string name)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw) || !int.TryParse(raw, out int parsed))
+                return 0;
+
+            return (sbyte)Math.Max(sbyte.MinValue, Math.Min(sbyte.MaxValue, parsed));
+        }
+
+        private static ushort ParseN64ControllerButtons()
+        {
+            string raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_INPUT_HELD");
+            if (string.IsNullOrWhiteSpace(raw))
+                return 0;
+
+            ushort buttons = 0;
+            foreach (string rawToken in raw.Split(new[] { ',', ';', '|', '+', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string token = rawToken.Trim().ToUpperInvariant().Replace("-", string.Empty).Replace("_", string.Empty);
+                switch (token)
+                {
+                    case "A": buttons |= 0x8000; break;
+                    case "B": buttons |= 0x4000; break;
+                    case "Z": buttons |= 0x2000; break;
+                    case "START": buttons |= 0x1000; break;
+                    case "UP":
+                    case "DUP": buttons |= 0x0800; break;
+                    case "DOWN":
+                    case "DDOWN": buttons |= 0x0400; break;
+                    case "LEFT":
+                    case "DLEFT": buttons |= 0x0200; break;
+                    case "RIGHT":
+                    case "DRIGHT": buttons |= 0x0100; break;
+                    case "L": buttons |= 0x0020; break;
+                    case "R": buttons |= 0x0010; break;
+                    case "CUP": buttons |= 0x0008; break;
+                    case "CDOWN": buttons |= 0x0004; break;
+                    case "CLEFT": buttons |= 0x0002; break;
+                    case "CRIGHT": buttons |= 0x0001; break;
+                }
+            }
+
+            return buttons;
         }
 
         private bool IsLateRspKickCpuPc()
@@ -577,6 +627,7 @@ namespace Ryu64.MIPS
         private string _writeUInt8Origin;
         private uint _dpInterruptDelayRemaining;
         private bool _dpInterruptDelayArmed;
+        private bool _dpCompletionPending;
         private RspTask _activeRspTask;
         private readonly RspInterpreter _rspInterpreter;
         private uint _rdpColorImageAddress;
@@ -859,12 +910,12 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void ExecuteRdpDisplayList(uint start, uint end)
+        private uint ExecuteRdpDisplayList(uint start, uint end)
         {
             uint current = start & 0x00FFFFF8u;
             uint endAddress = end & 0x00FFFFF8u;
             if (endAddress <= current)
-                return;
+                return current;
 
             uint maxEnd = current + Math.Min(endAddress - current, 0x20000u);
             bool xbusDmem = (ReadBigEndianWord(DPC_STATUS_REG_R) & DpcStatusXbusDmemDma) != 0;
@@ -891,6 +942,16 @@ namespace Ryu64.MIPS
                 bool handled = true;
                 switch (command)
                 {
+                    case 0x08: // Triangle
+                    case 0x09: // TriangleZ
+                    case 0x0A: // TriangleTexture
+                    case 0x0B: // TriangleTextureZ
+                    case 0x0C: // TriangleShade
+                    case 0x0D: // TriangleShadeZ
+                    case 0x0E: // TriangleShadeTexture
+                    case 0x0F: // TriangleShadeTextureZ
+                        ExecuteRdpTriangle(command, current, xbusDmem);
+                        break;
                     case 0x24: // TextureRectangle
                     case 0x25: // TextureRectangleFlip
                         ExecuteRdpTextureRectangle(w0, w1, ReadRdpCommandWord(current + 8u, xbusDmem), ReadRdpCommandWord(current + 12u, xbusDmem));
@@ -982,6 +1043,8 @@ namespace Ryu64.MIPS
                     $"hist={summary} firstUnhandled=0x{firstUnhandledCommand:x2}@0x{firstUnhandledAddress:x8} w0=0x{firstUnhandledW0:x8} w1=0x{firstUnhandledW1:x8}");
                 _traceRdpSummaryCount++;
             }
+
+            return current;
         }
 
         private uint ReadRdpCommandWord(uint address, bool xbusDmem)
@@ -999,20 +1062,193 @@ namespace Ryu64.MIPS
         {
             if (command >= 0x08 && command <= 0x0F)
             {
-                switch (command)
-                {
-                    case 0x08: return 8;
-                    case 0x09: return 12;
-                    case 0x0A: return 24;
-                    case 0x0B: return 28;
-                    case 0x0C: return 24;
-                    case 0x0D: return 28;
-                    case 0x0E: return 40;
-                    case 0x0F: return 44;
-                }
+                bool shaded = (command & 0x04) != 0;
+                bool textured = (command & 0x02) != 0;
+                bool zBuffered = (command & 0x01) != 0;
+                int words = 8;
+                if (shaded)
+                    words += 16;
+                if (textured)
+                    words += 16;
+                if (zBuffered)
+                    words += 4;
+                return words;
             }
 
             return command == 0x24 || command == 0x25 ? 4 : 2;
+        }
+
+        private void ExecuteRdpTriangle(int command, uint commandAddress, bool xbusDmem)
+        {
+            uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0)
+                return;
+
+            uint w0 = ReadRdpCommandWord(commandAddress, xbusDmem);
+            uint w1 = ReadRdpCommandWord(commandAddress + 4u, xbusDmem);
+            uint w2 = ReadRdpCommandWord(commandAddress + 8u, xbusDmem);
+            uint w3 = ReadRdpCommandWord(commandAddress + 12u, xbusDmem);
+            uint w4 = ReadRdpCommandWord(commandAddress + 16u, xbusDmem);
+            uint w5 = ReadRdpCommandWord(commandAddress + 20u, xbusDmem);
+            uint w6 = ReadRdpCommandWord(commandAddress + 24u, xbusDmem);
+            uint w7 = ReadRdpCommandWord(commandAddress + 28u, xbusDmem);
+
+            double yl = RdpTriangleYToScreen(w0 & 0x3FFFu);
+            double ym = RdpTriangleYToScreen((w1 >> 16) & 0x3FFFu);
+            double yh = RdpTriangleYToScreen(w1 & 0x3FFFu);
+            double xl = RdpTriangleXToScreen(w2);
+            double dxldy = RdpTriangleDeltaXToScreen(w3);
+            double xh = RdpTriangleXToScreen(w4);
+            double dxhdy = RdpTriangleDeltaXToScreen(w5);
+            double xm = RdpTriangleXToScreen(w6);
+            double dxmdy = RdpTriangleDeltaXToScreen(w7);
+            bool flip = (w0 & 0x00800000u) != 0;
+
+            uint rgba = SelectRdpTriangleColor(command, commandAddress, xbusDmem);
+            bool wrote = DrawRdpTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, rgba, bytesPerPixel);
+
+            if (TraceRdpCommands && _traceRdpTriangleCount < TraceRdpTriangleLimit)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64RDP] triangle cmd=0x{command:x2} ci=0x{_rdpColorImageAddress:x8} size={_rdpColorImageSize} width={_rdpColorImageWidth} " +
+                    $"yh={yh:0.##} ym={ym:0.##} yl={yl:0.##} xh={xh:0.##}/{dxhdy:0.####} xm={xm:0.##}/{dxmdy:0.####} xl={xl:0.##}/{dxldy:0.####} flip={flip} " +
+                    $"rgba=0x{rgba:x8} wrote={wrote}");
+                _traceRdpTriangleCount++;
+            }
+        }
+
+        private bool DrawRdpTriangle(
+            double xh,
+            double dxhdy,
+            double xm,
+            double dxmdy,
+            double xl,
+            double dxldy,
+            double yh,
+            double ym,
+            double yl,
+            bool flip,
+            uint rgba,
+            uint bytesPerPixel)
+        {
+            if (yl <= yh)
+                return false;
+
+            uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
+            if (maxRows == 0)
+                return false;
+
+            int firstY = Math.Max(0, (int)Math.Floor(yh));
+            int lastY = Math.Min((int)maxRows - 1, (int)Math.Ceiling(yl) - 1);
+            if (lastY < firstY)
+                return false;
+
+            bool wroteAny = false;
+            for (int y = firstY; y <= lastY; y++)
+            {
+                double sampleY = y + 0.5;
+                if (sampleY < yh || sampleY >= yl)
+                    continue;
+
+                double majorX = xh + (sampleY - yh) * dxhdy;
+                double minorX = sampleY < ym
+                    ? xm + (sampleY - yh) * dxmdy
+                    : xl + (sampleY - ym) * dxldy;
+                double left = flip ? majorX : minorX;
+                double right = flip ? minorX : majorX;
+                if (right < left)
+                {
+                    double tmp = left;
+                    left = right;
+                    right = tmp;
+                }
+
+                int firstX = Math.Max(0, (int)Math.Floor(left));
+                int lastX = Math.Min((int)_rdpColorImageWidth - 1, (int)Math.Ceiling(right) - 1);
+                if (lastX < firstX)
+                    continue;
+
+                for (int x = firstX; x <= lastX; x++)
+                {
+                    uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
+                    WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
+                    wroteAny = true;
+                }
+
+                uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
+                NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
+            }
+
+            if (wroteAny)
+                MarkRdpColorImageWritten(bytesPerPixel);
+            return wroteAny;
+        }
+
+        private uint SelectRdpTriangleColor(int command, uint commandAddress, bool xbusDmem)
+        {
+            if ((command & 0x04) != 0 && TryReadRdpShadeColor(commandAddress, xbusDmem, out uint shade))
+                return shade;
+
+            uint color = SelectRdpSolidColor();
+            if ((color & 0xFFFFFF00u) == 0 && _rdpFillColor != 0)
+                color = Rgba5551ToRgba8888((ushort)(_rdpFillColor >> 16));
+            return color;
+        }
+
+        private bool TryReadRdpShadeColor(uint commandAddress, bool xbusDmem, out uint rgba)
+        {
+            uint w8 = ReadRdpCommandWord(commandAddress + 32u, xbusDmem);
+            uint w9 = ReadRdpCommandWord(commandAddress + 36u, xbusDmem);
+            uint r = RdpShadeComponentTo8(w8 >> 16);
+            uint g = RdpShadeComponentTo8(w8);
+            uint b = RdpShadeComponentTo8(w9 >> 16);
+            uint a = RdpShadeComponentTo8(w9);
+            rgba = (r << 24) | (g << 16) | (b << 8) | (a == 0 ? 0xFFu : a);
+            return (rgba & 0xFFFFFF00u) != 0;
+        }
+
+        private static uint RdpShadeComponentTo8(uint value)
+        {
+            value &= 0xFFFFu;
+            if ((value & 0x8000u) != 0)
+                return 0;
+            if (value > 0xFFu)
+                value >>= 8;
+            return Math.Min(0xFFu, value);
+        }
+
+        private static double RdpTriangleYToScreen(uint value)
+        {
+            return SignExtend14(value) / 4.0;
+        }
+
+        private static double RdpTriangleXToScreen(uint value)
+        {
+            return SignExtend30(value) / 65536.0;
+        }
+
+        private static double RdpTriangleDeltaXToScreen(uint value)
+        {
+            return unchecked((int)value) / 65536.0;
+        }
+
+        private static int SignExtend14(uint value)
+        {
+            int signed = (int)(value & 0x3FFFu);
+            if ((signed & 0x2000) != 0)
+                signed -= 0x4000;
+            return signed;
+        }
+
+        private static int SignExtend30(uint value)
+        {
+            int signed = (int)(value & 0x3FFFFFFFu);
+            if ((signed & 0x20000000) != 0)
+                signed = unchecked((int)(signed | 0xC0000000u));
+            return signed;
         }
 
         private static uint RdpBytesPerPixel(uint rdpSize)
@@ -2563,7 +2799,7 @@ namespace Ryu64.MIPS
             bool rspStoppedOnBreak = (status & (SpStatusHalt | SpStatusBroke)) != 0;
             bool taskLocked = !rspStoppedOnBreak;
             bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
-            bool dpInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000020u) != 0;
+            bool dpInterruptPending = _dpCompletionPending;
             bool scheduleRspInterrupt = rspInterruptPending
                 || taskLocked
                 || (rspStoppedOnBreak && (status & SpStatusIntrBreak) != 0);
@@ -2573,7 +2809,7 @@ namespace Ryu64.MIPS
                 FinalizeGraphicsTask();
                 _dpInterruptDelayArmed = true;
                 _dpInterruptDelayRemaining = 4000;
-                ClearMiDpInterrupt();
+                _dpCompletionPending = true;
             }
 
             _rspTaskLocked = taskLocked;
@@ -2607,7 +2843,7 @@ namespace Ryu64.MIPS
             bool rspStoppedOnBreak = (postStatus & (SpStatusHalt | SpStatusBroke)) != 0;
             bool taskLocked = !rspStoppedOnBreak;
             bool rspInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000001u) != 0;
-            bool dpInterruptPending = (ReadBigEndianWord(MI_INTR_REG_R) & 0x00000020u) != 0;
+            bool dpInterruptPending = _dpCompletionPending;
             bool scheduleRspInterrupt = rspInterruptPending
                 || taskLocked
                 || (rspStoppedOnBreak && (postStatus & SpStatusIntrBreak) != 0);
@@ -2617,7 +2853,7 @@ namespace Ryu64.MIPS
                 FinalizeGraphicsTask();
                 _dpInterruptDelayArmed = true;
                 _dpInterruptDelayRemaining = 4000;
-                ClearMiDpInterrupt();
+                _dpCompletionPending = true;
             }
 
             _rspTaskLocked = taskLocked;
@@ -2661,6 +2897,10 @@ namespace Ryu64.MIPS
 
         private void FinalizeDpInterrupt()
         {
+            if (!_dpCompletionPending)
+                return;
+
+            _dpCompletionPending = false;
             if (TraceN64Io)
             {
                 Common.Logger.PrintWarningLine(
@@ -2679,11 +2919,12 @@ namespace Ryu64.MIPS
             if (current == 0)
                 current = start;
             TrackFramebufferInfosFromDpcBuffer(current, end);
-            ExecuteRdpDisplayList(current, end);
-            WriteBigEndianWord(DPC_CURRENT_REG_RW, end);
+            uint consumed = ExecuteRdpDisplayList(current, end);
+            WriteBigEndianWord(DPC_CURRENT_REG_RW, consumed);
 
             uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
-            status &= ~(DpcStatusCbufReady | DpcStatusStartValid | DpcStatusEndValid);
+            if (consumed >= (end & 0x00FFFFF8u))
+                status &= ~(DpcStatusCbufReady | DpcStatusStartValid | DpcStatusEndValid);
             WriteBigEndianWord(DPC_STATUS_REG_R, status);
             WriteBigEndianWord(DPC_BUFBUSY_REG_RW, 0);
             WriteBigEndianWord(DPC_PIPEBUSY_REG_RW, 0);
@@ -3619,6 +3860,9 @@ namespace Ryu64.MIPS
             uint value = ReadBigEndianWord(DPC_START_REG_RW);
             WriteBigEndianWord(DPC_START_REG_RW, value);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
+            uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
+            status |= DpcStatusStartValid | DpcStatusStartGclk | DpcStatusCbufReady;
+            WriteBigEndianWord(DPC_STATUS_REG_R, status);
 
             if (TraceN64Io)
             {
@@ -3637,9 +3881,20 @@ namespace Ryu64.MIPS
             if (current == 0)
                 current = start;
             TrackFramebufferInfosFromDpcBuffer(current, value);
-            ExecuteRdpDisplayList(current, value);
-            WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
-            SetMiDpInterrupt();
+            uint consumed = ExecuteRdpDisplayList(current, value);
+            WriteBigEndianWord(DPC_CURRENT_REG_RW, consumed);
+            uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
+            status |= DpcStatusStartGclk;
+            if (consumed >= (value & 0x00FFFFF8u))
+                status &= ~(DpcStatusStartValid | DpcStatusEndValid | DpcStatusCbufReady);
+            WriteBigEndianWord(DPC_STATUS_REG_R, status);
+            uint span = consumed > current ? consumed - current : 0u;
+            if (span != 0)
+            {
+                _dpCompletionPending = true;
+                _dpInterruptDelayArmed = true;
+                _dpInterruptDelayRemaining = Math.Max(1u, span / 8u);
+            }
 
             if (TraceN64Io)
             {
@@ -3722,7 +3977,6 @@ namespace Ryu64.MIPS
             _activeRspTask = task;
             _rspTaskLocked = false;
             _rspInterruptDelayArmed = false;
-            _dpInterruptDelayArmed = false;
 
             if (task.Type == 1)
                 SetMiDpInterrupt();
@@ -3832,7 +4086,6 @@ namespace Ryu64.MIPS
 
             _rspTaskLocked = false;
             _rspInterruptDelayArmed = false;
-            _dpInterruptDelayArmed = false;
 
             ArmSynchronousRspCompletion(ref status);
         }
@@ -4978,10 +5231,10 @@ namespace Ryu64.MIPS
                     case 0x01: // READ BUTTONS
                         if (rxLen >= 4 && rxIndex + 3 < 64)
                         {
-                            PIFRAM[rxIndex + 0] = 0x00;
-                            PIFRAM[rxIndex + 1] = 0x00;
-                            PIFRAM[rxIndex + 2] = 0x00;
-                            PIFRAM[rxIndex + 3] = 0x00;
+                            PIFRAM[rxIndex + 0] = (byte)(N64ControllerButtons >> 8);
+                            PIFRAM[rxIndex + 1] = (byte)N64ControllerButtons;
+                            PIFRAM[rxIndex + 2] = unchecked((byte)N64ControllerAnalogX);
+                            PIFRAM[rxIndex + 3] = unchecked((byte)N64ControllerAnalogY);
                         }
                         break;
                     default:
