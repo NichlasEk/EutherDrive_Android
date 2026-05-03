@@ -447,6 +447,7 @@ class Program
                 Console.WriteLine("[HEADLESS] Using Konami TMNT core");
                 var tmnt = new TmntAdapter();
                 tmnt.LoadRom(romPath);
+                var tmntInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT_HEADLESS_INPUT_SCRIPT"));
                 ReadOnlySpan<byte> fbIn = tmnt.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
                 var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
                 Console.WriteLine($"[HEADLESS] TMNT fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY})");
@@ -454,7 +455,14 @@ class Program
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
-                    tmnt.SetInputState(false, false, false, false, false, false, false, false, false, false, false, false, PadType.SixButton);
+                    var input = ResolveSnesInputForFrame(frame, tmntInputScript);
+                    tmnt.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X,
+                        input.Start,
+                        false, false, false,
+                        input.Select,
+                        PadType.SixButton);
                     tmnt.RunFrame();
                     if (frame == 0 || frame == 5 || frame == 10)
                     {
@@ -2624,6 +2632,68 @@ class Program
             bool useCps1 = string.Equals(coreOverride, "cps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
+            bool useTmnt = string.Equals(coreOverride, "tmnt", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
+
+            if (useTmnt)
+            {
+                var tmnt = new TmntAdapter();
+                tmnt.LoadRom(romPath);
+
+                int? slotOverrideTmnt = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadTmnt = TryLoadSavestatePayload(savestatePath, tmnt.RomIdentity, slotOverrideTmnt, out var tmntError);
+                if (payloadTmnt == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {tmntError}");
+                    return 1;
+                }
+
+                using (var tmntStateStream = new MemoryStream(payloadTmnt, writable: false))
+                using (var tmntStateReader = new BinaryReader(tmntStateStream))
+                    tmnt.LoadState(tmntStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (TMNT)");
+                ReadOnlySpan<byte> fbBefore = tmnt.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine($"[HEADLESS] TMNT before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) frameCounter={tmnt.FrameCounter ?? -1}");
+                Console.WriteLine($"[HEADLESS] TMNT before debug {tmnt.DebugSummary}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_tmnt_state_before.ppm"));
+
+                using var audioDump = OpenOptionalRawAudioDump(dumpDir, "headless_tmnt_audio_s16le.raw");
+                var tmntInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT_HEADLESS_INPUT_SCRIPT"));
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, tmntInputScript);
+                    tmnt.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X,
+                        input.Start,
+                        false, false, false,
+                        input.Select,
+                        PadType.SixButton);
+                    tmnt.RunFrame();
+                    ReadOnlySpan<short> audio = tmnt.GetAudioBuffer(out int sampleRate, out int channels);
+                    WriteRawAudio(audioDump, audio);
+
+                    if (frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        ReadOnlySpan<byte> fb = tmnt.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        int peak = AudioPeak(audio);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: tmnt_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) audio={sampleRate}Hz/{channels}ch peak={peak} {tmnt.DebugSummary}");
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_tmnt_state_frame{frame}.ppm"));
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = tmnt.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] TMNT final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={tmnt.FrameCounter ?? -1}");
+                Console.WriteLine($"[HEADLESS] TMNT final debug {tmnt.DebugSummary}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_tmnt_state_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
 
             if (useCps1)
             {
@@ -3918,6 +3988,52 @@ class Program
 
         error = "No valid savestate payload found.";
         return null;
+    }
+
+    private static FileStream? OpenOptionalRawAudioDump(string dumpDir, string fileName)
+    {
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_AUDIO") != "1")
+            return null;
+
+        Directory.CreateDirectory(dumpDir);
+        string path = Path.Combine(dumpDir, fileName);
+        Console.WriteLine($"[HEADLESS] Raw audio dump: {path}");
+        return File.Open(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+    }
+
+    private static void WriteRawAudio(FileStream? stream, ReadOnlySpan<short> audio)
+    {
+        if (stream == null || audio.IsEmpty)
+            return;
+
+        Span<byte> scratch = stackalloc byte[4096];
+        int offset = 0;
+        while (offset < audio.Length)
+        {
+            int samples = Math.Min(audio.Length - offset, scratch.Length / sizeof(short));
+            for (int i = 0; i < samples; i++)
+            {
+                short sample = audio[offset + i];
+                scratch[i * 2] = (byte)sample;
+                scratch[i * 2 + 1] = (byte)(sample >> 8);
+            }
+            stream.Write(scratch[..(samples * sizeof(short))]);
+            offset += samples;
+        }
+    }
+
+    private static int AudioPeak(ReadOnlySpan<short> audio)
+    {
+        int peak = 0;
+        foreach (short sample in audio)
+        {
+            int value = sample;
+            if (value < 0)
+                value = -value;
+            if (value > peak)
+                peak = value;
+        }
+        return peak;
     }
 
     private static void ConfigureConsoleLogging()

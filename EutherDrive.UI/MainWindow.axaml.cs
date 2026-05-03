@@ -969,6 +969,8 @@ public partial class MainWindow : Window
             target = s32x.GetTargetFps();
         else if (_core is Cps1DinoAdapter cps1)
             target = cps1.GetTargetFps();
+        else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
+            target = tmnt.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -3657,6 +3659,8 @@ public partial class MainWindow : Window
             psx.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is N64Adapter n64)
             n64.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
+            tmnt.SetMasterVolumePercent(_masterVolumePercent);
     }
 
     private void ApplyAudioMixToCore()
@@ -9826,7 +9830,7 @@ public partial class MainWindow : Window
                 continue;
 
             bool useSpeedLock = _speedLockEnabled;
-            if (audioStartupPriming && _audioEngine != null)
+            if (audioStartupPriming && _audioEngine != null && core is not EutherDrive.Core.Arcade.Konami.TmntAdapter)
             {
                 int buffered = _audioEngine.BufferedFrames;
                 if (buffered >= AudioTargetBufferedFrames || now >= audioStartupPrimeUntilTicks)
@@ -9887,7 +9891,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -9896,6 +9900,16 @@ public partial class MainWindow : Window
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter)
                                 {
+                                    _audioEngine.Submit(audio);
+                                }
+                                else if (core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                                {
+                                    int audioFrames = audio.Length / channels;
+                                    int highWater = Math.Min(
+                                        AudioTargetBufferedFrames + AudioEngineBatchFrames * 2,
+                                        Math.Max(AudioEngineBatchFrames, AudioEngineBufferFrames - audioFrames - AudioEngineBatchFrames));
+                                    while (_emuRunning && generation == _emuLoopGeneration && _audioEngine.BufferedFrames > highWater)
+                                        Thread.Sleep(1);
                                     _audioEngine.Submit(audio);
                                 }
                                 else
@@ -10226,7 +10240,8 @@ public partial class MainWindow : Window
             || _core is McsArcadeAdapter
             || _core is Cps1DinoAdapter
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
-            || _core is EutherDrive.Core.Arcade.System32.System32Adapter)
+            || _core is EutherDrive.Core.Arcade.System32.System32Adapter
+            || _core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
     }
@@ -10783,6 +10798,8 @@ public partial class MainWindow : Window
             return psx.GetTargetFps() * _speedScale;
         if (_core is Cps1DinoAdapter cps1)
             return cps1.GetTargetFps() * _speedScale;
+        if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
+            return tmnt.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 
