@@ -18,7 +18,9 @@ namespace EutherDrive.Core.Arcade.Konami;
 public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 {
     private const string SavestateMagic = "KONAMITMNT";
+    private const string SavestateExtendedMagic = "KONAMITMNTE";
     private const int SavestateVersion = 1;
+    private const int SavestateExtendedVersion = 2;
     private const int FrameWidth = 320;
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
@@ -165,6 +167,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         StateBinarySerializer.WriteInto(writer, _mainCpu);
         StateBinarySerializer.WriteInto(writer, _bus);
         StateBinarySerializer.WriteInto(writer, _sound);
+        writer.Write(SavestateExtendedMagic);
+        writer.Write(SavestateExtendedVersion);
+        _sound.SaveExtendedState(writer);
     }
 
     public void LoadState(BinaryReader reader)
@@ -189,9 +194,36 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         StateBinarySerializer.ReadInto(reader, _mainCpu);
         StateBinarySerializer.ReadInto(reader, _bus);
         StateBinarySerializer.ReadInto(reader, _sound);
+        _sound.RestoreRuntimeState(_loadedVariant);
         _bus.RestoreRuntimeState(_sound, _loadedVariant);
+        TryReadExtendedState(reader);
         if (_audioBuffer.Length == 0)
             _audioBuffer = new short[Math.Max(1, (int)Math.Round(OutputSampleRate / TargetFps)) * OutputChannels];
+    }
+
+    private void TryReadExtendedState(BinaryReader reader)
+    {
+        if (!reader.BaseStream.CanSeek || reader.BaseStream.Position >= reader.BaseStream.Length)
+            return;
+
+        long position = reader.BaseStream.Position;
+        try
+        {
+            string magic = reader.ReadString();
+            if (!string.Equals(magic, SavestateExtendedMagic, StringComparison.Ordinal))
+            {
+                reader.BaseStream.Position = position;
+                return;
+            }
+
+            int version = reader.ReadInt32();
+            if (version is 1 or SavestateExtendedVersion)
+                _sound.LoadExtendedState(reader, version);
+        }
+        catch (EndOfStreamException)
+        {
+            reader.BaseStream.Position = position;
+        }
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -283,7 +315,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly K052109 _k052109 = new();
         private readonly K051960 _k051960 = new();
         private readonly K053245 _k053245 = new();
-        private readonly K053260MainPorts _k053260MainPorts = new();
         private readonly Tmnt2SerialEeprom _tmnt2Eeprom = new();
         private readonly byte[] _tmnt2UnknownRam = new byte[0x80];
         private readonly ushort[] _tmnt2ProtRam = new ushort[0x10];
@@ -291,6 +322,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly byte[] _k053251PaletteIndex = new byte[5];
         [NonSerialized] private TmntSound? _sound;
         [NonSerialized] private byte[]? _tmnt2RawFrameBuffer;
+        [NonSerialized] private byte[]? _tmnt2PriorityBuffer;
 
         private ArcadeInputState _input;
         private TmntHardwareVariant _variant;
@@ -364,7 +396,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k051960.Reset();
             _k053245.Reset();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
-            _k053260MainPorts.Reset();
             _interruptLevel = 0;
             _irq5Enabled = false;
             _tmnt2InVblank = false;
@@ -679,7 +710,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + $"prot={_tmnt2ProtectionRuns}:{_lastTmnt2Protection} "
                + PaletteDebugSummary()
                + _k052109.DebugSummary()
-               + $" k053245={_k053245.DebugSummary()} k053260={_k053260MainPorts.DebugSummary} eep={_tmnt2Eeprom.DebugSummary()}";
+               + $" k053245={_k053245.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
 
         private string PaletteDebugSummary()
         {
@@ -701,6 +732,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private void RenderTmnt2(byte[] frameBuffer)
         {
             byte[] rawFrameBuffer = EnsureTmnt2RawFrameBuffer();
+            byte[] priorityBuffer = EnsureTmnt2PriorityBuffer();
             string renderMask = Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT_RENDER_MASK") ?? "all";
             bool drawLayer0 = renderMask == "all" || renderMask.Contains('0', StringComparison.Ordinal);
             bool drawLayer1 = renderMask == "all" || renderMask.Contains('1', StringComparison.Ordinal);
@@ -709,6 +741,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
             UpdateTmnt2LayerColorBases();
             FillFrame(rawFrameBuffer, _palette[(16 * _k053251PaletteIndex[0]) & 0x7ff]);
+            Array.Clear(priorityBuffer);
 
             Span<int> layer = stackalloc int[] { 0, 1, 2 };
             Span<int> priority = stackalloc int[]
@@ -718,12 +751,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 K053251Priority(3)
             };
             SortKonamiLayers3(layer, priority);
-
-            if (drawSprites)
-            {
-                _k053245.BeginRenderFrameStats();
-                _k053245.RenderPriorityBand(rawFrameBuffer, _palette, priority, 0, Tmnt2RawFrameHeight);
-            }
 
             for (int i = 0; i < 3; i++)
             {
@@ -735,11 +762,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     _ => drawLayer2
                 };
                 if (drawLayer)
-                    _k052109.RenderLayer(rawFrameBuffer, _palette, currentLayer, opaque: false, paletteMask: 0x7ff, outputHeight: Tmnt2RawFrameHeight);
-
-                if (drawSprites)
-                    _k053245.RenderPriorityBand(rawFrameBuffer, _palette, priority, i + 1, Tmnt2RawFrameHeight);
+                    _k052109.RenderLayer(rawFrameBuffer, _palette, currentLayer, opaque: false, paletteMask: 0x7ff,
+                        outputHeight: Tmnt2RawFrameHeight, priorityBuffer: priorityBuffer, priorityCode: 1 << i);
             }
+
+            if (drawSprites)
+                _k053245.RenderPriorityMasked(rawFrameBuffer, _palette, priority, priorityBuffer, Tmnt2RawFrameHeight);
 
             CopyTmnt2VisibleArea(rawFrameBuffer, frameBuffer);
         }
@@ -750,6 +778,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (_tmnt2RawFrameBuffer == null || _tmnt2RawFrameBuffer.Length != length)
                 _tmnt2RawFrameBuffer = new byte[length];
             return _tmnt2RawFrameBuffer;
+        }
+
+        private byte[] EnsureTmnt2PriorityBuffer()
+        {
+            int length = Tmnt2RawFrameHeight * FrameWidth;
+            if (_tmnt2PriorityBuffer == null || _tmnt2PriorityBuffer.Length != length)
+                _tmnt2PriorityBuffer = new byte[length];
+            return _tmnt2PriorityBuffer;
         }
 
         private static void CopyTmnt2VisibleArea(byte[] rawFrameBuffer, byte[] frameBuffer)
@@ -813,7 +849,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x5a0000 && address <= 0x5a001e)
                 return _k053245.ReadControlWordNoA1((int)((address - 0x5a0000) >> 1));
             if (address >= 0x5c0600 && address <= 0x5c0603)
-                return (ushort)(0xff00 | _k053260MainPorts.MainRead((int)((address - 0x5c0600) >> 1)));
+                return (ushort)(0xff00 | (_sound?.K053260MainRead((int)((address - 0x5c0600) >> 1)) ?? 0xff));
             if (address >= 0x600000 && address <= 0x603ffe)
             {
                 int offset = (int)((address - 0x600000) >> 1);
@@ -859,7 +895,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x5c0600 && address <= 0x5c0603)
             {
                 if ((address & 1) != 0)
-                    _k053260MainPorts.MainWrite((int)((address - 0x5c0600) >> 1), value);
+                    _sound?.K053260MainWrite((int)((address - 0x5c0600) >> 1), value);
                 return;
             }
             if (address >= 0x5c0604 && address <= 0x5c0605)
@@ -929,7 +965,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             if (address >= 0x5c0600 && address <= 0x5c0603)
             {
-                _k053260MainPorts.MainWrite((int)((address - 0x5c0600) >> 1), (byte)value);
+                _sound?.K053260MainWrite((int)((address - 0x5c0600) >> 1), (byte)value);
                 return;
             }
             if (address >= 0x5c0604 && address <= 0x5c0605)
@@ -1298,7 +1334,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private static int WrapRamOffset(int offset) => offset % 0x6000;
 
-        public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, int paletteMask, int outputHeight = FrameHeight)
+        public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, int paletteMask,
+            int outputHeight = FrameHeight, byte[]? priorityBuffer = null, int priorityCode = 0)
         {
             int attrBase = layer switch { 0 => 0x0000, 1 => 0x0800, _ => 0x1000 };
             int codeBase = layer switch { 0 => 0x2000, 1 => 0x2800, _ => 0x3000 };
@@ -1332,6 +1369,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
                     int color = (attr & 0x7f) * 16 + pen;
                     WritePixel(frameBuffer, sx, sy, palette[color & paletteMask]);
+                    if (priorityBuffer != null)
+                        priorityBuffer[sy * FrameWidth + sx] = (byte)(priorityBuffer[sy * FrameWidth + sx] | priorityCode);
                 }
             }
         }
@@ -1854,18 +1893,25 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void Render(byte[] frameBuffer, ReadOnlySpan<ushort> palette)
         {
             BeginRenderFrameStats();
-            RenderSprites(frameBuffer, palette, default, -1, FrameHeight);
+            RenderSprites(frameBuffer, palette, default, -1, FrameHeight, null);
             FinishRenderFrameStats();
         }
 
         public void RenderPriorityBand(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight = FrameHeight)
         {
-            RenderSprites(frameBuffer, palette, sortedLayerPriorities, band, outputHeight);
+            RenderSprites(frameBuffer, palette, sortedLayerPriorities, band, outputHeight, null);
             if (band == 3)
                 FinishRenderFrameStats();
         }
 
-        private void RenderSprites(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight)
+        public void RenderPriorityMasked(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, byte[] priorityBuffer, int outputHeight = FrameHeight)
+        {
+            BeginRenderFrameStats();
+            RenderSprites(frameBuffer, palette, sortedLayerPriorities, -1, outputHeight, priorityBuffer);
+            FinishRenderFrameStats();
+        }
+
+        private void RenderSprites(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight, byte[]? priorityBuffer)
         {
             Span<int> sorted = stackalloc int[SpriteCount];
             sorted.Fill(-1);
@@ -1890,6 +1936,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int rawColor = _buffer[offs + 6] & 0xff;
                 if (band >= 0 && SpritePriorityBand(rawColor, sortedLayerPriorities) != band)
                     continue;
+                int priorityMask = priorityBuffer != null ? SpritePriorityMask(rawColor, sortedLayerPriorities) : 0;
                 int color = SpriteColorBase + (rawColor & 0x1f);
                 if (!TryComputeSpriteBounds(offs, out var bounds))
                     continue;
@@ -1931,7 +1978,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         int sx = ox + ((zoomX * x + (1 << 11)) >> 12);
                         int zw = Math.Max(1, ox + ((zoomX * (x + 1) + (1 << 11)) >> 12) - sx);
                         int tile = SpriteTileCode(code, x, y, w, h, flipX, flipY, mirrorX, mirrorY, out bool tileFlipX, out bool tileFlipY);
-                        _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight);
+                        _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask);
                     }
                 }
             }
@@ -1961,6 +2008,21 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (priority <= sortedLayerPriorities[0])
                 return 1;
             return 0;
+        }
+
+        private static int SpritePriorityMask(int rawColor, ReadOnlySpan<int> sortedLayerPriorities)
+        {
+            if (sortedLayerPriorities.Length < 3)
+                return 0;
+
+            int priority = 0x20 | ((rawColor & 0x60) >> 2);
+            if (priority <= sortedLayerPriorities[2])
+                return 0;
+            if (priority <= sortedLayerPriorities[1])
+                return 0xf0;
+            if (priority <= sortedLayerPriorities[0])
+                return 0xf0 | 0xcc;
+            return 0xf0 | 0xcc | 0xaa;
         }
 
         private readonly record struct SpriteBounds(int RawY, int X, int Y, int Right, int Bottom, int Width, int Height, int ZoomX, int ZoomY);
@@ -2072,7 +2134,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return (c & 0x3f) | (code & ~0x3f);
         }
 
-        private int DrawSpriteTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int colorBase, int sx, int sy, int zw, int zh, bool flipX, bool flipY, int outputHeight)
+        private int DrawSpriteTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int colorBase, int sx, int sy, int zw, int zh,
+            bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask)
         {
             int drawn = 0;
             int baseAddress = ((code & 0x7fff) * 128) & (_rom.Length - 1);
@@ -2093,6 +2156,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int pen = DecodeSpritePixel(baseAddress, srcX, srcY);
                     if (pen == 0)
                         continue;
+                    if (priorityBuffer != null)
+                    {
+                        int priorityOffset = py * FrameWidth + px;
+                        int priority = priorityBuffer[priorityOffset] & 0x1f;
+                        if (priority == 31 || (((1 << priority) & priorityMask) != 0))
+                        {
+                            priorityBuffer[priorityOffset] = 31;
+                            continue;
+                        }
+                        priorityBuffer[priorityOffset] = 31;
+                    }
                     WritePixel(frameBuffer, px, py, palette[(colorBase * 16 + pen) & 0x7ff]);
                     drawn++;
                 }
@@ -2111,35 +2185,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                    | (((_rom[address + 1] >> bit) & 1) << 1)
                    | ((_rom[address + 0] >> bit) & 1);
         }
-    }
-
-    private sealed class K053260MainPorts
-    {
-        private readonly byte[] _portData = new byte[4];
-        private int _mainReads;
-        private int _mainWrites;
-
-        public void Reset()
-        {
-            Array.Clear(_portData);
-            _mainReads = 0;
-            _mainWrites = 0;
-        }
-
-        public byte MainRead(int offset)
-        {
-            _mainReads++;
-            return _portData[2 + (offset & 1)];
-        }
-
-        public void MainWrite(int offset, byte value)
-        {
-            _mainWrites++;
-            _portData[offset & 1] = value;
-        }
-
-        public string DebugSummary
-            => $"mr={_mainReads} mw={_mainWrites} p={_portData[0]:X2}/{_portData[1]:X2}/{_portData[2]:X2}/{_portData[3]:X2}";
     }
 
     private sealed class Tmnt2SerialEeprom
@@ -2369,18 +2414,27 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     {
         private const int AudioCpuClock = 3_579_545;
         private const int AudioCpuCyclesPerFrame = 60_480;
+        private const int Tmnt2AudioCpuClock = 8_000_000;
+        private const int Tmnt2AudioCpuCyclesPerFrame = 135_168;
+        private const float K053260RouteGain = 0.75f;
+        private static readonly int Tmnt2Z80MemoryWaitCycles =
+            ParseEnvInt("EUTHERDRIVE_TMNT2_Z80_WAIT_CYCLES", defaultValue: 1, minValue: 0, maxValue: 4);
 
         [NonSerialized] private readonly byte[] _program = new byte[0x10000];
         private readonly byte[] _ram = new byte[0x800];
         private readonly Z80 _cpu = new();
         private readonly Cps1Ym2151 _ym = new();
         private readonly K007232Pcm _pcm = new();
+        [NonSerialized] private readonly K053260Pcm _k053260 = new();
         private readonly Upd7759Adpcm _upd = new();
         [NonSerialized] private short[] _titleSample = Array.Empty<short>();
 
+        [NonSerialized] private TmntHardwareVariant _variant;
         private byte _soundLatch = 0xff;
         private byte _sres = 0xff;
         private bool _irqAsserted;
+        [NonSerialized] private bool _nmiAsserted;
+        [NonSerialized] private int _nmiBlockedCycles;
         private double _outputFrameAccumulator;
         private int _audioFrameSampleIndex;
         private short[]? _audioFrameBuffer;
@@ -2394,23 +2448,68 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private double _z80CycleAccumulator;
         private int _pendingRenderCycles;
         private int _z80CyclesThisFrame;
+        [NonSerialized] private int _tmnt2Z80WaitCycles;
+        [NonSerialized] private int _tmnt2WaitCyclesThisFrame;
         private long _soundFrameCounter;
         [NonSerialized] private TmntAudioProbe? _audioProbe;
         [NonSerialized] private TmntAudioTrace? _audioTrace;
 
         public string DebugSummary
             => $"z80pc=0x{_cpu.Pc:X4} z80stalled={_cpu.Stalled} sndLatch=0x{_soundLatch:X2} "
-               + $"sres=0x{_sres:X2} sresW={_sresWrites} ymW={_ymWrites} pcmW={_pcmWrites} {_pcm.DebugSummary} "
-               + $"{_upd.DebugSummary} irqP={_irqPulses} audPeak={_lastPeak} probe={(_audioProbe?.Enabled == true ? 1 : 0)}";
+               + $"sres=0x{_sres:X2} sresW={_sresWrites} ymW={_ymWrites} {_ym.DebugSummary} pcmW={_pcmWrites} {_pcm.DebugSummary} "
+               + $"{_upd.DebugSummary} {K053260DebugSummary} irqP={_irqPulses} z80wait={_tmnt2WaitCyclesThisFrame} "
+               + $"audPeak={_lastPeak} probe={(_audioProbe?.Enabled == true ? 1 : 0)}";
+
+        public string K053260DebugSummary => _k053260.DebugSummary;
 
         public void Load(TmntRomSet roms)
         {
+            _variant = roms.Variant;
             Array.Clear(_program);
             Array.Copy(roms.AudioCpu, _program, Math.Min(roms.AudioCpu.Length, _program.Length));
             _pcm.Load(roms.K007232);
+            _k053260.Load(roms.K053260);
             _upd.Load(roms.Upd7759);
             _titleSample = DecodeTitleSample(roms.TitleSample);
             ResetMachine();
+        }
+
+        public void RestoreRuntimeState(TmntHardwareVariant variant)
+        {
+            _variant = variant;
+            _audioFrameBuffer = null;
+            _audioFrameSampleIndex = 0;
+            if (!double.IsFinite(_z80CycleAccumulator) || Math.Abs(_z80CycleAccumulator) > CurrentAudioCpuCyclesPerFrame * 4.0)
+                _z80CycleAccumulator = 0;
+            if (!double.IsFinite(_outputFrameAccumulator) || Math.Abs(_outputFrameAccumulator) > OutputSampleRate)
+                _outputFrameAccumulator = 0;
+            if (_pendingRenderCycles < 0 || _pendingRenderCycles > CurrentAudioCpuCyclesPerFrame * 4)
+                _pendingRenderCycles = 0;
+            if (_nmiBlockedCycles < 0 || _nmiBlockedCycles > CurrentAudioCpuClock)
+                _nmiBlockedCycles = 0;
+        }
+
+        public void SaveExtendedState(BinaryWriter writer)
+        {
+            writer.Write(_variant == TmntHardwareVariant.Tmnt2);
+            writer.Write(_nmiAsserted);
+            writer.Write(_nmiBlockedCycles);
+            writer.Write(_outputFrameAccumulator);
+            writer.Write(_z80CycleAccumulator);
+            writer.Write(_pendingRenderCycles);
+            _k053260.SaveState(writer);
+        }
+
+        public void LoadExtendedState(BinaryReader reader, int version)
+        {
+            bool hasTmnt2Sound = reader.ReadBoolean();
+            _nmiAsserted = reader.ReadBoolean();
+            _nmiBlockedCycles = reader.ReadInt32();
+            _outputFrameAccumulator = reader.ReadDouble();
+            _z80CycleAccumulator = reader.ReadDouble();
+            _pendingRenderCycles = reader.ReadInt32();
+            if (hasTmnt2Sound)
+                _k053260.LoadState(reader, version);
         }
 
         public void ResetMachine()
@@ -2419,10 +2518,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _cpu.ApplyResetLine();
             _ym.Reset();
             _pcm.Reset();
+            _k053260.Reset();
             _upd.Reset();
             _soundLatch = 0xff;
             _sres = 0xff;
             _irqAsserted = false;
+            _nmiAsserted = _variant == TmntHardwareVariant.Tmnt2;
+            _nmiBlockedCycles = 0;
             _outputFrameAccumulator = 0;
             _audioFrameSampleIndex = 0;
             _audioFrameBuffer = null;
@@ -2436,6 +2538,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _z80CycleAccumulator = 0;
             _pendingRenderCycles = 0;
             _z80CyclesThisFrame = 0;
+            _tmnt2Z80WaitCycles = 0;
+            _tmnt2WaitCyclesThisFrame = 0;
             _soundFrameCounter = 0;
             _audioTrace = null;
         }
@@ -2464,6 +2568,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _audioFrameBuffer = audioBuffer;
             _audioFrameSampleIndex = 0;
             _z80CyclesThisFrame = 0;
+            _tmnt2Z80WaitCycles = 0;
+            _tmnt2WaitCyclesThisFrame = 0;
             _audioProbe ??= TmntAudioProbe.TryCreate();
             _audioProbe?.BeginFrame(audioBuffer.Length);
             _audioTrace ??= TmntAudioTrace.TryCreate(_upd);
@@ -2475,7 +2581,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (_audioFrameBuffer is null || mainCpuCycles <= 0 || mainCpuCyclesPerFrame <= 0)
                 return;
 
-            _z80CycleAccumulator += mainCpuCycles * (AudioCpuCyclesPerFrame / (double)mainCpuCyclesPerFrame);
+            _z80CycleAccumulator += mainCpuCycles * (CurrentAudioCpuCyclesPerFrame / (double)mainCpuCyclesPerFrame);
             RunAudioCpuCredit();
         }
 
@@ -2501,7 +2607,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void RunFrame(short[] audioBuffer)
         {
             BeginFrame(audioBuffer);
-            RunAudioCpuCycles(AudioCpuCyclesPerFrame);
+            RunAudioCpuCycles(CurrentAudioCpuCyclesPerFrame);
             EndFrame();
         }
 
@@ -2524,16 +2630,28 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 RenderElapsedAudioCycles(_pendingRenderCycles);
                 _pendingRenderCycles = 0;
 
+                _tmnt2Z80WaitCycles = 0;
                 uint elapsed = _cpu.ExecuteInstruction(this);
+                if (_variant == TmntHardwareVariant.Tmnt2 && _tmnt2Z80WaitCycles > 0)
+                {
+                    elapsed += (uint)_tmnt2Z80WaitCycles;
+                    _tmnt2WaitCyclesThisFrame += _tmnt2Z80WaitCycles;
+                }
                 _z80CycleAccumulator -= elapsed;
                 _z80CyclesThisFrame += (int)elapsed;
-                _ym.AdvanceTimersByCpuCycles((int)elapsed, AudioCpuClock);
+                int audioClock = CurrentAudioCpuClock;
+                _ym.AdvanceTimersByCpuCycles((int)elapsed, audioClock);
+                if (_variant == TmntHardwareVariant.Tmnt2)
+                    _k053260.AdvanceControlCycles((int)elapsed, audioClock, OnK053260Sh1);
                 _pendingRenderCycles += (int)elapsed;
+                if (_nmiBlockedCycles > 0)
+                    _nmiBlockedCycles = Math.Max(0, _nmiBlockedCycles - (int)elapsed);
 
                 if (_cpu.LastInterruptAccepted)
                 {
-                    TraceAudioState("z80-int-ack vector=0xFF");
-                    _irqAsserted = false;
+                    TraceAudioState($"z80-int-ack vector=0xFF nmi={(_nmiAsserted ? 1 : 0)}");
+                    if (_irqAsserted && !_nmiAsserted)
+                        _irqAsserted = false;
                 }
             }
         }
@@ -2543,7 +2661,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (_audioFrameBuffer is not { } audioBuffer || elapsedCycles <= 0)
                 return;
 
-            double outputFramesPerZ80Cycle = OutputSampleRate / (double)AudioCpuClock;
+            double outputFramesPerZ80Cycle = OutputSampleRate / (double)CurrentAudioCpuClock;
             _outputFrameAccumulator += elapsedCycles * outputFramesPerZ80Cycle;
             int framesToRender = (int)_outputFrameAccumulator;
             if (framesToRender <= 0)
@@ -2557,6 +2675,28 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void RenderAudioRange(short[] audioBuffer, int startFrame, int targetFrame)
         {
+            if (_variant == TmntHardwareVariant.Tmnt2)
+            {
+                if (_audioProbe?.Enabled == true)
+                {
+                    short[] ym = _audioProbe.Ym;
+                    short[] k053260 = _audioProbe.K053260;
+                    int ymIndex = _audioFrameSampleIndex;
+                    _ym.RenderStereo(ym, ref ymIndex, targetFrame, gain: Ym2151RouteGain, outputSampleRate: OutputSampleRate, routeToMono: false);
+                    _audioFrameSampleIndex = ymIndex;
+                    _k053260.RenderStereo(k053260, startFrame, targetFrame, gain: K053260RouteGain, outputSampleRate: OutputSampleRate);
+                    MixStems(audioBuffer, startFrame, targetFrame, ym, k053260);
+                }
+                else
+                {
+                    int ymIndex = _audioFrameSampleIndex;
+                    _ym.RenderStereo(audioBuffer, ref ymIndex, targetFrame, gain: Ym2151RouteGain, outputSampleRate: OutputSampleRate, routeToMono: false);
+                    _audioFrameSampleIndex = ymIndex;
+                    _k053260.RenderStereo(audioBuffer, startFrame, targetFrame, gain: K053260RouteGain, outputSampleRate: OutputSampleRate);
+                }
+                return;
+            }
+
             if (_audioProbe?.Enabled == true)
             {
                 short[] ym = _audioProbe.Ym;
@@ -2579,10 +2719,25 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             RenderTitleSample(audioBuffer, startFrame, targetFrame, gain: TitleSampleRouteGain, outputSampleRate: OutputSampleRate);
         }
 
-        public byte ReadOpcode(ushort address) => ReadMemory(address);
+        public byte ReadOpcode(ushort address)
+        {
+            if (_variant == TmntHardwareVariant.Tmnt2)
+            {
+                AddTmnt2Z80Wait(address);
+                if (address < 0xf000)
+                    return _program[address];
+                if (address is >= 0xf000 and <= 0xf7ff)
+                    return _ram[address - 0xf000];
+            }
+
+            return ReadMemory(address);
+        }
 
         public byte ReadMemory(ushort address)
         {
+            if (_variant == TmntHardwareVariant.Tmnt2)
+                return ReadMemoryTmnt2(address);
+
             if (address < 0x8000)
                 return _program[address];
             if (address is >= 0x8000 and <= 0x87ff)
@@ -2620,6 +2775,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void WriteMemory(ushort address, byte value)
         {
+            if (_variant == TmntHardwareVariant.Tmnt2)
+            {
+                WriteMemoryTmnt2(address, value);
+                return;
+            }
+
             if (address is >= 0x8000 and <= 0x87ff)
             {
                 _ram[address - 0x8000] = value;
@@ -2678,11 +2839,85 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public byte ReadIo(ushort address) => 0xff;
         public void WriteIo(ushort address, byte value) { }
-        public InterruptLine Nmi() => InterruptLine.High;
+        public InterruptLine Nmi() => _nmiAsserted ? InterruptLine.Low : InterruptLine.High;
         public InterruptLine Int() => _irqAsserted ? InterruptLine.Low : InterruptLine.High;
         public byte InterruptVector() => 0xff;
         public bool BusReq() => false;
         public bool Reset() => false;
+
+        public byte K053260MainRead(int offset) => _k053260.MainRead(offset);
+
+        public void K053260MainWrite(int offset, byte value) => _k053260.MainWrite(offset, value);
+
+        private int CurrentAudioCpuClock => _variant == TmntHardwareVariant.Tmnt2 ? Tmnt2AudioCpuClock : AudioCpuClock;
+
+        private int CurrentAudioCpuCyclesPerFrame => _variant == TmntHardwareVariant.Tmnt2 ? Tmnt2AudioCpuCyclesPerFrame : AudioCpuCyclesPerFrame;
+
+        private byte ReadMemoryTmnt2(ushort address)
+        {
+            if (address < 0xf000)
+            {
+                AddTmnt2Z80Wait(address);
+                return _program[address];
+            }
+            if (address is >= 0xf000 and <= 0xf7ff)
+            {
+                AddTmnt2Z80Wait(address);
+                return _ram[address - 0xf000];
+            }
+            if (address is >= 0xf800 and <= 0xf801)
+                return _ym.ReadStatus();
+            if (address is >= 0xfa00 and <= 0xfa2f)
+                return _k053260.Read(address - 0xfa00);
+            return 0xff;
+        }
+
+        private void WriteMemoryTmnt2(ushort address, byte value)
+        {
+            if (address is >= 0xf000 and <= 0xf7ff)
+            {
+                AddTmnt2Z80Wait(address);
+                _ram[address - 0xf000] = value;
+                return;
+            }
+            if (address is >= 0xf800 and <= 0xf801)
+            {
+                _ym.Write(address - 0xf800, value);
+                _ymWrites++;
+                return;
+            }
+            if (address is >= 0xfa00 and <= 0xfa2f)
+            {
+                _k053260.Write(address - 0xfa00, value);
+                _pcmWrites++;
+                return;
+            }
+            if (address == 0xfc00)
+            {
+                _nmiAsserted = false;
+                _nmiBlockedCycles = 4;
+            }
+        }
+
+        private void OnK053260Sh1(bool asserted)
+        {
+            if (asserted && _nmiBlockedCycles == 0)
+                _nmiAsserted = true;
+        }
+
+        private void AddTmnt2Z80Wait(ushort address)
+        {
+            if (Tmnt2Z80MemoryWaitCycles != 0 && address < 0xf800)
+                _tmnt2Z80WaitCycles += Tmnt2Z80MemoryWaitCycles;
+        }
+
+        private static int ParseEnvInt(string name, int defaultValue, int minValue, int maxValue)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            if (!int.TryParse(value, out int parsed))
+                return defaultValue;
+            return Math.Clamp(parsed, minValue, maxValue);
+        }
 
         private void TraceAudioEvent(string message)
         {
@@ -2713,6 +2948,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 destination[i] = Mix(Mix(Mix(ym[i], pcm[i]), upd[i]), title[i]);
         }
 
+        private static void MixStems(
+            short[] destination,
+            int startFrame,
+            int targetFrame,
+            short[] ym,
+            short[] k053260)
+        {
+            int start = Math.Clamp(startFrame * 2, 0, destination.Length);
+            int end = Math.Clamp(targetFrame * 2, start, destination.Length);
+            for (int i = start; i < end; i++)
+                destination[i] = Mix(ym[i], k053260[i]);
+        }
+
         private sealed class TmntAudioProbe
         {
             private readonly string _directory;
@@ -2720,6 +2968,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             private FileStream? _mixStream;
             private FileStream? _ymStream;
             private FileStream? _pcmStream;
+            private FileStream? _k053260Stream;
             private FileStream? _updStream;
             private FileStream? _titleStream;
 
@@ -2731,6 +2980,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             public bool Enabled => true;
             public short[] Ym { get; private set; } = Array.Empty<short>();
             public short[] K007232 { get; private set; } = Array.Empty<short>();
+            public short[] K053260 { get; private set; } = Array.Empty<short>();
             public short[] Upd7759 { get; private set; } = Array.Empty<short>();
             public short[] Title { get; private set; } = Array.Empty<short>();
 
@@ -2753,6 +3003,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 EnsureBuffers(samples);
                 Array.Clear(Ym);
                 Array.Clear(K007232);
+                Array.Clear(K053260);
                 Array.Clear(Upd7759);
                 Array.Clear(Title);
                 EnsureStreams();
@@ -2770,10 +3021,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 WriteRaw(_mixStream, mix);
                 WriteRaw(_ymStream, Ym);
                 WriteRaw(_pcmStream, K007232);
+                WriteRaw(_k053260Stream, K053260);
                 WriteRaw(_updStream, Upd7759);
                 WriteRaw(_titleStream, Title);
                 _events?.WriteLine(
-                    $"frame={frame} end z80cyc={z80Cycles} mixPeak={peak} ymPeak={Peak(Ym)} k007Peak={Peak(K007232)} updPeak={Peak(Upd7759)} titlePeak={Peak(Title)}");
+                    $"frame={frame} end z80cyc={z80Cycles} mixPeak={peak} ymPeak={Peak(Ym)} k007Peak={Peak(K007232)} k053260Peak={Peak(K053260)} updPeak={Peak(Upd7759)} titlePeak={Peak(Title)}");
                 _events?.Flush();
             }
 
@@ -2784,6 +3036,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
                 Ym = new short[samples];
                 K007232 = new short[samples];
+                K053260 = new short[samples];
                 Upd7759 = new short[samples];
                 Title = new short[samples];
             }
@@ -2798,6 +3051,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _mixStream ??= OpenRaw("mix_s16le.raw");
                 _ymStream ??= OpenRaw("ym2151_s16le.raw");
                 _pcmStream ??= OpenRaw("k007232_s16le.raw");
+                _k053260Stream ??= OpenRaw("k053260_s16le.raw");
                 _updStream ??= OpenRaw("upd7759_s16le.raw");
                 _titleStream ??= OpenRaw("title_s16le.raw");
             }
@@ -2938,6 +3192,540 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     }
 
     // Minimal K007232 PCM translation from MAME's BSD-3-Clause k007232 device.
+    // BSD-3-Clause semantic port of MAME's k053260_device for TMNT2 / Sunset Riders hardware.
+    private sealed class K053260Pcm
+    {
+        private const int ChipClock = 3_579_545;
+        private const int ClocksPerSample = 64;
+        private const int SourceSampleRate = ChipClock / ClocksPerSample;
+        private const double DcBlockerR = 0.995;
+        private static readonly bool EnableDcBlocker =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT2_K053260_DC_BLOCK") == "1";
+        private static readonly bool SignedPcm =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT2_K053260_SIGNED_PCM") != "0";
+        private static readonly sbyte[] KadpcmDeltaTable =
+            { 0, 1, 2, 4, 8, 16, 32, 64, -128, -64, -32, -16, -8, -4, -2, -1 };
+
+        private static readonly int[,] PanMul =
+        {
+            {     0,     0 },
+            { 65536,     0 },
+            { 59870, 26656 },
+            { 53684, 37950 },
+            { 46341, 46341 },
+            { 37950, 53684 },
+            { 26656, 59870 },
+            {     0, 65536 },
+        };
+
+        [NonSerialized] private byte[] _rom = Array.Empty<byte>();
+        private readonly byte[] _portData = new byte[4];
+        private readonly Voice[] _voices;
+        private byte _keyOn;
+        private byte _mode;
+        private int _timerState;
+        private double _controlCycleAccumulator;
+        private double _sourcePhase;
+        private int _lastLeft;
+        private int _lastRight;
+        private int _nextLeft;
+        private int _nextRight;
+        private double _dcLeftX;
+        private double _dcLeftY;
+        private double _dcRightX;
+        private double _dcRightY;
+        private bool _primed;
+        private int _mainReads;
+        private int _mainWrites;
+        private int _subReads;
+        private int _subWrites;
+        private int _keyOns;
+        private int _lastPeak;
+
+        public K053260Pcm()
+        {
+            _voices = new[] { new Voice(this), new Voice(this), new Voice(this), new Voice(this) };
+        }
+
+        public string DebugSummary
+            => $"mr={_mainReads} mw={_mainWrites} sr={_subReads} sw={_subWrites} mode=0x{_mode:X2} key=0x{_keyOn:X2} pcm={(SignedPcm ? "s8" : "u8")} dc={(EnableDcBlocker ? 1 : 0)} "
+               + $"play={(_voices[0].Playing ? 1 : 0)}{(_voices[1].Playing ? 1 : 0)}{(_voices[2].Playing ? 1 : 0)}{(_voices[3].Playing ? 1 : 0)} "
+               + $"ko={_keyOns} pk={_lastPeak} p={_portData[0]:X2}/{_portData[1]:X2}/{_portData[2]:X2}/{_portData[3]:X2} "
+               + $"v0={_voices[0].DebugSummary} v1={_voices[1].DebugSummary} v2={_voices[2].DebugSummary} v3={_voices[3].DebugSummary}";
+
+        public void Load(byte[] rom)
+        {
+            _rom = rom;
+            Reset();
+        }
+
+        public void Reset()
+        {
+            Array.Clear(_portData);
+            foreach (Voice voice in _voices)
+                voice.Reset();
+            _keyOn = 0;
+            _mode = 0;
+            _timerState = 0;
+            _controlCycleAccumulator = 0;
+            _sourcePhase = 0;
+            _lastLeft = _lastRight = _nextLeft = _nextRight = 0;
+            _dcLeftX = _dcLeftY = _dcRightX = _dcRightY = 0;
+            _primed = false;
+            _mainReads = _mainWrites = _subReads = _subWrites = _keyOns = _lastPeak = 0;
+        }
+
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(_portData);
+            writer.Write(_keyOn);
+            writer.Write(_mode);
+            writer.Write(_timerState);
+            writer.Write(_controlCycleAccumulator);
+            writer.Write(_sourcePhase);
+            writer.Write(_lastLeft);
+            writer.Write(_lastRight);
+            writer.Write(_nextLeft);
+            writer.Write(_nextRight);
+            writer.Write(_dcLeftX);
+            writer.Write(_dcLeftY);
+            writer.Write(_dcRightX);
+            writer.Write(_dcRightY);
+            writer.Write(_primed);
+            writer.Write(_mainReads);
+            writer.Write(_mainWrites);
+            writer.Write(_subReads);
+            writer.Write(_subWrites);
+            writer.Write(_keyOns);
+            writer.Write(_lastPeak);
+            for (int i = 0; i < _voices.Length; i++)
+                _voices[i].SaveState(writer);
+        }
+
+        public void LoadState(BinaryReader reader, int version)
+        {
+            byte[] portData = reader.ReadBytes(_portData.Length);
+            if (portData.Length == _portData.Length)
+                Buffer.BlockCopy(portData, 0, _portData, 0, _portData.Length);
+            _keyOn = reader.ReadByte();
+            _mode = reader.ReadByte();
+            _timerState = reader.ReadInt32();
+            _controlCycleAccumulator = reader.ReadDouble();
+            _sourcePhase = reader.ReadDouble();
+            _lastLeft = reader.ReadInt32();
+            _lastRight = reader.ReadInt32();
+            _nextLeft = reader.ReadInt32();
+            _nextRight = reader.ReadInt32();
+            if (version >= 2)
+            {
+                _dcLeftX = reader.ReadDouble();
+                _dcLeftY = reader.ReadDouble();
+                _dcRightX = reader.ReadDouble();
+                _dcRightY = reader.ReadDouble();
+            }
+            else
+            {
+                _dcLeftX = _dcLeftY = _dcRightX = _dcRightY = 0;
+            }
+            _primed = reader.ReadBoolean();
+            _mainReads = reader.ReadInt32();
+            _mainWrites = reader.ReadInt32();
+            _subReads = reader.ReadInt32();
+            _subWrites = reader.ReadInt32();
+            _keyOns = reader.ReadInt32();
+            _lastPeak = reader.ReadInt32();
+            for (int i = 0; i < _voices.Length; i++)
+                _voices[i].LoadState(reader);
+        }
+
+        public byte MainRead(int offset)
+        {
+            _mainReads++;
+            return _portData[2 + (offset & 1)];
+        }
+
+        public void MainWrite(int offset, byte data)
+        {
+            _mainWrites++;
+            _portData[offset & 1] = data;
+        }
+
+        public byte Read(int offset)
+        {
+            offset &= 0x3f;
+            _subReads++;
+            return offset switch
+            {
+                0x00 or 0x01 => _portData[offset],
+                0x29 => VoiceStatus(),
+                0x2e => (_mode & 1) != 0 ? _voices[0].ReadRom(sideEffects: true) : (byte)0,
+                _ => 0
+            };
+        }
+
+        public void Write(int offset, byte data)
+        {
+            offset &= 0x3f;
+            _subWrites++;
+
+            if (offset is >= 0x08 and <= 0x27)
+            {
+                _voices[(offset - 8) / 8].SetRegister(offset, data);
+                return;
+            }
+
+            switch (offset)
+            {
+                case 0x02:
+                case 0x03:
+                    _portData[offset] = data;
+                    break;
+
+                case 0x28:
+                {
+                    byte rising = (byte)(data & ~_keyOn);
+                    for (int i = 0; i < 4; i++)
+                    {
+                        _voices[i].Reverse = (data & (1 << (i + 4))) != 0;
+                        if ((rising & (1 << i)) != 0)
+                        {
+                            _voices[i].KeyOn();
+                            _keyOns++;
+                        }
+                        else if ((data & (1 << i)) == 0)
+                        {
+                            _voices[i].KeyOff();
+                        }
+                    }
+                    _keyOn = data;
+                    _primed = false;
+                    break;
+                }
+
+                case 0x2a:
+                    for (int i = 0; i < 4; i++)
+                    {
+                        _voices[i].Loop = (data & (1 << i)) != 0;
+                        _voices[i].Kadpcm = (data & (1 << (i + 4))) != 0;
+                    }
+                    break;
+
+                case 0x2c:
+                    _voices[0].SetPan(data);
+                    _voices[1].SetPan(data >> 3);
+                    break;
+
+                case 0x2d:
+                    _voices[2].SetPan(data);
+                    _voices[3].SetPan(data >> 3);
+                    break;
+
+                case 0x2f:
+                    _mode = data;
+                    break;
+            }
+        }
+
+        public void AdvanceControlCycles(int audioCpuCycles, int audioCpuClock, Action<bool> sh1Callback)
+        {
+            if (audioCpuCycles <= 0 || audioCpuClock <= 0)
+                return;
+
+            _controlCycleAccumulator += audioCpuCycles * (ChipClock / (double)audioCpuClock);
+            while (_controlCycleAccumulator >= 16.0)
+            {
+                switch (_timerState)
+                {
+                    case 0:
+                        sh1Callback(true);
+                        break;
+                    case 1:
+                        sh1Callback(false);
+                        break;
+                }
+                _timerState = (_timerState + 1) & 3;
+                _controlCycleAccumulator -= 16.0;
+            }
+        }
+
+        public void RenderStereo(short[] destination, int startFrame, int targetFrame, float gain, int outputSampleRate)
+        {
+            if (_rom.Length == 0 || destination.Length == 0)
+                return;
+
+            int maxFrames = destination.Length / 2;
+            startFrame = Math.Clamp(startFrame, 0, maxFrames);
+            targetFrame = Math.Clamp(targetFrame, startFrame, maxFrames);
+            if (targetFrame <= startFrame)
+                return;
+
+            EnsurePrimed();
+            double step = SourceSampleRate / (double)outputSampleRate;
+            int peak = 0;
+            for (int frame = startFrame; frame < targetFrame; frame++)
+            {
+                double left = _lastLeft + ((_nextLeft - _lastLeft) * _sourcePhase);
+                double right = _lastRight + ((_nextRight - _lastRight) * _sourcePhase);
+                if (EnableDcBlocker)
+                {
+                    left = ApplyDcBlock(left, ref _dcLeftX, ref _dcLeftY);
+                    right = ApplyDcBlock(right, ref _dcRightX, ref _dcRightY);
+                }
+                int mixLeft = (int)Math.Round(left * gain);
+                int mixRight = (int)Math.Round(right * gain);
+                int offset = frame * 2;
+                destination[offset] = Mix(destination[offset], mixLeft);
+                destination[offset + 1] = Mix(destination[offset + 1], mixRight);
+                peak = Math.Max(peak, Math.Max(Math.Abs(mixLeft), Math.Abs(mixRight)));
+
+                _sourcePhase += step;
+                while (_sourcePhase >= 1.0)
+                {
+                    _lastLeft = _nextLeft;
+                    _lastRight = _nextRight;
+                    GenerateSourceFrame(out _nextLeft, out _nextRight);
+                    _sourcePhase -= 1.0;
+                }
+            }
+            _lastPeak = peak;
+        }
+
+        private void EnsurePrimed()
+        {
+            if (_primed)
+                return;
+
+            GenerateSourceFrame(out _lastLeft, out _lastRight);
+            GenerateSourceFrame(out _nextLeft, out _nextRight);
+            _sourcePhase = 0;
+            _primed = true;
+        }
+
+        private void GenerateSourceFrame(out int left, out int right)
+        {
+            left = 0;
+            right = 0;
+            if ((_mode & 0x02) == 0)
+                return;
+
+            Span<int> outputs = stackalloc int[2];
+            for (int i = 0; i < _voices.Length; i++)
+            {
+                if (_voices[i].Playing)
+                    _voices[i].Play(outputs);
+            }
+            left = Math.Clamp(outputs[0], short.MinValue, short.MaxValue);
+            right = Math.Clamp(outputs[1], short.MinValue, short.MaxValue);
+        }
+
+        private byte VoiceStatus()
+        {
+            int status = 0;
+            for (int i = 0; i < _voices.Length; i++)
+                if (_voices[i].Playing)
+                    status |= 1 << i;
+            return (byte)status;
+        }
+
+        private byte ReadRom(int address)
+        {
+            if (_rom.Length == 0)
+                return 0;
+            return _rom[address & (_rom.Length - 1)];
+        }
+
+        private static short Mix(short current, int sample)
+            => (short)Math.Clamp(current + sample, short.MinValue, short.MaxValue);
+
+        private static double ApplyDcBlock(double input, ref double lastInput, ref double lastOutput)
+        {
+            double output = input - lastInput + DcBlockerR * lastOutput;
+            lastInput = input;
+            lastOutput = output;
+            return output;
+        }
+
+        private sealed class Voice
+        {
+            private readonly K053260Pcm _device;
+            private int _position;
+            private readonly int[] _panVolume = new int[2];
+            private int _counter;
+            private int _output;
+            private int _start;
+            private int _length;
+            private int _pitch;
+            private int _volume;
+            private int _pan;
+
+            public Voice(K053260Pcm device) => _device = device;
+
+            public bool Playing { get; private set; }
+            public bool Loop { get; set; }
+            public bool Kadpcm { get; set; }
+            public bool Reverse { get; set; }
+            public string DebugSummary
+                => $"{(Playing ? 1 : 0)}:{_start:X5}+{_length:X4}:p{_pitch:X3}:v{_volume:X2}:pan{_pan}:pos{_position:X5}:out{_output}:c{_counter:X3}:"
+                   + $"{(Loop ? "L" : "-")}{(Kadpcm ? "A" : "P")}{(Reverse ? "R" : "-")}";
+
+            public void Reset()
+            {
+                _position = 0;
+                _counter = 0;
+                _output = 0;
+                Playing = false;
+                _start = 0;
+                _length = 0;
+                _pitch = 0;
+                _volume = 0;
+                _pan = 0;
+                Loop = false;
+                Kadpcm = false;
+                Reverse = false;
+                UpdatePanVolume();
+            }
+
+            public void SetRegister(int offset, byte data)
+            {
+                switch (offset & 7)
+                {
+                    case 0:
+                        _pitch = (_pitch & 0x0f00) | data;
+                        break;
+                    case 1:
+                        _pitch = (_pitch & 0x00ff) | ((data << 8) & 0x0f00);
+                        break;
+                    case 2:
+                        _length = (_length & 0xff00) | data;
+                        break;
+                    case 3:
+                        _length = (_length & 0x00ff) | (data << 8);
+                        break;
+                    case 4:
+                        _start = (_start & 0x1fff00) | data;
+                        break;
+                    case 5:
+                        _start = (_start & 0x1f00ff) | (data << 8);
+                        break;
+                    case 6:
+                        _start = (_start & 0x00ffff) | ((data << 16) & 0x1f0000);
+                        break;
+                    case 7:
+                        _volume = data & 0x7f;
+                        UpdatePanVolume();
+                        break;
+                }
+            }
+
+            public void SetPan(int data)
+            {
+                _pan = data & 7;
+                UpdatePanVolume();
+            }
+
+            public void KeyOn()
+            {
+                _position = Kadpcm ? 1 : 0;
+                _counter = 0x1000 - ClocksPerSample;
+                _output = 0;
+                Playing = true;
+            }
+
+            public void KeyOff()
+            {
+                _position = 0;
+                _output = 0;
+                Playing = false;
+            }
+
+            public void Play(Span<int> outputs)
+            {
+                _counter += ClocksPerSample;
+                while (_counter >= 0x1000)
+                {
+                    _counter = _counter - 0x1000 + _pitch;
+                    int bytePos = ++_position >> (Kadpcm ? 1 : 0);
+                    if (bytePos > _length)
+                    {
+                        if (Loop)
+                        {
+                            _position = 0;
+                            _output = 0;
+                            bytePos = 0;
+                        }
+                        else
+                        {
+                            Playing = false;
+                            return;
+                        }
+                    }
+
+                    byte romData = _device.ReadRom(_start + (Reverse ? -bytePos : bytePos));
+                    if (Kadpcm)
+                    {
+                        if ((_position & 1) != 0)
+                            romData >>= 4;
+                        _output += KadpcmDeltaTable[romData & 0x0f];
+                    }
+                    else
+                    {
+                        _output = SignedPcm ? unchecked((sbyte)romData) : romData;
+                    }
+                }
+
+                outputs[0] += (_output * _panVolume[0]) >> 15;
+                outputs[1] += (_output * _panVolume[1]) >> 15;
+            }
+
+            public byte ReadRom(bool sideEffects)
+            {
+                byte value = _device.ReadRom(_start + _position);
+                if (sideEffects)
+                    _position = (_position + 1) & 0xffff;
+                return value;
+            }
+
+            private void UpdatePanVolume()
+            {
+                _panVolume[0] = _volume * PanMul[_pan, 0];
+                _panVolume[1] = _volume * PanMul[_pan, 1];
+            }
+
+            public void SaveState(BinaryWriter writer)
+            {
+                writer.Write(_position);
+                writer.Write(_counter);
+                writer.Write(_output);
+                writer.Write(_start);
+                writer.Write(_length);
+                writer.Write(_pitch);
+                writer.Write(_volume);
+                writer.Write(_pan);
+                writer.Write(Playing);
+                writer.Write(Loop);
+                writer.Write(Kadpcm);
+                writer.Write(Reverse);
+            }
+
+            public void LoadState(BinaryReader reader)
+            {
+                _position = reader.ReadInt32();
+                _counter = reader.ReadInt32();
+                _output = reader.ReadInt32();
+                _start = reader.ReadInt32();
+                _length = reader.ReadInt32();
+                _pitch = reader.ReadInt32();
+                _volume = reader.ReadInt32();
+                _pan = reader.ReadInt32();
+                Playing = reader.ReadBoolean();
+                Loop = reader.ReadBoolean();
+                Kadpcm = reader.ReadBoolean();
+                Reverse = reader.ReadBoolean();
+                UpdatePanVolume();
+            }
+        }
+    }
+
     private sealed class K007232Pcm
     {
         private const int ChipClock = 3_579_545;
