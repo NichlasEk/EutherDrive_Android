@@ -1822,7 +1822,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 ? $" f=[{_buffer[first]:X4},{_buffer[first + 1]:X4},{_buffer[first + 2]:X4},{_buffer[first + 3]:X4},{_buffer[first + 4]:X4},{_buffer[first + 5]:X4},{_buffer[first + 6]:X4}]"
                 : " f=none";
             string calc = DebugFirstSortedSprite();
-
             return $"romR={_controlRomReads} last=0x{_lastControlRomAddress:X6} bank={_romBank} "
                    + $"regs={_regs[0]:X2}/{_regs[1]:X2}/{_regs[2]:X2}/{_regs[3]:X2}/{_regs[5]:X2}/{_regs[8]:X2}/{_regs[9]:X2}/{_regs[11]:X2} "
                    + $"act={active} vis={_lastVisibleCandidates} pix={_lastDrawnPixels} bb={_lastMinX},{_lastMinY}-{_lastMaxX},{_lastMaxY}{firstSprite} {calc}";
@@ -1951,6 +1950,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 bool flipY = (_buffer[offs] & 0x2000) != 0;
                 bool mirrorX = (_buffer[offs + 6] & 0x0100) != 0;
                 bool mirrorY = (_buffer[offs + 6] & 0x0200) != 0;
+                bool shadow = (_buffer[offs + 6] & 0x0080) != 0;
                 if (mirrorX)
                     flipX = false;
                 if ((_regs[5] & 0x01) != 0 && !mirrorX) flipX = !flipX;
@@ -1978,7 +1978,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         int sx = ox + ((zoomX * x + (1 << 11)) >> 12);
                         int zw = Math.Max(1, ox + ((zoomX * (x + 1) + (1 << 11)) >> 12) - sx);
                         int tile = SpriteTileCode(code, x, y, w, h, flipX, flipY, mirrorX, mirrorY, out bool tileFlipX, out bool tileFlipY);
-                        _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask);
+                        _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask, shadow);
                     }
                 }
             }
@@ -2063,7 +2063,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             ox -= (zoomX * w) >> 13;
             oy -= (zoomY * h) >> 13;
             // TMNT2's protection output lands in the adjacent K053245 Y phase for gameplay sprites.
-            if (rawY is >= 0x0100 and < 0x0200 && oy >= FrameHeight)
+            if (rawY is >= 0x0100 and < 0x0200 && oy >= Tmnt2RawFrameHeight)
                 oy -= 128;
             if (Tmnt2CoordinateMode && rawY is >= 0x0100 and < 0x0200 && oy < -128)
                 oy += 384;
@@ -2135,7 +2135,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private int DrawSpriteTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int colorBase, int sx, int sy, int zw, int zh,
-            bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask)
+            bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask, bool shadow)
         {
             int drawn = 0;
             int baseAddress = ((code & 0x7fff) * 128) & (_rom.Length - 1);
@@ -2167,11 +2167,25 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         }
                         priorityBuffer[priorityOffset] = 31;
                     }
+                    if (shadow && pen == 0x0f)
+                    {
+                        ApplyShadow(frameBuffer, px, py);
+                        drawn++;
+                        continue;
+                    }
                     WritePixel(frameBuffer, px, py, palette[(colorBase * 16 + pen) & 0x7ff]);
                     drawn++;
                 }
             }
             return drawn;
+        }
+
+        private static void ApplyShadow(byte[] frameBuffer, int x, int y)
+        {
+            int offset = y * FrameStride + x * 3;
+            frameBuffer[offset] = (byte)(frameBuffer[offset] * 5 / 8);
+            frameBuffer[offset + 1] = (byte)(frameBuffer[offset + 1] * 5 / 8);
+            frameBuffer[offset + 2] = (byte)(frameBuffer[offset + 2] * 5 / 8);
         }
 
         private int DecodeSpritePixel(int baseAddress, int x, int y)
