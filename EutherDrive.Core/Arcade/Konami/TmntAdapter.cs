@@ -73,7 +73,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "tmnt" or "tmntu" or "tmntj" or "tmhta" or "tmnt2p" or "tmht2p" or "tmnt2";
+        return name is "tmnt" or "tmntu" or "tmntj" or "tmhta" or "tmnt2p" or "tmht2p" or "tmnt2" or "ssriders";
     }
 
     public void LoadRom(string path)
@@ -301,7 +301,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     private enum TmntHardwareVariant
     {
         Tmnt,
-        Tmnt2
+        Tmnt2,
+        Ssriders
     }
 
     private sealed class TmntBus : EutherDrive.Core.Cpu.M68000Emu.IBusInterface, EutherDrive.Core.Cpu.M68000Emu.IOpcodeBusInterface
@@ -348,7 +349,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private int _tmnt2ProtectionRuns;
         [NonSerialized] private string _lastTmnt2Protection = "";
 
-        private int ProgramRomLength => _variant == TmntHardwareVariant.Tmnt2 ? _program.Length : 0x60000;
+        private bool UsesK053245Hardware => _variant is TmntHardwareVariant.Tmnt2 or TmntHardwareVariant.Ssriders;
+
+        private int ProgramRomLength => UsesK053245Hardware ? _program.Length : 0x60000;
 
         public void AttachSound(TmntSound sound) => _sound = sound;
 
@@ -378,7 +381,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.Load(_spriteRom);
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _tmnt2Eeprom.ResetContents();
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
                 _tmnt2Eeprom.Import(roms.Eeprom);
             ResetMachine();
         }
@@ -420,13 +423,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void BeginVisible()
         {
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
                 _tmnt2InVblank = false;
         }
 
         public void BeginVblank()
         {
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
             {
                 _tmnt2InVblank = true;
                 _k053245.BufferSprites();
@@ -442,7 +445,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void Render(byte[] frameBuffer)
         {
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
             {
                 RenderTmnt2(frameBuffer);
                 return;
@@ -470,7 +473,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public byte ReadByte(uint address)
         {
             address &= 0x00ff_ffff;
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
                 return ReadByteTmnt2(address);
 
             if (address < ProgramRomLength)
@@ -497,7 +500,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public ushort ReadWord(uint address)
         {
             address &= 0x00ff_ffff;
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
                 return ReadWordTmnt2(address);
 
             if (address < ProgramRomLength - 1)
@@ -539,7 +542,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteByte(uint address, byte value)
         {
             address &= 0x00ff_ffff;
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
             {
                 WriteByteTmnt2(address, value);
                 return;
@@ -597,7 +600,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteWord(uint address, ushort value)
         {
             address &= 0x00ff_ffff;
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053245Hardware)
             {
                 WriteWordTmnt2(address, value);
                 return;
@@ -832,6 +835,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return ReadBigEndianWord(_paletteRam, (int)(address - 0x140000));
             if (address >= 0x180000 && address <= 0x183ffe)
                 return _k053245.ReadCpuRamWord((int)((address - 0x180000) >> 1));
+            if (_variant == TmntHardwareVariant.Ssriders && address >= 0x1c0000 && address <= 0x1c0001)
+                return (ushort)(0xff00 | Player(1));
+            if (_variant == TmntHardwareVariant.Ssriders && address >= 0x1c0002 && address <= 0x1c0003)
+                return (ushort)(0xff00 | Player(2));
+            if (_variant == TmntHardwareVariant.Ssriders && address >= 0x1c0004 && address <= 0x1c0007)
+                return 0xffff;
+            if (_variant == TmntHardwareVariant.Ssriders && address >= 0x1c0100 && address <= 0x1c0101)
+                return (ushort)(0xff00 | SsridersCoins());
+            if (_variant == TmntHardwareVariant.Ssriders && address >= 0x1c0102 && address <= 0x1c0103)
+                return (ushort)(0xff00 | SsridersEepromPort());
             if (address >= 0x1c0000 && address <= 0x1c0001)
                 return (ushort)(0xff00 | Player(1));
             if (address >= 0x1c0002 && address <= 0x1c0007)
@@ -845,7 +858,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x1c0500 && address <= 0x1c057e)
                 return ReadBigEndianWord(_tmnt2UnknownRam, (int)(address - 0x1c0500));
             if (address >= 0x1c0800 && address <= 0x1c081e)
+            {
+                if (_variant == TmntHardwareVariant.Ssriders)
+                    return ReadSsridersProtection();
                 return _tmnt2ProtRam[(address - 0x1c0800) >> 1];
+            }
             if (address >= 0x5a0000 && address <= 0x5a001e)
                 return _k053245.ReadControlWordNoA1((int)((address - 0x5a0000) >> 1));
             if (address >= 0x5c0600 && address <= 0x5c0603)
@@ -938,7 +955,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             if (address >= 0x1c0200 && address <= 0x1c0201)
             {
-                WriteTmnt2EepromAndGfxControl((byte)value);
+                if (_variant == TmntHardwareVariant.Ssriders)
+                    WriteSsridersEepromAndGfxControl((byte)value);
+                else
+                    WriteTmnt2EepromAndGfxControl((byte)value);
                 return;
             }
             if (address >= 0x1c0300 && address <= 0x1c0301)
@@ -955,7 +975,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             if (address >= 0x1c0800 && address <= 0x1c081e)
             {
-                WriteTmnt2Protection((int)((address - 0x1c0800) >> 1), value, highByteAccess);
+                if (_variant == TmntHardwareVariant.Ssriders)
+                    WriteSsridersProtection((int)((address - 0x1c0800) >> 1));
+                else
+                    WriteTmnt2Protection((int)((address - 0x1c0800) >> 1), value, highByteAccess);
                 return;
             }
             if (address >= 0x5a0000 && address <= 0x5a001e)
@@ -1050,6 +1073,52 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Tmnt2PutWord(dstAddr + 12, (ushort)(attr2 | color));
         }
 
+        private ushort ReadSsridersProtection()
+        {
+            int data = ReadBigEndianWord(_ram, 0x1a0a);
+            int command = ReadBigEndianWord(_ram, 0x18fc);
+            return command switch
+            {
+                0x100b => 0x0064,
+                0x6003 => (ushort)(data & 0x000f),
+                0x6004 => (ushort)(data & 0x001f),
+                0x6000 => (ushort)(data & 0x0001),
+                0x0000 => (ushort)(data & 0x00ff),
+                0x6007 => (ushort)(data & 0x00ff),
+                0x8abc => SsridersCollisionTableIndex(),
+                _ => 0xffff
+            };
+        }
+
+        private ushort SsridersCollisionTableIndex()
+        {
+            int data = -ReadBigEndianWord(_ram, 0x1818);
+            data = ((data / 8 - 4) & 0x1f) * 0x40;
+            data += ((ReadBigEndianWord(_ram, 0x1cb0) + ReadBigEndianWord(_ram, 0x00c8) - 6) / 8 + 12) & 0x3f;
+            return (ushort)data;
+        }
+
+        private void WriteSsridersProtection(int offset)
+        {
+            if (offset != 1)
+                return;
+
+            int hardwarePriority = 1;
+            for (int logicalPriority = 1; logicalPriority < 0x100; logicalPriority <<= 1)
+            {
+                for (int i = 0; i < 128; i++)
+                {
+                    int sourceOffset = 3 + 64 * i;
+                    if ((_k053245.ReadCpuRamWord(sourceOffset) >> 8) != logicalPriority)
+                        continue;
+
+                    ushort existing = _k053245.ReadScatteredWord(8 * i);
+                    _k053245.WriteScatteredWord(8 * i, (ushort)((existing & 0xff00) | hardwarePriority));
+                    hardwarePriority++;
+                }
+            }
+        }
+
         private byte Tmnt2EepromPort()
         {
             int value = 0xfc; // OBJMPX/service/unknown inactive high.
@@ -1062,7 +1131,25 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return (byte)value;
         }
 
+        private byte SsridersEepromPort()
+        {
+            int value = 0xf0; // Bit 2 is active-high OBJMPX/unknown and idles low; bit 3 is active-low VBLANK.
+            if (_tmnt2Eeprom.DataOut)
+                value |= 0x01;
+            if (_tmnt2Eeprom.Ready)
+                value |= 0x02;
+            if (!_tmnt2InVblank)
+                value |= 0x08;
+            return (byte)value;
+        }
+
         private void WriteTmnt2EepromAndGfxControl(byte value)
+        {
+            _tmnt2Eeprom.Write(value);
+            _k053245.BankSelect((value & 0x20) != 0 ? 4 : 0);
+        }
+
+        private void WriteSsridersEepromAndGfxControl(byte value)
         {
             _tmnt2Eeprom.Write(value);
             _k053245.BankSelect((value & 0x20) != 0 ? 4 : 0);
@@ -1202,6 +1289,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private byte Coins()
+        {
+            int value = 0xff;
+            if (_input.Coin)
+                value &= ~0x01;
+            return (byte)value;
+        }
+
+        private byte SsridersCoins()
         {
             int value = 0xff;
             if (_input.Coin)
@@ -2508,7 +2603,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void SaveExtendedState(BinaryWriter writer)
         {
-            writer.Write(_variant == TmntHardwareVariant.Tmnt2);
+            writer.Write(UsesK053260Sound);
             writer.Write(_nmiAsserted);
             writer.Write(_nmiBlockedCycles);
             writer.Write(_outputFrameAccumulator);
@@ -2540,7 +2635,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _soundLatch = 0xff;
             _sres = 0xff;
             _irqAsserted = false;
-            _nmiAsserted = _variant == TmntHardwareVariant.Tmnt2;
+            _nmiAsserted = UsesK053260Sound;
             _nmiBlockedCycles = 0;
             _outputFrameAccumulator = 0;
             _audioFrameSampleIndex = 0;
@@ -2649,7 +2744,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
                 _tmnt2Z80WaitCycles = 0;
                 uint elapsed = _cpu.ExecuteInstruction(this);
-                if (_variant == TmntHardwareVariant.Tmnt2 && _tmnt2Z80WaitCycles > 0)
+                if (UsesK053260Sound && _tmnt2Z80WaitCycles > 0)
                 {
                     elapsed += (uint)_tmnt2Z80WaitCycles;
                     _tmnt2WaitCyclesThisFrame += _tmnt2Z80WaitCycles;
@@ -2658,7 +2753,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _z80CyclesThisFrame += (int)elapsed;
                 int audioClock = CurrentAudioCpuClock;
                 _ym.AdvanceTimersByCpuCycles((int)elapsed, audioClock);
-                if (_variant == TmntHardwareVariant.Tmnt2)
+                if (UsesK053260Sound)
                     _k053260.AdvanceControlCycles((int)elapsed, audioClock, OnK053260Sh1);
                 _pendingRenderCycles += (int)elapsed;
                 if (_nmiBlockArmedThisInstruction)
@@ -2685,7 +2780,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (_audioFrameBuffer is not { } audioBuffer || elapsedCycles <= 0)
                 return;
 
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053260Sound)
                 _k053260.AdvanceStreamCycles(elapsedCycles, CurrentAudioCpuClock);
 
             double outputFramesPerZ80Cycle = OutputSampleRate / (double)CurrentAudioCpuClock;
@@ -2702,7 +2797,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void RenderAudioRange(short[] audioBuffer, int startFrame, int targetFrame)
         {
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053260Sound)
             {
                 if (_audioProbe?.Enabled == true)
                 {
@@ -2754,7 +2849,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public byte ReadOpcode(ushort address)
         {
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053260Sound)
             {
                 AddTmnt2Z80Wait(address);
                 if (address < 0xf000)
@@ -2768,7 +2863,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public byte ReadMemory(ushort address)
         {
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053260Sound)
                 return ReadMemoryTmnt2(address);
 
             if (address < 0x8000)
@@ -2808,7 +2903,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void WriteMemory(ushort address, byte value)
         {
-            if (_variant == TmntHardwareVariant.Tmnt2)
+            if (UsesK053260Sound)
             {
                 WriteMemoryTmnt2(address, value);
                 return;
@@ -2882,9 +2977,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void K053260MainWrite(int offset, byte value) => _k053260.MainWrite(offset, value);
 
-        private int CurrentAudioCpuClock => _variant == TmntHardwareVariant.Tmnt2 ? Tmnt2AudioCpuClock : AudioCpuClock;
+        private bool UsesK053260Sound => _variant is TmntHardwareVariant.Tmnt2 or TmntHardwareVariant.Ssriders;
 
-        private int CurrentAudioCpuCyclesPerFrame => _variant == TmntHardwareVariant.Tmnt2 ? Tmnt2AudioCpuCyclesPerFrame : AudioCpuCyclesPerFrame;
+        private int CurrentAudioCpuClock => UsesK053260Sound ? Tmnt2AudioCpuClock : AudioCpuClock;
+
+        private int CurrentAudioCpuCyclesPerFrame => UsesK053260Sound ? Tmnt2AudioCpuCyclesPerFrame : AudioCpuCyclesPerFrame;
 
         private byte ReadMemoryTmnt2(ushort address)
         {
@@ -4519,6 +4616,23 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Dictionary<string, byte[]> entries = ReadArchive(path);
             var roms = new TmntRomSet();
             string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
+            if (name == "ssriders")
+            {
+                roms.Variant = TmntHardwareVariant.Ssriders;
+                Load16Byte(entries, roms.Program, 0x000000, "064eac02.8e");
+                Load16Byte(entries, roms.Program, 0x000001, "064eac03.8g");
+                Load16Byte(entries, roms.Program, 0x080000, "064eab04.10e");
+                Load16Byte(entries, roms.Program, 0x080001, "064eab05.10g");
+                Find(entries, "064e01.2f").CopyTo(roms.AudioCpu, 0);
+                Load32Word(entries, roms.TileRom, 0x000000, "064e12.16k");
+                Load32Word(entries, roms.TileRom, 0x000002, "064e11.12k");
+                Load32Word(entries, roms.SpriteRom, 0x000000, "064e09.7l");
+                Load32Word(entries, roms.SpriteRom, 0x000002, "064e07.3l");
+                Find(entries, "064e06.1d").CopyTo(roms.K053260, 0);
+                if (TryFind(entries, "ssriders_eac.nv", out byte[]? nv))
+                    Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
+                return roms;
+            }
             if (name == "tmnt2")
             {
                 roms.Variant = TmntHardwareVariant.Tmnt2;
