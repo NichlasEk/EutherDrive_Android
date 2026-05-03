@@ -171,6 +171,7 @@ namespace EutherDrive.Core.Cpu.Z80Emu
                     case InterruptType.Nmi:
                         PushStack(_registers.Pc);
                         _registers.Pc = 0x0066;
+                        _registers.Iff2 = _registers.Iff1;
                         _registers.Iff1 = false;
                         return 11;
                     case InterruptType.Int:
