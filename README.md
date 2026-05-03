@@ -16,6 +16,7 @@ EutherDrive currently has active UI integration for:
 - CPS1 arcade
 - CPS2 arcade
 - Sega System 32 arcade
+- Konami arcade
 - Game Boy
 - Game Boy Color
 - Game Boy Advance
@@ -47,7 +48,7 @@ Sega 32X support is also improving and now boots and runs more titles than earli
 ## System Notes
 - Mega Drive / Genesis remains the original core path and still forms the base for several Sega-family integrations
 - Sega 32X is integrated on top of the Mega Drive path and has seen recent SH2, bus, and timing fixes; compatibility is better than before but still not final
-- CPS1, CPS2, and Sega System 32 arcade support is integrated for desktop and Android through the arcade adapter paths. These systems work on a best-effort basis with the ROM sets and drivers currently covered, and unsupported boards, bootlegs, protection devices, or unusual mapper cases may still need per-game work
+- CPS1, CPS2, Sega System 32, and Konami arcade support is integrated for desktop and Android through the arcade adapter paths. These systems work on a best-effort basis with the ROM sets and drivers currently covered, and unsupported boards, bootlegs, protection devices, or unusual mapper cases may still need per-game work
 - Master System and Game Gear are integrated through the newer `SmsGgAdapter` path
 - Game Boy / Game Boy Color are integrated through `GbAdapter`, with the adopted core based on `gameboy_sharp`
 - Game Boy Advance is integrated with BIOS support and software-renderer optimizations
@@ -55,6 +56,18 @@ Sega 32X support is also improving and now boots and runs more titles than earli
 - PC Engine CD requires a BIOS and remains an active compatibility area
 - PSX is integrated and working well in current testing, including support for `.sbi` data used by protected discs
 - N64 is wired into the frontend, but still needs significantly more work before it should be treated as usable
+
+## Arcade Game Status
+Arcade support is currently driven by per-board adapters and known-good ROM set names rather than broad automatic MAME compatibility.
+
+| Board / adapter | ROM set(s) | Current status |
+| --- | --- | --- |
+| CPS1 | `dino.zip` | Boots and plays through the dedicated CPS1 adapter path |
+| CPS2 | `ddsom.zip` | Boots through the dedicated CPS2 adapter path |
+| Sega System 32 | `darkedge.zip` | Boots and plays with the current System 32 adapter; some game-specific video behavior remains imperfect |
+| Konami TMNT | `tmnt.zip`, `tmntu.zip`, `tmntj.zip`, `tmhta.zip`, `tmnt2p.zip`, `tmht2p.zip` | Boots and plays through the Konami TMNT adapter |
+| Konami TMNT2 | `tmnt2.zip` | Boots and plays with graphics, controls, savestates, and K053260/YM2151 audio wired up |
+| Konami Sunset Riders | `ssriders.zip` | Bring-up in progress on the TMNT2-style Konami hardware path |
 
 ## Savestates
 Savestates are now a first-class feature in the project rather than a one-off debug path.
