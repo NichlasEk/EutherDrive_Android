@@ -348,6 +348,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private int _paletteWrites;
         [NonSerialized] private int _tmnt2ProtectionRuns;
         [NonSerialized] private string _lastTmnt2Protection = "";
+        [NonSerialized] private int _ssridersProtectionReads;
+        [NonSerialized] private int _ssridersUnknownProtectionReads;
+        [NonSerialized] private string _lastSsridersProtectionRead = "";
 
         private bool UsesK053245Hardware => _variant is TmntHardwareVariant.Tmnt2 or TmntHardwareVariant.Ssriders;
 
@@ -417,6 +420,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _paletteWrites = 0;
             _tmnt2ProtectionRuns = 0;
             _lastTmnt2Protection = "";
+            _ssridersProtectionReads = 0;
+            _ssridersUnknownProtectionReads = 0;
+            _lastSsridersProtectionRead = "";
         }
 
         public void SetInput(ArcadeInputState input) => _input = input;
@@ -711,6 +717,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + $"k052Seg={_k052ColorWrites}/{_k052CodeLowWrites}/{_k052CodeHighWrites}/{_k052RegisterWrites} "
                + $"k052Byte={_k052EvenByteWrites}/{_k052OddByteWrites} "
                + $"prot={_tmnt2ProtectionRuns}:{_lastTmnt2Protection} "
+               + $"ssprot={_ssridersProtectionReads}/{_ssridersUnknownProtectionReads}:{_lastSsridersProtectionRead} "
                + PaletteDebugSummary()
                + _k052109.DebugSummary()
                + $" k053245={_k053245.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
@@ -810,7 +817,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x140000 && address <= 0x140fff)
                 return _paletteRam[address - 0x140000];
             if (address >= 0x180000 && address <= 0x183fff)
-                return _k053245.ReadCpuRamByte((int)(address - 0x180000));
+                return _k053245.ReadScatteredByte((int)(address - 0x180000));
             if (address >= 0x1c0000 && address <= 0x1c081f)
                 return ReadWordByte(ReadWord(address & ~1u), address);
             if (address >= 0x5a0000 && address <= 0x5a001f)
@@ -834,7 +841,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x140000 && address <= 0x140ffe)
                 return ReadBigEndianWord(_paletteRam, (int)(address - 0x140000));
             if (address >= 0x180000 && address <= 0x183ffe)
-                return _k053245.ReadCpuRamWord((int)((address - 0x180000) >> 1));
+                return _k053245.ReadScatteredWord((int)((address - 0x180000) >> 1));
             if (_variant == TmntHardwareVariant.Ssriders && address >= 0x1c0000 && address <= 0x1c0001)
                 return (ushort)(0xff00 | Player(1));
             if (_variant == TmntHardwareVariant.Ssriders && address >= 0x1c0002 && address <= 0x1c0003)
@@ -1077,7 +1084,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             int data = ReadBigEndianWord(_ram, 0x1a0a);
             int command = ReadBigEndianWord(_ram, 0x18fc);
-            return command switch
+            ushort result = command switch
             {
                 0x100b => 0x0064,
                 0x6003 => (ushort)(data & 0x000f),
@@ -1088,6 +1095,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 0x8abc => SsridersCollisionTableIndex(),
                 _ => 0xffff
             };
+            _ssridersProtectionReads++;
+            if (result == 0xffff)
+                _ssridersUnknownProtectionReads++;
+            _lastSsridersProtectionRead = $"cmd={command:X4} data={data:X4} -> {result:X4}";
+            return result;
         }
 
         private ushort SsridersCollisionTableIndex()
@@ -1112,11 +1124,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     if ((_k053245.ReadCpuRamWord(sourceOffset) >> 8) != logicalPriority)
                         continue;
 
-                    ushort existing = _k053245.ReadScatteredWord(8 * i);
-                    _k053245.WriteScatteredWord(8 * i, (ushort)((existing & 0xff00) | hardwarePriority));
+                    ushort existing = _k053245.ReadHardwareWord(8 * i);
+                    _k053245.WriteHardwareWord(8 * i, (ushort)((existing & 0xff00) | hardwarePriority));
                     hardwarePriority++;
                 }
             }
+
+            _tmnt2ProtectionRuns++;
+            _lastTmnt2Protection = $"ssriders-pri count={hardwarePriority - 1}";
         }
 
         private byte Tmnt2EepromPort()
@@ -1179,7 +1194,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (byteAddress >= 0x104000 && byteAddress <= 0x107ffe)
                 return ReadBigEndianWord(_ram, (int)(byteAddress - 0x104000));
             if (byteAddress >= 0x180000 && byteAddress <= 0x183ffe)
-                return _k053245.ReadCpuRamWord((int)((byteAddress - 0x180000) >> 1));
+                return _k053245.ReadScatteredWord((int)((byteAddress - 0x180000) >> 1));
             return 0;
         }
 
@@ -1299,7 +1314,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private byte SsridersCoins()
         {
             int value = 0xff;
-            if (_input.Coin)
+            if (_input.Coin || _input.Start)
                 value &= ~0x01;
             return (byte)value;
         }
@@ -1791,6 +1806,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly ushort[] _buffer = new ushort[RamWords];
         private readonly byte[] _regs = new byte[0x10];
         [NonSerialized] private readonly byte[] _rom = new byte[0x400000];
+        private int _romMask = 0x3fffff; // Savestate compatibility only; ROM decode always uses full loaded region.
         private int _romBank;
         private int _controlRomReads;
         private int _lastControlRomAddress;
@@ -1809,7 +1825,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             set => _tmnt2CoordinateMode = value;
         }
 
-        public void Load(byte[] rom) => Array.Copy(rom, _rom, Math.Min(rom.Length, _rom.Length));
+        public void Load(byte[] rom)
+        {
+            Array.Clear(_rom);
+            Array.Copy(rom, _rom, Math.Min(rom.Length, _rom.Length));
+        }
 
         public void Reset()
         {
@@ -1847,6 +1867,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return _cpuRam[offset];
         }
 
+        public ushort ReadHardwareWord(int offset)
+        {
+            offset &= RamWords - 1;
+            return _ram[offset];
+        }
+
         public byte ReadScatteredByte(int byteOffset)
         {
             ushort word = ReadScatteredWord(byteOffset >> 1);
@@ -1866,6 +1892,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
             if ((offset & 0x0031) == 0)
                 _ram[ScatterOffset(offset)] = value;
+        }
+
+        public void WriteHardwareWord(int offset, ushort value)
+        {
+            offset &= RamWords - 1;
+            _ram[offset] = value;
         }
 
         public void WriteScatteredByte(int byteOffset, byte value)
@@ -1917,9 +1949,34 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 ? $" f=[{_buffer[first]:X4},{_buffer[first + 1]:X4},{_buffer[first + 2]:X4},{_buffer[first + 3]:X4},{_buffer[first + 4]:X4},{_buffer[first + 5]:X4},{_buffer[first + 6]:X4}]"
                 : " f=none";
             string calc = DebugFirstSortedSprite();
+            int cpuActive = CountActive(_ram);
+            int cpuMirrorActive = CountCpuActive();
             return $"romR={_controlRomReads} last=0x{_lastControlRomAddress:X6} bank={_romBank} "
                    + $"regs={_regs[0]:X2}/{_regs[1]:X2}/{_regs[2]:X2}/{_regs[3]:X2}/{_regs[5]:X2}/{_regs[8]:X2}/{_regs[9]:X2}/{_regs[11]:X2} "
-                   + $"act={active} vis={_lastVisibleCandidates} pix={_lastDrawnPixels} bb={_lastMinX},{_lastMinY}-{_lastMaxX},{_lastMaxY}{firstSprite} {calc}";
+                   + $"act={active} live={cpuActive}/{cpuMirrorActive} vis={_lastVisibleCandidates} pix={_lastDrawnPixels} bb={_lastMinX},{_lastMinY}-{_lastMaxX},{_lastMaxY}{firstSprite} {calc}";
+        }
+
+        private static int CountActive(ushort[] ram)
+        {
+            int active = 0;
+            for (int offs = 0; offs < ram.Length; offs += 8)
+            {
+                if ((ram[offs] & 0x8000) != 0)
+                    active++;
+            }
+            return active;
+        }
+
+        private int CountCpuActive()
+        {
+            int active = 0;
+            for (int i = 0; i < SpriteCount; i++)
+            {
+                int sourceOffset = 64 * i;
+                if ((_cpuRam[sourceOffset] & 0x8000) != 0)
+                    active++;
+            }
+            return active;
         }
 
         private string DebugFirstSortedSprite()
