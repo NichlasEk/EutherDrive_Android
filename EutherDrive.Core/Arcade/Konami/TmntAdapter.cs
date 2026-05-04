@@ -2724,9 +2724,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (int plane = 0; plane < 5; plane++)
             {
                 int bitIndex = bitIndexBase + planeOffsets[plane];
-                int byteIndex = (bitIndex >> 3) % _rom.Length;
+                int byteIndex = (bitIndex >> 3) % _decodedRom.Length;
                 int bit = 7 - (bitIndex & 7);
-                pen |= ((_rom[byteIndex] >> bit) & 1) << (4 - plane);
+                pen |= ((_decodedRom[byteIndex] >> bit) & 1) << (4 - plane);
             }
             return pen;
         }
