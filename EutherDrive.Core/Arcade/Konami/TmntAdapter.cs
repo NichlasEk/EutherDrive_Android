@@ -770,7 +770,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + $"ssprot={_ssridersProtectionReads}/{_ssridersUnknownProtectionReads}:{_lastSsridersProtectionRead} "
                + PaletteDebugSummary()
                + _k052109.DebugSummary()
-               + $" k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053252={_k053252.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
+               + $" k055555={_k055555.DebugSummary()} k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053252={_k053252.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
 
         private string PaletteDebugSummary()
         {
@@ -840,6 +840,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             bool drawLayer2 = renderMask == "all" || renderMask.Contains('2', StringComparison.Ordinal);
             bool drawLayer3 = renderMask == "all" || renderMask.Contains('3', StringComparison.Ordinal);
             bool drawSprites = renderMask == "all" || renderMask.Contains('s', StringComparison.OrdinalIgnoreCase);
+            int inputEnables = _k055555.ReadRegister(K055555.InputEnables);
 
             _k056832.LayerColorBase[0] = _k055555.GetPaletteIndex(0) << 4;
             _k056832.LayerColorBase[1] = _k055555.GetPaletteIndex(1) << 4;
@@ -848,15 +849,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.SpriteColorBase = _k055555.GetPaletteIndex(4) << 5;
 
             Array.Fill(frameBuffer, (byte)0);
+            if (inputEnables == 0)
+                return;
             _k053245.BufferSprites();
 
             Span<MystwarrRenderItem> items = stackalloc MystwarrRenderItem[12];
             int count = 0;
-            if (drawLayer0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp0), 0, -1);
-            if (drawLayer1) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp3), 1, -1);
-            if (drawLayer2) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp6), 2, -1);
-            if (drawLayer3) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp7), 3, -1);
-            if (drawSprites)
+            if (drawLayer0 && (inputEnables & K055555.InputVramA) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp0), 0, -1);
+            if (drawLayer1 && (inputEnables & K055555.InputVramB) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp3), 1, -1);
+            if (drawLayer2 && (inputEnables & K055555.InputVramC) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp6), 2, -1);
+            if (drawLayer3 && (inputEnables & K055555.InputVramD) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp7), 3, -1);
+            if (drawSprites && (inputEnables & K055555.InputObj) != 0)
             {
                 for (int priority = 0; priority <= 0xe0; priority += 0x20)
                     items[count++] = new MystwarrRenderItem(priority, -1, priority);
@@ -1581,7 +1584,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             {
                 MystwarrRenderItem item = items[i];
                 int j = i - 1;
-                while (j >= 0 && items[j].Priority > item.Priority)
+                while (j >= 0 && items[j].Priority < item.Priority)
                 {
                     items[j + 1] = items[j];
                     j--;
@@ -2150,6 +2153,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
     private sealed class K055555
     {
+        public const int PriInpObj = 15;
+        public const int InputEnables = 45;
+        public const int InputVramA = 0x01;
+        public const int InputVramB = 0x02;
+        public const int InputVramC = 0x04;
+        public const int InputVramD = 0x08;
+        public const int InputObj = 0x10;
         public const int PriInp0 = 7;
         public const int PriInp3 = 10;
         public const int PriInp6 = 13;
@@ -2173,6 +2183,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public int ReadRegister(int index) => _regs[index & 0x7f];
 
         public int GetPaletteIndex(int index) => _regs[(23 + index) & 0x7f];
+
+        public string DebugSummary()
+            => $"inp={_regs[InputEnables]:X2} pri={_regs[PriInp0]:X2}/{_regs[PriInp3]:X2}/{_regs[PriInp6]:X2}/{_regs[PriInp7]:X2}/obj{_regs[PriInpObj]:X2} pal={_regs[23]:X2}/{_regs[24]:X2}/{_regs[25]:X2}/{_regs[26]:X2}/{_regs[27]:X2}";
     }
 
     private sealed class K054338
