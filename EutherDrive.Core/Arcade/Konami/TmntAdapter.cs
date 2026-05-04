@@ -1136,13 +1136,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private byte Tmnt2EepromPort()
         {
-            int value = 0xfc; // OBJMPX/service/unknown inactive high.
+            int value = 0xf0; // Bit 2 is active-high OBJMPX/unknown and idles low; bit 3 is active-low VBLANK.
             if (_tmnt2Eeprom.DataOut)
                 value |= 0x01;
             if (_tmnt2Eeprom.Ready)
                 value |= 0x02;
-            if (_tmnt2InVblank)
-                value &= ~0x08; // NVBLK is active low on TMNT2.
+            if (!_tmnt2InVblank)
+                value |= 0x08;
             return (byte)value;
         }
 
