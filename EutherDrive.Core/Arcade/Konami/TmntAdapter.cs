@@ -323,6 +323,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly K053245 _k053245 = new();
         private readonly K055555 _k055555 = new();
         [NonSerialized] private readonly K054338 _k054338 = new();
+        [NonSerialized] private readonly K053252 _k053252 = new();
         private readonly Tmnt2SerialEeprom _tmnt2Eeprom = new();
         private readonly byte[] _tmnt2UnknownRam = new byte[0x80];
         private readonly ushort[] _tmnt2ProtRam = new ushort[0x10];
@@ -415,6 +416,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.Reset();
             _k055555.Reset();
             _k054338.Reset();
+            _k053252.Reset();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr;
             _interruptLevel = 0;
@@ -447,8 +449,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             if (UsesK053245Hardware)
                 _tmnt2InVblank = false;
-            if (UsesMystwarrHardware && (_mystwarrIrqControl & 0x01) != 0)
-                _interruptLevel = 4;
+            if (UsesMystwarrHardware)
+            {
+                _k053252.SetVpos(0);
+                if ((_mystwarrIrqControl & 0x01) != 0)
+                    _interruptLevel = 4;
+            }
         }
 
         public void BeginVblank()
@@ -463,6 +469,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             if (UsesMystwarrHardware)
             {
+                _k053252.SetVpos(ScreenVisibleLines);
                 if ((_mystwarrIrqControl & 0x01) != 0)
                     _interruptLevel = 2;
                 return;
@@ -763,7 +770,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + $"ssprot={_ssridersProtectionReads}/{_ssridersUnknownProtectionReads}:{_lastSsridersProtectionRead} "
                + PaletteDebugSummary()
                + _k052109.DebugSummary()
-               + $" k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
+               + $" k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053252={_k053252.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
 
         private string PaletteDebugSummary()
         {
@@ -907,7 +914,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x498000 && address <= 0x49801f)
                 return ReadK054321MainByte(address);
             if (address >= 0x49c000 && address <= 0x49c01f)
-                return 0;
+                return ReadK053252MainByte(address);
             if (address >= 0x600000 && address <= 0x603fff)
                 return ReadWordByte(_k056832.ReadRamWord((int)((address - 0x600000) >> 1)), address);
             if (address >= 0x680000 && address <= 0x683fff)
@@ -938,7 +945,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x498000 && address <= 0x49801e)
                 return (ushort)(0xff00 | ReadK054321MainByte(address | 1));
             if (address >= 0x49c000 && address <= 0x49c01e)
-                return 0;
+                return (ushort)(0xff00 | _k053252.Read((int)((address - 0x49c000) >> 1)));
             if (address >= 0x600000 && address <= 0x603ffe)
                 return _k056832.ReadRamWord((int)((address - 0x600000) >> 1));
             if (address >= 0x680000 && address <= 0x683ffe)
@@ -980,6 +987,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _tmnt2Eeprom.Write(value);
                 return;
             }
+            if (address >= 0x49c000 && address <= 0x49c01f)
+            {
+                WriteK053252MainByte(address, value);
+                return;
+            }
             if (address >= 0x49e000 && address <= 0x49e007)
             {
                 int byteOffset = (int)(address - 0x49e000);
@@ -1009,6 +1021,22 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 0x0a => 0x00, // sound CPU to main CPU latch, defaults low during POST
                 _ => 0xff
             };
+        }
+
+        private byte ReadK053252MainByte(uint address)
+        {
+            if ((address & 1) == 0)
+                return 0xff;
+
+            return _k053252.Read((int)((address - 0x49c000) >> 1));
+        }
+
+        private void WriteK053252MainByte(uint address, byte value)
+        {
+            if ((address & 1) == 0)
+                return;
+
+            _k053252.Write((int)((address - 0x49c000) >> 1), value);
         }
 
         private void WriteWordMystwarr(uint address, ushort value)
@@ -1060,7 +1088,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return;
             }
             if (address >= 0x49c000 && address <= 0x49c01e)
+            {
+                _k053252.Write((int)((address - 0x49c000) >> 1), (byte)value);
                 return;
+            }
             if (address >= 0x49e000 && address <= 0x49e006)
             {
                 int offset = (int)((address - 0x49e000) >> 1);
@@ -2177,6 +2208,101 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             => $"w={_writes} ctl={_regs[0]:X4} pblend={_regs[13]:X4}/{_regs[14]:X4}";
     }
 
+    private sealed class K053252
+    {
+        private readonly byte[] _regs = new byte[16];
+        private int _hc;
+        private int _hfp;
+        private int _hbp;
+        private int _vc;
+        private int _vfp;
+        private int _vbp;
+        private int _vsw;
+        private int _hsw;
+        private int _vpos;
+        private int _writes;
+        private int _int1Acks;
+        private int _int2Acks;
+
+        public void Reset()
+        {
+            Array.Clear(_regs);
+            _regs[0x08] = 1;
+            _hc = 0;
+            _hfp = 0;
+            _hbp = 0;
+            _vc = 0;
+            _vfp = 0;
+            _vbp = 0;
+            _vsw = 0;
+            _hsw = 0;
+            _vpos = 0;
+            _writes = 0;
+            _int1Acks = 0;
+            _int2Acks = 0;
+        }
+
+        public void SetVpos(int vpos) => _vpos = vpos;
+
+        public byte Read(int offset)
+        {
+            offset &= 0x0f;
+            int vct = _vpos - _vc;
+            return offset switch
+            {
+                0x0e => (byte)((vct >> 8) & 1),
+                0x0f => (byte)(vct & 0xff),
+                _ => _regs[offset]
+            };
+        }
+
+        public void Write(int offset, byte data)
+        {
+            offset &= 0x0f;
+            _regs[offset] = data;
+            _writes++;
+
+            switch (offset)
+            {
+                case 0x00:
+                case 0x01:
+                    _hc = (((_regs[0] << 8) | _regs[1]) & 0x03ff) + 1;
+                    break;
+                case 0x02:
+                case 0x03:
+                    _hfp = ((_regs[2] << 8) | _regs[3]) & 0x01ff;
+                    break;
+                case 0x04:
+                case 0x05:
+                    _hbp = ((_regs[4] << 8) | _regs[5]) & 0x01ff;
+                    break;
+                case 0x08:
+                case 0x09:
+                    _vc = (((_regs[8] << 8) | _regs[9]) & 0x01ff) + 1;
+                    break;
+                case 0x0a:
+                    _vfp = data;
+                    break;
+                case 0x0b:
+                    _vbp = data + 1;
+                    break;
+                case 0x0c:
+                    _vsw = ((data & 0xf0) >> 4) + 1;
+                    _hsw = (data & 0x0f) + 1;
+                    break;
+                case 0x0e:
+                    _int1Acks++;
+                    break;
+                case 0x0f:
+                    _int2Acks++;
+                    break;
+            }
+        }
+
+        public string DebugSummary()
+            => $"w={_writes} hc={_hc}/{_hfp}/{_hbp}/{_hsw} vc={_vc}/{_vfp}/{_vbp}/{_vsw} irq={_regs[6]:X2}/{_regs[7]:X2} ack={_int1Acks}/{_int2Acks}";
+    }
+
         private sealed class K056832
         {
         private const int PageCount = 16;
@@ -2868,15 +2994,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private string DebugFirstSortedSprite()
         {
+            ushort[] spriteRam = _mystwarrSpriteLayout ? _ram : _buffer;
             Span<int> sorted = stackalloc int[256];
-            int sortedCount = BuildSortedSpriteList(sorted);
+            int sortedCount = BuildSortedSpriteList(sorted, spriteRam);
 
             for (int priCode = sortedCount - 1; priCode >= 0; priCode--)
             {
                 int offs = sorted[priCode];
                 if (offs < 0)
                     continue;
-                if (!TryComputeSpriteBounds(offs, out var info))
+                if (!TryComputeSpriteBounds(offs, spriteRam, out var info))
                     return $"calc=skip@{offs:X3}/p{priCode}";
                 return $"calc=@{offs:X3}/p{priCode} raw={info.RawY:X3} y={info.Y}..{info.Bottom} x={info.X}..{info.Right} wh={info.Width}x{info.Height} z={info.ZoomX:X}/{info.ZoomY:X}";
             }
@@ -2913,6 +3040,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             offset &= 0x0f;
             _regs[offset] = value;
+            if (_mystwarrSpriteLayout)
+                return;
             if (offset == 0x06)
                 BufferSprites();
             else if (offset == 0x07)
@@ -2980,8 +3109,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void RenderSprites(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight, byte[]? priorityBuffer, int mystwarrPriority = -1)
         {
+            ushort[] spriteRam = _mystwarrSpriteLayout ? _ram : _buffer;
             Span<int> sorted = stackalloc int[SpriteCount];
-            int sortedCount = BuildSortedSpriteList(sorted);
+            int sortedCount = BuildSortedSpriteList(sorted, spriteRam);
 
             for (int sortedIndex = sortedCount - 1; sortedIndex >= 0; sortedIndex--)
             {
@@ -2989,17 +3119,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (offs < 0)
                     continue;
 
-                int code = _buffer[offs + 1];
+                int code = spriteRam[offs + 1];
                 if (!_mystwarrSpriteLayout)
                     code = (code & 0xffe1) + ((code & 0x0010) >> 2) + ((code & 0x0008) << 1) + ((code & 0x0004) >> 1) + ((code & 0x0002) << 2);
-                int rawColor = _buffer[offs + 6] & 0xff;
+                int rawColor = spriteRam[offs + 6] & 0xff;
                 if (mystwarrPriority >= 0 && (rawColor & 0xe0) != mystwarrPriority)
                     continue;
                 if (band >= 0 && SpritePriorityBand(rawColor, sortedLayerPriorities) != band)
                     continue;
                 int priorityMask = priorityBuffer != null ? SpritePriorityMask(rawColor, sortedLayerPriorities) : 0;
                 int color = SpriteColorBase + (rawColor & 0x1f);
-                if (!TryComputeSpriteBounds(offs, out var bounds))
+                if (!TryComputeSpriteBounds(offs, spriteRam, out var bounds))
                     continue;
 
                 int w = bounds.Width;
@@ -3008,11 +3138,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int zoomY = bounds.ZoomY;
                 int ox = bounds.X;
                 int oy = bounds.Y;
-                bool flipX = (_buffer[offs] & 0x1000) != 0;
-                bool flipY = (_buffer[offs] & 0x2000) != 0;
-                bool mirrorX = (_buffer[offs + 6] & (_mystwarrSpriteLayout ? 0x4000 : 0x0100)) != 0;
-                bool mirrorY = (_buffer[offs + 6] & (_mystwarrSpriteLayout ? 0x8000 : 0x0200)) != 0;
-                bool shadow = !_mystwarrSpriteLayout && (_buffer[offs + 6] & 0x0080) != 0;
+                bool flipX = (spriteRam[offs] & 0x1000) != 0;
+                bool flipY = (spriteRam[offs] & 0x2000) != 0;
+                bool mirrorX = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x4000 : 0x0100)) != 0;
+                bool mirrorY = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x8000 : 0x0200)) != 0;
+                bool shadow = !_mystwarrSpriteLayout && (spriteRam[offs + 6] & 0x0080) != 0;
                 if (mirrorX)
                     flipX = false;
                 if ((_regs[5] & 0x01) != 0 && !mirrorX) flipX = !flipX;
@@ -3046,15 +3176,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
         }
 
-        private int BuildSortedSpriteList(Span<int> sorted)
+        private int BuildSortedSpriteList(Span<int> sorted, ushort[] spriteRam)
         {
             sorted.Fill(-1);
 
             if (!_mystwarrSpriteLayout)
             {
-                for (int offs = 0; offs < _buffer.Length; offs += 8)
+                for (int offs = 0; offs < spriteRam.Length; offs += 8)
                 {
-                    int priCode = _buffer[offs];
+                    int priCode = spriteRam[offs];
                     if ((priCode & 0x8000) == 0)
                         continue;
                     priCode &= 0x7f;
@@ -3065,9 +3195,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
 
             int count = 0;
-            for (int offs = 0; offs < _buffer.Length && count < sorted.Length; offs += 8)
+            for (int offs = 0; offs < spriteRam.Length && count < sorted.Length; offs += 8)
             {
-                if ((_buffer[offs] & 0x8000) != 0)
+                if ((spriteRam[offs] & 0x8000) != 0)
                     sorted[count++] = offs;
             }
 
@@ -3075,11 +3205,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (int y = 0; y < count - 1; y++)
             {
                 int offs = sorted[y];
-                int zcode = _buffer[offs] & 0xff;
+                int zcode = spriteRam[offs] & 0xff;
                 for (int x = y + 1; x < count; x++)
                 {
                     int temp = sorted[x];
-                    int candidate = _buffer[temp] & 0xff;
+                    int candidate = spriteRam[temp] & 0xff;
                     bool swap = ascending ? zcode >= candidate : zcode <= candidate;
                     if (!swap)
                         continue;
@@ -3136,13 +3266,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private readonly record struct SpriteBounds(int RawY, int X, int Y, int Right, int Bottom, int Width, int Height, int ZoomX, int ZoomY);
 
-        private bool TryComputeSpriteBounds(int offs, out SpriteBounds bounds)
+        private bool TryComputeSpriteBounds(int offs, ushort[] spriteRam, out SpriteBounds bounds)
         {
-            int size = (_buffer[offs] & 0x0f00) >> 8;
+            int size = (spriteRam[offs] & 0x0f00) >> 8;
             int w = 1 << (size & 0x03);
             int h = 1 << ((size >> 2) & 0x03);
-            int zoomY = SpriteZoom(_buffer[offs + 4]);
-            int zoomX = (_buffer[offs] & 0x4000) == 0 ? SpriteZoom(_buffer[offs + 5]) : zoomY;
+            int zoomY = SpriteZoom(spriteRam[offs + 4]);
+            int zoomX = (spriteRam[offs] & 0x4000) == 0 ? SpriteZoom(spriteRam[offs + 5]) : zoomY;
             if (zoomX < 0 || zoomY < 0)
             {
                 bounds = default;
@@ -3153,15 +3283,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int spriteoffsY = (_regs[2] << 8) | _regs[3];
             bool flipScreenX = (_regs[5] & 0x01) != 0;
             bool flipScreenY = !Tmnt2CoordinateMode && (_regs[5] & 0x02) != 0;
-            bool mirrorX = (_buffer[offs + 6] & 0x0100) != 0;
-            bool mirrorY = (_buffer[offs + 6] & 0x0200) != 0;
+            bool mirrorX = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x4000 : 0x0100)) != 0;
+            bool mirrorY = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x8000 : 0x0200)) != 0;
 
-            int rawY = _buffer[offs + 2] & 0x03ff;
+            int rawY = spriteRam[offs + 2] & 0x03ff;
             if (_mystwarrSpriteLayout)
             {
                 int offx = (short)((_regs[0] << 8) | _regs[1]);
                 int offy = (short)((_regs[2] << 8) | _regs[3]);
-                int mysticX = _buffer[offs + 3] & 0x03ff;
+                int mysticX = spriteRam[offs + 3] & 0x03ff;
                 int mysticY = rawY;
                 int wrapSize;
                 int xWrapLimit;
@@ -3184,12 +3314,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (flipScreenY)
                     mysticY = -mysticY;
 
-                mysticX -= 48;
-                mysticY += 24;
                 mysticX = (mysticX - offx) & (wrapSize - 1);
                 mysticY = (-mysticY - offy) & (wrapSize - 1);
                 if (mysticX >= xWrapLimit) mysticX -= wrapSize;
                 if (mysticY >= yWrapLimit) mysticY -= wrapSize;
+                mysticX -= 48;
+                mysticY += 24;
                 mysticX -= (zoomX * w) >> 13;
                 mysticY -= (zoomY * h) >> 13;
 
@@ -3199,7 +3329,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return true;
             }
 
-            int ox = _buffer[offs + 3] + spriteoffsX - 96;
+            int ox = spriteRam[offs + 3] + spriteoffsX - 96;
             int oy = rawY;
 
             if (flipScreenX)
