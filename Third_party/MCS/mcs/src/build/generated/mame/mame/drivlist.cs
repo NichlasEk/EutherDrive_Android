@@ -72,6 +72,10 @@ namespace mame
                 williams.driver_sinistar,
                 williams.driver_stargate,
                 //zaxxon.driver_zaxxon,
+                xain.driver_xsleena,
+                xain.driver_xsleenaj,
+                xain.driver_solrwarr,
+                xain.driver_xsleenab,
             };
 
             drivlist_global.s_driver_count = (size_t)drivlist_global.s_drivers_sorted.Length;

@@ -536,6 +536,13 @@ namespace mame
         public Pointer<ym2151_device> cast(PointerU8 memory) { throw new emu_unimplemented(); }
     }
 
+    public class object_finder_operations_ym2203_device : object_finder_operations<ym2203_device>
+    {
+        public ym2203_device cast(device_t device) { return (ym2203_device)device; }
+        public ym2203_device cast(device_interface device) { throw new emu_unimplemented(); }
+        public Pointer<ym2203_device> cast(PointerU8 memory) { throw new emu_unimplemented(); }
+    }
+
     public class object_finder_operations_z80_device : object_finder_operations<z80_device>
     {
         public z80_device cast(device_t device) { return (z80_device)device; }
@@ -692,6 +699,7 @@ namespace mame
                 else if (typeof_ObjectClass == typeof(votrax_sc01_device))         return new object_finder_operations_device<votrax_sc01_device>();
                 else if (typeof_ObjectClass == typeof(watchdog_timer_device))      return new object_finder_operations_watchdog_timer_device();
                 else if (typeof_ObjectClass == typeof(ym2151_device))              return new object_finder_operations_ym2151_device();
+                else if (typeof_ObjectClass == typeof(ym2203_device))              return new object_finder_operations_ym2203_device();
                 else if (typeof_ObjectClass == typeof(z80_device))                 return new object_finder_operations_z80_device();
                 else if (typeof_ObjectClass == typeof(z8002_device))               return new object_finder_operations_z8002_device();
                 else if (typeof_ObjectClass == typeof(z80ctc_channel_device))      return new object_finder_operations_z80ctc_channel_device();
