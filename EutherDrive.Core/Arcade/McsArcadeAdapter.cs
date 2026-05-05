@@ -17,6 +17,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private const int AudioOutputDivisor = 8;
     private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int OutputChannels = 2;
+    private static readonly int MaxQueuedAudioSamples = OutputSampleRate * OutputChannels * 2;
     private static readonly object McsInitLock = new();
     private static readonly McsHostCore HostCore = new();
     private static readonly McsHostFileSystem HostFileSystem = new();
@@ -42,6 +43,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
 
     private byte[] _frameBuffer = new byte[PlaceholderHeight * PlaceholderStride];
     private short[] _audioBuffer = Array.Empty<short>();
+    private readonly List<short> _audioQueue = new();
     private int _frameWidth = PlaceholderWidth;
     private int _frameHeight = PlaceholderHeight;
     private int _frameStride = PlaceholderStride;
@@ -197,7 +199,16 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         sampleRate = OutputSampleRate;
         channels = OutputChannels;
         lock (_sync)
+        {
+            if (_audioQueue.Count == 0)
+                return ReadOnlySpan<short>.Empty;
+
+            if (_audioBuffer.Length != _audioQueue.Count)
+                _audioBuffer = new short[_audioQueue.Count];
+            _audioQueue.CopyTo(_audioBuffer);
+            _audioQueue.Clear();
             return _audioBuffer;
+        }
     }
 
     public void SetMasterVolumePercent(int percent)
@@ -327,17 +338,21 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         if (sampleCount <= 0)
             return;
 
+        short[] chunk = new short[sampleCount];
+        int volume = _masterVolumePercent;
+        for (int i = 0; i < sampleCount; i++)
+        {
+            int scaled = samples[i] * volume / (AudioOutputDivisor * 100);
+            chunk[i] = (short)Math.Clamp(scaled, short.MinValue, short.MaxValue);
+        }
+
         lock (_sync)
         {
-            if (_audioBuffer.Length != sampleCount)
-                _audioBuffer = new short[sampleCount];
+            int overflow = _audioQueue.Count + chunk.Length - MaxQueuedAudioSamples;
+            if (overflow > 0)
+                _audioQueue.RemoveRange(0, Math.Min(overflow, _audioQueue.Count));
 
-            int volume = _masterVolumePercent;
-            for (int i = 0; i < sampleCount; i++)
-            {
-                int scaled = samples[i] * volume / (AudioOutputDivisor * 100);
-                _audioBuffer[i] = (short)Math.Clamp(scaled, short.MinValue, short.MaxValue);
-            }
+            _audioQueue.AddRange(chunk);
         }
     }
 

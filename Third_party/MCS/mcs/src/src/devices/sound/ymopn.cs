@@ -93,6 +93,7 @@ namespace mame
         readonly bool [,] m_fm_ssg_inverted = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly int [] m_fm_opout = new int[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
+        readonly u8 [] m_fm_csm_key_mask = new u8[FM_CHANNELS];
         readonly u8 [] m_block_freq_latch = new u8[2];
         readonly bool [] m_timer_running = new bool[2];
         emu_timer m_timer_a;
@@ -164,6 +165,7 @@ namespace mame
             save_item(NAME(new { m_fm_feedback }));
             save_item(NAME(new { m_fm_feedback_in }));
             save_item(NAME(new { m_fm_ssg_inverted }));
+            save_item(NAME(new { m_fm_csm_key_mask }));
         }
 
         protected override void device_reset()
@@ -182,6 +184,7 @@ namespace mame
             Array.Clear(m_fm_key_state, 0, m_fm_key_state.Length);
             Array.Clear(m_fm_ssg_inverted, 0, m_fm_ssg_inverted.Length);
             Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
+            Array.Clear(m_fm_csm_key_mask, 0, m_fm_csm_key_mask.Length);
             Array.Clear(m_block_freq_latch, 0, m_block_freq_latch.Length);
             for (int channel = 0; channel < FM_CHANNELS; channel++)
             {
@@ -401,6 +404,8 @@ namespace mame
             if ((m_opn_regs[0x27] & 0x04) != 0)
                 m_status = (u8)(m_status | STATUS_TIMERA);
             update_irq();
+            if ((m_opn_regs[0x27] & 0xc0) == 0x80)
+                m_fm_csm_key_mask[2] = 0x0f;
             m_timer_running[0] = false;
             update_timer(0, (m_opn_regs[0x27] & 0x01) != 0);
         }
@@ -440,7 +445,7 @@ namespace mame
             for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
             {
                 bool wasOn = m_fm_key_state[channel, slot];
-                bool isOn = (m_fm_key_mask[channel] & (1 << slot)) != 0;
+                bool isOn = ((m_fm_key_mask[channel] | m_fm_csm_key_mask[channel]) & (1 << slot)) != 0;
                 if (wasOn == isOn)
                     continue;
 
@@ -457,7 +462,8 @@ namespace mame
                     m_fm_stage[channel, slot] = fm_envelope_stage.Attack;
                     m_fm_ssg_inverted[channel, slot] = ssg_eg_enabled(slotOffset) && ((ssg_eg_mode(slotOffset) & 0x04) != 0);
                     m_fm_env[channel, slot] = 0.0;
-                    m_fm_env_attenuation[channel, slot] = attackRate >= 62 ? 0 : 0x3ff;
+                    if (attackRate >= 62)
+                        m_fm_env_attenuation[channel, slot] = 0;
                     m_fm_phase[channel, slot] = 0.0;
                 }
                 else
@@ -470,6 +476,7 @@ namespace mame
                     m_fm_stage[channel, slot] = fm_envelope_stage.Release;
                 }
             }
+            m_fm_csm_key_mask[channel] = 0;
         }
 
         protected override void device_sound_interface_sound_stream_update(sound_stream stream, std.vector<read_stream_view> inputs, std.vector<write_stream_view> outputs)
@@ -661,10 +668,10 @@ namespace mame
             int envelopeAttenuation = m_fm_env_attenuation[channel, slot];
             if (m_fm_ssg_inverted[channel, slot])
                 envelopeAttenuation = (0x200 - envelopeAttenuation) & 0x3ff;
-            int attenuation = envelopeAttenuation + ((totalLevel & 0x7f) << 3);
-            if (attenuation > FM_ENVELOPE_QUIET)
+            if (m_fm_env_attenuation[channel, slot] > FM_ENVELOPE_QUIET)
                 return 0;
 
+            int attenuation = Math.Min(envelopeAttenuation + ((totalLevel & 0x7f) << 3), 0x3ff);
             int sineAttenuation = phase_to_attenuation(phase);
             int amplitude = attenuation_to_amplitude(sineAttenuation + (attenuation << 2));
             int output = (phase & 0x200) != 0 ? -amplitude : amplitude;
