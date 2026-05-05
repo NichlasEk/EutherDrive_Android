@@ -74,7 +74,7 @@ namespace mame
                 case ADDRESSING_MODE_IMMEDIATE:     return read_opcode_arg();
                 case ADDRESSING_MODE_REGISTER_A:    return m_q.r.a;
                 case ADDRESSING_MODE_REGISTER_B:    return m_q.r.b;
-                default:                            fatalerror("Unexpected");   return 0x00;
+                default:                            fatalerror(cpu_context("Unexpected read_operand"));   return 0x00;
             }
         }
 
@@ -88,7 +88,7 @@ namespace mame
             {
                 case ADDRESSING_MODE_EA:            return read_memory((ushort)(m_ea.w + ordinal));
                 case ADDRESSING_MODE_IMMEDIATE:     return read_opcode_arg();
-                default:                            fatalerror("Unexpected");   return 0x00;
+                default:                            fatalerror(cpu_context("Unexpected read_operand ordinal"));   return 0x00;
             }
         }
 
@@ -104,7 +104,7 @@ namespace mame
                 case ADDRESSING_MODE_EA:            write_memory(m_ea.w, data);     break;
                 case ADDRESSING_MODE_REGISTER_A:    m_q.r.a = data;                 break;
                 case ADDRESSING_MODE_REGISTER_B:    m_q.r.b = data;                 break;
-                default:                            fatalerror("Unexpected");       break;
+                default:                            fatalerror(cpu_context("Unexpected write_operand"));       break;
             }
         }
 
@@ -118,7 +118,7 @@ namespace mame
             {
                 case ADDRESSING_MODE_IMMEDIATE:     /* do nothing */                break;
                 case ADDRESSING_MODE_EA:            write_memory((ushort)(m_ea.w + ordinal), data);   break;
-                default:                            fatalerror("Unexpected");       break;
+                default:                            fatalerror(cpu_context("Unexpected write_operand ordinal"));       break;
             }
         }
 
@@ -180,7 +180,7 @@ namespace mame
                 case 0x40:  return ref m_u.w;
                 case 0x60:  return ref m_s.w;
                 default:
-                    fatalerror("Unexpected");
+                    fatalerror(cpu_context("Unexpected ireg"));
                     return ref m_x.w;
             }
         }

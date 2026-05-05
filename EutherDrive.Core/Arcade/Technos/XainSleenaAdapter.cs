@@ -1,6 +1,8 @@
 namespace EutherDrive.Core.Arcade.Technos;
 
-public sealed class XainSleenaAdapter : IEmulatorCore, IDisposable
+using EutherDrive.Core.Savestates;
+
+public sealed class XainSleenaAdapter : IEmulatorCore, ISavestateCapable, IDisposable
 {
     private readonly McsArcadeAdapter _adapter = new();
 
@@ -16,6 +18,12 @@ public sealed class XainSleenaAdapter : IEmulatorCore, IDisposable
     public void LoadRom(string path) => _adapter.LoadRom(path);
     public void Reset() => _adapter.Reset();
     public void RunFrame() => _adapter.RunFrame();
+
+    public RomIdentity? RomIdentity => _adapter.RomIdentity;
+    public long? FrameCounter => _adapter.FrameCounter;
+
+    public void SaveState(BinaryWriter writer) => _adapter.SaveState(writer);
+    public void LoadState(BinaryReader reader) => _adapter.LoadState(reader);
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
         => _adapter.GetFrameBuffer(out width, out height, out stride);

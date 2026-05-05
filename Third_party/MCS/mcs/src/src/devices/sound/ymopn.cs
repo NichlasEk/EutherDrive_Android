@@ -34,7 +34,8 @@ namespace mame
         const int FM_OPERATORS_PER_CHANNEL = 4;
         const int OPN_OPERATORS = 12;
         const int OPN_DEFAULT_PRESCALE = 6;
-        const double FM_MIX_GAIN = 1.0;
+        const double FM_MIX_GAIN = 8.0;
+        const double SSG_DC_BLOCKER_COEFFICIENT = 0.995;
         const int FM_PHASE_MASK = 0x3ff;
         const int FM_OPERATOR_MIN = -0x2000;
         const int FM_OPERATOR_MAX = 0x1fff;
@@ -94,6 +95,8 @@ namespace mame
         readonly int [] m_fm_opout = new int[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
         readonly u8 [] m_fm_csm_key_mask = new u8[FM_CHANNELS];
+        readonly double [] m_ssg_dc_last_input = new double[3];
+        readonly double [] m_ssg_dc_last_output = new double[3];
         readonly u8 [] m_block_freq_latch = new u8[2];
         readonly bool [] m_timer_running = new bool[2];
         emu_timer m_timer_a;
@@ -106,6 +109,8 @@ namespace mame
         int m_fm_held_sample;
         float m_psg_route0_gain = 1.0f;
         float m_fm_route_gain = 1.0f;
+        readonly bool m_mute_fm;
+        readonly bool m_mute_ssg;
         int m_trace_write_count;
         u8 m_last_trace_address;
         u8 m_last_trace_data;
@@ -115,6 +120,8 @@ namespace mame
             : base(mconfig, YM2203, tag, owner, clock, psg_type_t.PSG_TYPE_YM, 3, 2)
         {
             m_trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM2203_TRACE") == "1";
+            m_mute_fm = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM2203_MUTE_FM") == "1";
+            m_mute_ssg = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM2203_MUTE_SSG") == "1";
             m_irq_handler = new devcb_write_line(this);
         }
 
@@ -185,6 +192,8 @@ namespace mame
             Array.Clear(m_fm_ssg_inverted, 0, m_fm_ssg_inverted.Length);
             Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
             Array.Clear(m_fm_csm_key_mask, 0, m_fm_csm_key_mask.Length);
+            Array.Clear(m_ssg_dc_last_input, 0, m_ssg_dc_last_input.Length);
+            Array.Clear(m_ssg_dc_last_output, 0, m_ssg_dc_last_output.Length);
             Array.Clear(m_block_freq_latch, 0, m_block_freq_latch.Length);
             for (int channel = 0; channel < FM_CHANNELS; channel++)
             {
@@ -482,7 +491,33 @@ namespace mame
         protected override void device_sound_interface_sound_stream_update(sound_stream stream, std.vector<read_stream_view> inputs, std.vector<write_stream_view> outputs)
         {
             base.device_sound_interface_sound_stream_update(stream, inputs, outputs);
-            mix_fm(outputs);
+            if (m_mute_ssg)
+            {
+                for (int output = 0; output < (int)outputs.size(); output++)
+                    outputs[output].fill(0);
+            }
+            else
+                dc_block_ssg(outputs);
+
+            if (!m_mute_fm)
+                mix_fm(outputs);
+        }
+
+        void dc_block_ssg(std.vector<write_stream_view> outputs)
+        {
+            int outputCount = Math.Min((int)outputs.size(), m_ssg_dc_last_input.Length);
+            for (int output = 0; output < outputCount; output++)
+            {
+                s32 samples = (s32)outputs[output].samples();
+                for (s32 sample = 0; sample < samples; sample++)
+                {
+                    double input = outputs[output].get(sample);
+                    double filtered = input - m_ssg_dc_last_input[output] + SSG_DC_BLOCKER_COEFFICIENT * m_ssg_dc_last_output[output];
+                    m_ssg_dc_last_input[output] = input;
+                    m_ssg_dc_last_output[output] = filtered;
+                    outputs[output].put(sample, (stream_buffer_sample_t)Math.Clamp(filtered, -1.0, 1.0));
+                }
+            }
         }
 
         void mix_fm(std.vector<write_stream_view> outputs)

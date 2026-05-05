@@ -304,6 +304,15 @@ namespace mame
             machine().save().save_item(m_device, "tilemap", null, instance, m_dx_flipped, "m_dx_flipped");
             machine().save().save_item(m_device, "tilemap", null, instance, m_dy, "m_dy");
             machine().save().save_item(m_device, "tilemap", null, instance, m_dy_flipped, "m_dy_flipped");
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_enable.ref", () => m_enable, value => m_enable = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_attributes.ref", () => m_attributes, value => m_attributes = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_palette_offset.ref", () => m_palette_offset, value => m_palette_offset = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_scrollrows.ref", () => m_scrollrows, value => m_scrollrows = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_scrollcols.ref", () => m_scrollcols, value => m_scrollcols = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_dx.ref", () => m_dx, value => m_dx = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_dx_flipped.ref", () => m_dx_flipped, value => m_dx_flipped = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_dy.ref", () => m_dy, value => m_dy = value);
+            machine().save().save_item_ref(m_device, "tilemap", null, instance, "m_dy_flipped.ref", () => m_dy_flipped, value => m_dy_flipped = value);
 
             // reset everything after a load
             machine().save().register_postload(postload);

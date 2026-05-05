@@ -780,13 +780,14 @@ namespace mame
                 throw new emu_fatalerror("m_icountptr never initialized!");
 
             // register for save states
-            device().save_item(NAME(new { m_suspend }));
-            device().save_item(NAME(new { m_nextsuspend }));
-            device().save_item(NAME(new { m_eatcycles }));
-            device().save_item(NAME(new { m_nexteatcycles }));
-            device().save_item(NAME(new { m_trigger }));
-            device().save_item(NAME(new { m_totalcycles }));
-            device().save_item(NAME(new { m_localtime }));
+            var save = device().machine().save();
+            save.save_item_ref(device(), device().name(), device().tag(), 0, "m_suspend", () => m_suspend, value => m_suspend = value);
+            save.save_item_ref(device(), device().name(), device().tag(), 0, "m_nextsuspend", () => m_nextsuspend, value => m_nextsuspend = value);
+            save.save_item_ref(device(), device().name(), device().tag(), 0, "m_eatcycles", () => m_eatcycles, value => m_eatcycles = value);
+            save.save_item_ref(device(), device().name(), device().tag(), 0, "m_nexteatcycles", () => m_nexteatcycles, value => m_nexteatcycles = value);
+            save.save_item_ref(device(), device().name(), device().tag(), 0, "m_trigger", () => m_trigger, value => m_trigger = value);
+            save.save_item_ref(device(), device().name(), device().tag(), 0, "m_totalcycles", () => m_totalcycles, value => m_totalcycles = value);
+            save.save_item_ref(device(), device().name(), device().tag(), 0, "m_localtime", () => m_localtime, value => m_localtime = value);
 
             //throw new emu_unimplemented();
 #if false

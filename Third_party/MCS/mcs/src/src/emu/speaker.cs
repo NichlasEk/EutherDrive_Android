@@ -103,7 +103,7 @@ namespace mame
         public void mix(Pointer<stream_buffer_sample_t> leftmix, Pointer<stream_buffer_sample_t> rightmix, attotime start, attotime end, int expected_samples, bool suppress)  //void mix(stream_buffer::sample_t *leftmix, stream_buffer::sample_t *rightmix, attotime start, attotime end, int expected_samples, bool suppress)
         {
             // skip if no stream
-            if (m_dimixer.m_mixer_stream == null)
+            if (m_dimixer == null || m_dimixer.m_mixer_stream == null)
                 return;
 
             // skip if invalid range
@@ -112,6 +112,8 @@ namespace mame
 
             // get a view on the desired range
             read_stream_view view = m_dimixer.m_mixer_stream.update_view(start, end);
+            if (view == null)
+                return;
 
             sound_assert(view.samples() >= expected_samples);
 

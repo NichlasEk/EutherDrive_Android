@@ -854,7 +854,7 @@ namespace mame
             m_noise_value = 0;
             m_count_noise = 0;
             m_prescale_noise = 0;
-            m_last_enable = -1;  // force a write
+            m_last_enable = 0xc0; // force a write, matching MAME's port-direction reset state
             for (int i = 0; i < AY_PORTA; i++)
                 ay8910_write_reg(i,0);
             m_ready = 1;

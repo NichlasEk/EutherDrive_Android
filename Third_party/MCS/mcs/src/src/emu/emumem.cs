@@ -2752,6 +2752,7 @@ namespace mame
             m_tag = tag;
             m_name = util.string_format("Bank '{0}'", m_tag);
             machine().save().save_item(device, "memory", m_tag, 0, m_curentry, "m_curentry");
+            machine().save().save_item_ref(device, "memory", m_tag, 0, "m_curentry.ref", () => m_curentry, value => set_entry(value));
         }
 
 
@@ -3248,10 +3249,8 @@ namespace mame
 
             std.memset(ptr, (u8)0);
 
-            //throw new emu_unimplemented();
-#if false
-            machine().save().save_memory(&dev, "memory", dev.tag(), spacenum, name.c_str(), ptr, width/8, u32(bytes) / (width/8));
-#endif
+            u8 bytesPerElement = (u8)(width / 8);
+            machine().save().save_memory(dev, "memory", dev.tag(), spacenum, name, ptr, bytesPerElement, (u32)(bytes / (u64)bytesPerElement));
 
             return ptr;
         }

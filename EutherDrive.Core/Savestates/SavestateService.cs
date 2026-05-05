@@ -35,6 +35,10 @@ public sealed class SavestateService
 
     public SavestateSlotInfo[] GetSlotInfo(RomIdentity romId)
     {
+        string path = GetStatePath(romId);
+        if (!File.Exists(path))
+            return BuildEmptySlots();
+
         try
         {
             var file = ReadFileMetadata(romId);
@@ -90,7 +94,7 @@ public sealed class SavestateService
         slot.Error = null;
 
         WriteFile(romId, file);
-        Console.WriteLine($"[Savestate] Saved slot {slotIndex} for '{romId.Name}'.");
+        Console.WriteLine($"[Savestate] Saved slot {slotIndex} for '{romId.Name}' -> {GetStatePath(romId)}.");
     }
 
     public void Load(ISavestateCapable core, int slotIndex)
@@ -155,7 +159,7 @@ public sealed class SavestateService
             throw new ArgumentOutOfRangeException(nameof(slotIndex), $"Slot index must be 1..{SlotCount}.");
     }
 
-    private static SavestateSlotInfo[] BuildEmptySlots(string error)
+    private static SavestateSlotInfo[] BuildEmptySlots(string? error = null)
     {
         var slots = new SavestateSlotInfo[SlotCount];
         for (int i = 0; i < SlotCount; i++)

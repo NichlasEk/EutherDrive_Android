@@ -186,8 +186,8 @@ namespace mame
         // system state
         machine_phase m_current_phase;        // current execution phase
         bool m_paused;               // paused?
-        bool m_hard_reset_pending;   // is a hard reset pending?
-        bool m_exit_pending;         // is an exit pending?
+        volatile bool m_hard_reset_pending;   // is a hard reset pending?
+        volatile bool m_exit_pending;         // is an exit pending?
         emu_timer m_soft_reset_timer;     // timer used to schedule a soft reset
 
         // misc state
@@ -1001,7 +1001,7 @@ namespace mame
             m_memory.initialize();
 
             // save the random seed or save states might be broken in drivers that use the rand() method
-            save().save_item(m_rand_seed, "m_rand_seed");
+            save().save_item_ref(null, "machine", null, 0, "m_rand_seed", () => m_rand_seed, value => m_rand_seed = value);
 
             // initialize image devices
             m_image = new image_manager(this);

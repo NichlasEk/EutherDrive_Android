@@ -16,6 +16,7 @@ using uint8_t = System.Byte;
 using uint16_t = System.UInt16;
 using uint32_t = System.UInt32;
 using unsigned = System.UInt32;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 using static mame.device_global;
 using static mame.diexec_global;
@@ -319,6 +320,10 @@ namespace mame
 
         intref m_icount = new intref();  //int m_icount;
         int m_icount_executing;
+        readonly bool m_profile_cpu = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_CPU_PROFILE") == "1";
+        long m_profile_last_ticks = Stopwatch.GetTimestamp();
+        long m_profile_execute_ticks;
+        long m_profile_instructions;
         uint8_t m_rtemp;
         uint8_t [] m_cc_op;  //const uint8_t *   m_cc_op;
         uint8_t [] m_cc_cb;
@@ -688,12 +693,17 @@ namespace mame
 
         void device_execute_interface_execute_run()
         {
+            bool profileCpu = m_profile_cpu;
+            long profileStart = profileCpu ? Stopwatch.GetTimestamp() : 0;
+            long profileInstructions = 0;
             do
             {
                 if (m_wait_state != 0)
                 {
                     // stalled
                     m_icount.i = 0;
+                    if (profileCpu)
+                        add_cpu_profile(profileStart, profileInstructions);
                     return;
                 }
 
@@ -727,11 +737,36 @@ namespace mame
 
 
                 opcount++;
+                if (profileCpu)
+                    profileInstructions++;
 
 
                 EXEC_op(opcode);
 
             } while (m_icount.i > 0);
+
+            if (profileCpu)
+                add_cpu_profile(profileStart, profileInstructions);
+        }
+
+        void add_cpu_profile(long startTicks, long instructions)
+        {
+            long now = Stopwatch.GetTimestamp();
+            m_profile_execute_ticks += now - startTicks;
+            m_profile_instructions += instructions;
+
+            long elapsedTicks = now - m_profile_last_ticks;
+            if (elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double scale = 1000.0 / Stopwatch.Frequency;
+            double elapsedSeconds = elapsedTicks / (double)Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[MCS-CPU] tag={tag()} type=z80 exec_ms={m_profile_execute_ticks * scale:0.0} " +
+                $"insn={m_profile_instructions} ips={m_profile_instructions / elapsedSeconds:0}");
+            m_profile_last_ticks = now;
+            m_profile_execute_ticks = 0;
+            m_profile_instructions = 0;
         }
 
         void device_execute_interface_execute_set_input(int inputnum, int state)

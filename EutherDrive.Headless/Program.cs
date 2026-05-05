@@ -2386,6 +2386,11 @@ class Program
         bool useCps1 = string.Equals(coreOverride, "cps1", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
+        bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
 
         if (useCps1)
         {
@@ -2426,6 +2431,49 @@ class Program
             }
 
             Console.WriteLine("[HEADLESS] CPS1 savestate roundtrip ok.");
+            return 0;
+        }
+
+        if (useMcsArcade)
+        {
+            using var arcade = new McsArcadeAdapter();
+            arcade.LoadRom(romPath);
+
+            for (int i = 0; i < 2; i++)
+                arcade.RunFrame();
+
+            byte[] snapshotMcs;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                arcade.SaveState(writer);
+                writer.Flush();
+                snapshotMcs = ms.ToArray();
+            }
+
+            for (int i = 0; i < 320; i++)
+                arcade.RunFrame();
+
+            using (var ms = new MemoryStream(snapshotMcs))
+            using (var reader = new BinaryReader(ms))
+            {
+                arcade.LoadState(reader);
+            }
+
+            for (int i = 0; i < 20; i++)
+                arcade.RunFrame();
+
+            byte[] snapshotAfterMcs;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                arcade.SaveState(writer);
+                writer.Flush();
+                snapshotAfterMcs = ms.ToArray();
+            }
+
+            bool matchMcs = snapshotMcs.SequenceEqual(snapshotAfterMcs);
+            Console.WriteLine($"[HEADLESS] MCS savestate smoke ok. payload_bytes={snapshotMcs.Length} deterministic_match={matchMcs}");
             return 0;
         }
 

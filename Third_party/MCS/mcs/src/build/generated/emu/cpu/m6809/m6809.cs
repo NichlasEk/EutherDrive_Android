@@ -251,7 +251,7 @@ namespace mame
                 case 223:    throw new emu_unimplemented(); //goto state_223;
                 case 224:    throw new emu_unimplemented(); //goto state_224;
                 default:
-                    fatalerror("Unexpected state");
+                    fatalerror(cpu_context("Unexpected state"));
                     break;
             }
 
@@ -271,12 +271,12 @@ MAIN:
             debugger_instruction_hook(m_pc.w);
 
             // opcode fetch
-            m_lic_func.op_s32(ASSERT_LINE);
+            set_lic(ASSERT_LINE);
             m_opcode = read_opcode();
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(1); return; }
 
 state_1:
-            m_lic_func.op_s32(CLEAR_LINE);
+            set_lic(CLEAR_LINE);
 
             // dispatch opcode
             switch (m_opcode)

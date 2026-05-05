@@ -67,6 +67,17 @@ namespace mame
             m_char_tilemap.set_transparent_pen(0);
 
             save_item(NAME(new { m_pri }));
+            var save = machine().save();
+            save.save_item_ref(this, name(), tag(), 0, "m_pri", () => m_pri, value => m_pri = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrollx_0_0", () => m_scrollx_0_0, value => m_scrollx_0_0 = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrollx_0_1", () => m_scrollx_0_1, value => m_scrollx_0_1 = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrolly_0_0", () => m_scrolly_0_0, value => m_scrolly_0_0 = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrolly_0_1", () => m_scrolly_0_1, value => m_scrolly_0_1 = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrollx_1_0", () => m_scrollx_1_0, value => m_scrollx_1_0 = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrollx_1_1", () => m_scrollx_1_1, value => m_scrollx_1_1 = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrolly_1_0", () => m_scrolly_1_0, value => m_scrolly_1_0 = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_scrolly_1_1", () => m_scrolly_1_1, value => m_scrolly_1_1 = value);
+            save.register_postload(xain_postload);
         }
 
 

@@ -1094,6 +1094,8 @@ namespace mame
             save.save_item(&m_device, "stream.sound_stream", state_tag.c_str(), 0, NAME(m_sample_rate));
             save.save_item(&m_device, "stream.sound_stream", state_tag.c_str(), 0, NAME(m_last_update_end_time));
 #endif
+            save.save_item_ref(m_device, "stream.sound_stream", state_tag, 0, "m_sample_rate", () => m_sample_rate, value => m_sample_rate = value);
+            save.save_item_ref(m_device, "stream.sound_stream", state_tag, 0, "m_last_update_end_time", () => m_last_update_end_time, value => m_last_update_end_time = value);
 
             save.register_postload(postload);
             save.register_presave(presave);
@@ -1306,6 +1308,9 @@ namespace mame
             g_profiler.stop();
 
             // return the requested view
+            if (m_output_view[outputnum] == null)
+                return empty_view(start, end);
+
             return new read_stream_view(m_output_view[outputnum], start);
         }
 
@@ -1415,7 +1420,11 @@ namespace mame
         // handle updates before a save state load
         void presave()
         {
-            throw new emu_unimplemented();
+            if (m_output.empty())
+                return;
+
+            update();
+            m_last_update_end_time = m_output[0].end_time();
         }
 
 
@@ -1708,7 +1717,7 @@ namespace mame
             machine.add_notifier(machine_notification.MACHINE_NOTIFY_EXIT, stop_recording);
 
             // register global states
-            machine.save().save_item(NAME(new { m_last_update }));
+            machine.save().save_item_ref(null, "sound", null, 0, "m_last_update", () => m_last_update, value => m_last_update = value);
 
             // set the starting attenuation
             set_attenuation(machine.options().volume());
@@ -2117,7 +2126,12 @@ namespace mame
 
             // force all the speaker streams to generate the proper number of samples
             foreach (speaker_device speaker in m_speakers)
-                speaker.mix(new Pointer<stream_buffer_sample_t>(m_leftmix), new Pointer<stream_buffer_sample_t>(m_rightmix), m_last_update, endtime, (int)m_samples_this_update, (m_muted & MUTE_REASON_SYSTEM) != 0);  //speaker.mix(&m_leftmix[0], &m_rightmix[0], m_last_update, endtime, m_samples_this_update, (m_muted & MUTE_REASON_SYSTEM));
+            {
+                if (speaker == null)
+                    continue;
+
+                speaker.mix(new Pointer<stream_buffer_sample_t>(m_leftmix), new Pointer<stream_buffer_sample_t>(m_rightmix), m_last_update, endtime, (int)m_samples_this_update, (m_muted & MUTE_REASON_SYSTEM) != 0);  //speaker.mix(&m_leftmix[0], &m_rightmix[0], m_last_update, endtime, m_samples_this_update, m_muted & MUTE_REASON_SYSTEM);
+            }
 
             // determine the maximum in this section
             stream_buffer_sample_t curmax = 0;

@@ -205,6 +205,14 @@ namespace mame
             m_bg_tilemap_1.set_scrolly(0, (int)(m_scrolly_1_0 | (m_scrolly_1_1 << 8)));
         }
 
+        void xain_postload()
+        {
+            m_bg_tilemap_0.set_scrollx(0, (int)(m_scrollx_0_0 | (m_scrollx_0_1 << 8)));
+            m_bg_tilemap_0.set_scrolly(0, (int)(m_scrolly_0_0 | (m_scrolly_0_1 << 8)));
+            m_bg_tilemap_1.set_scrollx(0, (int)(m_scrollx_1_0 | (m_scrollx_1_1 << 8)));
+            m_bg_tilemap_1.set_scrolly(0, (int)(m_scrolly_1_0 | (m_scrolly_1_1 << 8)));
+        }
+
 
         void bootleg_map(address_map map, device_t device)
         {
@@ -418,6 +426,7 @@ namespace mame
             m_rom_banks_1.op0.set_entry(0);
 
             save_item(NAME(new { m_vblank }));
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_vblank", () => m_vblank, value => m_vblank = value);
         }
 
 

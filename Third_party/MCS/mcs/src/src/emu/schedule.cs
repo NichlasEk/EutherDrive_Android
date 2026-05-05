@@ -39,6 +39,7 @@ namespace mame
         public emu_timer m_next;         // next timer in order in the list
         public emu_timer m_prev;         // previous timer in order in the list
         public timer_expired_delegate m_callback;  // callback function
+        int m_save_index;
         public int m_param;        // integer parameter
         public bool m_enabled;      // is the timer enabled?
         public bool m_temporary;    // is the timer temporary?
@@ -87,6 +88,7 @@ namespace mame
             m_next = null;
             m_prev = null;
             m_callback = callback;
+            m_save_index = -1;
             m_param = param;
             m_temporary = temporary;
             m_period = attotime.never;
@@ -216,9 +218,12 @@ namespace mame
         //-------------------------------------------------
         void register_save(save_manager manager)
         {
-            //throw new emu_unimplemented();
-#if false
-#endif
+            m_save_index = (int)m_scheduler.allocate_timer_save_index();
+            manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_param", () => m_param, value => m_param = value);
+            manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_enabled", () => m_enabled, value => m_enabled = value);
+            manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_period", () => m_period, value => m_period = value);
+            manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_start", () => m_start, value => m_start = value);
+            manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_expire", () => m_expire, value => m_expire = value);
         }
 
         //-------------------------------------------------
@@ -272,6 +277,7 @@ namespace mame
         emu_timer m_timer_list;               // head of the active list
         emu_timer m_inactive_timers;          // head of the inactive timer list
         fixed_allocator<emu_timer> m_timer_allocator = new fixed_allocator<emu_timer>();          // allocator for timers
+        u32 m_timer_save_index;
 
         // other internal states
         public emu_timer m_callback_timer;           // pointer to the current callback timer
@@ -323,6 +329,7 @@ namespace mame
             m_basetime = attotime.zero;
             m_timer_list = null;
             m_inactive_timers = null;
+            m_timer_save_index = 0;
             m_callback_timer = null;
             m_callback_timer_modified = false;
             m_callback_timer_expire_time = attotime.zero;
@@ -361,7 +368,7 @@ namespace mame
             assert(m_inactive_timers == null);
 
             // register global states
-            machine.save().save_item(m_basetime, "m_basetime");
+            machine.save().save_item_ref(null, "scheduler", null, 0, "m_basetime", () => m_basetime, value => m_basetime = value);
             machine.save().register_presave(presave);
             machine.save().register_postload(postload);
         }
@@ -402,6 +409,7 @@ namespace mame
         }
 
         public emu_timer first_timer() { return m_timer_list; }
+        public u32 allocate_timer_save_index() { return m_timer_save_index++; }
         public device_execute_interface currently_executing() { return m_executing_device; }
         //bool can_save() const;
         public emu_timer callback_timer() { return m_callback_timer; }

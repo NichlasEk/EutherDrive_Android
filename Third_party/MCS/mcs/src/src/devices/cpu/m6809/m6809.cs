@@ -2,6 +2,7 @@
 // copyright-holders:Edward Fast
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 using devcb_write_line = mame.devcb_write<mame.Type_constant_s32, mame.devcb_value_const_unsigned_1<mame.Type_constant_s32>>;  //using devcb_write_line = devcb_write<int, 1U>;
@@ -11,6 +12,7 @@ using uint8_t = System.Byte;
 using uint16_t = System.UInt16;
 using uint32_t = System.UInt32;
 using uint64_t = System.UInt64;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 using static mame.device_global;
 using static mame.diexec_global;
@@ -220,9 +222,14 @@ namespace mame
         intref m_icount = new intref();  //int                         m_icount;
         int m_addressing_mode;
         PAIR16 m_ea;               // effective address
+        readonly bool m_profile_cpu = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_CPU_PROFILE") == "1";
+        long m_profile_last_ticks = Stopwatch.GetTimestamp();
+        long m_profile_execute_ticks;
+        long m_profile_instructions;
 
         // Callbacks
         devcb_write_line m_lic_func;         // LIC pin on the 6809E
+        bool m_lic_active;
 
         // address spaces
         address_space_config m_program_config;
@@ -273,6 +280,7 @@ namespace mame
             m_dimemory.space(AS_PROGRAM).specific(m_mintf.program);
             m_dimemory.space(m_dimemory.has_space(AS_OPCODES) ? AS_OPCODES : AS_PROGRAM).cache(m_mintf.csprogram);
 
+            m_lic_active = !m_lic_func.isnull();
             m_lic_func.resolve_safe();
 
             // register our state for the debugger
@@ -329,6 +337,29 @@ namespace mame
             save_item(NAME(new { m_reg }));
             save_item(NAME(new { m_cond }));
 
+            var save = machine().save();
+            save.save_item_ref(this, name(), tag(), 0, "m_pc.w", () => m_pc.w, value => m_pc.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_ppc.w", () => m_ppc.w, value => m_ppc.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_q.q", () => m_q.q, value => m_q.q = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_dp", () => m_dp, value => m_dp = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_u.w", () => m_u.w, value => m_u.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_s.w", () => m_s.w, value => m_s.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_x.w", () => m_x.w, value => m_x.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_y.w", () => m_y.w, value => m_y.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_cc", () => m_cc, value => m_cc = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_temp.w", () => m_temp.w, value => m_temp.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_opcode", () => m_opcode, value => m_opcode = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_nmi_asserted", () => m_nmi_asserted, value => m_nmi_asserted = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_nmi_line", () => m_nmi_line, value => m_nmi_line = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_firq_line", () => m_firq_line, value => m_firq_line = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_irq_line", () => m_irq_line, value => m_irq_line = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_lds_encountered", () => m_lds_encountered, value => m_lds_encountered = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_state", () => m_state, value => m_state = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_ea.w", () => m_ea.w, value => m_ea.w = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_addressing_mode", () => m_addressing_mode, value => m_addressing_mode = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_reg", () => m_reg, value => m_reg = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_cond", () => m_cond, value => m_cond = value);
+
             // set our instruction counter
             set_icountptr(m_icount);
             m_icount.i = 0;
@@ -356,8 +387,8 @@ namespace mame
         }
 
 
-        protected override void device_pre_save() { throw new emu_unimplemented(); }
-        protected override void device_post_load() { throw new emu_unimplemented(); }
+        protected override void device_pre_save() { }
+        protected override void device_post_load() { }
 
         // device_execute_interface overrides
         protected virtual uint32_t device_execute_interface_execute_min_cycles() { return 1; }
@@ -366,10 +397,38 @@ namespace mame
 
         protected virtual void device_execute_interface_execute_run()
         {
+            bool profileCpu = m_profile_cpu;
+            long profileStart = profileCpu ? Stopwatch.GetTimestamp() : 0;
+            long profileInstructions = 0;
             do
             {
                 execute_one();
+                if (profileCpu)
+                    profileInstructions++;
             } while (m_icount.i > 0);
+
+            if (profileCpu)
+                add_cpu_profile(profileStart, profileInstructions);
+        }
+
+        void add_cpu_profile(long startTicks, long instructions)
+        {
+            long now = Stopwatch.GetTimestamp();
+            m_profile_execute_ticks += now - startTicks;
+            m_profile_instructions += instructions;
+
+            long elapsedTicks = now - m_profile_last_ticks;
+            if (elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double scale = 1000.0 / Stopwatch.Frequency;
+            double elapsedSeconds = elapsedTicks / (double)Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[MCS-CPU] tag={tag()} type=m6809 exec_ms={m_profile_execute_ticks * scale:0.0} " +
+                $"insn={m_profile_instructions} ips={m_profile_instructions / elapsedSeconds:0}");
+            m_profile_last_ticks = now;
+            m_profile_execute_ticks = 0;
+            m_profile_instructions = 0;
         }
 
         protected virtual void device_execute_interface_execute_set_input(int inputnum, int state)
@@ -440,36 +499,54 @@ namespace mame
 
 
         // eat cycles
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void eat(int cycles)                              { m_icount.i -= cycles; }
 
         //m6809inl.cs
         //void eat_remaining();
 
         // read a byte from given memory location
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         uint8_t read_memory(uint16_t address)             { eat(1); return m_mintf.program.read_byte(address); }
 
         // write a byte to given memory location
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void write_memory(uint16_t address, uint8_t data) { eat(1); m_mintf.program.write_byte(address, data); }
 
         // read_opcode() is like read_memory() except it is used for reading opcodes. In  the case of a system
         // with memory mapped I/O, this function can be used  to greatly speed up emulation.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         uint8_t read_opcode(uint16_t address)             { eat(1); return m_mintf.read_opcode(address); }
 
         // read_opcode_arg() is identical to read_opcode() except it is used for reading opcode  arguments. This
         // difference can be used to support systems that use different encoding mechanisms for opcodes
         // and opcode arguments.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         uint8_t read_opcode_arg(uint16_t address)         { eat(1); return m_mintf.read_opcode_arg(address); }
 
         // read_opcode() and bump the program counter
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         uint8_t read_opcode()                             { return read_opcode(m_pc.w++); }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         uint8_t read_opcode_arg()                         { return read_opcode_arg(m_pc.w++); }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void dummy_read_opcode_arg(uint16_t delta)        { read_opcode_arg((uint16_t)(m_pc.w + delta)); }
         void dummy_vma(int count)                         { for (int i = 0; i != count; i++) { read_opcode_arg(0xffff); } }
 
         // state stack - implemented as a uint32_t
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void push_state(uint16_t state)                   { m_state = (m_state << 9) | state; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         uint16_t pop_state()                              { uint16_t result = (uint16_t)(m_state & 0x1ff); m_state >>= 9; return result; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void reset_state()                                { m_state = 1; }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        void set_lic(int state)
+        {
+            if (m_lic_active)
+                m_lic_func.op_s32(state);
+        }
 
         // effective address reading/writing
         //uint8_t read_ea()                                 { return read_memory(m_ea.w); }
@@ -528,12 +605,19 @@ namespace mame
             m_cc = (uint8_t)((m_cc & ~CC_C) | (newCarry ? CC_C : 0));
             return result;
         }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_a()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_A; m_reg = 0; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_b()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_B; m_reg = 1; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_d()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 0; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_x()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 1; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_y()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 2; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_s()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 3; }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_u()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 4; }
         void set_imm()                                    { m_addressing_mode = ADDRESSING_MODE_IMMEDIATE; }
         void set_regop8(uint8_t reg)                      { if (reg == m_q.r.a) set_a(); else set_b(); m_addressing_mode = ADDRESSING_MODE_IMMEDIATE; }
@@ -654,7 +738,25 @@ namespace mame
         // m6809inl.cs
         //uint16_t get_pending_interrupt();
 
-        void log_illegal() { throw new emu_unimplemented(); }
+        void log_illegal()
+        {
+            logerror("{0}: illegal opcode at {1:x4}\n", machine().describe_context(), (uint)m_pc.w);
+        }
+
+        string cpu_context(string where)
+        {
+            return string.Format(
+                "{0}: pc={1:x4} ppc={2:x4} op={3:x2} state=0x{4:x8} amode={5} reg={6} ea={7:x4} cc={8:x2}",
+                where,
+                (uint)m_pc.w,
+                (uint)m_ppc.w,
+                (uint)m_opcode,
+                (uint)m_state,
+                m_addressing_mode,
+                m_reg,
+                (uint)m_ea.w,
+                (uint)m_cc);
+        }
 
 
         // functions

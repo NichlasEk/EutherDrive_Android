@@ -262,7 +262,11 @@ namespace mame
         //-------------------------------------------------
         public override void interface_pre_save()
         {
-            throw new emu_unimplemented();
+            for (int index = 0; index < m_palette.num_colors(); index++)
+            {
+                m_save_pen[index] = m_palette.entry_color((u32)index);
+                m_save_contrast[index] = m_palette.entry_contrast((u32)index);
+            }
         }
 
         //-------------------------------------------------
@@ -271,7 +275,14 @@ namespace mame
         //-------------------------------------------------
         public override void interface_post_load()
         {
-            throw new emu_unimplemented();
+            for (int index = 0; index < m_palette.num_colors(); index++)
+            {
+                m_palette.entry_set_color((u32)index, new rgb_t((u32)m_save_pen[index]));
+                m_palette.entry_set_contrast((u32)index, m_save_contrast[index]);
+            }
+
+            for (u32 pen = 0; pen < m_indirect_pens.size(); pen++)
+                m_palette.entry_set_color(pen, m_indirect_colors[m_indirect_pens[(int)pen]]);
         }
 
         //-------------------------------------------------

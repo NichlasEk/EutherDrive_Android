@@ -5,12 +5,15 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using EutherDrive.Core.Savestates;
 using SharpCompress.Archives;
 
 namespace EutherDrive.Core.Arcade;
 
-public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
+public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDisposable
 {
+    private const string SavestateMagic = "MCSARC";
+    private const int SavestateVersion = 1;
     private const int PlaceholderWidth = 256;
     private const int PlaceholderHeight = 224;
     private const int PlaceholderStride = PlaceholderWidth * 4;
@@ -18,6 +21,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int OutputChannels = 2;
     private static readonly int MaxQueuedAudioSamples = OutputSampleRate * OutputChannels * 2;
+    private static readonly bool TraceMcsProfile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_PROFILE") == "1";
     private static readonly object McsInitLock = new();
     private static readonly McsHostCore HostCore = new();
     private static readonly McsHostFileSystem HostFileSystem = new();
@@ -49,6 +54,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private int _frameStride = PlaceholderStride;
 
     private string? _driverName;
+    private string? _romPath;
     private string? _romDirectory;
     private McsRuntime? _runtime;
     private ArcadeInputState _inputState;
@@ -142,6 +148,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         StopRuntime();
 
         _driverName = GetDriverNameFromPath(path);
+        _romPath = Path.GetFullPath(path);
         DrawPlaceholderFrame();
 
         if (!McsDriverCatalog.TryFind(_driverName, out McsDriverInfo? driver))
@@ -171,6 +178,62 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         DrawPlaceholderFrame();
         _runtime = new McsRuntime(this, driverName, romDirectory);
         _runtime.Start();
+    }
+
+    public RomIdentity? RomIdentity
+    {
+        get
+        {
+            string? romPath = _romPath;
+            string? driverName = _driverName;
+            if (string.IsNullOrWhiteSpace(romPath) || string.IsNullOrWhiteSpace(driverName) || !File.Exists(romPath))
+                return null;
+
+            using FileStream stream = File.OpenRead(romPath);
+            return new RomIdentity(
+                driverName,
+                RomIdentity.ComputeSha256(stream),
+                PersistentStoragePath.ResolveSavestateDirectory(romPath, "mcs"));
+        }
+    }
+
+    public long? FrameCounter => _runtime?.PublishedFrames;
+
+    public void SaveState(BinaryWriter writer)
+    {
+        McsRuntime runtime = _runtime ?? throw new InvalidOperationException("MCS runtime is not running.");
+        writer.Write(SavestateMagic);
+        writer.Write(SavestateVersion);
+        writer.Write(_driverName ?? "");
+        runtime.SaveState(writer);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        string magic = reader.ReadString();
+        if (!string.Equals(magic, SavestateMagic, StringComparison.Ordinal))
+            throw new InvalidDataException("MCS savestate magic mismatch.");
+
+        int version = reader.ReadInt32();
+        if (version != SavestateVersion)
+            throw new InvalidDataException($"MCS savestate version mismatch: {version}.");
+
+        string driverName = reader.ReadString();
+        if (!string.Equals(driverName, _driverName, StringComparison.Ordinal))
+            throw new InvalidDataException($"MCS savestate is for '{driverName}', current driver is '{_driverName}'.");
+
+        string? romDirectory = _romDirectory;
+        if (string.IsNullOrWhiteSpace(romDirectory))
+            throw new InvalidOperationException("MCS ROM is not loaded.");
+
+        using var payloadStream = new MemoryStream();
+        reader.BaseStream.CopyTo(payloadStream);
+        byte[] payload = payloadStream.ToArray();
+
+        McsRuntime runtime = _runtime ?? throw new InvalidOperationException("MCS runtime is not running.");
+        using var stateStream = new MemoryStream(payload, writable: false);
+        using var stateReader = new BinaryReader(stateStream, System.Text.Encoding.UTF8, leaveOpen: false);
+        runtime.LoadState(stateReader);
     }
 
     public void RunFrame()
@@ -325,19 +388,16 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
             if (_frameBuffer.Length != required)
                 _frameBuffer = new byte[required];
 
+            byte[] source = pixels.Buffer.data_raw;
+            int sourceBase = pixels.Offset;
+            int sourceRowBytes = rowPixels * 4;
+            int copyBytes = width * 4;
+
             for (int y = 0; y < height; y++)
             {
-                int srcRow = y * rowPixels;
+                int src = sourceBase + y * sourceRowBytes;
                 int dst = y * stride;
-                for (int x = 0; x < width; x++)
-                {
-                    uint argb = pixels[srcRow + x];
-                    _frameBuffer[dst + 0] = (byte)(argb & 0xFF);
-                    _frameBuffer[dst + 1] = (byte)((argb >> 8) & 0xFF);
-                    _frameBuffer[dst + 2] = (byte)((argb >> 16) & 0xFF);
-                    _frameBuffer[dst + 3] = 0xFF;
-                    dst += 4;
-                }
+                Buffer.BlockCopy(source, src, _frameBuffer, dst, copyBytes);
             }
         }
     }
@@ -348,21 +408,21 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         if (sampleCount <= 0)
             return;
 
-        short[] chunk = new short[sampleCount];
-        int volume = _masterVolumePercent;
-        for (int i = 0; i < sampleCount; i++)
-        {
-            int scaled = samples[i] * volume / (AudioOutputDivisor * 100);
-            chunk[i] = (short)Math.Clamp(scaled, short.MinValue, short.MaxValue);
-        }
-
         lock (_sync)
         {
-            int overflow = _audioQueue.Count + chunk.Length - MaxQueuedAudioSamples;
+            int overflow = _audioQueue.Count + sampleCount - MaxQueuedAudioSamples;
             if (overflow > 0)
                 _audioQueue.RemoveRange(0, Math.Min(overflow, _audioQueue.Count));
 
-            _audioQueue.AddRange(chunk);
+            if (_audioQueue.Capacity < _audioQueue.Count + sampleCount)
+                _audioQueue.Capacity = _audioQueue.Count + sampleCount;
+
+            int volume = _masterVolumePercent;
+            for (int i = 0; i < sampleCount; i++)
+            {
+                int scaled = samples[i] * volume / (AudioOutputDivisor * 100);
+                _audioQueue.Add((short)Math.Clamp(scaled, short.MinValue, short.MaxValue));
+            }
         }
     }
 
@@ -389,9 +449,20 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         private readonly AutoResetEvent _frameReady = new(false);
         private readonly object _frameSync = new();
         private readonly ManualResetEventSlim _stopped = new(false);
+        private readonly object _stateRequestSync = new();
         private readonly McsOsd _osd;
         private readonly Thread _thread;
+        private StateRequest? _pendingStateRequest;
         private volatile Exception? _fault;
+        private long _profileLastTicks = Stopwatch.GetTimestamp();
+        private long _profileFrames;
+        private long _profileWaitTicks;
+        private long _profileUpdateTicks;
+        private long _profileDrawTicks;
+        private long _profilePublishTicks;
+        private long _profileAudioTicks;
+        private long _profileInputTicks;
+        private long _profileAudioCallbacks;
 
         public McsRuntime(McsArcadeAdapter owner, string driverName, string romDirectory)
         {
@@ -426,8 +497,14 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         public void Dispose()
         {
             _osd.ScheduleExit();
-            if (!_stopped.Wait(TimeSpan.FromSeconds(2)))
-                Console.Error.WriteLine($"[MCS] Driver '{_driverName}' did not stop within timeout.");
+            TimeSpan timeout = TimeSpan.FromSeconds(10);
+            if (!_stopped.Wait(timeout))
+            {
+                var timeoutException = new TimeoutException($"MCS driver '{_driverName}' did not stop within {timeout.TotalSeconds:0} seconds.");
+                _fault ??= timeoutException;
+                Console.Error.WriteLine($"[MCS] {timeoutException.Message}");
+                throw timeoutException;
+            }
 
             _firstFrame.Dispose();
             _frameReady.Dispose();
@@ -447,12 +524,16 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
 
         public void WaitForNextFrame(TimeSpan timeout)
         {
+            long waitStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
             long start;
             lock (_frameSync)
                 start = PublishedFrames;
 
             if (start == 0 || _stopped.IsSet)
+            {
+                AddProfileWait(waitStart);
                 return;
+            }
 
             Stopwatch sw = Stopwatch.StartNew();
             while (!_stopped.IsSet)
@@ -460,15 +541,23 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                 lock (_frameSync)
                 {
                     if (PublishedFrames != start)
+                    {
+                        AddProfileWait(waitStart);
                         return;
+                    }
                 }
 
                 TimeSpan remaining = timeout - sw.Elapsed;
                 if (remaining <= TimeSpan.Zero)
+                {
+                    AddProfileWait(waitStart);
                     return;
+                }
 
                 _frameReady.WaitOne(remaining);
             }
+
+            AddProfileWait(waitStart);
         }
 
         public void ThrowIfFaulted()
@@ -479,6 +568,151 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         }
 
         public void ScheduleReset() => _osd.ScheduleReset();
+
+        public void SaveState(BinaryWriter writer)
+        {
+            byte[]? payload = null;
+            EnqueueStateRequest(new StateRequest(machine =>
+            {
+                using var stream = new MemoryStream();
+                using (var stateWriter = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+                    machine.save().write_stream(stateWriter);
+                payload = stream.ToArray();
+            }));
+
+            writer.Write(payload ?? Array.Empty<byte>());
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            using var payloadStream = new MemoryStream();
+            reader.BaseStream.CopyTo(payloadStream);
+            byte[] payload = payloadStream.ToArray();
+
+            EnqueueStateRequest(new StateRequest(machine =>
+            {
+                using var stream = new MemoryStream(payload, writable: false);
+                using var stateReader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: false);
+                machine.save().read_stream(stateReader);
+            }));
+        }
+
+        private void EnqueueStateRequest(StateRequest request)
+        {
+            lock (_stateRequestSync)
+            {
+                if (_pendingStateRequest != null)
+                    throw new InvalidOperationException("A MCS savestate operation is already pending.");
+
+                _pendingStateRequest = request;
+            }
+
+            while (!request.Done.Wait(TimeSpan.FromMilliseconds(50)))
+            {
+                if (_stopped.IsSet)
+                {
+                    ThrowIfFaulted();
+                    throw new InvalidOperationException("MCS runtime stopped before savestate operation completed.");
+                }
+            }
+
+            if (request.Error != null)
+                throw new InvalidOperationException("MCS savestate operation failed.", request.Error);
+        }
+
+        public void ProcessPendingStateRequest(mame.running_machine machine)
+        {
+            StateRequest? request;
+            lock (_stateRequestSync)
+            {
+                request = _pendingStateRequest;
+                _pendingStateRequest = null;
+            }
+
+            if (request == null)
+                return;
+
+            try
+            {
+                request.Execute(machine);
+            }
+            catch (Exception ex)
+            {
+                request.Error = ex;
+            }
+            finally
+            {
+                request.Done.Set();
+            }
+        }
+
+        private static mame.running_machine CurrentMachine()
+        {
+            mame.mame_machine_manager manager = mame.mame_machine_manager.instance()
+                ?? throw new InvalidOperationException("MCS machine manager is not running.");
+            return manager.machine()
+                ?? throw new InvalidOperationException("MCS running machine is not available.");
+        }
+
+        private void AddProfileWait(long startTicks)
+        {
+            if (TraceMcsProfile && startTicks != 0)
+                _profileWaitTicks += Stopwatch.GetTimestamp() - startTicks;
+        }
+
+        public void AddProfileFrame(long updateTicks, long drawTicks, long publishTicks)
+        {
+            if (!TraceMcsProfile)
+                return;
+
+            _profileFrames++;
+            _profileUpdateTicks += updateTicks;
+            _profileDrawTicks += drawTicks;
+            _profilePublishTicks += publishTicks;
+            MaybeReportProfile();
+        }
+
+        public void AddProfileAudio(long ticks)
+        {
+            if (!TraceMcsProfile)
+                return;
+
+            _profileAudioTicks += ticks;
+            _profileAudioCallbacks++;
+        }
+
+        public void AddProfileInput(long ticks)
+        {
+            if (TraceMcsProfile)
+                _profileInputTicks += ticks;
+        }
+
+        private void MaybeReportProfile()
+        {
+            long now = Stopwatch.GetTimestamp();
+            long elapsedTicks = now - _profileLastTicks;
+            if (elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double elapsedSeconds = elapsedTicks / (double)Stopwatch.Frequency;
+            double scale = 1000.0 / Stopwatch.Frequency;
+            long frames = _profileFrames;
+            Console.WriteLine(
+                $"[MCS-PROFILE] driver={_driverName} fps={frames / elapsedSeconds:0.0} " +
+                $"wait_ms={_profileWaitTicks * scale:0.0} update_ms={_profileUpdateTicks * scale:0.0} " +
+                $"draw_ms={_profileDrawTicks * scale:0.0} publish_ms={_profilePublishTicks * scale:0.0} " +
+                $"audio_ms={_profileAudioTicks * scale:0.0}/{_profileAudioCallbacks} input_ms={_profileInputTicks * scale:0.0}");
+
+            _profileLastTicks = now;
+            _profileFrames = 0;
+            _profileWaitTicks = 0;
+            _profileUpdateTicks = 0;
+            _profileDrawTicks = 0;
+            _profilePublishTicks = 0;
+            _profileAudioTicks = 0;
+            _profileAudioCallbacks = 0;
+            _profileInputTicks = 0;
+        }
 
         private void Run()
         {
@@ -543,6 +777,18 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                 _stopped.Set();
                 mame.mame_machine_manager.close_instance();
             }
+        }
+
+        private sealed class StateRequest
+        {
+            public StateRequest(Action<mame.running_machine> execute)
+            {
+                Execute = execute;
+            }
+
+            public Action<mame.running_machine> Execute { get; }
+            public ManualResetEventSlim Done { get; } = new(false);
+            public Exception? Error { get; set; }
         }
 
         private static string EnsureMcsDirectory(string name)
@@ -865,9 +1111,15 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
 
         public void update(bool skipRedraw)
         {
+            if (_machine != null)
+                _runtime.ProcessPendingStateRequest(_machine);
+
             if (skipRedraw || _target == null)
                 return;
 
+            long updateStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
+            long drawTicks = 0;
+            long publishTicks = 0;
             try
             {
                 _target.compute_minimum_size(out int width, out int height);
@@ -880,15 +1132,24 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
 
                 mame.render_primitive_list primitives = _target.get_primitives();
                 primitives.acquire_lock();
-                mame.software_renderer<uint, mame.int_const_0, mame.int_const_0, mame.int_const_0, mame.int_const_16, mame.int_const_8, mame.int_const_0, mame.bool_const_false, mame.bool_const_false>.draw_primitives(
-                    primitives,
-                    _bitmap.pix(0),
-                    (uint)width,
-                    (uint)height,
-                    (uint)_bitmap.rowpixels());
+                long drawStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
+                if (!TryDrawDirectPalette16(primitives, width, height))
+                {
+                    mame.software_renderer<uint, mame.int_const_0, mame.int_const_0, mame.int_const_0, mame.int_const_16, mame.int_const_8, mame.int_const_0, mame.bool_const_false, mame.bool_const_false>.draw_primitives(
+                        primitives,
+                        _bitmap.pix(0),
+                        (uint)width,
+                        (uint)height,
+                        (uint)_bitmap.rowpixels());
+                }
+                if (TraceMcsProfile)
+                    drawTicks = Stopwatch.GetTimestamp() - drawStart;
                 primitives.release_lock();
 
+                long publishStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
                 _owner.PublishFrame(_bitmap.pix(0), width, height, _bitmap.rowpixels());
+                if (TraceMcsProfile)
+                    publishTicks = Stopwatch.GetTimestamp() - publishStart;
                 _runtime.MarkFrameReady();
             }
             catch (Exception ex)
@@ -896,13 +1157,83 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                 if (_captureFailuresRemaining-- > 0)
                     Console.Error.WriteLine($"[MCS] Frame capture failed: {ex.Message}");
             }
+            finally
+            {
+                if (TraceMcsProfile)
+                    _runtime.AddProfileFrame(Stopwatch.GetTimestamp() - updateStart, drawTicks, publishTicks);
+            }
+        }
+
+        private bool TryDrawDirectPalette16(mame.render_primitive_list primitives, int width, int height)
+        {
+            mame.render_primitive? screenQuad = null;
+            for (mame.render_primitive? prim = primitives.first(); prim != null; prim = prim.next())
+            {
+                if (prim.type != mame.render_primitive.primitive_type.QUAD || prim.texture.base_ == null)
+                    continue;
+
+                if (screenQuad != null)
+                    return false;
+
+                screenQuad = prim;
+            }
+
+            if (screenQuad == null ||
+                screenQuad.texture.palette == null ||
+                screenQuad.texture.width != width ||
+                screenQuad.texture.height != height ||
+                screenQuad.texture.rowpixels < screenQuad.texture.width)
+                return false;
+
+            uint expectedFlags =
+                mame.render_global.PRIMFLAG_TEXFORMAT((uint)mame.texture_format.TEXFORMAT_PALETTE16) |
+                mame.render_global.PRIMFLAG_BLENDMODE(mame.rendertypes_global.BLENDMODE_NONE);
+            uint relevantFlags = screenQuad.flags & (mame.render_global.PRIMFLAG_TEXFORMAT_MASK | mame.render_global.PRIMFLAG_BLENDMODE_MASK);
+            if (relevantFlags != expectedFlags ||
+                mame.render_global.PRIMFLAG_GET_TEXWRAP(screenQuad.flags) ||
+                Math.Abs(screenQuad.bounds.x0) > 0.001f ||
+                Math.Abs(screenQuad.bounds.y0) > 0.001f ||
+                Math.Abs(screenQuad.bounds.x1 - width) > 0.001f ||
+                Math.Abs(screenQuad.bounds.y1 - height) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.tl.u) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.tl.v) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.tr.u - 1.0f) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.tr.v) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.bl.u) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.bl.v - 1.0f) > 0.001f)
+                return false;
+
+            mame.Pointer<byte> source = screenQuad.texture.base_;
+            mame.PointerU16 source16 = new(source);
+            mame.Pointer<mame.rgb_t> palette = screenQuad.texture.palette;
+            mame.PointerU32 destination = _bitmap.pix(0);
+            int sourceRowPixels = (int)screenQuad.texture.rowpixels;
+            int destinationRowPixels = _bitmap.rowpixels();
+
+            for (int y = 0; y < height; y++)
+            {
+                int sourceRow = y * sourceRowPixels;
+                int destinationRow = y * destinationRowPixels;
+                for (int x = 0; x < width; x++)
+                {
+                    ushort pen = source16[sourceRow + x];
+                    destination[destinationRow + x] = palette[pen];
+                }
+            }
+
+            return true;
         }
 
         public void input_update()
         {
+            long inputStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
             mame.running_machine? machine = _machine;
             if (machine == null)
+            {
+                if (TraceMcsProfile)
+                    _runtime.AddProfileInput(Stopwatch.GetTimestamp() - inputStart);
                 return;
+            }
 
             ArcadeInputState input = _owner.SnapshotInput();
             foreach (KeyValuePair<string, mame.ioport_port> port in machine.ioport().ports())
@@ -930,11 +1261,17 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                         field.set_value(pressed.Value ? 1u : 0u);
                 }
             }
+
+            if (TraceMcsProfile)
+                _runtime.AddProfileInput(Stopwatch.GetTimestamp() - inputStart);
         }
 
         public void update_audio_stream(mame.Pointer<short> buffer, int samplesThisFrame)
         {
+            long audioStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
             _owner.PublishAudio(buffer, samplesThisFrame);
+            if (TraceMcsProfile)
+                _runtime.AddProfileAudio(Stopwatch.GetTimestamp() - audioStart);
         }
 
         public void set_mastervolume(int attenuation)
