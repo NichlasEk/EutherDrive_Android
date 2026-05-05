@@ -675,7 +675,15 @@ namespace mame
 
 
     // ======================> mc6809_device
-    //class mc6809_device : public m6809_base_device
+    public class mc6809_device : m6809_base_device
+    {
+        public static readonly emu.detail.device_type_impl MC6809 = DEFINE_DEVICE_TYPE("mc6809", "Motorola MC6809", (type, mconfig, tag, owner, clock) => { return new mc6809_device(mconfig, tag, owner, clock); });
+
+        mc6809_device(machine_config mconfig, string tag, device_t owner, uint32_t clock)
+            : base(mconfig, tag, owner, clock, MC6809, 4)
+        {
+        }
+    }
 
 
     // ======================> mc6809e_device
@@ -734,6 +742,8 @@ namespace mame
 
     static partial class m6809_global
     {
+        public static mc6809_device MC6809(machine_config mconfig, string tag, u32 clock) { return emu.detail.device_type_impl.op<mc6809_device>(mconfig, tag, mc6809_device.MC6809, clock); }
+        public static mc6809_device MC6809<bool_Required>(machine_config mconfig, device_finder<mc6809_device, bool_Required> finder, u32 clock) where bool_Required : bool_const, new() { return emu.detail.device_type_impl.op(mconfig, finder, mc6809_device.MC6809, clock); }
         public static mc6809e_device MC6809E<bool_Required>(machine_config mconfig, device_finder<mc6809e_device, bool_Required> finder, u32 clock) where bool_Required : bool_const, new() { return emu.detail.device_type_impl.op(mconfig, finder, mc6809e_device.MC6809E, clock); }
         public static mc6809e_device MC6809E<bool_Required>(machine_config mconfig, device_finder<mc6809e_device, bool_Required> finder, XTAL clock) where bool_Required : bool_const, new() { return emu.detail.device_type_impl.op(mconfig, finder, mc6809e_device.MC6809E, clock); }
     }

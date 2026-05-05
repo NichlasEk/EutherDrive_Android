@@ -14,6 +14,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private const int PlaceholderWidth = 256;
     private const int PlaceholderHeight = 224;
     private const int PlaceholderStride = PlaceholderWidth * 4;
+    private const int AudioOutputDivisor = 8;
     private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int OutputChannels = 2;
     private static readonly object McsInitLock = new();
@@ -46,6 +47,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private int _frameStride = PlaceholderStride;
 
     private string? _driverName;
+    private string? _romDirectory;
     private McsRuntime? _runtime;
     private ArcadeInputState _inputState;
 
@@ -150,13 +152,22 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
 
         McsDriverInfo presentDriver = driver!;
         string romDirectory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? Environment.CurrentDirectory;
+        _romDirectory = romDirectory;
         _runtime = new McsRuntime(this, presentDriver.Name, romDirectory);
         _runtime.Start();
     }
 
     public void Reset()
     {
-        _runtime?.ScheduleReset();
+        string? driverName = _driverName;
+        string? romDirectory = _romDirectory;
+        if (string.IsNullOrWhiteSpace(driverName) || string.IsNullOrWhiteSpace(romDirectory))
+            return;
+
+        StopRuntime();
+        DrawPlaceholderFrame();
+        _runtime = new McsRuntime(this, driverName, romDirectory);
+        _runtime.Start();
     }
 
     public void RunFrame()
@@ -315,7 +326,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                 _audioBuffer = new short[sampleCount];
 
             for (int i = 0; i < sampleCount; i++)
-                _audioBuffer[i] = samples[i];
+                _audioBuffer[i] = (short)(samples[i] / AudioOutputDivisor);
         }
     }
 

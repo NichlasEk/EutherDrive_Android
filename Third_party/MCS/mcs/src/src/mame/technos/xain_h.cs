@@ -15,7 +15,7 @@ namespace mame
     {
         required_device<mc6809e_device> m_maincpu;
         required_device<mc6809e_device> m_subcpu;
-        required_device<mc6809e_device> m_audiocpu;
+        required_device<mc6809_device> m_audiocpu;
         optional_device<taito68705_mcu_device> m_mcu;
         required_device<gfxdecode_device> m_gfxdecode;
         required_device<screen_device> m_screen;
@@ -48,6 +48,7 @@ namespace mame
         int m_trace_screen_count;
         int m_trace_mcu_count;
         int m_trace_ram_count;
+        int m_trace_sound_count;
         int m_trace_last_mcu_status;
         int m_trace_last_vblank_port;
 
@@ -57,7 +58,7 @@ namespace mame
         {
             m_maincpu = new required_device<mc6809e_device>(this, "maincpu");
             m_subcpu = new required_device<mc6809e_device>(this, "sub");
-            m_audiocpu = new required_device<mc6809e_device>(this, "audiocpu");
+            m_audiocpu = new required_device<mc6809_device>(this, "audiocpu");
             m_mcu = new optional_device<taito68705_mcu_device>(this, "mcu");
             m_gfxdecode = new required_device<gfxdecode_device>(this, "gfxdecode");
             m_screen = new required_device<screen_device>(this, "screen");
@@ -75,6 +76,7 @@ namespace mame
             m_trace_screen_count = 0;
             m_trace_mcu_count = 0;
             m_trace_ram_count = 0;
+            m_trace_sound_count = 0;
             m_trace_last_mcu_status = -1;
             m_trace_last_vblank_port = -1;
         }

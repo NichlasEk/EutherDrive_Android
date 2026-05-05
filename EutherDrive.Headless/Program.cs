@@ -595,7 +595,10 @@ class Program
                 ReadOnlySpan<byte> fbOut = arcade.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                ReadOnlySpan<short> audioOut = arcade.GetAudioBuffer(out int audioRate, out int mcsAudioChannels);
+                int audioNonZero = CountNonZeroAudioSamples(audioOut);
                 Console.WriteLine($"[HEADLESS] MCS final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] MCS audio samples={audioOut.Length} rate={audioRate} channels={mcsAudioChannels} nonzero_samples={audioNonZero} max_abs={AudioPeak(audioOut)}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
@@ -4102,6 +4105,18 @@ class Program
                 peak = value;
         }
         return peak;
+    }
+
+    private static int CountNonZeroAudioSamples(ReadOnlySpan<short> audio)
+    {
+        int count = 0;
+        foreach (short sample in audio)
+        {
+            if (sample != 0)
+                count++;
+        }
+
+        return count;
     }
 
     private static void ConfigureConsoleLogging()

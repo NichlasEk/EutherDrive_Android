@@ -18,10 +18,12 @@ namespace mame
     // ======================> ym2203_device
     //
     // Minimal YM2203 implementation for drivers that rely on the SSG portion.
-    // The FM output is silent for now, but the three PSG channels are backed by
-    // the existing AY/YM SSG core and participate in MAME's sound routing. OPN
-    // timer/status handling is implemented so sound programs that use the
-    // YM2203 IRQ line for pacing can run.
+    // The three PSG channels are backed by the existing AY/YM SSG core and
+    // participate in MAME's sound routing. OPN timer/status handling is
+    // implemented so sound programs that use the YM2203 IRQ line for pacing can
+    // run. FM writes are currently approximated by steering key-on/frequency
+    // state into the PSG channels; this keeps games audible until ymfm_opn is
+    // ported.
     public class ym2203_device : ay8910_device
     {
         public static readonly emu.detail.device_type_impl YM2203 = DEFINE_DEVICE_TYPE("ym2203", "YM2203 OPN", (type, mconfig, tag, owner, clock) => { return new ym2203_device(mconfig, tag, owner, clock); });
@@ -34,6 +36,7 @@ namespace mame
         readonly bool m_trace;
         readonly devcb_write_line m_irq_handler;
         readonly u8 [] m_opn_regs = new u8[0x100];
+        readonly bool [] m_fm_key_on = new bool[3];
         emu_timer m_timer_a;
         emu_timer m_timer_b;
         u8 m_address;
@@ -85,6 +88,7 @@ namespace mame
             base.device_reset();
 
             Array.Clear(m_opn_regs, 0, m_opn_regs.Length);
+            Array.Clear(m_fm_key_on, 0, m_fm_key_on.Length);
             m_address = 0;
             m_status = 0;
             if (m_timer_a != null)
@@ -97,14 +101,18 @@ namespace mame
         void ym2203_address_w(u8 data)
         {
             m_address = data;
+            if (m_trace)
+                logerror("{0}: {1} address 0x{2:X2}\n", machine().describe_context(), tag(), m_address);
+
             if (m_address <= 0x0f)
                 base.address_w(data);
-            else if (m_trace)
-                logerror("{0}: {1} address 0x{2:X2}\n", machine().describe_context(), tag(), m_address);
         }
 
         void ym2203_data_w(u8 data)
         {
+            if (m_trace)
+                logerror("{0}: {1} write reg=0x{2:X2} data=0x{3:X2}\n", machine().describe_context(), tag(), m_address, data);
+
             if (m_address <= 0x0f)
             {
                 base.data_w(data);
@@ -112,8 +120,6 @@ namespace mame
             }
 
             m_opn_regs[m_address] = data;
-            if (m_trace)
-                logerror("{0}: {1} write reg=0x{2:X2} data=0x{3:X2}\n", machine().describe_context(), tag(), m_address, data);
 
             switch (m_address)
             {
@@ -124,6 +130,13 @@ namespace mame
                 break;
             case 0x27:
                 mode_w(data);
+                break;
+            case 0x28:
+                keyon_w(data);
+                break;
+            default:
+                if (is_fm_channel_register(m_address))
+                    update_fm_surrogate(m_address & 0x03);
                 break;
             }
         }
@@ -206,6 +219,60 @@ namespace mame
                 enabled |= STATUS_TIMERB;
 
             m_irq_handler.op_s32((m_status & enabled) != 0 ? ASSERT_LINE : CLEAR_LINE);
+        }
+
+        void keyon_w(u8 data)
+        {
+            int channel = data & 0x03;
+            if (channel >= 3)
+                return;
+
+            m_fm_key_on[channel] = (data & 0xf0) != 0;
+            update_fm_surrogate(channel);
+        }
+
+        static bool is_fm_channel_register(u8 reg)
+        {
+            int channel = reg & 0x03;
+            if (channel >= 3)
+                return false;
+
+            return (reg >= 0x40 && reg <= 0x9e)
+                || (reg >= 0xa0 && reg <= 0xa6)
+                || (reg >= 0xb0 && reg <= 0xb6);
+        }
+
+        void update_fm_surrogate(int channel)
+        {
+            if (channel < 0 || channel >= 3)
+                return;
+
+            int period = fm_surrogate_period(channel);
+            int volume = m_fm_key_on[channel] ? 1 : 0;
+
+            write_ssg_register((u8)(channel * 2), (u8)(period & 0xff));
+            write_ssg_register((u8)(channel * 2 + 1), (u8)((period >> 8) & 0x0f));
+            write_ssg_register((u8)(0x08 + channel), (u8)volume);
+        }
+
+        int fm_surrogate_period(int channel)
+        {
+            int fnum = m_opn_regs[0xa0 + channel] | ((m_opn_regs[0xa4 + channel] & 0x07) << 8);
+            int block = (m_opn_regs[0xa4 + channel] >> 3) & 0x07;
+            if (fnum <= 0)
+                return 0x0fff;
+
+            int scaled = fnum << Math.Max(0, block - 1);
+            if (scaled <= 0)
+                return 0x0fff;
+
+            return Math.Clamp(0x180000 / scaled, 1, 0x0fff);
+        }
+
+        void write_ssg_register(u8 reg, u8 data)
+        {
+            base.address_w(reg);
+            base.data_w(data);
         }
     }
 

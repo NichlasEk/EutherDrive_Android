@@ -222,7 +222,14 @@ namespace mame
             map.op(0x3a04, 0x3a05).w(scrollx_w_0);
             map.op(0x3a05, 0x3a05).r(vblank_port_r);
             map.op(0x3a06, 0x3a07).w(scrolly_w_0);
-            map.op(0x3a08, 0x3a08).w(m_soundlatch, (data) => { m_soundlatch.op0.write(data); });
+            map.op(0x3a08, 0x3a08).w(m_soundlatch, (data) => {
+                if (m_trace_status && m_trace_sound_count < 256)
+                {
+                    Console.Error.WriteLine($"[XAIN] soundlatch_w pc=0x{m_maincpu.op0.debug_pc():X4} data=0x{data:X2}");
+                    m_trace_sound_count++;
+                }
+                m_soundlatch.op0.write(data);
+            });
             map.op(0x3a09, 0x3a0c).w(main_irq_w);
             map.op(0x3a0d, 0x3a0d).w(flipscreen_w);
             map.op(0x3a0f, 0x3a0f).w(cpuA_bankswitch_w);
@@ -271,7 +278,15 @@ namespace mame
         void sound_map(address_map map, device_t device)
         {
             map.op(0x0000, 0x07ff).ram();
-            map.op(0x1000, 0x1000).r(m_soundlatch, () => { return m_soundlatch.op0.read(); });
+            map.op(0x1000, 0x1000).r(m_soundlatch, () => {
+                u8 data = m_soundlatch.op0.read();
+                if (m_trace_status && m_trace_sound_count < 256)
+                {
+                    Console.Error.WriteLine($"[XAIN] soundlatch_r pc=0x{m_audiocpu.op0.debug_pc():X4} data=0x{data:X2}");
+                    m_trace_sound_count++;
+                }
+                return data;
+            });
             map.op(0x2800, 0x2801).w("ym1", (offset, data) => { ((ym2203_device)subdevice("ym1")).write(offset, data); });
             map.op(0x3000, 0x3001).w("ym2", (offset, data) => { ((ym2203_device)subdevice("ym2")).write(offset, data); });
             map.op(0x4000, 0xffff).rom();
@@ -416,7 +431,7 @@ namespace mame
             MC6809E(config, m_subcpu, CPU_CLOCK);
             m_subcpu.op0.memory().set_addrmap(AS_PROGRAM, cpu_map_B);
 
-            MC6809E(config, m_audiocpu, PIXEL_CLOCK);
+            MC6809(config, m_audiocpu, (u32)PIXEL_CLOCK.dvalue());
             m_audiocpu.op0.memory().set_addrmap(AS_PROGRAM, sound_map);
 
             TAITO68705_MCU(config, m_mcu, MCU_CLOCK);
