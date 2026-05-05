@@ -33,6 +33,9 @@ namespace mame
         const int FM_OPERATORS_PER_CHANNEL = 4;
         const int OPN_OPERATORS = 12;
         const int OPN_DEFAULT_PRESCALE = 6;
+        const double FM_MIX_GAIN = 0.48;
+        const double FM_PHASE_MOD_SCALE = 0.075;
+        const double FM_FEEDBACK_SCALE = 0.026;
         const double TWO_PI = Math.PI * 2.0;
         static readonly int [,] OPN_OPERATOR_OFFSET =
         {
@@ -361,7 +364,7 @@ namespace mame
                 for (int channel = 0; channel < FM_CHANNELS; channel++)
                     fm += render_fm_channel(channel, sampleRate);
 
-                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp(fm * 0.32, -0.80, 0.80);
+                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp(fm * FM_MIX_GAIN, -0.90, 0.90);
                 outputs[0].put(sample, outputs[0].get(sample) + mixed);
             }
         }
@@ -381,7 +384,7 @@ namespace mame
                 channel,
                 0,
                 operator_block_freq(channel, 0, blockFreq),
-                feedback != 0.0 ? (m_fm_last[channel, 0] + m_fm_last[channel, 1]) * feedback * 0.18 : 0.0,
+                feedback != 0.0 ? (m_fm_last[channel, 0] + m_fm_last[channel, 1]) * feedback * FM_FEEDBACK_SCALE : 0.0,
                 opnSampleRate,
                 sampleRate);
             double [] opout = m_fm_opout;
@@ -390,12 +393,12 @@ namespace mame
             opout[1] = op0;
 
             int algorithmOps = OPN_ALGORITHM_OPS[algorithm & 0x07];
-            opout[2] = clock_fm_operator(channel, 1, operator_block_freq(channel, 1, blockFreq), opout[algorithmOps & 0x01] * 2.5, opnSampleRate, sampleRate);
+            opout[2] = clock_fm_operator(channel, 1, operator_block_freq(channel, 1, blockFreq), opout[algorithmOps & 0x01] * FM_PHASE_MOD_SCALE, opnSampleRate, sampleRate);
             opout[5] = opout[1] + opout[2];
-            opout[3] = clock_fm_operator(channel, 2, operator_block_freq(channel, 2, blockFreq), opout[(algorithmOps >> 1) & 0x07] * 2.5, opnSampleRate, sampleRate);
+            opout[3] = clock_fm_operator(channel, 2, operator_block_freq(channel, 2, blockFreq), opout[(algorithmOps >> 1) & 0x07] * FM_PHASE_MOD_SCALE, opnSampleRate, sampleRate);
             opout[6] = opout[1] + opout[3];
             opout[7] = opout[2] + opout[3];
-            double op3 = clock_fm_operator(channel, 3, operator_block_freq(channel, 3, blockFreq), opout[(algorithmOps >> 4) & 0x07] * 2.5, opnSampleRate, sampleRate);
+            double op3 = clock_fm_operator(channel, 3, operator_block_freq(channel, 3, blockFreq), opout[(algorithmOps >> 4) & 0x07] * FM_PHASE_MOD_SCALE, opnSampleRate, sampleRate);
 
             m_fm_last[channel, 0] = op0;
             m_fm_last[channel, 1] = opout[2];
