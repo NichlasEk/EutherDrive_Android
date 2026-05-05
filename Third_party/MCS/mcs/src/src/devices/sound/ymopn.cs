@@ -52,12 +52,24 @@ namespace mame
             Algorithm(0, 0, 0, true,  true,  true)
         };
 
+        enum fm_envelope_stage
+        {
+            Attack,
+            Decay,
+            Sustain,
+            Release,
+            Off
+        }
+
         readonly bool m_trace;
         readonly devcb_write_line m_irq_handler;
         readonly u8 [] m_opn_regs = new u8[0x100];
         readonly double [,] m_fm_phase = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly double [,] m_fm_env = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly double [,] m_fm_last = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly fm_envelope_stage [,] m_fm_stage = new fm_envelope_stage[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly bool [,] m_fm_key_state = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly double [] m_fm_opout = new double[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
         emu_timer m_timer_a;
         emu_timer m_timer_b;
@@ -115,7 +127,12 @@ namespace mame
             Array.Clear(m_fm_phase, 0, m_fm_phase.Length);
             Array.Clear(m_fm_env, 0, m_fm_env.Length);
             Array.Clear(m_fm_last, 0, m_fm_last.Length);
+            Array.Clear(m_fm_stage, 0, m_fm_stage.Length);
+            Array.Clear(m_fm_key_state, 0, m_fm_key_state.Length);
             Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
+            for (int channel = 0; channel < FM_CHANNELS; channel++)
+                for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Off;
             m_address = 0;
             m_status = 0;
             if (m_timer_a != null)
@@ -260,7 +277,29 @@ namespace mame
             if (channel >= FM_CHANNELS)
                 return;
 
-            m_fm_key_mask[channel] = (u8)(data >> 4);
+            u8 newMask = (u8)(data >> 4);
+            u8 oldMask = m_fm_key_mask[channel];
+            m_fm_key_mask[channel] = newMask;
+
+            for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
+            {
+                bool wasOn = (oldMask & (1 << slot)) != 0;
+                bool isOn = (newMask & (1 << slot)) != 0;
+                if (wasOn == isOn)
+                    continue;
+
+                m_fm_key_state[channel, slot] = isOn;
+                if (isOn)
+                {
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Attack;
+                    m_fm_env[channel, slot] = 0.0;
+                    m_fm_phase[channel, slot] = 0.0;
+                }
+                else
+                {
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Release;
+                }
+            }
         }
 
         protected override void device_sound_interface_sound_stream_update(sound_stream stream, std.vector<read_stream_view> inputs, std.vector<write_stream_view> outputs)
@@ -310,7 +349,8 @@ namespace mame
                 baseFrequency,
                 feedback != 0.0 ? (m_fm_last[channel, 0] + m_fm_last[channel, 1]) * feedback * 0.18 : 0.0,
                 sampleRate);
-            double [] opout = new double[8];
+            double [] opout = m_fm_opout;
+            Array.Clear(opout, 0, opout.Length);
             opout[0] = 0.0;
             opout[1] = op0;
 
@@ -359,19 +399,7 @@ namespace mame
             u8 sustainLevel = m_opn_regs[0x80 + slotOffset];
             u8 release = m_opn_regs[0x80 + slotOffset];
 
-            bool keyOn = (m_fm_key_mask[channel] & (1 << slot)) != 0;
-            double sustain = 1.0 - (((sustainLevel >> 4) & 0x0f) / 15.0);
-            double target = keyOn ? Math.Max(0.08, sustain) : 0.0;
-            double speed = keyOn
-                ? (0.00008 + (((attack >> 1) & 0x1f) / 31.0) * 0.018)
-                : (0.00002 + ((release & 0x0f) / 15.0) * 0.006);
-
-            if (keyOn && m_fm_env[channel, slot] < 0.96)
-                target = 1.0;
-            else if (keyOn && sustainRate != 0)
-                speed = 0.00002 + (((decay >> 1) & 0x1f) / 31.0) * 0.002;
-
-            m_fm_env[channel, slot] += (target - m_fm_env[channel, slot]) * speed;
+            clock_envelope(channel, slot, attack, decay, sustainRate, sustainLevel, release);
 
             double multiple = dtMul & 0x0f;
             if (multiple == 0.0)
@@ -382,9 +410,95 @@ namespace mame
             m_fm_phase[channel, slot] += step;
             m_fm_phase[channel, slot] -= Math.Floor(m_fm_phase[channel, slot]);
 
-            double tl = 1.0 - Math.Min(127, totalLevel & 0x7f) / 127.0;
-            double amplitude = m_fm_env[channel, slot] * tl * tl;
+            double tl = Math.Pow(10.0, -((totalLevel & 0x7f) * 0.75) / 20.0);
+            double amplitude = m_fm_env[channel, slot] * tl;
             return Math.Sin((m_fm_phase[channel, slot] + modulation) * TWO_PI) * amplitude;
+        }
+
+        void clock_envelope(int channel, int slot, u8 attack, u8 decay, u8 sustainRate, u8 sustainLevel, u8 release)
+        {
+            int attackRate = attack & 0x1f;
+            int decayRate = decay & 0x1f;
+            int sustainDecayRate = sustainRate & 0x1f;
+            int releaseRate = release & 0x0f;
+            double sustain = sustain_amplitude((sustainLevel >> 4) & 0x0f);
+
+            switch (m_fm_stage[channel, slot])
+            {
+            case fm_envelope_stage.Attack:
+                if (attackRate == 0)
+                    return;
+                if (attackRate >= 31)
+                {
+                    m_fm_env[channel, slot] = 1.0;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
+                    return;
+                }
+
+                m_fm_env[channel, slot] += (1.0 - m_fm_env[channel, slot]) * rate_to_coefficient(attackRate, 0.00005, 0.095);
+                if (m_fm_env[channel, slot] >= 0.995)
+                {
+                    m_fm_env[channel, slot] = 1.0;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
+                }
+                break;
+
+            case fm_envelope_stage.Decay:
+                if (m_fm_env[channel, slot] <= sustain || decayRate == 0)
+                {
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
+                    break;
+                }
+                m_fm_env[channel, slot] += (sustain - m_fm_env[channel, slot]) * rate_to_coefficient(decayRate, 0.000015, 0.018);
+                if (m_fm_env[channel, slot] <= sustain)
+                {
+                    m_fm_env[channel, slot] = sustain;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
+                }
+                break;
+
+            case fm_envelope_stage.Sustain:
+                if (!m_fm_key_state[channel, slot])
+                {
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Release;
+                    break;
+                }
+                if (sustainDecayRate != 0)
+                {
+                    m_fm_env[channel, slot] += (0.0 - m_fm_env[channel, slot]) * rate_to_coefficient(sustainDecayRate, 0.000003, 0.004);
+                    if (m_fm_env[channel, slot] < 0.00002)
+                        m_fm_env[channel, slot] = 0.0;
+                }
+                break;
+
+            case fm_envelope_stage.Release:
+                m_fm_env[channel, slot] += (0.0 - m_fm_env[channel, slot]) * rate_to_coefficient(releaseRate * 2, 0.00002, 0.035);
+                if (m_fm_env[channel, slot] < 0.00002)
+                {
+                    m_fm_env[channel, slot] = 0.0;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Off;
+                }
+                break;
+
+            case fm_envelope_stage.Off:
+                m_fm_env[channel, slot] = 0.0;
+                break;
+            }
+        }
+
+        static double sustain_amplitude(int level)
+        {
+            if (level >= 15)
+                return 0.0;
+            return Math.Pow(10.0, -(level * 3.0) / 20.0);
+        }
+
+        static double rate_to_coefficient(int rate, double min, double max)
+        {
+            if (rate <= 0)
+                return 0.0;
+            double normalized = Math.Clamp(rate / 31.0, 0.0, 1.0);
+            return min + (max - min) * normalized * normalized;
         }
 
     }
