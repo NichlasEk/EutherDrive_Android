@@ -34,7 +34,7 @@ namespace mame
         const int FM_OPERATORS_PER_CHANNEL = 4;
         const int OPN_OPERATORS = 12;
         const int OPN_DEFAULT_PRESCALE = 6;
-        const double FM_MIX_GAIN = 0.48;
+        const double FM_MIX_GAIN = 1.0;
         const int FM_PHASE_MASK = 0x3ff;
         const int FM_OPERATOR_MIN = -0x2000;
         const int FM_OPERATOR_MAX = 0x1fff;
@@ -86,8 +86,11 @@ namespace mame
         readonly int [,] m_fm_env_attenuation = new int[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly double [,] m_fm_last = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly int [,] m_fm_int_last = new int[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly int [,] m_fm_feedback = new int[FM_CHANNELS, 2];
+        readonly int [] m_fm_feedback_in = new int[FM_CHANNELS];
         readonly fm_envelope_stage [,] m_fm_stage = new fm_envelope_stage[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly bool [,] m_fm_key_state = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly bool [,] m_fm_ssg_inverted = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly int [] m_fm_opout = new int[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
         readonly u8 [] m_block_freq_latch = new u8[2];
@@ -98,6 +101,10 @@ namespace mame
         u8 m_address;
         u8 m_status;
         int m_clock_prescale;
+        double m_fm_clock_accumulator;
+        int m_fm_held_sample;
+        float m_psg_route0_gain = 1.0f;
+        float m_fm_route_gain = 1.0f;
         int m_trace_write_count;
         u8 m_last_trace_address;
         u8 m_last_trace_data;
@@ -128,9 +135,13 @@ namespace mame
         public void add_route(int index, string tag, float gain)
         {
             if (index >= 0 && index < 3)
+            {
+                if (index == 0)
+                    m_psg_route0_gain = gain;
                 base.add_route((uint32_t)index, tag, gain);
+            }
             else if (index == 3)
-                base.add_route(0, tag, gain);
+                m_fm_route_gain = gain;
         }
 
         protected override void device_start()
@@ -145,7 +156,14 @@ namespace mame
             save_item(NAME(new { m_status }));
             save_item(NAME(new { m_busy_end }));
             save_item(NAME(new { m_clock_prescale }));
+            save_item(NAME(new { m_fm_clock_accumulator }));
+            save_item(NAME(new { m_fm_held_sample }));
+            save_item(NAME(new { m_psg_route0_gain }));
+            save_item(NAME(new { m_fm_route_gain }));
             save_item(NAME(new { m_opn_regs }));
+            save_item(NAME(new { m_fm_feedback }));
+            save_item(NAME(new { m_fm_feedback_in }));
+            save_item(NAME(new { m_fm_ssg_inverted }));
         }
 
         protected override void device_reset()
@@ -158,8 +176,11 @@ namespace mame
             Array.Clear(m_fm_env_attenuation, 0, m_fm_env_attenuation.Length);
             Array.Clear(m_fm_last, 0, m_fm_last.Length);
             Array.Clear(m_fm_int_last, 0, m_fm_int_last.Length);
+            Array.Clear(m_fm_feedback, 0, m_fm_feedback.Length);
+            Array.Clear(m_fm_feedback_in, 0, m_fm_feedback_in.Length);
             Array.Clear(m_fm_stage, 0, m_fm_stage.Length);
             Array.Clear(m_fm_key_state, 0, m_fm_key_state.Length);
+            Array.Clear(m_fm_ssg_inverted, 0, m_fm_ssg_inverted.Length);
             Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
             Array.Clear(m_block_freq_latch, 0, m_block_freq_latch.Length);
             for (int channel = 0; channel < FM_CHANNELS; channel++)
@@ -174,6 +195,8 @@ namespace mame
             m_status = 0;
             m_busy_end = attotime.zero;
             m_clock_prescale = OPN_DEFAULT_PRESCALE;
+            m_fm_clock_accumulator = 0.0;
+            m_fm_held_sample = 0;
             m_env_counter = 0;
             m_trace_write_count = 0;
             m_last_trace_address = 0xff;
@@ -235,6 +258,8 @@ namespace mame
                 mark_busy();
                 return;
             }
+
+            update_sound_stream();
 
             if (write_latched_block_freq(data))
             {
@@ -407,26 +432,41 @@ namespace mame
                 return;
 
             u8 newMask = (u8)(data >> 4);
-            u8 oldMask = m_fm_key_mask[channel];
             m_fm_key_mask[channel] = newMask;
+        }
 
+        void prepare_fm_channel(int channel)
+        {
             for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
             {
-                bool wasOn = (oldMask & (1 << slot)) != 0;
-                bool isOn = (newMask & (1 << slot)) != 0;
+                bool wasOn = m_fm_key_state[channel, slot];
+                bool isOn = (m_fm_key_mask[channel] & (1 << slot)) != 0;
                 if (wasOn == isOn)
                     continue;
 
                 m_fm_key_state[channel, slot] = isOn;
                 if (isOn)
                 {
+                    int blockFreq = operator_block_freq(channel, slot, channel_block_freq(channel));
+                    int slotOffset = OPN_OPERATOR_OFFSET[channel, slot];
+                    u8 attack = m_opn_regs[0x50 + slotOffset];
+                    int keycode = keycode_from_block_freq(blockFreq);
+                    int keyScale = (attack >> 6) & 0x03;
+                    int attackRate = effective_rate((attack & 0x1f) * 2, keycode >> (keyScale ^ 3));
+
                     m_fm_stage[channel, slot] = fm_envelope_stage.Attack;
+                    m_fm_ssg_inverted[channel, slot] = ssg_eg_enabled(slotOffset) && ((ssg_eg_mode(slotOffset) & 0x04) != 0);
                     m_fm_env[channel, slot] = 0.0;
-                    m_fm_env_attenuation[channel, slot] = 0x3ff;
+                    m_fm_env_attenuation[channel, slot] = attackRate >= 62 ? 0 : 0x3ff;
                     m_fm_phase[channel, slot] = 0.0;
                 }
                 else
                 {
+                    if (m_fm_stage[channel, slot] < fm_envelope_stage.Release && m_fm_ssg_inverted[channel, slot])
+                    {
+                        m_fm_env_attenuation[channel, slot] = (0x200 - m_fm_env_attenuation[channel, slot]) & 0x3ff;
+                        m_fm_ssg_inverted[channel, slot] = false;
+                    }
                     m_fm_stage[channel, slot] = fm_envelope_stage.Release;
                 }
             }
@@ -447,44 +487,99 @@ namespace mame
             double sampleRate = outputs[0].sample_rate();
             if (sampleRate <= 0)
                 sampleRate = Math.Max(1, fm_source_sample_rate());
+            double opnSampleRate = fm_source_sample_rate();
 
             for (s32 sample = 0; sample < samples; sample++)
             {
-                m_env_counter++;
-                int fm = 0;
-                for (int channel = 0; channel < FM_CHANNELS; channel++)
-                    fm += render_fm_channel(channel, sampleRate);
+                m_fm_clock_accumulator += opnSampleRate;
+                while (m_fm_clock_accumulator >= sampleRate)
+                {
+                    m_fm_clock_accumulator -= sampleRate;
+                    m_fm_held_sample = clock_fm_once(opnSampleRate);
+                }
 
-                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp((fm / 32768.0) * FM_MIX_GAIN, -0.90, 0.90);
+                double routeCompensation = m_psg_route0_gain > 0.0f ? m_fm_route_gain / m_psg_route0_gain : m_fm_route_gain;
+                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp((m_fm_held_sample / 32768.0) * FM_MIX_GAIN * routeCompensation, -0.90, 0.90);
                 outputs[0].put(sample, outputs[0].get(sample) + mixed);
             }
         }
 
-        int render_fm_channel(int channel, double sampleRate)
+        int clock_fm_once(double opnSampleRate)
+        {
+            for (int channel = 0; channel < FM_CHANNELS; channel++)
+                prepare_fm_channel(channel);
+
+            if ((++m_env_counter & 0x03) == 3)
+                m_env_counter++;
+
+            for (int channel = 0; channel < FM_CHANNELS; channel++)
+                clock_fm_channel(channel);
+
+            int fm = 0;
+            for (int channel = 0; channel < FM_CHANNELS; channel++)
+                fm += output_fm_channel(channel);
+
+            return roundtrip_fp(Math.Clamp(fm, -32768, 32767));
+        }
+
+        static int roundtrip_fp(int value)
+        {
+            if (value < -32768)
+                return -32768;
+            if (value > 32767)
+                return 32767;
+
+            int scan = value ^ (value >> 31);
+            int leading = 0;
+            uint bits = (uint)(scan << 17);
+            while (leading < 32 && (bits & 0x80000000U) == 0)
+            {
+                leading++;
+                bits <<= 1;
+            }
+
+            int exponent = Math.Max(7 - leading, 1) - 1;
+            int mask = (1 << exponent) - 1;
+            return value & ~mask;
+        }
+
+        void clock_fm_channel(int channel)
+        {
+            int blockFreq = channel_block_freq(channel);
+            if (blockFreq == 0)
+                return;
+
+            int feedback = (m_opn_regs[0xb0 + channel] >> 3) & 0x07;
+            m_fm_feedback[channel, 0] = m_fm_feedback[channel, 1];
+            m_fm_feedback[channel, 1] = m_fm_feedback_in[channel];
+            for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
+                clock_fm_operator_state(channel, slot, operator_block_freq(channel, slot, blockFreq));
+        }
+
+        int output_fm_channel(int channel)
         {
             int blockFreq = channel_block_freq(channel);
             if (blockFreq == 0)
                 return 0;
 
-            double opnSampleRate = fm_source_sample_rate();
-
             int feedback = (m_opn_regs[0xb0 + channel] >> 3) & 0x07;
             int algorithm = m_opn_regs[0xb0 + channel] & 0x07;
-            int feedbackInput = feedback == 0 ? 0 : (m_fm_int_last[channel, 0] + m_fm_int_last[channel, 1]) >> (10 - feedback);
+            int feedbackInput = feedback == 0 ? 0 : (m_fm_feedback[channel, 0] + m_fm_feedback[channel, 1]) >> (10 - feedback);
 
-            int op0 = clock_fm_operator_int(channel, 0, operator_block_freq(channel, 0, blockFreq), feedbackInput, opnSampleRate, sampleRate);
+            int op0 = compute_fm_operator_volume(channel, 0, feedbackInput);
+            m_fm_feedback_in[channel] = op0;
             int [] opout = m_fm_opout;
             Array.Clear(opout, 0, opout.Length);
             opout[0] = 0;
             opout[1] = op0;
 
             int algorithmOps = OPN_ALGORITHM_OPS[algorithm & 0x07];
-            opout[2] = clock_fm_operator_int(channel, 1, operator_block_freq(channel, 1, blockFreq), opout[algorithmOps & 0x01] >> 1, opnSampleRate, sampleRate);
+            opout[2] = compute_fm_operator_volume(channel, 1, opout[algorithmOps & 0x01] >> 1);
             opout[5] = opout[1] + opout[2];
-            opout[3] = clock_fm_operator_int(channel, 2, operator_block_freq(channel, 2, blockFreq), opout[(algorithmOps >> 1) & 0x07] >> 1, opnSampleRate, sampleRate);
+            opout[3] = compute_fm_operator_volume(channel, 2, opout[(algorithmOps >> 1) & 0x07] >> 1);
             opout[6] = opout[1] + opout[3];
             opout[7] = opout[2] + opout[3];
-            int op3 = clock_fm_operator_int(channel, 3, operator_block_freq(channel, 3, blockFreq), opout[(algorithmOps >> 4) & 0x07] >> 1, opnSampleRate, sampleRate);
+            int op3 = compute_fm_operator_volume(channel, 3, opout[(algorithmOps >> 4) & 0x07] >> 1);
 
             m_fm_last[channel, 0] = op0;
             m_fm_last[channel, 1] = opout[2];
@@ -530,31 +625,16 @@ namespace mame
             }
         }
 
-        double block_freq_to_hz(int blockFreq, int multiple, int detunePhaseStep, double opnSampleRate)
-        {
-            int fnum = (blockFreq & 0x7ff) << 1;
-            int block = (blockFreq >> 11) & 0x07;
-            int phaseStep = (fnum << block) >> 2;
-            phaseStep = (phaseStep + detunePhaseStep) & 0x1ffff;
-            int x1Multiple = multiple * 2;
-            if (x1Multiple == 0)
-                x1Multiple = 1;
-
-            phaseStep = (phaseStep * x1Multiple) >> 1;
-            return opnSampleRate * phaseStep / 1048576.0;
-        }
-
         double fm_source_sample_rate()
         {
             // MAME ymfm_opn.h: YM2203 prescale 6 FM updates at input_clock / 72.
             return Math.Max(1.0, clock() / (m_clock_prescale * 12.0));
         }
 
-        int clock_fm_operator_int(int channel, int slot, int blockFreq, int modulation, double opnSampleRate, double sampleRate)
+        void clock_fm_operator_state(int channel, int slot, int blockFreq)
         {
             int slotOffset = OPN_OPERATOR_OFFSET[channel, slot];
             u8 dtMul = m_opn_regs[0x30 + slotOffset];
-            u8 totalLevel = m_opn_regs[0x40 + slotOffset];
             u8 attack = m_opn_regs[0x50 + slotOffset];
             u8 decay = m_opn_regs[0x60 + slotOffset];
             u8 sustainRate = m_opn_regs[0x70 + slotOffset];
@@ -563,14 +643,25 @@ namespace mame
 
             int detune = (dtMul >> 4) & 0x07;
             int keycode = keycode_from_block_freq(blockFreq);
+            if (ssg_eg_enabled(slotOffset))
+                clock_ssg_eg_state(channel, slot, slotOffset);
+            else
+                m_fm_ssg_inverted[channel, slot] = false;
             clock_envelope(channel, slot, attack, decay, sustainRate, sustainLevel, release, keycode);
             int phaseStep = block_freq_to_phase_step(blockFreq, dtMul & 0x0f, detune_adjustment(detune, keycode));
-            double scaledStep = phaseStep * opnSampleRate / sampleRate;
-            m_fm_phase[channel, slot] += scaledStep;
+            m_fm_phase[channel, slot] += phaseStep;
             m_fm_phase[channel, slot] %= FM_PHASE_COUNTER_SCALE;
+        }
 
+        int compute_fm_operator_volume(int channel, int slot, int modulation)
+        {
+            int slotOffset = OPN_OPERATOR_OFFSET[channel, slot];
+            u8 totalLevel = m_opn_regs[0x40 + slotOffset];
             int phase = (((int)m_fm_phase[channel, slot] >> 10) + modulation) & FM_PHASE_MASK;
-            int attenuation = m_fm_env_attenuation[channel, slot] + ((totalLevel & 0x7f) << 3);
+            int envelopeAttenuation = m_fm_env_attenuation[channel, slot];
+            if (m_fm_ssg_inverted[channel, slot])
+                envelopeAttenuation = (0x200 - envelopeAttenuation) & 0x3ff;
+            int attenuation = envelopeAttenuation + ((totalLevel & 0x7f) << 3);
             if (attenuation > FM_ENVELOPE_QUIET)
                 return 0;
 
@@ -609,6 +700,9 @@ namespace mame
 
         void clock_envelope(int channel, int slot, u8 attack, u8 decay, u8 sustainRateReg, u8 sustainLevel, u8 release, int keycode)
         {
+            if ((m_env_counter & 0x03) != 0)
+                return;
+
             int keyScale = (attack >> 6) & 0x03;
             int ksr = keycode >> (keyScale ^ 3);
             int attackRate = effective_rate((attack & 0x1f) * 2, ksr);
@@ -619,6 +713,11 @@ namespace mame
             sustain |= (sustain + 1) & 0x10;
             sustain <<= 5;
             int attenuation = m_fm_env_attenuation[channel, slot];
+
+            if (m_fm_stage[channel, slot] == fm_envelope_stage.Attack && attenuation == 0)
+                m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
+            if (m_fm_stage[channel, slot] == fm_envelope_stage.Decay && attenuation >= sustain)
+                m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
 
             switch (m_fm_stage[channel, slot])
             {
@@ -632,7 +731,7 @@ namespace mame
                     break;
                 }
 
-                int attackIncrement = envelope_increment(attackRate);
+                int attackIncrement = envelope_increment(attackRate, (int)(m_env_counter >> 2));
                 attenuation += ((~attenuation) * attackIncrement) >> 4;
                 if (attenuation <= 0)
                 {
@@ -642,12 +741,12 @@ namespace mame
                 break;
 
             case fm_envelope_stage.Decay:
-                if (attenuation >= sustain || decayRate == 0)
+                if (decayRate == 0)
                 {
                     m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
                     break;
                 }
-                attenuation += envelope_increment(decayRate);
+                attenuation += envelope_increment(decayRate, (int)(m_env_counter >> 2));
                 if (attenuation >= sustain)
                 {
                     attenuation = sustain;
@@ -661,11 +760,11 @@ namespace mame
                     m_fm_stage[channel, slot] = fm_envelope_stage.Release;
                     break;
                 }
-                attenuation += envelope_increment(sustainRate);
+                attenuation += envelope_increment(sustainRate, (int)(m_env_counter >> 2));
                 break;
 
             case fm_envelope_stage.Release:
-                attenuation += envelope_increment(releaseRate);
+                attenuation += envelope_increment(releaseRate, (int)(m_env_counter >> 2));
                 if (attenuation >= 0x3ff)
                 {
                     attenuation = 0x3ff;
@@ -681,12 +780,50 @@ namespace mame
             m_fm_env_attenuation[channel, slot] = Math.Clamp(attenuation, 0, 0x3ff);
         }
 
+        void clock_ssg_eg_state(int channel, int slot, int slotOffset)
+        {
+            if ((m_fm_env_attenuation[channel, slot] & 0x200) == 0)
+                return;
+
+            int mode = ssg_eg_mode(slotOffset);
+            if ((mode & 0x01) != 0)
+            {
+                m_fm_ssg_inverted[channel, slot] = (((mode >> 2) & 1) ^ ((mode >> 1) & 1)) != 0;
+                if (m_fm_stage[channel, slot] != fm_envelope_stage.Attack)
+                    m_fm_env_attenuation[channel, slot] = m_fm_ssg_inverted[channel, slot] ? 0x200 : 0x3ff;
+            }
+            else
+            {
+                if ((mode & 0x02) != 0)
+                    m_fm_ssg_inverted[channel, slot] = !m_fm_ssg_inverted[channel, slot];
+
+                if (m_fm_stage[channel, slot] == fm_envelope_stage.Decay || m_fm_stage[channel, slot] == fm_envelope_stage.Sustain)
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Attack;
+
+                if ((mode & 0x02) == 0)
+                    m_fm_phase[channel, slot] = 0.0;
+            }
+
+            if (m_fm_stage[channel, slot] == fm_envelope_stage.Release)
+                m_fm_env_attenuation[channel, slot] = 0x3ff;
+        }
+
+        bool ssg_eg_enabled(int slotOffset)
+        {
+            return (m_opn_regs[0x90 + slotOffset] & 0x08) != 0;
+        }
+
+        int ssg_eg_mode(int slotOffset)
+        {
+            return m_opn_regs[0x90 + slotOffset] & 0x07;
+        }
+
         static int effective_rate(int rawRate, int ksr)
         {
             return rawRate == 0 ? 0 : Math.Min(rawRate + ksr, 63);
         }
 
-        int envelope_increment(int rate)
+        static int envelope_increment(int rate, int envCounter)
         {
             rate = Math.Clamp(rate, 0, 63);
             if (rate == 0)
@@ -695,10 +832,10 @@ namespace mame
             int shift = 11 - (rate >> 2);
             if (shift < 0)
                 shift = 0;
-            if ((m_env_counter & ((1U << shift) - 1U)) != 0)
+            if ((envCounter & ((1 << shift) - 1)) != 0)
                 return 0;
 
-            int index = (int)((m_env_counter >> shift) & 0x07);
+            int index = (envCounter >> shift) & 0x07;
             return (int)((OPN_ATTENUATION_INCREMENT[rate] >> (index * 4)) & 0x0f);
         }
 

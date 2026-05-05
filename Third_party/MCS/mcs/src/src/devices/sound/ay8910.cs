@@ -434,6 +434,11 @@ namespace mame
         public device_sound_interface add_route(u32 output, device_t base_, string target, double gain, u32 input, u32 mixoutput) { return disound.add_route(output, base_, target, gain, input, mixoutput); }
         public void set_output_gain(int outputnum, float gain) { disound.set_output_gain(outputnum, gain); }
 
+        protected void update_sound_stream()
+        {
+            m_channel?.update();
+        }
+
 
         // configuration helpers
         public void set_flags(int flags) { m_flags = flags; }
