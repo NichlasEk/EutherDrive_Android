@@ -85,6 +85,7 @@ namespace mame
         readonly bool [,] m_fm_key_state = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly double [] m_fm_opout = new double[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
+        readonly u8 [] m_block_freq_latch = new u8[2];
         readonly bool [] m_timer_running = new bool[2];
         emu_timer m_timer_a;
         emu_timer m_timer_b;
@@ -148,6 +149,7 @@ namespace mame
             Array.Clear(m_fm_stage, 0, m_fm_stage.Length);
             Array.Clear(m_fm_key_state, 0, m_fm_key_state.Length);
             Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
+            Array.Clear(m_block_freq_latch, 0, m_block_freq_latch.Length);
             for (int channel = 0; channel < FM_CHANNELS; channel++)
                 for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
                     m_fm_stage[channel, slot] = fm_envelope_stage.Off;
@@ -207,6 +209,9 @@ namespace mame
                 return;
             }
 
+            if (write_latched_block_freq(data))
+                return;
+
             m_opn_regs[m_address] = data;
 
             switch (m_address)
@@ -228,6 +233,29 @@ namespace mame
         u8 ym2203_data_r()
         {
             return m_address <= 0x0f ? data_r() : (u8)0xff;
+        }
+
+        bool write_latched_block_freq(u8 data)
+        {
+            if ((m_address & 0xf0) != 0xa0)
+                return false;
+
+            int channel = m_address & 0x03;
+            if (channel == 3)
+                return true;
+
+            int latch = (m_address >> 3) & 0x01;
+            if ((m_address & 0x04) != 0)
+            {
+                // MAME/ymfm uses temporary B8/B9 latches: upper FNUM/block writes
+                // don't affect the active channel frequency until the low byte arrives.
+                m_block_freq_latch[latch] = (u8)(data & 0x3f);
+                return true;
+            }
+
+            m_opn_regs[m_address] = data;
+            m_opn_regs[m_address | 0x04] = m_block_freq_latch[latch];
+            return true;
         }
 
         void mode_w(u8 data)
@@ -356,7 +384,7 @@ namespace mame
             s32 samples = (s32)outputs[0].samples();
             double sampleRate = outputs[0].sample_rate();
             if (sampleRate <= 0)
-                sampleRate = Math.Max(1, clock() / (OPN_DEFAULT_PRESCALE * 24.0));
+                sampleRate = Math.Max(1, fm_source_sample_rate());
 
             for (s32 sample = 0; sample < samples; sample++)
             {
@@ -375,7 +403,7 @@ namespace mame
             if (blockFreq == 0)
                 return 0.0;
 
-            double opnSampleRate = Math.Max(1.0, clock() / (OPN_DEFAULT_PRESCALE * 24.0));
+            double opnSampleRate = fm_source_sample_rate();
 
             double feedback = (m_opn_regs[0xb0 + channel] >> 3) & 0x07;
             int algorithm = m_opn_regs[0xb0 + channel] & 0x07;
@@ -462,6 +490,12 @@ namespace mame
 
             phaseStep = (phaseStep * x1Multiple) >> 1;
             return opnSampleRate * phaseStep / 1048576.0;
+        }
+
+        double fm_source_sample_rate()
+        {
+            // MAME ymfm_opn.h: YM2203 prescale 6 FM updates at input_clock / 72.
+            return Math.Max(1.0, clock() / (OPN_DEFAULT_PRESCALE * 12.0));
         }
 
         double clock_fm_operator(int channel, int slot, int blockFreq, double modulation, double opnSampleRate, double sampleRate)
