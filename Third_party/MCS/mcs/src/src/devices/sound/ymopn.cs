@@ -29,6 +29,7 @@ namespace mame
 
         const u8 STATUS_TIMERA = 0x01;
         const u8 STATUS_TIMERB = 0x02;
+        const u8 STATUS_BUSY = 0x80;
         const int FM_CHANNELS = 3;
         const int FM_OPERATORS_PER_CHANNEL = 4;
         const int OPN_OPERATORS = 12;
@@ -58,14 +59,14 @@ namespace mame
         };
         static readonly u8 [,] OPN_DETUNE_ADJUSTMENT =
         {
-            {  0,  0,  0,  0 }, {  0,  0,  0,  0 }, {  0,  0,  0,  0 }, {  0,  0,  0,  0 },
+            {  0,  0,  1,  2 }, {  0,  0,  1,  2 }, {  0,  0,  1,  2 }, {  0,  0,  1,  2 },
             {  0,  1,  2,  2 }, {  0,  1,  2,  3 }, {  0,  1,  2,  3 }, {  0,  1,  2,  3 },
-            {  0,  1,  3,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  5 },
-            {  0,  2,  4,  5 }, {  0,  2,  4,  5 }, {  0,  2,  4,  6 }, {  0,  2,  5,  6 },
-            {  0,  2,  5,  7 }, {  0,  2,  5,  7 }, {  0,  3,  6,  8 }, {  0,  3,  6,  8 },
-            {  0,  3,  7,  9 }, {  0,  3,  7, 10 }, {  0,  4,  8, 11 }, {  0,  4,  8, 11 },
-            {  0,  4,  9, 12 }, {  0,  4,  9, 13 }, {  0,  5, 10, 14 }, {  0,  5, 11, 15 },
-            {  0,  5, 12, 16 }, {  0,  6, 13, 17 }, {  0,  6, 14, 19 }, {  0,  7, 16, 20 }
+            {  0,  1,  2,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  5 },
+            {  0,  2,  4,  5 }, {  0,  2,  4,  6 }, {  0,  2,  4,  6 }, {  0,  2,  5,  7 },
+            {  0,  2,  5,  8 }, {  0,  3,  6,  8 }, {  0,  3,  6,  9 }, {  0,  3,  7, 10 },
+            {  0,  4,  8, 11 }, {  0,  4,  8, 12 }, {  0,  4,  9, 13 }, {  0,  5, 10, 14 },
+            {  0,  5, 11, 16 }, {  0,  6, 12, 17 }, {  0,  6, 13, 19 }, {  0,  7, 14, 20 },
+            {  0,  8, 16, 22 }, {  0,  8, 16, 22 }, {  0,  8, 16, 22 }, {  0,  8, 16, 22 }
         };
 
         enum fm_envelope_stage
@@ -93,8 +94,10 @@ namespace mame
         readonly bool [] m_timer_running = new bool[2];
         emu_timer m_timer_a;
         emu_timer m_timer_b;
+        attotime m_busy_end;
         u8 m_address;
         u8 m_status;
+        int m_clock_prescale;
         int m_trace_write_count;
         u8 m_last_trace_address;
         u8 m_last_trace_data;
@@ -119,7 +122,7 @@ namespace mame
 
         public u8 read(offs_t offset)
         {
-            return (offset & 1) == 0 ? m_status : ym2203_data_r();
+            return (offset & 1) == 0 ? read_status() : ym2203_data_r();
         }
 
         public void add_route(int index, string tag, float gain)
@@ -140,6 +143,8 @@ namespace mame
 
             save_item(NAME(new { m_address }));
             save_item(NAME(new { m_status }));
+            save_item(NAME(new { m_busy_end }));
+            save_item(NAME(new { m_clock_prescale }));
             save_item(NAME(new { m_opn_regs }));
         }
 
@@ -167,6 +172,8 @@ namespace mame
             }
             m_address = 0;
             m_status = 0;
+            m_busy_end = attotime.zero;
+            m_clock_prescale = OPN_DEFAULT_PRESCALE;
             m_env_counter = 0;
             m_trace_write_count = 0;
             m_last_trace_address = 0xff;
@@ -198,6 +205,12 @@ namespace mame
 
             if (m_address <= 0x0f)
                 base.address_w(data);
+            else if (m_address == 0x2d)
+                update_prescale(6);
+            else if (m_address == 0x2e && m_clock_prescale == 6)
+                update_prescale(3);
+            else if (m_address == 0x2f)
+                update_prescale(2);
         }
 
         void ym2203_data_w(u8 data)
@@ -219,11 +232,15 @@ namespace mame
             if (m_address <= 0x0f)
             {
                 base.data_w(data);
+                mark_busy();
                 return;
             }
 
             if (write_latched_block_freq(data))
+            {
+                mark_busy();
                 return;
+            }
 
             m_opn_regs[m_address] = data;
 
@@ -240,6 +257,37 @@ namespace mame
             case 0x28:
                 keyon_w(data);
                 break;
+            }
+
+            mark_busy();
+        }
+
+        u8 read_status()
+        {
+            u8 result = m_status;
+            if (machine().time() < m_busy_end)
+                result |= STATUS_BUSY;
+            return result;
+        }
+
+        void mark_busy()
+        {
+            m_busy_end = machine().time() + attotime.from_ticks((uint32_t)(32 * m_clock_prescale), clock());
+        }
+
+        void update_prescale(int prescale)
+        {
+            if (m_clock_prescale == prescale)
+                return;
+
+            m_clock_prescale = prescale;
+            for (int index = 0; index < 2; index++)
+            {
+                if (!m_timer_running[index])
+                    continue;
+
+                m_timer_running[index] = false;
+                update_timer(index, (m_opn_regs[0x27] & (1 << index)) != 0);
             }
         }
 
@@ -313,7 +361,7 @@ namespace mame
             if (period == 0)
                 period = 1;
 
-            uint32_t clocks = period * OPN_OPERATORS * OPN_DEFAULT_PRESCALE;
+            uint32_t clocks = period * OPN_OPERATORS * (uint32_t)m_clock_prescale;
             timer.adjust(attotime.from_ticks(clocks, clock()));
             m_timer_running[index] = true;
         }
@@ -448,24 +496,14 @@ namespace mame
             m_fm_int_last[channel, 3] = op3;
 
             int result = op3;
-            int carriers = 1;
             if ((algorithmOps & (1 << 7)) != 0)
-            {
                 result += opout[1];
-                carriers++;
-            }
             if ((algorithmOps & (1 << 8)) != 0)
-            {
                 result += opout[2];
-                carriers++;
-            }
             if ((algorithmOps & (1 << 9)) != 0)
-            {
                 result += opout[3];
-                carriers++;
-            }
 
-            return result / carriers;
+            return Math.Clamp(result, -32768, 32767);
         }
 
         int channel_block_freq(int channel)
@@ -509,7 +547,7 @@ namespace mame
         double fm_source_sample_rate()
         {
             // MAME ymfm_opn.h: YM2203 prescale 6 FM updates at input_clock / 72.
-            return Math.Max(1.0, clock() / (OPN_DEFAULT_PRESCALE * 12.0));
+            return Math.Max(1.0, clock() / (m_clock_prescale * 12.0));
         }
 
         int clock_fm_operator_int(int channel, int slot, int blockFreq, int modulation, double opnSampleRate, double sampleRate)
