@@ -291,6 +291,16 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         McsRuntime? runtime = _runtime;
         _runtime = null;
         runtime?.Dispose();
+        ClearAudio();
+    }
+
+    private void ClearAudio()
+    {
+        lock (_sync)
+        {
+            _audioQueue.Clear();
+            _audioBuffer = Array.Empty<short>();
+        }
     }
 
     private ArcadeInputState SnapshotInput()
