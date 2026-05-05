@@ -5,6 +5,8 @@ using System;
 
 using devcb_write_line = mame.devcb_write<mame.Type_constant_s32, mame.devcb_value_const_unsigned_1<mame.Type_constant_s32>>;
 using offs_t = System.UInt32;
+using s32 = System.Int32;
+using stream_buffer_sample_t = System.Single;
 using u8 = System.Byte;
 using uint32_t = System.UInt32;
 
@@ -17,26 +19,29 @@ namespace mame
 {
     // ======================> ym2203_device
     //
-    // Minimal YM2203 implementation for drivers that rely on the SSG portion.
-    // The three PSG channels are backed by the existing AY/YM SSG core and
-    // participate in MAME's sound routing. OPN timer/status handling is
-    // implemented so sound programs that use the YM2203 IRQ line for pacing can
-    // run. FM writes are currently approximated by steering key-on/frequency
-    // state into the PSG channels; this keeps games audible until ymfm_opn is
-    // ported.
+    // YM2203 implementation backed by the existing AY/YM SSG core plus a small
+    // OPN FM renderer. Timer/status/IRQ behaviour follows the YM2203 register
+    // contract used by MAME drivers; the FM renderer consumes the real OPN
+    // operator/channel registers instead of mutating PSG state.
     public class ym2203_device : ay8910_device
     {
         public static readonly emu.detail.device_type_impl YM2203 = DEFINE_DEVICE_TYPE("ym2203", "YM2203 OPN", (type, mconfig, tag, owner, clock) => { return new ym2203_device(mconfig, tag, owner, clock); });
 
         const u8 STATUS_TIMERA = 0x01;
         const u8 STATUS_TIMERB = 0x02;
+        const int FM_CHANNELS = 3;
+        const int FM_OPERATORS_PER_CHANNEL = 4;
         const int OPN_OPERATORS = 12;
         const int OPN_DEFAULT_PRESCALE = 6;
+        const double TWO_PI = Math.PI * 2.0;
 
         readonly bool m_trace;
         readonly devcb_write_line m_irq_handler;
         readonly u8 [] m_opn_regs = new u8[0x100];
-        readonly bool [] m_fm_key_on = new bool[3];
+        readonly double [,] m_fm_phase = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly double [,] m_fm_env = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly double [,] m_fm_last = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
         emu_timer m_timer_a;
         emu_timer m_timer_b;
         u8 m_address;
@@ -68,6 +73,8 @@ namespace mame
         {
             if (index >= 0 && index < 3)
                 base.add_route((uint32_t)index, tag, gain);
+            else if (index == 3)
+                base.add_route(0, tag, gain);
         }
 
         protected override void device_start()
@@ -88,7 +95,10 @@ namespace mame
             base.device_reset();
 
             Array.Clear(m_opn_regs, 0, m_opn_regs.Length);
-            Array.Clear(m_fm_key_on, 0, m_fm_key_on.Length);
+            Array.Clear(m_fm_phase, 0, m_fm_phase.Length);
+            Array.Clear(m_fm_env, 0, m_fm_env.Length);
+            Array.Clear(m_fm_last, 0, m_fm_last.Length);
+            Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
             m_address = 0;
             m_status = 0;
             if (m_timer_a != null)
@@ -133,10 +143,6 @@ namespace mame
                 break;
             case 0x28:
                 keyon_w(data);
-                break;
-            default:
-                if (is_fm_channel_register(m_address))
-                    update_fm_surrogate(m_address & 0x03);
                 break;
             }
         }
@@ -224,56 +230,121 @@ namespace mame
         void keyon_w(u8 data)
         {
             int channel = data & 0x03;
-            if (channel >= 3)
+            if (channel >= FM_CHANNELS)
                 return;
 
-            m_fm_key_on[channel] = (data & 0xf0) != 0;
-            update_fm_surrogate(channel);
+            m_fm_key_mask[channel] = (u8)(data >> 4);
         }
 
-        static bool is_fm_channel_register(u8 reg)
+        protected override void device_sound_interface_sound_stream_update(sound_stream stream, std.vector<read_stream_view> inputs, std.vector<write_stream_view> outputs)
         {
-            int channel = reg & 0x03;
-            if (channel >= 3)
-                return false;
-
-            return (reg >= 0x40 && reg <= 0x9e)
-                || (reg >= 0xa0 && reg <= 0xa6)
-                || (reg >= 0xb0 && reg <= 0xb6);
+            base.device_sound_interface_sound_stream_update(stream, inputs, outputs);
+            mix_fm(outputs);
         }
 
-        void update_fm_surrogate(int channel)
+        void mix_fm(std.vector<write_stream_view> outputs)
         {
-            if (channel < 0 || channel >= 3)
+            if (outputs.empty())
                 return;
 
-            int period = fm_surrogate_period(channel);
-            int volume = m_fm_key_on[channel] ? 1 : 0;
+            s32 samples = (s32)outputs[0].samples();
+            double sampleRate = outputs[0].sample_rate();
+            if (sampleRate <= 0)
+                sampleRate = Math.Max(1, clock() / (OPN_DEFAULT_PRESCALE * 24.0));
 
-            write_ssg_register((u8)(channel * 2), (u8)(period & 0xff));
-            write_ssg_register((u8)(channel * 2 + 1), (u8)((period >> 8) & 0x0f));
-            write_ssg_register((u8)(0x08 + channel), (u8)volume);
+            for (s32 sample = 0; sample < samples; sample++)
+            {
+                double fm = 0.0;
+                for (int channel = 0; channel < FM_CHANNELS; channel++)
+                    fm += render_fm_channel(channel, sampleRate);
+
+                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp(fm * 0.16, -0.70, 0.70);
+                for (int output = 0; output < Math.Min(3, outputs.Count); output++)
+                    outputs[output].put(sample, outputs[output].get(sample) + mixed);
+            }
         }
 
-        int fm_surrogate_period(int channel)
+        double render_fm_channel(int channel, double sampleRate)
         {
             int fnum = m_opn_regs[0xa0 + channel] | ((m_opn_regs[0xa4 + channel] & 0x07) << 8);
             int block = (m_opn_regs[0xa4 + channel] >> 3) & 0x07;
-            if (fnum <= 0)
-                return 0x0fff;
+            if (fnum == 0)
+                return 0.0;
 
-            int scaled = fnum << Math.Max(0, block - 1);
-            if (scaled <= 0)
-                return 0x0fff;
+            double baseFrequency = clock() * fnum * Math.Pow(2.0, block - 21) / 72.0;
+            if (baseFrequency <= 0.0)
+                return 0.0;
 
-            return Math.Clamp(0x180000 / scaled, 1, 0x0fff);
+            double feedback = (m_opn_regs[0xb0 + channel] >> 3) & 0x07;
+            int algorithm = m_opn_regs[0xb0 + channel] & 0x07;
+
+            double op0 = clock_fm_operator(
+                channel,
+                0,
+                baseFrequency,
+                feedback != 0.0 ? (m_fm_last[channel, 0] + m_fm_last[channel, 1]) * feedback * 0.18 : 0.0,
+                sampleRate);
+            double op1 = clock_fm_operator(channel, 1, baseFrequency, algorithm <= 3 || algorithm == 4 ? op0 * 2.5 : 0.0, sampleRate);
+            double op2 = clock_fm_operator(channel, 2, baseFrequency, algorithm <= 3 ? op1 * 2.5 : 0.0, sampleRate);
+            double op3 = clock_fm_operator(channel, 3, baseFrequency, algorithm <= 3 || algorithm == 4 ? op2 * 2.5 : 0.0, sampleRate);
+
+            m_fm_last[channel, 0] = op0;
+            m_fm_last[channel, 1] = op1;
+            m_fm_last[channel, 2] = op2;
+            m_fm_last[channel, 3] = op3;
+
+            switch (algorithm)
+            {
+            case 0: return op3;
+            case 1: return (op2 + op3) * 0.5;
+            case 2: return (op1 + op3) * 0.5;
+            case 3: return (op1 + op2 + op3) * 0.33;
+            case 4: return (op1 + op3) * 0.5;
+            case 5: return (op1 + op2 + op3) * 0.33;
+            case 6: return (op0 + op1 + op3) * 0.33;
+            default: return (op0 + op1 + op2 + op3) * 0.25;
+            }
         }
 
-        void write_ssg_register(u8 reg, u8 data)
+        double clock_fm_operator(int channel, int slot, double baseFrequency, double modulation, double sampleRate)
         {
-            base.address_w(reg);
-            base.data_w(data);
+            int slotOffset = slot * 4 + channel;
+            u8 dtMul = m_opn_regs[0x30 + slotOffset];
+            u8 totalLevel = m_opn_regs[0x40 + slotOffset];
+            u8 attack = m_opn_regs[0x50 + slotOffset];
+            u8 decay = m_opn_regs[0x60 + slotOffset];
+            u8 sustainRate = m_opn_regs[0x70 + slotOffset];
+            u8 sustainLevel = m_opn_regs[0x80 + slotOffset];
+            u8 release = m_opn_regs[0x80 + slotOffset];
+
+            bool keyOn = (m_fm_key_mask[channel] & (1 << slot)) != 0;
+            double sustain = 1.0 - (((sustainLevel >> 4) & 0x0f) / 15.0);
+            double target = keyOn ? Math.Max(0.08, sustain) : 0.0;
+            double speed = keyOn
+                ? (0.00008 + (((attack >> 1) & 0x1f) / 31.0) * 0.018)
+                : (0.00002 + ((release & 0x0f) / 15.0) * 0.006);
+
+            if (keyOn && m_fm_env[channel, slot] < 0.96)
+                target = 1.0;
+            else if (keyOn && sustainRate != 0)
+                speed = 0.00002 + (((decay >> 1) & 0x1f) / 31.0) * 0.002;
+
+            m_fm_env[channel, slot] += (target - m_fm_env[channel, slot]) * speed;
+
+            double multiple = dtMul & 0x0f;
+            if (multiple == 0.0)
+                multiple = 0.5;
+
+            double detune = (((dtMul >> 4) & 0x07) - 3) * 0.0025;
+            double step = (baseFrequency * multiple * (1.0 + detune)) / sampleRate;
+            m_fm_phase[channel, slot] += step;
+            m_fm_phase[channel, slot] -= Math.Floor(m_fm_phase[channel, slot]);
+
+            double tl = 1.0 - Math.Min(127, totalLevel & 0x7f) / 127.0;
+            double amplitude = m_fm_env[channel, slot] * tl * tl;
+            return Math.Sin((m_fm_phase[channel, slot] + modulation) * TWO_PI) * amplitude;
         }
+
     }
 
 

@@ -3661,6 +3661,8 @@ public partial class MainWindow : Window
             psx.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is N64Adapter n64)
             n64.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is McsArcadeAdapter mcs)
+            mcs.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             tmnt.SetMasterVolumePercent(_masterVolumePercent);
     }

@@ -50,6 +50,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
     private string? _romDirectory;
     private McsRuntime? _runtime;
     private ArcadeInputState _inputState;
+    private int _masterVolumePercent = 50;
 
     internal static void EnsureMcsInitialized()
     {
@@ -199,6 +200,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
             return _audioBuffer;
     }
 
+    public void SetMasterVolumePercent(int percent)
+    {
+        lock (_sync)
+            _masterVolumePercent = Math.Clamp(percent, 0, 100);
+    }
+
     public void SetInputState(
         bool up,
         bool down,
@@ -325,8 +332,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
             if (_audioBuffer.Length != sampleCount)
                 _audioBuffer = new short[sampleCount];
 
+            int volume = _masterVolumePercent;
             for (int i = 0; i < sampleCount; i++)
-                _audioBuffer[i] = (short)(samples[i] / AudioOutputDivisor);
+            {
+                int scaled = samples[i] * volume / (AudioOutputDivisor * 100);
+                _audioBuffer[i] = (short)Math.Clamp(scaled, short.MinValue, short.MaxValue);
+            }
         }
     }
 
