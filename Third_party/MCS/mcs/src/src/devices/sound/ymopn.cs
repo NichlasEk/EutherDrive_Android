@@ -34,9 +34,11 @@ namespace mame
         const int OPN_OPERATORS = 12;
         const int OPN_DEFAULT_PRESCALE = 6;
         const double FM_MIX_GAIN = 0.48;
-        const double FM_PHASE_MOD_SCALE = 0.075;
-        const double FM_FEEDBACK_SCALE = 0.026;
-        const double TWO_PI = Math.PI * 2.0;
+        const int FM_PHASE_MASK = 0x3ff;
+        const int FM_OPERATOR_MIN = -0x2000;
+        const int FM_OPERATOR_MAX = 0x1fff;
+        const int FM_ENVELOPE_QUIET = 0x380;
+        const int FM_PHASE_COUNTER_SCALE = 1 << 20;
         static readonly int [,] OPN_OPERATOR_OFFSET =
         {
             { 0, 8, 4, 12 },
@@ -80,10 +82,12 @@ namespace mame
         readonly u8 [] m_opn_regs = new u8[0x100];
         readonly double [,] m_fm_phase = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly double [,] m_fm_env = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly int [,] m_fm_env_attenuation = new int[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly double [,] m_fm_last = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly int [,] m_fm_int_last = new int[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly fm_envelope_stage [,] m_fm_stage = new fm_envelope_stage[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly bool [,] m_fm_key_state = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
-        readonly double [] m_fm_opout = new double[8];
+        readonly int [] m_fm_opout = new int[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
         readonly u8 [] m_block_freq_latch = new u8[2];
         readonly bool [] m_timer_running = new bool[2];
@@ -94,6 +98,7 @@ namespace mame
         int m_trace_write_count;
         u8 m_last_trace_address;
         u8 m_last_trace_data;
+        uint32_t m_env_counter;
 
         ym2203_device(machine_config mconfig, string tag, device_t owner, uint32_t clock)
             : base(mconfig, YM2203, tag, owner, clock, psg_type_t.PSG_TYPE_YM, 3, 2)
@@ -145,16 +150,24 @@ namespace mame
             Array.Clear(m_opn_regs, 0, m_opn_regs.Length);
             Array.Clear(m_fm_phase, 0, m_fm_phase.Length);
             Array.Clear(m_fm_env, 0, m_fm_env.Length);
+            Array.Clear(m_fm_env_attenuation, 0, m_fm_env_attenuation.Length);
             Array.Clear(m_fm_last, 0, m_fm_last.Length);
+            Array.Clear(m_fm_int_last, 0, m_fm_int_last.Length);
             Array.Clear(m_fm_stage, 0, m_fm_stage.Length);
             Array.Clear(m_fm_key_state, 0, m_fm_key_state.Length);
             Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
             Array.Clear(m_block_freq_latch, 0, m_block_freq_latch.Length);
             for (int channel = 0; channel < FM_CHANNELS; channel++)
+            {
                 for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
+                {
                     m_fm_stage[channel, slot] = fm_envelope_stage.Off;
+                    m_fm_env_attenuation[channel, slot] = 0x3ff;
+                }
+            }
             m_address = 0;
             m_status = 0;
+            m_env_counter = 0;
             m_trace_write_count = 0;
             m_last_trace_address = 0xff;
             m_last_trace_data = 0xff;
@@ -361,6 +374,7 @@ namespace mame
                 {
                     m_fm_stage[channel, slot] = fm_envelope_stage.Attack;
                     m_fm_env[channel, slot] = 0.0;
+                    m_fm_env_attenuation[channel, slot] = 0x3ff;
                     m_fm_phase[channel, slot] = 0.0;
                 }
                 else
@@ -388,52 +402,51 @@ namespace mame
 
             for (s32 sample = 0; sample < samples; sample++)
             {
-                double fm = 0.0;
+                int fm = 0;
                 for (int channel = 0; channel < FM_CHANNELS; channel++)
                     fm += render_fm_channel(channel, sampleRate);
 
-                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp(fm * FM_MIX_GAIN, -0.90, 0.90);
+                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp((fm / 32768.0) * FM_MIX_GAIN, -0.90, 0.90);
                 outputs[0].put(sample, outputs[0].get(sample) + mixed);
             }
         }
 
-        double render_fm_channel(int channel, double sampleRate)
+        int render_fm_channel(int channel, double sampleRate)
         {
             int blockFreq = channel_block_freq(channel);
             if (blockFreq == 0)
-                return 0.0;
+                return 0;
 
             double opnSampleRate = fm_source_sample_rate();
 
-            double feedback = (m_opn_regs[0xb0 + channel] >> 3) & 0x07;
+            int feedback = (m_opn_regs[0xb0 + channel] >> 3) & 0x07;
             int algorithm = m_opn_regs[0xb0 + channel] & 0x07;
+            int feedbackInput = feedback == 0 ? 0 : (m_fm_int_last[channel, 0] + m_fm_int_last[channel, 1]) >> (10 - feedback);
 
-            double op0 = clock_fm_operator(
-                channel,
-                0,
-                operator_block_freq(channel, 0, blockFreq),
-                feedback != 0.0 ? (m_fm_last[channel, 0] + m_fm_last[channel, 1]) * feedback * FM_FEEDBACK_SCALE : 0.0,
-                opnSampleRate,
-                sampleRate);
-            double [] opout = m_fm_opout;
+            int op0 = clock_fm_operator_int(channel, 0, operator_block_freq(channel, 0, blockFreq), feedbackInput, opnSampleRate, sampleRate);
+            int [] opout = m_fm_opout;
             Array.Clear(opout, 0, opout.Length);
-            opout[0] = 0.0;
+            opout[0] = 0;
             opout[1] = op0;
 
             int algorithmOps = OPN_ALGORITHM_OPS[algorithm & 0x07];
-            opout[2] = clock_fm_operator(channel, 1, operator_block_freq(channel, 1, blockFreq), opout[algorithmOps & 0x01] * FM_PHASE_MOD_SCALE, opnSampleRate, sampleRate);
+            opout[2] = clock_fm_operator_int(channel, 1, operator_block_freq(channel, 1, blockFreq), opout[algorithmOps & 0x01] >> 1, opnSampleRate, sampleRate);
             opout[5] = opout[1] + opout[2];
-            opout[3] = clock_fm_operator(channel, 2, operator_block_freq(channel, 2, blockFreq), opout[(algorithmOps >> 1) & 0x07] * FM_PHASE_MOD_SCALE, opnSampleRate, sampleRate);
+            opout[3] = clock_fm_operator_int(channel, 2, operator_block_freq(channel, 2, blockFreq), opout[(algorithmOps >> 1) & 0x07] >> 1, opnSampleRate, sampleRate);
             opout[6] = opout[1] + opout[3];
             opout[7] = opout[2] + opout[3];
-            double op3 = clock_fm_operator(channel, 3, operator_block_freq(channel, 3, blockFreq), opout[(algorithmOps >> 4) & 0x07] * FM_PHASE_MOD_SCALE, opnSampleRate, sampleRate);
+            int op3 = clock_fm_operator_int(channel, 3, operator_block_freq(channel, 3, blockFreq), opout[(algorithmOps >> 4) & 0x07] >> 1, opnSampleRate, sampleRate);
 
             m_fm_last[channel, 0] = op0;
             m_fm_last[channel, 1] = opout[2];
             m_fm_last[channel, 2] = opout[3];
             m_fm_last[channel, 3] = op3;
+            m_fm_int_last[channel, 0] = op0;
+            m_fm_int_last[channel, 1] = opout[2];
+            m_fm_int_last[channel, 2] = opout[3];
+            m_fm_int_last[channel, 3] = op3;
 
-            double result = op3;
+            int result = op3;
             int carriers = 1;
             if ((algorithmOps & (1 << 7)) != 0)
             {
@@ -498,7 +511,7 @@ namespace mame
             return Math.Max(1.0, clock() / (OPN_DEFAULT_PRESCALE * 12.0));
         }
 
-        double clock_fm_operator(int channel, int slot, int blockFreq, double modulation, double opnSampleRate, double sampleRate)
+        int clock_fm_operator_int(int channel, int slot, int blockFreq, int modulation, double opnSampleRate, double sampleRate)
         {
             int slotOffset = OPN_OPERATOR_OFFSET[channel, slot];
             u8 dtMul = m_opn_regs[0x30 + slotOffset];
@@ -509,18 +522,36 @@ namespace mame
             u8 sustainLevel = m_opn_regs[0x80 + slotOffset];
             u8 release = m_opn_regs[0x80 + slotOffset];
 
-            clock_envelope(channel, slot, attack, decay, sustainRate, sustainLevel, release);
-
             int detune = (dtMul >> 4) & 0x07;
             int keycode = keycode_from_block_freq(blockFreq);
-            double frequency = block_freq_to_hz(blockFreq, dtMul & 0x0f, detune_adjustment(detune, keycode), opnSampleRate);
-            double step = frequency / sampleRate;
-            m_fm_phase[channel, slot] += step;
-            m_fm_phase[channel, slot] -= Math.Floor(m_fm_phase[channel, slot]);
+            clock_envelope(channel, slot, attack, decay, sustainRate, sustainLevel, release, keycode);
+            int phaseStep = block_freq_to_phase_step(blockFreq, dtMul & 0x0f, detune_adjustment(detune, keycode));
+            double scaledStep = phaseStep * opnSampleRate / sampleRate;
+            m_fm_phase[channel, slot] += scaledStep;
+            m_fm_phase[channel, slot] %= FM_PHASE_COUNTER_SCALE;
 
-            double tl = Math.Pow(10.0, -((totalLevel & 0x7f) * 0.75) / 20.0);
-            double amplitude = m_fm_env[channel, slot] * tl;
-            return Math.Sin((m_fm_phase[channel, slot] + modulation) * TWO_PI) * amplitude;
+            int phase = (((int)m_fm_phase[channel, slot] >> 10) + modulation) & FM_PHASE_MASK;
+            int attenuation = m_fm_env_attenuation[channel, slot] + ((totalLevel & 0x7f) << 3);
+            if (attenuation > FM_ENVELOPE_QUIET)
+                return 0;
+
+            int sineAttenuation = phase_to_attenuation(phase);
+            int amplitude = attenuation_to_amplitude(sineAttenuation + (attenuation << 2));
+            int output = (phase & 0x200) != 0 ? -amplitude : amplitude;
+            return Math.Clamp(output, FM_OPERATOR_MIN, FM_OPERATOR_MAX);
+        }
+
+        int block_freq_to_phase_step(int blockFreq, int multiple, int detunePhaseStep)
+        {
+            int fnum = (blockFreq & 0x7ff) << 1;
+            int block = (blockFreq >> 11) & 0x07;
+            int phaseStep = (fnum << block) >> 2;
+            phaseStep = (phaseStep + detunePhaseStep) & 0x1ffff;
+            int x1Multiple = multiple * 2;
+            if (x1Multiple == 0)
+                x1Multiple = 1;
+
+            return (phaseStep * x1Multiple) >> 1;
         }
 
         static int keycode_from_block_freq(int blockFreq)
@@ -537,44 +568,52 @@ namespace mame
             return (detune & 0x04) != 0 ? -result : result;
         }
 
-        void clock_envelope(int channel, int slot, u8 attack, u8 decay, u8 sustainRate, u8 sustainLevel, u8 release)
+        void clock_envelope(int channel, int slot, u8 attack, u8 decay, u8 sustainRateReg, u8 sustainLevel, u8 release, int keycode)
         {
-            int attackRate = attack & 0x1f;
-            int decayRate = decay & 0x1f;
-            int sustainDecayRate = sustainRate & 0x1f;
-            int releaseRate = release & 0x0f;
-            double sustain = sustain_amplitude((sustainLevel >> 4) & 0x0f);
+            m_env_counter++;
+
+            int keyScale = (attack >> 6) & 0x03;
+            int ksr = keycode >> (keyScale ^ 3);
+            int attackRate = effective_rate((attack & 0x1f) * 2, ksr);
+            int decayRate = effective_rate((decay & 0x1f) * 2, ksr);
+            int sustainRate = effective_rate((sustainRateReg & 0x1f) * 2, ksr);
+            int releaseRate = effective_rate(((release & 0x0f) * 4) + 2, ksr);
+            int sustain = ((sustainLevel >> 4) & 0x0f);
+            sustain |= (sustain + 1) & 0x10;
+            sustain <<= 5;
+            int attenuation = m_fm_env_attenuation[channel, slot];
 
             switch (m_fm_stage[channel, slot])
             {
             case fm_envelope_stage.Attack:
                 if (attackRate == 0)
-                    return;
-                if (attackRate >= 31)
+                    break;
+                if (attackRate >= 62)
                 {
-                    m_fm_env[channel, slot] = 1.0;
+                    attenuation = 0;
                     m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
-                    return;
+                    break;
                 }
 
-                m_fm_env[channel, slot] += (1.0 - m_fm_env[channel, slot]) * rate_to_coefficient(attackRate, 0.00005, 0.095);
-                if (m_fm_env[channel, slot] >= 0.995)
+                int attackIncrement = envelope_increment(attackRate);
+                attenuation += ((~attenuation) * attackIncrement) >> 4;
+                if (attenuation <= 0)
                 {
-                    m_fm_env[channel, slot] = 1.0;
+                    attenuation = 0;
                     m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
                 }
                 break;
 
             case fm_envelope_stage.Decay:
-                if (m_fm_env[channel, slot] <= sustain || decayRate == 0)
+                if (attenuation >= sustain || decayRate == 0)
                 {
                     m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
                     break;
                 }
-                m_fm_env[channel, slot] += (sustain - m_fm_env[channel, slot]) * rate_to_coefficient(decayRate, 0.000015, 0.018);
-                if (m_fm_env[channel, slot] <= sustain)
+                attenuation += envelope_increment(decayRate);
+                if (attenuation >= sustain)
                 {
-                    m_fm_env[channel, slot] = sustain;
+                    attenuation = sustain;
                     m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
                 }
                 break;
@@ -585,42 +624,108 @@ namespace mame
                     m_fm_stage[channel, slot] = fm_envelope_stage.Release;
                     break;
                 }
-                if (sustainDecayRate != 0)
-                {
-                    m_fm_env[channel, slot] += (0.0 - m_fm_env[channel, slot]) * rate_to_coefficient(sustainDecayRate, 0.000003, 0.004);
-                    if (m_fm_env[channel, slot] < 0.00002)
-                        m_fm_env[channel, slot] = 0.0;
-                }
+                attenuation += envelope_increment(sustainRate);
                 break;
 
             case fm_envelope_stage.Release:
-                m_fm_env[channel, slot] += (0.0 - m_fm_env[channel, slot]) * rate_to_coefficient(releaseRate * 2, 0.00002, 0.035);
-                if (m_fm_env[channel, slot] < 0.00002)
+                attenuation += envelope_increment(releaseRate);
+                if (attenuation >= 0x3ff)
                 {
-                    m_fm_env[channel, slot] = 0.0;
+                    attenuation = 0x3ff;
                     m_fm_stage[channel, slot] = fm_envelope_stage.Off;
                 }
                 break;
 
             case fm_envelope_stage.Off:
-                m_fm_env[channel, slot] = 0.0;
+                attenuation = 0x3ff;
                 break;
             }
+
+            m_fm_env_attenuation[channel, slot] = Math.Clamp(attenuation, 0, 0x3ff);
         }
 
-        static double sustain_amplitude(int level)
+        static int effective_rate(int rawRate, int ksr)
         {
-            if (level >= 15)
-                return 0.0;
-            return Math.Pow(10.0, -(level * 3.0) / 20.0);
+            return rawRate == 0 ? 0 : Math.Min(rawRate + ksr, 63);
         }
 
-        static double rate_to_coefficient(int rate, double min, double max)
+        int envelope_increment(int rate)
         {
-            if (rate <= 0)
-                return 0.0;
-            double normalized = Math.Clamp(rate / 31.0, 0.0, 1.0);
-            return min + (max - min) * normalized * normalized;
+            rate = Math.Clamp(rate, 0, 63);
+            if (rate == 0)
+                return 0;
+
+            int shift = 11 - (rate >> 2);
+            if (shift < 0)
+                shift = 0;
+            if ((m_env_counter & ((1U << shift) - 1U)) != 0)
+                return 0;
+
+            int index = (int)((m_env_counter >> shift) & 0x07);
+            return (int)((OPN_ATTENUATION_INCREMENT[rate] >> (index * 4)) & 0x0f);
+        }
+
+        static int phase_to_attenuation(int phase)
+        {
+            int index = phase & 0x1ff;
+            if ((index & 0x100) != 0)
+                index = (~index) & 0xff;
+            return OPN_LOG_SINE_TABLE[index];
+        }
+
+        static int attenuation_to_amplitude(int attenuation)
+        {
+            int intPart = (attenuation >> 8) & 0x1f;
+            if (intPart >= 13)
+                return 0;
+
+            int fractPart = attenuation & 0xff;
+            return ((OPN_POW2_TABLE[fractPart] << 2) & 0xffff) >> intPart;
+        }
+
+        static readonly ushort [] OPN_LOG_SINE_TABLE = build_log_sine_table();
+        static readonly ushort [] OPN_POW2_TABLE = build_pow2_table();
+        static readonly uint32_t [] OPN_ATTENUATION_INCREMENT =
+        {
+            0x00000000, 0x00000000, 0x10101010, 0x10101010,
+            0x10101010, 0x10101010, 0x11101110, 0x11101110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x11111111, 0x21112111, 0x21212121, 0x22212221,
+            0x22222222, 0x42224222, 0x42424242, 0x44424442,
+            0x44444444, 0x84448444, 0x84848484, 0x88848884,
+            0x88888888, 0x88888888, 0x88888888, 0x88888888
+        };
+
+        static ushort [] build_log_sine_table()
+        {
+            ushort [] table = new ushort[256];
+            for (int i = 0; i < table.Length; i++)
+            {
+                double n = ((i << 1) | 1) / 512.0;
+                double sine = Math.Sin(n * Math.PI / 2.0);
+                table[i] = (ushort)Math.Round(-Math.Log(sine, 2.0) * 256.0);
+            }
+            return table;
+        }
+
+        static ushort [] build_pow2_table()
+        {
+            ushort [] table = new ushort[256];
+            for (int i = 0; i < table.Length; i++)
+            {
+                double n = (i + 1) / 256.0;
+                table[i] = (ushort)Math.Round(Math.Pow(2.0, -n) * 2048.0);
+            }
+            return table;
         }
 
     }
