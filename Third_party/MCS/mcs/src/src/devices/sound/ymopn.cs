@@ -402,6 +402,7 @@ namespace mame
 
             for (s32 sample = 0; sample < samples; sample++)
             {
+                m_env_counter++;
                 int fm = 0;
                 for (int channel = 0; channel < FM_CHANNELS; channel++)
                     fm += render_fm_channel(channel, sampleRate);
@@ -570,8 +571,6 @@ namespace mame
 
         void clock_envelope(int channel, int slot, u8 attack, u8 decay, u8 sustainRateReg, u8 sustainLevel, u8 release, int keycode)
         {
-            m_env_counter++;
-
             int keyScale = (attack >> 6) & 0x03;
             int ksr = keycode >> (keyScale ^ 3);
             int attackRate = effective_rate((attack & 0x1f) * 2, ksr);
