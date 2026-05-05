@@ -3,12 +3,14 @@
 
 using System;
 
+using devcb_write_line = mame.devcb_write<mame.Type_constant_s32, mame.devcb_value_const_unsigned_1<mame.Type_constant_s32>>;
 using offs_t = System.UInt32;
 using u8 = System.Byte;
-using uint8_t = System.Byte;
 using uint32_t = System.UInt32;
 
 using static mame.device_global;
+using static mame.diexec_global;
+using static mame.emucore_global;
 
 
 namespace mame
@@ -17,33 +19,193 @@ namespace mame
     //
     // Minimal YM2203 implementation for drivers that rely on the SSG portion.
     // The FM output is silent for now, but the three PSG channels are backed by
-    // the existing AY/YM SSG core and participate in MAME's sound routing.
+    // the existing AY/YM SSG core and participate in MAME's sound routing. OPN
+    // timer/status handling is implemented so sound programs that use the
+    // YM2203 IRQ line for pacing can run.
     public class ym2203_device : ay8910_device
     {
         public static readonly emu.detail.device_type_impl YM2203 = DEFINE_DEVICE_TYPE("ym2203", "YM2203 OPN", (type, mconfig, tag, owner, clock) => { return new ym2203_device(mconfig, tag, owner, clock); });
 
+        const u8 STATUS_TIMERA = 0x01;
+        const u8 STATUS_TIMERB = 0x02;
+        const int OPN_OPERATORS = 12;
+        const int OPN_DEFAULT_PRESCALE = 6;
+
+        readonly bool m_trace;
+        readonly devcb_write_line m_irq_handler;
+        readonly u8 [] m_opn_regs = new u8[0x100];
+        emu_timer m_timer_a;
+        emu_timer m_timer_b;
+        u8 m_address;
+        u8 m_status;
+
         ym2203_device(machine_config mconfig, string tag, device_t owner, uint32_t clock)
             : base(mconfig, YM2203, tag, owner, clock, psg_type_t.PSG_TYPE_YM, 3, 2)
         {
+            m_trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_YM2203_TRACE") == "1";
+            m_irq_handler = new devcb_write_line(this);
         }
+
+        public devcb_write_line.binder irq_handler() { return m_irq_handler.bind(); }
 
         public void write(offs_t offset, u8 data)
         {
             if ((offset & 1) == 0)
-                address_w(data);
+                ym2203_address_w(data);
             else
-                data_w(data);
+                ym2203_data_w(data);
         }
 
         public u8 read(offs_t offset)
         {
-            return (offset & 1) == 0 ? (u8)0 : data_r();
+            return (offset & 1) == 0 ? m_status : ym2203_data_r();
         }
 
         public void add_route(int index, string tag, float gain)
         {
             if (index >= 0 && index < 3)
                 base.add_route((uint32_t)index, tag, gain);
+        }
+
+        protected override void device_start()
+        {
+            base.device_start();
+
+            m_irq_handler.resolve_safe();
+            m_timer_a = timer_alloc(timer_a_expired);
+            m_timer_b = timer_alloc(timer_b_expired);
+
+            save_item(NAME(new { m_address }));
+            save_item(NAME(new { m_status }));
+            save_item(NAME(new { m_opn_regs }));
+        }
+
+        protected override void device_reset()
+        {
+            base.device_reset();
+
+            Array.Clear(m_opn_regs, 0, m_opn_regs.Length);
+            m_address = 0;
+            m_status = 0;
+            if (m_timer_a != null)
+                m_timer_a.enable(false);
+            if (m_timer_b != null)
+                m_timer_b.enable(false);
+            update_irq();
+        }
+
+        void ym2203_address_w(u8 data)
+        {
+            m_address = data;
+            if (m_address <= 0x0f)
+                base.address_w(data);
+            else if (m_trace)
+                logerror("{0}: {1} address 0x{2:X2}\n", machine().describe_context(), tag(), m_address);
+        }
+
+        void ym2203_data_w(u8 data)
+        {
+            if (m_address <= 0x0f)
+            {
+                base.data_w(data);
+                return;
+            }
+
+            m_opn_regs[m_address] = data;
+            if (m_trace)
+                logerror("{0}: {1} write reg=0x{2:X2} data=0x{3:X2}\n", machine().describe_context(), tag(), m_address, data);
+
+            switch (m_address)
+            {
+            case 0x24:
+            case 0x25:
+            case 0x26:
+                reload_timer_register(m_address);
+                break;
+            case 0x27:
+                mode_w(data);
+                break;
+            }
+        }
+
+        u8 ym2203_data_r()
+        {
+            return m_address <= 0x0f ? data_r() : (u8)0xff;
+        }
+
+        void mode_w(u8 data)
+        {
+            if ((data & 0x10) != 0)
+                m_status = (u8)(m_status & ~STATUS_TIMERA);
+            if ((data & 0x20) != 0)
+                m_status = (u8)(m_status & ~STATUS_TIMERB);
+
+            update_timer(0, (data & 0x01) != 0);
+            update_timer(1, (data & 0x02) != 0);
+            update_irq();
+        }
+
+        void reload_timer_register(u8 reg)
+        {
+            u8 mode = m_opn_regs[0x27];
+            if ((reg == 0x24 || reg == 0x25) && (mode & 0x01) != 0)
+                update_timer(0, true);
+            else if (reg == 0x26 && (mode & 0x02) != 0)
+                update_timer(1, true);
+        }
+
+        void update_timer(int index, bool load)
+        {
+            emu_timer timer = index == 0 ? m_timer_a : m_timer_b;
+            if (timer == null)
+                return;
+
+            if (!load)
+            {
+                timer.enable(false);
+                return;
+            }
+
+            uint32_t period = index == 0
+                ? (uint32_t)(1024 - timer_a_value())
+                : (uint32_t)(16 * (256 - m_opn_regs[0x26]));
+            if (period == 0)
+                period = 1;
+
+            uint32_t clocks = period * OPN_OPERATORS * OPN_DEFAULT_PRESCALE;
+            timer.adjust(attotime.from_ticks(clocks, clock()));
+        }
+
+        int timer_a_value()
+        {
+            return ((m_opn_regs[0x24] << 2) | (m_opn_regs[0x25] & 0x03)) & 0x3ff;
+        }
+
+        void timer_a_expired(int param)
+        {
+            if ((m_opn_regs[0x27] & 0x04) != 0)
+                m_status = (u8)(m_status | STATUS_TIMERA);
+            update_irq();
+            update_timer(0, (m_opn_regs[0x27] & 0x01) != 0);
+        }
+
+        void timer_b_expired(int param)
+        {
+            if ((m_opn_regs[0x27] & 0x08) != 0)
+                m_status = (u8)(m_status | STATUS_TIMERB);
+            update_irq();
+            update_timer(1, (m_opn_regs[0x27] & 0x02) != 0);
+        }
+
+        void update_irq()
+        {
+            u8 enabled = 0;
+            if ((m_opn_regs[0x27] & 0x04) != 0)
+                enabled |= STATUS_TIMERA;
+            if ((m_opn_regs[0x27] & 0x08) != 0)
+                enabled |= STATUS_TIMERB;
+
+            m_irq_handler.op_s32((m_status & enabled) != 0 ? ASSERT_LINE : CLEAR_LINE);
         }
     }
 

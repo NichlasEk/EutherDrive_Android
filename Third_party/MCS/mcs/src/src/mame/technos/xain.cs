@@ -434,6 +434,7 @@ namespace mame
             GENERIC_LATCH_8(config, m_soundlatch).data_pending_callback().set_inputline(m_audiocpu, M6809_IRQ_LINE).reg();
 
             ym2203_device ym1 = YM2203(config, "ym1", (u32)MCU_CLOCK.dvalue());
+            ym1.irq_handler().set_inputline(m_audiocpu, M6809_FIRQ_LINE).reg();
             ym1.add_route(0, "mono", 0.50f);
             ym1.add_route(1, "mono", 0.50f);
             ym1.add_route(2, "mono", 0.50f);
