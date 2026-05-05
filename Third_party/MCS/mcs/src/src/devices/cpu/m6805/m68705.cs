@@ -139,7 +139,9 @@ namespace mame
 
         public u8 tcr_r()
         {
-            throw new emu_unimplemented();
+            return (u8)(((m_options & timer_options.TIMER_MOR) != 0)
+                    ? m_tcr | (u8)tcr_mask.TCR_PSC
+                    : m_tcr & ~(u8)tcr_mask.TCR_PSC);
         }
 
 
@@ -374,7 +376,12 @@ namespace mame
         }
 
 
-        //template <std::size_t N> void port_input_w(uint8_t data) { m_port_input[N] = data & ~m_port_mask[N]; }
+        protected void port_input_w<std_size_t_N>(u8 data)
+            where std_size_t_N : u32_const, new()
+        {
+            size_t N = new std_size_t_N().value;
+            m_port_input[N] = (u8)(data & ~m_port_mask[N]);
+        }
 
 
         u8 port_r<std_size_t_N>()  //template <std::size_t N> u8 port_r();
@@ -610,8 +617,8 @@ namespace mame
             public device_nvram_interface_m68705(machine_config mconfig, device_t device) : base(mconfig, device) { }
 
             protected override void nvram_default() { }
-            protected override bool nvram_read(util.read_stream file) { throw new emu_unimplemented(); }
-            protected override bool nvram_write(util.write_stream file) { throw new emu_unimplemented(); }
+            protected override bool nvram_read(util.read_stream file) { return ((m68705_device)device()).device_nvram_interface_nvram_read(file); }
+            protected override bool nvram_write(util.write_stream file) { return ((m68705_device)device()).device_nvram_interface_nvram_write(file); }
         }
 
 
@@ -764,31 +771,80 @@ namespace mame
         }
 
         protected u8 eprom_r_0x0080(offs_t offset) { return eprom_r(0x0080, offset); }
+        protected u8 eprom_r_0x0785(offs_t offset) { return eprom_r(0x0785, offset); }
         protected u8 eprom_r_0x07f8(offs_t offset) { return eprom_r(0x07f8, offset); }
 
 
         void eprom_w(offs_t B, offs_t offset, u8 data)  //template <offs_t B> void eprom_w(offs_t offset, u8 data);
         {
-            throw new emu_unimplemented();
+            LOGEPROM(
+                    "EPROM programming latch write{0}{1}: {2} = {3}\n",
+                    !pcr_vpon() ? " [Vpp low]" : "",
+                    !pcr_ple() ? " [disabled]" : "",
+                    B + offset,
+                    data);
+
+            // programming latch enabled when /VPON and /PLE are asserted
+            if (pcr_vpon() && pcr_ple())
+            {
+                if (!pcr_pge())
+                {
+                    m_pl_data = data;
+                    m_pl_addr = (u16)(B + offset);
+                }
+                else
+                {
+                    logerror("warning: write to EPROM when /PGE = 0 ({0} = {1})\n", B + offset, data);
+                }
+            }
         }
 
         protected void eprom_w_0x0080(offs_t offset, u8 data) { eprom_w(0x0080, offset, data); }
+        protected void eprom_w_0x0785(offs_t offset, u8 data) { eprom_w(0x0785, offset, data); }
         protected void eprom_w_0x07f8(offs_t offset, u8 data) { eprom_w(0x07f8, offset, data); }
 
 
         protected u8 pcr_r()
         {
-            throw new emu_unimplemented();
+            return m_pcr;
         }
 
 
         protected void pcr_w(u8 data)
         {
-            throw new emu_unimplemented();
+            // lock out /PGE if /PLE is not asserted
+            data |= (u8)((data & 0x01) << 1);
+
+            // write EPROM if /PGE is asserted; erase requires UV so don't clear bits
+            if (!pcr_pge() && BIT(data, 1) == 0)
+            {
+                if (pcr_vpon())
+                    m_user_rom[m_pl_addr].op = (u8)(m_user_rom[m_pl_addr].op | m_pl_data);
+            }
+
+            m_pcr = (u8)((m_pcr & 0xfc) | (data & 0x03));
         }
 
 
         protected Pointer<u8> get_user_rom() { return m_user_rom[0]; }  //u8 *const get_user_rom() const { return &m_user_rom[0]; }
+
+
+        bool device_nvram_interface_nvram_read(util.read_stream file)
+        {
+            size_t actual;
+            std.error_condition err = file.read(m_user_rom[0], m_user_rom.bytes(), out actual);
+            return !err && actual == m_user_rom.bytes();
+        }
+
+
+        bool device_nvram_interface_nvram_write(util.write_stream file)
+        {
+            size_t actual;
+            std.error_condition err = file.write(m_user_rom[0], m_user_rom.bytes(), out actual);
+            return !err && actual == m_user_rom.bytes();
+        }
+
+
         protected abstract u8 get_mask_options();
 
 
@@ -820,9 +876,9 @@ namespace mame
         }
 
 
-        //void pa_w(u8 data) { port_input_w<0>(data); }
-        //void pb_w(u8 data) { port_input_w<1>(data); }
-        //void pc_w(u8 data) { port_input_w<2>(data); }
+        public void pa_w(u8 data) { port_input_w<u32_const_0>(data); }
+        public void pb_w(u8 data) { port_input_w<u32_const_1>(data); }
+        public void pc_w(u8 data) { port_input_w<u32_const_2>(data); }
 
 
         protected override void internal_map(address_map map)
@@ -830,7 +886,7 @@ namespace mame
             base.internal_map(map);
 
             map.op(0x0080, 0x0784).rw(eprom_r_0x0080, eprom_w_0x0080); // User EPROM
-            map.op(0x0785, 0x07f7).rom().region("bootstrap", 0);
+            map.op(0x0785, 0x07f7).rw(eprom_r_0x0785, eprom_w_0x0785); // User EPROM (skip undumped bootstrap dependency)
             map.op(0x07f8, 0x07ff).rw(eprom_r_0x07f8, eprom_w_0x07f8); // Interrupt vectors
         }
 
@@ -873,7 +929,7 @@ namespace mame
 
         protected override Pointer<tiny_rom_entry> device_rom_region()
         {
-            return new Pointer<tiny_rom_entry>(new MemoryContainer<tiny_rom_entry>(rom_m68705p5));
+            return null;
         }
 
         protected override u8 get_mask_options()

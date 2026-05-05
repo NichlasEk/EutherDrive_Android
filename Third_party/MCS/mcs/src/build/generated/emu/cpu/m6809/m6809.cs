@@ -216,40 +216,40 @@ namespace mame
                 case 188:   throw new emu_unimplemented();  //goto state_188;
                 case 189:   throw new emu_unimplemented();  //goto state_189;
                 case 190:   goto state_190;
-                case 191:   throw new emu_unimplemented();  //goto state_191;
-                case 192:   throw new emu_unimplemented();  //goto state_192;
-                case 193:   throw new emu_unimplemented();  //goto state_193;
-                case 194:   throw new emu_unimplemented();  //goto state_194;
-                case 195:   throw new emu_unimplemented();  //goto state_195;
-                case 196:   throw new emu_unimplemented();  //goto state_196;
-                case 197:   throw new emu_unimplemented();  //goto state_197;
-                case 198:   throw new emu_unimplemented();  //goto state_198;
-                case 199:   throw new emu_unimplemented();  //goto state_199;
-                case 200:   throw new emu_unimplemented();  //goto state_200;
-                case 201:   throw new emu_unimplemented();  //goto state_201;
-                case 202:   throw new emu_unimplemented();  //goto state_202;
-                case 203:   throw new emu_unimplemented();  //goto state_203;
-                case 204:   throw new emu_unimplemented();  //goto state_204;
-                case 205:   throw new emu_unimplemented();  //goto state_205;
-                case 206:   throw new emu_unimplemented();  //goto state_206;
-                case 207:   throw new emu_unimplemented();  //goto state_207;
-                case 208:   throw new emu_unimplemented();  //goto state_208;
-                case 209:   throw new emu_unimplemented();  //goto state_209;
-                case 210:   throw new emu_unimplemented();  //goto state_210;
-                case 211:   throw new emu_unimplemented();  //goto state_211;
-                case 212:   throw new emu_unimplemented();  //goto state_212;
-                case 213:   throw new emu_unimplemented();  //goto state_213;
-                case 214:   throw new emu_unimplemented();  //goto state_214;
-                case 215:   throw new emu_unimplemented();  //goto state_215;
-                case 216:   throw new emu_unimplemented();  //goto state_216;
-                case 217:   throw new emu_unimplemented();  //goto state_217;
-                case 218:   throw new emu_unimplemented();  //goto state_218;
-                case 219:   throw new emu_unimplemented();  //goto state_219;
-                case 220:   throw new emu_unimplemented();  //goto state_220;
-                case 221:   throw new emu_unimplemented();  //goto state_221;
-                case 222:   throw new emu_unimplemented();  //goto state_222;
-                case 223:   throw new emu_unimplemented();  //goto state_223;
-                case 224:   throw new emu_unimplemented();  //goto state_224;
+                case 191:    throw new emu_unimplemented(); //goto state_191;
+                case 192:    throw new emu_unimplemented(); //goto state_192;
+                case 193:    throw new emu_unimplemented(); //goto state_193;
+                case 194:    throw new emu_unimplemented(); //goto state_194;
+                case 195:    throw new emu_unimplemented(); //goto state_195;
+                case 196:    throw new emu_unimplemented(); //goto state_196;
+                case 197:    throw new emu_unimplemented(); //goto state_197;
+                case 198:    throw new emu_unimplemented(); //goto state_198;
+                case 199:    throw new emu_unimplemented(); //goto state_199;
+                case 200:    throw new emu_unimplemented(); //goto state_200;
+                case 201:    throw new emu_unimplemented(); //goto state_201;
+                case 202:    throw new emu_unimplemented(); //goto state_202;
+                case 203:    throw new emu_unimplemented(); //goto state_203;
+                case 204:    throw new emu_unimplemented(); //goto state_204;
+                case 205:    throw new emu_unimplemented(); //goto state_205;
+                case 206:    throw new emu_unimplemented(); //goto state_206;
+                case 207:    throw new emu_unimplemented(); //goto state_207;
+                case 208:    throw new emu_unimplemented(); //goto state_208;
+                case 209:    throw new emu_unimplemented(); //goto state_209;
+                case 210:    throw new emu_unimplemented(); //goto state_210;
+                case 211:    throw new emu_unimplemented(); //goto state_211;
+                case 212:    throw new emu_unimplemented(); //goto state_212;
+                case 213:    throw new emu_unimplemented(); //goto state_213;
+                case 214:    throw new emu_unimplemented(); //goto state_214;
+                case 215:    throw new emu_unimplemented(); //goto state_215;
+                case 216:    throw new emu_unimplemented(); //goto state_216;
+                case 217:    throw new emu_unimplemented(); //goto state_217;
+                case 218:    throw new emu_unimplemented(); //goto state_218;
+                case 219:    throw new emu_unimplemented(); //goto state_219;
+                case 220:    throw new emu_unimplemented(); //goto state_220;
+                case 221:    throw new emu_unimplemented(); //goto state_221;
+                case 222:    throw new emu_unimplemented(); //goto state_222;
+                case 223:    throw new emu_unimplemented(); //goto state_223;
+                case 224:    throw new emu_unimplemented(); //goto state_224;
                 default:
                     fatalerror("Unexpected state");
                     break;
@@ -357,13 +357,13 @@ state_1:
                 case 0x2E:              set_cond(cond_gt());    goto BRANCH;
                 case 0x2F:              set_cond(!cond_gt());   goto BRANCH;
 
-                case 0x30:              set_regop16(m_x);       push_state(14); // LEA_xy
+                case 0x30:              set_x();       push_state(14); // LEA_xy
                 goto INDEXED;
-                case 0x31:              set_regop16(m_y);       push_state(14); // LEA_xy
+                case 0x31:              set_y();       push_state(14); // LEA_xy
                 goto INDEXED;
-                case 0x32:              set_regop16(m_s);       push_state(15); // LEA_us
+                case 0x32:              set_s();       push_state(15); // LEA_us
                 goto INDEXED;
-                case 0x33:              set_regop16(m_u);       push_state(15); // LEA_us
+                case 0x33:              set_u();       push_state(15); // LEA_us
                 goto INDEXED;
                 case 0x34:
                     goto PSHS;
@@ -486,240 +486,240 @@ state_1:
                     push_state(13); // CLR8
                     goto EXTENDED;
 
-                case 0x80:              set_regop8(m_q.r.a);    set_imm();  goto SUB8;
-                case 0x81:              set_regop8(m_q.r.a);    set_imm();  goto CMP8;
-                case 0x82:              set_regop8(m_q.r.a);    set_imm();  goto SBC8;
-                case 0x83:              set_regop16(m_q.p.d);   set_imm();  goto SUB16;
-                case 0x84:              set_regop8(m_q.r.a);    set_imm();  goto AND8;
-                case 0x85:              set_regop8(m_q.r.a);    set_imm();  goto BIT8;
-                case 0x86:              set_regop8(m_q.r.a);    set_imm();  goto LD8;
-                case 0x87:              set_regop8(m_q.r.a);    set_imm();  goto ST8;
-                case 0x88:              set_regop8(m_q.r.a);    set_imm();  goto EOR8;
-                case 0x89:              set_regop8(m_q.r.a);    set_imm();  goto ADC8;
-                case 0x8A:              set_regop8(m_q.r.a);    set_imm();  goto OR8;
-                case 0x8B:              set_regop8(m_q.r.a);    set_imm();  goto ADD8;
-                case 0x8C:              set_regop16(m_x);       set_imm();  goto CMP16;
+                case 0x80:              set_a();    set_imm();  goto SUB8;
+                case 0x81:              set_a();    set_imm();  goto CMP8;
+                case 0x82:              set_a();    set_imm();  goto SBC8;
+                case 0x83:              set_d();   set_imm();  goto SUB16;
+                case 0x84:              set_a();    set_imm();  goto AND8;
+                case 0x85:              set_a();    set_imm();  goto BIT8;
+                case 0x86:              set_a();    set_imm();  goto LD8;
+                case 0x87:              set_a();    set_imm();  goto ST8;
+                case 0x88:              set_a();    set_imm();  goto EOR8;
+                case 0x89:              set_a();    set_imm();  goto ADC8;
+                case 0x8A:              set_a();    set_imm();  goto OR8;
+                case 0x8B:              set_a();    set_imm();  goto ADD8;
+                case 0x8C:              set_x();       set_imm();  goto CMP16;
                 case 0x8D:
                     goto BSR;
-                case 0x8E:              set_regop16(m_x);       set_imm();  goto LD16;
-                case 0x8F:              set_regop16(m_x);       set_imm();  goto ST16;
+                case 0x8E:              set_x();       set_imm();  goto LD16;
+                case 0x8F:              set_x();       set_imm();  goto ST16;
 
-                case 0x90:              set_regop8(m_q.r.a);    push_state(16); // SUB8
+                case 0x90:              set_a();    push_state(16); // SUB8
             goto DIRECT;
-                case 0x91:              set_regop8(m_q.r.a);    push_state(17); // CMP8
+                case 0x91:              set_a();    push_state(17); // CMP8
             goto DIRECT;
-                case 0x92:              set_regop8(m_q.r.a);    push_state(18); // SBC8
+                case 0x92:              set_a();    push_state(18); // SBC8
             goto DIRECT;
-                case 0x93:              set_regop16(m_q.p.d);   push_state(19); // SUB16
+                case 0x93:              set_d();   push_state(19); // SUB16
             goto DIRECT;
-                case 0x94:              set_regop8(m_q.r.a);    push_state(20); // AND8
+                case 0x94:              set_a();    push_state(20); // AND8
             goto DIRECT;
-                case 0x95:              set_regop8(m_q.r.a);    push_state(21); // BIT8
+                case 0x95:              set_a();    push_state(21); // BIT8
             goto DIRECT;
-                case 0x96:              set_regop8(m_q.r.a);    push_state(22); // LD8
+                case 0x96:              set_a();    push_state(22); // LD8
             goto DIRECT;
-                case 0x97:              set_regop8(m_q.r.a);    push_state(23); // ST8
+                case 0x97:              set_a();    push_state(23); // ST8
             goto DIRECT;
-                case 0x98:              set_regop8(m_q.r.a);    push_state(24); // EOR8
+                case 0x98:              set_a();    push_state(24); // EOR8
             goto DIRECT;
-                case 0x99:              set_regop8(m_q.r.a);    push_state(25); // ADC8
+                case 0x99:              set_a();    push_state(25); // ADC8
             goto DIRECT;
-                case 0x9A:              set_regop8(m_q.r.a);    push_state(26); // OR8
+                case 0x9A:              set_a();    push_state(26); // OR8
             goto DIRECT;
-                case 0x9B:              set_regop8(m_q.r.a);    push_state(27); // ADD8
+                case 0x9B:              set_a();    push_state(27); // ADD8
             goto DIRECT;
-                case 0x9C:              set_regop16(m_x);       push_state(28); // CMP16
+                case 0x9C:              set_x();       push_state(28); // CMP16
                 goto DIRECT;
                 case 0x9D:
                     push_state(29); // JSR
                     goto DIRECT;
-                case 0x9E:              set_regop16(m_x);       push_state(30); // LD16
+                case 0x9E:              set_x();       push_state(30); // LD16
                 goto DIRECT;
-                case 0x9F:              set_regop16(m_x);       push_state(31); // ST16
+                case 0x9F:              set_x();       push_state(31); // ST16
                 goto DIRECT;
 
-                case 0xA0:              set_regop8(m_q.r.a);    push_state(16); // SUB8
+                case 0xA0:              set_a();    push_state(16); // SUB8
             goto INDEXED;
-                case 0xA1:              set_regop8(m_q.r.a);    push_state(17); // CMP8
+                case 0xA1:              set_a();    push_state(17); // CMP8
             goto INDEXED;
-                case 0xA2:              set_regop8(m_q.r.a);    push_state(18); // SBC8
+                case 0xA2:              set_a();    push_state(18); // SBC8
             goto INDEXED;
-                case 0xA3:              set_regop16(m_q.p.d);   push_state(19); // SUB16
+                case 0xA3:              set_d();   push_state(19); // SUB16
             goto INDEXED;
-                case 0xA4:              set_regop8(m_q.r.a);    push_state(20); // AND8
+                case 0xA4:              set_a();    push_state(20); // AND8
             goto INDEXED;
-                case 0xA5:              set_regop8(m_q.r.a);    push_state(21); // BIT8
+                case 0xA5:              set_a();    push_state(21); // BIT8
             goto INDEXED;
-                case 0xA6:              set_regop8(m_q.r.a);    push_state(22); // LD8
+                case 0xA6:              set_a();    push_state(22); // LD8
             goto INDEXED;
-                case 0xA7:              set_regop8(m_q.r.a);    push_state(23); // ST8
+                case 0xA7:              set_a();    push_state(23); // ST8
             goto INDEXED;
-                case 0xA8:              set_regop8(m_q.r.a);    push_state(24); // EOR8
+                case 0xA8:              set_a();    push_state(24); // EOR8
             goto INDEXED;
-                case 0xA9:              set_regop8(m_q.r.a);    push_state(25); // ADC8
+                case 0xA9:              set_a();    push_state(25); // ADC8
             goto INDEXED;
-                case 0xAA:              set_regop8(m_q.r.a);    push_state(26); // OR8
+                case 0xAA:              set_a();    push_state(26); // OR8
             goto INDEXED;
-                case 0xAB:              set_regop8(m_q.r.a);    push_state(27); // ADD8
+                case 0xAB:              set_a();    push_state(27); // ADD8
             goto INDEXED;
-                case 0xAC:              set_regop16(m_x);       push_state(28); // CMP16
+                case 0xAC:              set_x();       push_state(28); // CMP16
                 goto INDEXED;
                 case 0xAD:
                     push_state(29); // JSR
                     goto INDEXED;
-                case 0xAE:              set_regop16(m_x);       push_state(30); // LD16
+                case 0xAE:              set_x();       push_state(30); // LD16
                 goto INDEXED;
-                case 0xAF:              set_regop16(m_x);       push_state(31); // ST16
+                case 0xAF:              set_x();       push_state(31); // ST16
                 goto INDEXED;
 
-                case 0xB0:              set_regop8(m_q.r.a);    push_state(16); // SUB8
+                case 0xB0:              set_a();    push_state(16); // SUB8
             goto EXTENDED;
-                case 0xB1:              set_regop8(m_q.r.a);    push_state(17); // CMP8
+                case 0xB1:              set_a();    push_state(17); // CMP8
             goto EXTENDED;
-                case 0xB2:              set_regop8(m_q.r.a);    push_state(18); // SBC8
+                case 0xB2:              set_a();    push_state(18); // SBC8
             goto EXTENDED;
-                case 0xB3:              set_regop16(m_q.p.d);   push_state(19); // SUB16
+                case 0xB3:              set_d();   push_state(19); // SUB16
             goto EXTENDED;
-                case 0xB4:              set_regop8(m_q.r.a);    push_state(20); // AND8
+                case 0xB4:              set_a();    push_state(20); // AND8
             goto EXTENDED;
-                case 0xB5:              set_regop8(m_q.r.a);    push_state(21); // BIT8
+                case 0xB5:              set_a();    push_state(21); // BIT8
             goto EXTENDED;
-                case 0xB6:              set_regop8(m_q.r.a);    push_state(22); // LD8
+                case 0xB6:              set_a();    push_state(22); // LD8
             goto EXTENDED;
-                case 0xB7:              set_regop8(m_q.r.a);    push_state(23); // ST8
+                case 0xB7:              set_a();    push_state(23); // ST8
             goto EXTENDED;
-                case 0xB8:              set_regop8(m_q.r.a);    push_state(24); // EOR8
+                case 0xB8:              set_a();    push_state(24); // EOR8
             goto EXTENDED;
-                case 0xB9:              set_regop8(m_q.r.a);    push_state(25); // ADC8
+                case 0xB9:              set_a();    push_state(25); // ADC8
             goto EXTENDED;
-                case 0xBA:              set_regop8(m_q.r.a);    push_state(26); // OR8
+                case 0xBA:              set_a();    push_state(26); // OR8
             goto EXTENDED;
-                case 0xBB:              set_regop8(m_q.r.a);    push_state(27); // ADD8
+                case 0xBB:              set_a();    push_state(27); // ADD8
             goto EXTENDED;
-                case 0xBC:              set_regop16(m_x);       push_state(28); // CMP16
+                case 0xBC:              set_x();       push_state(28); // CMP16
                 goto EXTENDED;
                 case 0xBD:
                     push_state(29); // JSR
                     goto EXTENDED;
-                case 0xBE:              set_regop16(m_x);       push_state(30); // LD16
+                case 0xBE:              set_x();       push_state(30); // LD16
                 goto EXTENDED;
-                case 0xBF:              set_regop16(m_x);       push_state(31); // ST16
+                case 0xBF:              set_x();       push_state(31); // ST16
                 goto EXTENDED;
 
-                case 0xC0:              set_regop8(m_q.r.b);    set_imm();  goto SUB8;
-                case 0xC1:              set_regop8(m_q.r.b);    set_imm();  goto CMP8;
-                case 0xC2:              set_regop8(m_q.r.b);    set_imm();  goto SBC8;
-                case 0xC3:              set_regop16(m_q.p.d);   set_imm();  goto ADD16;
-                case 0xC4:              set_regop8(m_q.r.b);    set_imm();  goto AND8;
-                case 0xC5:              set_regop8(m_q.r.b);    set_imm();  goto BIT8;
-                case 0xC6:              set_regop8(m_q.r.b);    set_imm();  goto LD8;
-                case 0xC7:              set_regop8(m_q.r.b);    set_imm();  goto ST8;
-                case 0xC8:              set_regop8(m_q.r.b);    set_imm();  goto EOR8;
-                case 0xC9:              set_regop8(m_q.r.b);    set_imm();  goto ADC8;
-                case 0xCA:              set_regop8(m_q.r.b);    set_imm();  goto OR8;
-                case 0xCB:              set_regop8(m_q.r.b);    set_imm();  goto ADD8;
-                case 0xCC:              set_regop16(m_q.p.d);   set_imm();  goto LD16;
-                case 0xCD:              set_regop16(m_q.p.d);   set_imm();  goto ST16;
-                case 0xCE:              set_regop16(m_u);       set_imm();  goto LD16;
-                case 0xCF:              set_regop16(m_u);       set_imm();  goto ST16;
+                case 0xC0:              set_b();    set_imm();  goto SUB8;
+                case 0xC1:              set_b();    set_imm();  goto CMP8;
+                case 0xC2:              set_b();    set_imm();  goto SBC8;
+                case 0xC3:              set_d();   set_imm();  goto ADD16;
+                case 0xC4:              set_b();    set_imm();  goto AND8;
+                case 0xC5:              set_b();    set_imm();  goto BIT8;
+                case 0xC6:              set_b();    set_imm();  goto LD8;
+                case 0xC7:              set_b();    set_imm();  goto ST8;
+                case 0xC8:              set_b();    set_imm();  goto EOR8;
+                case 0xC9:              set_b();    set_imm();  goto ADC8;
+                case 0xCA:              set_b();    set_imm();  goto OR8;
+                case 0xCB:              set_b();    set_imm();  goto ADD8;
+                case 0xCC:              set_d();   set_imm();  goto LD16;
+                case 0xCD:              set_d();   set_imm();  goto ST16;
+                case 0xCE:              set_u();       set_imm();  goto LD16;
+                case 0xCF:              set_u();       set_imm();  goto ST16;
 
-                case 0xD0:              set_regop8(m_q.r.b);    push_state(16); // SUB8
+                case 0xD0:              set_b();    push_state(16); // SUB8
             goto DIRECT;
-                case 0xD1:              set_regop8(m_q.r.b);    push_state(17); // CMP8
+                case 0xD1:              set_b();    push_state(17); // CMP8
             goto DIRECT;
-                case 0xD2:              set_regop8(m_q.r.b);    push_state(18); // SBC8
+                case 0xD2:              set_b();    push_state(18); // SBC8
             goto DIRECT;
-                case 0xD3:              set_regop16(m_q.p.d);   push_state(32); // ADD16
+                case 0xD3:              set_d();   push_state(32); // ADD16
             goto DIRECT;
-                case 0xD4:              set_regop8(m_q.r.b);    push_state(20); // AND8
+                case 0xD4:              set_b();    push_state(20); // AND8
             goto DIRECT;
-                case 0xD5:              set_regop8(m_q.r.b);    push_state(21); // BIT8
+                case 0xD5:              set_b();    push_state(21); // BIT8
             goto DIRECT;
-                case 0xD6:              set_regop8(m_q.r.b);    push_state(22); // LD8
+                case 0xD6:              set_b();    push_state(22); // LD8
             goto DIRECT;
-                case 0xD7:              set_regop8(m_q.r.b);    push_state(23); // ST8
+                case 0xD7:              set_b();    push_state(23); // ST8
             goto DIRECT;
-                case 0xD8:              set_regop8(m_q.r.b);    push_state(24); // EOR8
+                case 0xD8:              set_b();    push_state(24); // EOR8
             goto DIRECT;
-                case 0xD9:              set_regop8(m_q.r.b);    push_state(25); // ADC8
+                case 0xD9:              set_b();    push_state(25); // ADC8
             goto DIRECT;
-                case 0xDA:              set_regop8(m_q.r.b);    push_state(26); // OR8
+                case 0xDA:              set_b();    push_state(26); // OR8
             goto DIRECT;
-                case 0xDB:              set_regop8(m_q.r.b);    push_state(27); // ADD8
+                case 0xDB:              set_b();    push_state(27); // ADD8
             goto DIRECT;
-                case 0xDC:              set_regop16(m_q.p.d);   push_state(30); // LD16
+                case 0xDC:              set_d();   push_state(30); // LD16
             goto DIRECT;
-                case 0xDD:              set_regop16(m_q.p.d);   push_state(31); // ST16
+                case 0xDD:              set_d();   push_state(31); // ST16
             goto DIRECT;
-                case 0xDE:              set_regop16(m_u);       push_state(30); // LD16
+                case 0xDE:              set_u();       push_state(30); // LD16
                 goto DIRECT;
-                case 0xDF:              set_regop16(m_u);       push_state(31); // ST16
+                case 0xDF:              set_u();       push_state(31); // ST16
                 goto DIRECT;
 
-                case 0xE0:              set_regop8(m_q.r.b);    push_state(16); // SUB8
+                case 0xE0:              set_b();    push_state(16); // SUB8
             goto INDEXED;
-                case 0xE1:              set_regop8(m_q.r.b);    push_state(17); // CMP8
+                case 0xE1:              set_b();    push_state(17); // CMP8
             goto INDEXED;
-                case 0xE2:              set_regop8(m_q.r.b);    push_state(18); // SBC8
+                case 0xE2:              set_b();    push_state(18); // SBC8
             goto INDEXED;
-                case 0xE3:              set_regop16(m_q.p.d);   push_state(32); // ADD16
+                case 0xE3:              set_d();   push_state(32); // ADD16
             goto INDEXED;
-                case 0xE4:              set_regop8(m_q.r.b);    push_state(20); // AND8
+                case 0xE4:              set_b();    push_state(20); // AND8
             goto INDEXED;
-                case 0xE5:              set_regop8(m_q.r.b);    push_state(21); // BIT8
+                case 0xE5:              set_b();    push_state(21); // BIT8
             goto INDEXED;
-                case 0xE6:              set_regop8(m_q.r.b);    push_state(22); // LD8
+                case 0xE6:              set_b();    push_state(22); // LD8
             goto INDEXED;
-                case 0xE7:              set_regop8(m_q.r.b);    push_state(23); // ST8
+                case 0xE7:              set_b();    push_state(23); // ST8
             goto INDEXED;
-                case 0xE8:              set_regop8(m_q.r.b);    push_state(24); // EOR8
+                case 0xE8:              set_b();    push_state(24); // EOR8
             goto INDEXED;
-                case 0xE9:              set_regop8(m_q.r.b);    push_state(25); // ADC8
+                case 0xE9:              set_b();    push_state(25); // ADC8
             goto INDEXED;
-                case 0xEA:              set_regop8(m_q.r.b);    push_state(26); // OR8
+                case 0xEA:              set_b();    push_state(26); // OR8
             goto INDEXED;
-                case 0xEB:              set_regop8(m_q.r.b);    push_state(27); // ADD8
+                case 0xEB:              set_b();    push_state(27); // ADD8
             goto INDEXED;
-                case 0xEC:              set_regop16(m_q.p.d);   push_state(30); // LD16
+                case 0xEC:              set_d();   push_state(30); // LD16
             goto INDEXED;
-                case 0xED:              set_regop16(m_q.p.d);   push_state(31); // ST16
+                case 0xED:              set_d();   push_state(31); // ST16
             goto INDEXED;
-                case 0xEE:              set_regop16(m_u);       push_state(30); // LD16
+                case 0xEE:              set_u();       push_state(30); // LD16
                 goto INDEXED;
-                case 0xEF:              set_regop16(m_u);       push_state(31); // ST16
+                case 0xEF:              set_u();       push_state(31); // ST16
                 goto INDEXED;
 
-                case 0xF0:              set_regop8(m_q.r.b);    push_state(16); // SUB8
+                case 0xF0:              set_b();    push_state(16); // SUB8
             goto EXTENDED;
-                case 0xF1:              set_regop8(m_q.r.b);    push_state(17); // CMP8
+                case 0xF1:              set_b();    push_state(17); // CMP8
             goto EXTENDED;
-                case 0xF2:              set_regop8(m_q.r.b);    push_state(18); // SBC8
+                case 0xF2:              set_b();    push_state(18); // SBC8
             goto EXTENDED;
-                case 0xF3:              set_regop16(m_q.p.d);   push_state(32); // ADD16
+                case 0xF3:              set_d();   push_state(32); // ADD16
             goto EXTENDED;
-                case 0xF4:              set_regop8(m_q.r.b);    push_state(20); // AND8
+                case 0xF4:              set_b();    push_state(20); // AND8
             goto EXTENDED;
-                case 0xF5:              set_regop8(m_q.r.b);    push_state(21); // BIT8
+                case 0xF5:              set_b();    push_state(21); // BIT8
             goto EXTENDED;
-                case 0xF6:              set_regop8(m_q.r.b);    push_state(22); // LD8
+                case 0xF6:              set_b();    push_state(22); // LD8
             goto EXTENDED;
-                case 0xF7:              set_regop8(m_q.r.b);    push_state(23); // ST8
+                case 0xF7:              set_b();    push_state(23); // ST8
             goto EXTENDED;
-                case 0xF8:              set_regop8(m_q.r.b);    push_state(24); // EOR8
+                case 0xF8:              set_b();    push_state(24); // EOR8
             goto EXTENDED;
-                case 0xF9:              set_regop8(m_q.r.b);    push_state(25); // ADC8
+                case 0xF9:              set_b();    push_state(25); // ADC8
             goto EXTENDED;
-                case 0xFA:              set_regop8(m_q.r.b);    push_state(26); // OR8
+                case 0xFA:              set_b();    push_state(26); // OR8
             goto EXTENDED;
-                case 0xFB:              set_regop8(m_q.r.b);    push_state(27); // ADD8
+                case 0xFB:              set_b();    push_state(27); // ADD8
             goto EXTENDED;
-                case 0xFC:              set_regop16(m_q.p.d);   push_state(30); // LD16
+                case 0xFC:              set_d();   push_state(30); // LD16
             goto EXTENDED;
-                case 0xFD:              set_regop16(m_q.p.d);   push_state(31); // ST16
+                case 0xFD:              set_d();   push_state(31); // ST16
             goto EXTENDED;
-                case 0xFE:              set_regop16(m_u);       push_state(30); // LD16
+                case 0xFE:              set_u();       push_state(30); // LD16
                 goto EXTENDED;
-                case 0xFF:              set_regop16(m_u);       push_state(31); // ST16
+                case 0xFF:              set_u();       push_state(31); // ST16
                 goto EXTENDED;
                 default:
                     goto ILLEGAL;
@@ -754,48 +754,48 @@ state_33:
                 case 0x3F:
                     goto SWI2;
 
-                case 0x83:              set_regop16(m_q.p.d);   set_imm();      goto CMP16;
-                case 0x8C:              set_regop16(m_y);   set_imm();      goto CMP16;
-                case 0x8E:              set_regop16(m_y);   set_imm();      goto LD16;
-                case 0x8F:              set_regop16(m_y);   set_imm();      goto ST16;
-                case 0x93:              set_regop16(m_q.p.d);   push_state(28); // CMP16
+                case 0x83:              set_d();   set_imm();      goto CMP16;
+                case 0x8C:              set_y();   set_imm();      goto CMP16;
+                case 0x8E:              set_y();   set_imm();      goto LD16;
+                case 0x8F:              set_y();   set_imm();      goto ST16;
+                case 0x93:              set_d();   push_state(28); // CMP16
             goto DIRECT;
-                case 0x9C:              set_regop16(m_y);   push_state(28); // CMP16
+                case 0x9C:              set_y();   push_state(28); // CMP16
             goto DIRECT;
-                case 0x9E:              set_regop16(m_y);   push_state(30); // LD16
+                case 0x9E:              set_y();   push_state(30); // LD16
             goto DIRECT;
-                case 0x9F:              set_regop16(m_y);   push_state(31); // ST16
+                case 0x9F:              set_y();   push_state(31); // ST16
             goto DIRECT;
-                case 0xA3:              set_regop16(m_q.p.d);   push_state(28); // CMP16
+                case 0xA3:              set_d();   push_state(28); // CMP16
             goto INDEXED;
-                case 0xAC:              set_regop16(m_y);   push_state(28); // CMP16
+                case 0xAC:              set_y();   push_state(28); // CMP16
             goto INDEXED;
-                case 0xAE:              set_regop16(m_y);   push_state(30); // LD16
+                case 0xAE:              set_y();   push_state(30); // LD16
             goto INDEXED;
-                case 0xAF:              set_regop16(m_y);   push_state(31); // ST16
+                case 0xAF:              set_y();   push_state(31); // ST16
             goto INDEXED;
-                case 0xB3:              set_regop16(m_q.p.d);   push_state(28); // CMP16
+                case 0xB3:              set_d();   push_state(28); // CMP16
             goto EXTENDED;
-                case 0xBC:              set_regop16(m_y);   push_state(28); // CMP16
+                case 0xBC:              set_y();   push_state(28); // CMP16
             goto EXTENDED;
-                case 0xBE:              set_regop16(m_y);   push_state(30); // LD16
+                case 0xBE:              set_y();   push_state(30); // LD16
             goto EXTENDED;
-                case 0xBF:              set_regop16(m_y);   push_state(31); // ST16
+                case 0xBF:              set_y();   push_state(31); // ST16
             goto EXTENDED;
 
-                case 0xCE:              set_regop16(m_s);   set_imm();      goto LD16;
-                case 0xCF:              set_regop16(m_s);   set_imm();      goto ST16;
-                case 0xDE:              set_regop16(m_s);   push_state(30); // LD16
+                case 0xCE:              set_s();   set_imm();      goto LD16;
+                case 0xCF:              set_s();   set_imm();      goto ST16;
+                case 0xDE:              set_s();   push_state(30); // LD16
             goto DIRECT;
-                case 0xDF:              set_regop16(m_s);   push_state(31); // ST16
+                case 0xDF:              set_s();   push_state(31); // ST16
             goto DIRECT;
-                case 0xEE:              set_regop16(m_s);   push_state(30); // LD16
+                case 0xEE:              set_s();   push_state(30); // LD16
             goto INDEXED;
-                case 0xEF:              set_regop16(m_s);   push_state(31); // ST16
+                case 0xEF:              set_s();   push_state(31); // ST16
             goto INDEXED;
-                case 0xFE:              set_regop16(m_s);   push_state(30); // LD16
+                case 0xFE:              set_s();   push_state(30); // LD16
             goto EXTENDED;
-                case 0xFF:              set_regop16(m_s);   push_state(31); // ST16
+                case 0xFF:              set_s();   push_state(31); // ST16
             goto EXTENDED;
 
                 default:
@@ -813,19 +813,19 @@ state_34:
             {
                 case 0x3F:
                     goto SWI3;
-                case 0x83:              set_regop16(m_u);   set_imm();      goto CMP16;
-                case 0x8C:              set_regop16(m_s);   set_imm();      goto CMP16;
-                case 0x93:              set_regop16(m_u);   push_state(28); // CMP16
+                case 0x83:              set_u();   set_imm();      goto CMP16;
+                case 0x8C:              set_s();   set_imm();      goto CMP16;
+                case 0x93:              set_u();   push_state(28); // CMP16
             goto DIRECT;
-                case 0x9C:              set_regop16(m_s);   push_state(28); // CMP16
+                case 0x9C:              set_s();   push_state(28); // CMP16
             goto DIRECT;
-                case 0xA3:              set_regop16(m_u);   push_state(28); // CMP16
+                case 0xA3:              set_u();   push_state(28); // CMP16
             goto INDEXED;
-                case 0xAC:              set_regop16(m_s);   push_state(28); // CMP16
+                case 0xAC:              set_s();   push_state(28); // CMP16
             goto INDEXED;
-                case 0xB3:              set_regop16(m_u);   push_state(28); // CMP16
+                case 0xB3:              set_u();   push_state(28); // CMP16
             goto EXTENDED;
-                case 0xBC:              set_regop16(m_s);   push_state(28); // CMP16
+                case 0xBC:              set_s();   push_state(28); // CMP16
             goto EXTENDED;
                 default:
                     goto ILLEGAL;
@@ -850,7 +850,7 @@ state_36:
 
 state_37:
             m_cc |= CC_E;
-            set_regop16(m_s);
+            set_s();
             m_temp.w = entire_state_registers();
             push_state(38);
             goto PUSH_REGISTERS;
@@ -884,7 +884,7 @@ state_41:
                 m_cc &= unchecked((uint8_t)~CC_E);
                 m_temp.w = partial_state_registers();
             }
-            set_regop16(m_s);
+            set_s();
             push_state(42);
             goto PUSH_REGISTERS;
 
@@ -908,7 +908,7 @@ state_44:
 
 state_45:
             m_cc |= CC_E;
-            set_regop16(m_s);
+            set_s();
             m_temp.w = entire_state_registers();
             push_state(46);
             goto PUSH_REGISTERS;
@@ -1467,8 +1467,6 @@ state_113:
                 m_pc.w--;
 
                 eat_remaining();
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(114); return; }
-//state_114:
 
                 // unmassage...
                 m_pc.w++;
@@ -1615,15 +1613,13 @@ RTS:
                 ;
             }
 state_134:
-            set_regop16(m_s);
+            set_s();
             goto PULL_REGISTERS;
 
 ABX:
             m_x.w += m_q.r.b;
             if(!hd6309_native_mode()) {
                 dummy_read_opcode_arg(0);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(135); return; }
-//state_135:
                 dummy_vma(1);
                 if (UNEXPECTED(m_icount.i <= 0)) { push_state(136); return; }
 //state_136:
@@ -1644,7 +1640,7 @@ RTI:
             dummy_read_opcode_arg(0);
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(138); return; }
 state_138:
-            set_regop16(m_s);
+            set_s();
             m_cc = read_memory(regop16().w++);  if (UNEXPECTED(m_icount.i <= 0)) { push_state(139); return; }
 state_139:
             // PULS CC
@@ -1663,7 +1659,7 @@ state_141:
 state_142:
 
             m_cc |= CC_E;
-            set_regop16(m_s);
+            set_s();
             m_temp.w = entire_state_registers();
             push_state(143);
             goto PUSH_REGISTERS;
@@ -1676,8 +1672,6 @@ state_143:
                 m_pc.w -= 2;
 
                 eat_remaining();
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(144); return; }
-//state_144:
 
                 // unmassage...
                 m_pc.w += 2;
@@ -1719,7 +1713,7 @@ state_145:
             dummy_vma(2);
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(146); return; }
 state_146:
-            set_regop16(m_s);
+            set_s();
             if(!hd6309_native_mode()) {
                 read_memory(regop16().w);
                 if (UNEXPECTED(m_icount.i <= 0)) { push_state(147); return; }
@@ -1736,7 +1730,7 @@ state_148:
             dummy_vma(hd6309_native_mode() ? 1 : 2);
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(149); return; }
 state_149:
-            set_regop16(m_s);
+            set_s();
             goto PULL_REGISTERS;
 
 PSHU:
@@ -1746,7 +1740,7 @@ state_150:
             dummy_vma(2);
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(151); return; }
 state_151:
-            set_regop16(m_u);
+            set_u();
             if(!hd6309_native_mode()) {
                 read_memory(regop16().w);
                 if (UNEXPECTED(m_icount.i <= 0)) { push_state(152); return; }
@@ -1763,7 +1757,7 @@ state_153:
             dummy_vma(hd6309_native_mode() ? 1 : 2);
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(154); return; }
 state_154:
-            set_regop16(m_u);
+            set_u();
             goto PULL_REGISTERS;
 
 SWI:
@@ -1772,7 +1766,7 @@ SWI:
             set_ea(VECTOR_SWI);
             standard_irq_callback(M6809_SWI);
             m_cc |= CC_E;
-            set_regop16(m_s);
+            set_s();
             m_temp.w = entire_state_registers();
             dummy_read_opcode_arg(0);
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(155); return; }
@@ -1799,7 +1793,7 @@ SWI3:
 SOFTWARE_INTERRUPT:
             // used for SWI2/SWI3 and illegal/div0 on 6309
             m_cc |= CC_E;
-            set_regop16(m_s);
+            set_s();
             m_temp.w = entire_state_registers();
             dummy_read_opcode_arg(0);
             if (UNEXPECTED(m_icount.i <= 0)) { push_state(158); return; }
@@ -1845,69 +1839,45 @@ PUSH_REGISTERS:
             if ((m_temp.w & 0x80) != 0)
             {
                 write_memory(--regop16().w, m_pc.b.l);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(166); return; }
-//state_166:
                 write_memory(--regop16().w, m_pc.b.h);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(167); return; }
-//state_167:
                 nop();
             }
             if ((m_temp.w & 0x40) != 0)
             {
                 write_memory(--regop16().w, (regop16_is_m_s()) ? m_u.b.l : m_s.b.l);  //write_memory(--regop16().w, (&regop16() == &m_s) ? m_u.b.l : m_s.b.l);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(168); return; }
-//state_168:
                 write_memory(--regop16().w, (regop16_is_m_s()) ? m_u.b.h : m_s.b.h);  //write_memory(--regop16().w, (&regop16() == &m_s) ? m_u.b.h : m_s.b.h);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(169); return; }
-//state_169:
                 nop();
             }
             if ((m_temp.w & 0x20) != 0)
             {
                 write_memory(--regop16().w, m_y.b.l);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(170); return; }
-//state_170:
                 write_memory(--regop16().w, m_y.b.h);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(171); return; }
-//state_171:
                 nop();
             }
             if ((m_temp.w & 0x10) != 0)
             {
                 write_memory(--regop16().w, m_x.b.l);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(172); return; }
-//state_172:
                 write_memory(--regop16().w, m_x.b.h);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(173); return; }
-//state_173:
                 nop();
             }
             if ((m_temp.w & 0x08) != 0)
             {
                 write_memory(--regop16().w, m_dp);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(174); return; }
-//state_174:
                 nop();
             }
             if ((m_temp.w & 0x04) != 0)
             {
                 write_memory(--regop16().w, m_q.r.b);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(175); return; }
-//state_175:
                 nop();
             }
             if ((m_temp.w & 0x02) != 0)
             {
                 write_memory(--regop16().w, m_q.r.a);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(176); return; }
-//state_176:
                 nop();
             }
             if ((m_temp.w & 0x01) != 0)
             {
                 write_memory(--regop16().w, m_cc);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(177); return; }
-//state_177:
                 nop();
             }
             return;
@@ -1916,49 +1886,33 @@ PULL_REGISTERS:
             if ((m_temp.w & 0x01) != 0)
             {
                 m_cc = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(178); return; }
-//state_178:
                 nop();
             }
             if ((m_temp.w & 0x02) != 0)
             {
                 m_q.r.a = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(179); return; }
-//state_179:
                 nop();
             }
             if ((m_temp.w & 0x04) != 0)
             {
                 m_q.r.b = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(180); return; }
-//state_180:
                 nop();
             }
             if ((m_temp.w & 0x08) != 0)
             {
                 m_dp = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(181); return; }
-//state_181:
                 nop();
             }
             if ((m_temp.w & 0x10) != 0)
             {
                 m_x.b.h = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(182); return; }
-//state_182:
                 m_x.b.l = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(183); return; }
-//state_183:
                 nop();
             }
             if ((m_temp.w & 0x20) != 0)
             {
                 m_y.b.h = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(184); return; }
-//state_184:
                 m_y.b.l = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(185); return; }
-//state_185:
                 nop();
             }
             if ((m_temp.w & 0x40) != 0)
@@ -1969,26 +1923,18 @@ PULL_REGISTERS:
                 else
                     m_s.b.h = read_memory(regop16().w++);
 
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(186); return; }
-//state_186:
                 //(&regop16() == &m_s ? m_u : m_s).b.l = read_memory(regop16().w++);
                 if (regop16_is_m_s())
                     m_u.b.l = read_memory(regop16().w++);
                 else
                     m_s.b.l = read_memory(regop16().w++);
 
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(187); return; }
-//state_187:
                 nop();
             }
             if ((m_temp.w & 0x80) != 0)
             {
                 m_pc.b.h = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(188); return; }
-//state_188:
                 m_pc.b.l = read_memory(regop16().w++);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(189); return; }
-//state_189:
                 nop();
             }
             read_memory(regop16().w);
@@ -2007,11 +1953,7 @@ state_190:
                         m_temp.w = ireg();
                         ireg()++;
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(191); return; }
-//state_191:
                         dummy_vma(2);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(192); return; }
-//state_192:
                         break;
 
                     case 0x01: case 0x21: case 0x41: case 0x61:
@@ -2019,11 +1961,7 @@ state_190:
                         m_temp.w = ireg();
                         ireg() += 2;
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(193); return; }
-//state_193:
                         dummy_vma(3);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(194); return; }
-//state_194:
                         break;
 
                     case 0x02: case 0x22: case 0x42: case 0x62:
@@ -2031,11 +1969,9 @@ state_190:
                         ireg()--;
                         m_temp.w = ireg();
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(195); return; }
-//state_195:
+state_195:
                         dummy_vma(2);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(196); return; }
-//state_196:
+state_196:
                         break;
 
                     case 0x03: case 0x23: case 0x43: case 0x63:
@@ -2043,117 +1979,94 @@ state_190:
                         ireg() -= 2;
                         m_temp.w = ireg();
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(197); return; }
-//state_197:
+state_197:
                         dummy_vma(3);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(198); return; }
-//state_198:
+state_198:
                         break;
 
                     case 0x04: case 0x24: case 0x44: case 0x64:
                     case 0x14: case 0x34: case 0x54: case 0x74:
                         m_temp.w = ireg();
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(199); return; }
-//state_199:
+state_199:
                         break;
 
                     case 0x05: case 0x25: case 0x45: case 0x65:
                     case 0x15: case 0x35: case 0x55: case 0x75:
                         m_temp.w = (uint16_t)(ireg() + (int8_t) m_q.r.b);
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(200); return; }
-//state_200:
+state_200:
                         dummy_vma(1);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(201); return; }
-//state_201:
+state_201:
                         break;
 
                     case 0x06: case 0x26: case 0x46: case 0x66:
                     case 0x16: case 0x36: case 0x56: case 0x76:
                         m_temp.w = (uint16_t)(ireg() + (int8_t) m_q.r.a);
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(202); return; }
-//state_202:
+state_202:
                         dummy_vma(1);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(203); return; }
-//state_203:
+state_203:
                         break;
 
                     case 0x08: case 0x28: case 0x48: case 0x68:
                     case 0x18: case 0x38: case 0x58: case 0x78:
                         m_temp.w = (uint16_t)(ireg() + (int8_t) read_opcode_arg());
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(204); return; }
-//state_204:
+state_204:
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(205); return; }
-//state_205:
+state_205:
                         break;
 
                     case 0x09: case 0x29: case 0x49: case 0x69:
                     case 0x19: case 0x39: case 0x59: case 0x79:
                         m_temp.b.h = read_opcode_arg();
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(206); return; }
-//state_206:
+state_206:
                         m_temp.b.l = read_opcode_arg();
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(207); return; }
-//state_207:
+state_207:
                         m_temp.w = (uint16_t)(ireg() + m_temp.w);
                         dummy_vma(3);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(208); return; }
-//state_208:
+state_208:
                         break;
 
                     case 0x0B: case 0x2B: case 0x4B: case 0x6B:
                     case 0x1B: case 0x3B: case 0x5B: case 0x7B:
                         m_temp.w = (uint16_t)(ireg() + m_q.r.d);
                         dummy_read_opcode_arg(0);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(209); return; }
-//state_209:
+state_209:
                         dummy_read_opcode_arg(1);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(210); return; }
-//state_210:
+state_210:
                         dummy_vma(3);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(211); return; }
-//state_211:
+state_211:
                         break;
 
                     case 0x0C: case 0x2C: case 0x4C: case 0x6C:
                     case 0x1C: case 0x3C: case 0x5C: case 0x7C:
                         m_temp.b.l = read_opcode_arg();
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(212); return; }
-//state_212:
+state_212:
                         m_temp.w = (uint16_t)(m_pc.w + (int8_t) m_temp.b.l);
                         dummy_vma(1);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(213); return; }
-//state_213:
+state_213:
                         break;
 
                     case 0x0D: case 0x2D: case 0x4D: case 0x6D:
                     case 0x1D: case 0x3D: case 0x5D: case 0x7D:
                         m_temp.b.h = read_opcode_arg();
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(214); return; }
-//state_214:
+state_214:
                         m_temp.b.l = read_opcode_arg();
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(215); return; }
-//state_215:
+state_215:
                         m_temp.w = (uint16_t)(m_pc.w + (int16_t) m_temp.w);
                         dummy_vma(4);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(216); return; }
-//state_216:
+state_216:
                         break;
 
                     case 0x0F: case 0x2F: case 0x4F: case 0x6F:
                     case 0x1F: case 0x3F: case 0x5F: case 0x7F:
                         m_temp.b.h = read_opcode_arg();
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(217); return; }
-//state_217:
+state_217:
                         m_temp.b.l = read_opcode_arg();
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(218); return; }
-//state_218:
+state_218:
                         dummy_vma(1);
-                        if (UNEXPECTED(m_icount.i <= 0)) { push_state(219); return; }
-//state_219:
+state_219:
                         break;
 
                     default:
@@ -2166,14 +2079,11 @@ state_190:
                 {
                     set_ea(m_temp.w);
                     m_temp.b.h = read_operand(0);
-                    if (UNEXPECTED(m_icount.i <= 0)) { push_state(220); return; }
-//state_220:
+state_220:
                     m_temp.b.l = read_operand(1);
-                    if (UNEXPECTED(m_icount.i <= 0)) { push_state(221); return; }
-//state_221:
+state_221:
                     dummy_vma(1);
-                    if (UNEXPECTED(m_icount.i <= 0)) { push_state(222); return; }
-//state_222:
+state_222:
                     ;
                 }
             }
@@ -2182,11 +2092,9 @@ state_190:
                 // 5-bit offset
                 m_temp.w = (uint16_t)(ireg() + (int8_t) ((m_opcode & 0x0F) | ((m_opcode & 0x10) != 0 ? 0xF0 : 0x00)));
                 dummy_read_opcode_arg(0);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(223); return; }
-//state_223:
+state_223:
                 dummy_vma(1);
-                if (UNEXPECTED(m_icount.i <= 0)) { push_state(224); return; }
-//state_224:
+state_224:
                 ;
             }
             set_ea(m_temp.w);

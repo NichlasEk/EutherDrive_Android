@@ -84,15 +84,12 @@ namespace mame
         //-------------------------------------------------
         uint8_t read_operand(int ordinal)
         {
-            throw new emu_unimplemented();
-#if false
             switch(m_addressing_mode)
             {
-                case ADDRESSING_MODE_EA:            return read_memory(m_ea.w + ordinal);
+                case ADDRESSING_MODE_EA:            return read_memory((ushort)(m_ea.w + ordinal));
                 case ADDRESSING_MODE_IMMEDIATE:     return read_opcode_arg();
                 default:                            fatalerror("Unexpected");   return 0x00;
             }
-#endif
         }
 
 
@@ -101,8 +98,6 @@ namespace mame
         //-------------------------------------------------
         void write_operand(uint8_t data)
         {
-            throw new emu_unimplemented();
-#if false
             switch(m_addressing_mode)
             {
                 case ADDRESSING_MODE_IMMEDIATE:     /* do nothing */                break;
@@ -111,7 +106,6 @@ namespace mame
                 case ADDRESSING_MODE_REGISTER_B:    m_q.r.b = data;                 break;
                 default:                            fatalerror("Unexpected");       break;
             }
-#endif
         }
 
 
@@ -120,15 +114,12 @@ namespace mame
         //-------------------------------------------------
         void write_operand(int ordinal, uint8_t data)
         {
-            throw new emu_unimplemented();
-#if false
             switch(m_addressing_mode)
             {
                 case ADDRESSING_MODE_IMMEDIATE:     /* do nothing */                break;
-                case ADDRESSING_MODE_EA:            write_memory(m_ea.w + ordinal, data);   break;
+                case ADDRESSING_MODE_EA:            write_memory((ushort)(m_ea.w + ordinal), data);   break;
                 default:                            fatalerror("Unexpected");       break;
             }
-#endif
         }
 
 
@@ -137,27 +128,24 @@ namespace mame
         //-------------------------------------------------
         void daa()
         {
-            throw new emu_unimplemented();
-#if false
-            uint16_t t, cf = 0;
-            uint8_t msn = m_q.r.a & 0xF0;
-            uint8_t lsn = m_q.r.a & 0x0F;
+            uint16_t cf = 0;
+            uint8_t msn = (uint8_t)(m_q.r.a & 0xF0);
+            uint8_t lsn = (uint8_t)(m_q.r.a & 0x0F);
 
             // compute the carry
-            if (lsn > 0x09 || m_cc & CC_H)  cf |= 0x06;
-            if (msn > 0x80 && lsn > 0x09 )  cf |= 0x60;
-            if (msn > 0x90 || m_cc & CC_C)  cf |= 0x60;
+            if (lsn > 0x09 || (m_cc & CC_H) != 0)  cf |= 0x06;
+            if (msn > 0x80 && lsn > 0x09)           cf |= 0x60;
+            if (msn > 0x90 || (m_cc & CC_C) != 0)  cf |= 0x60;
 
             // calculate the result
-            t = m_q.r.a + cf;
+            uint16_t t = (uint16_t)(m_q.r.a + cf);
 
-            m_cc &= ~CC_V;
-            if (t & 0x0100)     // keep carry from previous operation
+            m_cc = (uint8_t)(m_cc & ~CC_V);
+            if ((t & 0x0100) != 0)     // keep carry from previous operation
                 m_cc |= CC_C;
 
             // and put it back into A
-            m_q.r.a = set_flags(CC_NZ, (uint8_t) t);
-#endif
+            m_q.r.a = set_flags_u8(CC_NZ, (uint8_t)t);
         }
 
 
@@ -166,20 +154,17 @@ namespace mame
         //-------------------------------------------------
         void mul()
         {
-            throw new emu_unimplemented();
-#if false
             // perform multiply
-            uint16_t result = ((uint16_t) m_q.r.a) * ((uint16_t) m_q.r.b);
+            uint16_t result = (uint16_t)(m_q.r.a * m_q.r.b);
 
             // set result and Z flag
-            m_q.r.d = set_flags(CC_Z, result);
+            m_q.r.d = set_flags_u16(CC_Z, result);
 
             // set C flag
-            if (m_q.r.d & 0x0080)
+            if ((m_q.r.d & 0x0080) != 0)
                 m_cc |= CC_C;
             else
-                m_cc &= ~CC_C;
-#endif
+                m_cc = (uint8_t)(m_cc & ~CC_C);
         }
 
 
@@ -188,19 +173,16 @@ namespace mame
         //-------------------------------------------------
         ref uint16_t ireg()
         {
-            throw new emu_unimplemented();
-#if false
             switch(m_opcode & 0x60)
             {
-                case 0x00:  return m_x.w;
-                case 0x20:  return m_y.w;
-                case 0x40:  return m_u.w;
-                case 0x60:  return m_s.w;
+                case 0x00:  return ref m_x.w;
+                case 0x20:  return ref m_y.w;
+                case 0x40:  return ref m_u.w;
+                case 0x60:  return ref m_s.w;
                 default:
                     fatalerror("Unexpected");
-                    return m_x.w;
+                    return ref m_x.w;
             }
-#endif
         }
 
 
@@ -246,17 +228,14 @@ namespace mame
         //-------------------------------------------------
         void eat_remaining()
         {
-            throw new emu_unimplemented();
-#if false
             // we do this in order to be nice to people debugging
             uint16_t real_pc = m_pc.w;
 
-            eat(m_icount);
+            eat(m_icount.i);
 
             m_pc.w = m_ppc.w;
             debugger_instruction_hook(m_pc.w);
             m_pc.w = real_pc;
-#endif
         }
 
 
@@ -265,9 +244,8 @@ namespace mame
         //-------------------------------------------------
         bool is_register_addressing_mode()
         {
-            throw new emu_unimplemented();
-            //return (m_addressing_mode != ADDRESSING_MODE_IMMEDIATE)
-            //    && (m_addressing_mode != ADDRESSING_MODE_EA);
+            return (m_addressing_mode != ADDRESSING_MODE_IMMEDIATE)
+                && (m_addressing_mode != ADDRESSING_MODE_EA);
         }
 
 

@@ -304,6 +304,13 @@ namespace mame
         public Pointer<m68705p_device> cast(PointerU8 memory) { throw new emu_unimplemented(); }
     }
 
+    public class object_finder_operations_taito68705_mcu_device : object_finder_operations<taito68705_mcu_device>
+    {
+        public taito68705_mcu_device cast(device_t device) { return (taito68705_mcu_device)device; }
+        public taito68705_mcu_device cast(device_interface device) { throw new emu_unimplemented(); }
+        public Pointer<taito68705_mcu_device> cast(PointerU8 memory) { throw new emu_unimplemented(); }
+    }
+
     public class object_finder_operations_mathbox_device : object_finder_operations<mathbox_device>
     {
         public mathbox_device cast(device_t device) { return (mathbox_device)device; }

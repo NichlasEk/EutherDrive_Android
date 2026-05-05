@@ -83,10 +83,10 @@ namespace mame
         class mi_default : memory_interface
         {
             //virtual ~mi_default() {}
-            protected override uint8_t read(uint16_t adr) { throw new emu_unimplemented(); }
+            protected override uint8_t read(uint16_t adr) { return program.read_byte(adr); }
             public override uint8_t read_opcode(uint16_t adr) { return csprogram.read_byte(adr); }
             public override uint8_t read_opcode_arg(uint16_t adr) { return cprogram.read_byte(adr); }
-            protected override void write(uint16_t adr, uint8_t val) { throw new emu_unimplemented(); }
+            protected override void write(uint16_t adr, uint8_t val) { program.write_byte(adr, val); }
         }
 
 
@@ -104,8 +104,8 @@ namespace mame
         // register transfer
         struct exgtfr_register
         {
-            uint8_t   byte_value;
-            uint16_t  word_value;
+            public uint8_t   byte_value;
+            public uint16_t  word_value;
         }
 
 
@@ -399,7 +399,7 @@ namespace mame
 
         protected virtual bool device_execute_interface_execute_input_edge_triggered(int inputnum) { throw new emu_unimplemented(); }
         protected virtual uint64_t device_execute_interface_execute_clocks_to_cycles(uint64_t clocks) { return (clocks + (uint64_t)m_clock_divider - 1) / (uint64_t)m_clock_divider; }
-        protected virtual uint64_t device_execute_interface_execute_cycles_to_clocks(uint64_t cycles) { throw new emu_unimplemented(); }
+        protected virtual uint64_t device_execute_interface_execute_cycles_to_clocks(uint64_t cycles) { return cycles * (uint64_t)m_clock_divider; }
 
 
         // device_memory_interface overrides
@@ -446,10 +446,10 @@ namespace mame
         //void eat_remaining();
 
         // read a byte from given memory location
-        uint8_t read_memory(uint16_t address)             { throw new emu_unimplemented(); }  //{ eat(1); return m_mintf->read(address); }
+        uint8_t read_memory(uint16_t address)             { eat(1); return m_mintf.program.read_byte(address); }
 
         // write a byte to given memory location
-        void write_memory(uint16_t address, uint8_t data) { throw new emu_unimplemented(); }  //{ eat(1); m_mintf->write(address, data); }
+        void write_memory(uint16_t address, uint8_t data) { eat(1); m_mintf.program.write_byte(address, data); }
 
         // read_opcode() is like read_memory() except it is used for reading opcodes. In  the case of a system
         // with memory mapped I/O, this function can be used  to greatly speed up emulation.
@@ -469,11 +469,11 @@ namespace mame
         // state stack - implemented as a uint32_t
         void push_state(uint16_t state)                   { m_state = (m_state << 9) | state; }
         uint16_t pop_state()                              { uint16_t result = (uint16_t)(m_state & 0x1ff); m_state >>= 9; return result; }
-        void reset_state()                                { m_state = 0; }
+        void reset_state()                                { m_state = 1; }
 
         // effective address reading/writing
         //uint8_t read_ea()                                 { return read_memory(m_ea.w); }
-        void write_ea(uint8_t data)                       { throw new emu_unimplemented(); }//{ write_memory(m_ea.w, data); }
+        void write_ea(uint8_t data)                       { write_memory(m_ea.w, data); }
         void set_ea(uint16_t ea)                          { m_ea.w = ea; m_addressing_mode = ADDRESSING_MODE_EA; }
         void set_ea_h(uint8_t ea_h)                       { m_ea.b.h = ea_h; }
         void set_ea_l(uint8_t ea_l)                       { m_ea.b.l = ea_l; m_addressing_mode = ADDRESSING_MODE_EA; }
@@ -492,19 +492,75 @@ namespace mame
 
         // miscellaneous
         void nop()                                        { }
-        uint8_t rotate_right(uint8_t value)               { throw new emu_unimplemented(); }  //template<class T> T rotate_right(T value);
-        uint16_t rotate_right(uint16_t value)             { throw new emu_unimplemented(); }  //template<class T> T rotate_right(T value);
-        uint32_t rotate_left(uint8_t value)               { throw new emu_unimplemented(); }  //template<class T> uint32_t rotate_left(T value);
-        uint32_t rotate_left(uint16_t value)              { throw new emu_unimplemented(); }  //template<class T> uint32_t rotate_left(T value);
-        void set_a()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_A; }
-        void set_b()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_B; }
-        //void set_d()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; }
+        uint8_t rotate_right(uint8_t value)
+        {
+            bool newCarry = (value & 0x01) != 0;
+            uint8_t result = (uint8_t)(value >> 1);
+            if ((m_cc & CC_C) != 0)
+                result |= 0x80;
+            m_cc = (uint8_t)((m_cc & ~CC_C) | (newCarry ? CC_C : 0));
+            return result;
+        }
+        uint16_t rotate_right(uint16_t value)
+        {
+            bool newCarry = (value & 0x0001) != 0;
+            uint16_t result = (uint16_t)(value >> 1);
+            if ((m_cc & CC_C) != 0)
+                result |= 0x8000;
+            m_cc = (uint8_t)((m_cc & ~CC_C) | (newCarry ? CC_C : 0));
+            return result;
+        }
+        uint32_t rotate_left(uint8_t value)
+        {
+            bool newCarry = (value & 0x80) != 0;
+            uint32_t result = (uint32_t)(value << 1);
+            if ((m_cc & CC_C) != 0)
+                result |= 0x01;
+            m_cc = (uint8_t)((m_cc & ~CC_C) | (newCarry ? CC_C : 0));
+            return result;
+        }
+        uint32_t rotate_left(uint16_t value)
+        {
+            bool newCarry = (value & 0x8000) != 0;
+            uint32_t result = (uint32_t)(value << 1);
+            if ((m_cc & CC_C) != 0)
+                result |= 0x01;
+            m_cc = (uint8_t)((m_cc & ~CC_C) | (newCarry ? CC_C : 0));
+            return result;
+        }
+        void set_a()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_A; m_reg = 0; }
+        void set_b()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_B; m_reg = 1; }
+        void set_d()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 0; }
+        void set_x()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 1; }
+        void set_y()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 2; }
+        void set_s()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 3; }
+        void set_u()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 4; }
         void set_imm()                                    { m_addressing_mode = ADDRESSING_MODE_IMMEDIATE; }
-        void set_regop8(uint8_t reg)                      { throw new emu_unimplemented(); }  //{ m_reg8 = &reg; m_reg16 = nullptr; }  //void set_regop8(uint8_t &reg)                     { m_reg8 = &reg; m_reg16 = nullptr; }
-        void set_regop16(PAIR16 reg, bool is_m_s = false) { throw new emu_unimplemented(); }  //{ m_reg16 = &reg; m_reg8 = null; }  //void set_regop16(PAIR16 &reg)                   { m_reg16 = &reg; m_reg8 = nullptr; }
-        ref byte regop8()                                 { throw new emu_unimplemented(); }  //{ assert(m_reg8 != nullptr); return *m_reg8; }  //uint8_t &regop8()                                 { assert(m_reg8 != nullptr); return *m_reg8; }
-        ref PAIR16 regop16()                              { throw new emu_unimplemented(); }  //{ assert(m_reg16 != nullptr); return *m_reg16; }  //PAIR16 &regop16()                               { assert(m_reg16 != nullptr); return *m_reg16; }
-        bool regop16_is_m_s()                             { throw new emu_unimplemented(); }
+        void set_regop8(uint8_t reg)                      { if (reg == m_q.r.a) set_a(); else set_b(); m_addressing_mode = ADDRESSING_MODE_IMMEDIATE; }
+        // set_regop16 is not used anymore - replaced by set_x/y/s/u/d in generated code
+        //void set_regop16(PAIR16 reg, bool is_m_s = false) { }
+        ref byte regop8()
+        {
+            switch (m_reg)
+            {
+                case 0: return ref m_q.r.a;
+                case 1: return ref m_q.r.b;
+                default: throw new emu_unimplemented();
+            }
+        }
+        ref PAIR16 regop16()
+        {
+            switch (m_reg)
+            {
+                case 0: return ref m_q.p.d;
+                case 1: return ref m_x;
+                case 2: return ref m_y;
+                case 3: return ref m_s;
+                case 4: return ref m_u;
+                default: throw new emu_unimplemented();
+            }
+        }
+        bool regop16_is_m_s()                             { return m_reg == 3; }
         //bool is_register_register_op_16_bit()             { return m_reg16 != nullptr; }
         bool add8_sets_h()                                { return true; }
         bool hd6309_native_mode()                         { return false; }
@@ -514,10 +570,30 @@ namespace mame
         //uint16_t &ireg();
 
         // flags
-        uint8_t set_flags_u8(uint8_t mask, uint8_t a, uint8_t b, uint32_t r) { throw new emu_unimplemented(); }  //template<class T> T set_flags(uint8_t mask, T a, T b, uint32_t r);
-        uint16_t set_flags_u16(uint8_t mask, uint16_t a, uint16_t b, uint32_t r) { throw new emu_unimplemented(); }  //template<class T> T set_flags(uint8_t mask, T a, T b, uint32_t r);
-        uint8_t set_flags_u8(uint8_t mask, uint8_t r) { throw new emu_unimplemented(); }  //template<class T> T set_flags(uint8_t mask, T r);
-        uint16_t set_flags_u16(uint8_t mask, uint16_t r) { throw new emu_unimplemented(); }  //template<class T> T set_flags(uint8_t mask, T r);
+        uint8_t set_flags_u8(uint8_t mask, uint8_t a, uint8_t b, uint32_t r)
+        {
+            uint32_t hiBit = 0x80;
+            m_cc = (byte)(m_cc & ~mask);
+            if ((mask & CC_H) != 0) m_cc |= (((a ^ b ^ r) & 0x10) != 0) ? CC_H : (byte)0;
+            if ((mask & CC_N) != 0) m_cc |= ((r & hiBit) != 0) ? CC_N : (byte)0;
+            if ((mask & CC_Z) != 0) m_cc |= (((byte)r) == 0) ? CC_Z : (byte)0;
+            if ((mask & CC_V) != 0) m_cc |= (((a ^ b ^ r ^ (r >> 1)) & hiBit) != 0) ? CC_V : (byte)0;
+            if ((mask & CC_C) != 0) m_cc |= ((r & (hiBit << 1)) != 0) ? CC_C : (byte)0;
+            return (byte)r;
+        }
+        uint16_t set_flags_u16(uint8_t mask, uint16_t a, uint16_t b, uint32_t r)
+        {
+            uint32_t hiBit = 0x8000;
+            m_cc = (byte)(m_cc & ~mask);
+            if ((mask & CC_H) != 0) m_cc |= (((a ^ b ^ r) & 0x10) != 0) ? CC_H : (byte)0;
+            if ((mask & CC_N) != 0) m_cc |= ((r & hiBit) != 0) ? CC_N : (byte)0;
+            if ((mask & CC_Z) != 0) m_cc |= (((ushort)r) == 0) ? CC_Z : (byte)0;
+            if ((mask & CC_V) != 0) m_cc |= (((a ^ b ^ r ^ (r >> 1)) & hiBit) != 0) ? CC_V : (byte)0;
+            if ((mask & CC_C) != 0) m_cc |= ((r & (hiBit << 1)) != 0) ? CC_C : (byte)0;
+            return (ushort)r;
+        }
+        uint8_t set_flags_u8(uint8_t mask, uint8_t r) { return set_flags_u8(mask, 0, r, r); }
+        uint16_t set_flags_u16(uint8_t mask, uint16_t r) { return set_flags_u16(mask, 0, r, r); }
 
         // branch conditions
         bool cond_hi() { return (m_cc & CC_ZC) == 0; }                                                // BHI/BLS
@@ -536,8 +612,39 @@ namespace mame
         uint16_t entire_state_registers()     { return 0xFF; }
 
         // miscellaneous
-        exgtfr_register read_exgtfr_register(uint8_t reg) { throw new emu_unimplemented(); }
-        void write_exgtfr_register(uint8_t reg, exgtfr_register value) { throw new emu_unimplemented(); }
+        exgtfr_register read_exgtfr_register(uint8_t reg)
+        {
+            switch (reg & 0x0f)
+            {
+                case 0:  return new exgtfr_register { byte_value = 0, word_value = m_q.r.d };
+                case 1:  return new exgtfr_register { byte_value = 0, word_value = m_x.w };
+                case 2:  return new exgtfr_register { byte_value = 0, word_value = m_y.w };
+                case 3:  return new exgtfr_register { byte_value = 0, word_value = m_u.w };
+                case 4:  return new exgtfr_register { byte_value = 0, word_value = m_s.w };
+                case 5:  return new exgtfr_register { byte_value = 0, word_value = m_pc.w };
+                case 8:  return new exgtfr_register { byte_value = m_q.r.a, word_value = (uint16_t)(0xff00 | m_q.r.a) };
+                case 9:  return new exgtfr_register { byte_value = m_q.r.b, word_value = (uint16_t)(0xff00 | m_q.r.b) };
+                case 10: return new exgtfr_register { byte_value = m_cc, word_value = (uint16_t)(0xff00 | m_cc) };
+                case 11: return new exgtfr_register { byte_value = m_dp, word_value = (uint16_t)(0xff00 | m_dp) };
+                default: return new exgtfr_register { byte_value = 0xff, word_value = 0xffff };
+            }
+        }
+        void write_exgtfr_register(uint8_t reg, exgtfr_register value)
+        {
+            switch (reg & 0x0f)
+            {
+                case 0:  m_q.r.d = value.word_value; break;
+                case 1:  m_x.w = value.word_value; break;
+                case 2:  m_y.w = value.word_value; break;
+                case 3:  m_u.w = value.word_value; break;
+                case 4:  m_s.w = value.word_value; break;
+                case 5:  m_pc.w = value.word_value; break;
+                case 8:  m_q.r.a = value.byte_value; break;
+                case 9:  m_q.r.b = value.byte_value; break;
+                case 10: m_cc = value.byte_value; break;
+                case 11: m_dp = value.byte_value; break;
+            }
+        }
 
         // m6809inl.cs
         //bool is_register_addressing_mode();
@@ -551,6 +658,8 @@ namespace mame
 
 
         // functions
+        public uint16_t debug_pc() { return m_pc.w; }
+
         void execute_one()
         {
             //switch (pop_state())

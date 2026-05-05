@@ -25,6 +25,7 @@ using EutherDrive.Core.Sega32X;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.Savestates;
+using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.Cps2;
 using EutherDrive.Core.Arcade.Konami;
@@ -359,8 +360,15 @@ class Program
                 || string.Equals(coreOverride, "sega-system32", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && System32Adapter.IsSupportedArchive(romPath));
             bool useTmnt = string.Equals(coreOverride, "tmnt", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "tmnt2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "konami-tmnt2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
+            bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -377,6 +385,7 @@ class Program
                 useCps2 = false;
                 useSystem32 = false;
                 useTmnt = false;
+                useMcsArcade = false;
             }
 
             if (useCps1)
@@ -530,6 +539,63 @@ class Program
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] System32 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useMcsArcade)
+            {
+                Console.WriteLine("[HEADLESS] Using MCS arcade core");
+                using var arcade = new McsArcadeAdapter();
+                arcade.LoadRom(romPath);
+
+                ReadOnlySpan<byte> fbIn = arcade.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                var mcsInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_HEADLESS_INPUT_SCRIPT"));
+
+                Console.WriteLine($"[HEADLESS] MCS fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, mcsInputScript);
+                    arcade.SetInputState(
+                        up: input.Up,
+                        down: input.Down,
+                        left: input.Left,
+                        right: input.Right,
+                        a: input.A,
+                        b: input.B,
+                        c: input.X,
+                        start: input.Start,
+                        x: input.Y,
+                        y: input.L,
+                        z: input.R,
+                        mode: input.Select,
+                        padType: PadType.SixButton);
+                    arcade.RunFrame();
+
+                    ReadOnlySpan<byte> fb = arcade.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: mcs_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = arcade.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] MCS final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
@@ -2633,7 +2699,9 @@ class Program
                 || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
             bool useTmnt = string.Equals(coreOverride, "tmnt", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "tmnt2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "konami-tmnt2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
 
             if (useTmnt)

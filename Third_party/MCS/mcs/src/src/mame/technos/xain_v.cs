@@ -8,6 +8,7 @@ using offs_t = System.UInt32;
 using s32 = System.Int32;
 using tilemap_memory_index = System.UInt32;
 using u8 = System.Byte;
+using u16 = System.UInt16;
 using u32 = System.UInt32;
 using uint8_t = System.Byte;
 
@@ -73,6 +74,12 @@ namespace mame
         {
             m_charram[offset].op = data;
             m_char_tilemap.mark_tile_dirty((tilemap_memory_index)(offset & 0x3ffU));
+
+            if (m_trace_status && data != 0 && m_trace_ram_count < 64)
+            {
+                Console.Error.WriteLine($"[XAIN] charram_w offs=0x{offset:X4} data=0x{data:X2}");
+                m_trace_ram_count++;
+            }
         }
 
 
@@ -80,6 +87,12 @@ namespace mame
         {
             m_bgram[0][offset].op = data;
             m_bg_tilemap_0.mark_tile_dirty((tilemap_memory_index)(offset & 0x3ffU));
+
+            if (m_trace_status && data != 0 && m_trace_ram_count < 64)
+            {
+                Console.Error.WriteLine($"[XAIN] bgram0_w offs=0x{offset:X4} data=0x{data:X2}");
+                m_trace_ram_count++;
+            }
         }
 
 
@@ -87,6 +100,12 @@ namespace mame
         {
             m_bgram[1][offset].op = data;
             m_bg_tilemap_1.mark_tile_dirty((tilemap_memory_index)(offset & 0x3ffU));
+
+            if (m_trace_status && data != 0 && m_trace_ram_count < 64)
+            {
+                Console.Error.WriteLine($"[XAIN] bgram1_w offs=0x{offset:X4} data=0x{data:X2}");
+                m_trace_ram_count++;
+            }
         }
 
 
@@ -197,7 +216,49 @@ namespace mame
                 m_char_tilemap.draw(screen, bitmap, cliprect, 0, 0);
                 break;
             }
+
+            if (m_trace_status && cliprect.top() == 8)
+            {
+                if (m_trace_screen_count < 180 && ((m_trace_screen_count < 20) || ((m_trace_screen_count % 30) == 0)))
+                {
+                    int pixels = 0;
+                    u32 fp = 2166136261U;
+                    for (int y = cliprect.top(); y <= cliprect.bottom(); y++)
+                    {
+                        PointerU16 row = bitmap.pix(y);
+                        for (int x = cliprect.left(); x <= cliprect.right(); x++)
+                        {
+                            u16 pix = row[x];
+                            if (pix != 0)
+                                pixels++;
+                            fp = (fp ^ pix) * 16777619U;
+                        }
+                    }
+
+                    int charNonZero = CountNonZero(m_charram, 0x800);
+                    int bg0NonZero = CountNonZero(m_bgram[0], 0x800);
+                    int bg1NonZero = CountNonZero(m_bgram[1], 0x800);
+                    int sprNonZero = CountNonZero(m_spriteram, (int)m_spriteram.bytes());
+                    Console.Error.WriteLine($"[XAIN] frame_update n={m_trace_screen_count} pri={m_pri & 7} clip={cliprect.left()},{cliprect.top()}-{cliprect.right()},{cliprect.bottom()} pixnz={pixels} fp=0x{fp:X8} ram char={charNonZero} bg0={bg0NonZero} bg1={bg1NonZero} spr={sprNonZero} vblank={m_vblank}");
+                }
+
+                m_trace_screen_count++;
+            }
+
             return 0;
+        }
+
+
+        int CountNonZero(shared_ptr_finder<u8, bool_const_true> ptr, int max)
+        {
+            int count = 0;
+            int limit = Math.Min(max, (int)ptr.bytes());
+            for (int i = 0; i < limit; i++)
+            {
+                if (ptr[i].op != 0)
+                    count++;
+            }
+            return count;
         }
     }
 }

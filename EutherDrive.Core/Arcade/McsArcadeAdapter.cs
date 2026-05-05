@@ -161,7 +161,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
 
     public void RunFrame()
     {
-        _runtime?.ThrowIfFaulted();
+        McsRuntime? runtime = _runtime;
+        if (runtime == null)
+            return;
+
+        runtime.WaitForNextFrame(TimeSpan.FromMilliseconds(250));
+        runtime.ThrowIfFaulted();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -334,6 +339,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
         private readonly string _driverName;
         private readonly string _romDirectory;
         private readonly ManualResetEventSlim _firstFrame = new(false);
+        private readonly AutoResetEvent _frameReady = new(false);
+        private readonly object _frameSync = new();
         private readonly ManualResetEventSlim _stopped = new(false);
         private readonly McsOsd _osd;
         private readonly Thread _thread;
@@ -376,10 +383,46 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                 Console.Error.WriteLine($"[MCS] Driver '{_driverName}' did not stop within timeout.");
 
             _firstFrame.Dispose();
+            _frameReady.Dispose();
             _stopped.Dispose();
         }
 
-        public void MarkFrameReady() => _firstFrame.Set();
+        public void MarkFrameReady()
+        {
+            lock (_frameSync)
+                PublishedFrames++;
+
+            _firstFrame.Set();
+            _frameReady.Set();
+        }
+
+        public long PublishedFrames { get; private set; }
+
+        public void WaitForNextFrame(TimeSpan timeout)
+        {
+            long start;
+            lock (_frameSync)
+                start = PublishedFrames;
+
+            if (start == 0 || _stopped.IsSet)
+                return;
+
+            Stopwatch sw = Stopwatch.StartNew();
+            while (!_stopped.IsSet)
+            {
+                lock (_frameSync)
+                {
+                    if (PublishedFrames != start)
+                        return;
+                }
+
+                TimeSpan remaining = timeout - sw.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                    return;
+
+                _frameReady.WaitOne(remaining);
+            }
+        }
 
         public void ThrowIfFaulted()
         {
@@ -819,7 +862,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
             {
                 foreach (mame.ioport_field field in port.Value.fields())
                 {
-                    bool pressed = field.type() switch
+                    bool? pressed = field.type() switch
                     {
                         mame.ioport_type.IPT_JOYSTICK_UP => input.Up && field.player() == 0,
                         mame.ioport_type.IPT_JOYSTICK_DOWN => input.Down && field.player() == 0,
@@ -833,10 +876,11 @@ public sealed class McsArcadeAdapter : IEmulatorCore, IDisposable
                         mame.ioport_type.IPT_BUTTON6 => input.Button6 && field.player() == 0,
                         mame.ioport_type.IPT_START1 => input.Start,
                         mame.ioport_type.IPT_COIN1 => input.Coin,
-                        _ => false
+                        _ => null
                     };
 
-                    field.set_value(pressed ? 1u : 0u);
+                    if (pressed.HasValue)
+                        field.set_value(pressed.Value ? 1u : 0u);
                 }
             }
         }

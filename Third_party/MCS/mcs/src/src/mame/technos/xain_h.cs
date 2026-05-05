@@ -16,7 +16,7 @@ namespace mame
         required_device<mc6809e_device> m_maincpu;
         required_device<mc6809e_device> m_subcpu;
         required_device<mc6809e_device> m_audiocpu;
-        optional_device<m68705p_device> m_mcu;
+        optional_device<taito68705_mcu_device> m_mcu;
         required_device<gfxdecode_device> m_gfxdecode;
         required_device<screen_device> m_screen;
         required_device<palette_device> m_palette;
@@ -44,6 +44,13 @@ namespace mame
         tilemap_t m_bg_tilemap_0;
         tilemap_t m_bg_tilemap_1;
 
+        bool m_trace_status;
+        int m_trace_screen_count;
+        int m_trace_mcu_count;
+        int m_trace_ram_count;
+        int m_trace_last_mcu_status;
+        int m_trace_last_vblank_port;
+
 
         public xain_state(machine_config mconfig, device_type type, string tag)
             : base(mconfig, type, tag)
@@ -51,7 +58,7 @@ namespace mame
             m_maincpu = new required_device<mc6809e_device>(this, "maincpu");
             m_subcpu = new required_device<mc6809e_device>(this, "sub");
             m_audiocpu = new required_device<mc6809e_device>(this, "audiocpu");
-            m_mcu = new optional_device<m68705p_device>(this, "mcu");
+            m_mcu = new optional_device<taito68705_mcu_device>(this, "mcu");
             m_gfxdecode = new required_device<gfxdecode_device>(this, "gfxdecode");
             m_screen = new required_device<screen_device>(this, "screen");
             m_palette = new required_device<palette_device>(this, "palette");
@@ -63,6 +70,13 @@ namespace mame
 
             m_rom_banks_0 = new required_memory_bank(this, "mainbank");
             m_rom_banks_1 = new required_memory_bank(this, "subbank");
+
+            m_trace_status = Environment.GetEnvironmentVariable("EUTHERDRIVE_XAIN_STATUS") == "1";
+            m_trace_screen_count = 0;
+            m_trace_mcu_count = 0;
+            m_trace_ram_count = 0;
+            m_trace_last_mcu_status = -1;
+            m_trace_last_vblank_port = -1;
         }
     }
 }

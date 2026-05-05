@@ -19,6 +19,7 @@ namespace mame
         u32 SP_MASK { get { return m_params.m_sp_mask; } }  // stack pointer mask
         u32 SP_LOW { get { return m_params.m_sp_floor; } }  // stack pointer low water mark
         u16 PC { get { return m_pc.w.l; } set { m_pc.w.l = value; } }            // program counter lower word
+        public u16 debug_pc() { return m_pc.w.l; }
         u16 S { get { return m_s.w.l; } set { m_s.w.l = value; } }             // stack pointer lower word
         u8 A { get { return m_a; } set { m_a = value; } }                 // accumulator
         u8 X { get { return m_x; } set { m_x = value; } }                 // index register

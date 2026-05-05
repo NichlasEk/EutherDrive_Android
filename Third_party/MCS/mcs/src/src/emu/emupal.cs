@@ -179,7 +179,7 @@ namespace mame
         //enum xrgb_444_t     { xRGB_444, xxxxRRRRGGGGBBBB };
         public enum xrbg_444_t  { xRBG_444, xxxxRRRRBBBBGGGG }
         //enum xbrg_444_t     { xBRG_444, xxxxBBBBRRRRGGGG };
-        //enum xbgr_444_t     { xBGR_444, xxxxBBBBGGGGRRRR };
+        public enum xbgr_444_t  { xBGR_444, xxxxBBBBGGGGRRRR }
         //enum rgbx_444_t     { RGBx_444, RRRRGGGGBBBBxxxx };
         //enum gbrx_444_t     { GBRx_444, GGGGBBBBRRRRxxxx };
         //enum irgb_4444_t    { IRGB_4444, IIIIRRRRGGGGBBBB };
@@ -361,7 +361,13 @@ namespace mame
         }
 
         //palette_device &set_format(xbrg_444_t, u32 entries);
-        //palette_device &set_format(xbgr_444_t, u32 entries);
+
+        public palette_device set_format(xbgr_444_t _, u32 entries)
+        {
+            set_format(2, raw_to_rgb_converter.standard_rgb_decoder<int_const_4,int_const_4,int_const_4, int_const_0,int_const_4,int_const_8>, entries);
+            return this;
+        }
+
         //palette_device &set_format(rgbx_444_t, u32 entries);
         //palette_device &set_format(gbrx_444_t, u32 entries);
         //palette_device &set_format(irgb_4444_t, u32 entries);
@@ -441,7 +447,12 @@ namespace mame
         }
 
 
-        //void write8_ext(offs_t offset, u8 data);
+        public void write8_ext(offs_t offset, u8 data)
+        {
+            m_paletteram_ext.write8(offset, data);
+            update_for_write(offset, 1);
+        }
+
         //void write_indirect(offs_t offset, u8 data);
         //void write_indirect_ext(offs_t offset, u8 data);
         //u16 read16(offs_t offset);

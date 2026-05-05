@@ -4,6 +4,7 @@
 
 using System;
 
+using ioport_value = System.UInt32;
 using offs_t = System.UInt32;
 using PointerU8 = mame.Pointer<System.Byte>;
 using s32 = System.Int32;
@@ -13,6 +14,7 @@ using uint8_t = System.Byte;
 
 using static mame.diexec_global;
 using static mame.digfx_global;
+using static mame.device_global;
 using static mame.drawgfx_global;
 using static mame.emucore_global;
 using static mame.emumem_global;
@@ -27,6 +29,7 @@ using static mame.m6809_global;
 using static mame.romentry_global;
 using static mame.screen_global;
 using static mame.speaker_global;
+using static mame.taito68705_global;
 using static mame.timer_global;
 using static mame.ymopn_global;
 
@@ -123,6 +126,54 @@ namespace mame
             return m_vblank;
         }
 
+        uint8_t vblank_port_r()
+        {
+            uint8_t data = (uint8_t)ioport("VBLANK").read();
+
+            if (m_trace_status && data != m_trace_last_vblank_port && m_trace_mcu_count < 256)
+            {
+                Console.Error.WriteLine($"[XAIN] vblank_port_r pc=0x{m_maincpu.op0.debug_pc():X4} data=0x{data:X2} vblank={m_vblank}");
+                m_trace_last_vblank_port = data;
+                m_trace_mcu_count++;
+            }
+
+            return data;
+        }
+
+
+        public int mcu_status_r()
+        {
+            int result = ((m_mcu.found() && (CLEAR_LINE != m_mcu.op0.mcu_semaphore_r())) ? 0x00 : 0x01) |
+                         ((m_mcu.found() && (CLEAR_LINE != m_mcu.op0.host_semaphore_r())) ? 0x00 : 0x02);
+
+            if (m_trace_status && result != m_trace_last_mcu_status && m_trace_mcu_count < 256)
+            {
+                Console.Error.WriteLine($"[XAIN] mcu_status_r result=0x{result:X2} mcu={(m_mcu.found() ? m_mcu.op0.mcu_semaphore_r() : -1)} host={(m_mcu.found() ? m_mcu.op0.host_semaphore_r() : -1)}");
+                m_trace_last_mcu_status = result;
+                m_trace_mcu_count++;
+            }
+
+            return result;
+        }
+
+
+        uint8_t mcu_comm_reset_r()
+        {
+            if (m_trace_status && m_trace_mcu_count < 256)
+            {
+                Console.Error.WriteLine("[XAIN] mcu_comm_reset_r");
+                m_trace_mcu_count++;
+            }
+
+            if (m_mcu.found() && !machine().side_effects_disabled())
+            {
+                m_mcu.op0.reset_w(ASSERT_LINE);
+                m_mcu.op0.reset_w(CLEAR_LINE);
+            }
+            return 0xff;
+        }
+
+
         void scrollx_w_0(offs_t offset, uint8_t data)
         {
             if (offset == 0) m_scrollx_0_0 = data;
@@ -169,14 +220,14 @@ namespace mame
             map.op(0x3a02, 0x3a03).w(scrolly_w_1);
             map.op(0x3a03, 0x3a03).portr("DSW1");
             map.op(0x3a04, 0x3a05).w(scrollx_w_0);
-            map.op(0x3a05, 0x3a05).portr("VBLANK");
+            map.op(0x3a05, 0x3a05).r(vblank_port_r);
             map.op(0x3a06, 0x3a07).w(scrolly_w_0);
             map.op(0x3a08, 0x3a08).w(m_soundlatch, (data) => { m_soundlatch.op0.write(data); });
             map.op(0x3a09, 0x3a0c).w(main_irq_w);
             map.op(0x3a0d, 0x3a0d).w(flipscreen_w);
             map.op(0x3a0f, 0x3a0f).w(cpuA_bankswitch_w);
             map.op(0x3c00, 0x3dff).w(m_palette, (offset, data) => { m_palette.op0.write8(offset, data); }).share("palette");
-            map.op(0x3e00, 0x3fff).w(m_palette, (offset, data) => { m_palette.op0.write8(offset, data); }).share("palette_ext");
+            map.op(0x3e00, 0x3fff).w(m_palette, (offset, data) => { m_palette.op0.write8_ext(offset, data); }).share("palette_ext");
             map.op(0x4000, 0x7fff).bankr(m_rom_banks_0);
             map.op(0x8000, 0xffff).rom();
         }
@@ -185,6 +236,24 @@ namespace mame
         void main_map(address_map map, device_t device)
         {
             bootleg_map(map, device);
+            map.op(0x3a04, 0x3a04).r(m_mcu, () => {
+                u8 data = m_mcu.op0.data_r();
+                if (m_trace_status && m_trace_mcu_count < 256)
+                {
+                    Console.Error.WriteLine($"[XAIN] mcu_data_r pc=0x{m_maincpu.op0.debug_pc():X4} data=0x{data:X2}");
+                    m_trace_mcu_count++;
+                }
+                return data;
+            });
+            map.op(0x3a06, 0x3a06).r(mcu_comm_reset_r);
+            map.op(0x3a0e, 0x3a0e).w(m_mcu, (data) => {
+                if (m_trace_status && m_trace_mcu_count < 256)
+                {
+                    Console.Error.WriteLine($"[XAIN] mcu_data_w pc=0x{m_maincpu.op0.debug_pc():X4} data=0x{data:X2}");
+                    m_trace_mcu_count++;
+                }
+                m_mcu.op0.data_w(data);
+            });
         }
 
 
@@ -287,7 +356,7 @@ namespace mame
             PORT_START("VBLANK");
             PORT_BIT( 0x03, IP_ACTIVE_LOW,  IPT_UNUSED );
             PORT_BIT( 0x04, IP_ACTIVE_LOW,  IPT_COIN3 );
-            PORT_BIT( 0x18, IP_ACTIVE_HIGH, IPT_CUSTOM ); PORT_READ_LINE_MEMBER(() => state.vblank_r());
+            PORT_BIT( 0x18, IP_ACTIVE_HIGH, IPT_CUSTOM ); PORT_CUSTOM_MEMBER(DEVICE_SELF, () => (ioport_value)state.mcu_status_r());
             PORT_BIT( 0x20, IP_ACTIVE_HIGH, IPT_CUSTOM ); PORT_READ_LINE_MEMBER(() => state.vblank_r());
             PORT_BIT( 0xc0, IP_ACTIVE_LOW,  IPT_UNUSED );
 
@@ -350,17 +419,19 @@ namespace mame
             MC6809E(config, m_audiocpu, PIXEL_CLOCK);
             m_audiocpu.op0.memory().set_addrmap(AS_PROGRAM, sound_map);
 
+            TAITO68705_MCU(config, m_mcu, MCU_CLOCK);
+
             SCREEN(config, m_screen, SCREEN_TYPE_RASTER);
             m_screen.op0.set_raw(PIXEL_CLOCK, 384, 0, 256, 272, 8, 248);
             m_screen.op0.set_screen_update(screen_update);
             m_screen.op0.set_palette(m_palette);
 
             GFXDECODE(config, m_gfxdecode, m_palette, gfx_xain);
-            PALETTE(config, m_palette).set_format(palette_device.xrbg_444_t.xRBG_444, 512);
+            PALETTE(config, m_palette).set_format(palette_device.xbgr_444_t.xBGR_444, 512);
 
             SPEAKER(config, "mono").front_center();
 
-            GENERIC_LATCH_8(config, m_soundlatch).data_pending_callback().set_inputline(m_audiocpu, M6809_IRQ_LINE);
+            GENERIC_LATCH_8(config, m_soundlatch).data_pending_callback().set_inputline(m_audiocpu, M6809_IRQ_LINE).reg();
 
             ym2203_device ym1 = YM2203(config, "ym1", (u32)MCU_CLOCK.dvalue());
             ym1.add_route(0, "mono", 0.50f);
@@ -379,6 +450,7 @@ namespace mame
         public void xsleenab(machine_config config)
         {
             xsleena(config);
+            config.device_remove("mcu");
             m_maincpu.op0.memory().set_addrmap(AS_PROGRAM, bootleg_map);
         }
     }
@@ -400,7 +472,8 @@ namespace mame
             ROM_REGION( 0x10000, "audiocpu", 0 ),
             ROM_LOAD( "p2-0.ic49",     0x8000, 0x8000, CRC("a5318cb8") + SHA1("35fb28c5598e39f22552bb036ae356b78422f080") ),
 
-            ROM_REGION( 0x800, "mcu", 0 ),
+            ROM_REGION( 0x800, "mcu:mcu", 0 ),
+            ROM_LOAD( "pz-0.113",      0x0000, 0x0800, CRC("a432a907") + SHA1("4708a40e3a82dec2c5a64bc5da884a37d503cb6b") ),
 
             ROM_REGION( 0x08000, "gfx1", 0 ),
             ROM_LOAD( "pb-0.ic24",   0x00000, 0x8000, CRC("83c00dd8") + SHA1("8e9b19281039b63072270c7a63d9fb30cda570fd") ),
@@ -455,7 +528,8 @@ namespace mame
             ROM_REGION( 0x10000, "audiocpu", 0 ),
             ROM_LOAD( "p2-0.ic49",     0x8000, 0x8000, CRC("a5318cb8") + SHA1("35fb28c5598e39f22552bb036ae356b78422f080") ),
 
-            ROM_REGION( 0x800, "mcu", 0 ),
+            ROM_REGION( 0x800, "mcu:mcu", 0 ),
+            ROM_LOAD( "pz-0.113",      0x0000, 0x0800, CRC("a432a907") + SHA1("4708a40e3a82dec2c5a64bc5da884a37d503cb6b") ),
 
             ROM_REGION( 0x08000, "gfx1", 0 ),
             ROM_LOAD( "pb-0.ic24",   0x00000, 0x8000, CRC("83c00dd8") + SHA1("8e9b19281039b63072270c7a63d9fb30cda570fd") ),
@@ -509,7 +583,8 @@ namespace mame
             ROM_REGION( 0x10000, "audiocpu", 0 ),
             ROM_LOAD( "p2-0.ic49",     0x8000, 0x8000, CRC("a5318cb8") + SHA1("35fb28c5598e39f22552bb036ae356b78422f080") ),
 
-            ROM_REGION( 0x800, "mcu", 0 ),
+            ROM_REGION( 0x800, "mcu:mcu", 0 ),
+            ROM_LOAD( "pz-0.113",      0x0000, 0x0800, CRC("a432a907") + SHA1("4708a40e3a82dec2c5a64bc5da884a37d503cb6b") ),
 
             ROM_REGION( 0x08000, "gfx1", 0 ),
             ROM_LOAD( "pb-0.ic24",   0x00000, 0x8000, CRC("83c00dd8") + SHA1("8e9b19281039b63072270c7a63d9fb30cda570fd") ),
