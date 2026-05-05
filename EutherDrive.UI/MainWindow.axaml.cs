@@ -3663,6 +3663,8 @@ public partial class MainWindow : Window
             n64.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is McsArcadeAdapter mcs)
             mcs.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter xain)
+            xain.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             tmnt.SetMasterVolumePercent(_masterVolumePercent);
     }
@@ -9895,7 +9897,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -9903,7 +9905,8 @@ public partial class MainWindow : Window
                             if (_audioEngine != null && !_audioPullMode)
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
-                                    || core is McsArcadeAdapter)
+                                    || core is McsArcadeAdapter
+                                    || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter)
                                 {
                                     _audioEngine.Submit(audio);
                                 }
@@ -10250,6 +10253,7 @@ public partial class MainWindow : Window
             || _core is N64Adapter
             || _core is SegaCdAdapter
             || _core is McsArcadeAdapter
+            || _core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
             || _core is Cps1DinoAdapter
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
             || _core is EutherDrive.Core.Arcade.System32.System32Adapter

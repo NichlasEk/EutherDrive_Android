@@ -34,6 +34,23 @@ namespace mame
         const int OPN_OPERATORS = 12;
         const int OPN_DEFAULT_PRESCALE = 6;
         const double TWO_PI = Math.PI * 2.0;
+        static readonly int [,] OPN_OPERATOR_OFFSET =
+        {
+            { 0, 8, 4, 12 },
+            { 1, 9, 5, 13 },
+            { 2, 10, 6, 14 }
+        };
+        static readonly int [] OPN_ALGORITHM_OPS =
+        {
+            Algorithm(1, 2, 3, false, false, false),
+            Algorithm(0, 5, 3, false, false, false),
+            Algorithm(0, 2, 6, false, false, false),
+            Algorithm(1, 0, 7, false, false, false),
+            Algorithm(1, 0, 3, false, true,  false),
+            Algorithm(1, 1, 1, false, true,  true),
+            Algorithm(1, 0, 0, false, true,  true),
+            Algorithm(0, 0, 0, true,  true,  true)
+        };
 
         readonly bool m_trace;
         readonly devcb_write_line m_irq_handler;
@@ -106,6 +123,16 @@ namespace mame
             if (m_timer_b != null)
                 m_timer_b.enable(false);
             update_irq();
+        }
+
+        static int Algorithm(int op2in, int op3in, int op4in, bool op1out, bool op2out, bool op3out)
+        {
+            return op2in
+                | (op3in << 1)
+                | (op4in << 4)
+                | (op1out ? 1 << 7 : 0)
+                | (op2out ? 1 << 8 : 0)
+                | (op3out ? 1 << 9 : 0);
         }
 
         void ym2203_address_w(u8 data)
@@ -258,9 +285,8 @@ namespace mame
                 for (int channel = 0; channel < FM_CHANNELS; channel++)
                     fm += render_fm_channel(channel, sampleRate);
 
-                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp(fm * 0.16, -0.70, 0.70);
-                for (int output = 0; output < Math.Min(3, outputs.Count); output++)
-                    outputs[output].put(sample, outputs[output].get(sample) + mixed);
+                stream_buffer_sample_t mixed = (stream_buffer_sample_t)Math.Clamp(fm * 0.32, -0.80, 0.80);
+                outputs[0].put(sample, outputs[0].get(sample) + mixed);
             }
         }
 
@@ -284,31 +310,47 @@ namespace mame
                 baseFrequency,
                 feedback != 0.0 ? (m_fm_last[channel, 0] + m_fm_last[channel, 1]) * feedback * 0.18 : 0.0,
                 sampleRate);
-            double op1 = clock_fm_operator(channel, 1, baseFrequency, algorithm <= 3 || algorithm == 4 ? op0 * 2.5 : 0.0, sampleRate);
-            double op2 = clock_fm_operator(channel, 2, baseFrequency, algorithm <= 3 ? op1 * 2.5 : 0.0, sampleRate);
-            double op3 = clock_fm_operator(channel, 3, baseFrequency, algorithm <= 3 || algorithm == 4 ? op2 * 2.5 : 0.0, sampleRate);
+            double [] opout = new double[8];
+            opout[0] = 0.0;
+            opout[1] = op0;
+
+            int algorithmOps = OPN_ALGORITHM_OPS[algorithm & 0x07];
+            opout[2] = clock_fm_operator(channel, 1, baseFrequency, opout[algorithmOps & 0x01] * 2.5, sampleRate);
+            opout[5] = opout[1] + opout[2];
+            opout[3] = clock_fm_operator(channel, 2, baseFrequency, opout[(algorithmOps >> 1) & 0x07] * 2.5, sampleRate);
+            opout[6] = opout[1] + opout[3];
+            opout[7] = opout[2] + opout[3];
+            double op3 = clock_fm_operator(channel, 3, baseFrequency, opout[(algorithmOps >> 4) & 0x07] * 2.5, sampleRate);
 
             m_fm_last[channel, 0] = op0;
-            m_fm_last[channel, 1] = op1;
-            m_fm_last[channel, 2] = op2;
+            m_fm_last[channel, 1] = opout[2];
+            m_fm_last[channel, 2] = opout[3];
             m_fm_last[channel, 3] = op3;
 
-            switch (algorithm)
+            double result = op3;
+            int carriers = 1;
+            if ((algorithmOps & (1 << 7)) != 0)
             {
-            case 0: return op3;
-            case 1: return (op2 + op3) * 0.5;
-            case 2: return (op1 + op3) * 0.5;
-            case 3: return (op1 + op2 + op3) * 0.33;
-            case 4: return (op1 + op3) * 0.5;
-            case 5: return (op1 + op2 + op3) * 0.33;
-            case 6: return (op0 + op1 + op3) * 0.33;
-            default: return (op0 + op1 + op2 + op3) * 0.25;
+                result += opout[1];
+                carriers++;
             }
+            if ((algorithmOps & (1 << 8)) != 0)
+            {
+                result += opout[2];
+                carriers++;
+            }
+            if ((algorithmOps & (1 << 9)) != 0)
+            {
+                result += opout[3];
+                carriers++;
+            }
+
+            return result / carriers;
         }
 
         double clock_fm_operator(int channel, int slot, double baseFrequency, double modulation, double sampleRate)
         {
-            int slotOffset = slot * 4 + channel;
+            int slotOffset = OPN_OPERATOR_OFFSET[channel, slot];
             u8 dtMul = m_opn_regs[0x30 + slotOffset];
             u8 totalLevel = m_opn_regs[0x40 + slotOffset];
             u8 attack = m_opn_regs[0x50 + slotOffset];

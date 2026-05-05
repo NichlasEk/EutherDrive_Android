@@ -23,6 +23,9 @@ public sealed class XainSleenaAdapter : IEmulatorCore, IDisposable
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
         => _adapter.GetAudioBuffer(out sampleRate, out channels);
 
+    public void SetMasterVolumePercent(int percent)
+        => _adapter.SetMasterVolumePercent(percent);
+
     public void SetInputState(
         bool up, bool down, bool left, bool right,
         bool a, bool b, bool c, bool start,
