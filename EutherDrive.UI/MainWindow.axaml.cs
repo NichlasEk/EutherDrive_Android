@@ -9902,7 +9902,8 @@ public partial class MainWindow : Window
                         {
                             if (_audioEngine != null && !_audioPullMode)
                             {
-                                if (core is EutherDrive.Core.Arcade.System32.System32Adapter)
+                                if (core is EutherDrive.Core.Arcade.System32.System32Adapter
+                                    || core is McsArcadeAdapter)
                                 {
                                     _audioEngine.Submit(audio);
                                 }
@@ -9934,6 +9935,13 @@ public partial class MainWindow : Window
                             {
                                 EnqueueSnesAudio(audio);
                             }
+                        }
+                        else if (!audio.IsEmpty && !_audioFormatMismatchLogged)
+                        {
+                            _audioFormatMismatchLogged = true;
+                            Console.WriteLine(
+                                $"[Audio] Dropping {core.GetType().Name} audio: core={rate}Hz/{channels}ch " +
+                                $"engine={AudioSampleRate}Hz/{AudioChannels}ch samples={audio.Length}");
                         }
                     }
                     if (TraceUiProfile)
