@@ -51,6 +51,17 @@ namespace mame
             Algorithm(1, 0, 0, false, true,  true),
             Algorithm(0, 0, 0, true,  true,  true)
         };
+        static readonly u8 [,] OPN_DETUNE_ADJUSTMENT =
+        {
+            {  0,  0,  0,  0 }, {  0,  0,  0,  0 }, {  0,  0,  0,  0 }, {  0,  0,  0,  0 },
+            {  0,  1,  2,  2 }, {  0,  1,  2,  3 }, {  0,  1,  2,  3 }, {  0,  1,  2,  3 },
+            {  0,  1,  3,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  5 },
+            {  0,  2,  4,  5 }, {  0,  2,  4,  5 }, {  0,  2,  4,  6 }, {  0,  2,  5,  6 },
+            {  0,  2,  5,  7 }, {  0,  2,  5,  7 }, {  0,  3,  6,  8 }, {  0,  3,  6,  8 },
+            {  0,  3,  7,  9 }, {  0,  3,  7, 10 }, {  0,  4,  8, 11 }, {  0,  4,  8, 11 },
+            {  0,  4,  9, 12 }, {  0,  4,  9, 13 }, {  0,  5, 10, 14 }, {  0,  5, 11, 15 },
+            {  0,  5, 12, 16 }, {  0,  6, 13, 17 }, {  0,  6, 14, 19 }, {  0,  7, 16, 20 }
+        };
 
         enum fm_envelope_stage
         {
@@ -71,10 +82,14 @@ namespace mame
         readonly bool [,] m_fm_key_state = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
         readonly double [] m_fm_opout = new double[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
+        readonly bool [] m_timer_running = new bool[2];
         emu_timer m_timer_a;
         emu_timer m_timer_b;
         u8 m_address;
         u8 m_status;
+        int m_trace_write_count;
+        u8 m_last_trace_address;
+        u8 m_last_trace_data;
 
         ym2203_device(machine_config mconfig, string tag, device_t owner, uint32_t clock)
             : base(mconfig, YM2203, tag, owner, clock, psg_type_t.PSG_TYPE_YM, 3, 2)
@@ -135,6 +150,11 @@ namespace mame
                     m_fm_stage[channel, slot] = fm_envelope_stage.Off;
             m_address = 0;
             m_status = 0;
+            m_trace_write_count = 0;
+            m_last_trace_address = 0xff;
+            m_last_trace_data = 0xff;
+            m_timer_running[0] = false;
+            m_timer_running[1] = false;
             if (m_timer_a != null)
                 m_timer_a.enable(false);
             if (m_timer_b != null)
@@ -165,7 +185,18 @@ namespace mame
         void ym2203_data_w(u8 data)
         {
             if (m_trace)
-                logerror("{0}: {1} write reg=0x{2:X2} data=0x{3:X2}\n", machine().describe_context(), tag(), m_address, data);
+            {
+                bool duplicate = m_address == m_last_trace_address && data == m_last_trace_data;
+                bool interesting = (m_address == 0x28 && data != 0) || (m_address >= 0x30 && m_address <= 0xb6);
+                if (interesting && !duplicate && m_trace_write_count < 2048)
+                {
+                    logerror("{0}: {1} write reg=0x{2:X2} data=0x{3:X2}\n", machine().describe_context(), tag(), m_address, data);
+                    Console.Error.WriteLine($"[YM2203] {tag()} reg=0x{m_address:X2} data=0x{data:X2}");
+                    m_trace_write_count++;
+                }
+                m_last_trace_address = m_address;
+                m_last_trace_data = data;
+            }
 
             if (m_address <= 0x0f)
             {
@@ -226,8 +257,11 @@ namespace mame
             if (!load)
             {
                 timer.enable(false);
+                m_timer_running[index] = false;
                 return;
             }
+            if (m_timer_running[index])
+                return;
 
             uint32_t period = index == 0
                 ? (uint32_t)(1024 - timer_a_value())
@@ -237,6 +271,7 @@ namespace mame
 
             uint32_t clocks = period * OPN_OPERATORS * OPN_DEFAULT_PRESCALE;
             timer.adjust(attotime.from_ticks(clocks, clock()));
+            m_timer_running[index] = true;
         }
 
         int timer_a_value()
@@ -249,6 +284,7 @@ namespace mame
             if ((m_opn_regs[0x27] & 0x04) != 0)
                 m_status = (u8)(m_status | STATUS_TIMERA);
             update_irq();
+            m_timer_running[0] = false;
             update_timer(0, (m_opn_regs[0x27] & 0x01) != 0);
         }
 
@@ -257,6 +293,7 @@ namespace mame
             if ((m_opn_regs[0x27] & 0x08) != 0)
                 m_status = (u8)(m_status | STATUS_TIMERB);
             update_irq();
+            m_timer_running[1] = false;
             update_timer(1, (m_opn_regs[0x27] & 0x02) != 0);
         }
 
@@ -331,14 +368,11 @@ namespace mame
 
         double render_fm_channel(int channel, double sampleRate)
         {
-            int fnum = m_opn_regs[0xa0 + channel] | ((m_opn_regs[0xa4 + channel] & 0x07) << 8);
-            int block = (m_opn_regs[0xa4 + channel] >> 3) & 0x07;
-            if (fnum == 0)
+            int blockFreq = channel_block_freq(channel);
+            if (blockFreq == 0)
                 return 0.0;
 
-            double baseFrequency = clock() * fnum * Math.Pow(2.0, block - 21) / 72.0;
-            if (baseFrequency <= 0.0)
-                return 0.0;
+            double opnSampleRate = Math.Max(1.0, clock() / (OPN_DEFAULT_PRESCALE * 24.0));
 
             double feedback = (m_opn_regs[0xb0 + channel] >> 3) & 0x07;
             int algorithm = m_opn_regs[0xb0 + channel] & 0x07;
@@ -346,8 +380,9 @@ namespace mame
             double op0 = clock_fm_operator(
                 channel,
                 0,
-                baseFrequency,
+                operator_block_freq(channel, 0, blockFreq),
                 feedback != 0.0 ? (m_fm_last[channel, 0] + m_fm_last[channel, 1]) * feedback * 0.18 : 0.0,
+                opnSampleRate,
                 sampleRate);
             double [] opout = m_fm_opout;
             Array.Clear(opout, 0, opout.Length);
@@ -355,12 +390,12 @@ namespace mame
             opout[1] = op0;
 
             int algorithmOps = OPN_ALGORITHM_OPS[algorithm & 0x07];
-            opout[2] = clock_fm_operator(channel, 1, baseFrequency, opout[algorithmOps & 0x01] * 2.5, sampleRate);
+            opout[2] = clock_fm_operator(channel, 1, operator_block_freq(channel, 1, blockFreq), opout[algorithmOps & 0x01] * 2.5, opnSampleRate, sampleRate);
             opout[5] = opout[1] + opout[2];
-            opout[3] = clock_fm_operator(channel, 2, baseFrequency, opout[(algorithmOps >> 1) & 0x07] * 2.5, sampleRate);
+            opout[3] = clock_fm_operator(channel, 2, operator_block_freq(channel, 2, blockFreq), opout[(algorithmOps >> 1) & 0x07] * 2.5, opnSampleRate, sampleRate);
             opout[6] = opout[1] + opout[3];
             opout[7] = opout[2] + opout[3];
-            double op3 = clock_fm_operator(channel, 3, baseFrequency, opout[(algorithmOps >> 4) & 0x07] * 2.5, sampleRate);
+            double op3 = clock_fm_operator(channel, 3, operator_block_freq(channel, 3, blockFreq), opout[(algorithmOps >> 4) & 0x07] * 2.5, opnSampleRate, sampleRate);
 
             m_fm_last[channel, 0] = op0;
             m_fm_last[channel, 1] = opout[2];
@@ -388,7 +423,45 @@ namespace mame
             return result / carriers;
         }
 
-        double clock_fm_operator(int channel, int slot, double baseFrequency, double modulation, double sampleRate)
+        int channel_block_freq(int channel)
+        {
+            return ((m_opn_regs[0xa4 + channel] & 0x3f) << 8) | m_opn_regs[0xa0 + channel];
+        }
+
+        int operator_block_freq(int channel, int slot, int normalBlockFreq)
+        {
+            if (channel != 2 || (m_opn_regs[0x27] & 0xc0) == 0)
+                return normalBlockFreq;
+
+            int slotOffset = OPN_OPERATOR_OFFSET[channel, slot];
+            switch (slotOffset)
+            {
+            case 2:
+                return ((m_opn_regs[0xac + 1] & 0x3f) << 8) | m_opn_regs[0xa8 + 1];
+            case 10:
+                return ((m_opn_regs[0xac + 2] & 0x3f) << 8) | m_opn_regs[0xa8 + 2];
+            case 6:
+                return ((m_opn_regs[0xac + 0] & 0x3f) << 8) | m_opn_regs[0xa8 + 0];
+            default:
+                return normalBlockFreq;
+            }
+        }
+
+        double block_freq_to_hz(int blockFreq, int multiple, int detunePhaseStep, double opnSampleRate)
+        {
+            int fnum = (blockFreq & 0x7ff) << 1;
+            int block = (blockFreq >> 11) & 0x07;
+            int phaseStep = (fnum << block) >> 2;
+            phaseStep = (phaseStep + detunePhaseStep) & 0x1ffff;
+            int x1Multiple = multiple * 2;
+            if (x1Multiple == 0)
+                x1Multiple = 1;
+
+            phaseStep = (phaseStep * x1Multiple) >> 1;
+            return opnSampleRate * phaseStep / 1048576.0;
+        }
+
+        double clock_fm_operator(int channel, int slot, int blockFreq, double modulation, double opnSampleRate, double sampleRate)
         {
             int slotOffset = OPN_OPERATOR_OFFSET[channel, slot];
             u8 dtMul = m_opn_regs[0x30 + slotOffset];
@@ -401,18 +474,30 @@ namespace mame
 
             clock_envelope(channel, slot, attack, decay, sustainRate, sustainLevel, release);
 
-            double multiple = dtMul & 0x0f;
-            if (multiple == 0.0)
-                multiple = 0.5;
-
-            double detune = (((dtMul >> 4) & 0x07) - 3) * 0.0025;
-            double step = (baseFrequency * multiple * (1.0 + detune)) / sampleRate;
+            int detune = (dtMul >> 4) & 0x07;
+            int keycode = keycode_from_block_freq(blockFreq);
+            double frequency = block_freq_to_hz(blockFreq, dtMul & 0x0f, detune_adjustment(detune, keycode), opnSampleRate);
+            double step = frequency / sampleRate;
             m_fm_phase[channel, slot] += step;
             m_fm_phase[channel, slot] -= Math.Floor(m_fm_phase[channel, slot]);
 
             double tl = Math.Pow(10.0, -((totalLevel & 0x7f) * 0.75) / 20.0);
             double amplitude = m_fm_env[channel, slot] * tl;
             return Math.Sin((m_fm_phase[channel, slot] + modulation) * TWO_PI) * amplitude;
+        }
+
+        static int keycode_from_block_freq(int blockFreq)
+        {
+            int keycode = ((blockFreq >> 10) & 0x0f) << 1;
+            int fnumBits = (blockFreq >> 7) & 0x0f;
+            keycode |= (0xfe80 >> fnumBits) & 1;
+            return keycode & 0x1f;
+        }
+
+        static int detune_adjustment(int detune, int keycode)
+        {
+            int result = OPN_DETUNE_ADJUSTMENT[keycode & 0x1f, detune & 0x03];
+            return (detune & 0x04) != 0 ? -result : result;
         }
 
         void clock_envelope(int channel, int slot, u8 attack, u8 decay, u8 sustainRate, u8 sustainLevel, u8 release)
