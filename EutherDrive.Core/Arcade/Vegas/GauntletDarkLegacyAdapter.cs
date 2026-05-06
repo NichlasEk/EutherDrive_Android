@@ -371,6 +371,11 @@ internal sealed class MipsR5000Core
         Array.Clear(_cp0);
         Array.Clear(_fpr);
         Array.Clear(_fcr);
+        _cp0[9] = 0; // Count
+        _cp0[11] = 0xffffffff; // Compare
+        _cp0[12] = 0x00400004; // Status: BEV | ERL after reset
+        _cp0[15] = 0x00002300; // PRId: R5000
+        _cp0[16] = 0x00026030; // Config: 32-byte cache lines, 2x system clock
         Pc = 0xffffffffbfc00000UL;
         LastFetchedInstruction = 0xffffffff;
         _halted = false;
