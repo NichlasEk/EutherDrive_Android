@@ -21,7 +21,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     private const string SavestateMagic = "KONAMITMNT";
     private const string SavestateExtendedMagic = "KONAMITMNTE";
     private const int SavestateVersion = 1;
-    private const int SavestateExtendedVersion = 4;
+    private const int SavestateExtendedVersion = 5;
     private const int FrameWidth = 320;
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
@@ -4449,6 +4449,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             writer.Write(_z80CycleAccumulator);
             writer.Write(_pendingRenderCycles);
             _k053260.SaveState(writer);
+            writer.Write(UsesMystwarrSound);
+            if (UsesMystwarrSound)
+            {
+                _k054539_1.SaveState(writer);
+                _k054539_2.SaveState(writer);
+            }
         }
 
         public void LoadExtendedState(BinaryReader reader, int version)
@@ -4461,6 +4467,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _pendingRenderCycles = reader.ReadInt32();
             if (hasTmnt2Sound)
                 _k053260.LoadState(reader, version);
+            if (version >= 5)
+            {
+                bool hasMystwarrSound = reader.ReadBoolean();
+                if (hasMystwarrSound)
+                {
+                    _k054539_1.LoadState(reader);
+                    _k054539_2.LoadState(reader);
+                }
+            }
         }
 
         public void ResetMachine()
@@ -4933,8 +4948,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address == 0xf800)
             {
                 _mystwarrSoundCtrl = value;
-                if ((value & 0x10) == 0)
-                    _nmiAsserted = false;
+                _nmiAsserted = false;
                 TraceAudioState($"mystwarr sound-ctrl value=0x{value:X2} bank={value & 0x0f}");
             }
         }
@@ -5413,7 +5427,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     {
         private const int ChipClock = 18_432_000;
         private const int SourceSampleRate = ChipClock / 384;
-        private static readonly int[] DpcmDelta = { 0, 1, 2, 4, 8, 16, 32, 64, -128, -64, -32, -16, -8, -4, -2, -1 };
+        private static readonly int[] DpcmDelta =
+        {
+            0 * 0x100, 1 * 0x100, 2 * 0x100, 4 * 0x100,
+            8 * 0x100, 16 * 0x100, 32 * 0x100, 64 * 0x100,
+            0 * 0x100, -64 * 0x100, -32 * 0x100, -16 * 0x100,
+            -8 * 0x100, -4 * 0x100, -2 * 0x100, -1 * 0x100
+        };
         private static readonly double[] VolumeTable = BuildVolumeTable();
         private static readonly double[] PanTable = BuildPanTable();
 
@@ -5474,6 +5494,72 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _timerCycleAccumulator = 0;
             _timerPeriodChipCycles = 0;
             _keyOns = _keyOffs = _writes = _reads = _lastPeak = 0;
+        }
+
+        public void SaveState(BinaryWriter writer)
+        {
+            WriteByteArray(writer, _regs);
+            WriteByteArray(writer, _ram);
+            writer.Write(_reverb.Length);
+            for (int i = 0; i < _reverb.Length; i++)
+                writer.Write(_reverb[i]);
+            for (int ch = 0; ch < 8; ch++)
+                for (int i = 0; i < 3; i++)
+                    writer.Write(_posLatch[ch, i]);
+            foreach (Channel channel in _channels)
+                channel.SaveState(writer);
+            writer.Write(_gain.Length);
+            for (int i = 0; i < _gain.Length; i++)
+                writer.Write(_gain[i]);
+            writer.Write(_sourcePhase);
+            writer.Write(_lastSourceLeft);
+            writer.Write(_lastSourceRight);
+            writer.Write(_reverbPos);
+            writer.Write(_curPtr);
+            writer.Write(_romAddr);
+            writer.Write(_timerState);
+            writer.Write(_timerCycleAccumulator);
+            writer.Write(_timerPeriodChipCycles);
+            writer.Write(_keyOns);
+            writer.Write(_keyOffs);
+            writer.Write(_writes);
+            writer.Write(_reads);
+            writer.Write(_lastPeak);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            ReadByteArray(reader, _regs);
+            ReadByteArray(reader, _ram);
+            int reverbLength = reader.ReadInt32();
+            if (reverbLength != _reverb.Length)
+                throw new InvalidDataException($"K054539 reverb length mismatch: {reverbLength}.");
+            for (int i = 0; i < _reverb.Length; i++)
+                _reverb[i] = reader.ReadInt16();
+            for (int ch = 0; ch < 8; ch++)
+                for (int i = 0; i < 3; i++)
+                    _posLatch[ch, i] = reader.ReadByte();
+            foreach (Channel channel in _channels)
+                channel.LoadState(reader);
+            int gainLength = reader.ReadInt32();
+            if (gainLength != _gain.Length)
+                throw new InvalidDataException($"K054539 gain length mismatch: {gainLength}.");
+            for (int i = 0; i < _gain.Length; i++)
+                _gain[i] = reader.ReadDouble();
+            _sourcePhase = reader.ReadDouble();
+            _lastSourceLeft = reader.ReadDouble();
+            _lastSourceRight = reader.ReadDouble();
+            _reverbPos = reader.ReadInt32() & 0x1fff;
+            _curPtr = reader.ReadInt32() & 0x1ffff;
+            _romAddr = reader.ReadInt32();
+            _timerState = reader.ReadInt32();
+            _timerCycleAccumulator = reader.ReadDouble();
+            _timerPeriodChipCycles = reader.ReadDouble();
+            _keyOns = reader.ReadInt32();
+            _keyOffs = reader.ReadInt32();
+            _writes = reader.ReadInt32();
+            _reads = reader.ReadInt32();
+            _lastPeak = reader.ReadInt32();
         }
 
         public void SetGain(int channel, double gain)
@@ -5860,6 +5946,22 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private static short Mix(short current, int sample)
             => (short)Math.Clamp(current + sample, short.MinValue, short.MaxValue);
 
+        private static void WriteByteArray(BinaryWriter writer, byte[] data)
+        {
+            writer.Write(data.Length);
+            writer.Write(data);
+        }
+
+        private static void ReadByteArray(BinaryReader reader, byte[] destination)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"K054539 byte array length mismatch: {length}.");
+            int read = reader.Read(destination, 0, destination.Length);
+            if (read != destination.Length)
+                throw new EndOfStreamException("Unexpected end of K054539 byte array.");
+        }
+
         private sealed class Channel
         {
             public int Pos;
@@ -5873,6 +5975,22 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 Pfrac = 0;
                 Val = 0;
                 Pval = 0;
+            }
+
+            public void SaveState(BinaryWriter writer)
+            {
+                writer.Write(Pos);
+                writer.Write(Pfrac);
+                writer.Write(Val);
+                writer.Write(Pval);
+            }
+
+            public void LoadState(BinaryReader reader)
+            {
+                Pos = reader.ReadInt32();
+                Pfrac = reader.ReadInt32();
+                Val = reader.ReadInt32();
+                Pval = reader.ReadInt32();
             }
         }
     }
