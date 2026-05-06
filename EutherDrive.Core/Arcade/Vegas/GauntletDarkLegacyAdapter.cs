@@ -395,6 +395,9 @@ internal sealed class MipsR5000Core
     private void Step()
     {
         ulong pc = Pc;
+        if (TryFastPathKnownBootLoop(pc))
+            return;
+
         uint op = _memory.Read32(pc);
         LastFetchedInstruction = op;
         ulong nextPc = pc + 4;
@@ -414,6 +417,41 @@ internal sealed class MipsR5000Core
         Pc = branchFromPreviousInstruction
             ? branchTarget
             : _hasImmediatePcOverride ? _immediatePcOverride : nextPc;
+    }
+
+    private bool TryFastPathKnownBootLoop(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x1fc038c4UL)
+            return false;
+
+        ulong cursor = _gpr[4];
+        ulong end = _gpr[5];
+        if (cursor >= end || end - cursor > 0x00100000UL)
+            return false;
+
+        ulong mask0 = _gpr[6];
+        ulong mask1 = _gpr[7];
+        ulong acc0 = _gpr[8];
+        ulong acc1 = _gpr[9];
+
+        while (cursor < end)
+        {
+            uint value = _memory.Read32(cursor);
+            cursor += 4;
+            acc0 = (acc0 + (value & mask0)) & mask0;
+            acc1 = (acc1 + (value & mask1)) & mask1;
+        }
+
+        _gpr[2] = 0;
+        _gpr[3] = 0;
+        _gpr[4] = end;
+        _gpr[8] = acc0;
+        _gpr[9] = acc1;
+        _gpr[0] = 0;
+        _cp0[9] += _cp0CountStep;
+        _instructionCounter++;
+        Pc = (pc & 0xffffffffe0000000UL) | 0x1fc038ecUL;
+        return true;
     }
 
     private void Execute(ulong pc, uint op)
