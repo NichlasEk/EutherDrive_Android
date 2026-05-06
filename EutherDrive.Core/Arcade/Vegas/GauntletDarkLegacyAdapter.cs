@@ -397,6 +397,8 @@ internal sealed class MipsR5000Core
         ulong pc = Pc;
         if (TryFastPathKnownBootLoop(pc))
             return;
+        if (TryFastPathKnownCacheLoop(pc))
+            return;
 
         uint op = _memory.Read32(pc);
         LastFetchedInstruction = op;
@@ -451,6 +453,32 @@ internal sealed class MipsR5000Core
         _cp0[9] += _cp0CountStep;
         _instructionCounter++;
         Pc = (pc & 0xffffffffe0000000UL) | 0x1fc038ecUL;
+        return true;
+    }
+
+    private bool TryFastPathKnownCacheLoop(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        uint exitOffset = offset switch
+        {
+            0x1fc039f0UL or 0x1fc039f8UL => 0x1fc03a04,
+            0x1fc03a18UL or 0x1fc03a20UL => 0x1fc03a2c,
+            _ => 0
+        };
+
+        if (exitOffset == 0)
+            return false;
+
+        ulong cursor = _gpr[4];
+        ulong end = _gpr[5];
+        if (cursor >= end || end - cursor > 0x00400000UL)
+            return false;
+
+        _gpr[4] = end;
+        _gpr[0] = 0;
+        _cp0[9] += _cp0CountStep;
+        _instructionCounter++;
+        Pc = (pc & 0xffffffffe0000000UL) | exitOffset;
         return true;
     }
 
