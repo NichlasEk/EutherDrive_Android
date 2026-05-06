@@ -2505,6 +2505,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly ushort[] _boardRegs = new ushort[4];
         [NonSerialized] private readonly byte[] _rom = new byte[0x500000];
         [NonSerialized] private readonly byte[] _decodedRom = new byte[0x500000];
+        private static readonly int[] MystwarrTileFlipShifts = { 6, 4, 2, 0 };
+        private static readonly int[] MystwarrTilePaletteMask1 = { 0x3f, 0x0f, 0x03, 0x00 };
+        private static readonly int[] MystwarrTilePaletteShift2 = { 0, 2, 2, 2 };
+        private static readonly int[] MystwarrTilePaletteMask2 = { 0x00, 0x30, 0x3c, 0x3f };
         private int _selectedPage;
         private int _selectedPageBase;
         private int _romBank;
@@ -2823,16 +2827,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void DecodeMystwarrTileAttr(int layer, int attr, int colorBase, out int color, out bool flipX, out bool flipY, out int mixCode)
         {
-            ReadOnlySpan<int> flips = stackalloc[] { 6, 4, 2, 0 };
-            ReadOnlySpan<int> palm1 = stackalloc[] { 0x3f, 0x0f, 0x03, 0x00 };
-            ReadOnlySpan<int> pals2 = stackalloc[] { 0, 2, 2, 2 };
-            ReadOnlySpan<int> palm2 = stackalloc[] { 0x00, 0x30, 0x3c, 0x3f };
-
             int fbits = (_regs[3] >> 6) & 3;
             int flip = (_regs[1] >> ((layer & 3) << 1)) & 3;
-            flip &= (attr >> flips[fbits]) & 3;
+            flip &= (attr >> MystwarrTileFlipShifts[fbits]) & 3;
 
-            int rawColor = (attr & palm1[fbits]) | ((attr >> pals2[fbits]) & palm2[fbits]);
+            int rawColor = (attr & MystwarrTilePaletteMask1[fbits]) | ((attr >> MystwarrTilePaletteShift2[fbits]) & MystwarrTilePaletteMask2[fbits]);
             color = colorBase | ((rawColor >> 1) & 0x0f);
             flipX = (flip & 1) != 0;
             flipY = (flip & 2) != 0;
