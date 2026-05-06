@@ -4026,6 +4026,11 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.System32.System32Adapter();
         }
 
+        if (EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsSupportedPath(path))
+        {
+            return new EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter();
+        }
+
         if (EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
         {
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
