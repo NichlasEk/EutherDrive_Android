@@ -1052,6 +1052,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _tmnt2Eeprom.Write(value);
                 return;
             }
+            if (address >= 0x498000 && address <= 0x49801f)
+            {
+                if ((address & 1) != 0)
+                    _sound?.K054321MainWrite((int)((address - 0x498000) >> 1), value);
+                return;
+            }
             if (address >= 0x49c000 && address <= 0x49c01f)
             {
                 WriteK053252MainByte(address, value);
@@ -1073,19 +1079,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private byte ReadK054321MainByte(uint address)
         {
-            // MAME maps K054321 as an 8-bit device on the low byte of the
-            // 68000 bus. Odd CPU addresses therefore select subdevice offsets
-            // using the 16-bit word offset, e.g. $498015 -> K054321 offset $0a.
             if ((address & 1) == 0)
                 return 0xff;
 
             int offset = (int)((address - 0x498000) >> 1) & 0x0f;
-            return offset switch
-            {
-                0x08 => 0x00, // busy_r: bit 0 set would mean busy; MAME returns idle
-                0x0a => 0x00, // sound CPU to main CPU latch, defaults low during POST
-                _ => 0xff
-            };
+            return _sound?.K054321MainRead(offset) ?? 0xff;
         }
 
         private byte ReadK053252MainByte(uint address)
@@ -1145,6 +1143,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x490000 && address <= 0x490001)
             {
                 _tmnt2Eeprom.Write((byte)(value >> 8));
+                return;
+            }
+            if (address >= 0x498000 && address <= 0x49801e)
+            {
+                _sound?.K054321MainWrite((int)((address - 0x498000) >> 1), (byte)value);
                 return;
             }
             if (address >= 0x49a000 && address <= 0x49a001)
@@ -4265,23 +4268,32 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private const int Tmnt2AudioCpuClock = 8_000_000;
         private const int Tmnt2AudioCpuCyclesPerFrame = 135_168;
         private const float K053260RouteGain = 0.75f;
+        private const int MystwarrK054539Clock = 18_432_000;
+        private const float MystwarrK054539RouteGain = 1.0f;
         private static readonly bool Tmnt2MuteYm2151 =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT2_YM2151_MUTE") == "1";
         private static readonly int Tmnt2Z80MemoryWaitCycles =
             ParseEnvInt("EUTHERDRIVE_TMNT2_Z80_WAIT_CYCLES", defaultValue: 0, minValue: 0, maxValue: 4);
 
         [NonSerialized] private readonly byte[] _program = new byte[0x40000];
-        private readonly byte[] _ram = new byte[0x800];
+        private readonly byte[] _ram = new byte[0x2000];
         private readonly Z80 _cpu = new();
         private readonly Cps1Ym2151 _ym = new();
         private readonly K007232Pcm _pcm = new();
         [NonSerialized] private readonly K053260Pcm _k053260 = new();
+        [NonSerialized] private readonly K054539Pcm _k054539_1 = new();
+        [NonSerialized] private readonly K054539Pcm _k054539_2 = new();
+        private readonly K054321SoundInterface _k054321 = new();
         private readonly Upd7759Adpcm _upd = new();
+        private readonly byte[] _mystwarrK054539Scratch1 = new byte[0x1d0];
+        private readonly byte[] _mystwarrK054539Scratch2 = new byte[0x1d0];
         [NonSerialized] private short[] _titleSample = Array.Empty<short>();
 
         [NonSerialized] private TmntHardwareVariant _variant;
         private byte _soundLatch = 0xff;
         private byte _sres = 0xff;
+        private byte _mystwarrSoundCtrl = 2;
+        private bool _mystwarrNmiClock;
         private bool _irqAsserted;
         [NonSerialized] private bool _nmiAsserted;
         [NonSerialized] private int _nmiBlockedCycles;
@@ -4308,7 +4320,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public string DebugSummary
             => $"z80pc=0x{_cpu.Pc:X4} z80stalled={_cpu.Stalled} sndLatch=0x{_soundLatch:X2} "
                + $"sres=0x{_sres:X2} sresW={_sresWrites} ymW={_ymWrites} {_ym.DebugSummary} pcmW={_pcmWrites} {_pcm.DebugSummary} "
-               + $"{_upd.DebugSummary} {K053260DebugSummary} irqP={_irqPulses} z80wait={_tmnt2WaitCyclesThisFrame} "
+               + $"{_upd.DebugSummary} {K053260DebugSummary} k054321={_k054321.DebugSummary} k054539a={_k054539_1.DebugSummary} k054539b={_k054539_2.DebugSummary} irqP={_irqPulses} z80wait={_tmnt2WaitCyclesThisFrame} "
                + $"audPeak={_lastPeak} probe={(_audioProbe?.Enabled == true ? 1 : 0)}";
 
         public string K053260DebugSummary => _k053260.DebugSummary;
@@ -4320,6 +4332,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Copy(roms.AudioCpu, _program, Math.Min(roms.AudioCpu.Length, _program.Length));
             _pcm.Load(roms.K007232);
             _k053260.Load(roms.K053260);
+            _k054539_1.Load(roms.K054539);
+            _k054539_2.Load(roms.K054539);
             _upd.Load(roms.Upd7759);
             _titleSample = DecodeTitleSample(roms.TitleSample);
             ResetMachine();
@@ -4366,13 +4380,29 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void ResetMachine()
         {
             Array.Clear(_ram);
+            Array.Clear(_mystwarrK054539Scratch1);
+            Array.Clear(_mystwarrK054539Scratch2);
             _cpu.ApplyResetLine();
             _ym.Reset();
             _pcm.Reset();
             _k053260.Reset();
+            _k054539_1.Reset();
+            _k054539_2.Reset();
+            if (UsesMystwarrSound)
+            {
+                for (int i = 0; i <= 3; i++)
+                    _k054539_1.SetGain(i, 0.8);
+                for (int i = 4; i <= 7; i++)
+                    _k054539_1.SetGain(i, 2.0);
+                for (int i = 0; i <= 7; i++)
+                    _k054539_2.SetGain(i, 0.5);
+            }
+            _k054321.Reset();
             _upd.Reset();
             _soundLatch = 0xff;
             _sres = 0xff;
+            _mystwarrSoundCtrl = UsesMystwarrSound ? (byte)2 : (byte)0;
+            _mystwarrNmiClock = false;
             _irqAsserted = false;
             _nmiAsserted = UsesK053260Sound;
             _nmiBlockedCycles = 0;
@@ -4494,6 +4524,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _ym.AdvanceTimersByCpuCycles((int)elapsed, audioClock);
                 if (UsesK053260Sound)
                     _k053260.AdvanceControlCycles((int)elapsed, audioClock, OnK053260Sh1);
+                if (UsesMystwarrSound)
+                    _k054539_1.AdvanceTimerCycles((int)elapsed, audioClock, OnK054539Timer);
                 _pendingRenderCycles += (int)elapsed;
                 if (_nmiBlockArmedThisInstruction)
                 {
@@ -4536,6 +4568,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void RenderAudioRange(short[] audioBuffer, int startFrame, int targetFrame)
         {
+            if (UsesMystwarrSound)
+            {
+                float gain = MystwarrK054539RouteGain * _k054321.OutputGain;
+                _k054539_1.RenderStereo(audioBuffer, startFrame, targetFrame, gain: gain, outputSampleRate: OutputSampleRate, swapStereo: true);
+                _k054539_2.RenderStereo(audioBuffer, startFrame, targetFrame, gain: gain, outputSampleRate: OutputSampleRate, swapStereo: true);
+                _audioFrameSampleIndex = Math.Max(_audioFrameSampleIndex, targetFrame);
+                return;
+            }
+
             if (UsesK053260Sound)
             {
                 if (_audioProbe?.Enabled == true)
@@ -4588,6 +4629,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public byte ReadOpcode(ushort address)
         {
+            if (UsesMystwarrSound)
+            {
+                if (address < 0x8000)
+                    return _program[address];
+                if (address is >= 0x8000 and <= 0xbfff)
+                    return _program[MystwarrBankedRomOffset(address)];
+                return ReadMemoryMystwarr(address);
+            }
+
             if (UsesK053260Sound)
             {
                 AddTmnt2Z80Wait(address);
@@ -4602,6 +4652,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public byte ReadMemory(ushort address)
         {
+            if (UsesMystwarrSound)
+                return ReadMemoryMystwarr(address);
+
             if (UsesK053260Sound)
                 return ReadMemoryTmnt2(address);
 
@@ -4642,6 +4695,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void WriteMemory(ushort address, byte value)
         {
+            if (UsesMystwarrSound)
+            {
+                WriteMemoryMystwarr(address, value);
+                return;
+            }
+
             if (UsesK053260Sound)
             {
                 WriteMemoryTmnt2(address, value);
@@ -4718,9 +4777,95 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private bool UsesK053260Sound => _variant is TmntHardwareVariant.Tmnt2 or TmntHardwareVariant.Ssriders;
 
-        private int CurrentAudioCpuClock => UsesK053260Sound ? Tmnt2AudioCpuClock : AudioCpuClock;
+        private bool UsesMystwarrSound => _variant == TmntHardwareVariant.Mystwarr;
 
-        private int CurrentAudioCpuCyclesPerFrame => UsesK053260Sound ? Tmnt2AudioCpuCyclesPerFrame : AudioCpuCyclesPerFrame;
+        private int CurrentAudioCpuClock => UsesK053260Sound || UsesMystwarrSound ? Tmnt2AudioCpuClock : AudioCpuClock;
+
+        private int CurrentAudioCpuCyclesPerFrame => UsesK053260Sound || UsesMystwarrSound ? Tmnt2AudioCpuCyclesPerFrame : AudioCpuCyclesPerFrame;
+
+        private byte ReadMemoryMystwarr(ushort address)
+        {
+            if (address < 0x8000)
+                return _program[address];
+            if (address is >= 0x8000 and <= 0xbfff)
+                return _program[MystwarrBankedRomOffset(address)];
+            if (address is >= 0xc000 and <= 0xdfff)
+                return _ram[address - 0xc000];
+            if (address is >= 0xe000 and <= 0xe22f)
+            {
+                FlushPendingAudioStream();
+                return _k054539_1.Read(address - 0xe000);
+            }
+            if (address is >= 0xe230 and <= 0xe3ff)
+                return _mystwarrK054539Scratch1[address - 0xe230];
+            if (address is >= 0xe400 and <= 0xe62f)
+            {
+                FlushPendingAudioStream();
+                return _k054539_2.Read(address - 0xe400);
+            }
+            if (address is >= 0xe630 and <= 0xe7ff)
+                return _mystwarrK054539Scratch2[address - 0xe630];
+            if (address is >= 0xf000 and <= 0xf003)
+                return _k054321.SoundRead(address - 0xf000);
+            return 0xff;
+        }
+
+        private void WriteMemoryMystwarr(ushort address, byte value)
+        {
+            if (address is >= 0xc000 and <= 0xdfff)
+            {
+                _ram[address - 0xc000] = value;
+                return;
+            }
+            if (address is >= 0xe000 and <= 0xe22f)
+            {
+                FlushPendingAudioStream();
+                _k054539_1.Write(address - 0xe000, value);
+                return;
+            }
+            if (address is >= 0xe230 and <= 0xe3ff)
+            {
+                _mystwarrK054539Scratch1[address - 0xe230] = value;
+                return;
+            }
+            if (address is >= 0xe400 and <= 0xe62f)
+            {
+                FlushPendingAudioStream();
+                _k054539_2.Write(address - 0xe400, value);
+                return;
+            }
+            if (address is >= 0xe630 and <= 0xe7ff)
+            {
+                _mystwarrK054539Scratch2[address - 0xe630] = value;
+                return;
+            }
+            if (address is >= 0xf000 and <= 0xf003)
+            {
+                _k054321.SoundWrite(address - 0xf000, value);
+                return;
+            }
+            if (address == 0xf800)
+            {
+                _mystwarrSoundCtrl = value;
+                if ((value & 0x10) == 0)
+                    _nmiAsserted = false;
+                TraceAudioState($"mystwarr sound-ctrl value=0x{value:X2} bank={value & 0x0f}");
+            }
+        }
+
+        private int MystwarrBankedRomOffset(ushort address)
+            => (((_mystwarrSoundCtrl & 0x0f) * 0x4000) + (address - 0x8000)) & (_program.Length - 1);
+
+        public byte K054321MainRead(int offset) => _k054321.MainRead(offset);
+
+        public void K054321MainWrite(int offset, byte value) => _k054321.MainWrite(offset, value);
+
+        private void OnK054539Timer(bool state)
+        {
+            if ((_mystwarrSoundCtrl & 0x10) != 0 && !_mystwarrNmiClock && state)
+                _nmiAsserted = true;
+            _mystwarrNmiClock = state;
+        }
 
         private byte ReadMemoryTmnt2(ushort address)
         {
@@ -5085,6 +5230,565 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private static short Mix(short current, int sample)
             => (short)Math.Clamp(current + sample, short.MinValue, short.MaxValue);
+    }
+
+    private sealed class K054321SoundInterface
+    {
+        private byte _mainToSound0;
+        private byte _mainToSound1;
+        private byte _soundToMain;
+        private byte _volume;
+        private byte _active;
+        private int _mainWrites;
+        private int _soundReads;
+
+        public float OutputGain
+        {
+            get
+            {
+                if ((_active & 0x03) == 0)
+                    return 0.0f;
+                return (float)Math.Pow(2.0, (_volume - 40) / 10.0);
+            }
+        }
+
+        public string DebugSummary => $"m2s=0x{_mainToSound0:X2}/0x{_mainToSound1:X2} s2m=0x{_soundToMain:X2} vol={_volume} act=0x{_active:X2} mw={_mainWrites} sr={_soundReads}";
+
+        public void Reset()
+        {
+            _mainToSound0 = 0;
+            _mainToSound1 = 0;
+            _soundToMain = 0;
+            _volume = 0;
+            _active = 0;
+            _mainWrites = 0;
+            _soundReads = 0;
+        }
+
+        public byte MainRead(int offset)
+        {
+            offset &= 0x0f;
+            return offset switch
+            {
+                0x08 => 0x00,
+                0x0a => _soundToMain,
+                _ => 0xff
+            };
+        }
+
+        public void MainWrite(int offset, byte value)
+        {
+            offset &= 0x0f;
+            switch (offset)
+            {
+                case 0x00:
+                    _active = value;
+                    break;
+                case 0x02:
+                    _volume = 0;
+                    break;
+                case 0x03:
+                    if (value != 0 && _volume < 64)
+                        _volume++;
+                    break;
+                case 0x06:
+                    _mainToSound0 = value;
+                    _mainWrites++;
+                    break;
+                case 0x07:
+                    _mainToSound1 = value;
+                    _mainWrites++;
+                    break;
+            }
+        }
+
+        public byte SoundRead(int offset)
+        {
+            offset &= 3;
+            _soundReads++;
+            return offset switch
+            {
+                2 => _mainToSound0,
+                3 => _mainToSound1,
+                _ => 0xff
+            };
+        }
+
+        public void SoundWrite(int offset, byte value)
+        {
+            offset &= 3;
+            if (offset == 0)
+                _soundToMain = value;
+        }
+    }
+
+    // BSD-3-Clause semantic port of MAME's k054539_device for Mystic Warriors.
+    private sealed class K054539Pcm
+    {
+        private const int ChipClock = 18_432_000;
+        private const int SourceSampleRate = ChipClock / 384;
+        private static readonly int[] DpcmDelta = { 0, 1, 2, 4, 8, 16, 32, 64, -128, -64, -32, -16, -8, -4, -2, -1 };
+        private static readonly double[] VolumeTable = BuildVolumeTable();
+        private static readonly double[] PanTable = BuildPanTable();
+
+        [NonSerialized] private byte[] _rom = Array.Empty<byte>();
+        private readonly byte[] _regs = new byte[0x230];
+        private readonly byte[] _ram = new byte[0x8000];
+        private readonly short[] _reverb = new short[0x2000];
+        private readonly byte[,] _posLatch = new byte[8, 3];
+        private readonly Channel[] _channels;
+        private readonly double[] _gain = new double[8];
+        private double _sourcePhase;
+        private double _lastSourceLeft;
+        private double _lastSourceRight;
+        private int _reverbPos;
+        private int _curPtr;
+        private int _romAddr;
+        private int _timerState;
+        private double _timerCycleAccumulator;
+        private double _timerPeriodChipCycles;
+        private int _keyOns;
+        private int _keyOffs;
+        private int _writes;
+        private int _reads;
+        private int _lastPeak;
+
+        public K054539Pcm()
+        {
+            _channels = new Channel[8];
+            for (int i = 0; i < _channels.Length; i++)
+                _channels[i] = new Channel();
+            Array.Fill(_gain, 1.0);
+        }
+
+        public string DebugSummary
+            => $"w={_writes} r={_reads} key={_regs[0x22c]:X2} ko={_keyOns} kf={_keyOffs} ctl={_regs[0x22f]:X2} rom={_romAddr:X2}:{_curPtr:X5} pk={_lastPeak}";
+
+        public void Load(byte[] rom)
+        {
+            _rom = rom;
+            Reset();
+        }
+
+        public void Reset()
+        {
+            Array.Clear(_regs);
+            Array.Clear(_ram);
+            Array.Clear(_reverb);
+            Array.Clear(_posLatch);
+            foreach (Channel channel in _channels)
+                channel.Reset();
+            _sourcePhase = 0;
+            _lastSourceLeft = 0;
+            _lastSourceRight = 0;
+            _reverbPos = 0;
+            _curPtr = 0;
+            _romAddr = 0;
+            _timerState = 0;
+            _timerCycleAccumulator = 0;
+            _timerPeriodChipCycles = 0;
+            _keyOns = _keyOffs = _writes = _reads = _lastPeak = 0;
+        }
+
+        public void SetGain(int channel, double gain)
+        {
+            if ((uint)channel < _gain.Length)
+                _gain[channel] = gain;
+        }
+
+        public byte Read(int offset)
+        {
+            if ((uint)offset >= _regs.Length)
+                return 0xff;
+            _reads++;
+            if (offset == 0x22d)
+            {
+                if ((_regs[0x22f] & 0x10) == 0)
+                    return 0;
+
+                byte value;
+                if (_romAddr == 0x80)
+                {
+                    int addr = (_curPtr & 0x3fff) | ((_curPtr & 0x10000) >> 2);
+                    value = _ram[addr & (_ram.Length - 1)];
+                }
+                else
+                {
+                    value = ReadRom(0x20000 * _romAddr + _curPtr);
+                }
+                _curPtr = (_curPtr + 1) & 0x1ffff;
+                return value;
+            }
+
+            return _regs[offset];
+        }
+
+        public void Write(int offset, byte value)
+        {
+            if ((uint)offset >= _regs.Length)
+                return;
+            _writes++;
+
+            bool latch = (_regs[0x22f] & 0x01) != 0;
+            if (latch && offset < 0x100)
+            {
+                int latchOffset = (offset & 0x1f) - 0x0c;
+                if ((uint)latchOffset <= 2)
+                {
+                    _posLatch[offset >> 5, latchOffset] = value;
+                    return;
+                }
+            }
+
+            switch (offset)
+            {
+                case 0x214:
+                    for (int ch = 0; ch < 8; ch++)
+                    {
+                        if ((value & (1 << ch)) == 0)
+                            continue;
+                        if (latch)
+                        {
+                            int baseOffset = ch << 5;
+                            _regs[baseOffset + 0x0c] = _posLatch[ch, 0];
+                            _regs[baseOffset + 0x0d] = _posLatch[ch, 1];
+                            _regs[baseOffset + 0x0e] = _posLatch[ch, 2];
+                        }
+                        KeyOn(ch);
+                    }
+                    break;
+
+                case 0x215:
+                    for (int ch = 0; ch < 8; ch++)
+                        if ((value & (1 << ch)) != 0)
+                            KeyOff(ch);
+                    break;
+
+                case 0x227:
+                    _timerState = 0;
+                    _timerCycleAccumulator = 0;
+                    _timerPeriodChipCycles = 2_764_800.0 / Math.Max(1, 38 + value);
+                    break;
+
+                case 0x22d:
+                    if (_romAddr == 0x80)
+                    {
+                        int addr = (_curPtr & 0x3fff) | ((_curPtr & 0x10000) >> 2);
+                        _ram[addr & (_ram.Length - 1)] = value;
+                    }
+                    _curPtr = (_curPtr + 1) & 0x1ffff;
+                    break;
+
+                case 0x22e:
+                    _romAddr = value;
+                    _curPtr = 0;
+                    break;
+
+                case 0x22f:
+                    if ((value & 0x20) == 0)
+                        _timerState = 0;
+                    break;
+            }
+
+            _regs[offset] = value;
+        }
+
+        public void AdvanceTimerCycles(int audioCpuCycles, int audioCpuClock, Action<bool> timerHandler)
+        {
+            if (audioCpuCycles <= 0 || audioCpuClock <= 0 || _timerPeriodChipCycles <= 0 || (_regs[0x22f] & 0x20) == 0)
+                return;
+
+            _timerCycleAccumulator += audioCpuCycles * (ChipClock / (double)audioCpuClock);
+            while (_timerCycleAccumulator >= _timerPeriodChipCycles)
+            {
+                _timerState ^= 1;
+                timerHandler(_timerState != 0);
+                _timerCycleAccumulator -= _timerPeriodChipCycles;
+            }
+        }
+
+        public void RenderStereo(short[] destination, int startFrame, int targetFrame, float gain, int outputSampleRate, bool swapStereo)
+        {
+            if (_rom.Length == 0 || destination.Length == 0 || (_regs[0x22f] & 0x01) == 0)
+                return;
+
+            int maxFrames = destination.Length / 2;
+            startFrame = Math.Clamp(startFrame, 0, maxFrames);
+            targetFrame = Math.Clamp(targetFrame, startFrame, maxFrames);
+            if (targetFrame <= startFrame)
+                return;
+
+            double step = SourceSampleRate / (double)outputSampleRate;
+            int peak = 0;
+            for (int frame = startFrame; frame < targetFrame; frame++)
+            {
+                _sourcePhase += step;
+                while (_sourcePhase >= 1.0)
+                {
+                    GenerateSourceFrame(out _lastSourceLeft, out _lastSourceRight);
+                    _sourcePhase -= 1.0;
+                }
+
+                double left = _lastSourceLeft;
+                double right = _lastSourceRight;
+                if (swapStereo)
+                    (left, right) = (right, left);
+                int mixLeft = (int)Math.Round(left * gain);
+                int mixRight = (int)Math.Round(right * gain);
+                int offset = frame * 2;
+                destination[offset] = Mix(destination[offset], mixLeft);
+                destination[offset + 1] = Mix(destination[offset + 1], mixRight);
+                peak = Math.Max(peak, Math.Max(Math.Abs(mixLeft), Math.Abs(mixRight)));
+            }
+            _lastPeak = peak;
+        }
+
+        private void GenerateSourceFrame(out double left, out double right)
+        {
+            left = _reverb[_reverbPos];
+            right = _reverb[_reverbPos];
+            _reverb[_reverbPos] = 0;
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if ((_regs[0x22c] & (1 << ch)) == 0)
+                    continue;
+                PlayChannel(ch, ref left, ref right);
+            }
+            _reverbPos = (_reverbPos + 1) & 0x1fff;
+        }
+
+        private void PlayChannel(int ch, ref double left, ref double right)
+        {
+            int base1 = ch << 5;
+            int base2 = 0x200 + (ch << 1);
+            int delta = _regs[base1] | (_regs[base1 + 1] << 8) | (_regs[base1 + 2] << 16);
+            int vol = _regs[base1 + 3];
+            int reverbVol = Math.Min(255, vol + _regs[base1 + 4]);
+            int pan = DecodePan(_regs[base1 + 5]);
+            double lvol = Math.Min(1.8, VolumeTable[vol] * PanTable[pan] * _gain[ch]);
+            double rvol = Math.Min(1.8, VolumeTable[vol] * PanTable[0x0e - pan] * _gain[ch]);
+            double rbvol = Math.Min(1.8, VolumeTable[reverbVol] * _gain[ch] / 2.0);
+            int reverbDelta = ((_regs[base1 + 6] | (_regs[base1 + 7] << 8)) >> 3) & 0x3fff;
+            int curPos = _regs[base1 + 0x0c] | (_regs[base1 + 0x0d] << 8) | (_regs[base1 + 0x0e] << 16);
+
+            Channel channel = _channels[ch];
+            int curPfrac;
+            int curVal;
+            int curPval;
+            if (curPos != channel.Pos)
+            {
+                channel.Pos = curPos;
+                curPfrac = 0;
+                curVal = 0;
+                curPval = 0;
+            }
+            else
+            {
+                curPfrac = channel.Pfrac;
+                curVal = channel.Val;
+                curPval = channel.Pval;
+            }
+
+            int pdelta;
+            int fdelta;
+            if ((_regs[base2] & 0x20) != 0)
+            {
+                delta = -delta;
+                fdelta = 0x10000;
+                pdelta = -1;
+            }
+            else
+            {
+                fdelta = -0x10000;
+                pdelta = 1;
+            }
+
+            switch (_regs[base2] & 0x0c)
+            {
+                case 0x00:
+                    Step8Bit(ch, base1, base2, delta, fdelta, pdelta, ref curPos, ref curPfrac, ref curVal, ref curPval);
+                    break;
+                case 0x04:
+                    Step16Bit(ch, base1, base2, delta, fdelta, pdelta << 1, ref curPos, ref curPfrac, ref curVal, ref curPval);
+                    break;
+                case 0x08:
+                    StepDpcm(ch, base1, base2, delta, fdelta, pdelta, ref curPos, ref curPfrac, ref curVal, ref curPval);
+                    break;
+            }
+
+            left += curVal * lvol;
+            right += curVal * rvol;
+            int reverbIndex = (reverbDelta + _reverbPos) & 0x1fff;
+            _reverb[reverbIndex] = (short)Math.Clamp(_reverb[reverbIndex] + (curVal * rbvol), short.MinValue, short.MaxValue);
+            channel.Pos = curPos;
+            channel.Pfrac = curPfrac;
+            channel.Pval = curPval;
+            channel.Val = curVal;
+            if (((_regs[0x22f] & 0x80) == 0))
+            {
+                _regs[base1 + 0x0c] = (byte)curPos;
+                _regs[base1 + 0x0d] = (byte)(curPos >> 8);
+                _regs[base1 + 0x0e] = (byte)(curPos >> 16);
+            }
+        }
+
+        private void Step8Bit(int ch, int base1, int base2, int delta, int fdelta, int pdelta, ref int curPos, ref int curPfrac, ref int curVal, ref int curPval)
+        {
+            curPfrac += delta;
+            while (curPfrac < 0 || curPfrac > 0xffff)
+            {
+                curPfrac += fdelta;
+                curPos += pdelta;
+                curPval = curVal;
+                curVal = unchecked((short)(ReadRom(curPos) << 8));
+                if (curVal == short.MinValue)
+                {
+                    if ((_regs[base2 + 1] & 1) != 0)
+                    {
+                        curPos = LoopAddress(base1);
+                        curVal = unchecked((short)(ReadRom(curPos) << 8));
+                    }
+                    if (curVal == short.MinValue)
+                    {
+                        KeyOff(ch);
+                        curVal = 0;
+                        break;
+                    }
+                }
+            }
+        }
+
+        private void Step16Bit(int ch, int base1, int base2, int delta, int fdelta, int pdelta, ref int curPos, ref int curPfrac, ref int curVal, ref int curPval)
+        {
+            curPfrac += delta;
+            while (curPfrac < 0 || curPfrac > 0xffff)
+            {
+                curPfrac += fdelta;
+                curPos += pdelta;
+                curPval = curVal;
+                curVal = unchecked((short)(ReadRom(curPos) | (ReadRom(curPos + 1) << 8)));
+                if (curVal == short.MinValue)
+                {
+                    if ((_regs[base2 + 1] & 1) != 0)
+                    {
+                        curPos = LoopAddress(base1);
+                        curVal = unchecked((short)(ReadRom(curPos) | (ReadRom(curPos + 1) << 8)));
+                    }
+                    if (curVal == short.MinValue)
+                    {
+                        KeyOff(ch);
+                        curVal = 0;
+                        break;
+                    }
+                }
+            }
+        }
+
+        private void StepDpcm(int ch, int base1, int base2, int delta, int fdelta, int pdelta, ref int curPos, ref int curPfrac, ref int curVal, ref int curPval)
+        {
+            curPos <<= 1;
+            curPfrac <<= 1;
+            if ((curPfrac & 0x10000) != 0)
+            {
+                curPfrac &= 0xffff;
+                curPos |= 1;
+            }
+
+            curPfrac += delta;
+            while (curPfrac < 0 || curPfrac > 0xffff)
+            {
+                curPfrac += fdelta;
+                curPos += pdelta;
+                curPval = curVal;
+                int raw = ReadRom(curPos >> 1);
+                if (raw == 0x88)
+                {
+                    if ((_regs[base2 + 1] & 1) != 0)
+                    {
+                        curPos = LoopAddress(base1) << 1;
+                        raw = ReadRom(curPos >> 1);
+                    }
+                    if (raw == 0x88)
+                    {
+                        KeyOff(ch);
+                        curVal = 0;
+                        break;
+                    }
+                }
+                int nibble = (curPos & 1) != 0 ? raw >> 4 : raw & 0x0f;
+                curVal = Math.Clamp(curPval + DpcmDelta[nibble], short.MinValue, short.MaxValue);
+            }
+
+            curPfrac >>= 1;
+            if ((curPos & 1) != 0)
+                curPfrac |= 0x8000;
+            curPos >>= 1;
+        }
+
+        private void KeyOn(int ch)
+        {
+            if ((_regs[0x22f] & 0x80) == 0)
+                _regs[0x22c] |= (byte)(1 << ch);
+            _channels[ch].Reset();
+            _keyOns++;
+        }
+
+        private void KeyOff(int ch)
+        {
+            if ((_regs[0x22f] & 0x80) == 0)
+                _regs[0x22c] &= (byte)~(1 << ch);
+            _keyOffs++;
+        }
+
+        private int LoopAddress(int base1)
+            => _regs[base1 + 0x08] | (_regs[base1 + 0x09] << 8) | (_regs[base1 + 0x0a] << 16);
+
+        private byte ReadRom(int address)
+            => _rom.Length == 0 ? (byte)0 : _rom[address & (_rom.Length - 1)];
+
+        private static int DecodePan(byte value)
+        {
+            if (value is >= 0x81 and <= 0x8f)
+                return value - 0x81;
+            if (value is >= 0x11 and <= 0x1f)
+                return value - 0x11;
+            return 0x18 - 0x11;
+        }
+
+        private static double[] BuildVolumeTable()
+        {
+            double[] table = new double[256];
+            for (int i = 0; i < table.Length; i++)
+                table[i] = Math.Pow(10.0, (-36.0 * i / 0x40) / 20.0) / 4.0;
+            return table;
+        }
+
+        private static double[] BuildPanTable()
+        {
+            double[] table = new double[0x0f];
+            for (int i = 0; i < table.Length; i++)
+                table[i] = Math.Sqrt(i) / Math.Sqrt(0x0e);
+            return table;
+        }
+
+        private static short Mix(short current, int sample)
+            => (short)Math.Clamp(current + sample, short.MinValue, short.MaxValue);
+
+        private sealed class Channel
+        {
+            public int Pos;
+            public int Pfrac;
+            public int Val;
+            public int Pval;
+
+            public void Reset()
+            {
+                Pos = 0;
+                Pfrac = 0;
+                Val = 0;
+                Pval = 0;
+            }
+        }
     }
 
     // Minimal K007232 PCM translation from MAME's BSD-3-Clause k007232 device.
@@ -6346,6 +7050,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public byte[] TileRom { get; } = new byte[0x500000];
         public byte[] SpriteRom { get; } = new byte[0x800000];
         public byte[] K053260 { get; } = new byte[0x200000];
+        public byte[] K054539 { get; } = new byte[0x400000];
         public byte[] Eeprom { get; } = new byte[0x80];
         public byte[] SpriteAddressProm { get; } = new byte[0x100];
         public TmntHardwareVariant Variant { get; private set; } = TmntHardwareVariant.Tmnt;
@@ -6398,8 +7103,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 Load16Byte(entries, roms.Program, 0x000001, "128eaa02.20g");
                 Load16Byte(entries, roms.Program, 0x100000, "128a03.19f");
                 Load16Byte(entries, roms.Program, 0x100001, "128a04.19g");
-                PatchMystwarrPostLoop(roms.Program);
-                Find(entries, "128a05.6b").CopyTo(roms.AudioCpu, 0);
+                byte[] mystSound = Find(entries, "128a05.6b");
+                mystSound.CopyTo(roms.AudioCpu, 0);
+                mystSound.CopyTo(roms.AudioCpu, 0x20000);
                 LoadTileWord(entries, roms.TileRom, 0x000000, "128a08.1h");
                 LoadTileWord(entries, roms.TileRom, 0x000002, "128a09.1k");
                 LoadTileByte(entries, roms.TileRom, 0x000004, "128a10.3h");
@@ -6409,6 +7115,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 Load64Word(entries, roms.SpriteRom, 0x000006, "128a13.17k");
                 Load16Byte(entries, roms.SpriteRom, 0x400000, "128a12.12k");
                 Load16Byte(entries, roms.SpriteRom, 0x400001, "128a11.10k");
+                Find(entries, "128a06.2d").CopyTo(roms.K054539, 0x000000);
+                Find(entries, "128a07.1d").CopyTo(roms.K054539, 0x200000);
                 if (TryFind(entries, "mystwarr.nv", out byte[]? nv))
                     Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
                 return roms;
@@ -6436,18 +7144,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             ChunkyToPlanar(roms.SpriteRom);
             UnscrambleSpriteRom(roms.SpriteRom, roms.SpriteAddressProm);
             return roms;
-        }
-
-        private static void PatchMystwarrPostLoop(byte[] program)
-        {
-            // POST is useful while bringing the board up, but our partial Mystic
-            // adapter still reports graphics/sound ROM readback mismatches. Let
-            // the game continue after displaying the test instead of looping.
-            if (program.Length <= 0x21dd || program[0x21dc] != 0x60 || program[0x21dd] != 0xda)
-                return;
-
-            program[0x21dc] = 0x4e;
-            program[0x21dd] = 0x71;
         }
 
         private static Dictionary<string, byte[]> ReadArchive(string path)
