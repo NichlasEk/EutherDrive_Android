@@ -462,6 +462,9 @@ class Program
                 Console.WriteLine($"[HEADLESS] TMNT fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY})");
                 DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
 
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
                     var input = ResolveSnesInputForFrame(frame, tmntInputScript);
@@ -472,7 +475,12 @@ class Program
                         false, false, false,
                         input.Select,
                         PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
                     tmnt.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
                     if (frame == 0 || frame == 5 || frame == 10)
                     {
                         ReadOnlySpan<byte> fb = tmnt.GetFrameBuffer(out int w, out int h, out int s);
@@ -486,6 +494,7 @@ class Program
                 Console.WriteLine($"[HEADLESS] TMNT final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 Console.WriteLine($"[HEADLESS] TMNT debug {tmnt.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                PrintHeadlessPerf("TMNT", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -2143,6 +2152,22 @@ class Program
         return 0;
     }
 
+    private static void PrintHeadlessPerf(string label, int framesToRun, long runTicksTotal, long runTicksMin, long runTicksMax, double targetFps)
+    {
+        if (framesToRun <= 0 || runTicksTotal <= 0)
+            return;
+
+        double tickMs = 1000.0 / Stopwatch.Frequency;
+        double avgMs = (runTicksTotal * tickMs) / framesToRun;
+        double minMs = (runTicksMin == long.MaxValue ? 0 : runTicksMin) * tickMs;
+        double maxMs = runTicksMax * tickMs;
+        double capacityFps = framesToRun * Stopwatch.Frequency / (double)runTicksTotal;
+        double headroomFps = capacityFps - targetFps;
+        double headroomPercent = targetFps > 0 ? capacityFps / targetFps * 100.0 : 0.0;
+        Console.WriteLine(
+            $"[HEADLESS][{label}-PERF] frames={framesToRun} run_avg_ms={avgMs:0.###} run_min_ms={minMs:0.###} run_max_ms={maxMs:0.###} capacity_fps={capacityFps:0.###} target_fps={targetFps:0.###} headroom_fps={headroomFps:+0.###;-0.###;0.###} headroom_pct={headroomPercent:0.#}");
+    }
+
     private static bool IsSnesRomPath(string path)
     {
         string ext = Path.GetExtension(path).ToLowerInvariant();
@@ -3142,6 +3167,9 @@ class Program
 
                 using var audioDump = OpenOptionalRawAudioDump(dumpDir, "headless_tmnt_audio_s16le.raw");
                 var tmntInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT_HEADLESS_INPUT_SCRIPT"));
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
                     var input = ResolveSnesInputForFrame(frame, tmntInputScript);
@@ -3152,7 +3180,12 @@ class Program
                         false, false, false,
                         input.Select,
                         PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
                     tmnt.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
                     ReadOnlySpan<short> audio = tmnt.GetAudioBuffer(out int sampleRate, out int channels);
                     WriteRawAudio(audioDump, audio);
 
@@ -3171,6 +3204,7 @@ class Program
                 Console.WriteLine($"[HEADLESS] TMNT final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={tmnt.FrameCounter ?? -1}");
                 Console.WriteLine($"[HEADLESS] TMNT final debug {tmnt.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_tmnt_state_output.ppm"));
+                PrintHeadlessPerf("TMNT", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

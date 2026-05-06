@@ -3052,6 +3052,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly byte[] _regs = new byte[0x10];
         private readonly ushort[] _objRegs = new ushort[8];
         [NonSerialized] private readonly byte[] _rom = new byte[0x800000];
+        [NonSerialized] private readonly byte[] _mystwarrDecodedSprites = new byte[0x8000 * 16 * 16];
         private int _romMask = 0x3fffff; // Savestate compatibility only; ROM decode always uses full loaded region.
         private int _romBank;
         private int _controlRomReads;
@@ -3083,6 +3084,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             Array.Clear(_rom);
             Array.Copy(rom, _rom, Math.Min(rom.Length, _rom.Length));
+            DecodeMystwarrSprites();
         }
 
         public void Reset()
@@ -4011,18 +4013,36 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private int DecodeMystwarrSpritePixel(int code, int x, int y)
+            => _mystwarrDecodedSprites[((code & 0x7fff) << 8) | ((y & 15) << 4) | (x & 15)];
+
+        private void DecodeMystwarrSprites()
         {
-            ReadOnlySpan<int> planeOffsets = stackalloc[] { 32, 24, 16, 8, 0 };
-            int bitIndexBase = (code & 0x7fff) * 1280 + y * 80 + (x >= 8 ? 40 : 0) + (x & 7);
-            int pen = 0;
-            for (int plane = 0; plane < 5; plane++)
+            for (int code = 0; code < 0x8000; code++)
             {
-                int bitIndex = bitIndexBase + planeOffsets[plane];
-                int byteIndex = bitIndex >> 3;
-                int bit = 7 - (bitIndex & 7);
-                pen |= ((ReadMystwarrCombinedSpriteByte(byteIndex) >> bit) & 1) << (4 - plane);
+                int bitTileBase = code * 1280;
+                int decodedTileBase = code << 8;
+                for (int y = 0; y < 16; y++)
+                {
+                    int bitRowBase = bitTileBase + y * 80;
+                    int decodedRowBase = decodedTileBase + (y << 4);
+                    for (int x = 0; x < 16; x++)
+                    {
+                        int bitIndexBase = bitRowBase + (x >= 8 ? 40 : 0) + (x & 7);
+                        int pen = (ReadMystwarrCombinedBit(bitIndexBase + 32) << 4)
+                                  | (ReadMystwarrCombinedBit(bitIndexBase + 24) << 3)
+                                  | (ReadMystwarrCombinedBit(bitIndexBase + 16) << 2)
+                                  | (ReadMystwarrCombinedBit(bitIndexBase + 8) << 1)
+                                  | ReadMystwarrCombinedBit(bitIndexBase);
+                        _mystwarrDecodedSprites[decodedRowBase + x] = (byte)pen;
+                    }
+                }
             }
-            return pen;
+        }
+
+        private int ReadMystwarrCombinedBit(int bitIndex)
+        {
+            int byteIndex = bitIndex >> 3;
+            return (ReadMystwarrCombinedSpriteByte(byteIndex) >> (7 - (bitIndex & 7))) & 1;
         }
 
         private byte ReadMystwarrCombinedSpriteByte(int combinedIndex)
