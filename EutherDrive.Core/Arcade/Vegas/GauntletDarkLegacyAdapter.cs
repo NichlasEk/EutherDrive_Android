@@ -399,6 +399,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownCacheLoop(pc))
             return;
+        if (TryFastPathKnownBiosTextRoutine(pc))
+            return;
 
         uint op = _memory.Read32(pc);
         LastFetchedInstruction = op;
@@ -461,6 +463,7 @@ internal sealed class MipsR5000Core
         ulong offset = pc & 0x1fffffffUL;
         uint exitOffset = offset switch
         {
+            0x1fc039c8UL or 0x1fc039d0UL or 0x1fc039d4UL => 0x1fc039dc,
             0x1fc039f0UL or 0x1fc039f8UL => 0x1fc03a04,
             0x1fc03a18UL or 0x1fc03a20UL => 0x1fc03a2c,
             0x1fc03a40UL or 0x1fc03a50UL or 0x1fc03a54UL => 0x1fc03a5c,
@@ -481,6 +484,61 @@ internal sealed class MipsR5000Core
         _instructionCounter++;
         Pc = (pc & 0xffffffffe0000000UL) | exitOffset;
         return true;
+    }
+
+    private bool TryFastPathKnownBiosTextRoutine(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        return offset switch
+        {
+            0x1fc02c28UL => FastPathInlineBiosText(),
+            0x1fc02c5cUL => FastPathPointerBiosText(),
+            _ => false
+        };
+    }
+
+    private bool FastPathInlineBiosText()
+    {
+        ulong cursor = _gpr[31];
+        if (!TryScanNullTerminatedBytes(ref cursor, 4096))
+            return false;
+
+        Pc = (cursor + 7UL) & ~7UL;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool FastPathPointerBiosText()
+    {
+        ulong cursor = _gpr[4];
+        if (!TryScanNullTerminatedBytes(ref cursor, 4096))
+            return false;
+
+        _gpr[4] = 0;
+        _gpr[7] = cursor;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryScanNullTerminatedBytes(ref ulong cursor, int maxLength)
+    {
+        for (int i = 0; i < maxLength; i++, cursor++)
+        {
+            if (_memory.Read8(cursor) == 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void CompleteFastPathStep()
+    {
+        _gpr[0] = 0;
+        _cp0[9] += _cp0CountStep;
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
     }
 
     private void Execute(ulong pc, uint op)
