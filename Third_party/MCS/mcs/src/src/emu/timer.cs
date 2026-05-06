@@ -226,6 +226,7 @@ namespace mame
 
             // register for save states
             save_item(NAME(new { m_first_time }));
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_first_time", () => m_first_time, value => m_first_time = value);
         }
 
 

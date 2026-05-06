@@ -144,6 +144,18 @@ namespace mame
             }
 
 
+            public void register_save(save_manager save)
+            {
+                string tag = m_execute.device().tag();
+                string module = m_execute.device().name();
+                save.save_item_ref(m_execute.device(), module, tag, m_linenum, "m_input.m_stored_vector", () => m_stored_vector, value => m_stored_vector = value);
+                save.save_item_ref(m_execute.device(), module, tag, m_linenum, "m_input.m_curvector", () => m_curvector, value => m_curvector = value);
+                save.save_item_ref(m_execute.device(), module, tag, m_linenum, "m_input.m_curstate", () => m_curstate, value => m_curstate = value);
+                save.save_item_ref(m_execute.device(), module, tag, m_linenum, "m_input.m_qindex", () => m_qindex, value => m_qindex = value);
+                save.save_item(m_execute.device(), module, tag, m_linenum, m_queue, "m_input.m_queue");
+            }
+
+
             //-------------------------------------------------
             //  reset - reset our input states
             //-------------------------------------------------
@@ -789,17 +801,12 @@ namespace mame
             save.save_item_ref(device(), device().name(), device().tag(), 0, "m_totalcycles", () => m_totalcycles, value => m_totalcycles = value);
             save.save_item_ref(device(), device().name(), device().tag(), 0, "m_localtime", () => m_localtime, value => m_localtime = value);
 
-            //throw new emu_unimplemented();
-#if false
-            // it's more efficient and causes less clutter to save these this way
-            device().save_item(STRUCT_MEMBER(m_input, m_stored_vector));
-            device().save_item(STRUCT_MEMBER(m_input, m_curvector));
-            device().save_item(STRUCT_MEMBER(m_input, m_curstate));
-#endif
-
             // fill in the input states and IRQ callback information
             for (int line = 0; line < (int)std.size(m_input); line++)
+            {
                 m_input[line].start(this, line);
+                m_input[line].register_save(save);
+            }
         }
 
         //-------------------------------------------------

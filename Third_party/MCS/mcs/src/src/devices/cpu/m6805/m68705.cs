@@ -117,6 +117,14 @@ namespace mame
             m_parent.save_item(NAME(new { m_prescale }));
             m_parent.save_item(NAME(new { m_tdr }));
             m_parent.save_item(NAME(new { m_tcr }));
+            var save = m_parent.machine().save();
+            save.save_item_ref(m_parent, m_parent.name(), m_parent.tag(), 0, "m_timer", () => m_timer, value => m_timer = value);
+            save.save_item_ref(m_parent, m_parent.name(), m_parent.tag(), 0, "m_timer_edges", () => m_timer_edges, value => m_timer_edges = value);
+            save.save_item_ref(m_parent, m_parent.name(), m_parent.tag(), 0, "m_prescale", () => m_prescale, value => m_prescale = value);
+            save.save_item_ref(m_parent, m_parent.name(), m_parent.tag(), 0, "m_tdr", () => m_tdr, value => m_tdr = value);
+            save.save_item_ref(m_parent, m_parent.name(), m_parent.tag(), 0, "m_tcr", () => m_tcr, value => m_tcr = value);
+            save.save_item_ref(m_parent, m_parent.name(), m_parent.tag(), 0, "m_divisor", () => m_divisor, value => m_divisor = value);
+            save.save_item_ref(m_parent, m_parent.name(), m_parent.tag(), 0, "m_source", () => (int)m_source, value => m_source = (timer_source)value);
 
             m_parent.m_distate.state_add((int)base_ + 0, "PS", m_prescale);
             m_parent.m_distate.state_add((int)base_ + 1, "TDR", m_tdr);
@@ -464,6 +472,8 @@ namespace mame
             save_item(NAME(new { m_port_input }));
             save_item(NAME(new { m_port_latch }));
             save_item(NAME(new { m_port_ddr }));
+            var save = machine().save();
+            save.save_item_ref(this, name(), tag(), 0, "m_mr", () => m_mr, value => m_mr = value);
 
             // initialise digital I/O
             for (int i = 0; i < m_port_input.Length; i++) m_port_input[i] = 0xff;  //for (u8 &input : m_port_input) input = 0xff;
@@ -680,6 +690,11 @@ namespace mame
             save_item(NAME(new { m_pcr }));
             save_item(NAME(new { m_pl_data }));
             save_item(NAME(new { m_pl_addr }));
+            var save = machine().save();
+            save.save_item_ref(this, name(), tag(), 0, "m_vihtp", () => m_vihtp, value => m_vihtp = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_pcr", () => m_pcr, value => m_pcr = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_pl_data", () => m_pl_data, value => m_pl_data = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_pl_addr", () => m_pl_addr, value => m_pl_addr = value);
 
             // initialise timer/counter
             u8 options = get_mask_options();

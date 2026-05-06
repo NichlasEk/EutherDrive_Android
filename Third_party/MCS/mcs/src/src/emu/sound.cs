@@ -1423,7 +1423,6 @@ namespace mame
             if (m_output.empty())
                 return;
 
-            update();
             m_last_update_end_time = m_output[0].end_time();
         }
 

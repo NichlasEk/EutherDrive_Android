@@ -74,6 +74,7 @@ namespace mame
         {
             m_data_pending_cb.resolve_safe();
             save_item(NAME(new { m_latch_written }));
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_latch_written", () => m_latch_written, value => m_latch_written = value);
 
             // synchronization is needed since other devices may not be initialized yet
             machine().scheduler().synchronize(init_callback);
@@ -165,6 +166,7 @@ namespace mame
             // register for state saving
             base.device_start();
             save_item(NAME(new { m_latched_value }));
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_latched_value", () => m_latched_value, value => m_latched_value = value);
         }
 
 
@@ -225,6 +227,7 @@ namespace mame
             // register for state saving
             base.device_start();
             save_item(NAME(new { m_latched_value }));
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_latched_value", () => m_latched_value, value => m_latched_value = value);
         }
 
 

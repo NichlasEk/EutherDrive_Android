@@ -2439,7 +2439,8 @@ class Program
             using var arcade = new McsArcadeAdapter();
             arcade.LoadRom(romPath);
 
-            for (int i = 0; i < 2; i++)
+            int warmupFrames = ReadPositiveIntEnv("EUTHERDRIVE_HEADLESS_SAVESTATE_WARMUP_FRAMES", 2);
+            for (int i = 0; i < warmupFrames; i++)
                 arcade.RunFrame();
 
             byte[] snapshotMcs;
@@ -2451,7 +2452,58 @@ class Program
                 snapshotMcs = ms.ToArray();
             }
 
-            for (int i = 0; i < 320; i++)
+            bool dumpMcsState = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_MCS_STATE") == "1";
+            bool dumpMcsEntryKinds = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_DUMP_MCS_ENTRY_KINDS") == "1";
+            string[] mcsStateDumpNames =
+            {
+                "scheduler::0:m_basetime",
+                "Video Screen::screen:0:m_frame_number",
+                "Video Screen::screen:0:m_vblank_start_time",
+                "Video Screen::screen:0:m_vblank_end_time",
+                "Motorola MC6809E::maincpu:0:m_localtime",
+                "Motorola MC6809E::maincpu:0:m_totalcycles",
+                "Motorola MC6809E::maincpu:0:m_state",
+                "Motorola MC6809E::maincpu:0:m_pc.w",
+                "Motorola MC6809E::maincpu:0:m_opcode",
+                "Motorola MC6809::audiocpu:0:m_localtime",
+                "Motorola MC6809::audiocpu:0:m_totalcycles",
+                "Motorola MC6809::audiocpu:0:m_state",
+                "Motorola MC6809::audiocpu:0:m_pc.w",
+                "Motorola MC6809::audiocpu:0:m_opcode",
+                "timer:scheduler:1:m_start",
+                "timer:scheduler:1:m_expire",
+                "timer:scheduler:71:m_start",
+                "timer:scheduler:71:m_expire",
+                "timer:scheduler:277:m_start",
+                "timer:scheduler:277:m_expire",
+                "timer:scheduler:280:m_start",
+                "timer:scheduler:280:m_expire",
+                "timer:scheduler:282:m_start",
+                "timer:scheduler:282:m_expire"
+            };
+
+            if (dumpMcsState)
+            {
+                DumpMcsStateValues(snapshotMcs, "snapshot", mcsStateDumpNames);
+            }
+            if (dumpMcsEntryKinds)
+                DumpMcsEntryKinds(snapshotMcs, "snapshot");
+
+            arcade.RunFrame();
+            ulong expectedNextFrameHash = HashMcsFrameBuffer(arcade);
+            byte[] snapshotExpectedNextMcs;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                arcade.SaveState(writer);
+                writer.Flush();
+                snapshotExpectedNextMcs = ms.ToArray();
+            }
+            if (dumpMcsState)
+                DumpMcsStateValues(snapshotExpectedNextMcs, "expected-next", mcsStateDumpNames);
+
+            int driftFrames = ReadNonNegativeIntEnv("EUTHERDRIVE_HEADLESS_SAVESTATE_DRIFT_FRAMES", 319);
+            for (int i = 0; i < driftFrames; i++)
                 arcade.RunFrame();
 
             using (var ms = new MemoryStream(snapshotMcs))
@@ -2460,7 +2512,61 @@ class Program
                 arcade.LoadState(reader);
             }
 
-            for (int i = 0; i < 20; i++)
+            byte[] snapshotImmediateMcs;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                arcade.SaveState(writer);
+                writer.Flush();
+                snapshotImmediateMcs = ms.ToArray();
+            }
+            if (dumpMcsState)
+                DumpMcsStateValues(snapshotImmediateMcs, "same-immediate", mcsStateDumpNames);
+
+            if (!snapshotMcs.SequenceEqual(snapshotImmediateMcs))
+            {
+                Console.Error.WriteLine("[HEADLESS] MCS savestate roundtrip failed: immediate payload mismatch.");
+                string[] mismatches = DescribeMcsStateMismatches(snapshotMcs, snapshotImmediateMcs).Take(20).ToArray();
+                foreach (string mismatch in mismatches)
+                    Console.Error.WriteLine($"[HEADLESS]   {mismatch}");
+                if (mismatches.Any(mismatch =>
+                        !mismatch.StartsWith("changed Video Screen::screen:0:m_last_partial_scan ", StringComparison.Ordinal)
+                        && !mismatch.Contains(":m_start ", StringComparison.Ordinal)
+                        && !mismatch.Contains(":m_index ", StringComparison.Ordinal)))
+                {
+                    return 1;
+                }
+            }
+
+            arcade.RunFrame();
+            ulong actualNextFrameHash = HashMcsFrameBuffer(arcade);
+            byte[] snapshotActualNextMcs;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                arcade.SaveState(writer);
+                writer.Flush();
+                snapshotActualNextMcs = ms.ToArray();
+            }
+            if (dumpMcsState)
+                DumpMcsStateValues(snapshotActualNextMcs, "same-next", mcsStateDumpNames);
+
+            if (expectedNextFrameHash != actualNextFrameHash)
+            {
+                Console.Error.WriteLine($"[HEADLESS] MCS savestate diagnostic: next-frame framebuffer mismatch. expected=0x{expectedNextFrameHash:X16} actual=0x{actualNextFrameHash:X16}");
+                if (!snapshotExpectedNextMcs.SequenceEqual(snapshotActualNextMcs))
+                {
+                    Console.Error.WriteLine("[HEADLESS]   next-frame payload also diverged:");
+                    foreach (string mismatch in DescribeMcsStateMismatches(snapshotExpectedNextMcs, snapshotActualNextMcs).Take(20))
+                        Console.Error.WriteLine($"[HEADLESS]   {mismatch}");
+                }
+                else
+                {
+                    Console.Error.WriteLine("[HEADLESS]   next-frame payload matches; mismatch is confined to rendered/host video state.");
+                }
+            }
+
+            for (int i = 0; i < 19; i++)
                 arcade.RunFrame();
 
             byte[] snapshotAfterMcs;
@@ -2473,8 +2579,258 @@ class Program
             }
 
             bool matchMcs = snapshotMcs.SequenceEqual(snapshotAfterMcs);
-            Console.WriteLine($"[HEADLESS] MCS savestate smoke ok. payload_bytes={snapshotMcs.Length} deterministic_match={matchMcs}");
+            arcade.Dispose();
+
+            using var coldbootArcade = new McsArcadeAdapter();
+            coldbootArcade.LoadRom(romPath);
+            using (var ms = new MemoryStream(snapshotMcs))
+            using (var reader = new BinaryReader(ms))
+            {
+                coldbootArcade.LoadState(reader);
+            }
+
+            byte[] snapshotColdbootImmediateMcs;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                coldbootArcade.SaveState(writer);
+                writer.Flush();
+                snapshotColdbootImmediateMcs = ms.ToArray();
+            }
+            if (dumpMcsState)
+                DumpMcsStateValues(snapshotColdbootImmediateMcs, "coldboot-immediate", mcsStateDumpNames);
+
+            bool coldbootMatchMcs = snapshotMcs.SequenceEqual(snapshotColdbootImmediateMcs);
+            if (!coldbootMatchMcs)
+            {
+                Console.Error.WriteLine("[HEADLESS] MCS savestate diagnostic: coldboot immediate payload mismatch.");
+                foreach (string mismatch in DescribeMcsStateMismatches(snapshotMcs, snapshotColdbootImmediateMcs).Take(40))
+                    Console.Error.WriteLine($"[HEADLESS]   {mismatch}");
+            }
+
+            coldbootArcade.RunFrame();
+            ulong coldbootNextFrameHash = HashMcsFrameBuffer(coldbootArcade);
+            byte[] snapshotColdbootNextMcs;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                coldbootArcade.SaveState(writer);
+                writer.Flush();
+                snapshotColdbootNextMcs = ms.ToArray();
+            }
+            if (dumpMcsState)
+                DumpMcsStateValues(snapshotColdbootNextMcs, "coldboot-next", mcsStateDumpNames);
+
+            if (expectedNextFrameHash != coldbootNextFrameHash)
+            {
+                Console.Error.WriteLine($"[HEADLESS] MCS savestate diagnostic: coldboot next-frame framebuffer mismatch. expected=0x{expectedNextFrameHash:X16} actual=0x{coldbootNextFrameHash:X16}");
+                if (!snapshotExpectedNextMcs.SequenceEqual(snapshotColdbootNextMcs))
+                {
+                    Console.Error.WriteLine("[HEADLESS]   coldboot next-frame payload also diverged:");
+                    foreach (string mismatch in DescribeMcsStateMismatches(snapshotExpectedNextMcs, snapshotColdbootNextMcs).Take(60))
+                        Console.Error.WriteLine($"[HEADLESS]   {mismatch}");
+                }
+                else
+                {
+                    Console.Error.WriteLine("[HEADLESS]   coldboot next-frame payload matches; mismatch is confined to rendered/host video state.");
+                }
+            }
+
+            Console.WriteLine($"[HEADLESS] MCS savestate smoke ok. payload_bytes={snapshotMcs.Length} framebuffer_next=0x{actualNextFrameHash:X16} deterministic_match={matchMcs} coldboot_match={coldbootMatchMcs} coldboot_framebuffer_next=0x{coldbootNextFrameHash:X16}");
             return 0;
+        }
+
+        static int ReadPositiveIntEnv(string name, int fallback)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0
+                ? parsed
+                : fallback;
+        }
+
+        static int ReadNonNegativeIntEnv(string name, int fallback)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed >= 0
+                ? parsed
+                : fallback;
+        }
+
+        static ulong HashMcsFrameBuffer(McsArcadeAdapter arcade)
+        {
+            ReadOnlySpan<byte> frame = arcade.GetFrameBuffer(out int width, out int height, out int stride);
+            ulong hash = 14695981039346656037UL;
+            for (int y = 0; y < height; y++)
+            {
+                ReadOnlySpan<byte> row = frame.Slice(y * stride, width * 4);
+                for (int i = 0; i < row.Length; i++)
+                {
+                    hash ^= row[i];
+                    hash *= 1099511628211UL;
+                }
+            }
+
+            return hash;
+        }
+
+        static IEnumerable<string> DescribeMcsStateMismatches(byte[] before, byte[] after)
+        {
+            Dictionary<string, byte[]> beforeEntries = ReadMcsStateEntries(before);
+            Dictionary<string, byte[]> afterEntries = ReadMcsStateEntries(after);
+            foreach (string name in beforeEntries.Keys.Union(afterEntries.Keys).OrderBy(name => name, StringComparer.Ordinal))
+            {
+                if (!beforeEntries.TryGetValue(name, out byte[] beforePayload))
+                {
+                    yield return $"added {name}";
+                    continue;
+                }
+
+                if (!afterEntries.TryGetValue(name, out byte[] afterPayload))
+                {
+                    yield return $"missing {name}";
+                    continue;
+                }
+
+                if (!beforePayload.SequenceEqual(afterPayload))
+                    yield return $"changed {name} before={FormatStatePayload(beforePayload)} after={FormatStatePayload(afterPayload)}";
+            }
+        }
+
+        static void DumpMcsStateValues(byte[] state, string label, params string[] names)
+        {
+            Dictionary<string, byte[]> entries = ReadMcsStateEntries(state);
+            foreach (string name in names)
+            {
+                if (entries.TryGetValue(name, out byte[] payload))
+                    Console.Error.WriteLine($"[HEADLESS]   {label} {name}={FormatStatePayload(payload)}");
+                else
+                    Console.Error.WriteLine($"[HEADLESS]   {label} {name}=<missing>");
+            }
+        }
+
+        static void DumpMcsEntryKinds(byte[] state, string label)
+        {
+            Dictionary<string, byte[]> entries = ReadMcsStateEntries(state);
+            var counts = new SortedDictionary<char, int>();
+            foreach (byte[] payload in entries.Values)
+            {
+                char kind = payload.Length > 0 ? (char)payload[0] : '?';
+                counts[kind] = counts.TryGetValue(kind, out int count) ? count + 1 : 1;
+            }
+
+            Console.Error.WriteLine($"[HEADLESS] MCS state entry kinds ({label}): {string.Join(", ", counts.Select(pair => $"{pair.Key}={pair.Value}"))}");
+            foreach (var entry in entries.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                char kind = entry.Value.Length > 0 ? (char)entry.Value[0] : '?';
+                if (kind == 's' || kind == 'n' || entry.Key.StartsWith("memory:", StringComparison.Ordinal))
+                    Console.Error.WriteLine($"[HEADLESS]   non-ref {entry.Key}={FormatStatePayload(entry.Value)}");
+            }
+        }
+
+        static string FormatStatePayload(byte[] payload)
+        {
+            try
+            {
+                using var stream = new MemoryStream(payload, writable: false);
+                using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
+                byte kind = reader.ReadByte();
+                switch (kind)
+                {
+                    case (byte)'r':
+                    case (byte)'s':
+                        return $"{payload.Length}:{(char)kind}:{FormatMcsPrimitive(reader.ReadString(), reader)}";
+                    case (byte)'i':
+                        return $"{payload.Length}:i:{reader.ReadInt32()}";
+                    case (byte)'d':
+                        return $"{payload.Length}:d:{reader.ReadDouble().ToString(CultureInfo.InvariantCulture)}";
+                    case (byte)'a':
+                    case (byte)'l':
+                    {
+                        string typeName = reader.ReadString();
+                        if (kind == (byte)'a')
+                        {
+                            int rank = reader.ReadInt32();
+                            for (int axis = 0; axis < rank; axis++)
+                                _ = reader.ReadInt32();
+                        }
+
+                        int count = reader.ReadInt32();
+                        string first = count > 0 ? FormatMcsPrimitive(typeName, reader) : "empty";
+                        return $"{payload.Length}:{(char)kind}:{ShortTypeName(typeName)}[{count}] first={first}";
+                    }
+                    default:
+                        return $"{payload.Length}:{BitConverter.ToString(payload, 0, Math.Min(payload.Length, 16))}";
+                }
+            }
+            catch
+            {
+                return $"{payload.Length}:{BitConverter.ToString(payload, 0, Math.Min(payload.Length, 16))}";
+            }
+        }
+
+        static string FormatMcsPrimitive(string typeName, BinaryReader reader)
+        {
+            if (typeName.Contains("System.Boolean", StringComparison.Ordinal))
+                return reader.ReadBoolean() ? "true" : "false";
+            if (typeName.Contains("System.Byte", StringComparison.Ordinal))
+                return reader.ReadByte().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.SByte", StringComparison.Ordinal))
+                return reader.ReadSByte().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.Int16", StringComparison.Ordinal))
+                return reader.ReadInt16().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.UInt16", StringComparison.Ordinal))
+                return reader.ReadUInt16().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.Int32", StringComparison.Ordinal))
+                return reader.ReadInt32().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.UInt32", StringComparison.Ordinal))
+                return reader.ReadUInt32().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.Int64", StringComparison.Ordinal))
+                return reader.ReadInt64().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.UInt64", StringComparison.Ordinal))
+                return reader.ReadUInt64().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.Single", StringComparison.Ordinal))
+                return reader.ReadSingle().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("System.Double", StringComparison.Ordinal))
+                return reader.ReadDouble().ToString(CultureInfo.InvariantCulture);
+            if (typeName.Contains("mame.attotime", StringComparison.Ordinal))
+                return $"{reader.ReadInt32()}s/{reader.ReadInt64()}as";
+            return ShortTypeName(typeName);
+        }
+
+        static string ShortTypeName(string typeName)
+        {
+            int comma = typeName.IndexOf(',');
+            return comma >= 0 ? typeName[..comma] : typeName;
+        }
+
+        static Dictionary<string, byte[]> ReadMcsStateEntries(byte[] state)
+        {
+            using var stream = new MemoryStream(state, writable: false);
+            using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
+            _ = reader.ReadString(); // adapter magic
+            int adapterVersion = reader.ReadInt32();
+            _ = reader.ReadString(); // driver
+            if (adapterVersion >= 2)
+            {
+                int payloadLength = reader.ReadInt32();
+                if (payloadLength < 0 || payloadLength > stream.Length - stream.Position)
+                    throw new InvalidDataException("MCS savestate payload length is invalid.");
+                byte[] payload = reader.ReadBytes(payloadLength);
+                stream.Position -= payload.Length;
+            }
+            string magic = Encoding.ASCII.GetString(reader.ReadBytes(8));
+            if (magic != "MCSSTATE")
+                throw new InvalidDataException("MCS savestate payload magic mismatch.");
+            _ = reader.ReadInt32(); // MCS state version
+            int count = reader.ReadInt32();
+            var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            for (int i = 0; i < count; i++)
+            {
+                string name = reader.ReadString();
+                int length = reader.ReadInt32();
+                entries[name] = reader.ReadBytes(length);
+            }
+            return entries;
         }
 
         if (use32X)
@@ -2754,6 +3110,11 @@ class Program
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
+            bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
 
             if (useTmnt)
             {
@@ -2810,6 +3171,58 @@ class Program
                 Console.WriteLine($"[HEADLESS] TMNT final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={tmnt.FrameCounter ?? -1}");
                 Console.WriteLine($"[HEADLESS] TMNT final debug {tmnt.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_tmnt_state_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useMcsArcade)
+            {
+                Console.WriteLine("[HEADLESS] Using MCS arcade core");
+                using var arcade = new McsArcadeAdapter();
+                arcade.LoadRom(romPath);
+
+                int? slotOverrideMcs = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadMcs = TryLoadSavestatePayload(savestatePath, arcade.RomIdentity, slotOverrideMcs, out var mcsError);
+                if (payloadMcs == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {mcsError}");
+                    return 1;
+                }
+
+                using (var mcsStateStream = new MemoryStream(payloadMcs, writable: false))
+                using (var mcsStateReader = new BinaryReader(mcsStateStream))
+                    arcade.LoadState(mcsStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (MCS)");
+                ReadOnlySpan<byte> fbIn = arcade.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                Console.WriteLine($"[HEADLESS] MCS before fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16} frameCounter={arcade.FrameCounter ?? -1}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_mcs_state_before.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    arcade.RunFrame();
+                    ReadOnlySpan<byte> fb = arcade.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: mcs_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={arcade.FrameCounter ?? -1}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_mcs_state_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = arcade.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] MCS final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={arcade.FrameCounter ?? -1}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_mcs_state_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

@@ -278,6 +278,9 @@ MAIN:
 state_1:
             set_lic(CLEAR_LINE);
 
+            if (m_free_run)
+                goto FREERUN;
+
             // dispatch opcode
             switch (m_opcode)
             {
@@ -326,6 +329,8 @@ state_1:
                     goto NOP;
                 case 0x13:
                     goto SYNC;
+                case 0x14: case 0x15:
+                    goto FREERUN;
                 case 0x16:              set_cond(true); goto LBRANCH;
                 case 0x17:
                     goto LBSR;
@@ -619,7 +624,7 @@ state_1:
                 case 0xCA:              set_b();    set_imm();  goto OR8;
                 case 0xCB:              set_b();    set_imm();  goto ADD8;
                 case 0xCC:              set_d();   set_imm();  goto LD16;
-                case 0xCD:              set_d();   set_imm();  goto ST16;
+                case 0xCD:              goto FREERUN;
                 case 0xCE:              set_u();       set_imm();  goto LD16;
                 case 0xCF:              set_u();       set_imm();  goto ST16;
 
@@ -1450,6 +1455,10 @@ NOP:
                 ;
             }
 state_112:
+            return;
+
+FREERUN:
+            m_free_run = true;
             return;
 
 SYNC:

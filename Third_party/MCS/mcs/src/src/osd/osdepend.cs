@@ -34,6 +34,7 @@ namespace mame
     {
         // general overridables
         void init(running_machine machine);
+        void machine_update(running_machine machine);
         void update(bool skip_redraw);
         void input_update();
         void set_verbose(bool print_verbose);

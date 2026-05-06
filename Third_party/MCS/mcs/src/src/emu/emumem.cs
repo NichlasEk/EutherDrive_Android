@@ -3244,7 +3244,7 @@ namespace mame
         MemoryU8 allocate_memory(device_t dev, int spacenum, string name, u8 width, size_t bytes)
         {
             //void *const ptr = m_datablocks.emplace_back(malloc(bytes)).get();
-            MemoryU8 ptr = new MemoryU8((int)bytes);
+            MemoryU8 ptr = new MemoryU8((int)bytes, allocate: true);
             m_datablocks.emplace_back(ptr);
 
             std.memset(ptr, (u8)0);

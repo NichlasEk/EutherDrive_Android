@@ -223,6 +223,8 @@ namespace mame
         int m_addressing_mode;
         PAIR16 m_ea;               // effective address
         readonly bool m_profile_cpu = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_CPU_PROFILE") == "1";
+        static readonly int s_trace_postload_count = parse_trace_postload_count();
+        int m_trace_postload_remaining;
         long m_profile_last_ticks = Stopwatch.GetTimestamp();
         long m_profile_execute_ticks;
         long m_profile_instructions;
@@ -238,6 +240,7 @@ namespace mame
         // other state
         uint32_t m_state;
         bool m_cond;
+        bool m_free_run;
 
         // incidentals
         int m_clock_divider;
@@ -304,15 +307,26 @@ namespace mame
             // initialize variables
             m_cc = 0;
             m_pc.w = 0;
+            m_ppc.w = 0;
             m_s.w = 0;
             m_u.w = 0;
             m_q.q = 0;
             m_x.w = 0;
             m_y.w = 0;
             m_dp = 0;
+            m_temp.w = 0;
+            m_opcode = 0;
             m_reg = 0;
             m_reg8 = null;
             m_reg16 = null;
+            m_nmi_line = false;
+            m_nmi_asserted = false;
+            m_firq_line = false;
+            m_irq_line = false;
+            m_lds_encountered = false;
+            m_state = 0;
+            m_cond = false;
+            m_free_run = false;
 
             // setup regtable
             save_item(NAME(new { m_pc.w }));
@@ -336,6 +350,7 @@ namespace mame
             save_item(NAME(new { m_addressing_mode }));
             save_item(NAME(new { m_reg }));
             save_item(NAME(new { m_cond }));
+            save_item(NAME(new { m_free_run }));
 
             var save = machine().save();
             save.save_item_ref(this, name(), tag(), 0, "m_pc.w", () => m_pc.w, value => m_pc.w = value);
@@ -359,6 +374,7 @@ namespace mame
             save.save_item_ref(this, name(), tag(), 0, "m_addressing_mode", () => m_addressing_mode, value => m_addressing_mode = value);
             save.save_item_ref(this, name(), tag(), 0, "m_reg", () => m_reg, value => m_reg = value);
             save.save_item_ref(this, name(), tag(), 0, "m_cond", () => m_cond, value => m_cond = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_free_run", () => m_free_run, value => m_free_run = value);
 
             // set our instruction counter
             set_icountptr(m_icount);
@@ -373,6 +389,7 @@ namespace mame
             m_firq_line = false;
             m_irq_line = false;
             m_lds_encountered = false;
+            m_free_run = false;
 
             m_dp = 0x00;        // reset direct page register
 
@@ -388,7 +405,10 @@ namespace mame
 
 
         protected override void device_pre_save() { }
-        protected override void device_post_load() { }
+        protected override void device_post_load()
+        {
+            m_trace_postload_remaining = s_trace_postload_count;
+        }
 
         // device_execute_interface overrides
         protected virtual uint32_t device_execute_interface_execute_min_cycles() { return 1; }
@@ -620,7 +640,7 @@ namespace mame
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void set_u()                                      { m_addressing_mode = ADDRESSING_MODE_REGISTER_D; m_reg = 4; }
         void set_imm()                                    { m_addressing_mode = ADDRESSING_MODE_IMMEDIATE; }
-        void set_regop8(uint8_t reg)                      { if (reg == m_q.r.a) set_a(); else set_b(); m_addressing_mode = ADDRESSING_MODE_IMMEDIATE; }
+        void set_regop8(uint8_t reg)                      { if (reg == m_q.r.a) set_a(); else set_b(); }
         // set_regop16 is not used anymore - replaced by set_x/y/s/u/d in generated code
         //void set_regop16(PAIR16 reg, bool is_m_s = false) { }
         ref byte regop8()
@@ -764,11 +784,25 @@ namespace mame
 
         void execute_one()
         {
+            bool tracePostload = m_trace_postload_remaining > 0;
+            if (tracePostload)
+                Console.Error.WriteLine($"[M6809-POSTLOAD] {tag()} before pc={m_pc.w:X4} ppc={m_ppc.w:X4} state=0x{m_state:X8} op={m_opcode:X2} amode={m_addressing_mode} reg={m_reg} ea={m_ea.w:X4} s={m_s.w:X4} u={m_u.w:X4} x={m_x.w:X4} y={m_y.w:X4} q={m_q.q:X8} cc={m_cc:X2} icount={m_icount.i}");
             //switch (pop_state())
             //{
             //    #include "cpu/m6809/m6809.hxx"
             //}
             execute_one_switch();
+            if (tracePostload)
+            {
+                m_trace_postload_remaining--;
+                Console.Error.WriteLine($"[M6809-POSTLOAD] {tag()} after  pc={m_pc.w:X4} ppc={m_ppc.w:X4} state=0x{m_state:X8} op={m_opcode:X2} amode={m_addressing_mode} reg={m_reg} ea={m_ea.w:X4} s={m_s.w:X4} u={m_u.w:X4} x={m_x.w:X4} y={m_y.w:X4} q={m_q.q:X8} cc={m_cc:X2} icount={m_icount.i}");
+            }
+        }
+
+        static int parse_trace_postload_count()
+        {
+            string value = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_TRACE_M6809_POSTLOAD") ?? "";
+            return int.TryParse(value, out int parsed) && parsed > 0 ? parsed : 0;
         }
 
 

@@ -466,6 +466,8 @@ namespace mame
                 {
                     g_profiler.start(profile_type.PROFILER_EXTRA);
 
+                    osd().machine_update(this);
+
                     // execute CPUs if not paused
                     if (!m_paused)
                         m_scheduler.timeslice();

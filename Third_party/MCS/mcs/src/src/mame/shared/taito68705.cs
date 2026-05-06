@@ -123,6 +123,15 @@ namespace mame
             save_item(NAME(new { m_mcu_latch }));
             save_item(NAME(new { m_pa_output }));
             save_item(NAME(new { m_pb_output }));
+            var save = machine().save();
+            save.save_item_ref(this, name(), tag(), 0, "m_latch_driven", () => m_latch_driven, value => m_latch_driven = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_reset_input", () => m_reset_input, value => m_reset_input = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_host_flag", () => m_host_flag, value => m_host_flag = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_mcu_flag", () => m_mcu_flag, value => m_mcu_flag = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_host_latch", () => m_host_latch, value => m_host_latch = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_mcu_latch", () => m_mcu_latch, value => m_mcu_latch = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_pa_output", () => m_pa_output, value => m_pa_output = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_pb_output", () => m_pb_output, value => m_pb_output = value);
 
             m_latch_driven = false;
             m_reset_input = false;

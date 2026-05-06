@@ -5,6 +5,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Text;
 
 using s32 = System.Int32;
@@ -374,6 +375,8 @@ namespace mame
                 return array.Length;
             if (value is IList list)
                 return list.Count;
+            if (TryGetIndexedContainer(value, out _, out int count, out _, out _))
+                return count;
             return 1;
         }
 
@@ -436,6 +439,15 @@ namespace mame
                 for (int i = 0; i < list.Count; i++)
                     WritePrimitive(writer, elementType, list[i]);
             }
+            else if (TryGetIndexedContainer(value, out Type containerElementType, out int containerCount, out Func<int, object> containerGetter, out _)
+                && IsSupportedElementType(containerElementType))
+            {
+                writer.Write((byte)'l');
+                writer.Write(containerElementType.AssemblyQualifiedName ?? containerElementType.FullName ?? "");
+                writer.Write(containerCount);
+                for (int i = 0; i < containerCount; i++)
+                    WritePrimitive(writer, containerElementType, containerGetter(i));
+            }
             else if (IsSupportedElementType(value?.GetType()))
             {
                 Type type = value.GetType();
@@ -487,6 +499,21 @@ namespace mame
                         list[i] = item;
                 }
             }
+            else if (kind == (byte)'l' && TryGetIndexedContainer(value, out _, out int containerCount, out _, out Action<int, object> containerSetter))
+            {
+                Type elementType = ResolveType(reader.ReadString());
+                int count = reader.ReadInt32();
+                if (containerCount != count && TryResizeIndexedContainer(value, count))
+                    TryGetIndexedContainer(value, out _, out containerCount, out _, out containerSetter);
+
+                int targetCount = Math.Min(count, containerCount);
+                for (int i = 0; i < count; i++)
+                {
+                    object item = ReadPrimitive(reader, elementType);
+                    if (i < targetCount)
+                        containerSetter(i, item);
+                }
+            }
             else if (kind == (byte)'a' && value is Array array)
             {
                 Type elementType = ResolveType(reader.ReadString());
@@ -510,6 +537,43 @@ namespace mame
                 // Boxed value types registered through the C# NAME shim are copies, not references.
                 // Drivers must use reference/delegate registration for scalar state that needs restore.
             }
+        }
+
+        static bool TryGetIndexedContainer(
+            object value,
+            out Type elementType,
+            out int count,
+            out Func<int, object> getter,
+            out Action<int, object> setter)
+        {
+            elementType = UnwrapContainerElementType(value);
+            count = 0;
+            getter = null;
+            setter = null;
+
+            if (value == null || elementType == null)
+                return false;
+
+            Type type = value.GetType();
+            PropertyInfo countProperty = type.GetProperty("Count", BindingFlags.Instance | BindingFlags.Public);
+            PropertyInfo indexer = type.GetProperty("Item", BindingFlags.Instance | BindingFlags.Public, null, elementType, new[] { typeof(int) }, null);
+            if (countProperty == null || indexer == null || !indexer.CanRead || !indexer.CanWrite)
+                return false;
+
+            count = (int)countProperty.GetValue(value, null);
+            getter = index => indexer.GetValue(value, new object[] { index });
+            setter = (index, item) => indexer.SetValue(value, item, new object[] { index });
+            return true;
+        }
+
+        static bool TryResizeIndexedContainer(object value, int count)
+        {
+            MethodInfo resize = value?.GetType().GetMethod("Resize", BindingFlags.Instance | BindingFlags.Public, null, new[] { typeof(int) }, null);
+            if (resize == null)
+                return false;
+
+            resize.Invoke(value, new object[] { count });
+            return true;
         }
 
         static bool IsSupportedElementType(Type type)

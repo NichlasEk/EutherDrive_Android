@@ -439,6 +439,15 @@ namespace mame
             save_item(NAME(new { m_pending_interrupts }));
             save_item(NAME(new { m_irq_state }));
             save_item(NAME(new { m_nmi_state }));
+            var save = machine().save();
+            save.save_item_ref(this, name(), tag(), 0, "EA", () => EA, value => EA = value);
+            save.save_item_ref(this, name(), tag(), 0, "A", () => A, value => A = value);
+            save.save_item_ref(this, name(), tag(), 0, "PC", () => PC, value => PC = value);
+            save.save_item_ref(this, name(), tag(), 0, "S", () => S, value => S = value);
+            save.save_item_ref(this, name(), tag(), 0, "X", () => X, value => X = value);
+            save.save_item_ref(this, name(), tag(), 0, "CC", () => CC, value => CC = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_pending_interrupts", () => m_pending_interrupts, value => m_pending_interrupts = value);
+            save.save_item_ref(this, name(), tag(), 0, "m_nmi_state", () => m_nmi_state, value => m_nmi_state = value);
 
             std.fill(m_irq_state, CLEAR_LINE);
         }

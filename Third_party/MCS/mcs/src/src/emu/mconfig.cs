@@ -338,12 +338,24 @@ namespace mame
         //{
         //    set_perfect_quantum(current_device(), std::forward<T>(tag));
         //}
+        public void set_perfect_quantum(string tag)
+        {
+            set_perfect_quantum(current_device(), tag);
+        }
+
         //template <class DeviceClass, bool Required>
         //void set_perfect_quantum(device_finder<DeviceClass, Required> const &finder)
         //{
         //    std::pair<device_t &, char const *> const target(finder.finder_target());
         //    set_perfect_quantum(target.first, target.second);
         //}
+        public void set_perfect_quantum<DeviceClass, bool_Required>(device_finder<DeviceClass, bool_Required> finder)
+            where bool_Required : bool_const, new()
+        {
+            std.pair<device_t, string> target = finder.finder_target();
+            set_perfect_quantum(target.first, target.second);
+        }
+
         //template <class DeviceClass, bool Required>
         //void set_perfect_quantum(device_finder<DeviceClass, Required> &finder)
         //{
@@ -610,6 +622,9 @@ namespace mame
         }
 
 
-        //void set_perfect_quantum(device_t &device, std::string tag);
+        public void set_perfect_quantum(device_t device, string tag)
+        {
+            m_perfect_quantum_device = std.make_pair(string.IsNullOrEmpty(tag) ? null : device, tag ?? "");
+        }
     }
 }

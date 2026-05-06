@@ -46,6 +46,7 @@ namespace mame
         public attotime m_period;       // the repeat frequency of the timer
         attotime m_start;        // time when the timer was started
         public attotime m_expire;       // time when the timer will expire
+        public u32 m_index;        // insertion order for save-state restore
 
 
         // construction/destruction
@@ -66,6 +67,7 @@ namespace mame
             m_period = attotime.zero;
             m_start = attotime.zero;
             m_expire = attotime.never;
+            m_index = 0;
         }
 
 
@@ -224,6 +226,7 @@ namespace mame
             manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_period", () => m_period, value => m_period = value);
             manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_start", () => m_start, value => m_start = value);
             manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_expire", () => m_expire, value => m_expire = value);
+            manager.save_item_ref(null, "timer", "scheduler", m_save_index, "m_index", () => m_index, value => m_index = value);
         }
 
         //-------------------------------------------------
@@ -411,7 +414,17 @@ namespace mame
         public emu_timer first_timer() { return m_timer_list; }
         public u32 allocate_timer_save_index() { return m_timer_save_index++; }
         public device_execute_interface currently_executing() { return m_executing_device; }
-        //bool can_save() const;
+        public bool can_save()
+        {
+            for (emu_timer timer = m_timer_list; timer != null; timer = timer.m_next)
+            {
+                if (timer.m_temporary && !timer.expire().is_never())
+                    return false;
+            }
+
+            return true;
+        }
+
         public emu_timer callback_timer() { return m_callback_timer; }
         public bool callback_timer_modified() { return m_callback_timer_modified; }
 
@@ -731,6 +744,9 @@ namespace mame
         {
             // report the timer state after a log
             LOG("Prior to saving state:\n");
+            u32 index = 0;
+            for (emu_timer timer = m_timer_list; timer != null; timer = timer.m_next)
+                timer.m_index = index++;
 #if VERBOSE
             dump_timers();
 #endif
@@ -781,7 +797,7 @@ namespace mame
             {
                 emu_timer timer = private_list;
                 private_list = timer.m_next;
-                timer_list_insert(timer);
+                timer_list_insert(timer, true);
             }
 
             m_suspend_changes_pending = true;
@@ -940,7 +956,7 @@ namespace mame
         //  timer_list_insert - insert a new timer into
         //  the list at the appropriate location
         //-------------------------------------------------
-        public emu_timer timer_list_insert(emu_timer timer)
+        public emu_timer timer_list_insert(emu_timer timer, bool checkIndex = false)
         {
             // disabled timers never expire
             if (!timer.m_expire.is_never() && timer.m_enabled)
@@ -950,7 +966,8 @@ namespace mame
                 for (emu_timer curtimer = m_timer_list; curtimer != null; prevtimer = curtimer, curtimer = curtimer.m_next)
                 {
                     // if the current list entry expires after us, we should be inserted before it
-                    if (curtimer.m_expire > timer.m_expire)
+                    if (curtimer.m_expire > timer.m_expire
+                        || (checkIndex && !(curtimer.m_expire < timer.m_expire) && curtimer.m_index > timer.m_index))
                     {
                         // link the new guy in before the current list entry
                         timer.m_prev = prevtimer;

@@ -942,7 +942,11 @@ namespace mame
         //  postload - after loading a save state
         //  invalidate everything
         //-------------------------------------------------
-        void postload() { mappings_update(); }
+        void postload()
+        {
+            mappings_update();
+            mark_all_dirty();
+        }
 
 
         //-------------------------------------------------

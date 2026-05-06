@@ -487,6 +487,10 @@ namespace mame
             foreach (var x in m_movie_recordings)
                 x.set_next_frame_time(emutime);
 
+            m_output_changed = true;
+            m_empty_skip_count = 0;
+            m_skipping_this_frame = false;
+
             // reset speed measurements
             m_speed_last_realtime = m_osdcore.osd_ticks();
             m_speed_last_emutime = emutime;

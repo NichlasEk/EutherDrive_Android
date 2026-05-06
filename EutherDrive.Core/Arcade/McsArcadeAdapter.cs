@@ -13,7 +13,7 @@ namespace EutherDrive.Core.Arcade;
 public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDisposable
 {
     private const string SavestateMagic = "MCSARC";
-    private const int SavestateVersion = 1;
+    private const int SavestateVersion = 2;
     private const int PlaceholderWidth = 256;
     private const int PlaceholderHeight = 224;
     private const int PlaceholderStride = PlaceholderWidth * 4;
@@ -205,7 +205,23 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         writer.Write(SavestateMagic);
         writer.Write(SavestateVersion);
         writer.Write(_driverName ?? "");
-        runtime.SaveState(writer);
+
+        using var payloadStream = new MemoryStream();
+        using (var payloadWriter = new BinaryWriter(payloadStream, System.Text.Encoding.UTF8, leaveOpen: true))
+            runtime.SaveState(payloadWriter);
+        byte[] mcsPayload = payloadStream.ToArray();
+        writer.Write(mcsPayload.Length);
+        writer.Write(mcsPayload);
+
+        lock (_sync)
+        {
+            int frameLength = Math.Min(_frameBuffer.Length, _frameHeight * _frameStride);
+            writer.Write(_frameWidth);
+            writer.Write(_frameHeight);
+            writer.Write(_frameStride);
+            writer.Write(frameLength);
+            writer.Write(_frameBuffer, 0, frameLength);
+        }
     }
 
     public void LoadState(BinaryReader reader)
@@ -215,7 +231,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             throw new InvalidDataException("MCS savestate magic mismatch.");
 
         int version = reader.ReadInt32();
-        if (version != SavestateVersion)
+        if (version != 1 && version != SavestateVersion)
             throw new InvalidDataException($"MCS savestate version mismatch: {version}.");
 
         string driverName = reader.ReadString();
@@ -226,14 +242,55 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         if (string.IsNullOrWhiteSpace(romDirectory))
             throw new InvalidOperationException("MCS ROM is not loaded.");
 
-        using var payloadStream = new MemoryStream();
-        reader.BaseStream.CopyTo(payloadStream);
-        byte[] payload = payloadStream.ToArray();
+        byte[] payload;
+        byte[]? frameBuffer = null;
+        int frameWidth = 0;
+        int frameHeight = 0;
+        int frameStride = 0;
+
+        if (version == 1)
+        {
+            using var payloadStream = new MemoryStream();
+            reader.BaseStream.CopyTo(payloadStream);
+            payload = payloadStream.ToArray();
+        }
+        else
+        {
+            int payloadLength = reader.ReadInt32();
+            if (payloadLength < 0)
+                throw new InvalidDataException("MCS savestate payload length is invalid.");
+            payload = reader.ReadBytes(payloadLength);
+            if (payload.Length != payloadLength)
+                throw new EndOfStreamException("MCS savestate payload is truncated.");
+
+            frameWidth = reader.ReadInt32();
+            frameHeight = reader.ReadInt32();
+            frameStride = reader.ReadInt32();
+            int frameLength = reader.ReadInt32();
+            if (frameWidth <= 0 || frameHeight <= 0 || frameStride <= 0 || frameLength < 0 || frameLength > frameHeight * frameStride)
+                throw new InvalidDataException("MCS savestate framebuffer metadata is invalid.");
+            frameBuffer = reader.ReadBytes(frameLength);
+            if (frameBuffer.Length != frameLength)
+                throw new EndOfStreamException("MCS savestate framebuffer is truncated.");
+        }
 
         McsRuntime runtime = _runtime ?? throw new InvalidOperationException("MCS runtime is not running.");
         using var stateStream = new MemoryStream(payload, writable: false);
         using var stateReader = new BinaryReader(stateStream, System.Text.Encoding.UTF8, leaveOpen: false);
         runtime.LoadState(stateReader);
+
+        if (frameBuffer != null)
+        {
+            lock (_sync)
+            {
+                _frameWidth = frameWidth;
+                _frameHeight = frameHeight;
+                _frameStride = frameStride;
+                if (_frameBuffer.Length != frameBuffer.Length)
+                    _frameBuffer = new byte[frameBuffer.Length];
+                Buffer.BlockCopy(frameBuffer, 0, _frameBuffer, 0, frameBuffer.Length);
+            }
+        }
     }
 
     public void RunFrame()
@@ -450,9 +507,13 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private readonly object _frameSync = new();
         private readonly ManualResetEventSlim _stopped = new(false);
         private readonly object _stateRequestSync = new();
+        private readonly object _frameGateSync = new();
+        private readonly ManualResetEventSlim _frameGateChanged = new(false);
         private readonly McsOsd _osd;
         private readonly Thread _thread;
         private StateRequest? _pendingStateRequest;
+        private int _frameAdvancePermits;
+        private bool _shutdownFrameGate;
         private volatile Exception? _fault;
         private long _profileLastTicks = Stopwatch.GetTimestamp();
         private long _profileFrames;
@@ -497,27 +558,27 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         public void Dispose()
         {
             _osd.ScheduleExit();
+            ReleaseFrameGateForShutdown();
             TimeSpan timeout = TimeSpan.FromSeconds(10);
-            if (!_stopped.Wait(timeout))
+            bool stopped = _stopped.Wait(timeout);
+            if (!stopped)
             {
                 var timeoutException = new TimeoutException($"MCS driver '{_driverName}' did not stop within {timeout.TotalSeconds:0} seconds.");
                 _fault ??= timeoutException;
                 Console.Error.WriteLine($"[MCS] {timeoutException.Message}");
-                throw timeoutException;
+                return;
             }
 
             _firstFrame.Dispose();
             _frameReady.Dispose();
             _stopped.Dispose();
+            _frameGateChanged.Dispose();
         }
 
         public void MarkFrameReady()
         {
             lock (_frameSync)
                 PublishedFrames++;
-
-            _firstFrame.Set();
-            _frameReady.Set();
         }
 
         public long PublishedFrames { get; private set; }
@@ -528,6 +589,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             long start;
             lock (_frameSync)
                 start = PublishedFrames;
+
+            RequestFrameAdvance();
 
             if (start == 0 || _stopped.IsSet)
             {
@@ -607,6 +670,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _pendingStateRequest = request;
             }
 
+            _frameGateChanged.Set();
+
             while (!request.Done.Wait(TimeSpan.FromMilliseconds(50)))
             {
                 if (_stopped.IsSet)
@@ -620,8 +685,27 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 throw new InvalidOperationException("MCS savestate operation failed.", request.Error);
         }
 
-        public void ProcessPendingStateRequest(mame.running_machine machine)
+        public void ProcessMachineUpdate(mame.running_machine machine)
         {
+            StateRequest? request = ProcessOneStateRequest(machine);
+            if (request != null)
+            {
+                ClearFrameAdvancePermits();
+                request.Done.Set();
+                WaitForFrameAdvance(machine, processStateRequests: true);
+            }
+        }
+
+        public void ProcessFrameBoundaryStateRequest(mame.running_machine machine)
+        {
+            WaitForFrameAdvance(machine, processStateRequests: false);
+        }
+
+        private StateRequest? ProcessOneStateRequest(mame.running_machine machine)
+        {
+            if (!machine.scheduler().can_save())
+                return null;
+
             StateRequest? request;
             lock (_stateRequestSync)
             {
@@ -630,7 +714,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             }
 
             if (request == null)
-                return;
+                return null;
 
             try
             {
@@ -639,11 +723,88 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             catch (Exception ex)
             {
                 request.Error = ex;
-            }
-            finally
-            {
                 request.Done.Set();
             }
+
+            return request;
+        }
+
+        private bool HasPendingStateRequest()
+        {
+            lock (_stateRequestSync)
+                return _pendingStateRequest != null;
+        }
+
+        private void RequestFrameAdvance()
+        {
+            lock (_frameGateSync)
+            {
+                _frameAdvancePermits++;
+                _frameGateChanged.Set();
+            }
+        }
+
+        private void ReleaseFrameGateForShutdown()
+        {
+            lock (_frameGateSync)
+            {
+                _shutdownFrameGate = true;
+                _frameGateChanged.Set();
+            }
+        }
+
+        private void ClearFrameAdvancePermits()
+        {
+            lock (_frameGateSync)
+            {
+                _frameAdvancePermits = 0;
+                _frameGateChanged.Reset();
+            }
+        }
+
+        private void WaitForFrameAdvance(mame.running_machine machine, bool processStateRequests)
+        {
+            while (!_stopped.IsSet)
+            {
+                if (processStateRequests)
+                {
+                    StateRequest? request = ProcessOneStateRequest(machine);
+                    if (request != null)
+                    {
+                        ClearFrameAdvancePermits();
+                        request.Done.Set();
+                        continue;
+                    }
+                }
+
+                bool hasPendingStateRequest = HasPendingStateRequest();
+
+                lock (_frameGateSync)
+                {
+                    if (_shutdownFrameGate)
+                        return;
+
+                    if (!processStateRequests && hasPendingStateRequest)
+                        return;
+
+                    if (_frameAdvancePermits > 0)
+                    {
+                        _frameAdvancePermits--;
+                        if (_frameAdvancePermits == 0)
+                            _frameGateChanged.Reset();
+                        return;
+                    }
+                }
+
+                SignalFrameParked();
+                _frameGateChanged.Wait(TimeSpan.FromMilliseconds(10));
+            }
+        }
+
+        private void SignalFrameParked()
+        {
+            _firstFrame.Set();
+            _frameReady.Set();
         }
 
         private static mame.running_machine CurrentMachine()
@@ -1109,13 +1270,21 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             _target.set_screen_overlay_enabled(false);
         }
 
+        public void machine_update(mame.running_machine machine)
+        {
+            _runtime.ProcessMachineUpdate(machine);
+        }
+
         public void update(bool skipRedraw)
         {
-            if (_machine != null)
-                _runtime.ProcessPendingStateRequest(_machine);
+            if (_machine == null)
+                return;
 
             if (skipRedraw || _target == null)
+            {
+                CompleteFrameBoundary(_machine);
                 return;
+            }
 
             long updateStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
             long drawTicks = 0;
@@ -1124,7 +1293,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             {
                 _target.compute_minimum_size(out int width, out int height);
                 if (width <= 0 || height <= 0)
+                {
+                    CompleteFrameBoundary(_machine);
                     return;
+                }
 
                 _target.set_bounds(width, height);
                 if (_bitmap.width() != width || _bitmap.height() != height)
@@ -1151,6 +1323,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 if (TraceMcsProfile)
                     publishTicks = Stopwatch.GetTimestamp() - publishStart;
                 _runtime.MarkFrameReady();
+                _runtime.ProcessFrameBoundaryStateRequest(_machine);
             }
             catch (Exception ex)
             {
@@ -1162,6 +1335,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 if (TraceMcsProfile)
                     _runtime.AddProfileFrame(Stopwatch.GetTimestamp() - updateStart, drawTicks, publishTicks);
             }
+        }
+
+        private void CompleteFrameBoundary(mame.running_machine machine)
+        {
+            _runtime.MarkFrameReady();
+            _runtime.ProcessFrameBoundaryStateRequest(machine);
         }
 
         private bool TryDrawDirectPalette16(mame.render_primitive_list primitives, int width, int height)

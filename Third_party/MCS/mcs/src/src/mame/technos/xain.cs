@@ -211,6 +211,9 @@ namespace mame
             m_bg_tilemap_0.set_scrolly(0, (int)(m_scrolly_0_0 | (m_scrolly_0_1 << 8)));
             m_bg_tilemap_1.set_scrollx(0, (int)(m_scrollx_1_0 | (m_scrollx_1_1 << 8)));
             m_bg_tilemap_1.set_scrolly(0, (int)(m_scrolly_1_0 | (m_scrolly_1_1 << 8)));
+            m_char_tilemap.mark_all_dirty();
+            m_bg_tilemap_0.mark_all_dirty();
+            m_bg_tilemap_1.mark_all_dirty();
         }
 
 
@@ -469,6 +472,8 @@ namespace mame
             ym2.add_route(1, "mono", 0.50f);
             ym2.add_route(2, "mono", 0.50f);
             ym2.add_route(3, "mono", 0.40f);
+
+            config.set_perfect_quantum(m_maincpu);
         }
 
 

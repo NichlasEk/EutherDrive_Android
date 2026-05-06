@@ -609,6 +609,11 @@ namespace mame
         //-------------------------------------------------
         //  update - periodic system update
         //-------------------------------------------------
+        public virtual void machine_update(running_machine machine)
+        {
+        }
+
+
         public virtual void update(bool skip_redraw)
         {
             //

@@ -1403,6 +1403,21 @@ namespace mame
             save_item(NAME(new { m_vblank_start_time }));
             save_item(NAME(new { m_vblank_end_time }));
             save_item(NAME(new { m_frame_number }));
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_width", () => m_width, value => m_width = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_height", () => m_height, value => m_height = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_visarea.min_x", () => m_visarea.min_x, value => m_visarea.min_x = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_visarea.min_y", () => m_visarea.min_y, value => m_visarea.min_y = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_visarea.max_x", () => m_visarea.max_x, value => m_visarea.max_x = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_visarea.max_y", () => m_visarea.max_y, value => m_visarea.max_y = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_last_partial_scan", () => m_last_partial_scan, value => m_last_partial_scan = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_frame_period", () => m_frame_period, value => m_frame_period = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_brightness", () => m_brightness, value => m_brightness = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_scantime", () => m_scantime, value => m_scantime = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_pixeltime", () => m_pixeltime, value => m_pixeltime = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_vblank_period", () => m_vblank_period, value => m_vblank_period = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_vblank_start_time", () => m_vblank_start_time, value => m_vblank_start_time = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_vblank_end_time", () => m_vblank_end_time, value => m_vblank_end_time = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_frame_number", () => m_frame_number, value => m_frame_number = value);
             if (m_oldstyle_vblank_supplied)
                 logerror("{0}: Deprecated legacy Old Style screen configured (MCFG_SCREEN_VBLANK_TIME), please use MCFG_SCREEN_RAW_PARAMS instead.\n", tag());
 
@@ -1439,6 +1454,7 @@ namespace mame
         protected override void device_post_load()
         {
             realloc_screen_bitmaps();
+            m_changed = true;
         }
 
 

@@ -276,6 +276,8 @@ namespace mame
             // save generic states
             save_item(NAME(new { m_flip_screen_x }));
             save_item(NAME(new { m_flip_screen_y }));
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_flip_screen_x", () => m_flip_screen_x, value => m_flip_screen_x = value);
+            machine().save().save_item_ref(this, name(), tag(), 0, "m_flip_screen_y", () => m_flip_screen_y, value => m_flip_screen_y = value);
         }
 
         //-------------------------------------------------
