@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using SharpCompress.Archives;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Cpu.M68000Emu;
@@ -20,10 +21,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     private const string SavestateMagic = "KONAMITMNT";
     private const string SavestateExtendedMagic = "KONAMITMNTE";
     private const int SavestateVersion = 1;
-    private const int SavestateExtendedVersion = 3;
+    private const int SavestateExtendedVersion = 4;
     private const int FrameWidth = 320;
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
+    private const int MysticVisibleOriginX = 24;
+    private const int MysticVisibleOriginY = 16;
+    private const int MysticVisibleWidth = 288;
     private const int Tmnt2RawFrameHeight = 240;
     private const int Tmnt2VisibleStartY = 16;
     private const double TargetFps = 24_000_000.0 / 4.0 / 384.0 / 264.0;
@@ -173,6 +177,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         writer.Write(SavestateExtendedMagic);
         writer.Write(SavestateExtendedVersion);
         _sound.SaveExtendedState(writer);
+        _bus.SaveExtendedState(writer);
     }
 
     public void LoadState(BinaryReader reader)
@@ -221,7 +226,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
             int version = reader.ReadInt32();
             if (version is >= 1 and <= SavestateExtendedVersion)
+            {
                 _sound.LoadExtendedState(reader, version);
+                if (version >= 4)
+                    _bus.LoadExtendedState(reader);
+            }
         }
         catch (EndOfStreamException)
         {
@@ -234,7 +243,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         lock (_frameSync)
         {
             Buffer.BlockCopy(_presentFrameBuffer, 0, _snapshotFrameBuffer, 0, _presentFrameBuffer.Length);
-            width = FrameWidth;
+            width = _loadedVariant == TmntHardwareVariant.Mystwarr ? MysticVisibleWidth : FrameWidth;
             height = FrameHeight;
             stride = FrameStride;
             return _snapshotFrameBuffer;
@@ -300,6 +309,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         bool Button3,
         bool Start,
         bool Coin);
+
+    private readonly record struct MystwarrRenderItem(uint Order, int Layer, int SpriteOffset, int DrawMode, int ShadowMode);
 
     private enum TmntHardwareVariant
     {
@@ -373,6 +384,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _sound = sound;
             _variant = loadedVariant;
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
+            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr;
         }
 
         public void Load(TmntRomSet roms)
@@ -499,7 +511,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             bool drawLayer2 = renderMask == "all" || renderMask.Contains('2', StringComparison.Ordinal);
             bool drawSprites = renderMask == "all" || renderMask.Contains('s', StringComparison.OrdinalIgnoreCase);
 
-            Array.Fill(frameBuffer, (byte)0);
+            _k054338.FillSolidBackground(frameBuffer);
             if (drawLayer2 && _k052109.LayerHasContent(2))
                 _k052109.RenderLayer(frameBuffer, _palette, 2, opaque: true, paletteMask: 0x3ff);
             if (drawSprites && (_priority & 1) != 0)
@@ -772,6 +784,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + _k052109.DebugSummary()
                + $" k055555={_k055555.DebugSummary()} k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053252={_k053252.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
 
+        public void SaveExtendedState(BinaryWriter writer)
+        {
+            StateBinarySerializer.WriteInto(writer, _k054338);
+            StateBinarySerializer.WriteInto(writer, _k053252);
+        }
+
+        public void LoadExtendedState(BinaryReader reader)
+        {
+            StateBinarySerializer.ReadInto(reader, _k054338);
+            StateBinarySerializer.ReadInto(reader, _k053252);
+        }
+
         private string PaletteDebugSummary()
         {
             int nonZero = 0;
@@ -848,32 +872,70 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k056832.LayerColorBase[3] = _k055555.GetPaletteIndex(3) << 4;
             _k053245.SpriteColorBase = _k055555.GetPaletteIndex(4) << 5;
 
-            Array.Fill(frameBuffer, (byte)0);
+            _k054338.FillSolidBackground(frameBuffer);
             if (inputEnables == 0)
                 return;
             _k053245.BufferSprites();
 
-            Span<MystwarrRenderItem> items = stackalloc MystwarrRenderItem[12];
+            Span<MystwarrRenderItem> items = stackalloc MystwarrRenderItem[520];
             int count = 0;
-            if (drawLayer0 && (inputEnables & K055555.InputVramA) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp0), 0, -1);
-            if (drawLayer1 && (inputEnables & K055555.InputVramB) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp3), 1, -1);
-            if (drawLayer2 && (inputEnables & K055555.InputVramC) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp6), 2, -1);
-            if (drawLayer3 && (inputEnables & K055555.InputVramD) != 0) items[count++] = new MystwarrRenderItem(_k055555.ReadRegister(K055555.PriInp7), 3, -1);
+            if (drawLayer0 && (inputEnables & K055555.InputVramA) != 0) items[count++] = LayerRenderItem(_k055555.ReadRegister(K055555.PriInp0), 0);
+            if (drawLayer1 && (inputEnables & K055555.InputVramB) != 0) items[count++] = LayerRenderItem(_k055555.ReadRegister(K055555.PriInp3), 1);
+            if (drawLayer2 && (inputEnables & K055555.InputVramC) != 0) items[count++] = LayerRenderItem(_k055555.ReadRegister(K055555.PriInp6), 2);
+            if (drawLayer3 && (inputEnables & K055555.InputVramD) != 0) items[count++] = LayerRenderItem(_k055555.ReadRegister(K055555.PriInp7), 3);
             if (drawSprites && (inputEnables & K055555.InputObj) != 0)
-            {
-                for (int priority = 0; priority <= 0xe0; priority += 0x20)
-                    items[count++] = new MystwarrRenderItem(priority, -1, priority);
-            }
+                count = _k053245.AppendMystwarrSpriteRenderItems(items, count, _k055555, _k054338);
 
+            ReverseMystwarrRenderItems(items[..count]);
             SortMystwarrRenderItems(items[..count]);
+            Span<int> mixAlphas = stackalloc int[4];
+            int frameTileMixCode = _k056832.LastAlphaTileMixCode;
+            _k053245.BeginMystwarrObjectFrame();
             for (int i = 0; i < count; i++)
             {
                 MystwarrRenderItem item = items[i];
                 if (item.Layer >= 0)
-                    _k056832.RenderLayer(frameBuffer, _palette, item.Layer, opaque: false);
+                {
+                    bool splitMixCategory = BuildMystwarrLayerMixAlphas(item.Layer, frameTileMixCode, mixAlphas);
+                    int brightness = MystwarrLayerBrightness(item.Layer);
+                    if (splitMixCategory)
+                    {
+                        _k056832.RenderLayer(frameBuffer, _palette, item.Layer, opaque: false, mixAlphas, K056832.TileCategoryMixed, brightness);
+                        _k056832.RenderLayer(frameBuffer, _palette, item.Layer, opaque: false, mixAlphas, K056832.TileCategoryNormal, brightness);
+                    }
+                    else
+                    {
+                        _k056832.RenderLayer(frameBuffer, _palette, item.Layer, opaque: false, mixAlphas, K056832.TileCategoryAll, brightness);
+                    }
+                }
                 else
-                    _k053245.RenderMystwarrPriority(frameBuffer, _palette, item.SpritePriority);
+                    _k053245.RenderMystwarrObject(frameBuffer, _palette, item.SpriteOffset, item.DrawMode, item.ShadowMode, (int)((item.Order >> 16) & 0xff), _k054338);
             }
+            _k053245.FinishMystwarrRenderFrameStats();
+        }
+
+        private bool BuildMystwarrLayerMixAlphas(int layer, int frameTileMixCode, Span<int> mixAlphas)
+        {
+            int shift = (layer & 3) << 1;
+            int internalMix = ((_k055555.ReadRegister(K055555.BlendEnables) >> shift) & 3)
+                & ((_k055555.ReadRegister(K055555.VInMixOn) >> shift) & 3);
+            int internalAlpha = _k054338.TilemapAlphaLevel(internalMix);
+            mixAlphas[0] = internalAlpha;
+
+            int internalMask = (_k055555.ReadRegister(K055555.VInMixOn) >> shift) & 3;
+            int externalMix = frameTileMixCode & ~internalMask;
+            int externalAlpha = _k054338.TilemapAlphaLevel(externalMix);
+            int mixedAlpha = externalAlpha < 255 ? externalAlpha : internalAlpha;
+            for (int mixCode = 1; mixCode < mixAlphas.Length; mixCode++)
+                mixAlphas[mixCode] = mixedAlpha;
+
+            return externalAlpha < 255;
+        }
+
+        private int MystwarrLayerBrightness(int layer)
+        {
+            int mode = (_k055555.ReadRegister(K055555.VramBrightness) >> ((layer & 3) << 1)) & 3;
+            return _k054338.BrightnessLevel(mode);
         }
 
         private byte[] EnsureTmnt2RawFrameBuffer()
@@ -1067,7 +1129,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             if (address >= 0x484000 && address <= 0x484006)
             {
-                _k053245.WriteControlWordNoA1((int)((address - 0x484000) >> 1), value);
+                _k053245.WriteControlWordNoA1((int)(address - 0x484000), value);
                 return;
             }
             if (address >= 0x48a000 && address <= 0x48a01e)
@@ -1180,7 +1242,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return _tmnt2ProtRam[(address - 0x1c0800) >> 1];
             }
             if (address >= 0x5a0000 && address <= 0x5a001e)
-                return _k053245.ReadControlWordNoA1((int)((address - 0x5a0000) >> 1));
+                return _k053245.ReadControlWordNoA1((int)(address - 0x5a0000));
             if (address >= 0x5c0600 && address <= 0x5c0603)
                 return (ushort)(0xff00 | (_sound?.K053260MainRead((int)((address - 0x5c0600) >> 1)) ?? 0xff));
             if (address >= 0x600000 && address <= 0x603ffe)
@@ -1221,8 +1283,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             if (address >= 0x5a0000 && address <= 0x5a001f)
             {
-                int offset = (int)((address - 0x5a0000) >> 1) & ~1;
-                _k053245.WriteControl(offset + ((address & 1) == 0 ? 0 : 1), value);
+                _k053245.WriteControl((int)(address - 0x5a0000), value);
                 return;
             }
             if (address >= 0x5c0600 && address <= 0x5c0603)
@@ -1299,7 +1360,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             if (address >= 0x5a0000 && address <= 0x5a001e)
             {
-                _k053245.WriteControlWordNoA1((int)((address - 0x5a0000) >> 1), value);
+                _k053245.WriteControlWordNoA1((int)(address - 0x5a0000), value);
                 return;
             }
             if (address >= 0x5c0600 && address <= 0x5c0603)
@@ -1576,7 +1637,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             (layer[a], layer[b]) = (layer[b], layer[a]);
         }
 
-        private readonly record struct MystwarrRenderItem(int Priority, int Layer, int SpritePriority);
+        private static MystwarrRenderItem LayerRenderItem(int priority, int layer)
+            => new(((uint)(priority & 0xff) << 24), layer, -1, 0, 0);
+
+        private static void ReverseMystwarrRenderItems(Span<MystwarrRenderItem> items)
+        {
+            for (int left = 0, right = items.Length - 1; left < right; left++, right--)
+                (items[left], items[right]) = (items[right], items[left]);
+        }
 
         private static void SortMystwarrRenderItems(Span<MystwarrRenderItem> items)
         {
@@ -1584,7 +1652,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             {
                 MystwarrRenderItem item = items[i];
                 int j = i - 1;
-                while (j >= 0 && items[j].Priority < item.Priority)
+                while (j >= 0 && items[j].Order < item.Order)
                 {
                     items[j + 1] = items[j];
                     j--;
@@ -2160,6 +2228,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public const int InputVramC = 0x04;
         public const int InputVramD = 0x08;
         public const int InputObj = 0x10;
+        public const int BlendEnables = 33;
+        public const int VInMixOn = 34;
+        public const int ShadowPriority1 = 37;
+        public const int ShadowPriority2 = 38;
+        public const int ShadowPriority3 = 39;
+        public const int ShadowOn = 40;
+        public const int ShadowPrioritySelect = 41;
+        public const int VramBrightness = 42;
+        public const int ObjBrightness = 43;
+        public const int ObjBrightnessOn = 44;
         public const int PriInp0 = 7;
         public const int PriInp3 = 10;
         public const int PriInp6 = 13;
@@ -2185,7 +2263,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public int GetPaletteIndex(int index) => _regs[(23 + index) & 0x7f];
 
         public string DebugSummary()
-            => $"inp={_regs[InputEnables]:X2} pri={_regs[PriInp0]:X2}/{_regs[PriInp3]:X2}/{_regs[PriInp6]:X2}/{_regs[PriInp7]:X2}/obj{_regs[PriInpObj]:X2} pal={_regs[23]:X2}/{_regs[24]:X2}/{_regs[25]:X2}/{_regs[26]:X2}/{_regs[27]:X2}";
+            => $"inp={_regs[InputEnables]:X2} pri={_regs[PriInp0]:X2}/{_regs[PriInp3]:X2}/{_regs[PriInp6]:X2}/{_regs[PriInp7]:X2}/obj{_regs[PriInpObj]:X2} "
+               + $"pal={_regs[23]:X2}/{_regs[24]:X2}/{_regs[25]:X2}/{_regs[26]:X2}/{_regs[27]:X2} "
+               + $"mix={_regs[BlendEnables]:X2}/{_regs[VInMixOn]:X2} shd={_regs[ShadowPriority1]:X2}/{_regs[ShadowPriority2]:X2}/{_regs[ShadowPriority3]:X2}:{_regs[ShadowOn]:X2}/{_regs[ShadowPrioritySelect]:X2} bri={_regs[VramBrightness]:X2}/{_regs[ObjBrightness]:X2}/{_regs[ObjBrightnessOn]:X2}";
     }
 
     private sealed class K054338
@@ -2217,8 +2297,102 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public ushort ReadRegister(int offset) => _regs[offset & 0x0f];
 
+        public void FillSolidBackground(byte[] frameBuffer)
+        {
+            byte r = (byte)(_regs[0] & 0xff);
+            byte g = (byte)((_regs[1] >> 8) & 0xff);
+            byte b = (byte)(_regs[1] & 0xff);
+            for (int offset = 0; offset < frameBuffer.Length; offset += 4)
+            {
+                frameBuffer[offset] = b;
+                frameBuffer[offset + 1] = g;
+                frameBuffer[offset + 2] = r;
+                frameBuffer[offset + 3] = 0xff;
+            }
+        }
+
+        public int TilemapAlphaLevel(int pblend)
+        {
+            if (pblend == 0)
+                return 255;
+
+            pblend &= 3;
+            int register = 13 + ((pblend >> 1) & 1);
+            int shift = ((~pblend << 3) & 8);
+            int mixset = (_regs[register] >> shift) & 0xff;
+            int mixLevel = 0x1f - (mixset & 0x1f);
+            int alpha = (mixLevel << 3) | (mixLevel >> 2);
+            if ((mixset & 0x20) != 0)
+            {
+                alpha &= 0xff;
+                if (alpha != 0)
+                    alpha = (~alpha) & 0xff;
+            }
+            return Math.Clamp(alpha, 0, 255);
+        }
+
+        public int BrightnessLevel(int mode)
+        {
+            return (mode & 3) switch
+            {
+                1 => _regs[11] & 0xff,
+                2 => (_regs[12] >> 8) & 0xff,
+                3 => _regs[12] & 0xff,
+                _ => 255
+            };
+        }
+
+        public bool ShadowEnabled(int mode)
+        {
+            mode = Math.Clamp(mode, 0, 2);
+            int baseRegister = 2 + mode * 3;
+            return IsActiveShadowComponent(_regs[baseRegister])
+                   || IsActiveShadowComponent(_regs[baseRegister + 1])
+                   || IsActiveShadowComponent(_regs[baseRegister + 2]);
+        }
+
+        public void ApplyShadow(byte[] frameBuffer, int x, int y, int mode)
+        {
+            mode = Math.Clamp(mode, 0, 2);
+            int baseRegister = 2 + mode * 3;
+            int offset = y * FrameStride + x * 4;
+            int r = QuantizeRgb15(frameBuffer[offset + 2]) + DecodeShadowDelta(_regs[baseRegister]);
+            int g = QuantizeRgb15(frameBuffer[offset + 1]) + DecodeShadowDelta(_regs[baseRegister + 1]);
+            int b = QuantizeRgb15(frameBuffer[offset]) + DecodeShadowDelta(_regs[baseRegister + 2]);
+            bool noClip = (_regs[15] & 0x20) != 0;
+            if (!noClip)
+            {
+                r = Math.Clamp(r, 0, 255);
+                g = Math.Clamp(g, 0, 255);
+                b = Math.Clamp(b, 0, 255);
+            }
+
+            frameBuffer[offset] = (byte)Math.Clamp(b, 0, 255);
+            frameBuffer[offset + 1] = (byte)Math.Clamp(g, 0, 255);
+            frameBuffer[offset + 2] = (byte)Math.Clamp(r, 0, 255);
+            frameBuffer[offset + 3] = 0xff;
+        }
+
+        private static bool IsActiveShadowComponent(ushort value)
+        {
+            int delta = DecodeShadowDelta(value);
+            return delta < -7 || delta > 7;
+        }
+
+        private static int DecodeShadowDelta(ushort value)
+        {
+            int delta = value & 0x1ff;
+            return delta >= 0x100 ? delta - 0x200 : delta;
+        }
+
+        private static int QuantizeRgb15(byte value)
+        {
+            int fiveBit = value >> 3;
+            return (fiveBit << 3) | (fiveBit >> 2);
+        }
+
         public string DebugSummary()
-            => $"w={_writes} ctl={_regs[0]:X4} pblend={_regs[13]:X4}/{_regs[14]:X4}";
+            => $"w={_writes} bg={_regs[0]:X4}/{_regs[1]:X4} ctl={_regs[15]:X4} pblend={_regs[13]:X4}/{_regs[14]:X4}";
     }
 
     private sealed class K053252
@@ -2318,6 +2492,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private sealed class K056832
         {
+        public const int TileCategoryAll = -1;
+        public const int TileCategoryNormal = 0;
+        public const int TileCategoryMixed = 1;
         private const int PageCount = 16;
         private const int PageWords = 0x1000;
         private readonly ushort[] _vram = new ushort[PageCount * PageWords];
@@ -2331,8 +2508,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private int _romReads;
         private int _lastRomReadOffset;
         private ushort _lastRomReadValue;
+        [NonSerialized] private int _lastAlphaTileMixCode;
 
         public int[] LayerColorBase { get; } = new int[4];
+        public int LastAlphaTileMixCode => _lastAlphaTileMixCode;
 
         public void Load(byte[] rom)
         {
@@ -2358,13 +2537,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public ushort ReadRamWord(int offset)
         {
-            offset &= (PageWords * 2) - 1;
+            offset &= PageWords - 1;
             return _vram[(_selectedPageBase + offset) & (_vram.Length - 1)];
         }
 
         public void WriteRamWord(int offset, ushort value)
         {
-            offset &= (PageWords * 2) - 1;
+            offset &= PageWords - 1;
             _vram[(_selectedPageBase + offset) & (_vram.Length - 1)] = value;
         }
 
@@ -2456,13 +2635,23 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque)
+            => RenderLayer(frameBuffer, palette, layer, opaque, default);
+
+        public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas)
+            => RenderLayer(frameBuffer, palette, layer, opaque, mixAlphas, TileCategoryAll);
+
+        public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory)
+            => RenderLayer(frameBuffer, palette, layer, opaque, mixAlphas, tileCategory, 255);
+
+        public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
         {
+            brightness = Math.Clamp(brightness, 0, 255);
             int scrollMode = (_regs[5] >> ((layer & 3) << 1)) & 3;
             bool flipX = (_regs[0] & 0x10) != 0;
             bool flipY = (_regs[0] & 0x20) != 0;
             if ((scrollMode == 1 || scrollMode == 3) && !flipX && !flipY)
             {
-                RenderLayerMameXy(frameBuffer, palette, layer, opaque);
+                RenderLayerMameXy(frameBuffer, palette, layer, opaque, mixAlphas, tileCategory, brightness);
                 return;
             }
 
@@ -2487,20 +2676,20 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int pageX = baseX + pageCol * 512;
                     int pageY = baseY + pageRow * 256;
 
-                    DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX, pageY, opaque);
+                    DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX, pageY, opaque, mixAlphas, tileCategory, brightness);
                     if (pageX > 0)
-                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX - mapWidth, pageY, opaque);
+                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX - mapWidth, pageY, opaque, mixAlphas, tileCategory, brightness);
                     if (pageX + 512 < FrameWidth)
-                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX + mapWidth, pageY, opaque);
+                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX + mapWidth, pageY, opaque, mixAlphas, tileCategory, brightness);
                     if (pageY > 0)
-                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX, pageY - mapHeight, opaque);
+                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX, pageY - mapHeight, opaque, mixAlphas, tileCategory, brightness);
                     if (pageY + 256 < FrameHeight)
-                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX, pageY + mapHeight, opaque);
+                        DrawPage(frameBuffer, palette, pageBase, layer, colorBase, pageX, pageY + mapHeight, opaque, mixAlphas, tileCategory, brightness);
                 }
             }
         }
 
-        private void RenderLayerMameXy(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque)
+        private void RenderLayerMameXy(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
         {
             layer &= 3;
             int rowStart = (_regs[0x08 + layer] >> 3) & 3;
@@ -2538,19 +2727,24 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int attr = _vram[pageBase + tileIndex * 2];
                     int code = _vram[pageBase + tileIndex * 2 + 1];
                     int pageColorBase = LayerColorBase[pageLayer];
-                    DecodeMystwarrTileAttr(pageLayer, attr, pageColorBase, out int color, out bool tileFlipX, out bool tileFlipY);
+                    DecodeMystwarrTileAttr(pageLayer, attr, pageColorBase, out int color, out bool tileFlipX, out bool tileFlipY, out int mixCode);
+                    if (!TileCategoryMatches(mixCode, tileCategory))
+                        continue;
+                    int alpha = TileAlphaForMixCode(mixAlphas, mixCode);
+                    if (alpha <= 0)
+                        continue;
                     int srcX = tileFlipX ? 7 - pixelX : pixelX;
                     int srcY = tileFlipY ? 7 - pixelY : pixelY;
                     int pen = Decode5BppPixel(code * 320, srcX, srcY);
                     if (pen == 0 && !opaque)
                         continue;
 
-                    WritePixel(frameBuffer, px, py, palette[(color * 32 + pen) & 0x7ff]);
+                    WriteTilePixel(frameBuffer, px, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
                 }
             }
         }
 
-        private void DrawPage(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int pageBase, int layer, int colorBase, int pageX, int pageY, bool opaque)
+        private void DrawPage(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int pageBase, int layer, int colorBase, int pageX, int pageY, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
         {
             if (pageX <= -512 || pageX >= FrameWidth || pageY <= -256 || pageY >= FrameHeight)
                 return;
@@ -2563,7 +2757,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int pageColorBase = LayerColorBase[pageLayer];
             if (!PageUsesTileMode(page))
             {
-                DrawLinePage(frameBuffer, palette, pageBase, pageLayer, pageColorBase, pageX, pageY, opaque);
+                DrawLinePage(frameBuffer, palette, pageBase, pageLayer, pageColorBase, pageX, pageY, opaque, mixAlphas, tileCategory, brightness);
                 return;
             }
 
@@ -2582,13 +2776,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int tileIndex = (ty * 64 + tx) & 0x7ff;
                     int attr = _vram[pageBase + tileIndex * 2];
                     int code = _vram[pageBase + tileIndex * 2 + 1];
-                    DecodeMystwarrTileAttr(pageLayer, attr, pageColorBase, out int color, out bool flipX, out bool flipY);
-                    DrawTile(frameBuffer, palette, code, color, sx, sy, flipX, flipY, opaque);
+                    DecodeMystwarrTileAttr(pageLayer, attr, pageColorBase, out int color, out bool flipX, out bool flipY, out int mixCode);
+                    if (!TileCategoryMatches(mixCode, tileCategory))
+                        continue;
+                    int alpha = TileAlphaForMixCode(mixAlphas, mixCode);
+                    if (alpha > 0)
+                        DrawTile(frameBuffer, palette, code, color, sx, sy, flipX, flipY, opaque, alpha, brightness);
                 }
             }
         }
 
-        private void DrawLinePage(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int pageBase, int layer, int colorBase, int pageX, int pageY, bool opaque)
+        private void DrawLinePage(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int pageBase, int layer, int colorBase, int pageX, int pageY, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
         {
             for (int line = 0; line < 256; line++)
             {
@@ -2598,7 +2796,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
                 int attr = _vram[pageBase + line * 2];
                 int code = _vram[pageBase + line * 2 + 1] & ~7;
-                DecodeMystwarrTileAttr(layer, attr, colorBase, out int color, out _, out _);
+                DecodeMystwarrTileAttr(layer, attr, colorBase, out int color, out _, out _, out int mixCode);
+                if (!TileCategoryMatches(mixCode, tileCategory))
+                    continue;
+                int alpha = TileAlphaForMixCode(mixAlphas, mixCode);
+                if (alpha <= 0)
+                    continue;
 
                 for (int x = 0; x < 512; x++)
                 {
@@ -2610,12 +2813,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int pen = Decode5BppPixel((code + (x >> 6)) * 320, src & 7, src >> 3);
                     if (pen == 0 && !opaque)
                         continue;
-                    WritePixel(frameBuffer, px, py, palette[(color * 32 + pen) & 0x7ff]);
+                    WriteTilePixel(frameBuffer, px, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
                 }
             }
         }
 
-        private void DecodeMystwarrTileAttr(int layer, int attr, int colorBase, out int color, out bool flipX, out bool flipY)
+        private void DecodeMystwarrTileAttr(int layer, int attr, int colorBase, out int color, out bool flipX, out bool flipY, out int mixCode)
         {
             ReadOnlySpan<int> flips = stackalloc[] { 6, 4, 2, 0 };
             ReadOnlySpan<int> palm1 = stackalloc[] { 0x3f, 0x0f, 0x03, 0x00 };
@@ -2630,7 +2833,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             color = colorBase | ((rawColor >> 1) & 0x0f);
             flipX = (flip & 1) != 0;
             flipY = (flip & 2) != 0;
+            mixCode = (attr >> 2) & 3;
+            if (mixCode != 0)
+                _lastAlphaTileMixCode = mixCode;
         }
+
+        private static int TileAlphaForMixCode(ReadOnlySpan<int> mixAlphas, int mixCode)
+            => mixAlphas.Length > mixCode ? mixAlphas[mixCode] : 255;
+
+        private static bool TileCategoryMatches(int mixCode, int tileCategory)
+            => tileCategory == TileCategoryAll
+               || (tileCategory == TileCategoryNormal && mixCode == 0)
+               || (tileCategory == TileCategoryMixed && mixCode != 0);
 
         private static int LayerOffsetX(int layer) => layer switch
         {
@@ -2706,7 +2920,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return result < 0 ? result + divisor : result;
         }
 
-        private void DrawTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int color, int sx, int sy, bool flipX, bool flipY, bool opaque)
+        private void DrawTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int color, int sx, int sy, bool flipX, bool flipY, bool opaque, int alpha, int brightness)
         {
             int baseBit = code * 320;
             for (int y = 0; y < 8; y++)
@@ -2724,9 +2938,45 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int pen = Decode5BppPixel(baseBit, srcX, srcY);
                     if (pen == 0 && !opaque)
                         continue;
-                    WritePixel(frameBuffer, px, py, palette[(color * 32 + pen) & 0x7ff]);
+                    WriteTilePixel(frameBuffer, px, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
                 }
             }
+        }
+
+        private static int MystwarrTilePaletteIndex(int color, int pen)
+            => (color * 16 + pen) & 0x7ff;
+
+        private static void WriteTilePixel(byte[] frameBuffer, int x, int y, ushort xBgr555, int alpha)
+            => WriteTilePixel(frameBuffer, x, y, xBgr555, alpha, 255);
+
+        private static void WriteTilePixel(byte[] frameBuffer, int x, int y, ushort xBgr555, int alpha, int brightness)
+        {
+            int r = (xBgr555 & 0x1f) * 255 / 31;
+            int g = ((xBgr555 >> 5) & 0x1f) * 255 / 31;
+            int b = ((xBgr555 >> 10) & 0x1f) * 255 / 31;
+            if (brightness < 255)
+            {
+                r = (r * brightness + 127) / 255;
+                g = (g * brightness + 127) / 255;
+                b = (b * brightness + 127) / 255;
+            }
+
+            if (alpha >= 255)
+            {
+                int solidOffset = y * FrameStride + x * 4;
+                frameBuffer[solidOffset] = (byte)b;
+                frameBuffer[solidOffset + 1] = (byte)g;
+                frameBuffer[solidOffset + 2] = (byte)r;
+                frameBuffer[solidOffset + 3] = 0xff;
+                return;
+            }
+
+            int inv = 255 - alpha;
+            int offset = y * FrameStride + x * 4;
+            frameBuffer[offset] = (byte)((b * alpha + frameBuffer[offset] * inv + 127) / 255);
+            frameBuffer[offset + 1] = (byte)((g * alpha + frameBuffer[offset + 1] * inv + 127) / 255);
+            frameBuffer[offset + 2] = (byte)((r * alpha + frameBuffer[offset + 2] * inv + 127) / 255);
+            frameBuffer[offset + 3] = 0xff;
         }
 
         private int Decode5BppPixel(int baseBit, int x, int y)
@@ -2811,6 +3061,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private int _lastMaxY;
         [NonSerialized] private bool _tmnt2CoordinateMode;
         [NonSerialized] private bool _mystwarrSpriteLayout;
+        [NonSerialized] private readonly byte[] _mystwarrObjZBuffer = new byte[FrameWidth * FrameHeight];
 
         public int SpriteColorBase { get; set; }
         public bool Tmnt2CoordinateMode
@@ -2975,11 +3226,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 ? $" f=[{_buffer[first]:X4},{_buffer[first + 1]:X4},{_buffer[first + 2]:X4},{_buffer[first + 3]:X4},{_buffer[first + 4]:X4},{_buffer[first + 5]:X4},{_buffer[first + 6]:X4}]"
                 : " f=none";
             string calc = DebugFirstSortedSprite();
+            string spriteList = _mystwarrSpriteLayout && Environment.GetEnvironmentVariable("EUTHERDRIVE_MYSTWARR_SPRITE_TRACE") == "1"
+                ? " " + DebugMystwarrSpriteList()
+                : "";
             int cpuActive = CountActive(_ram);
             int cpuMirrorActive = CountCpuActive();
             return $"romR={_controlRomReads} last=0x{_lastControlRomAddress:X6} bank={_romBank} "
                    + $"regs={_regs[0]:X2}/{_regs[1]:X2}/{_regs[2]:X2}/{_regs[3]:X2}/{_regs[5]:X2}/{_regs[8]:X2}/{_regs[9]:X2}/{_regs[11]:X2} "
-                   + $"act={active} live={cpuActive}/{cpuMirrorActive} vis={_lastVisibleCandidates} pix={_lastDrawnPixels} bb={_lastMinX},{_lastMinY}-{_lastMaxX},{_lastMaxY}{firstSprite} {calc}";
+                   + $"act={active} live={cpuActive}/{cpuMirrorActive} vis={_lastVisibleCandidates} pix={_lastDrawnPixels} bb={_lastMinX},{_lastMinY}-{_lastMaxX},{_lastMaxY}{firstSprite} {calc}"
+                   + spriteList;
         }
 
         private static int CountActive(ushort[] ram)
@@ -3022,6 +3277,58 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
 
             return "calc=none";
+        }
+
+        private string DebugMystwarrSpriteList()
+        {
+            ushort[] spriteRam = _ram;
+            Span<int> sorted = stackalloc int[SpriteCount];
+            int sortedCount = BuildSortedSpriteList(sorted, spriteRam);
+            var writer = new StringBuilder(2048);
+            writer.Append("spr=[");
+            int emitted = 0;
+            int visible = 0;
+            for (int i = sortedCount - 1; i >= 0 && emitted < 16; i--)
+            {
+                int offs = sorted[i];
+                if (offs < 0)
+                    continue;
+
+                bool hasBounds = TryComputeSpriteBounds(offs, spriteRam, out var info);
+                if (hasBounds && info.Right > 0 && info.Bottom > 0 && info.X < FrameWidth && info.Y < FrameHeight)
+                    visible++;
+                if (emitted > 0)
+                    writer.Append(' ');
+                writer.Append('@');
+                writer.Append(offs.ToString("X3"));
+                writer.Append("/z");
+                writer.Append((spriteRam[offs] & 0xff).ToString("X2"));
+                writer.Append("/c");
+                writer.Append((spriteRam[offs + 6] & 0xffff).ToString("X4"));
+                writer.Append("/xy");
+                writer.Append((spriteRam[offs + 3] & 0x03ff).ToString("X3"));
+                writer.Append(',');
+                writer.Append((spriteRam[offs + 2] & 0x03ff).ToString("X3"));
+                if (hasBounds)
+                {
+                    writer.Append("=>");
+                    writer.Append(info.X.ToString());
+                    writer.Append(',');
+                    writer.Append(info.Y.ToString());
+                    writer.Append('-');
+                    writer.Append(info.Right.ToString());
+                    writer.Append(',');
+                    writer.Append(info.Bottom.ToString());
+                }
+                else
+                {
+                    writer.Append("=>skip");
+                }
+                emitted++;
+            }
+            writer.Append("] on=");
+            writer.Append(visible.ToString());
+            return writer.ToString();
         }
 
         public ushort ReadControlWordNoA1(int offset)
@@ -3094,6 +3401,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _lastMaxY = -1;
         }
 
+        public void BeginMystwarrObjectFrame()
+        {
+            BeginRenderFrameStats();
+            Array.Fill(_mystwarrObjZBuffer, (byte)0xff);
+        }
+
         public void Render(byte[] frameBuffer, ReadOnlySpan<ushort> palette)
         {
             BeginRenderFrameStats();
@@ -3101,10 +3414,71 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             FinishRenderFrameStats();
         }
 
-        public void RenderMystwarrPriority(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int priority)
+        public void RenderMystwarrPriority(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int priority, K054338 k054338)
         {
-            RenderSprites(frameBuffer, palette, default, -1, FrameHeight, null, priority);
+            RenderSprites(frameBuffer, palette, default, -1, FrameHeight, null, priority, k054338);
         }
+
+        public int AppendMystwarrSpriteRenderItems(Span<MystwarrRenderItem> items, int count, K055555 mixer, K054338 k054338)
+        {
+            ushort[] spriteRam = _ram;
+            for (int offs = 0; offs < spriteRam.Length && count < items.Length; offs += 8)
+            {
+                if ((spriteRam[offs] & 0x8000) == 0)
+                    continue;
+
+                int rawColor = spriteRam[offs + 6];
+                int priority = rawColor & 0xe0;
+                int zcode = spriteRam[offs] & 0xff;
+                if ((_objRegs[6] & 0x0010) != 0)
+                    zcode = 0xff - zcode;
+
+                int effect = (rawColor >> 8) & 3;
+                int shadow = (rawColor >> 10) & 3;
+                if (shadow != 0)
+                {
+                    int shadowMode = shadow - 1;
+                    bool objSet1Shadow0Enabled = (_regs[5] & 0x20) != 0;
+                    if (shadow != 1 || objSet1Shadow0Enabled)
+                    {
+                        int drawMode = effect != 0 ? 3 : 1;
+                        uint order = ((uint)priority << 24) | ((uint)zcode << 16) | ((uint)offs << 5) | ((uint)drawMode << 4);
+                        items[count++] = new MystwarrRenderItem(order, -1, offs, drawMode, shadowMode);
+
+                        if (shadow != 3 && k054338.ShadowEnabled(shadowMode) && count < items.Length)
+                        {
+                            int shadowPriority = (_objRegs[6] & 0x0020) != 0
+                                ? priority
+                                : mixer.ReadRegister(K055555.ShadowPriority1 + shadowMode);
+                            drawMode = 4;
+                            order = ((uint)shadowPriority << 24) | ((uint)zcode << 16) | ((uint)offs << 5) | ((uint)drawMode << 4) | (uint)shadowMode;
+                            items[count++] = new MystwarrRenderItem(order, -1, offs, drawMode, shadowMode);
+                        }
+                    }
+                    else if (k054338.ShadowEnabled(0))
+                    {
+                        int drawMode = 5;
+                        uint order = ((uint)priority << 24) | ((uint)zcode << 16) | ((uint)offs << 5) | ((uint)drawMode << 4);
+                        items[count++] = new MystwarrRenderItem(order, -1, offs, drawMode, 0);
+                    }
+                }
+                else
+                {
+                    int drawMode = effect != 0 ? 2 : 0;
+                    uint order = ((uint)priority << 24) | ((uint)zcode << 16) | ((uint)offs << 5) | ((uint)drawMode << 4);
+                    items[count++] = new MystwarrRenderItem(order, -1, offs, drawMode, 0);
+                }
+            }
+
+            return count;
+        }
+
+        public void RenderMystwarrObject(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int spriteOffset, int drawMode, int shadowMode, int zcode, K054338 k054338)
+        {
+            RenderSpriteObject(frameBuffer, palette, _ram, spriteOffset, default, -1, FrameHeight, null, -1, k054338, drawMode, shadowMode, zcode);
+        }
+
+        public void FinishMystwarrRenderFrameStats() => FinishRenderFrameStats();
 
         public void RenderPriorityBand(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight = FrameHeight)
         {
@@ -3120,7 +3494,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             FinishRenderFrameStats();
         }
 
-        private void RenderSprites(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight, byte[]? priorityBuffer, int mystwarrPriority = -1)
+        private void RenderSprites(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight, byte[]? priorityBuffer, int mystwarrPriority = -1, K054338? k054338 = null)
         {
             ushort[] spriteRam = _mystwarrSpriteLayout ? _ram : _buffer;
             Span<int> sorted = stackalloc int[SpriteCount];
@@ -3129,64 +3503,85 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (int sortedIndex = sortedCount - 1; sortedIndex >= 0; sortedIndex--)
             {
                 int offs = sorted[sortedIndex];
-                if (offs < 0)
-                    continue;
+                RenderSpriteObject(frameBuffer, palette, spriteRam, offs, sortedLayerPriorities, band, outputHeight, priorityBuffer, mystwarrPriority, k054338, -1, 0, -1);
+            }
+        }
 
-                int code = spriteRam[offs + 1];
-                if (!_mystwarrSpriteLayout)
-                    code = (code & 0xffe1) + ((code & 0x0010) >> 2) + ((code & 0x0008) << 1) + ((code & 0x0004) >> 1) + ((code & 0x0002) << 2);
-                int rawColor = spriteRam[offs + 6] & 0xff;
-                if (mystwarrPriority >= 0 && (rawColor & 0xe0) != mystwarrPriority)
-                    continue;
-                if (band >= 0 && SpritePriorityBand(rawColor, sortedLayerPriorities) != band)
-                    continue;
-                int priorityMask = priorityBuffer != null ? SpritePriorityMask(rawColor, sortedLayerPriorities) : 0;
-                int color = SpriteColorBase + (rawColor & 0x1f);
-                if (!TryComputeSpriteBounds(offs, spriteRam, out var bounds))
-                    continue;
+        private void RenderSpriteObject(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ushort[] spriteRam, int offs,
+            ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight, byte[]? priorityBuffer,
+            int mystwarrPriority, K054338? k054338, int gxDrawMode, int gxShadowMode, int gxZCode)
+        {
+            if ((uint)offs >= (uint)spriteRam.Length)
+                return;
 
-                int w = bounds.Width;
-                int h = bounds.Height;
-                int zoomX = bounds.ZoomX;
-                int zoomY = bounds.ZoomY;
-                int ox = bounds.X;
-                int oy = bounds.Y;
-                bool flipX = (spriteRam[offs] & 0x1000) != 0;
-                bool flipY = (spriteRam[offs] & 0x2000) != 0;
-                bool mirrorX = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x4000 : 0x0100)) != 0;
-                bool mirrorY = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x8000 : 0x0200)) != 0;
-                bool shadow = !_mystwarrSpriteLayout && (spriteRam[offs + 6] & 0x0080) != 0;
-                if (mirrorX)
-                    flipX = false;
-                if ((_regs[5] & 0x01) != 0 && !mirrorX) flipX = !flipX;
-                if (!Tmnt2CoordinateMode && (_regs[5] & 0x02) != 0 && !mirrorY) flipY = !flipY;
+            int code = spriteRam[offs + 1];
+            if (!_mystwarrSpriteLayout)
+                code = (code & 0xffe1) + ((code & 0x0010) >> 2) + ((code & 0x0008) << 1) + ((code & 0x0004) >> 1) + ((code & 0x0002) << 2);
+            int rawColorWord = spriteRam[offs + 6];
+            int rawColor = _mystwarrSpriteLayout ? rawColorWord : rawColorWord & 0xff;
+            if (mystwarrPriority >= 0 && (rawColor & 0xe0) != mystwarrPriority)
+                return;
+            if (band >= 0 && SpritePriorityBand(rawColor, sortedLayerPriorities) != band)
+                return;
+            int priorityMask = priorityBuffer != null ? SpritePriorityMask(rawColor, sortedLayerPriorities) : 0;
+            int color = SpriteColorBase + (rawColor & 0x1f);
+            int alpha = _mystwarrSpriteLayout ? SpriteAlpha(rawColorWord, k054338, gxDrawMode) : 255;
+            if (!TryComputeSpriteBounds(offs, spriteRam, out var bounds))
+                return;
 
-                int spriteMinX = ox;
-                int spriteMinY = oy;
-                int spriteMaxX = bounds.Right;
-                int spriteMaxY = bounds.Bottom;
-                if (spriteMaxX > 0 && spriteMaxY > 0 && spriteMinX < FrameWidth && spriteMinY < outputHeight)
+            int w = bounds.Width;
+            int h = bounds.Height;
+            int zoomX = bounds.ZoomX;
+            int zoomY = bounds.ZoomY;
+            int ox = bounds.X;
+            int oy = bounds.Y;
+            bool flipX = (spriteRam[offs] & 0x1000) != 0;
+            bool flipY = (spriteRam[offs] & 0x2000) != 0;
+            bool mirrorX = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x4000 : 0x0100)) != 0;
+            bool mirrorY = (spriteRam[offs + 6] & (_mystwarrSpriteLayout ? 0x8000 : 0x0200)) != 0;
+            bool shadow = !_mystwarrSpriteLayout && (spriteRam[offs + 6] & 0x0080) != 0;
+            if (mirrorX)
+                flipX = false;
+            if ((_regs[5] & 0x01) != 0 && !mirrorX) flipX = !flipX;
+            if (!Tmnt2CoordinateMode && (_regs[5] & 0x02) != 0 && !mirrorY) flipY = !flipY;
+
+            int spriteMinX = ox;
+            int spriteMinY = oy;
+            int spriteMaxX = bounds.Right;
+            int spriteMaxY = bounds.Bottom;
+            if (spriteMaxX > 0 && spriteMaxY > 0 && spriteMinX < FrameWidth && spriteMinY < outputHeight)
+            {
+                _lastVisibleCandidates++;
+                _lastMinX = Math.Min(_lastMinX, spriteMinX);
+                _lastMinY = Math.Min(_lastMinY, spriteMinY);
+                _lastMaxX = Math.Max(_lastMaxX, spriteMaxX);
+                _lastMaxY = Math.Max(_lastMaxY, spriteMaxY);
+            }
+
+            for (int y = 0; y < h; y++)
+            {
+                int sy = oy + ((zoomY * y + (1 << 11)) >> 12);
+                int zh = Math.Max(1, oy + ((zoomY * (y + 1) + (1 << 11)) >> 12) - sy);
+                for (int x = 0; x < w; x++)
                 {
-                    _lastVisibleCandidates++;
-                    _lastMinX = Math.Min(_lastMinX, spriteMinX);
-                    _lastMinY = Math.Min(_lastMinY, spriteMinY);
-                    _lastMaxX = Math.Max(_lastMaxX, spriteMaxX);
-                    _lastMaxY = Math.Max(_lastMaxY, spriteMaxY);
-                }
-
-                for (int y = 0; y < h; y++)
-                {
-                    int sy = oy + ((zoomY * y + (1 << 11)) >> 12);
-                    int zh = Math.Max(1, oy + ((zoomY * (y + 1) + (1 << 11)) >> 12) - sy);
-                    for (int x = 0; x < w; x++)
-                    {
-                        int sx = ox + ((zoomX * x + (1 << 11)) >> 12);
-                        int zw = Math.Max(1, ox + ((zoomX * (x + 1) + (1 << 11)) >> 12) - sx);
-                        int tile = SpriteTileCode(code, x, y, w, h, flipX, flipY, mirrorX, mirrorY, _mystwarrSpriteLayout, out bool tileFlipX, out bool tileFlipY);
-                        _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask, shadow);
-                    }
+                    int sx = ox + ((zoomX * x + (1 << 11)) >> 12);
+                    int zw = Math.Max(1, ox + ((zoomX * (x + 1) + (1 << 11)) >> 12) - sx);
+                    int tile = SpriteTileCode(code, x, y, w, h, flipX, flipY, mirrorX, mirrorY, _mystwarrSpriteLayout, out bool tileFlipX, out bool tileFlipY);
+                    _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask, shadow, alpha, gxDrawMode, gxShadowMode, gxZCode, k054338);
                 }
             }
+        }
+
+        private static int SpriteAlpha(int rawColorWord, K054338? k054338, int gxDrawMode)
+        {
+            if (gxDrawMode >= 0 && (gxDrawMode & 2) == 0)
+                return 255;
+
+            int effect = (rawColorWord >> 8) & 3;
+            if (effect == 0 || k054338 == null)
+                return 255;
+
+            return k054338.TilemapAlphaLevel(effect);
         }
 
         private int BuildSortedSpriteList(Span<int> sorted, ushort[] spriteRam)
@@ -3284,8 +3679,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int size = (spriteRam[offs] & 0x0f00) >> 8;
             int w = 1 << (size & 0x03);
             int h = 1 << ((size >> 2) & 0x03);
-            int zoomY = SpriteZoom(spriteRam[offs + 4]);
-            int zoomX = (spriteRam[offs] & 0x4000) == 0 ? SpriteZoom(spriteRam[offs + 5]) : zoomY;
+            int rawZoomY = _mystwarrSpriteLayout ? spriteRam[offs + 4] & 0x03ff : spriteRam[offs + 4];
+            int rawZoomX = _mystwarrSpriteLayout ? spriteRam[offs + 5] & 0x03ff : spriteRam[offs + 5];
+            int zoomY = SpriteZoom((ushort)rawZoomY, cullZero: _mystwarrSpriteLayout);
+            int zoomX = (spriteRam[offs] & 0x4000) == 0 ? SpriteZoom((ushort)rawZoomX, cullZero: _mystwarrSpriteLayout) : zoomY;
             if (zoomX < 0 || zoomY < 0)
             {
                 bounds = default;
@@ -3327,14 +3724,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (flipScreenY)
                     mysticY = -mysticY;
 
+                // Mystic Warriors is rendered through MAME's GX mixer path.  In that path
+                // K055673 applies the chip dx/dy offsets before wrapping, which matters for Y
+                // because the coordinate is negated during wrap normalization.
+                mysticX -= 48;
+                mysticY += 24;
                 mysticX = (mysticX - offx) & (wrapSize - 1);
                 mysticY = (-mysticY - offy) & (wrapSize - 1);
                 if (mysticX >= xWrapLimit) mysticX -= wrapSize;
                 if (mysticY >= yWrapLimit) mysticY -= wrapSize;
-                mysticX -= 48;
-                mysticY += 24;
                 mysticX -= (zoomX * w) >> 13;
                 mysticY -= (zoomY * h) >> 13;
+                mysticX -= MysticVisibleOriginX;
+                mysticY -= MysticVisibleOriginY;
 
                 int mysticRight = mysticX + ((zoomX * w + (1 << 11)) >> 12);
                 int mysticBottom = mysticY + ((zoomY * h + (1 << 11)) >> 12);
@@ -3380,8 +3782,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private static int MystwarrScatterOffset(int offset)
             => ((offset & 0x0007) | ((offset & 0x7f80) >> 4)) & (RamWords - 1);
 
-        private static int SpriteZoom(ushort value)
+        private static int SpriteZoom(ushort value, bool cullZero = false)
         {
+            if (value == 0 && cullZero)
+                return -1;
             if (value > 0x2000)
                 return -1;
             return value != 0 ? (0x400000 + value / 2) / value : 2 * 0x400000;
@@ -3491,10 +3895,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private int DrawSpriteTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int colorBase, int sx, int sy, int zw, int zh,
-            bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask, bool shadow)
+            bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask, bool shadow, int alpha, int gxDrawMode, int gxShadowMode, int gxZCode, K054338? k054338)
         {
             int drawn = 0;
             int baseAddress = ((code & 0x7fff) * 128) & (_rom.Length - 1);
+            bool gxShadowDraw = _mystwarrSpriteLayout && gxDrawMode >= 4;
+            int shadowPen = gxShadowDraw && gxDrawMode == 5 ? 1 : 31;
+            bool gxSolidOnly = _mystwarrSpriteLayout && (gxDrawMode & 3) != 0;
             for (int dy = 0; dy < zh; dy++)
             {
                 int py = sy + dy;
@@ -3512,6 +3919,27 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int pen = DecodeSpritePixel(baseAddress, srcX, srcY);
                     if (pen == 0)
                         continue;
+
+                    if (gxShadowDraw)
+                    {
+                        if (pen < shadowPen || k054338 == null)
+                            continue;
+
+                        k054338.ApplyShadow(frameBuffer, px, py, gxShadowMode);
+                        drawn++;
+                        continue;
+                    }
+
+                    if (gxSolidOnly && pen >= shadowPen)
+                        continue;
+
+                    if (gxZCode >= 0)
+                    {
+                        int zOffset = py * FrameWidth + px;
+                        if (_mystwarrObjZBuffer[zOffset] < gxZCode)
+                            continue;
+                        _mystwarrObjZBuffer[zOffset] = (byte)gxZCode;
+                    }
                     if (priorityBuffer != null)
                     {
                         int priorityOffset = py * FrameWidth + px;
@@ -3530,16 +3958,35 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         continue;
                     }
                     int paletteIndex = _mystwarrSpriteLayout ? colorBase * 32 + pen : colorBase * 16 + pen;
-                    WritePixel(frameBuffer, px, py, palette[paletteIndex & 0x7ff]);
+                    WriteSpritePixel(frameBuffer, px, py, palette[paletteIndex & 0x7ff], alpha);
                     drawn++;
                 }
             }
             return drawn;
         }
 
+        private static void WriteSpritePixel(byte[] frameBuffer, int x, int y, ushort xBgr555, int alpha)
+        {
+            if (alpha >= 255)
+            {
+                WritePixel(frameBuffer, x, y, xBgr555);
+                return;
+            }
+
+            int r = (xBgr555 & 0x1f) * 255 / 31;
+            int g = ((xBgr555 >> 5) & 0x1f) * 255 / 31;
+            int b = ((xBgr555 >> 10) & 0x1f) * 255 / 31;
+            int inv = 255 - alpha;
+            int offset = y * FrameStride + x * 4;
+            frameBuffer[offset] = (byte)((b * alpha + frameBuffer[offset] * inv + 127) / 255);
+            frameBuffer[offset + 1] = (byte)((g * alpha + frameBuffer[offset + 1] * inv + 127) / 255);
+            frameBuffer[offset + 2] = (byte)((r * alpha + frameBuffer[offset + 2] * inv + 127) / 255);
+            frameBuffer[offset + 3] = 0xff;
+        }
+
         private static void ApplyShadow(byte[] frameBuffer, int x, int y)
         {
-            int offset = y * FrameStride + x * 3;
+            int offset = y * FrameStride + x * 4;
             frameBuffer[offset] = (byte)(frameBuffer[offset] * 5 / 8);
             frameBuffer[offset + 1] = (byte)(frameBuffer[offset + 1] * 5 / 8);
             frameBuffer[offset + 2] = (byte)(frameBuffer[offset + 2] * 5 / 8);
