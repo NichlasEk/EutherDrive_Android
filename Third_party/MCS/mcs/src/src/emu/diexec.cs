@@ -575,7 +575,7 @@ namespace mame
         void spin() { suspend(SUSPEND_REASON_TIMESLICE, true); }
         //void spin_until_trigger(int trigid) { suspend_until_trigger(trigid, true); }
         //void spin_until_time(const attotime &duration);
-        //void spin_until_interrupt() { spin_until_trigger(m_inttrigger); }
+        public void spin_until_interrupt() { suspend_until_trigger(m_inttrigger, true); }
 
 
         // triggers

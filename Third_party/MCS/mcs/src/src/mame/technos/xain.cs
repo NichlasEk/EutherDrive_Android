@@ -473,7 +473,8 @@ namespace mame
             ym2.add_route(2, "mono", 0.50f);
             ym2.add_route(3, "mono", 0.40f);
 
-            config.set_perfect_quantum(m_maincpu);
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_XAIN_PERFECT_QUANTUM") == "1")
+                config.set_perfect_quantum(m_maincpu);
         }
 
 

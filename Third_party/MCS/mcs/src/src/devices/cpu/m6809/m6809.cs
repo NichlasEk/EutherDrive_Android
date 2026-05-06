@@ -223,11 +223,16 @@ namespace mame
         int m_addressing_mode;
         PAIR16 m_ea;               // effective address
         readonly bool m_profile_cpu = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_CPU_PROFILE") == "1";
+        readonly bool m_profile_cpu_pc = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_CPU_PC_PROFILE") == "1";
+        readonly bool m_enable_xsleena_sub_idle = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_XSLEENA_SUB_IDLE") != "0";
         static readonly int s_trace_postload_count = parse_trace_postload_count();
         int m_trace_postload_remaining;
         long m_profile_last_ticks = Stopwatch.GetTimestamp();
         long m_profile_execute_ticks;
         long m_profile_instructions;
+        long [] m_profile_pc_counts = Array.Empty<long>();
+        long m_profile_pc_samples;
+        bool m_is_xsleena_sub_idle_cpu;
 
         // Callbacks
         devcb_write_line m_lic_func;         // LIC pin on the 6809E
@@ -278,6 +283,11 @@ namespace mame
         {
             if (m_mintf == null)
                 m_mintf = new mi_default();  //m_mintf = std::make_unique<mi_default>();
+
+            m_is_xsleena_sub_idle_cpu =
+                m_enable_xsleena_sub_idle &&
+                string.Equals(tag(), ":sub", StringComparison.Ordinal) &&
+                string.Equals(machine().basename(), "xsleena", StringComparison.Ordinal);
 
             m_dimemory.space(AS_PROGRAM).cache(m_mintf.cprogram);
             m_dimemory.space(AS_PROGRAM).specific(m_mintf.program);
@@ -418,10 +428,27 @@ namespace mame
         protected virtual void device_execute_interface_execute_run()
         {
             bool profileCpu = m_profile_cpu;
+            bool profilePc = m_profile_cpu_pc;
+            if (profilePc && m_profile_pc_counts.Length == 0)
+                m_profile_pc_counts = new long[0x10000];
+
             long profileStart = profileCpu ? Stopwatch.GetTimestamp() : 0;
             long profileInstructions = 0;
             do
             {
+                if (profilePc && m_state == 0)
+                {
+                    m_profile_pc_counts[m_pc.w]++;
+                    m_profile_pc_samples++;
+                }
+
+                if (try_spin_xsleena_sub_idle())
+                {
+                    if (profileCpu)
+                        profileInstructions++;
+                    continue;
+                }
+
                 execute_one();
                 if (profileCpu)
                     profileInstructions++;
@@ -446,9 +473,66 @@ namespace mame
             Console.WriteLine(
                 $"[MCS-CPU] tag={tag()} type=m6809 exec_ms={m_profile_execute_ticks * scale:0.0} " +
                 $"insn={m_profile_instructions} ips={m_profile_instructions / elapsedSeconds:0}");
+            if (m_profile_cpu_pc)
+                report_pc_profile();
+
             m_profile_last_ticks = now;
             m_profile_execute_ticks = 0;
             m_profile_instructions = 0;
+        }
+
+        void report_pc_profile()
+        {
+            if (m_profile_pc_samples == 0 || m_profile_pc_counts.Length == 0)
+                return;
+
+            const int TopCount = 8;
+            uint16_t [] topPc = new uint16_t[TopCount];
+            long [] topCount = new long[TopCount];
+
+            for (int pc = 0; pc < m_profile_pc_counts.Length; pc++)
+            {
+                long count = m_profile_pc_counts[pc];
+                if (count <= topCount[TopCount - 1])
+                    continue;
+
+                int insert = TopCount - 1;
+                while (insert > 0 && count > topCount[insert - 1])
+                {
+                    topCount[insert] = topCount[insert - 1];
+                    topPc[insert] = topPc[insert - 1];
+                    insert--;
+                }
+
+                topCount[insert] = count;
+                topPc[insert] = (uint16_t)pc;
+            }
+
+            string summary = "";
+            for (int i = 0; i < TopCount && topCount[i] > 0; i++)
+            {
+                double percent = topCount[i] * 100.0 / m_profile_pc_samples;
+                if (i > 0)
+                    summary += " ";
+                summary += $"{topPc[i]:X4}:{topCount[i]}({percent:0.0}%)";
+            }
+
+            Console.WriteLine($"[MCS-CPU-PC] tag={tag()} samples={m_profile_pc_samples} top={summary}");
+            Array.Clear(m_profile_pc_counts, 0, m_profile_pc_counts.Length);
+            m_profile_pc_samples = 0;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        bool try_spin_xsleena_sub_idle()
+        {
+            if (!m_is_xsleena_sub_idle_cpu || m_state != 0 || m_pc.w != 0x8014 || m_icount.i <= 0)
+                return false;
+
+            if (get_pending_interrupt() != 0)
+                return false;
+
+            m_diexec.spin_until_interrupt();
+            return true;
         }
 
         protected virtual void device_execute_interface_execute_set_input(int inputnum, int state)

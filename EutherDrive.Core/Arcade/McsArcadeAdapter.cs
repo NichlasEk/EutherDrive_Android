@@ -1382,25 +1382,51 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 Math.Abs(screenQuad.texcoords.bl.v - 1.0f) > 0.001f)
                 return false;
 
-            mame.Pointer<byte> source = screenQuad.texture.base_;
-            mame.PointerU16 source16 = new(source);
-            mame.Pointer<mame.rgb_t> palette = screenQuad.texture.palette;
-            mame.PointerU32 destination = _bitmap.pix(0);
-            int sourceRowPixels = (int)screenQuad.texture.rowpixels;
-            int destinationRowPixels = _bitmap.rowpixels();
-
-            for (int y = 0; y < height; y++)
-            {
-                int sourceRow = y * sourceRowPixels;
-                int destinationRow = y * destinationRowPixels;
-                for (int x = 0; x < width; x++)
-                {
-                    ushort pen = source16[sourceRow + x];
-                    destination[destinationRow + x] = palette[pen];
-                }
-            }
+            CopyPalette16ToBgra(
+                screenQuad.texture.base_,
+                screenQuad.texture.palette,
+                _bitmap.pix(0),
+                width,
+                height,
+                (int)screenQuad.texture.rowpixels,
+                _bitmap.rowpixels());
 
             return true;
+        }
+
+        private static unsafe void CopyPalette16ToBgra(
+            mame.Pointer<byte> source,
+            mame.Pointer<mame.rgb_t> palette,
+            mame.PointerU32 destination,
+            int width,
+            int height,
+            int sourceRowPixels,
+            int destinationRowPixels)
+        {
+            byte[] sourceData = source.Buffer.data_raw;
+            byte[] destinationData = destination.Buffer.data_raw;
+            mame.rgb_t[] paletteData = palette.Buffer.data_raw;
+            int sourceOffset = source.Offset;
+            int destinationOffset = destination.Offset;
+            int paletteOffset = palette.Offset;
+
+            fixed (byte* sourceBase = sourceData)
+            fixed (byte* destinationBase = destinationData)
+            {
+                ushort* source16 = (ushort*)(sourceBase + sourceOffset);
+                uint* destination32 = (uint*)(destinationBase + destinationOffset);
+
+                for (int y = 0; y < height; y++)
+                {
+                    int sourceRow = y * sourceRowPixels;
+                    int destinationRow = y * destinationRowPixels;
+                    for (int x = 0; x < width; x++)
+                    {
+                        ushort pen = source16[sourceRow + x];
+                        destination32[destinationRow + x] = paletteData[paletteOffset + pen];
+                    }
+                }
+            }
         }
 
         public void input_update()
