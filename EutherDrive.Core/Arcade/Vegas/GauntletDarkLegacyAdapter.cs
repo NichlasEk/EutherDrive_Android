@@ -463,6 +463,7 @@ internal sealed class MipsR5000Core
         {
             0x1fc039f0UL or 0x1fc039f8UL => 0x1fc03a04,
             0x1fc03a18UL or 0x1fc03a20UL => 0x1fc03a2c,
+            0x1fc03a40UL or 0x1fc03a50UL or 0x1fc03a54UL => 0x1fc03a5c,
             _ => 0
         };
 
