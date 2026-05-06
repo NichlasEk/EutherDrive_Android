@@ -43,6 +43,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     private const float K007232RouteGain = 0.15f;
     private const float Upd7759RouteGain = 0.30f;
     private const float TitleSampleRouteGain = 0.25f;
+    private static readonly byte[] Color5To8 = BuildColor5To8();
 
     private readonly TmntBus _bus = new();
     private readonly TmntSound _sound = new();
@@ -2505,10 +2506,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly ushort[] _boardRegs = new ushort[4];
         [NonSerialized] private readonly byte[] _rom = new byte[0x500000];
         [NonSerialized] private readonly byte[] _decodedRom = new byte[0x500000];
+        [NonSerialized] private readonly byte[] _decodedTilePens = new byte[0x20000 * 8 * 8];
         private static readonly int[] MystwarrTileFlipShifts = { 6, 4, 2, 0 };
         private static readonly int[] MystwarrTilePaletteMask1 = { 0x3f, 0x0f, 0x03, 0x00 };
         private static readonly int[] MystwarrTilePaletteShift2 = { 0, 2, 2, 2 };
         private static readonly int[] MystwarrTilePaletteMask2 = { 0x00, 0x30, 0x3c, 0x3f };
+        private static readonly int[] MystwarrTilePlaneOffsets = { 32, 24, 8, 16, 0 };
         private int _selectedPage;
         private int _selectedPageBase;
         private int _romBank;
@@ -2524,8 +2527,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             Array.Clear(_rom);
             Array.Clear(_decodedRom);
+            Array.Clear(_decodedTilePens);
             Array.Copy(rom, _rom, Math.Min(rom.Length, _rom.Length));
             DecodeMystwarrTiles();
+            DecodeMystwarrTilePens();
         }
 
         public void Reset()
@@ -2699,6 +2704,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private void RenderLayerMameXy(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
         {
             layer &= 3;
+            if ((_regs[4] & (1 << layer)) == 0)
+                return;
+
             int rowStart = (_regs[0x08 + layer] >> 3) & 3;
             int rowSpan = (_regs[0x08 + layer] & 3) + 1;
             int colStart = (_regs[0x0c + layer] >> 3) & 3;
@@ -2708,45 +2716,80 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int dx = ((int)_regs[0x14 + layer] - LayerOffsetX(layer)) & 0xffff;
             int dy = (short)_regs[0x10 + layer] - LayerOffsetY(layer);
             int ay = PositiveMod(dy, mapHeight);
+            int pageColorBase = LayerColorBase[layer];
+            Span<bool> pageBelongsToLayer = stackalloc bool[16];
+            for (int page = 0; page < pageBelongsToLayer.Length; page++)
+                pageBelongsToLayer[page] = AssociatedLayerForPage(page) == layer;
 
             for (int py = 0; py < FrameHeight; py++)
             {
-                int sourceY = PositiveMod(py + 16 + ay, mapHeight);
+                int sourceY = py + 16 + ay;
+                if (sourceY >= mapHeight)
+                    sourceY %= mapHeight;
                 int pageRow = sourceY >> 8;
                 int localY = sourceY & 0xff;
                 int tileY = localY >> 3;
                 int pixelY = localY & 7;
 
-                for (int px = 0; px < FrameWidth; px++)
+                int sourceX = PositiveMod(24 + dx, mapWidth);
+                for (int px = 0; px < FrameWidth;)
                 {
-                    int sourceX = PositiveMod(px + 24 + dx, mapWidth);
                     int pageCol = sourceX >> 9;
                     int page = (((rowStart + pageRow) & 3) << 2) | ((colStart + pageCol) & 3);
-                    int pageLayer = AssociatedLayerForPage(page);
-                    if (pageLayer != layer || !PageUsesTileMode(page))
-                        continue;
-
                     int localX = sourceX & 0x1ff;
-                    int tileX = localX >> 3;
                     int pixelX = localX & 7;
+                    int run = Math.Min(FrameWidth - px, 8 - pixelX);
+                    run = Math.Min(run, mapWidth - sourceX);
+
+                    if (!pageBelongsToLayer[page])
+                    {
+                        px += run;
+                        sourceX += run;
+                        if (sourceX >= mapWidth)
+                            sourceX = 0;
+                        continue;
+                    }
+
+                    int tileX = localX >> 3;
                     int pageBase = page * PageWords;
                     int tileIndex = (tileY * 64 + tileX) & 0x7ff;
                     int attr = _vram[pageBase + tileIndex * 2];
                     int code = _vram[pageBase + tileIndex * 2 + 1];
-                    int pageColorBase = LayerColorBase[pageLayer];
-                    DecodeMystwarrTileAttr(pageLayer, attr, pageColorBase, out int color, out bool tileFlipX, out bool tileFlipY, out int mixCode);
+                    DecodeMystwarrTileAttr(layer, attr, pageColorBase, out int color, out bool tileFlipX, out bool tileFlipY, out int mixCode);
                     if (!TileCategoryMatches(mixCode, tileCategory))
+                    {
+                        px += run;
+                        sourceX += run;
+                        if (sourceX >= mapWidth)
+                            sourceX = 0;
                         continue;
+                    }
                     int alpha = TileAlphaForMixCode(mixAlphas, mixCode);
                     if (alpha <= 0)
+                    {
+                        px += run;
+                        sourceX += run;
+                        if (sourceX >= mapWidth)
+                            sourceX = 0;
                         continue;
-                    int srcX = tileFlipX ? 7 - pixelX : pixelX;
-                    int srcY = tileFlipY ? 7 - pixelY : pixelY;
-                    int pen = Decode5BppPixel(code * 320, srcX, srcY);
-                    if (pen == 0 && !opaque)
-                        continue;
+                    }
 
-                    WriteTilePixel(frameBuffer, px, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
+                    int srcY = tileFlipY ? 7 - pixelY : pixelY;
+                    int tileCode = code & 0x1ffff;
+                    for (int i = 0; i < run; i++)
+                    {
+                        int srcX = tileFlipX ? 7 - (pixelX + i) : pixelX + i;
+                        int pen = Decode5BppPixel(tileCode, srcX, srcY);
+                        if (pen == 0 && !opaque)
+                            continue;
+
+                        WriteTilePixel(frameBuffer, px + i, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
+                    }
+
+                    px += run;
+                    sourceX += run;
+                    if (sourceX >= mapWidth)
+                        sourceX = 0;
                 }
             }
         }
@@ -2817,7 +2860,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         continue;
 
                     int src = x & 0x3f;
-                    int pen = Decode5BppPixel((code + (x >> 6)) * 320, src & 7, src >> 3);
+                    int pen = Decode5BppPixel(code + (x >> 6), src & 7, src >> 3);
                     if (pen == 0 && !opaque)
                         continue;
                     WriteTilePixel(frameBuffer, px, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
@@ -2924,7 +2967,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void DrawTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int color, int sx, int sy, bool flipX, bool flipY, bool opaque, int alpha, int brightness)
         {
-            int baseBit = code * 320;
+            int tileCode = code & 0x1ffff;
             for (int y = 0; y < 8; y++)
             {
                 int py = sy + y;
@@ -2937,7 +2980,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     if ((uint)px >= FrameWidth)
                         continue;
                     int srcX = flipX ? 7 - x : x;
-                    int pen = Decode5BppPixel(baseBit, srcX, srcY);
+                    int pen = Decode5BppPixel(tileCode, srcX, srcY);
                     if (pen == 0 && !opaque)
                         continue;
                     WriteTilePixel(frameBuffer, px, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
@@ -2953,9 +2996,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private static void WriteTilePixel(byte[] frameBuffer, int x, int y, ushort xBgr555, int alpha, int brightness)
         {
-            int r = (xBgr555 & 0x1f) * 255 / 31;
-            int g = ((xBgr555 >> 5) & 0x1f) * 255 / 31;
-            int b = ((xBgr555 >> 10) & 0x1f) * 255 / 31;
+            int offset = y * FrameStride + x * 4;
+            if (alpha >= 255 && brightness >= 255)
+            {
+                frameBuffer[offset] = Color5To8[(xBgr555 >> 10) & 0x1f];
+                frameBuffer[offset + 1] = Color5To8[(xBgr555 >> 5) & 0x1f];
+                frameBuffer[offset + 2] = Color5To8[xBgr555 & 0x1f];
+                frameBuffer[offset + 3] = 0xff;
+                return;
+            }
+
+            int r = Color5To8[xBgr555 & 0x1f];
+            int g = Color5To8[(xBgr555 >> 5) & 0x1f];
+            int b = Color5To8[(xBgr555 >> 10) & 0x1f];
             if (brightness < 255)
             {
                 r = (r * brightness + 127) / 255;
@@ -2965,35 +3018,49 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
             if (alpha >= 255)
             {
-                int solidOffset = y * FrameStride + x * 4;
-                frameBuffer[solidOffset] = (byte)b;
-                frameBuffer[solidOffset + 1] = (byte)g;
-                frameBuffer[solidOffset + 2] = (byte)r;
-                frameBuffer[solidOffset + 3] = 0xff;
+                frameBuffer[offset] = (byte)b;
+                frameBuffer[offset + 1] = (byte)g;
+                frameBuffer[offset + 2] = (byte)r;
+                frameBuffer[offset + 3] = 0xff;
                 return;
             }
 
             int inv = 255 - alpha;
-            int offset = y * FrameStride + x * 4;
             frameBuffer[offset] = (byte)((b * alpha + frameBuffer[offset] * inv + 127) / 255);
             frameBuffer[offset + 1] = (byte)((g * alpha + frameBuffer[offset + 1] * inv + 127) / 255);
             frameBuffer[offset + 2] = (byte)((r * alpha + frameBuffer[offset + 2] * inv + 127) / 255);
             frameBuffer[offset + 3] = 0xff;
         }
 
-        private int Decode5BppPixel(int baseBit, int x, int y)
+        private int Decode5BppPixel(int code, int x, int y)
+            => _decodedTilePens[((code & 0x1ffff) << 6) | ((y & 7) << 3) | (x & 7)];
+
+        private int Decode5BppPixelFromDecodedRom(int code, int x, int y)
         {
-            int[] planeOffsets = { 32, 24, 8, 16, 0 };
-            int bitIndexBase = baseBit + y * 40 + x;
+            int bitIndexBase = code * 320 + y * 40 + x;
             int pen = 0;
             for (int plane = 0; plane < 5; plane++)
             {
-                int bitIndex = bitIndexBase + planeOffsets[plane];
+                int bitIndex = bitIndexBase + MystwarrTilePlaneOffsets[plane];
                 int byteIndex = (bitIndex >> 3) % _decodedRom.Length;
                 int bit = 7 - (bitIndex & 7);
                 pen |= ((_decodedRom[byteIndex] >> bit) & 1) << (4 - plane);
             }
             return pen;
+        }
+
+        private void DecodeMystwarrTilePens()
+        {
+            for (int code = 0; code < 0x20000; code++)
+            {
+                int decodedTileBase = code << 6;
+                for (int y = 0; y < 8; y++)
+                {
+                    int decodedRowBase = decodedTileBase + (y << 3);
+                    for (int x = 0; x < 8; x++)
+                        _decodedTilePens[decodedRowBase + x] = (byte)Decode5BppPixelFromDecodedRom(code, x, y);
+                }
+            }
         }
 
         private void DecodeMystwarrTiles()
@@ -3977,9 +4044,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return;
             }
 
-            int r = (xBgr555 & 0x1f) * 255 / 31;
-            int g = ((xBgr555 >> 5) & 0x1f) * 255 / 31;
-            int b = ((xBgr555 >> 10) & 0x1f) * 255 / 31;
+            int r = Color5To8[xBgr555 & 0x1f];
+            int g = Color5To8[(xBgr555 >> 5) & 0x1f];
+            int b = Color5To8[(xBgr555 >> 10) & 0x1f];
             int inv = 255 - alpha;
             int offset = y * FrameStride + x * 4;
             frameBuffer[offset] = (byte)((b * alpha + frameBuffer[offset] * inv + 127) / 255);
@@ -7332,28 +7399,33 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
     private static void WritePixel(byte[] frameBuffer, int x, int y, ushort xBgr555)
     {
-        int r = (xBgr555 & 0x1f) * 255 / 31;
-        int g = ((xBgr555 >> 5) & 0x1f) * 255 / 31;
-        int b = ((xBgr555 >> 10) & 0x1f) * 255 / 31;
         int offset = y * FrameStride + x * 4;
-        frameBuffer[offset] = (byte)b;
-        frameBuffer[offset + 1] = (byte)g;
-        frameBuffer[offset + 2] = (byte)r;
+        frameBuffer[offset] = Color5To8[(xBgr555 >> 10) & 0x1f];
+        frameBuffer[offset + 1] = Color5To8[(xBgr555 >> 5) & 0x1f];
+        frameBuffer[offset + 2] = Color5To8[xBgr555 & 0x1f];
         frameBuffer[offset + 3] = 0xff;
     }
 
     private static void FillFrame(byte[] frameBuffer, ushort xBgr555)
     {
-        int r = (xBgr555 & 0x1f) * 255 / 31;
-        int g = ((xBgr555 >> 5) & 0x1f) * 255 / 31;
-        int b = ((xBgr555 >> 10) & 0x1f) * 255 / 31;
+        byte r = Color5To8[xBgr555 & 0x1f];
+        byte g = Color5To8[(xBgr555 >> 5) & 0x1f];
+        byte b = Color5To8[(xBgr555 >> 10) & 0x1f];
         for (int offset = 0; offset < frameBuffer.Length; offset += 4)
         {
-            frameBuffer[offset] = (byte)b;
-            frameBuffer[offset + 1] = (byte)g;
-            frameBuffer[offset + 2] = (byte)r;
+            frameBuffer[offset] = b;
+            frameBuffer[offset + 1] = g;
+            frameBuffer[offset + 2] = r;
             frameBuffer[offset + 3] = 0xff;
         }
+    }
+
+    private static byte[] BuildColor5To8()
+    {
+        var table = new byte[32];
+        for (int i = 0; i < table.Length; i++)
+            table[i] = (byte)(i * 255 / 31);
+        return table;
     }
 
     private static void WriteInputState(BinaryWriter writer, ArcadeInputState input)
