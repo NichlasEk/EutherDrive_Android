@@ -33,7 +33,8 @@ The working strategy is still:
 - `3a10669` Skip Gauntlet BIOS secondary cache loop
 - `533c99e` Fast path Gauntlet BIOS text output
 - `3160c40` Initialize Gauntlet R5000 CP0 reset state
-- pending/current pass: Model FPGA config done transition, add `slti/sltiu`, and fast-path deterministic FPGA/delay loops
+- `bda14ab` Advance Gauntlet Vegas FPGA bring-up
+- pending/current pass: add minimal NILE/VRC5074 CPU-register window for `0x1fa00000..0x1fa003ff`
 
 There are unrelated dirty files in the worktree. Do not revert them unless explicitly asked.
 
@@ -100,6 +101,38 @@ lba0Words=0x0000,0x0000
 ```
 
 This is not attract-mode progress yet, but it does move beyond the earlier fixed failure return and into repeated BIOS config/exception/cache init paths.
+
+Current pass result:
+
+- Added a little-endian NILE register bank mapped through physical `0x1fa00000..0x1fa003ff`, visible to BIOS as `0xbfa00000..0xbfa003ff`.
+- This matches MAME's `vrc5074_device::device_start()`, which installs:
+  - CPU registers at `0x1fa00000..0x1fa001ff`
+  - PCI config alias at `0x1fa00200..0x1fa002ff`
+  - serial registers at `0x1fa00300..0x1fa0033f`
+- The main worktree build is currently blocked by unrelated dirty `TmntAdapter.cs` errors.
+- The Vegas patch was build-tested in `/tmp/eutherdrive-gauntlet-nextpass` against a clean `bda14ab` worktree plus the local `Cps1Ym2151.cs` change needed by that baseline:
+
+```text
+Build succeeded.
+322 Warning(s)
+0 Error(s)
+```
+
+Probe against the test worktree reached:
+
+```text
+rom=gauntdl24
+frame=600
+pc=0x00000000bfc00924
+lastOp=0x64420000
+a0=0x0000000080042e64
+a1=0x00000000bfa00000
+v0=0x0000000080000000
+v1=0x0000000026300000
+s8=0x00000000bfc00000
+```
+
+This means the BIOS is now executing the NILE register POST path instead of reading `bfa00000` as unmapped. It then repeatedly enters the exception/POST handler around `0xbfc00880..0xbfc00970`.
 
 ## Probe Setup
 
@@ -206,12 +239,22 @@ Disassembly notes:
 
 The current suspected blocker is no longer the `v0=2` branch itself. The next pass should trace why BIOS returns/re-enters `0x1fc027a0..0x1fc02ab0` after later exception/cache/init activity, and whether `bfa00000`/`bfc80000` scratch/exception-vector behavior needs a real writable mapping.
 
+After the NILE register bank, `bfa00000` is no longer suspected scratch RAM; it is the VRC5074/NILE register window. The current blocker is now exception/POST handling around `0xbfc00880..0xbfc00970`. Focused trace showed repeated execution through:
+
+```text
+bfc00880..bfc008b8
+bfc00900..bfc00970
+```
+
+The trace suggests BIOS is entering the exception vector with `s8`/Cause-like state selecting the path, printing diagnostic text, then returning/re-entering.
+
 ## Recommended Next Steps
 
-1. Add a focused probe mode for `0xbfc01e00..0xbfc04260` and `0x9fc027a0..0x9fc02ab0`, with `ra`, `sp`, `a0-a3`, `t5-t8`, and CP0 Cause/EPC.
-2. Inspect whether writes to `0xbfa00000..0xbfa00200` should land in a writable boot scratch/exception-vector area instead of being treated as unmapped.
-3. Confirm whether `0xbfc80000` reads are a ROM mirror, RAM scratch, or device window in MAME's Vegas/NILE map.
-4. Once config/init stops re-entering, expect the next real blocker to be SIO/IDE/Voodoo self-test rather than CPU loops.
+1. Add better CP0 tracing/properties for `Cause`, `EPC`, `Status`, and `ErrorEPC`; the current trace only prints GPRs.
+2. Decode the exception vector path at `0xbfc00880..0xbfc00970` and confirm which exception code is being handled.
+3. Check whether CP0 operation handling needs `eret`/`deret`/status bit behavior, or whether an earlier memory/device read is raising the path indirectly.
+4. Confirm whether `0xbfc80000` is a ROM mirror, RAM scratch, or device window once the exception source is known.
+5. Once config/init stops re-entering, expect the next real blocker to be SIO/IDE/Voodoo self-test rather than CPU loops.
 
 ## Gotchas
 

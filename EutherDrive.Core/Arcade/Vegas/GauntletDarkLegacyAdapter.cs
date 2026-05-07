@@ -1109,12 +1109,15 @@ internal sealed class VegasMemoryMap
 {
     private const ulong ResetRomBase = 0xffffffffbfc00000UL;
     private const uint ResetRomPhysicalBase = 0x1fc00000;
+    private const uint NileRegisterPhysicalBase = 0x1fa00000;
+    private const int NileRegisterSize = 0x400;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
     private const int MainRamSize = 32 * 1024 * 1024;
     private const uint UnmappedReadValue = 0xffffffffu;
 
     private readonly List<VegasMemoryRange> _ranges = new();
     private readonly byte[] _mainRam = new byte[MainRamSize];
+    private readonly byte[] _nileRegisters = new byte[NileRegisterSize];
     private readonly byte[] _fpgaConfigRegisters = new byte[4];
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM") == "1";
     private byte[] _mainBootRom = Array.Empty<byte>();
@@ -1158,6 +1161,7 @@ internal sealed class VegasMemoryMap
 
     public void Reset()
     {
+        Array.Clear(_nileRegisters);
         Array.Clear(_fpgaConfigRegisters);
         _fpgaConfigSeenLow = false;
         _fpgaConfigDone = false;
@@ -1175,6 +1179,12 @@ internal sealed class VegasMemoryMap
         {
             Trace("read8", address, romValue, "PCI_ID_NILE:rom");
             return romValue;
+        }
+
+        if (TryReadNile8(address, out byte nileValue))
+        {
+            Trace("read8", address, nileValue, "NILE");
+            return nileValue;
         }
 
         if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
@@ -1202,6 +1212,12 @@ internal sealed class VegasMemoryMap
             return value;
         }
 
+        if (TryReadNile32(address, out value))
+        {
+            Trace("read32", address, value, "NILE");
+            return value;
+        }
+
         if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
         {
             value = BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4));
@@ -1215,6 +1231,12 @@ internal sealed class VegasMemoryMap
 
     public ulong Read64(ulong address)
     {
+        if (TryReadNile64(address, out ulong nileValue))
+        {
+            Trace("read64", address, unchecked((uint)nileValue), "NILE");
+            return nileValue;
+        }
+
         if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
         {
             ulong value = BinaryPrimitives.ReadUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8));
@@ -1232,6 +1254,12 @@ internal sealed class VegasMemoryMap
         if (TryWriteFpgaConfig8(address, value))
         {
             Trace("write8", address, value, "FPGA config");
+            return;
+        }
+
+        if (TryWriteNile8(address, value))
+        {
+            Trace("write8", address, value, "NILE");
             return;
         }
 
@@ -1253,6 +1281,12 @@ internal sealed class VegasMemoryMap
 
     public void Write32(ulong address, uint value)
     {
+        if (TryWriteNile32(address, value))
+        {
+            Trace("write32", address, value, "NILE");
+            return;
+        }
+
         if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
         {
             BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4), value);
@@ -1265,6 +1299,12 @@ internal sealed class VegasMemoryMap
 
     public void Write64(ulong address, ulong value)
     {
+        if (TryWriteNile64(address, value))
+        {
+            Trace("write64", address, unchecked((uint)value), "NILE");
+            return;
+        }
+
         if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
         {
             BinaryPrimitives.WriteUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8), value);
@@ -1274,6 +1314,83 @@ internal sealed class VegasMemoryMap
 
         Write32(address, (uint)value);
         Write32(address + 4, (uint)(value >> 32));
+    }
+
+    private bool TryReadNile8(ulong address, out byte value)
+    {
+        if (!TryGetNileRegisterOffset(address, out uint offset))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _nileRegisters[offset];
+        return true;
+    }
+
+    private bool TryReadNile32(ulong address, out uint value)
+    {
+        if (!TryGetNileRegisterOffset(address, out uint offset) || offset + 3 >= NileRegisterSize)
+        {
+            value = UnmappedReadValue;
+            return false;
+        }
+
+        value = BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
+        return true;
+    }
+
+    private bool TryReadNile64(ulong address, out ulong value)
+    {
+        if (!TryGetNileRegisterOffset(address, out uint offset) || offset + 7 >= NileRegisterSize)
+        {
+            value = 0;
+            return false;
+        }
+
+        value = BinaryPrimitives.ReadUInt64LittleEndian(_nileRegisters.AsSpan((int)offset, 8));
+        return true;
+    }
+
+    private bool TryWriteNile8(ulong address, byte value)
+    {
+        if (!TryGetNileRegisterOffset(address, out uint offset))
+            return false;
+
+        _nileRegisters[offset] = value;
+        return true;
+    }
+
+    private bool TryWriteNile32(ulong address, uint value)
+    {
+        if (!TryGetNileRegisterOffset(address, out uint offset) || offset + 3 >= NileRegisterSize)
+            return false;
+
+        BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4), value);
+        return true;
+    }
+
+    private bool TryWriteNile64(ulong address, ulong value)
+    {
+        if (!TryGetNileRegisterOffset(address, out uint offset) || offset + 7 >= NileRegisterSize)
+            return false;
+
+        BinaryPrimitives.WriteUInt64LittleEndian(_nileRegisters.AsSpan((int)offset, 8), value);
+        return true;
+    }
+
+    private static bool TryGetNileRegisterOffset(ulong address, out uint offset)
+    {
+        if (TryTranslatePhysical(address, out uint physical) &&
+            physical >= NileRegisterPhysicalBase &&
+            physical < NileRegisterPhysicalBase + NileRegisterSize)
+        {
+            offset = physical - NileRegisterPhysicalBase;
+            return true;
+        }
+
+        offset = 0;
+        return false;
     }
 
     private bool TryReadFpgaConfig8(ulong address, out byte value)
