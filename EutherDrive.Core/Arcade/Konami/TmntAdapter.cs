@@ -4465,8 +4465,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _outputFrameAccumulator = reader.ReadDouble();
             _z80CycleAccumulator = reader.ReadDouble();
             _pendingRenderCycles = reader.ReadInt32();
-            if (hasTmnt2Sound)
-                _k053260.LoadState(reader, version);
+            _k053260.LoadState(reader, version);
             if (version >= 5)
             {
                 bool hasMystwarrSound = reader.ReadBoolean();
@@ -4921,7 +4920,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address is >= 0xe000 and <= 0xe22f)
             {
                 FlushPendingAudioStream();
-                _k054539_1.Write(address - 0xe000, value);
+                _k054539_1.Write(address - 0xe000, value, OnK054539Timer);
                 return;
             }
             if (address is >= 0xe230 and <= 0xe3ff)
@@ -5595,7 +5594,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return _regs[offset];
         }
 
-        public void Write(int offset, byte value)
+        public void Write(int offset, byte value, Action<bool>? timerHandler = null)
         {
             if ((uint)offset >= _regs.Length)
                 return;
@@ -5639,7 +5638,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 case 0x227:
                     _timerState = 0;
                     _timerCycleAccumulator = 0;
-                    _timerPeriodChipCycles = 2_764_800.0 / Math.Max(1, 38 + value);
+                    _timerPeriodChipCycles = (2.0 * 384.0 * 14_400.0) / Math.Max(1, 38 + value);
+                    timerHandler?.Invoke(false);
                     break;
 
                 case 0x22d:
@@ -5658,7 +5658,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
                 case 0x22f:
                     if ((value & 0x20) == 0)
+                    {
                         _timerState = 0;
+                        timerHandler?.Invoke(false);
+                    }
                     break;
             }
 
