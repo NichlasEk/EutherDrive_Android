@@ -3526,10 +3526,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int lineDataOffset;
             int dstWrapMask;
             int passes;
+            int clipMinX = MysticVisibleOriginX;
+            int clipMaxX = MysticVisibleOriginX + MysticVisibleWidth - 1;
+            int clipMinY = 15;
+            int clipMaxY = clipMinY + FrameHeight - 1;
             if ((orientation & OrientationSwapXy) == 0)
             {
-                lineStart = 0;
-                lineEnd = FrameHeight - 1;
+                lineStart = clipMinY;
+                lineEnd = clipMaxY;
                 scrollCorr = mapScrollX;
                 lineDataOffset = mapScrollY;
                 if ((orientation & OrientationFlipX) != 0)
@@ -3537,15 +3541,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if ((orientation & OrientationFlipY) != 0)
                 {
                     lineDataAdv = -lineDataAdv;
-                    lineDataOffset += FrameHeight - 1;
+                    lineDataOffset += clipMaxY;
                 }
                 dstWrapMask = ~0;
                 passes = 1;
             }
             else
             {
-                lineStart = 0;
-                lineEnd = MysticVisibleWidth - 1;
+                lineStart = clipMinX;
+                lineEnd = clipMaxX;
                 scrollCorr = mapScrollY;
                 lineDataOffset = mapScrollX;
                 if ((orientation & OrientationFlipY) != 0)
@@ -3557,7 +3561,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if ((orientation & OrientationFlipX) != 0)
                 {
                     lineDataAdv = -lineDataAdv;
-                    lineDataOffset += FrameWidth - 1;
+                    lineDataOffset += clipMaxX;
                 }
                 dstWrapMask = srcClipMask != 0 ? dstHeight - 1 : ~0;
                 passes = srcClipMask != 0 ? 2 : 1;
@@ -3584,22 +3588,23 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int sourceBase = (pixelOffset << 8) % (_rom.Length * 2);
                 for (int pass = 0; pass < passes; pass++)
                 {
-                    DrawScanline(frameBuffer, palette, paletteBase, sourceBase, linePos, scroll, zoom, srcClipMask, srcWrapMask, orientation);
+                    DrawScanline(frameBuffer, palette, paletteBase, sourceBase, linePos, scroll, zoom,
+                        srcClipMask, srcWrapMask, orientation, clipMinX, clipMaxX, clipMinY, clipMaxY);
                     scroll -= dstHeight;
                 }
             }
         }
 
         private void DrawScanline(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int paletteBase, int sourceBase, int linePos,
-            int scroll, int zoom, int clipMask, int wrapMask, int orientation)
+            int scroll, int zoom, int clipMask, int wrapMask, int orientation, int clipMinX, int clipMaxX, int clipMinY, int clipMaxY)
         {
             const int precision = 16;
             const int half = 1 << (precision - 1);
 
             bool swap = (orientation & OrientationSwapXy) != 0;
             bool flip = swap ? (orientation & OrientationFlipY) != 0 : (orientation & OrientationFlipX) != 0;
-            int dstMin = 0;
-            int dstMax = swap ? FrameHeight - 1 : MysticVisibleWidth - 1;
+            int dstMin = swap ? clipMinY : clipMinX;
+            int dstMax = swap ? clipMaxY : clipMaxX;
             int dstStart;
             int dstLength;
             int srcFx;
@@ -3661,8 +3666,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int pen = ReadUnpackedPixel(sourceBase + (((srcFx >> precision) & srcMask) & (_rom.Length * 2 - 1)));
                 if (pen == 0)
                     continue;
-                int px = swap ? linePos : dstStart + i;
-                int py = swap ? dstStart + i : linePos;
+                int px = (swap ? linePos : dstStart + i) - clipMinX;
+                int py = (swap ? dstStart + i : linePos) - clipMinY;
                 if ((uint)px >= FrameWidth || (uint)py >= FrameHeight)
                     continue;
                 TmntAdapter.WritePixel(frameBuffer, px, py, palette[(paletteBase + pen) & 0x7ff]);
