@@ -347,6 +347,7 @@ internal sealed class MipsR5000Core
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU") == "1";
     private readonly ulong? _tracePcMin = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN");
     private readonly ulong? _tracePcMax = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX");
+    private readonly int _traceInstructionLimit = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", int.MaxValue);
     private readonly int _stepBudget = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", 2048);
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
     private bool _halted;
@@ -355,6 +356,7 @@ internal sealed class MipsR5000Core
     private bool _hasImmediatePcOverride;
     private ulong _immediatePcOverride;
     private ulong _instructionCounter;
+    private int _traceInstructionCount;
     private ulong _hi;
     private ulong _lo;
 
@@ -365,6 +367,10 @@ internal sealed class MipsR5000Core
 
     public ulong Pc { get; private set; }
     public uint LastFetchedInstruction { get; private set; }
+    public ulong Cp0Status => _cp0[12];
+    public ulong Cp0Cause => _cp0[13];
+    public ulong Cp0Epc => _cp0[14];
+    public ulong Cp0ErrorEpc => _cp0[30];
 
     public void Reset()
     {
@@ -385,6 +391,7 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
         _immediatePcOverride = 0;
         _instructionCounter = 0;
+        _traceInstructionCount = 0;
         _hi = 0;
         _lo = 0;
     }
@@ -420,8 +427,7 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
 
-        if (ShouldTrace(pc))
-            Console.WriteLine($"[GAUNTDL:CPU] #{_instructionCounter} pc={pc:x16} op={op:x8} {DisassembleBrief(op)} a0={_gpr[4]:x16} a1={_gpr[5]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16}");
+        TraceInstruction(pc, op);
 
         Execute(pc, op);
         _gpr[0] = 0;
@@ -1022,11 +1028,26 @@ internal sealed class MipsR5000Core
         _halted = true;
         Console.WriteLine($"[GAUNTDL:CPU] halt pc={pc:x16} op={op:x8} reason={reason}");
         Console.WriteLine($"[GAUNTDL:CPU] ra={_gpr[31]:x16} sp={_gpr[29]:x16} gp={_gpr[28]:x16} k0={_gpr[26]:x16} k1={_gpr[27]:x16}");
+        Console.WriteLine($"[GAUNTDL:CPU] status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16}");
+    }
+
+    private void TraceInstruction(ulong pc, uint op)
+    {
+        if (!ShouldTrace(pc))
+            return;
+
+        _traceInstructionCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:CPU] #{_instructionCounter} pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+            $"st={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16}");
     }
 
     private bool ShouldTrace(ulong pc)
     {
         if (!_traceEnabled)
+            return false;
+        if (_traceInstructionCount >= _traceInstructionLimit)
             return false;
         if (_tracePcMin.HasValue && pc < _tracePcMin.Value)
             return false;

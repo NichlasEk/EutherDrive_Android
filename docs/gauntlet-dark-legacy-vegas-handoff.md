@@ -239,21 +239,77 @@ Disassembly notes:
 
 The current suspected blocker is no longer the `v0=2` branch itself. The next pass should trace why BIOS returns/re-enters `0x1fc027a0..0x1fc02ab0` after later exception/cache/init activity, and whether `bfa00000`/`bfc80000` scratch/exception-vector behavior needs a real writable mapping.
 
-After the NILE register bank, `bfa00000` is no longer suspected scratch RAM; it is the VRC5074/NILE register window. The current blocker is now exception/POST handling around `0xbfc00880..0xbfc00970`. Focused trace showed repeated execution through:
+After the NILE register bank, `bfa00000` is no longer suspected scratch RAM; it is the VRC5074/NILE register window. Focused trace showed repeated execution through:
 
 ```text
 bfc00880..bfc008b8
 bfc00900..bfc00970
 ```
 
-The trace suggests BIOS is entering the exception vector with `s8`/Cause-like state selecting the path, printing diagnostic text, then returning/re-entering.
+The first read of the ROM text pointer at `0xbfc42e64` was the normal banner:
+
+```text
+EPROM Boot code. Version: Dec 14 1999 13:37:53
+```
+
+The latest 120-frame probe now ends at:
+
+```text
+pc=0x00000000bfc03968
+lastOp=0x11200003
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+a0=0x000000000000000d a1=0x00000000bfa00000 v0=0x00000000bfc009b0 v1=0x0000000080000000 s8=0x00000000bfc00000
+romTableStart=0xbfa00000
+romTableEnd=0x00000000
+```
+
+This means the current loop is not an emulated CPU exception: CP0 `Cause`, `EPC`, and `ErrorEPC` remain zero. The repeated path is BIOS POST/print/control flow around `0xbfc03940..0xbfc03990`, calling through `0xbfc009b0`.
+
+Focused trace of the loop:
+
+```text
+bfc03940 nop
+bfc03944 addiu t5,zero,0x10
+bfc03948 daddu t6,zero,zero
+bfc0394c daddu t7,zero,zero
+bfc03950 lui at,0x8000
+bfc03954 and t1,t0,at
+bfc03958 bne t1,zero,...
+bfc03960 andi t1,t0,0x0008
+bfc03964 beq t1,zero,...
+bfc0396c lui t6,0x0004
+bfc03970 addiu t7,zero,0x20
+bfc03974 jr ra
+bfc03988 daddu ra,v0,zero
+bfc0398c mfc0 v0,Status
+bfc03990 lui v1,0x0001
+```
+
+The current blocker is therefore likely missing or inaccurate CP0 `Status`/interrupt bit behavior, not a memory-map exception. The loop sees `Status = 0x34400000`, tests the `0x80000000` and `0x00000008` bits, then returns with `t6=0x00040000` and `t7=0x20`.
+
+## Current Trace/Debug Additions
+
+`MipsR5000Core` now exposes:
+
+- `Cp0Status`
+- `Cp0Cause`
+- `Cp0Epc`
+- `Cp0ErrorEpc`
+
+CPU trace lines and unsupported-op halts now include those CP0 values. CPU trace also accepts:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT=200
+```
+
+Use it with a narrow PC window. Without a limit, this BIOS loop is too noisy.
 
 ## Recommended Next Steps
 
-1. Add better CP0 tracing/properties for `Cause`, `EPC`, `Status`, and `ErrorEPC`; the current trace only prints GPRs.
-2. Decode the exception vector path at `0xbfc00880..0xbfc00970` and confirm which exception code is being handled.
-3. Check whether CP0 operation handling needs `eret`/`deret`/status bit behavior, or whether an earlier memory/device read is raising the path indirectly.
-4. Confirm whether `0xbfc80000` is a ROM mirror, RAM scratch, or device window once the exception source is known.
+1. Decode the `0xbfc03940..0xbfc03990` status helper and compare against R5000 reset/status semantics.
+2. Fix CP0 `Status` behavior if needed; current value `0x34400000` is probably missing the post-reset/current interrupt-enable state BIOS expects.
+3. Re-run the 120-frame probe first, then only use a 600-frame probe after the PC moves beyond `0xbfc03968`.
+4. Confirm whether `0xbfc80000` is a ROM mirror, RAM scratch, or device window once the CP0 status loop moves.
 5. Once config/init stops re-entering, expect the next real blocker to be SIO/IDE/Voodoo self-test rather than CPU loops.
 
 ## Gotchas
