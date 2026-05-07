@@ -15,6 +15,7 @@ EutherDrive currently has active UI integration for:
 - Game Gear
 - CPS1 arcade
 - CPS2 arcade
+- MAME-backed arcade
 - Sega System 32 arcade
 - Konami arcade
 - Game Boy
@@ -64,10 +65,12 @@ Arcade support is currently driven by per-board adapters and known-good ROM set 
 | --- | --- | --- |
 | CPS1 | `dino.zip` | Boots and plays through the dedicated CPS1 adapter path |
 | CPS2 | `ddsom.zip` | Boots through the dedicated CPS2 adapter path |
+| MAME-backed Technos | `xsleena.zip`, `xsleenaj.zip`, `solrwarr.zip`, `xsleenab.zip` | Xain'd Sleena boots through the MCS/MAME-backed arcade adapter with video, audio, savestates, and current headless performance work |
 | Sega System 32 | `darkedge.zip` | Boots and plays with the current System 32 adapter; some game-specific video behavior remains imperfect |
 | Konami TMNT | `tmnt.zip`, `tmntu.zip`, `tmntj.zip`, `tmhta.zip`, `tmnt2p.zip`, `tmht2p.zip` | Boots and plays through the Konami TMNT adapter |
 | Konami TMNT2 | `tmnt2.zip` | Boots and plays with graphics, controls, savestates, and K053260/YM2151 audio wired up |
-| Konami Sunset Riders | `ssriders.zip` | Bring-up in progress on the TMNT2-style Konami hardware path |
+| Konami Sunset Riders | `ssriders.zip` | Boots and renders through the TMNT2-style Konami hardware path; gameplay/savestate validation is still in progress |
+| Konami Mystic Warriors | `mystwarr.zip` | Boots and plays through the Konami GX/Pre-GX path with controls, corrected 5bpp tile colors, sprite rendering, K054539 music/voice audio, savestates, and recent tile-render performance work; remaining work is compatibility polish rather than initial bring-up |
 
 ## Savestates
 Savestates are now a first-class feature in the project rather than a one-off debug path.
