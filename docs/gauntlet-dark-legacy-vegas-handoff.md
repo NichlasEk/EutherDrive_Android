@@ -252,7 +252,7 @@ The first read of the ROM text pointer at `0xbfc42e64` was the normal banner:
 EPROM Boot code. Version: Dec 14 1999 13:37:53
 ```
 
-The latest 120-frame probe now ends at:
+Older 120-frame probe before the CP0/NILE/UART pass ended at:
 
 ```text
 pc=0x00000000bfc03968
@@ -285,7 +285,43 @@ bfc0398c mfc0 v0,Status
 bfc03990 lui v1,0x0001
 ```
 
-The current blocker is therefore likely missing or inaccurate CP0 `Status`/interrupt bit behavior, not a memory-map exception. The loop sees `Status = 0x34400000`, tests the `0x80000000` and `0x00000008` bits, then returns with `t6=0x00040000` and `t7=0x20`.
+That blocker moved after the current pass. The loop was caused by incomplete CP0 transfer behavior, not a memory-map exception.
+
+## 2026-05-07 Next Pass Result
+
+This pass added three bring-up fixes:
+
+- CP0 `mfc0/mtc0` now use the 32-bit transfer path, while `dmfc0/dmtc0` keep the 64-bit path.
+- CP0 `Status` writes now apply MAME's R4000/R5000 write mask: `data & ~0x01a80000`.
+- CP0 `Cause` writes only preserve software interrupt bits, and `Compare` clears the timer interrupt bit.
+- The BIOS NILE init table at `0xbfc01cc8` is fast-pathed through the loop at `0xbfc01f08`.
+- The TLB invalid-entry helper at `0xbfc041b8` is fast-pathed as a no-op TLB write with IE cleared.
+- The minimal NILE UART line-status read at `0xbfa00328` now returns `0x60` (`THRE | TEMT`), letting BIOS serial output proceed.
+
+Relevant MAME references:
+
+- `r4000_base_device::cp0_set()` masks CP0 `Status` writes with `~0x01a80000`.
+- `vrc5074_device::serial_r()` delegates the `0x1fa00300..0x1fa0033f` window to an INS8250 UART.
+
+Latest 120-frame probe after this pass:
+
+```text
+rom=gauntdl24
+frame=120
+pc=0x00000000bfc0085c
+lastOp=0x40804800
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+a0=0x0000000002ee0000 a1=0xffffffffffffff99 v0=0x000000005f300000 v1=0x000000000000007d s8=0x00000000bfc00000
+```
+
+This is forward progress from:
+
+- `bfc03968` CP0 status helper
+- `bfc01f10` NILE init table
+- `bfc041d8` TLB invalid-entry helper
+- `bfc02bbc` UART transmit-ready wait
+
+The next suspected blocker is now around `0xbfc00850..0xbfc00870`. It writes CP0 `Count`/`Cause`, then jumps into the BIOS POST/exception-vector path. CP0 `Cause`, `EPC`, and `ErrorEPC` remain zero at the 120-frame endpoint, so do not assume this is a real emulated exception yet.
 
 ## Current Trace/Debug Additions
 
@@ -306,10 +342,10 @@ Use it with a narrow PC window. Without a limit, this BIOS loop is too noisy.
 
 ## Recommended Next Steps
 
-1. Decode the `0xbfc03940..0xbfc03990` status helper and compare against R5000 reset/status semantics.
-2. Fix CP0 `Status` behavior if needed; current value `0x34400000` is probably missing the post-reset/current interrupt-enable state BIOS expects.
-3. Re-run the 120-frame probe first, then only use a 600-frame probe after the PC moves beyond `0xbfc03968`.
-4. Confirm whether `0xbfc80000` is a ROM mirror, RAM scratch, or device window once the CP0 status loop moves.
+1. Trace `0xbfc00850..0xbfc00890` with `EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT=200` and include GPRs beyond `a0/a1/v0/v1` if needed.
+2. Decode whether `0xbfc00850` is just another delay/POST helper that can be fast-pathed, or whether it depends on CP0 `Count`, `Cause`, or `ErrorEPC` semantics.
+3. Re-run the 120-frame probe first; only use a 600-frame probe once PC moves beyond `0xbfc0085c`.
+4. Confirm whether `0xbfc80000` is a ROM mirror, RAM scratch, or device window once this POST path moves.
 5. Once config/init stops re-entering, expect the next real blocker to be SIO/IDE/Voodoo self-test rather than CPU loops.
 
 ## Gotchas

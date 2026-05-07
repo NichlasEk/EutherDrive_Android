@@ -350,6 +350,8 @@ internal sealed class MipsR5000Core
     private readonly int _traceInstructionLimit = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", int.MaxValue);
     private readonly int _stepBudget = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", 2048);
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
+    private const ulong Cp0StatusWriteMask = 0xfffffffffe57ffffUL;
+    private const ulong Cp0CauseSoftwareInterruptMask = 0x00000300UL;
     private bool _halted;
     private bool _hasPendingBranch;
     private ulong _pendingBranchTarget;
@@ -413,6 +415,10 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownCacheLoop(pc))
             return;
         if (TryFastPathKnownBiosTextRoutine(pc))
+            return;
+        if (TryFastPathKnownNileInitTable(pc))
+            return;
+        if (TryFastPathKnownTlbWriteHelper(pc))
             return;
         if (TryFastPathKnownFpgaLoadBlock(pc))
             return;
@@ -526,6 +532,53 @@ internal sealed class MipsR5000Core
         _gpr[5] = end;
         _gpr[10] = 8;
         Pc = (pc & 0xffffffffe0000000UL) | 0x1fc02a04UL;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownNileInitTable(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc01f08UL or 0x1fc01f10UL))
+            return false;
+
+        ulong cursor = _gpr[4];
+        ulong tableOffset = cursor & 0x1fffffffUL;
+        if (tableOffset is < 0x1fc01cc8UL or > 0x1fc01ee0UL)
+            return false;
+
+        for (int i = 0; i < 128; i++)
+        {
+            uint address = _memory.Read32(cursor);
+            if (address == 0)
+            {
+                _gpr[4] = cursor;
+                Pc = _gpr[31];
+                CompleteFastPathStep();
+                return true;
+            }
+
+            uint low = _memory.Read32(cursor + 4);
+            uint high = _memory.Read32(cursor + 8);
+            ulong value = (unchecked((ulong)(long)(int)low) & 0xffffffff00000000UL)
+                | (unchecked((ulong)(long)(int)high) << 32);
+            _memory.Write64(unchecked((ulong)(long)(int)address), value);
+            cursor += 12;
+        }
+
+        return false;
+    }
+
+    private bool TryFastPathKnownTlbWriteHelper(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x1fc041b8UL)
+            return false;
+
+        _cp0[12] &= ~1UL;
+        _cp0[0] = _gpr[4] & 0x3fUL;
+        _cp0[2] = 0;
+        _cp0[3] = 0;
+        Pc = _gpr[31];
         CompleteFastPathStep();
         return true;
     }
@@ -942,19 +995,51 @@ internal sealed class MipsR5000Core
     {
         switch (rs)
         {
-            case 0x00:
-            case 0x01:
+            case 0x00: // mfc0
+                _gpr[rt] = unchecked((ulong)(long)(int)ReadCp0(rd));
+                break;
+            case 0x01: // dmfc0
                 _gpr[rt] = _cp0[rd];
                 break;
-            case 0x04:
-            case 0x05:
-                _cp0[rd] = _gpr[rt];
+            case 0x04: // mtc0
+                WriteCp0(rd, unchecked((uint)_gpr[rt]));
+                break;
+            case 0x05: // dmtc0
+                WriteCp0(rd, _gpr[rt]);
                 break;
             case 0x10:
                 ExecuteCop0Operation(op);
                 break;
             default:
                 HaltUnsupported(Pc, op, $"cop0 rs={rs:x2}");
+                break;
+        }
+    }
+
+    private ulong ReadCp0(int register)
+    {
+        return register == 9 ? _cp0[9] : _cp0[register];
+    }
+
+    private void WriteCp0(int register, ulong value)
+    {
+        switch (register)
+        {
+            case 11: // Compare
+                _cp0[11] = (uint)value;
+                _cp0[13] &= ~0x00008000UL; // Clear timer interrupt pending.
+                break;
+            case 12: // Status
+                _cp0[12] = (uint)value & Cp0StatusWriteMask;
+                break;
+            case 13: // Cause
+                _cp0[13] = (_cp0[13] & ~Cp0CauseSoftwareInterruptMask) | (value & Cp0CauseSoftwareInterruptMask);
+                break;
+            case 16: // Config
+                _cp0[16] = (_cp0[16] & ~0x80000000UL) | (value & 0x80000000UL);
+                break;
+            default:
+                _cp0[register] = value;
                 break;
         }
     }
@@ -1132,6 +1217,8 @@ internal sealed class VegasMemoryMap
     private const uint ResetRomPhysicalBase = 0x1fc00000;
     private const uint NileRegisterPhysicalBase = 0x1fa00000;
     private const int NileRegisterSize = 0x400;
+    private const uint NileUartLineStatusOffset = 0x328;
+    private const byte NileUartTransmitReady = 0x60;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
     private const int MainRamSize = 32 * 1024 * 1024;
     private const uint UnmappedReadValue = 0xffffffffu;
@@ -1343,6 +1430,12 @@ internal sealed class VegasMemoryMap
         {
             value = 0;
             return false;
+        }
+
+        if (offset == NileUartLineStatusOffset)
+        {
+            value = NileUartTransmitReady;
+            return true;
         }
 
         value = _nileRegisters[offset];
