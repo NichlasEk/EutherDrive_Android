@@ -3545,7 +3545,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             else
             {
                 lineStart = 0;
-                lineEnd = FrameWidth - 1;
+                lineEnd = MysticVisibleWidth - 1;
                 scrollCorr = mapScrollY;
                 lineDataOffset = mapScrollX;
                 if ((orientation & OrientationFlipY) != 0)
@@ -3599,7 +3599,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             bool swap = (orientation & OrientationSwapXy) != 0;
             bool flip = swap ? (orientation & OrientationFlipY) != 0 : (orientation & OrientationFlipX) != 0;
             int dstMin = 0;
-            int dstMax = swap ? FrameHeight - 1 : FrameWidth - 1;
+            int dstMax = swap ? FrameHeight - 1 : MysticVisibleWidth - 1;
             int dstStart;
             int dstLength;
             int srcFx;
