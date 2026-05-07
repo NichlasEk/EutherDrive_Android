@@ -2,6 +2,8 @@
 
 Date: 2026-05-06
 
+Update: 2026-05-07
+
 ## Scope
 
 This pass continued the Gauntlet Dark Legacy / Midway Vegas bring-up in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`.
@@ -31,6 +33,7 @@ The working strategy is still:
 - `3a10669` Skip Gauntlet BIOS secondary cache loop
 - `533c99e` Fast path Gauntlet BIOS text output
 - `3160c40` Initialize Gauntlet R5000 CP0 reset state
+- pending/current pass: Model FPGA config done transition, add `slti/sltiu`, and fast-path deterministic FPGA/delay loops
 
 There are unrelated dirty files in the worktree. Do not revert them unless explicitly asked.
 
@@ -42,7 +45,7 @@ Core builds:
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
 ```
 
-Last known result:
+Last known committed result before the 2026-05-07 pass:
 
 - Build succeeded.
 - Warnings remain existing project warnings.
@@ -67,7 +70,36 @@ readStatus=0x48
 lba0Words=0x0000,0x0000
 ```
 
-This is forward progress from earlier cache/text stalls, but not yet past BIOS/FPGA/SIO bring-up.
+This was forward progress from earlier cache/text stalls, but not yet past BIOS/FPGA/SIO bring-up.
+
+2026-05-07 pass result:
+
+- `dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly` succeeds.
+- The fixed `a1600002` status model gets past the old `v0=2` fail path.
+- Missing CPU opcodes `slti/sltiu` were implemented after BIOS halted on `opcode 0x0a`.
+- The BIOS FPGA bit-bang loop at `0x1fc02918` is fast-pathed per block by advancing `a1` to `a2` and returning at `0x1fc02a04`.
+- The CP0 count delay loop at `0x1fc01a20..0x1fc01a30` is fast-pathed back to `ra`.
+
+Latest 600-frame probe after the current pass:
+
+```text
+rom=gauntdl24
+frame=600
+pc=0x000000009fc028a8
+lastOp=0x34840002
+a0=0x00000000a1600002
+a1=0x0000000000007e81
+v0=0x000000008e300000
+v1=0x000000000000007d
+s8=0x000000009fc00000
+geometry=DiskGeometry { Cylinders = 34367, Heads = 5, SectorsPerTrack = 26, BytesPerSector = 512, TotalSectors = 4467710 }
+identifyStatus=0x48
+identifyWord0=0x0040
+readStatus=0x48
+lba0Words=0x0000,0x0000
+```
+
+This is not attract-mode progress yet, but it does move beyond the earlier fixed failure return and into repeated BIOS config/exception/cache init paths.
 
 ## Probe Setup
 
@@ -131,27 +163,25 @@ Reset now initializes the core CP0 registers using MAME-compatible R5000 values:
 
 This did not change the final 600-frame PC, but it is correct baseline state and did not regress the probe.
 
-## What Was Tried And Reverted
+## FPGA Config Status Model
 
-A minimal FPGA config stub was tried for:
+A minimal FPGA config model is now committed for:
 
 - `0xa1600000..0xa1600003`
-- `0xa1000000`
 
-The idea was to make `0xa1600002` report `CFG_DONE`. Memory trace confirmed the stub was hit:
+Focused CPU trace showed the earlier fixed return `v0=2` came from the second status check after BIOS toggles `CONF` through `0xa1600001`.
 
-```text
-write8 00000000a1600001 00000001 FPGA config
-write8 00000000a1600001 000000fe FPGA config
-read8  00000000a1600002 00000001 FPGA config
-write8 00000000a1600000 ... FPGA config
-```
+Important behavior:
 
-But BIOS still reset/re-entered the same boot sequence and still ended around `0x9fc00b70`. The stub was removed and not committed.
+- First read of `0xa1600002` after writing `0xfe` to `0xa1600001` must have bit 1 clear.
+- After BIOS writes bit 0 high again (`0xff`) to `0xa1600001`, `0xa1600002 & 0x02` must become non-zero.
+- Returning `0x01` was wrong; the meaningful done bit for this path is `0x02`.
+
+The current implementation models only this proven state transition. It does not yet model the `0xa1000000` data sink except by skipping the deterministic BIOS bit-bang loop.
 
 ## Current Suspected Blocker
 
-The current failure path is around:
+The old fixed failure path was around:
 
 ```text
 0x1fc00ae8..0x1fc00b88
@@ -174,20 +204,19 @@ Disassembly notes:
 - It calls delay/timer routine `0x1fc019c4` repeatedly.
 - Error code `2` appears in the path around `0x1fc028b8..0x1fc02900`, which corresponds to status low during/after config pulse.
 
-The next pass should trace CPU through `0x1fc027a0..0x1fc02ab0` with registers, not only memory. We need to know exactly which branch sets `v0=2`.
+The current suspected blocker is no longer the `v0=2` branch itself. The next pass should trace why BIOS returns/re-enters `0x1fc027a0..0x1fc02ab0` after later exception/cache/init activity, and whether `bfa00000`/`bfc80000` scratch/exception-vector behavior needs a real writable mapping.
 
 ## Recommended Next Steps
 
-1. Add a focused probe mode that stops when PC enters `0x9fc027a0..0x9fc02ab0` and dumps registers every branch.
-2. Confirm whether the `0xa1600002` status model needs bit 0, bit 1, or state transitions rather than a fixed value.
-3. Inspect MAME Vegas/NILE mapping for the `0xa1000000` and `0xa1600000` boot FPGA/status area. It may not be plain CPU RAM or normal CS range.
-4. Once FPGA/config passes, expect the next blocker to be SIO/IDE/Voodoo self-test rather than CPU loops.
-5. Avoid committing any FPGA/status stub until the probe shows that it changes the final PC past the current failure route.
+1. Add a focused probe mode for `0xbfc01e00..0xbfc04260` and `0x9fc027a0..0x9fc02ab0`, with `ra`, `sp`, `a0-a3`, `t5-t8`, and CP0 Cause/EPC.
+2. Inspect whether writes to `0xbfa00000..0xbfa00200` should land in a writable boot scratch/exception-vector area instead of being treated as unmapped.
+3. Confirm whether `0xbfc80000` reads are a ROM mirror, RAM scratch, or device window in MAME's Vegas/NILE map.
+4. Once config/init stops re-entering, expect the next real blocker to be SIO/IDE/Voodoo self-test rather than CPU loops.
 
 ## Gotchas
 
 - Do not use the abandoned middle-of-text-loop fastpath. It repeats the boot string and breaks return flow.
-- Do not assume `a1600002 = 0x01` is sufficient. Trace showed that it was read, but boot still failed.
+- Do not use `a1600002 = 0x01`; trace proved the done bit needed by this BIOS path is `0x02`.
 - The probe output can be slow because each frame runs `200000` CPU steps. Use progress every 100 frames or targeted trace windows.
 - `EUTHERDRIVE_GAUNTDL_TRACE_MEM=1` is very noisy because ROM fetches are traced too.
 - There are unrelated dirty files in the repo, including CPS1/TMNT/32X/SegaCD/UI/README work. Keep Gauntlet edits isolated.

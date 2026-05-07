@@ -168,6 +168,7 @@ internal sealed class GauntletDarkLegacyMachine
 
     public void Reset()
     {
+        MemoryMap.Reset();
         Cpu.Reset();
         Disk.Reset();
         Sio.Reset();
@@ -406,6 +407,10 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownBiosTextRoutine(pc))
             return;
+        if (TryFastPathKnownFpgaLoadBlock(pc))
+            return;
+        if (TryFastPathKnownCountDelay(pc))
+            return;
 
         uint op = _memory.Read32(pc);
         LastFetchedInstruction = op;
@@ -502,6 +507,38 @@ internal sealed class MipsR5000Core
         };
     }
 
+    private bool TryFastPathKnownFpgaLoadBlock(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x1fc02918UL)
+            return false;
+
+        ulong cursor = _gpr[5];
+        ulong end = _gpr[6];
+        if (cursor >= end || end - cursor > 0x00100000UL)
+            return false;
+
+        _gpr[5] = end;
+        _gpr[10] = 8;
+        Pc = (pc & 0xffffffffe0000000UL) | 0x1fc02a04UL;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownCountDelay(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc01a20UL or 0x1fc01a24UL or 0x1fc01a28UL or 0x1fc01a30UL))
+            return false;
+
+        ulong returnAddress = _gpr[31];
+        if ((returnAddress & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL)
+            return false;
+
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
     private bool FastPathInlineBiosText()
     {
         ulong cursor = _gpr[31];
@@ -592,6 +629,12 @@ internal sealed class MipsR5000Core
             case 0x08:
             case 0x09:
                 _gpr[rt] = (ulong)((long)_gpr[rs] + simm);
+                break;
+            case 0x0a:
+                _gpr[rt] = unchecked((long)_gpr[rs]) < simm ? 1UL : 0UL;
+                break;
+            case 0x0b:
+                _gpr[rt] = _gpr[rs] < unchecked((ulong)(long)simm) ? 1UL : 0UL;
                 break;
             case 0x0c:
                 _gpr[rt] = _gpr[rs] & uimm;
@@ -1010,6 +1053,8 @@ internal sealed class MipsR5000Core
             0x07 => "bgtz",
             0x08 => "addi",
             0x09 => "addiu",
+            0x0a => "slti",
+            0x0b => "sltiu",
             0x0c => "andi",
             0x0d => "ori",
             0x0e => "xori",
@@ -1064,17 +1109,21 @@ internal sealed class VegasMemoryMap
 {
     private const ulong ResetRomBase = 0xffffffffbfc00000UL;
     private const uint ResetRomPhysicalBase = 0x1fc00000;
+    private const ulong FpgaConfigBase = 0x00000000a1600000UL;
     private const int MainRamSize = 32 * 1024 * 1024;
     private const uint UnmappedReadValue = 0xffffffffu;
 
     private readonly List<VegasMemoryRange> _ranges = new();
     private readonly byte[] _mainRam = new byte[MainRamSize];
+    private readonly byte[] _fpgaConfigRegisters = new byte[4];
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM") == "1";
     private byte[] _mainBootRom = Array.Empty<byte>();
     private VegasSioDevice? _sio;
     private IdeDiskDevice? _disk;
     private DcsAudioDevice? _audio;
     private VoodooFacade? _voodoo;
+    private bool _fpgaConfigSeenLow;
+    private bool _fpgaConfigDone;
 
     public VegasMemoryMap()
     {
@@ -1107,8 +1156,21 @@ internal sealed class VegasMemoryMap
 
     public void LoadMainBootRom(byte[] mainBootRom) => _mainBootRom = mainBootRom.ToArray();
 
+    public void Reset()
+    {
+        Array.Clear(_fpgaConfigRegisters);
+        _fpgaConfigSeenLow = false;
+        _fpgaConfigDone = false;
+    }
+
     public byte Read8(ulong address)
     {
+        if (TryReadFpgaConfig8(address, out byte fpgaValue))
+        {
+            Trace("read8", address, fpgaValue, "FPGA config");
+            return fpgaValue;
+        }
+
         if (TryReadBootRomByte(address, out byte romValue))
         {
             Trace("read8", address, romValue, "PCI_ID_NILE:rom");
@@ -1167,6 +1229,12 @@ internal sealed class VegasMemoryMap
 
     public void Write8(ulong address, byte value)
     {
+        if (TryWriteFpgaConfig8(address, value))
+        {
+            Trace("write8", address, value, "FPGA config");
+            return;
+        }
+
         if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
         {
             _mainRam[physical] = value;
@@ -1206,6 +1274,55 @@ internal sealed class VegasMemoryMap
 
         Write32(address, (uint)value);
         Write32(address + 4, (uint)(value >> 32));
+    }
+
+    private bool TryReadFpgaConfig8(ulong address, out byte value)
+    {
+        if (!TryGetFpgaConfigOffset(address, out uint offset))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = offset == 2
+            ? (byte)(_fpgaConfigDone ? 0x02 : 0x00)
+            : _fpgaConfigRegisters[offset];
+        return true;
+    }
+
+    private bool TryWriteFpgaConfig8(ulong address, byte value)
+    {
+        if (!TryGetFpgaConfigOffset(address, out uint offset))
+            return false;
+
+        _fpgaConfigRegisters[offset] = value;
+        if (offset == 1)
+        {
+            if ((value & 0x01) == 0)
+            {
+                _fpgaConfigSeenLow = true;
+                _fpgaConfigDone = false;
+            }
+            else if (_fpgaConfigSeenLow)
+            {
+                _fpgaConfigDone = true;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryGetFpgaConfigOffset(ulong address, out uint offset)
+    {
+        ulong normalized = address & 0x00000000ffffffffUL;
+        if (normalized >= FpgaConfigBase && normalized < FpgaConfigBase + 4)
+        {
+            offset = (uint)(normalized - FpgaConfigBase);
+            return true;
+        }
+
+        offset = 0;
+        return false;
     }
 
     public uint ReadChipSelect32(int chipSelect, uint offset)
