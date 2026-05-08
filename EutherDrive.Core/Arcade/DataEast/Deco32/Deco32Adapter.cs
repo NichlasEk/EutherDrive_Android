@@ -268,7 +268,7 @@ public sealed class Deco32Adapter : IEmulatorCore
     {
         Array.Clear(_renderFrameBuffer);
         _palette?.FillBackdrop(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
-        _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
+        _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride, _memory?.Priority ?? 0);
         _sprites?.Render(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride, _frameCounter, _memory?.Priority ?? 0);
         _tilemaps?.RenderTextPlayfield(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
         if (DebugWorkRamTextOverlay)
@@ -831,9 +831,10 @@ public sealed class Deco32MemoryMap : IArm6Bus
     private ushort BuildInput1()
     {
         ushort value = 0xffff;
+        if (_input.Mode) value &= unchecked((ushort)~0x0001);
         if (!_vblank) value &= unchecked((ushort)~0x0010);
-        if (_input.X) value &= unchecked((ushort)~0x0001);
-        if (_input.Y) value &= unchecked((ushort)~0x0004);
+        if (_input.X) value &= unchecked((ushort)~0x0100);
+        if (_input.Y) value &= unchecked((ushort)~0x1000);
         return value;
     }
 
@@ -1583,11 +1584,27 @@ public sealed class DecoTilemapDevice
             _controlWriteCount[chip]++;
     }
 
-    public void RenderBackPlayfields(byte[] fb, int width, int height, int stride)
+    public void RenderBackPlayfields(byte[] fb, int width, int height, int stride, int priority)
     {
-        RenderLayer(fb, width, height, stride, 3, _profile.Tiles2, 0x30 + (((ColorBank >> 3) & 7) << 4), opaque: true);
-        RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, 0x20 + (((ColorBank >> 0) & 7) << 4), opaque: false);
-        RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
+        if ((priority & 2) != 0)
+        {
+            RenderLayer(fb, width, height, stride, 3, _profile.Tiles2, Chip1Pf2ColorBase, opaque: false);
+            RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false);
+            RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
+            return;
+        }
+
+        RenderLayer(fb, width, height, stride, 3, _profile.Tiles2, Chip1Pf2ColorBase, opaque: false);
+        if ((priority & 1) != 0)
+        {
+            RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
+            RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false);
+        }
+        else
+        {
+            RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false);
+            RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
+        }
     }
 
     public void RenderTextPlayfield(byte[] fb, int width, int height, int stride)
@@ -1660,10 +1677,14 @@ public sealed class DecoTilemapDevice
     private static int DecoBankCallback(int bank)
         => (bank & ~0x0f) << 8;
 
+    private int Chip1Pf1ColorBase => ((ColorBank >> 0) & 7) << 4;
+    private int Chip1Pf2ColorBase => ((ColorBank >> 3) & 7) << 4;
+
     private static int Decode4BppChar(byte[] rom, int code, int x, int y)
     {
         int half = rom.Length / 2;
-        int baseBit = (code % Math.Max(1, half / 64)) * 16 * 8 + y * 16 + x;
+        int chars = Math.Max(1, half / 16);
+        int baseBit = (code % chars) * 16 * 8 + y * 16 + x;
         int p0 = ReadBit(rom, half * 8 + baseBit + 8);
         int p1 = ReadBit(rom, half * 8 + baseBit);
         int p2 = ReadBit(rom, baseBit + 8);
@@ -1674,8 +1695,8 @@ public sealed class DecoTilemapDevice
     private static int Decode4BppTile(byte[] rom, int code, int x, int y)
     {
         int half = rom.Length / 2;
-        int tiles = Math.Max(1, half / 256);
-        int baseBit = (code % tiles) * 64 * 8 + y * 16 + (x < 8 ? 128 : 0) + (x & 7);
+        int tiles = Math.Max(1, half / 64);
+        int baseBit = (code % tiles) * 64 * 8 + y * 16 + (x < 8 ? 16 * 8 * 2 : 0) + (x & 7);
         int p0 = ReadBit(rom, half * 8 + baseBit + 8);
         int p1 = ReadBit(rom, half * 8 + baseBit);
         int p2 = ReadBit(rom, baseBit + 8);
@@ -1842,8 +1863,8 @@ public sealed class DecoSpriteDevice
     private static int Decode4Bpp(byte[] rom, int code, int x, int y)
     {
         int half = rom.Length / 2;
-        int tiles = Math.Max(1, half / 256);
-        int baseBit = (code % tiles) * 64 * 8 + y * 16 + (x < 8 ? 128 : 0) + (x & 7);
+        int tiles = Math.Max(1, half / 64);
+        int baseBit = (code % tiles) * 64 * 8 + y * 16 + (x < 8 ? 16 * 8 * 2 : 0) + (x & 7);
         int p0 = ReadBit(rom, half * 8 + baseBit + 8);
         int p1 = ReadBit(rom, half * 8 + baseBit);
         int p2 = ReadBit(rom, baseBit + 8);
