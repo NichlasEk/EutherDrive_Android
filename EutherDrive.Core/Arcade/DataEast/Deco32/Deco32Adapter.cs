@@ -1730,7 +1730,7 @@ public sealed class DecoTilemapDevice
                 int py = sy & (tileSize - 1);
                 int tx = sx / tileSize;
                 int px = sx & (tileSize - 1);
-                int entry = Deco16ScanRows(tx, ty) & 0x7ff;
+                int entry = TilemapEntryIndex(tx, ty, mapCols, charMode) & 0x7ff;
                 int palettePixel = ReadLayerPalettePixel(ram, gfx, entry, tileBank, colorBase, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen);
                 if (charMode)
                 {
@@ -1799,6 +1799,9 @@ public sealed class DecoTilemapDevice
 
     private static int Deco16ScanRows(int col, int row)
         => (col & 0x1f) + ((row & 0x1f) << 5) + ((col & 0x20) << 5) + ((row & 0x20) << 6);
+
+    private static int TilemapEntryIndex(int col, int row, int mapCols, bool charMode)
+        => charMode ? col + row * mapCols : Deco16ScanRows(col, row);
 
     private static int DecoBankCallback(int bank)
         => (bank & ~0x0f) << 8;
