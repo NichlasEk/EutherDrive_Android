@@ -2949,6 +2949,175 @@ def print_token_block_disassembly_model(base_words: list[int]) -> None:
         print(f"    ${target:04x} {'/'.join(entries)}: " + " ".join(parts))
 
 
+def token_named_sequence(base_words: list[int], start: int, words: int, token_counts: dict[int, int]) -> tuple[str, ...]:
+    return tuple(
+        token_short_name(base_words[(start + offset * 2) // 2], token_counts)
+        for offset in range(words)
+        if 0 <= start + offset * 2 < len(base_words) * 2
+    )
+
+
+def classify_token_entry_sequence(seq: tuple[str, ...]) -> str:
+    if seq[:5] == ("A", "B", "G0", "F", "D"):
+        return "entry:ABG0FD"
+    if seq[:4] == ("C", "A", "B", "G1"):
+        return "entry:CABG1"
+    if seq[:3] == ("D", "A", "B") and len(seq) > 3 and seq[3] == "JMP":
+        return "entry:DA-tail-control"
+    if seq[:2] == ("D", "A"):
+        return "entry:DA"
+    if seq and (seq[0].startswith("$") or seq[0] in {"JMP", "BR"}):
+        return "entry:tail-param/control"
+    if seq[:3] == ("N5", "G0", "E"):
+        return "entry:B07-finalize"
+    return "entry:unknown"
+
+
+def print_token_entry_motif_model(base_words: list[int]) -> None:
+    print("\n== token entry motif model")
+    print("  clusters startup entrypoints by short token sequence and searches the token region for matching motifs")
+    token_counts = token_counts_for_region(base_words, 0x0EA0, 0x1066)
+    token_start = 0x0EA0
+    token_end = 0x1066
+    startup_entries = sorted(
+        (target, call_addr, mode)
+        for call_addr, mode, target, _record_label in startup_table_call_sites(base_words)
+        if token_start <= target < token_end
+    )
+    if not startup_entries:
+        print("  no startup entries inside token region")
+        return
+
+    motif_len = 5
+    motif_index: dict[tuple[str, ...], list[int]] = {}
+    for addr in range(token_start, token_end - motif_len * 2 + 2, 2):
+        seq = token_named_sequence(base_words, addr, motif_len, token_counts)
+        motif_index.setdefault(seq, []).append(addr)
+
+    entry_records = []
+    for target, call_addr, mode in startup_entries:
+        seq5 = token_named_sequence(base_words, target, motif_len, token_counts)
+        seq8 = token_named_sequence(base_words, target, 8, token_counts)
+        hits = motif_index.get(seq5, [])
+        entry_records.append((target, call_addr, mode, seq5, seq8, hits))
+
+    print("  startup entry motifs:")
+    for target, call_addr, mode, seq5, seq8, hits in entry_records:
+        hit_text = " ".join(f"${addr:04x}" for addr in hits[:10])
+        extra = f" +{len(hits) - 10}" if len(hits) > 10 else ""
+        print(
+            f"    ${target:04x} @{call_addr:04x}:{mode:<9} "
+            f"seq5={' '.join(seq5):<24} hits={len(hits):2d} {hit_text}{extra}"
+        )
+        print(f"      seq8={' '.join(seq8)}")
+
+    print("  pairwise entry sequence similarity:")
+    for idx, left in enumerate(entry_records):
+        left_target, _left_call, _left_mode, _left_seq5, left_seq8, _left_hits = left
+        for right in entry_records[idx + 1:]:
+            right_target, _right_call, _right_mode, _right_seq5, right_seq8, _right_hits = right
+            exact_prefix = 0
+            for a, b in zip(left_seq8, right_seq8):
+                if a != b:
+                    break
+                exact_prefix += 1
+            positional = sum(1 for a, b in zip(left_seq8, right_seq8) if a == b)
+            multiset = sum(min(left_seq8.count(token), right_seq8.count(token)) for token in set(left_seq8) | set(right_seq8))
+            if exact_prefix or positional >= 3 or multiset >= 5:
+                print(
+                    f"    ${left_target:04x} <-> ${right_target:04x}: "
+                    f"prefix={exact_prefix} positional={positional}/8 multiset={multiset}/8"
+                )
+
+    print("  repeated non-entry motifs near startup classes:")
+    seen = set()
+    for _target, _call_addr, _mode, seq5, _seq8, _hits in entry_records:
+        if seq5 in seen:
+            continue
+        seen.add(seq5)
+        hits = motif_index.get(seq5, [])
+        if len(hits) <= 1:
+            continue
+        print(f"    motif {' '.join(seq5)}")
+        for hit in hits[:12]:
+            label = token_block_label_for_named_address(
+                hit,
+                [("P00", 0x0EA0), ("B01", 0x0ED4), ("B02", 0x0F0E), ("B03", 0x0F48),
+                 ("B04", 0x0F82), ("B05", 0x0FBC), ("B06", 0x0FF6), ("B07", 0x1030)],
+                0x3A,
+            )
+            suffix = token_named_sequence(base_words, hit, 8, token_counts)
+            print(f"      ${hit:04x} {label:<18} {' '.join(suffix)}")
+
+    print("  column entry classes:")
+    for target, call_addr, mode, seq5, _seq8, _hits in entry_records:
+        block_label = token_block_label_for_named_address(
+            target,
+            [("P00", 0x0EA0), ("B01", 0x0ED4), ("B02", 0x0F0E), ("B03", 0x0F48),
+             ("B04", 0x0F82), ("B05", 0x0FBC), ("B06", 0x0FF6), ("B07", 0x1030)],
+            0x3A,
+        )
+        cls = classify_token_entry_sequence(seq5)
+        print(f"    ${target:04x} {block_label:<18} @{call_addr:04x}:{mode:<9} {cls:<24} {' '.join(seq5)}")
+
+
+def print_startup_callsite_token_class_model(base_words: list[int]) -> None:
+    print("\n== startup callsite token-class model")
+    print("  groups all token-region alternatives by startup callsite and semantic entry class")
+    token_counts = token_counts_for_region(base_words, 0x0EA0, 0x1066)
+    blocks = [
+        ("P00", 0x0EA0),
+        ("B01", 0x0ED4),
+        ("B02", 0x0F0E),
+        ("B03", 0x0F48),
+        ("B04", 0x0F82),
+        ("B05", 0x0FBC),
+        ("B06", 0x0FF6),
+        ("B07", 0x1030),
+    ]
+    by_call: dict[int, list[tuple[str, int, str, tuple[str, ...], int]]] = {}
+    motif_len = 5
+    motif_index: dict[tuple[str, ...], list[int]] = {}
+    for addr in range(0x0EA0, 0x1066 - motif_len * 2 + 2, 2):
+        motif_index.setdefault(token_named_sequence(base_words, addr, motif_len, token_counts), []).append(addr)
+
+    for call_addr, mode, target, _record_label in startup_table_call_sites(base_words):
+        if not (0x0EA0 <= target < 0x1066):
+            continue
+        seq5 = token_named_sequence(base_words, target, motif_len, token_counts)
+        cls = classify_token_entry_sequence(seq5)
+        support = len(motif_index.get(seq5, []))
+        by_call.setdefault(call_addr, []).append((mode, target, cls, seq5, support))
+
+    if not by_call:
+        print("  no startup callsites resolve into token classes")
+        return
+
+    for call_addr in sorted(by_call):
+        entries = sorted(by_call[call_addr], key=lambda item: (item[2], item[1], item[0]))
+        classes = sorted({entry[2] for entry in entries})
+        print(f"  @${call_addr:04x}: classes={', '.join(classes)} alternatives={len(entries)}")
+        for mode, target, cls, seq5, support in entries:
+            block_label = token_block_label_for_named_address(target, blocks, 0x3A)
+            print(
+                f"    {mode:<9} -> ${target:04x} {block_label:<18} "
+                f"{cls:<24} support={support:2d} {' '.join(seq5)}"
+            )
+
+    print("  callsite interpretation:")
+    for call_addr in sorted(by_call):
+        classes = {entry[2] for entry in by_call[call_addr]}
+        if "entry:CABG1" in classes and len(classes) == 1:
+            interpretation = "single repeated CABG1 entry"
+        elif {"entry:ABG0FD", "entry:DA", "entry:CABG1"} & classes and len(classes) > 1:
+            interpretation = "dispatch-like ambiguous operand into multiple token classes"
+        elif any(cls.startswith("entry:tail") or cls == "entry:DA-tail-control" for cls in classes):
+            interpretation = "tail/join control alternatives"
+        else:
+            interpretation = "unclassified token entry"
+        print(f"    @${call_addr:04x}: {interpretation}")
+
+
 def move_from_postincrement_role(word: int) -> str | None:
     size = (word >> 12) & 0xF
     if size not in (1, 2, 3):
@@ -3409,6 +3578,8 @@ def main() -> None:
     print_token_marker_family_scan(base_words)
     print_upstream_marker_block_test(base_words)
     print_token_block_disassembly_model(base_words)
+    print_token_entry_motif_model(base_words)
+    print_startup_callsite_token_class_model(base_words)
     print_table_cluster_consumer_probe(base_words)
     print_table_cluster_indirect_reference_flow(base_words)
     if args.xref_search:

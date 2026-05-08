@@ -172,6 +172,16 @@ The instruction-path search now finds a plausible partial startup stream:
   - `$0f2e` and `$1026` both enter on `D` and continue into `D A ...` motifs, giving a second likely entry class.
   - `$102e` lands on B06's trailer parameter immediately after `JMP`, then flows into `$1030`, so it is probably a tail/join entry rather than a normal body-token entry.
   - `$103a` lands inside B07 on `N5 G0 E D A B ...`, strengthening `$1030-$1068` as a join/finalization block rather than just ordinary continuation data.
+- A startup-entry motif search now finds repeated entry classes across the token region:
+  - `$0fa8` and `$101c` share exact `C A B G1 E` prefix; that motif appears four times (`$0ec0`, `$0fa8`, `$0fe2`, `$101c`).
+  - `$0f26` starts `A B G0 F D`; that motif appears three times (`$0f26`, `$0f60`, `$1048`), so it is a real motif class, not a one-off.
+  - `$0f2e` and `$1026` both classify as `D A ...`, but `$1026` immediately reaches `D A B JMP $013d`, so it is closer to a tail-control entry than `$0f2e`.
+  - `$102e` is now explicitly a tail-parameter/control entry (`$013d C N_A1 N5 C...`), while `$103a` remains the B07 finalization entry.
+- A callsite-level token-class model now groups startup operands by semantic class:
+  - `$0c5e` has one token-region alternative, `$101c`, and it is clean `entry:CABG1` with motif support 4.
+  - `$0c76` is dispatch-like: the same startup callsite has alternatives into `entry:ABG0FD` (`$0f26`, support 3), `entry:DA` (`$0f2e`), and `entry:CABG1` (`$0fa8`, support 4).
+  - `$0c6a` is tail/join-control-like: alternatives land at `entry:DA-tail-control` (`$1026`), `entry:tail-param/control` (`$102e`), and `entry:B07-finalize` (`$103a`).
+  - This makes the p5m alternatives more plausible as structured dispatch/join alternatives, not merely noisy false positives.
 
 ## Next steps
 
@@ -192,7 +202,8 @@ The instruction-path search now finds a plausible partial startup stream:
 14a. Treat mixed-transform opcode/operand call sites as false positives unless the opcode, high word, and low word can be justified by one coherent fetch context.
 14b. Decode the `4fbd/4eba + param` trailer semantics. The P00/B04/B05/B06 parameters landing at `$1030` are the strongest current clue for block-to-block control flow.
 14c. Treat `$0e38: 4fbd 0006` as a separate upstream/control marker candidate only. It fails the clean block-body test, so do not use it as part of the B01-B06 column model.
-14d. Use the pseudo-disassembly motifs to separate startup entry classes: `C A B G1 E`, `D A ...`, trailer-param tail entries, and B07 finalization entries.
+14d. Use the pseudo-disassembly motifs to separate startup entry classes: `C A B G1 E`, `A B G0 F D`, `D A ...`, trailer-param tail entries, and B07 finalization entries.
+14e. Treat `$0c76` as the first candidate dispatch-like startup callsite and `$0c6a` as the first tail/join-control callsite. Search for the consumer logic that distinguishes those alternatives.
 15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
 16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
 17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.
