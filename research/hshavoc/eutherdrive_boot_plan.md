@@ -38,23 +38,27 @@ It currently:
 
 Latest checkpoint:
 
-- The startup patch now treats `$0d06d6` as a real subroutine. It reaches that
+- The startup patch still treats `$0d06d6` as a real subroutine. It reaches that
   block, returns through `$0d0766`, lands at the patched `$0cb2` continuation,
   and jumps into the next startup stub at `$1126`.
 - `$1104` was rejected as a continuation because it lands inside the
   `4ef9 000d 0682` long jump operand. `$1126` is the next valid instruction
   boundary and reaches the main dispatch area at `$2c6c`.
-- The `$29d4` helper copies/initializes state, writes `1` to `$fff906`, then
-  waits at `$2a16/$2a1c` for that word to clear before calling `$1a16a`.
-  A narrow proof patch changes the `$2a10` immediate from `0001` to `0000`;
-  this confirms the wait is a board/PIC/interrupt acknowledgement gate, not a
-  decode failure in that helper.
-- With that proof patch, execution reaches `$2a1e -> $1a16a -> $2a24` and
-  returns into the `$2c6c` dispatch loop. The next blocker is the same
-  `$fff906` acknowledgement pattern earlier in startup around `$0aa8/$0aae`.
-  A quick direct immediate patch there was rejected because it hit the wrong
-  word and caused an illegal opcode at `$0aa4`; the next pass should model the
-  acknowledgement behavior centrally instead of stacking more ROM edits.
+- `$fff906` is now modeled centrally with `HshavocBoardBusOverride` instead of
+  the old narrow proof patch at `$2a10`. Writes touching `$fff906/$fff907`
+  clear that RAM word immediately, matching the observed board/PIC/interrupt
+  acknowledgement gate well enough for boot probing.
+- With that bus model, execution passes both known acknowledgement waits:
+  `$2a16 -> $2a1e -> $1a16a -> $2a24` and `$0aa8 -> $0ab0 -> $1a16a`.
+- Deeper runtime probes now reach `$2c6c`, `$2c8e`, `$2c9c`, `$1fe2`,
+  `$39328`, `$9530`, `$9aa0`, and repeated `$1a16a` calls. The sampled `$123e`
+  path is only a short delay routine (`move.w #$13,D6; dbf; rts`), not the next
+  real blocker.
+- The remaining visible failure is still black video: the frame buffer has no
+  content and VDP display status remains off. Next pass should trace VDP
+  register writes, especially display-enable register 1, and compare the
+  `$a10005`/I/O reads used by the new runtime loop against expected board
+  inputs.
 
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.

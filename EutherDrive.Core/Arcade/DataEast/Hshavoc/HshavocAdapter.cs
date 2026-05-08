@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using EutherDrive.Core.MdTracerCore;
 
 namespace EutherDrive.Core.Arcade.DataEast.Hshavoc;
 
@@ -48,8 +49,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         (0x0666, 0x4E71),
         (0xD05CA, 0x4E71), (0xD05CC, 0x4E71), (0xD05CE, 0x4E71), (0xD05D0, 0x4E71),
         (0xD05D2, 0x4E71),
-        (0x0A30, 0x4E71), (0x0A32, 0x4E71), (0x0A34, 0x4E71), (0x0A36, 0x4E71),
-        (0x2A10, 0x0000)
+        (0x0A30, 0x4E71), (0x0A32, 0x4E71), (0x0A34, 0x4E71), (0x0A36, 0x4E71)
     };
 
     private static readonly (int Address, ushort Value)[] OptionalPhase2OperandPatch =
@@ -91,6 +91,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         try
         {
             _md.PowerCycleAndLoadRom(tempPath);
+            InstallBoardAckProbe();
             RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile} | {BoardModel}";
             RomInfo.ExtraInfo =
                 "Data East hshavoc.zip via HshavocAdapter. This is not a Sega System 16 target; it runs the " +
@@ -151,6 +152,18 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     }
 
     public void Dispose() => _md.Dispose();
+
+    private static void InstallBoardAckProbe()
+    {
+        if (md_main.g_md_bus == null)
+            return;
+
+        IM68kBusOverride? existing = md_main.g_md_bus.OverrideBus;
+        if (existing is HshavocBoardBusOverride)
+            return;
+
+        md_main.g_md_bus.OverrideBus = new HshavocBoardBusOverride(existing);
+    }
 
     private static byte[] DecodeArchive(string path, string profile)
     {
