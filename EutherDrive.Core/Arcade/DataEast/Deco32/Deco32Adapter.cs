@@ -5,6 +5,7 @@ using System.IO;
 using System.Security.Cryptography;
 using SharpCompress.Archives;
 using EutherDrive.Core;
+using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Cpu.Z80Emu;
 using EutherDrive.Core.Savestates;
 
@@ -92,8 +93,8 @@ public sealed class Deco32Adapter : IEmulatorCore
         _tilemaps = new DecoTilemapDevice(profile, _palette);
         _sprites = new DecoSpriteDevice(profile, _palette);
         _ym2151 = new YM2151();
-        _oki1 = new OKI6295(profile.Oki1);
-        _oki2 = new OKI6295(profile.Oki2);
+        _oki1 = new OKI6295(profile.Oki1, 0.24f);
+        _oki2 = new OKI6295(profile.Oki2, 0.03f);
         _soundCpu = new Z80SoundCpu(profile.AudioCpu, _ym2151, _oki1, _oki2);
         _memory = new Deco32MemoryMap(profile, _palette, _tilemaps, _sprites, _soundCpu, _ym2151, _oki1, _oki2, asserted => _mainCpu.SetIrqLine(asserted), () => _mainCpu.Pc);
         _memory.Reset();
@@ -2320,12 +2321,10 @@ public sealed class PaletteDevice
 public sealed class Z80SoundCpu : IOpcodeBusInterface
 {
     private const int AudioCpuClock = 32_220_000 / 9;
-    private const int OutputSampleRate = 44_100;
     private const int OutputChannels = 2;
     private const int MaxChipLogsPerFrame = 100;
-    private const int DebugBeepFrequencyHz = 880;
-    private const int DebugBeepFrames = OutputSampleRate / 20;
-    private const int DebugBeepAmplitude = 3600;
+    private static readonly bool TraceSound =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_TRACE_SOUND"), "1", StringComparison.Ordinal);
 
     private readonly byte[] _rom;
     private readonly byte[] _ram = new byte[0x800];
@@ -2334,9 +2333,7 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     private readonly OKI6295 _oki1;
     private readonly OKI6295 _oki2;
     private byte _soundLatch = 0xff;
-    private bool _irqAsserted;
-    private int _beepFramesRemaining;
-    private int _beepPhase;
+    private bool _latchIrqAsserted;
     private int _frameCounter;
     private int _chipLogsThisFrame;
     private int _latchWrites;
@@ -2353,16 +2350,14 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     }
 
     public string DebugSummary
-        => $"z80pc=0x{_cpu.Pc:X4} sndLatch=0x{_soundLatch:X2} sndW={_latchWrites} sndR={_latchReads} z80Irq={(_irqAsserted ? 1 : 0)}/{_irqAccepts} audPeak={_lastPeak} {_ym.DebugSummary} oki1={_oki1.DebugSummary} oki2={_oki2.DebugSummary}";
+        => $"z80pc=0x{_cpu.Pc:X4} sndLatch=0x{_soundLatch:X2} sndW={_latchWrites} sndR={_latchReads} z80Irq={(InterruptAsserted ? 1 : 0)}/{_irqAccepts} audPeak={_lastPeak} {_ym.DebugSummary} oki1={_oki1.DebugSummary} oki2={_oki2.DebugSummary}";
 
     public void ResetSound()
     {
         Array.Clear(_ram);
         _cpu.ApplyResetLine();
         _soundLatch = 0xff;
-        _irqAsserted = false;
-        _beepFramesRemaining = 0;
-        _beepPhase = 0;
+        _latchIrqAsserted = false;
         _frameCounter = 0;
         _chipLogsThisFrame = 0;
         _latchWrites = 0;
@@ -2374,8 +2369,7 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     public void WriteSoundLatch(byte value, uint mainPc)
     {
         _soundLatch = value;
-        _irqAsserted = true;
-        _beepFramesRemaining = DebugBeepFrames;
+        _latchIrqAsserted = true;
         _latchWrites++;
         Console.WriteLine($"[SND CMD] pc=0x{mainPc:X8} val=0x{value:X2}");
         Console.WriteLine($"[Z80 IRQ] assert pc=0x{_cpu.Pc:X4}");
@@ -2391,47 +2385,29 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         while (cycles < budget)
         {
             uint elapsed = _cpu.ExecuteInstruction(this);
-            cycles += Math.Max(1, (int)elapsed);
+            int elapsedCycles = Math.Max(1, (int)elapsed);
+            cycles += elapsedCycles;
+            _ym.AdvanceTimersByCpuCycles(elapsedCycles, AudioCpuClock);
             if (_cpu.LastInterruptAccepted)
             {
                 _irqAccepts++;
-                Console.WriteLine($"[Z80 IRQ] accepted pc=0x{_cpu.Pc:X4}");
+                if (TraceSound && _irqAccepts <= 32)
+                    Console.WriteLine($"[Z80 IRQ] accepted pc=0x{_cpu.Pc:X4}");
             }
         }
 
-        int ymPeak = 0;
-        int oki1Peak = 0;
-        int oki2Peak = 0;
-        int mixPeak = RenderDebugBeep(audioBuffer);
+        int sampleFrames = audioBuffer.Length / OutputChannels;
+        int ymIndex = 0;
+        int oki1Index = 0;
+        int oki2Index = 0;
+        _ym.RenderStereo(audioBuffer, ref ymIndex, sampleFrames);
+        _oki1.RenderStereo(audioBuffer, ref oki1Index, sampleFrames);
+        _oki2.RenderStereo(audioBuffer, ref oki2Index, sampleFrames);
+        int mixPeak = Deco32AudioUtil.Peak(audioBuffer, 0, sampleFrames);
         _lastPeak = mixPeak;
-        if (mixPeak != 0 || (_frameCounter % 60) == 0)
-            Console.WriteLine($"[AUDIO] ym={ymPeak} oki1={oki1Peak} oki2={oki2Peak} mix={mixPeak}");
+        if (TraceSound && (mixPeak != 0 || (_frameCounter % 60) == 0))
+            Console.WriteLine($"[AUDIO] ym={_ym.LastPeak} oki1={_oki1.LastPeak} oki2={_oki2.LastPeak} mix={mixPeak}");
         _frameCounter++;
-    }
-
-    private int RenderDebugBeep(short[] audioBuffer)
-    {
-        if (_beepFramesRemaining <= 0 || audioBuffer.Length == 0)
-            return 0;
-
-        int peak = 0;
-        int frames = audioBuffer.Length / OutputChannels;
-        int framesToRender = Math.Min(frames, _beepFramesRemaining);
-        int halfPeriod = Math.Max(1, OutputSampleRate / (DebugBeepFrequencyHz * 2));
-        for (int frame = 0; frame < framesToRender; frame++)
-        {
-            short sample = (short)(((_beepPhase / halfPeriod) & 1) == 0 ? DebugBeepAmplitude : -DebugBeepAmplitude);
-            int offset = frame * OutputChannels;
-            audioBuffer[offset] = sample;
-            audioBuffer[offset + 1] = sample;
-            _beepPhase++;
-            int abs = Math.Abs(sample);
-            if (abs > peak)
-                peak = abs;
-        }
-
-        _beepFramesRemaining -= framesToRender;
-        return peak;
     }
 
     public byte ReadOpcode(ushort address) => ReadMemory(address);
@@ -2451,7 +2427,7 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         if (address == 0xd000)
         {
             _latchReads++;
-            _irqAsserted = false;
+            _latchIrqAsserted = false;
             Console.WriteLine($"[Z80 LATCH READ] pc=0x{_cpu.Pc:X4} val=0x{_soundLatch:X2}");
             return _soundLatch;
         }
@@ -2499,7 +2475,8 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     }
 
     public InterruptLine Nmi() => InterruptLine.High;
-    public InterruptLine Int() => _irqAsserted ? InterruptLine.Low : InterruptLine.High;
+    private bool InterruptAsserted => _latchIrqAsserted || _ym.IrqAsserted;
+    public InterruptLine Int() => InterruptAsserted ? InterruptLine.Low : InterruptLine.High;
     public byte InterruptVector() => 0xff;
     public bool BusReq() => false;
     public bool Reset() => false;
@@ -2508,65 +2485,131 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     {
         if (_chipLogsThisFrame++ >= MaxChipLogsPerFrame)
             return;
-        Console.WriteLine($"[Z80 WRITE] pc=0x{_cpu.Pc:X4} {target} addr=0x{address:X4} val=0x{value:X2}");
+        if (TraceSound)
+            Console.WriteLine($"[Z80 WRITE] pc=0x{_cpu.Pc:X4} {target} addr=0x{address:X4} val=0x{value:X2}");
     }
 }
 
 public sealed class YM2151
 {
-    private byte _selectedRegister;
+    private readonly Cps1Ym2151 _core = new();
     private int _registerWrites;
     private int _dataWrites;
+    public int LastPeak { get; private set; }
 
-    public string DebugSummary => $"ymReg=0x{_selectedRegister:X2} ymW={_registerWrites}/{_dataWrites}";
+    public bool IrqAsserted => _core.IrqAsserted;
+    public string DebugSummary => $"{_core.DebugSummary} ymW={_registerWrites}/{_dataWrites} ymPeak={LastPeak}";
 
     public void Reset()
     {
-        _selectedRegister = 0;
+        _core.Reset();
         _registerWrites = 0;
         _dataWrites = 0;
+        LastPeak = 0;
     }
-    public byte ReadStatus() => 0;
+    public byte ReadStatus() => _core.ReadStatus();
     public byte Read(byte offset) => ReadStatus();
     public void Write(byte offset, byte value)
     {
+        _core.Write(offset, value);
         if ((offset & 1) == 0)
-            WriteRegister(value);
+            _registerWrites++;
         else
-            WriteData(value);
+            _dataWrites++;
     }
-    public void WriteRegister(byte value)
+
+    public void AdvanceTimersByCpuCycles(int cpuCycles, double cpuClockHz)
+        => _core.AdvanceTimersByCpuCycles(cpuCycles, cpuClockHz);
+
+    public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
     {
-        _selectedRegister = value;
-        _registerWrites++;
-    }
-    public void WriteData(byte value)
-    {
-        _ = value;
-        _dataWrites++;
+        int before = sampleFrameIndex;
+        _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: 0.60f);
+        LastPeak = Deco32AudioUtil.Peak(destination, before, sampleFrameIndex);
     }
 }
 
 public sealed class OKI6295
 {
+    private const int BankSize = 0x40000;
     private readonly byte[] _rom;
+    private readonly Cps1Oki6295 _core = new();
+    private readonly float _gain;
     private int _bank;
     private int _writes;
-    public OKI6295(byte[] rom) => _rom = rom;
-    public string DebugSummary => $"bank={_bank} writes={_writes}";
+    public int LastPeak { get; private set; }
+
+    public OKI6295(byte[] rom, float gain = 0.30f)
+    {
+        _rom = rom ?? Array.Empty<byte>();
+        _gain = gain;
+        LoadBank(0);
+    }
+
+    public string DebugSummary => $"bank={_bank} writes={_writes} peak={LastPeak}";
     public void Reset()
     {
         _bank = 0;
         _writes = 0;
+        LastPeak = 0;
+        LoadBank(0);
     }
-    public byte ReadStatus() => 0xf0;
+    public byte ReadStatus() => _core.ReadStatus();
     public void Write(byte value)
     {
-        _ = value;
-        _ = _rom;
+        _core.Write(value);
         _writes++;
     }
-    public void SetRomBank(int bank) => _bank = bank;
+    public void SetRomBank(int bank)
+    {
+        bank &= 1;
+        if (_bank == bank)
+            return;
+
+        _bank = bank;
+        LoadBank(bank);
+    }
+
+    public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
+    {
+        int before = sampleFrameIndex;
+        _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: _gain);
+        LastPeak = Deco32AudioUtil.Peak(destination, before, sampleFrameIndex);
+    }
+
+    private void LoadBank(int bank)
+    {
+        if (_rom.Length <= BankSize)
+        {
+            _core.Load(_rom);
+            return;
+        }
+
+        byte[] window = new byte[BankSize];
+        int source = Math.Min(bank * BankSize, Math.Max(0, _rom.Length - BankSize));
+        int count = Math.Min(BankSize, _rom.Length - source);
+        if (count > 0)
+            Array.Copy(_rom, source, window, 0, count);
+        _core.Load(window);
+    }
+}
+
+internal static class Deco32AudioUtil
+{
+    public static int Peak(short[] destination, int startFrame, int endFrame)
+    {
+        int start = Math.Clamp(startFrame * 2, 0, destination.Length);
+        int end = Math.Clamp(endFrame * 2, start, destination.Length);
+        int peak = 0;
+        for (int i = start; i < end; i++)
+        {
+            int abs = Math.Abs(destination[i]);
+            if (abs > peak)
+                peak = abs;
+        }
+
+        return peak;
+    }
 }
 
 public readonly record struct ArcadeInputState(
