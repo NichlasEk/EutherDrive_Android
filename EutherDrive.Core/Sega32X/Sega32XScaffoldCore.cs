@@ -18,6 +18,7 @@ internal sealed class Sega32XScaffoldCore
     private static readonly ulong DefaultM68kCyclesPerFrame = ParseM68kCycleBudget();
     private const ulong NativeM68kDivider = 7;
     private const ulong NativeSh2Multiplier = 3;
+    private static readonly ulong S32xSyncQuantum = Math.Max(1, ParseNonNegativeUlong("EUTHERDRIVE_S32X_SYNC_QUANTUM", 1));
     private static readonly ulong DefaultSh2ExecutionSliceLength = ParseExecutionSliceLength();
     private static readonly ulong DefaultM68kCommSyncSliceLength = ParseM68kCommSyncSliceLength();
     private static readonly ulong CommWriteVisibilityWindow = ParseCommWriteVisibilityWindow();
@@ -542,7 +543,7 @@ internal sealed class Sega32XScaffoldCore
 
         // Middle-ground slice: reduces dual-SH2 scheduler overhead without the Doom
         // regression seen with much larger global slices.
-        return 96;
+        return ScaleS32xQuantum(96, 4096);
     }
 
     private static ulong ParseM68kCommSyncSliceLength()
@@ -553,7 +554,17 @@ internal sealed class Sega32XScaffoldCore
 
         // A small same-line catch-up slice lets the SH-2s respond to tight 68k communication-port
         // polling loops without paying the cost of globally finer interleaving.
-        return 128;
+        return ScaleS32xQuantum(128, 4096);
+    }
+
+    private static ulong ScaleS32xQuantum(ulong baseValue, ulong maxValue)
+    {
+        ulong quantum = Math.Max(1, S32xSyncQuantum);
+        if (baseValue > maxValue / quantum)
+            return Math.Max(1, maxValue);
+
+        ulong scaled = baseValue * quantum;
+        return Math.Clamp(scaled, 1, maxValue);
     }
 
     private static ulong ParseCommWriteVisibilityWindow()

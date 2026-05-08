@@ -348,6 +348,268 @@ Use it with a narrow PC window. Without a limit, this BIOS loop is too noisy.
 4. Confirm whether `0xbfc80000` is a ROM mirror, RAM scratch, or device window once this POST path moves.
 5. Once config/init stops re-entering, expect the next real blocker to be SIO/IDE/Voodoo self-test rather than CPU loops.
 
+## 2026-05-07 Evening Pass Result
+
+The `0xbfc00850` loop was caused by incomplete CP0 `Config` write semantics, not by a real exception or POST blink that should be fast-pathed.
+
+Focused trace showed BIOS executing:
+
+```text
+bfc00944 mfc0 v0,Config
+bfc00968 ori  v0,v0,0x0008
+bfc0096c mtc0 v0,Config
+```
+
+Before this pass, `WriteCp0(Config)` only preserved bit 31. MAME `r4000_base_device::cp0_set()` preserves runtime-writable `CONFIG_WM = 0x0000003f`, so BIOS could never observe the low Config bits it set. The adapter now preserves the low six Config bits.
+
+Build result:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+324 Warning(s)
+0 Error(s)
+```
+
+Probe checkpoints after the Config fix:
+
+```text
+frame=5
+pc=0x00000000bfc039ec
+lastOp=0x008b2821
+cp0 status=0x0000000034410000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+
+frame=20
+pc=0x000000009fc0113c
+lastOp=0x04110222
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+
+frame=120
+pc=0x00000000bfc02ba0
+lastOp=0x40034800
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+```
+
+The new 120-frame endpoint is BIOS serial output at `0xbfc02b88..0xbfc02bac`. It reads NILE UART line status from `0xbfa00328`; the existing `0x60` line-status stub satisfies the transmit-ready check (`0x20`), so this is not yet proven to be a hard blocker.
+
+Follow-up in the same pass:
+
+- Added a guarded BIOS serial char fastpath at routine entry `0xbfc02b88`.
+- The fastpath only fires when `ra` returns into boot ROM and `a0` is a byte, then returns to `ra`.
+- This skips only the serial side effect; UART line-status behavior remains unchanged.
+
+Probe checkpoints after the serial char fastpath:
+
+```text
+frame=20
+pc=0x000000009fc02c00
+lastOp=0x0082082a
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+
+frame=120
+pc=0x000000009fc01140
+lastOp=0x00000000
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+
+frame=240
+pc=0x000000009fc019e0
+lastOp=0x38630027
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+```
+
+Follow-up trace of `0x9fc019c0..0x9fc01a20` showed this is the earlier CP0 PRId/Config-based delay helper starting at `0x1fc019c4`, called repeatedly with different `a0` delay values. The existing count-delay fastpath now also covers `0x1fc019c4..0x1fc019ec`.
+
+Latest checkpoint after that delay helper extension:
+
+```text
+frame=120
+pc=0x000000009fc01148
+lastOp=0x0211082b
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+```
+
+Next useful step:
+
+1. Trace around `0x9fc01130..0x9fc01170` if the next pass still ends near `0x9fc01148`.
+2. Run a longer non-trace probe only after confirming whether that endpoint is a hot loop or just a transient call site.
+3. If it exits into `0x9fc02c00`/text output again, keep serial/text fastpaths at routine entries only.
+
+Additional follow-up in the same bringup pass:
+
+- Added a guarded FPGA serial-stream fastpath at `0x1fc01118`.
+- The routine bit-bangs boot ROM bytes to `0xa1600000`, then jumps back through `0x1fc00800`; the fastpath marks FPGA config done and preserves the expected loop-end registers.
+- Rechecked the later `fpgaload()` CFG_DONE poll at `0x1fc02a30..0x1fc02a38`: `bit0 != 0` branches to the success path at `0x1fc02a90`, while timeout falls through to the embedded `fpgaload(): timed out waiting for CFG_DONE` text and returns code 4.
+- Added a guarded entry fastpath for the BIOS cache helper at `0x1fc03980`, plus inner-loop coverage for the next cache helper at `0x1fc03a88..0x1fc03ae4`.
+
+Verification after these changes:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+324 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+365 Warning(s)
+0 Error(s)
+
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=5000 frame=120
+pc=0x000000009fc01cb4
+lastOp=0x0296082a
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+```
+
+The new endpoint is a BIOS loop around `0x1fc01ca4..0x1fc01cb8` that repeatedly calls a function pointer from a computed table until `s4 == 0x20`. This should be the next trace target. A full `200000` steps/frame probe is still too heavy after the reboot/freeze recovery, so use the 5000-step checkpoint first and only scale back up after the `0x1fc01cb4` loop is understood.
+
+## 2026-05-07 Late Pass Result
+
+The `0x1fc01ca4..0x1fc01cb8` loop is a 32-entry TLB clear loop. It computes the helper pointer `0x9fc041b4`, calls it with `a0 = 0..31`, and returns through `s0`. Added a guarded TLB-clear-loop fastpath that preserves the final CP0/TLB-visible state used by the existing single-entry helper.
+
+The next BIOS stop was `0x1fc02b18..0x1fc02b48`, a small UART/NILE register init table using address/value pairs at `0x1fc02ac0`. Added a guarded UART init table fastpath that writes the table through `VegasMemoryMap.Write32()` until the zero terminator.
+
+The later stop around `0x1fc027e0..0x1fc028b0` is the `fpgaload()` preamble. It pulses `a1600001`, checks `a1600002` low/high status, then sets up `a1/a2` for the existing `0x1fc02918` block-load fastpath. Added a guarded preamble fastpath that preserves the source/end registers and jumps into the existing block fastpath.
+
+Verification after these changes:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+324 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=5000 frame=400
+pc=0x00000000007a0e98
+lastOp=0x00000000
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=5000 frame=1000
+pc=0x0000000001312998
+lastOp=0x00000000
+cp0 status=0x0000000034400000 cause=0x0000000000000000 epc=0x0000000000000000 errorepc=0x0000000000000000
+```
+
+This is the first checkpoint in this bringup where PC leaves BIOS ROM and runs in low RAM. The bad news is `lastOp=0`, and PC keeps advancing through zero-filled RAM, so the next blocker is likely missing game-code/data population before the BIOS jumps out of ROM.
+
+Next useful step:
+
+1. Trace the handoff from BIOS to RAM around `0x9fc00b00..0x9fc00c80` and the jump target setup, with register fields that include `t5/t6/t7/t8/gp/fp`.
+2. Add a probe-side memory peek for the RAM entry window before and after `fpgaload()` to confirm whether disk/ROM data is copied into `0x007a0000`.
+3. If RAM is still zero after fpgaload, shift focus to disk/IDE DMA or the raw CHD read path rather than adding more BIOS fastpaths.
+
+Follow-up check against `docs/gauntlet-dark-legacy-vegas-plan.md`:
+
+- The bring-up is now squarely in Phase 2: ROM, CHD, IDE.
+- A temp probe-side `EUTHERDRIVE_GAUNTDL_PEEK` hook was added under `/tmp/eutherdrive-gauntlet-probe` only.
+- RAM peeks at frames 300, 400, and 1000 show the tested RAM entry/load windows are still zero:
+
+```text
+frame=300 pc=0x00000000005b8a18 lastOp=0x00000000
+peek 0x007a0000 nonzeroWords=0
+peek 0x00989000 nonzeroWords=0
+peek 0x01312000 nonzeroWords=0
+
+frame=400 pc=0x00000000007a0e98 lastOp=0x00000000
+peek 0x007a0000 nonzeroWords=0
+peek 0x00989000 nonzeroWords=0
+peek 0x01312000 nonzeroWords=0
+
+frame=1000 pc=0x0000000001312998 lastOp=0x00000000
+peek 0x007a0000 nonzeroWords=0
+peek 0x00989000 nonzeroWords=0
+peek 0x01312000 nonzeroWords=0
+```
+
+The current adapter has an `IdeDiskDevice`, raw sidecar support, identify, and PIO read-sector behavior, but it is not yet connected to the Vegas memory/PCI/SIO path the BIOS/game code would use for real program loading. Do not add more BIOS fastpaths until the IDE register/DMA path is wired and traced.
+
+## 2026-05-07 PCI/IDE Bring-Up Follow-Up
+
+Implemented the first minimal Vegas PCI/IDE path in `VegasMemoryMap`:
+
+- NILE PCI master windows now decode `PCIW0/1` and `PCIINIT0/1`.
+- PCI type 2 routes to a small CMD646-compatible IDE I/O wrapper.
+- PCI type 6 has a main-RAM target path for bus-master DMA.
+- PCI type 0 config access can expose the IDE device at dev 5 with BAR0-4 state.
+- The IDE wrapper exposes primary/secondary command and control ports plus a minimal bus-master register block.
+
+This did not immediately produce IDE traffic because the previous BIOS fastpaths were still corrupting control flow before the real loader path:
+
+- `fpgaload()` fastpath skipped the BIOS prologue that preserves `ra` through `k1`; the epilogue then returned to `0`. Fixed by preserving the caller return in `k1` when the fastpath enters the BIOS epilogue.
+- The A100/A160 ready-poll fastpath returned through the BIOS `jr a3` delay slot, which forced `v0=1` and sent the caller down the retry/failure path. Fixed by returning directly to `a3` with `v0=0`.
+- Added guarded RAM POST fastpaths for the 32-bit and 64-bit walking-bit RAM tests at `0x1fc02468` and `0x1fc01f80`, for both `0x80000000` and `0xa0000000` segments.
+
+Verification:
+
+```text
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=5000 frame=1200
+pc=0x0000000080004698
+lastOp=0x1040fffd
+```
+
+The earlier bad endpoint was `pc=0x00000000007a0e98` executing zero-filled RAM. The current endpoint is real RAM code; a probe peek confirms code at the active RAM page:
+
+```text
+peek addr=0x00004600 nonzeroWords=27
+firstWords=03e00008,27bd0018,40028000,03e00008,...
+```
+
+No `[GAUNTDL:IDE]` or `[GAUNTDL:IDEPCI]` traffic has appeared yet. The next useful target is the RAM-loader wait loop at `0x80004698` before adding more IDE behavior.
+
+Note: a normal `dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly` is currently blocked by an unrelated, untracked `EutherDrive.Core/Arcade/DataEast/Deco32/Deco32Adapter.cs` compile error. The isolated Gauntlet probe still builds.
+
+## 2026-05-07 Pause Point
+
+Latest trace target was the RAM-loader wait loop at `0x8000468c..0x80004698`. It is not IDE yet. The code initializes NILE timer 2 at `BFA001E0/BFA001E4`, then polls the timer-2 counter at `BFA001E8` until it drops below `0x65`:
+
+```text
+80004640 lui   s1,0xbfa0
+80004644 ori   s1,s1,0x01e0
+8000464c lui   s0,0x0001
+80004650 ori   s0,s0,0x8704
+80004660 sw    zero,4(s1)
+80004664 sw    s0,0(s1)
+80004668 sw    s0,8(s1)
+8000466c sw    v0,4(s1)
+8000468c lw    s0,8(s1)
+80004690 sltiu v0,s0,0x65
+80004694 beq   v0,zero,0x8000468c
+80004698 nop
+```
+
+The current `VegasMemoryMap` stores NILE timer registers as plain bytes, so the counter never counts down. I added a narrow bring-up fastpath, `TryFastPathKnownRamNileTimerDelay()`, matching only `pc == 0x8000468c` with `s1 == 0xbfa001e0`, then jumping to `0x8000469c`. This is a temporary deterministic replacement for NILE timer behavior, not a real timer implementation.
+
+Verification state:
+
+```text
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=5000 frame=1500
+pc=0x0000000080004698
+lastOp=0x1040fffd
+```
+
+After adding the timer-delay fastpath, probe rebuild was attempted but is currently blocked by unrelated untracked DataEast/Deco32 code:
+
+```text
+EutherDrive.Core/Arcade/DataEast/Deco32/Deco32Adapter.cs(245,9): error CS0103: The name 'Deco32GfxDecryptor' does not exist in the current context
+EutherDrive.Core/Arcade/DataEast/Deco32/Deco32Adapter.cs(246,9): error CS0103: The name 'Deco32GfxDecryptor' does not exist in the current context
+```
+
+That compile failure is outside the Gauntlet file. `Deco32GfxDecryptor` appears later in the same untracked `Deco32Adapter.cs`, so the next session can either fix that local DataEast compile issue first or isolate the Gauntlet probe from the full Core project reference before continuing.
+
+Next useful steps after resuming:
+
+1. Clear or isolate the unrelated DataEast/Deco32 build blocker.
+2. Rebuild `/tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj`.
+3. Run with `EUTHERDRIVE_GAUNTDL_TRACE_IDE=1` and the raw disk sidecar to see what PC reaches after the timer-delay fastpath.
+4. If still no `[GAUNTDL:IDE]` or `[GAUNTDL:IDEPCI]` traffic, trace the next RAM PC window rather than adding broad BIOS fastpaths.
+
 ## Gotchas
 
 - Do not use the abandoned middle-of-text-loop fastpath. It repeats the boot string and breaks return flow.

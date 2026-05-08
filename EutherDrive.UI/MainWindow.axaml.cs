@@ -27,6 +27,7 @@ using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
+using EutherDrive.Platforms.DataEast.Deco32;
 using EutherDrive.UI.Audio;
 using EutherDrive.Audio;
 using EutherDrive.Core.Savestates;
@@ -776,6 +777,12 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.System32.System32Adapter();
+        if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter.IsSupportedArchive(path))
+            return new EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && Deco32Adapter.IsSupportedArchive(path))
+            return new Deco32Adapter();
+        if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsSupportedPath(path))
+            return new EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Konami.TmntAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Technos.XainSleenaAdapter.IsSupportedArchive(path))
@@ -971,6 +978,8 @@ public partial class MainWindow : Window
             target = s32x.GetTargetFps();
         else if (_core is Cps1DinoAdapter cps1)
             target = cps1.GetTargetFps();
+        else if (_core is Deco32Adapter deco32)
+            target = deco32.GetTargetFps();
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             target = tmnt.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
@@ -2880,6 +2889,16 @@ public partial class MainWindow : Window
                             UpdateSega32XRomInfo(s32x);
                             Console.WriteLine(s32x.RomSummary ?? "32X ROM loaded.");
                         }
+                        else if (_core is Deco32Adapter deco32)
+                        {
+                            UpdateDeco32RomInfo(_romPath, deco32);
+                            Console.WriteLine("Data East Deco32 ROM loaded.");
+                        }
+                        else if (_core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter hshavoc)
+                        {
+                            UpdateRomInfo(hshavoc.RomInfo);
+                            Console.WriteLine(hshavoc.RomInfo.Summary);
+                        }
                         _audioPullReady = true;
                         PrimePullAudio();
                         AddRecentRom(_romPath);
@@ -3665,6 +3684,8 @@ public partial class MainWindow : Window
             mcs.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter xain)
             xain.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is Deco32Adapter deco32)
+            deco32.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             tmnt.SetMasterVolumePercent(_masterVolumePercent);
     }
@@ -4087,6 +4108,7 @@ public partial class MainWindow : Window
             EutherDrive.Core.SegaCd.SegaCdAdapter => "Mega-CD / Sega CD",
             EutherDrive.Core.Sega32XAdapter => "Sega 32X",
             N64Adapter => "Nintendo 64",
+            Deco32Adapter => "Data East Deco32",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
         };
@@ -4403,6 +4425,23 @@ public partial class MainWindow : Window
         adapter.SetRegionOverride(RegionOverride);
         if (RomInfoText != null)
             RomInfoText.Text = adapter.RomSummary ?? "32X ROM loaded.";
+        UpdateRomRegionHint(ConsoleRegion.Auto);
+        _romRegionKey = null;
+        _romSegaCdKey = null;
+        _segaCdRamCartEnabled = false;
+        _segaCdLoadCdToRam = false;
+        _segaCdForceNoDisc = false;
+        UpdateSegaCdOptionsUi();
+    }
+
+    private void UpdateDeco32RomInfo(string romPath, Deco32Adapter adapter)
+    {
+        if (RomInfoText != null)
+        {
+            string name = Path.GetFileName(romPath);
+            string identity = adapter.RomIdentity?.Name ?? name;
+            RomInfoText.Text = $"Data East Deco32: {identity} | Night Slashers";
+        }
         UpdateRomRegionHint(ConsoleRegion.Auto);
         _romRegionKey = null;
         _romSegaCdKey = null;
@@ -6619,10 +6658,19 @@ public partial class MainWindow : Window
 
     private void DisposeCurrentCore()
     {
-        if (_core is IDisposable disposableCore)
-            disposableCore.Dispose();
-
-        _core = null;
+        try
+        {
+            if (_core is IDisposable disposableCore)
+                disposableCore.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LogException(ex, "DisposeCurrentCore");
+        }
+        finally
+        {
+            _core = null;
+        }
     }
 
     private void BeginTrackedPlaySession(string? romPath)
@@ -7782,6 +7830,8 @@ public partial class MainWindow : Window
             return sc.FrameCounter.Value;
         if (core is PsxAdapter psx && psx.FrameCounter.HasValue)
             return psx.FrameCounter.Value;
+        if (core is Deco32Adapter deco32 && deco32.FrameCounter.HasValue)
+            return deco32.FrameCounter.Value;
         return null;
     }
 
@@ -8993,7 +9043,8 @@ public partial class MainWindow : Window
     private FrameBlitOptions CreateCurrentFrameBlitOptions(IEmulatorCore core, bool forceOpaque)
     {
         bool applyScanlines = _crtScanlinesEnabled;
-        bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter;
+        bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter
+            || core is Deco32Adapter;
         bool sharpPixels = _sharpPixelsEnabled || forceSharpPixels;
         bool applyAdvancedPixelFilter = sharpPixels && _advancedPixelFilterEnabled && !forceSharpPixels;
         int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
@@ -9897,7 +9948,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -9906,7 +9957,8 @@ public partial class MainWindow : Window
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
                                     || core is McsArcadeAdapter
-                                    || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter)
+                                    || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
+                                    || core is Deco32Adapter)
                                 {
                                     _audioEngine.Submit(audio);
                                 }
@@ -10257,6 +10309,7 @@ public partial class MainWindow : Window
             || _core is Cps1DinoAdapter
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
             || _core is EutherDrive.Core.Arcade.System32.System32Adapter
+            || _core is Deco32Adapter
             || _core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
             return DequeueSnesAudio(frames);
         return ReadOnlySpan<short>.Empty;
@@ -10814,6 +10867,8 @@ public partial class MainWindow : Window
             return psx.GetTargetFps() * _speedScale;
         if (_core is Cps1DinoAdapter cps1)
             return cps1.GetTargetFps() * _speedScale;
+        if (_core is Deco32Adapter deco32)
+            return deco32.GetTargetFps() * _speedScale;
         if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             return tmnt.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;

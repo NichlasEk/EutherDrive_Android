@@ -88,6 +88,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private bool _isSega32XRom;
     private int _s32xAccessDrivenM68kCycles;
     private int _s32xLineBatchCooldownCycles;
+    private ulong _s32xDeferredM68kCycles;
+    private int _s32xDeferredLineCount;
 
     // Framebuffer analyzer for live debugging
     public FramebufferAnalyzer FbAnalyzer { get; } = null!;
@@ -141,16 +143,26 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private static readonly double[] PsgSincWindow = BuildBlackmanWindow(PsgSincTaps);
     private static readonly bool SkipVdpRenderEnabled =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_VDP_RENDER"), "1", StringComparison.Ordinal);
+    private static readonly int S32xSyncQuantum =
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_SYNC_QUANTUM", 1));
     private static readonly int S32xPeripheralAccessWordCycles =
         Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_ACCESS_SYNC_CYCLES", 4));
     private static readonly int S32xM68kInterleaveSliceCycles =
-        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", 224));
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_M68K_INTERLEAVE_SLICE", ScaleS32xQuantum(224)));
     private static readonly bool S32xAccessDrivenLineBatch =
         ParseBoolEnvDefault("EUTHERDRIVE_S32X_ACCESS_DRIVEN_LINE_BATCH", true);
     private static readonly int S32xLineBatchBootSafeFrames =
         ParseNonNegativeInt("EUTHERDRIVE_S32X_LINE_BATCH_BOOT_SAFE_FRAMES", 8);
     private static readonly int S32xLineBatchIoCooldownCycles =
         ParseNonNegativeInt("EUTHERDRIVE_S32X_LINE_BATCH_IO_COOLDOWN_CYCLES", 2048);
+    private static readonly bool S32xDeferredLineBatch =
+        ParseBoolEnvDefault("EUTHERDRIVE_S32X_DEFERRED_LINE_BATCH", false);
+    private static readonly int S32xDeferredLineBatchLines =
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_DEFERRED_LINE_BATCH_LINES", ScaleS32xQuantum(2, VLINES_PAL)));
+    private static readonly bool S32xCoarseFrameScheduler =
+        ParseBoolEnvDefault("EUTHERDRIVE_S32X_COARSE_FRAME_SCHEDULER", S32xSyncQuantum > 1);
+    private static readonly int S32xCoarseFrameSchedulerLines =
+        Math.Max(1, ParseNonNegativeInt("EUTHERDRIVE_S32X_COARSE_FRAME_SCHEDULER_LINES", ScaleS32xQuantum(8, VLINES_PAL)));
     private static readonly bool S32xLegacyFrameBudgetTiming =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_LEGACY_FRAME_BUDGET"), "1", StringComparison.Ordinal);
     private double _z80CycleMultiplier = ParseZ80CycleMultiplier();
@@ -2038,6 +2050,14 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         return fallback;
     }
 
+    private static int ScaleS32xQuantum(int baseValue, int maxValue = int.MaxValue)
+    {
+        long scaled = (long)Math.Max(1, baseValue) * S32xSyncQuantum;
+        if (scaled > maxValue)
+            return Math.Max(1, maxValue);
+        return Math.Max(1, (int)scaled);
+    }
+
     private static bool IsEnvFlagSet(string name)
     {
         string? raw = Environment.GetEnvironmentVariable(name);
@@ -2221,6 +2241,10 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             Console.WriteLine($"[MdTracerAdapter] Reset stack:\n{Environment.StackTrace}");
         Console.WriteLine($"[MdTracerAdapter] Reset _cpuReady={_cpuReady} _cpu={(_cpu != null ? "ok" : "null")}");
         _tick = 0;
+        _s32xAccessDrivenM68kCycles = 0;
+        _s32xLineBatchCooldownCycles = 0;
+        _s32xDeferredM68kCycles = 0;
+        _s32xDeferredLineCount = 0;
 
         // Nollställ RAM
         _bus?.Reset();
@@ -2803,116 +2827,136 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 bool svpActive = md_main.g_md_bus?.OverrideBus is SvpBusOverride;
                 bool useM68k32XTiming = _sega32XCore != null && !S32xLegacyFrameBudgetTiming;
 
-                for (int v = 0; v < vlines; v++)
+                if (useM68k32XTiming && S32xCoarseFrameScheduler && !svpActive)
                 {
-                    if (!SkipVdpRenderEnabled)
+                    Run32XCoarseFrameScheduler(
+                        vlines,
+                        cpuBudget,
+                        z80Budget,
+                        allowZ80,
+                        useCycleCounterZ80Scheduling,
+                        frame,
+                        ref cpuTicks,
+                        ref vdpTicks,
+                        ref s32xSliceTicks,
+                        ref audioFlushTicks);
+                }
+                else
+                {
+                    for (int v = 0; v < vlines; v++)
                     {
-                        if (TracePerf)
+                        if (!SkipVdpRenderEnabled)
                         {
-                            long start = Stopwatch.GetTimestamp();
-                            _vdp.run(v);
-                            vdpTicks += Stopwatch.GetTimestamp() - start;
+                            if (TracePerf)
+                            {
+                                long start = Stopwatch.GetTimestamp();
+                                _vdp.run(v);
+                                vdpTicks += Stopwatch.GetTimestamp() - start;
+                            }
+                            else
+                            {
+                                _vdp.run(v);
+                            }
+                        }
+
+                        if (svpActive && md_main.g_md_bus?.OverrideBus is SvpBusOverride svpOverride)
+                        {
+                            if (!_svpTickLoggedInAdapter)
+                            {
+                                _svpTickLoggedInAdapter = true;
+                                Console.WriteLine("[SVP] tick active (MdTracerAdapter slice path)");
+                            }
+
+                            int remaining = cpuBudget;
+                            const int svpSliceCycles = 16;
+                            while (remaining > 0)
+                            {
+                                int slice = Math.Min(svpSliceCycles, remaining);
+                                int beforeCycles = md_m68k.g_clock_now;
+                                if (TracePerf)
+                                {
+                                    long cpuStart = Stopwatch.GetTimestamp();
+                                    _cpu.RunSome(budget: slice);
+                                    cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+                                }
+                                else
+                                {
+                                    _cpu.RunSome(budget: slice);
+                                }
+
+                                int ranCycles = md_m68k.g_clock_now - beforeCycles;
+                                if (ranCycles <= 0)
+                                    ranCycles = slice;
+
+                                svpOverride.Tick((uint)ranCycles);
+                                md_main.AdvanceSystemCycles(slice, flushAudio: false);
+                                remaining -= slice;
+                            }
+                        }
+                        else if (useM68k32XTiming)
+                        {
+                            RunM68kLineWith32XInterleave(cpuBudget, ref cpuTicks, ref s32xSliceTicks);
                         }
                         else
                         {
-                            _vdp.run(v);
-                        }
-                    }
-
-                    if (svpActive && md_main.g_md_bus?.OverrideBus is SvpBusOverride svpOverride)
-                    {
-                        if (!_svpTickLoggedInAdapter)
-                        {
-                            _svpTickLoggedInAdapter = true;
-                            Console.WriteLine("[SVP] tick active (MdTracerAdapter slice path)");
-                        }
-
-                        int remaining = cpuBudget;
-                        const int svpSliceCycles = 16;
-                        while (remaining > 0)
-                        {
-                            int slice = Math.Min(svpSliceCycles, remaining);
-                            int beforeCycles = md_m68k.g_clock_now;
                             if (TracePerf)
                             {
                                 long cpuStart = Stopwatch.GetTimestamp();
-                                _cpu.RunSome(budget: slice);
+                                _cpu.RunSome(budget: cpuBudget);
                                 cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
                             }
                             else
                             {
-                                _cpu.RunSome(budget: slice);
+                                _cpu.RunSome(budget: cpuBudget);
                             }
 
-                            int ranCycles = md_m68k.g_clock_now - beforeCycles;
-                            if (ranCycles <= 0)
-                                ranCycles = slice;
-
-                            svpOverride.Tick((uint)ranCycles);
-                            md_main.AdvanceSystemCycles(slice, flushAudio: false);
-                            remaining -= slice;
+                            md_main.AdvanceSystemCycles(cpuBudget, flushAudio: false);
                         }
-                    }
-                    else if (useM68k32XTiming)
-                    {
-                        RunM68kLineWith32XInterleave(cpuBudget, ref cpuTicks, ref s32xSliceTicks);
-                    }
-                    else
-                    {
+
+                        // Captain America can wedge in semaphore wait loops mid-frame;
+                        // detect/recover in slice-time instead of only frame boundaries.
+                        MaybeCaptainAmericaMailboxRecovery(frame);
+
+                        if (allowZ80)
+                        {
+                            int z80CyclesToRun = z80Budget;
+                            if (useCycleCounterZ80Scheduling)
+                                z80CyclesToRun = md_main.TakeZ80TicksForScheduling();
+
+                            if (z80CyclesToRun > 0)
+                            {
+                                md_main.g_md_z80?.BeginSystemCycleSlice();
+                                md_main.g_md_z80?.run(z80CyclesToRun);
+                                md_main.g_md_z80?.EndSystemCycleSlice();
+                                // Track Z80 cycles for Aladdin debug
+                                md_main.AddZ80Cycles(z80CyclesToRun);
+                            }
+                        }
+
                         if (TracePerf)
                         {
-                            long cpuStart = Stopwatch.GetTimestamp();
-                            _cpu.RunSome(budget: cpuBudget);
-                            cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+                            long flushStart = Stopwatch.GetTimestamp();
+                            md_main.FlushScheduledAudio();
+                            audioFlushTicks += Stopwatch.GetTimestamp() - flushStart;
+
+                            if (_sega32XCore != null && !useM68k32XTiming)
+                            {
+                                long s32xStart = Stopwatch.GetTimestamp();
+                                Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
+                                s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+                            }
                         }
                         else
                         {
-                            _cpu.RunSome(budget: cpuBudget);
+                            md_main.FlushScheduledAudio();
+                            if (_sega32XCore != null && !useM68k32XTiming)
+                                Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
                         }
-
-                        md_main.AdvanceSystemCycles(cpuBudget, flushAudio: false);
-                    }
-
-                    // Captain America can wedge in semaphore wait loops mid-frame;
-                    // detect/recover in slice-time instead of only frame boundaries.
-                    MaybeCaptainAmericaMailboxRecovery(frame);
-
-                    if (allowZ80)
-                    {
-                        int z80CyclesToRun = z80Budget;
-                        if (useCycleCounterZ80Scheduling)
-                            z80CyclesToRun = md_main.TakeZ80TicksForScheduling();
-
-                        if (z80CyclesToRun > 0)
-                        {
-                            md_main.g_md_z80?.BeginSystemCycleSlice();
-                            md_main.g_md_z80?.run(z80CyclesToRun);
-                            md_main.g_md_z80?.EndSystemCycleSlice();
-                            // Track Z80 cycles for Aladdin debug
-                            md_main.AddZ80Cycles(z80CyclesToRun);
-                        }
-                    }
-
-                    if (TracePerf)
-                    {
-                        long flushStart = Stopwatch.GetTimestamp();
-                        md_main.FlushScheduledAudio();
-                        audioFlushTicks += Stopwatch.GetTimestamp() - flushStart;
-
-                        if (_sega32XCore != null && !useM68k32XTiming)
-                        {
-                            long s32xStart = Stopwatch.GetTimestamp();
-                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
-                            s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
-                        }
-                    }
-                    else
-                    {
-                        md_main.FlushScheduledAudio();
-                        if (_sega32XCore != null && !useM68k32XTiming)
-                            Run32XInterleavedLine(v, s32xBaseTicksPerLine, s32xRemainderTicks);
                     }
                 }
+
+                if (useM68k32XTiming)
+                    FlushDeferred32XLineBatch(ref s32xSliceTicks);
 
                 if (TracePerf)
                 {
@@ -3157,6 +3201,102 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     private readonly object _asciiStreamLock = new();
     private long _asciiFrameNumber;
 
+    private void Run32XCoarseFrameScheduler(
+        int vlines,
+        int cpuBudget,
+        int z80Budget,
+        bool allowZ80,
+        bool useCycleCounterZ80Scheduling,
+        long frame,
+        ref long cpuTicks,
+        ref long vdpTicks,
+        ref long s32xSliceTicks,
+        ref long audioFlushTicks)
+    {
+        if (_cpu == null || _sega32XCore == null)
+            return;
+
+        int line = 0;
+        while (line < vlines)
+        {
+            int linesThisQuantum = Math.Min(S32xCoarseFrameSchedulerLines, vlines - line);
+
+            if (!CanUseS32xCoarseFrameScheduler())
+                linesThisQuantum = 1;
+
+            if (!SkipVdpRenderEnabled)
+            {
+                for (int i = 0; i < linesThisQuantum; i++)
+                {
+                    if (TracePerf)
+                    {
+                        long start = Stopwatch.GetTimestamp();
+                        _vdp.run(line + i);
+                        vdpTicks += Stopwatch.GetTimestamp() - start;
+                    }
+                    else
+                    {
+                        _vdp.run(line + i);
+                    }
+                }
+            }
+
+            int quantumCpuBudget = cpuBudget * linesThisQuantum;
+            if (_s32xLineBatchCooldownCycles > 0)
+                _s32xLineBatchCooldownCycles = Math.Max(0, _s32xLineBatchCooldownCycles - quantumCpuBudget);
+
+            int accessCyclesBefore = _s32xAccessDrivenM68kCycles;
+            if (TracePerf)
+            {
+                long cpuStart = Stopwatch.GetTimestamp();
+                _cpu.RunSome(budget: quantumCpuBudget);
+                cpuTicks += Stopwatch.GetTimestamp() - cpuStart;
+            }
+            else
+            {
+                _cpu.RunSome(budget: quantumCpuBudget);
+            }
+
+            int accessDrivenCycles = _s32xAccessDrivenM68kCycles - accessCyclesBefore;
+            int remaining32XCycles = quantumCpuBudget - Math.Max(0, accessDrivenCycles);
+            if (remaining32XCycles > 0)
+                QueueOrRun32XLineBatch((ulong)remaining32XCycles, accessDrivenCycles > 0, ref s32xSliceTicks);
+
+            _s32xAccessDrivenM68kCycles = 0;
+            md_main.AdvanceSystemCycles(quantumCpuBudget, flushAudio: false);
+
+            MaybeCaptainAmericaMailboxRecovery(frame);
+
+            if (allowZ80)
+            {
+                int z80CyclesToRun = useCycleCounterZ80Scheduling
+                    ? md_main.TakeZ80TicksForScheduling()
+                    : z80Budget * linesThisQuantum;
+
+                if (z80CyclesToRun > 0)
+                {
+                    md_main.g_md_z80?.BeginSystemCycleSlice();
+                    md_main.g_md_z80?.run(z80CyclesToRun);
+                    md_main.g_md_z80?.EndSystemCycleSlice();
+                    md_main.AddZ80Cycles(z80CyclesToRun);
+                }
+            }
+
+            if (TracePerf)
+            {
+                long flushStart = Stopwatch.GetTimestamp();
+                md_main.FlushScheduledAudio();
+                audioFlushTicks += Stopwatch.GetTimestamp() - flushStart;
+            }
+            else
+            {
+                md_main.FlushScheduledAudio();
+            }
+
+            line += linesThisQuantum;
+        }
+    }
+
     private void RunM68kLineWith32XInterleave(int cpuBudget, ref long cpuTicks, ref long s32xSliceTicks)
     {
         if (_cpu == null || _sega32XCore == null)
@@ -3181,16 +3321,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             int remaining32XCycles = cpuBudget - Math.Max(0, accessDrivenCycles);
             if (remaining32XCycles > 0)
             {
-                if (TracePerf)
-                {
-                    long s32xStart = Stopwatch.GetTimestamp();
-                    Run32XInterleavedLine((ulong)remaining32XCycles);
-                    s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
-                }
-                else
-                {
-                    Run32XInterleavedLine((ulong)remaining32XCycles);
-                }
+                QueueOrRun32XLineBatch((ulong)remaining32XCycles, accessDrivenCycles > 0, ref s32xSliceTicks);
             }
 
             _s32xAccessDrivenM68kCycles = 0;
@@ -3251,6 +3382,79 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         return _s32xLineBatchCooldownCycles == 0;
     }
 
+    private bool CanUseS32xCoarseFrameScheduler()
+    {
+        if (!S32xCoarseFrameScheduler || _sega32XCore == null)
+            return false;
+
+        if (S32xLineBatchBootSafeFrames > 0 && _sega32XCore.FrameCounter < S32xLineBatchBootSafeFrames)
+            return false;
+
+        return !_sega32XCore.Registers.EitherHInterruptEnabled;
+    }
+
+    private void QueueOrRun32XLineBatch(ulong elapsedM68kCycles, bool forceSync, ref long s32xSliceTicks)
+    {
+        if (elapsedM68kCycles == 0)
+            return;
+
+        if (!CanDefer32XLineBatch() || forceSync)
+        {
+            FlushDeferred32XLineBatch(ref s32xSliceTicks);
+            Run32XInterleavedLineMeasured(elapsedM68kCycles, ref s32xSliceTicks);
+            return;
+        }
+
+        _s32xDeferredM68kCycles += elapsedM68kCycles;
+        _s32xDeferredLineCount++;
+        if (_s32xDeferredLineCount >= S32xDeferredLineBatchLines)
+            FlushDeferred32XLineBatch(ref s32xSliceTicks);
+    }
+
+    private bool CanDefer32XLineBatch()
+    {
+        return S32xDeferredLineBatch
+            && _sega32XCore != null
+            && !_sega32XCore.Registers.EitherHInterruptEnabled
+            && _s32xLineBatchCooldownCycles == 0;
+    }
+
+    private void FlushDeferred32XLineBatch(ref long s32xSliceTicks)
+    {
+        ulong elapsedM68kCycles = _s32xDeferredM68kCycles;
+        if (elapsedM68kCycles == 0)
+            return;
+
+        _s32xDeferredM68kCycles = 0;
+        _s32xDeferredLineCount = 0;
+        Run32XInterleavedLineMeasured(elapsedM68kCycles, ref s32xSliceTicks);
+    }
+
+    private void FlushDeferred32XLineBatchUnmeasured()
+    {
+        ulong elapsedM68kCycles = _s32xDeferredM68kCycles;
+        if (elapsedM68kCycles == 0)
+            return;
+
+        _s32xDeferredM68kCycles = 0;
+        _s32xDeferredLineCount = 0;
+        Run32XInterleavedLine(elapsedM68kCycles);
+    }
+
+    private void Run32XInterleavedLineMeasured(ulong elapsedM68kCycles, ref long s32xSliceTicks)
+    {
+        if (TracePerf)
+        {
+            long s32xStart = Stopwatch.GetTimestamp();
+            Run32XInterleavedLine(elapsedM68kCycles);
+            s32xSliceTicks += Stopwatch.GetTimestamp() - s32xStart;
+        }
+        else
+        {
+            Run32XInterleavedLine(elapsedM68kCycles);
+        }
+    }
+
     private void Run32XInterleavedLine(int line, ulong baseTicksPerLine, ulong remainderTicks)
     {
         if (_sega32XCore == null)
@@ -3283,6 +3487,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         if (accessCycles <= 0)
             return;
 
+        FlushDeferred32XLineBatchUnmeasured();
         _sega32XCore.RunM68kCycles((ulong)accessCycles);
         _s32xAccessDrivenM68kCycles += accessCycles;
         _s32xLineBatchCooldownCycles = Math.Max(_s32xLineBatchCooldownCycles, S32xLineBatchIoCooldownCycles);

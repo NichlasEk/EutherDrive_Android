@@ -80,6 +80,9 @@ internal sealed class Sega32XSh2Cpu
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_FAST_CORE"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool TurboStraightLineEnabled =
+        ParseBoolEnvDefault("EUTHERDRIVE_S32X_TURBO_STRAIGHT_LINE", false);
+    private const ulong TurboStraightLineMaxOps = 48;
     private static readonly DecodedOp[] FastOpcodeTable = BuildFastOpcodeTable();
     private static readonly bool MemLoopFusionEnabled =
         string.Equals(
@@ -314,6 +317,15 @@ internal sealed class Sega32XSh2Cpu
 
             if (MemLoopFusionEnabled &&
                 TryExecuteMemoryTransferLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (TurboStraightLineEnabled &&
+                TryExecuteTurboStraightLine(bus, remainingInstructions, pc, opcode, out consumedInstructions))
             {
                 remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
                 if (bus.ShouldStopExecution)
@@ -1077,6 +1089,99 @@ internal sealed class Sega32XSh2Cpu
         {
             CurrentInstructionPc = 0;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteTurboStraightLine(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint firstPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        consumedInstructions = 0;
+
+        if (remainingInstructions < 2 ||
+            Registers.NextInstructionInDelaySlot ||
+            TraceInstructionStart.HasValue ||
+            TraceInstructionEnd.HasValue ||
+            TraceBootLoop ||
+            HasPendingInterrupt(bus))
+        {
+            return false;
+        }
+
+        ulong opLimit = Math.Min(remainingInstructions, TurboStraightLineMaxOps);
+        uint pc = firstPc;
+        ushort opcode = firstOpcode;
+
+        for (ulong i = 0; i < opLimit; i++)
+        {
+            DecodedOp template = FastOpcodeTable[opcode];
+            if (template.Kind == DecodedOpKind.Invalid ||
+                IsTurboStraightLineBoundary(template.Kind))
+            {
+                break;
+            }
+
+            DecodedOp op = new(pc, opcode, template.Kind, template.N, template.M, template.Imm);
+            ApplyFetchedInstructionPrelude();
+
+            CurrentInstructionPc = pc;
+            try
+            {
+                ExecuteDecodedOp(op, bus);
+                bus.IncrementCycleCounter(1);
+                CycleCounter += 1;
+                AccumulatePcSample(pc, 1);
+            }
+            finally
+            {
+                CurrentInstructionPc = 0;
+            }
+
+            consumedInstructions++;
+            if (bus.ShouldStopExecution || Registers.NextInstructionInDelaySlot || HasPendingInterrupt(bus))
+                return true;
+
+            pc = Registers.ProgramCounter;
+            if (consumedInstructions >= remainingInstructions || consumedInstructions >= TurboStraightLineMaxOps)
+                return true;
+
+            opcode = bus.ReadOpcodeFast(pc);
+        }
+
+        return consumedInstructions != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsTurboStraightLineBoundary(DecodedOpKind kind)
+    {
+        return kind is
+            DecodedOpKind.Invalid or
+            DecodedOpKind.Sleep or
+            DecodedOpKind.Tst or
+            DecodedOpKind.CmpEq or
+            DecodedOpKind.CmpHs or
+            DecodedOpKind.CmpGe or
+            DecodedOpKind.CmpHi or
+            DecodedOpKind.CmpGt or
+            DecodedOpKind.CmpEqImm or
+            DecodedOpKind.TstImm or
+            DecodedOpKind.Dt or
+            DecodedOpKind.CmpPz or
+            DecodedOpKind.CmpPl or
+            DecodedOpKind.Bra or
+            DecodedOpKind.Bsr or
+            DecodedOpKind.Bt or
+            DecodedOpKind.Bf or
+            DecodedOpKind.BtS or
+            DecodedOpKind.BfS or
+            DecodedOpKind.Rts or
+            DecodedOpKind.Jmp or
+            DecodedOpKind.Jsr or
+            DecodedOpKind.Braf or
+            DecodedOpKind.Bsrf;
     }
 
     private void ExecuteDecodedOp(DecodedOp op, Sega32XSh2Bus bus)
@@ -2898,6 +3003,15 @@ internal sealed class Sega32XSh2Cpu
         return uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out uint parsed)
             ? parsed
             : null;
+    }
+
+    private static bool ParseBoolEnvDefault(string name, bool defaultValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+
+        return raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int ParseTraceInstructionMaxLogs()

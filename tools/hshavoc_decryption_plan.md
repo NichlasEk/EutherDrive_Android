@@ -1,0 +1,187 @@
+# High Seas Havoc Decryption Plan
+
+## Current facts
+
+- The arcade ZIP interleaves `d-25.11a` and `d-26.9a` into a `0x100000` byte 68000 ROM image.
+- MAME's base decode produces a valid Mega Drive header and many large exact byte runs against the known Genesis ROMs.
+- The tail area `0xe8000-0xfffff` is explained by the simple tail bitswap alone and matches the Genesis ROMs exactly.
+- PEEL 4B has been modeled from the dumped fusemap. Its registered counter reproduces MAME's `typedat` table exactly.
+- PEEL 5B has been modeled from the dumped fusemap. It explains the kind of six-bit affine/permutation data-line transforms MAME is approximating.
+
+## Known blocker
+
+The startup region is not solved by MAME's current extra pass:
+
+- `017b` wants extra bitswap without final xor: `007c`.
+- `2e3f` wants extra bitswap with final xor: `4eb9`.
+- `0107` wants extra bitswap without final xor: `0000`.
+- `0603` does not become the expected Genesis-like `0700`; MAME-style extra gives `0684` or `0685`.
+
+The first deep PEEL5B search found no single affine PEEL5B mode with one fixed six-bit bus mapping that satisfies the first known startup pairs after the extra bitswap. That means the remaining protection is likely fetch/context gated, not one flat post-transform.
+
+The instruction-path search now finds a plausible partial startup stream:
+
+- `0x0c42`: extra no-xor opcode plus a named `0603 -> 0700` hypothesis gives `ori.w #$0700,SR`.
+- `0x0c46` and `0x0c4c`: `2e3f -> 4eb9` and `0107 -> 0000` produce plausible `JSR abs.l` instructions.
+- `0x0c52`: raw `2f3c` is likely intentional and decodes as `move.l #imm,-(sp)`.
+- The earlier hard stop at `0x0c70` is now better explained by choosing `x0:4eb8`, i.e. `JSR abs.w`, instead of forcing `x1:4eb9` / `JSR abs.l`.
+- With `0x0c70 = jsr $00f8.w` and `0x0c74 = x0:01a6` (`bclr d0,-(a6)`), the instruction-path search reaches the block-ending raw `RTS` at `0x0c9a`.
+- A PEEL5B search for the Genesis-like long target `$000d0000` at `0x0c70` found no valid fixed six-bit mapping from any `raw/x0/x1` operand combination, which supports the arcade startup being structurally different from the home ROM here.
+- Target verification now penalizes `$01xxxx` startup calls. The best path therefore prefers low-bank calls:
+  `$0010a2`, `$001082`, `$00107a`, `$00101c`, `$0010f8`, `$0010a8`, `$000e2e`, `$000adc`, `$000aba`, `$000af4`, `$000d34`, and the final push immediate `$000a1c`.
+- Weak targets remain and need confirmation: `$00f8.w` points into the vector/header area, while `$001082/$001084/$00101c/$0010a8/$000aba/$000af4` have low local scores and may be encrypted islands, data, or false positives.
+- `--write-best-startup` writes a complete candidate image with the current startup patch. Current generated file:
+  `/tmp/hshavoc_best_startup_candidate.bin`, CRC `d1e94775`, SHA1 `777a2cd391099647cf3c4215280f574fce147293`.
+- Objdump sanity check:
+  - Startup `0x0c42-0x0c9a` disassembles cleanly as the candidate path.
+  - `$0010a2` looks strong: a clear RAM-clear loop followed by VDP init at `$0010ba`.
+  - `$0010f8` is a clean `RTS`, followed by valid jumps to `$0d0000` and `$0d0682`.
+  - `$000adc` looks like real code with VDP/MMIO writes.
+  - `$001082`, `$00101c`, `$000e2e`, `$000d34`, and the entry alignment around `$000aba/$000af4` still look partially encrypted, data-like, or misaligned.
+- Nearby-entry scoring shows likely alignment issues:
+  - `$000aba` is probably not the real entry; `$000ab8` has a plausible `movem` prologue and `$000abc` starts a valid MMIO polling sequence.
+  - `$000af4` is probably early; `$000af8` scores much better and starts with `33fc ... 00ff`.
+  - `$000d34` and `$000d32` are tied by the simple score, but objdump makes `$000d34` look weak after the first instruction.
+  - `$000e2e` may be near `$000e32`, which starts with a plausible `43f9`.
+- `--write-adjusted-startup` writes a second diagnostic image with nearby-entry target adjustments. Current generated file:
+  `/tmp/hshavoc_adjusted_startup_candidate.bin`, CRC `c03098fc`, SHA1 `43a7b02dc88eb80d0d32ef8311a07c5af7ed612f`.
+- Adjusted target sanity check:
+  - `$000ab8` is a strong replacement for `$000aba`: it starts with `48e7 fffe` and runs into coherent MMIO/VDP-looking code.
+  - `$000af8` is a strong replacement for `$000af4`: it starts with `33fc 0001 00ff f910` and continues coherently.
+  - `$000e32` is only a weak improvement over `$000e2e`: the first instruction looks plausible, but the following stream still looks encrypted/data-like.
+  - `$000d32` just returns immediately; this may be intentional, but it does not explain the encrypted/data-like stream at `$000d34`.
+- Weak-window variant reporting is now in the lab:
+  - `$00101c-$001066` has no independent raw/x0/x1 words that look like strong 68000 opcodes, address-high words, or known startup targets.
+  - `$001082/$001084` looks data-like at the entry itself, but `$00109c` starts a plausible raw `41f9 00ff 0000`-style address load before the known-good `$0010a2` code.
+  - `$000e32` still gives the best local signal for the `$000e2e` window, with raw `43f9 00ff ...`, but later branch-looking words are not enough to call it solved.
+  - `$000d34` starts as raw `41f9` while its following address high word wants `x0:0000`, reinforcing that this area likely needs mixed per-word gating rather than one flat transform.
+- A first mixed raw/x0/x1 sequence scorer confirms the same shape:
+  - `$00101c`, `$001082`, and `$001084` do not currently decode into any modeled short instruction stream.
+  - `$000e32` only gets as far as `raw:43f9 raw:00ff raw:ff87` (`lea $00ffff87,a1`) before stopping.
+  - After adding `moveq` recognition, `$000d34` gets one instruction farther: `raw:41f9 x0:0000 raw:0a51` (`lea $00000a51,a0`) followed by `raw:7e0e` (`moveq #$0e,d7`), then stops.
+  - One-word `p5?` probes produce many plausible-looking but noisy sequences. Treat these as overfit diagnostics until a common PEEL mode is proven across adjacent words.
+- The common target-adjustment probe shows all four adjusted operand fixes can be described as small-delta changes within a six-bit set (`0c7a raw 0e2e->$0e32`, `0c86 raw 0abd->$0ab8`, `0c8c raw/x0/x1->$0af8`, `0c92 raw/x0/x1->$0d32`). This keeps PEEL5B/fetch-context gating plausible, but is not yet a proof of one shared mode.
+- The startup context/phase report does not reduce the remaining fixes to a simple `typedat` rule:
+  - `$0c7a`: phase `0d`, `typedat=0`, `4b=(0,1,1,0,1)`, needs bits `[2,3,4]`.
+  - `$0c86`: phase `03`, `typedat=1`, `4b=(0,0,0,1,1)`, needs bits `[0,2]`.
+  - `$0c8c`: phase `06`, `typedat=1`, `4b=(0,0,1,1,0)`, needs bits `[0,1,3,7]`.
+  - `$0c92`: phase `09`, `typedat=0`, `4b=(0,1,0,0,1)`, direct `x0`, bits `[1,2]`.
+  This supports a multi-stage or PIC-state-dependent model rather than one flat address-nibble formula.
+- A first local decode-layer scan is present, but its `p5?` class is intentionally broad and dominates too many chunks. Use it as a warning that unconstrained one-word PEEL probes overfit; the useful signal is still the stricter raw/x0/x1 hits plus adjusted-target bit deltas.
+- Exact PEEL5B fitting is now separated from the default report behind `--strict-peel-search`, because one-word and low-delta searches are underconstrained and expensive. The bounded two-word exact probe currently finds at least one shared hardware-shaped candidate:
+  - `$0c7a: raw 0e2e -> 0e32` together with `$0c86: x0 0abb -> 0ab8`
+  - shared control `(i1,i8,i9,i12,rf13) = (0,1,1,0,0)`
+  - shared bit order `(1,2,7,4,0,3)`
+  This is stronger than the earlier one-word `p5?` hints, but it still only proves a local two-word compatibility. Three- and four-word common-mode fitting needs a deeper bounded search before being treated as a real algorithm.
+- The strict PEEL5B candidate can now be replayed directly in the default report as `p5m`. Replay results:
+  - `$0c7a` matches `$0e32` through `p5m:raw`.
+  - `$0c86` matches `$0ab8` through `p5m:x0`.
+  - `$0c8c` does not reach `$0af8` through this mode.
+  - `$0c92` still reaches `$0d32` directly through `x0`, not through this mode.
+  - The weak-window sequence scores do not improve: `$101c` remains unknown, `$1082/$1084` remains unknown, `$0e32` remains a short `lea` then stop, and `$0d34` remains `lea` + `moveq` then stop.
+  This makes the strict mode useful evidence for local startup operand gating, but not a global code-island decryption rule.
+- A second focused PEEL5B hypothesis is now replayed as `p5h`:
+  - shared control `(i1,i8,i9,i12,rf13) = (0,1,1,0,0)`
+  - bit order `(4,0,3,1,7,8)`
+  - `$0c8c: raw 0a73 -> 0af8`, fixing the remaining strong startup target adjustment.
+  - `$0d48: raw 0107 -> 000d`, a possible bank/high-word signal inside the weak `$0d34` continuation.
+  - It does not improve weak-window sequence scores, so this should also be treated as local/fetch-context evidence rather than a global decode mode.
+- Weak code islands are now profiled separately instead of forcing one shared model:
+  - Models tested per island: `raw/x0/x1`, `p5m`, `p5h`, and combined `p5m+p5h`.
+  - `$101c`: no model produces independently interesting role hits or a valid sequence.
+  - `$1082/$1084`: no model improves the sequence; only the already-known raw signal around `$109c` remains.
+  - `$0e32`: `p5m`/`p5h` add role-looking words, but the best sequence remains the raw `lea $00ffff87,a1` followed by stop.
+  - `$0d34`: `p5m`/`p5h` add role-looking words, but the best sequence remains raw/x0 `lea $00000a51,a0`, raw `moveq #$0e,d7`, then stop.
+  This supports separating startup operand/fetch gating from actual code-island decryption. The weak islands likely need a third, island-specific rule or may include data/table streams rather than linear code.
+- An island-specific exact-mode search now anchors on each weak island's first hard stop and requires one exact PEEL5B mode to fit a short instruction-shaped seed:
+  - `$101c`: can be forced into `303c 01a6` (`move.w #$01a6,d0`) with a local PEEL mode, but it stops immediately at `$1020`. Treat this as weak/overfit evidence.
+  - `$1082/$1084`: no local exact PEEL5B seed improves the sequence.
+  - `$0e32`: the hard stop at `$0e38` first looked forceable into a `jsr`, but stricter validation killed it. Odd call targets are now rejected, and the even replacement candidate `jsr $00002e7a` is rejected because `$2e7a` itself scores as `data/unknown`.
+  - `$0d34`: no local exact PEEL5B seed improves the stop at `$0d3c`.
+  The useful negative result is that the exact island search no longer finds a clean, target-valid continuation for `$1082`, `$0e32`, or `$0d34`; the remaining `$101c` seed is too short to trust.
+- Per-island table/math profiling now treats the weak blocks as possible table streams instead of failed linear code:
+  - `$101c` and `$0e32` have similar low-entropy/repeated-word structure. They share the same strong XOR fingerprints (`00a4`, `1a98`) and both produce a modeled pointer-like `$00010806` with local `target_score=25`. Treat these as likely shared encrypted table/setup fragments until a code-aware model proves otherwise.
+  - `$1082/$1084` is still short and mostly data-like, but it contains the raw MMIO-looking `$00ff0000` longword near `$109e`, matching the already-known plausible raw setup around `$109c-$10a2`.
+  - `$0d34` is structurally different: higher entropy, many more pointer-like longword candidates, an `x0/x0` `$00000ad6` candidate with `target_score=12`, an `x1/p5h` `$00010bcc` candidate with `target_score=7`, bank-D candidates, and one VDP-like candidate. This looks more like mixed pointer/data or p5h-gated operand material than a single flat code stream.
+  - The pointer counts intentionally overcount because p5 variants can generate several alternatives for one word pair, but the repeated-island fingerprint is useful signal.
+- A cross-island table fingerprint scan now looks for windows sharing weak-island repetition/XOR structure:
+  - `$101c` is part of a larger local cluster, with strong non-identical matches around `$0ec0`, `$0efa`, `$0f34`, `$0fa8`, `$0fe2`, and `$100c`. The top hit `$0fe2` has `exact=29/38`, `xor_overlap=29/37`, and low entropy `3.23`.
+  - The `$0e2e/$0e32` family points back into the `$101c` cluster as well; several matches from `$100e-$102e` score above 220, and `$0ea8` contains the same `$00010806` modeled pointer candidate.
+  - `$0d34` does not produce the same kind of independent family. Its best hits are sliding windows around `$0d1e-$0d30`, which means the fingerprint is local structure, not a copy elsewhere.
+  - Validating the strongest `$0d34` pointer candidates gives `$00000ad6` as a plausible low-ROM code target (`tst.w $00fff90c`, then branch; score 12) and `$00010bcc` as a weaker high-bank target (`move.w $00ffe090,d0`; score 7). Bank-D variants still score as data/unknown.
+- The `$0ec0-$103e` table-family record model now tests start alignment and record period:
+  - The strongest alignment is currently `$0ea0` with a 4-word/8-byte period: score 562, repeat score 152, two pointer-like slot pairs, and 15 repeated pointer-like targets.
+  - The 4-word period wins over 3, 5, 6, 8, 9, and 16-word alternatives at the same start. Nearby starts (`$0ea2`, `$0ea8`, `$0eaa`) also keep the 4-word period on top, so the signal is period-stable even if the exact family boundary is still fuzzy.
+  - Best-period slots have no direct 68000 opcode roles through raw or p5m; this strongly suggests a compact table/bytecode-like record stream rather than direct executable 68000.
+  - Common raw records include `0102 1b3e 01a6 0102`, `1b3e 01a6 0102 0981`, `0101 14c5 01a6 0102`, and `1b3e 01a6 0102 09c1`.
+  - Repeated pointer-like pairs still cluster on slot `01/02` through p5m/raw or p5m/x0, but their destinations currently score as data/unknown. Treat them as structural markers, not patch targets yet.
+- The 4-word record alphabet view currently sees 52 records and 40 unique symbols in `$0ea0-$103f`:
+  - The most common symbol is `0102 1b3e 01a6 0102` with count 3.
+  - Repeated symbols confirm the stream is structured but not trivially one repeated filler block.
+  - Slot alphabets are small: slot 0 has 10 unique values, slot 1 has 18, slot 2 has 17, and slot 3 has 11. This is consistent with compact fields or state-machine tokens.
+- A prioritized reference scan links startup directly into the cluster:
+  - `$0c62: x1 -> $101c` has `context_score=73`.
+  - `$0c7a: x0 -> $0fa8` has `context_score=46`.
+  - `$0c6e` has p5m alternatives into `$1026/$102e/$103a` with `context_score=59`.
+  - These are stronger than the many low-score incidental table-looking values elsewhere, and suggest that at least some startup targets are entry points into this record/table family, not ordinary code addresses.
+- A focused startup-to-record interpretation now maps those startup operands to concrete 4-word records:
+  - `$0c5e: x0/x1 -> $101c` lands at `R04@$1018+04`, record `01a6 0005 1b3e 01a6`.
+  - `$0c76: x0/x0 -> $0fa8` lands at `R10@$0fa8+00`, record `1b3e 01a6 0102 09c1`.
+  - `$0c6a` has p5m alternatives into `R16@$1020+06`, `R24@$1038+02`, and `R27@$1028+06`.
+  - Several entries land at slot offsets `+02/+04/+06`, not only record starts. This suggests the startup targets may be field-entry/state-entry offsets inside a compact interpreter table rather than function starts.
+- A halfword-token stream model now flattens `$0ea0-$103f` into 2-byte tokens:
+  - The stream has 208 halfword tokens but only 24 unique raw token values, with entropy `3.65`. This is much more table/bytecode-like than random encrypted 68000 code.
+  - Frequent transitions are very strong: `01a6 -> 0102` occurs 35 times, `1b3e -> 01a6` 20 times, `14c5 -> 01a6` 15 times, and `0101 -> 14c5` 12 times.
+  - Startup entry slots are biased toward late-record entry: `s0:1`, `s1:1`, `s2:1`, `s3:4`. That confirms that mid-record entry is systematic, not a one-off alignment accident.
+  - Traces from `$101c`, `$1026`, `$102e`, `$0fa8`, `$0f26`, and `$0f2e` all stay inside the same small token alphabet. This strengthens the interpretation that these are state/table entrypoints, not failed function starts.
+  - The most useful next target is now the code that consumes the repeated transitions, especially the `01a6/0102/1b3e/14c5/0101` alphabet and the slot-3 startup entries.
+- A first table-consumer probe now searches for modeled `lea`, `movea.l #imm`, or `pea` base loads directly into `$0ea0-$103f`:
+  - No direct modeled base-load candidate was found in low ROM. This is useful negative evidence: the table base may be loaded indirectly, synthesized, passed through startup state, or hidden behind another decode layer.
+  - Startup entry windows show weak p5h postincrement-looking hits such as `15d9` (`move.b (a1)+,d2`) around `$0f2e/$0f3e/$0f58`, but those hits are inside the token stream itself. Treat them as token-shape hints, not confirmed consumer code.
+  - The next consumer search should include indirect pointer loads and routines that receive `$0ea0`-family addresses as arguments rather than only direct absolute base loads.
+- An indirect token-reference classifier now separates strong startup operands from loose word hits:
+  - The strong references are still only startup operands: `$0c62 -> $101c`, `$0c7a -> $0fa8`, `$0c6e -> $1026/$102e/$103a`, and `$0c7a -> $0f26/$0f2e`.
+  - A tempting non-startup `$4ab6 -> $1004` hit was rejected after context checking: `$1004` was raw, while the apparent `jsr abs.w` opcode came only from a p5m transform on the previous word. Mixed-transform opcode/operand pairs should not be trusted as call sites.
+  - Remaining non-startup hits (`$0584`, `$0d0e`, `$0e40`, `$0e9a`) are loose words in data/table-like regions, not consumer code.
+- A token alphabet run scan expands the probable token/table footprint:
+  - Using the repeated `$0ea0` alphabet, the densest merged region is `$0ea0-$1064` with 227 words, 219 token hits, density `0.96`.
+  - A separate earlier region `$0e46-$0e80` has 30 words, 28 token hits, density `0.93`.
+  - A small later echo at `$11ee-$1214` has 20 words, 17 hits, density `0.85`; it may be related data, a copied subtable, or coincidence and needs validation.
+  - `$0e82-$0e9e` now looks like a boundary/metadata bridge between token regions rather than ordinary code.
+- A fixed block/trailer model now explains much of `$0ed4-$102e` as six clean `0x3a`-byte blocks:
+  - Clean block starts are `$0ed4`, `$0f0e`, `$0f48`, `$0f82`, `$0fbc`, and `$0ff6`. Each has 29 words: 28 mostly-token columns and one parameter word.
+  - Most block trailers are `4fbd + param`; B05 is the near variant `4eba + 0074`. This looks like an end/control marker plus argument, not 68000 code.
+  - Startup table entries land on fixed block columns: B06/w19 (`$101c`), B06/w24 (`$1026`), B06/w28 (`$102e`), B04/w19 (`$0fa8`), B02/w12 (`$0f26`), and B02/w16 (`$0f2e`). This is stronger evidence for a table interpreter or state-machine entry model.
+  - The block-column model shows many stable columns (`w01`, `w04`, `w07`, `w10`, `w13`, `w17`, `w20`, `w23`, `w26`) and low-cardinality variation elsewhere. That strongly argues against random encryption noise.
+  - Trailer parameters are not yet decoded, but B04/B05/B06 all have simple relative interpretations that land at `$1030`, the next dense block/prologue region. Treat `$1030` as a likely block target/boundary until disproven.
+
+## Next steps
+
+1. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
+2. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
+3. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.
+4. Investigate `$001082`, `$00101c`, `$000e2e/$000e32`, and `$000d34` as likely encrypted islands or data tables.
+5. Add a local transform search for each weak target, using surrounding valid code and known MMIO patterns (`00ffxxxx`, `00c00004`, `4e75`, `4eb9`, `33fc`) as constraints.
+6. Expand the strict common-mode validator beyond the current bounded two-word startup probe. It must prove the same PEEL control/bit-order across three or more adjacent or fetch-related words before allowing `p5?`-style candidates to score as code.
+7. Add a segment/layer scan that summarizes which decode form (`raw`, `x0`, `x1`, strict p5m, p5h, small-delta) dominates each local code/data island, rather than assuming one global mode.
+8. Add a stricter continuation test for island exact-mode hits: a hit should survive at least two non-trivial instructions after the seed or reach a validated branch/call target.
+9. Investigate whether `$101c`, `$1082`, `$0e32`, and `$0d34` are data/table setup islands rather than linear code. The current linear-code model may be the wrong validator for these blocks.
+10. Determine the exact boundary and base alignment of the token/table family. Current evidence says `$0ea0-$1064` is the main dense region, `$0e46-$0e80` is a related earlier region, `$0e82-$0e9e` may be metadata/boundary material, and `$0ed4-$102e` contains six clean `0x3a`-byte subblocks.
+11. Build a small alphabet/dictionary view for the 4-word records and compare it against nearby executable routines to infer whether fields are opcodes, offsets, counters, or state-machine tokens.
+12. Validate whether `$0ea8`, `$0e54`, `$0f52`, `$0f72`, `$101a`, and `$1034` are repeated record fields that should decode through the same p5m/p5h longword rule.
+13. Find the code that consumes the 4-word records/halfword tokens. The direct startup refs prove entry points, but not yet the field semantics. Direct absolute base-load search was negative, so the next pass should model indirect argument/pointer flow.
+14. Search specifically for routines that walk repeated token transitions such as `01a6 -> 0102`, `1b3e -> 01a6`, `14c5 -> 01a6`, and `0101 -> 14c5`, including code using `(An)+`, indexed table reads, or A-register bases near `$0ea0`.
+14a. Treat mixed-transform opcode/operand call sites as false positives unless the opcode, high word, and low word can be justified by one coherent fetch context.
+14b. Decode the `4fbd/4eba + param` trailer semantics. The B04/B05/B06 parameters landing at `$1030` are the strongest current clue for block-to-block control flow.
+15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
+16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
+17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.
+18. Once a stable rule appears, port it back into a clean MAME `init_hshavoc()` patch with comments tying the magic tables to the PEEL dumps.
+
+## Useful commands
+
+```sh
+python tools/hshavoc_decrypt_lab.py --runs 5
+python tools/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
+python tools/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
+```

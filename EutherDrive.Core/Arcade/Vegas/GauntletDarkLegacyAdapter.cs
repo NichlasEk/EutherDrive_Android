@@ -352,6 +352,7 @@ internal sealed class MipsR5000Core
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
     private const ulong Cp0StatusWriteMask = 0xfffffffffe57ffffUL;
     private const ulong Cp0CauseSoftwareInterruptMask = 0x00000300UL;
+    private const ulong Cp0ConfigWriteMask = 0x0000003fUL;
     private bool _halted;
     private bool _hasPendingBranch;
     private ulong _pendingBranchTarget;
@@ -416,13 +417,29 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownBiosTextRoutine(pc))
             return;
+        if (TryFastPathKnownBiosSerialChar(pc))
+            return;
+        if (TryFastPathKnownUartInitTable(pc))
+            return;
         if (TryFastPathKnownNileInitTable(pc))
             return;
+        if (TryFastPathKnownTlbClearLoop(pc))
+            return;
         if (TryFastPathKnownTlbWriteHelper(pc))
+            return;
+        if (TryFastPathKnownFpgaSerialStream(pc))
+            return;
+        if (TryFastPathKnownFpgaLoadPreamble(pc))
             return;
         if (TryFastPathKnownFpgaLoadBlock(pc))
             return;
         if (TryFastPathKnownCountDelay(pc))
+            return;
+        if (TryFastPathKnownA180ReadyPoll(pc))
+            return;
+        if (TryFastPathKnownRamTest(pc))
+            return;
+        if (TryFastPathKnownRamNileTimerDelay(pc))
             return;
 
         uint op = _memory.Read32(pc);
@@ -483,12 +500,28 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownCacheLoop(ulong pc)
     {
         ulong offset = pc & 0x1fffffffUL;
+        if (offset == 0x1fc03980UL)
+        {
+            ulong returnAddress = _gpr[2];
+            if ((returnAddress & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL)
+                return false;
+
+            _gpr[2] = _cp0[12];
+            _gpr[31] = returnAddress;
+            CompleteFastPathStep();
+            Pc = returnAddress;
+            return true;
+        }
+
         uint exitOffset = offset switch
         {
             0x1fc039c8UL or 0x1fc039d0UL or 0x1fc039d4UL => 0x1fc039dc,
             0x1fc039f0UL or 0x1fc039f8UL => 0x1fc03a04,
             0x1fc03a18UL or 0x1fc03a20UL => 0x1fc03a2c,
             0x1fc03a40UL or 0x1fc03a50UL or 0x1fc03a54UL => 0x1fc03a5c,
+            0x1fc03a88UL or 0x1fc03a90UL or 0x1fc03a94UL => 0x1fc03a9c,
+            0x1fc03ab0UL or 0x1fc03ab8UL or 0x1fc03abcUL => 0x1fc03ac4,
+            0x1fc03ad8UL or 0x1fc03ae0UL or 0x1fc03ae4UL => 0x1fc03aec,
             _ => 0
         };
 
@@ -519,6 +552,22 @@ internal sealed class MipsR5000Core
         };
     }
 
+    private bool TryFastPathKnownBiosSerialChar(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x1fc02b88UL)
+            return false;
+
+        ulong returnAddress = _gpr[31];
+        if ((returnAddress & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL)
+            return false;
+        if ((_gpr[4] & ~0xffUL) != 0)
+            return false;
+
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
     private bool TryFastPathKnownFpgaLoadBlock(ulong pc)
     {
         if ((pc & 0x1fffffffUL) != 0x1fc02918UL)
@@ -531,7 +580,31 @@ internal sealed class MipsR5000Core
 
         _gpr[5] = end;
         _gpr[10] = 8;
+        if ((_gpr[27] & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL)
+            _gpr[27] = _gpr[31];
+        _memory.MarkFpgaConfigDone();
         Pc = (pc & 0xffffffffe0000000UL) | 0x1fc02a04UL;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownFpgaLoadPreamble(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc027a0UL or 0x1fc027e0UL or 0x1fc02800UL or 0x1fc02818UL
+            or 0x1fc02828UL or 0x1fc02880UL or 0x1fc028a0UL or 0x1fc028b0UL))
+            return false;
+
+        ulong source = offset == 0x1fc027a0UL ? _gpr[4] : _gpr[13];
+        ulong length = offset == 0x1fc027a0UL ? _gpr[5] : _gpr[14];
+        if (length == 0 || length > 0x00100000UL)
+            return false;
+
+        _gpr[5] = source;
+        _gpr[6] = source + length;
+        _gpr[10] = 0;
+        _gpr[27] = _gpr[31];
+        Pc = (pc & 0xffffffffe0000000UL) | 0x1fc02918UL;
         CompleteFastPathStep();
         return true;
     }
@@ -569,6 +642,40 @@ internal sealed class MipsR5000Core
         return false;
     }
 
+    private bool TryFastPathKnownUartInitTable(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc02b18UL or 0x1fc02b30UL or 0x1fc02b34UL or 0x1fc02b3cUL or 0x1fc02b40UL))
+            return false;
+
+        ulong cursor = offset == 0x1fc02b18UL
+            ? (pc & 0xffffffffe0000000UL) | 0x1fc02ac0UL
+            : _gpr[4];
+        ulong tableOffset = cursor & 0x1fffffffUL;
+        if (tableOffset is < 0x1fc02ac0UL or > 0x1fc02b10UL)
+            return false;
+
+        for (int i = 0; i < 32; i++)
+        {
+            uint address = _memory.Read32(cursor);
+            uint value = _memory.Read32(cursor + 4);
+            if (address == 0)
+            {
+                _gpr[2] = value;
+                _gpr[4] = cursor;
+                _gpr[5] = 0;
+                Pc = _gpr[31];
+                CompleteFastPathStep();
+                return true;
+            }
+
+            _memory.Write32(unchecked((ulong)(long)(int)address), value);
+            cursor += 8;
+        }
+
+        return false;
+    }
+
     private bool TryFastPathKnownTlbWriteHelper(ulong pc)
     {
         if ((pc & 0x1fffffffUL) != 0x1fc041b8UL)
@@ -583,10 +690,67 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownTlbClearLoop(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc01c80UL or 0x1fc01ca4UL or 0x1fc01ca8UL or 0x1fc01cb0UL or 0x1fc01cb4UL))
+            return false;
+
+        ulong returnAddress = _gpr[16];
+        if ((returnAddress & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL)
+            return false;
+
+        ulong index = offset == 0x1fc01c80UL ? 0 : _gpr[20];
+        if (index > 0x20UL)
+            return false;
+
+        _cp0[12] &= ~1UL;
+        _cp0[0] = 0x1f;
+        _cp0[2] = 0;
+        _cp0[3] = 0;
+        _gpr[1] = 0;
+        _gpr[2] = _cp0[12];
+        _gpr[4] = index >= 0x20UL ? 0x1fUL : index;
+        _gpr[20] = 0x20;
+        _gpr[31] = (pc & 0xffffffffe0000000UL) | 0x1fc01cb0UL;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownFpgaSerialStream(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x1fc01118UL)
+            return false;
+
+        ulong source = _gpr[19];
+        ulong length = _gpr[20];
+        ulong repeats = _gpr[7];
+        ulong sourceOffset = source & 0x1fffffffUL;
+        if (sourceOffset is < 0x1fc00000UL or > 0x1fc80000UL)
+            return false;
+        if (length == 0 || length > 0x00100000UL || repeats > 0x10000UL)
+            return false;
+
+        ulong end = source + length;
+        _gpr[16] = end;
+        _gpr[17] = end;
+        _gpr[18] = 0x00000000a1600000UL;
+        _gpr[7] = 0;
+        _memory.MarkFpgaConfigDone();
+        Pc = (pc & 0xffffffffe0000000UL) | 0x1fc00800UL;
+        CompleteFastPathStep();
+        return true;
+    }
+
     private bool TryFastPathKnownCountDelay(ulong pc)
     {
         ulong offset = pc & 0x1fffffffUL;
-        if (offset is not (0x1fc01a20UL or 0x1fc01a24UL or 0x1fc01a28UL or 0x1fc01a30UL))
+        if (offset is not (0x1fc019c4UL or 0x1fc019c8UL or 0x1fc019ccUL or 0x1fc019d0UL
+            or 0x1fc019d4UL or 0x1fc019d8UL or 0x1fc019dcUL or 0x1fc019e0UL
+            or 0x1fc019e4UL or 0x1fc019e8UL or 0x1fc019ecUL
+            or 0x1fc01a10UL or 0x1fc01a14UL or 0x1fc01a18UL or 0x1fc01a1cUL
+            or 0x1fc01a20UL or 0x1fc01a24UL or 0x1fc01a28UL or 0x1fc01a30UL))
             return false;
 
         ulong returnAddress = _gpr[31];
@@ -594,6 +758,63 @@ internal sealed class MipsR5000Core
             return false;
 
         Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownA180ReadyPoll(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc01804UL or 0x1fc0180cUL or 0x1fc01814UL or 0x1fc01820UL))
+            return false;
+
+        ulong counter = _gpr[11];
+        if (counter == 0 || counter > 0x10000UL)
+            return false;
+        ulong returnAddress = _gpr[7];
+        if ((returnAddress & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL)
+            return false;
+
+        _gpr[2] = 0;
+        _gpr[11] = 0;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRamTest(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc02468UL or 0x1fc01f80UL))
+            return false;
+
+        ulong start = _gpr[4];
+        ulong end = _gpr[5];
+        ulong returnAddress = _gpr[31];
+        ulong segment = start & 0xffffffffe0000000UL;
+        if (segment is not (0x0000000080000000UL or 0x00000000a0000000UL))
+            return false;
+        if (end < start || end - start > 0x02000000UL)
+            return false;
+        if ((returnAddress & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL)
+            return false;
+
+        _gpr[2] = 0;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRamNileTimerDelay(ulong pc)
+    {
+        if (pc != 0x000000008000468cUL)
+            return false;
+        if ((_gpr[17] & 0xffffffffUL) != 0xbfa001e0UL)
+            return false;
+
+        _gpr[16] = 0;
+        _gpr[2] = 1;
+        Pc = 0x000000008000469cUL;
         CompleteFastPathStep();
         return true;
     }
@@ -1036,7 +1257,7 @@ internal sealed class MipsR5000Core
                 _cp0[13] = (_cp0[13] & ~Cp0CauseSoftwareInterruptMask) | (value & Cp0CauseSoftwareInterruptMask);
                 break;
             case 16: // Config
-                _cp0[16] = (_cp0[16] & ~0x80000000UL) | (value & 0x80000000UL);
+                _cp0[16] = (_cp0[16] & ~Cp0ConfigWriteMask) | (value & Cp0ConfigWriteMask);
                 break;
             default:
                 _cp0[register] = value;
@@ -1125,6 +1346,8 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:CPU] #{_instructionCounter} pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
             $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+            $"t0={_gpr[8]:x16} t1={_gpr[9]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} ra={_gpr[31]:x16} " +
+            $"t5={_gpr[13]:x16} t6={_gpr[14]:x16} t7={_gpr[15]:x16} t8={_gpr[24]:x16} gp={_gpr[28]:x16} fp={_gpr[30]:x16} " +
             $"st={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16}");
     }
 
@@ -1219,14 +1442,21 @@ internal sealed class VegasMemoryMap
     private const int NileRegisterSize = 0x400;
     private const uint NileUartLineStatusOffset = 0x328;
     private const byte NileUartTransmitReady = 0x60;
+    private const uint NilePciConfigAliasOffset = 0x200;
+    private const uint NilePciWindow0Offset = 0x060;
+    private const uint NilePciInit0Offset = 0x0f0;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
     private const int MainRamSize = 32 * 1024 * 1024;
     private const uint UnmappedReadValue = 0xffffffffu;
+    private const int PciTypeIo = 0x2;
+    private const int PciTypeMemory = 0x6;
+    private const int PciTypeConfig = 0x0a;
 
     private readonly List<VegasMemoryRange> _ranges = new();
     private readonly byte[] _mainRam = new byte[MainRamSize];
     private readonly byte[] _nileRegisters = new byte[NileRegisterSize];
     private readonly byte[] _fpgaConfigRegisters = new byte[4];
+    private readonly VegasIdePciDevice _idePci = new();
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM") == "1";
     private byte[] _mainBootRom = Array.Empty<byte>();
     private VegasSioDevice? _sio;
@@ -1234,6 +1464,7 @@ internal sealed class VegasMemoryMap
     private DcsAudioDevice? _audio;
     private VoodooFacade? _voodoo;
     private bool _fpgaConfigSeenLow;
+    private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
 
     public VegasMemoryMap()
@@ -1263,6 +1494,7 @@ internal sealed class VegasMemoryMap
         _disk = disk;
         _audio = audio;
         _voodoo = voodoo;
+        _idePci.AttachDisk(disk);
     }
 
     public void LoadMainBootRom(byte[] mainBootRom) => _mainBootRom = mainBootRom.ToArray();
@@ -1272,7 +1504,9 @@ internal sealed class VegasMemoryMap
         Array.Clear(_nileRegisters);
         Array.Clear(_fpgaConfigRegisters);
         _fpgaConfigSeenLow = false;
+        _fpgaConfigStatusHigh = false;
         _fpgaConfigDone = false;
+        _idePci.Reset();
     }
 
     public byte Read8(ulong address)
@@ -1295,6 +1529,12 @@ internal sealed class VegasMemoryMap
             return nileValue;
         }
 
+        if (TryReadPciWindow8(address, out byte pciValue))
+        {
+            Trace("read8", address, pciValue, "PCI");
+            return pciValue;
+        }
+
         if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
         {
             byte value = _mainRam[physical];
@@ -1308,6 +1548,12 @@ internal sealed class VegasMemoryMap
 
     public ushort Read16(ulong address)
     {
+        if (TryReadPciWindow16(address, out ushort pciValue))
+        {
+            Trace("read16", address, pciValue, "PCI");
+            return pciValue;
+        }
+
         ushort value = (ushort)(Read8(address) | (Read8(address + 1) << 8));
         return value;
     }
@@ -1323,6 +1569,12 @@ internal sealed class VegasMemoryMap
         if (TryReadNile32(address, out value))
         {
             Trace("read32", address, value, "NILE");
+            return value;
+        }
+
+        if (TryReadPciWindow32(address, out value))
+        {
+            Trace("read32", address, value, "PCI");
             return value;
         }
 
@@ -1371,6 +1623,12 @@ internal sealed class VegasMemoryMap
             return;
         }
 
+        if (TryWritePciWindow8(address, value))
+        {
+            Trace("write8", address, value, "PCI");
+            return;
+        }
+
         if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
         {
             _mainRam[physical] = value;
@@ -1383,6 +1641,12 @@ internal sealed class VegasMemoryMap
 
     public void Write16(ulong address, ushort value)
     {
+        if (TryWritePciWindow16(address, value))
+        {
+            Trace("write16", address, value, "PCI");
+            return;
+        }
+
         Write8(address, (byte)value);
         Write8(address + 1, (byte)(value >> 8));
     }
@@ -1392,6 +1656,12 @@ internal sealed class VegasMemoryMap
         if (TryWriteNile32(address, value))
         {
             Trace("write32", address, value, "NILE");
+            return;
+        }
+
+        if (TryWritePciWindow32(address, value))
+        {
+            Trace("write32", address, value, "PCI");
             return;
         }
 
@@ -1438,6 +1708,12 @@ internal sealed class VegasMemoryMap
             return true;
         }
 
+        if (offset is >= NilePciConfigAliasOffset and < NilePciConfigAliasOffset + 0x100)
+        {
+            value = (byte)(_idePci.ReadConfig32(DecodePciConfigAlias(offset) & ~3u) >> (int)((offset & 3) * 8));
+            return true;
+        }
+
         value = _nileRegisters[offset];
         return true;
     }
@@ -1448,6 +1724,12 @@ internal sealed class VegasMemoryMap
         {
             value = UnmappedReadValue;
             return false;
+        }
+
+        if (offset is >= NilePciConfigAliasOffset and < NilePciConfigAliasOffset + 0x100)
+        {
+            value = _idePci.ReadConfig32(DecodePciConfigAlias(offset));
+            return true;
         }
 
         value = BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
@@ -1480,8 +1762,231 @@ internal sealed class VegasMemoryMap
         if (!TryGetNileRegisterOffset(address, out uint offset) || offset + 3 >= NileRegisterSize)
             return false;
 
+        if (offset is >= NilePciConfigAliasOffset and < NilePciConfigAliasOffset + 0x100)
+        {
+            _idePci.WriteConfig32(DecodePciConfigAlias(offset), value);
+            return true;
+        }
+
         BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4), value);
         return true;
+    }
+
+    private bool TryReadPciWindow8(ulong address, out byte value)
+    {
+        if (!TryTranslatePciWindow(address, out int type, out uint pciAddress))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = type switch
+        {
+            PciTypeIo => _idePci.ReadIo8(pciAddress),
+            PciTypeMemory => ReadPciMemory8(pciAddress),
+            PciTypeConfig => (byte)(_idePci.ReadConfig32(DecodePciType0ConfigAddress(pciAddress) & ~3u) >> (int)((pciAddress & 3) * 8)),
+            _ => 0xff
+        };
+        return true;
+    }
+
+    private bool TryReadPciWindow16(ulong address, out ushort value)
+    {
+        if (!TryTranslatePciWindow(address, out int type, out uint pciAddress))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = type switch
+        {
+            PciTypeIo => _idePci.ReadIo16(pciAddress),
+            PciTypeMemory => (ushort)(ReadPciMemory8(pciAddress) | (ReadPciMemory8(pciAddress + 1) << 8)),
+            PciTypeConfig => (ushort)(_idePci.ReadConfig32(DecodePciType0ConfigAddress(pciAddress) & ~3u) >> (int)((pciAddress & 2) * 8)),
+            _ => 0xffff
+        };
+        return true;
+    }
+
+    private bool TryReadPciWindow32(ulong address, out uint value)
+    {
+        if (!TryTranslatePciWindow(address, out int type, out uint pciAddress))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = type switch
+        {
+            PciTypeIo => _idePci.ReadIo32(pciAddress),
+            PciTypeMemory => ReadPciMemory32(pciAddress),
+            PciTypeConfig => _idePci.ReadConfig32(DecodePciType0ConfigAddress(pciAddress)),
+            _ => UnmappedReadValue
+        };
+        return true;
+    }
+
+    private bool TryWritePciWindow8(ulong address, byte value)
+    {
+        if (!TryTranslatePciWindow(address, out int type, out uint pciAddress))
+            return false;
+
+        switch (type)
+        {
+            case PciTypeIo:
+                _idePci.WriteIo8(pciAddress, value);
+                break;
+            case PciTypeMemory:
+                WritePciMemory8(pciAddress, value);
+                break;
+            case PciTypeConfig:
+                WritePciConfigByte(pciAddress, value);
+                break;
+        }
+
+        return true;
+    }
+
+    private bool TryWritePciWindow16(ulong address, ushort value)
+    {
+        if (!TryTranslatePciWindow(address, out int type, out uint pciAddress))
+            return false;
+
+        switch (type)
+        {
+            case PciTypeIo:
+                _idePci.WriteIo16(pciAddress, value);
+                break;
+            case PciTypeMemory:
+                WritePciMemory8(pciAddress, (byte)value);
+                WritePciMemory8(pciAddress + 1, (byte)(value >> 8));
+                break;
+            case PciTypeConfig:
+                WritePciConfigHalf(pciAddress, value);
+                break;
+        }
+
+        return true;
+    }
+
+    private bool TryWritePciWindow32(ulong address, uint value)
+    {
+        if (!TryTranslatePciWindow(address, out int type, out uint pciAddress))
+            return false;
+
+        switch (type)
+        {
+            case PciTypeIo:
+                _idePci.WriteIo32(pciAddress, value, this);
+                break;
+            case PciTypeMemory:
+                WritePciMemory32(pciAddress, value);
+                break;
+            case PciTypeConfig:
+                _idePci.WriteConfig32(DecodePciType0ConfigAddress(pciAddress), value);
+                break;
+        }
+
+        return true;
+    }
+
+    private bool TryTranslatePciWindow(ulong address, out int type, out uint pciAddress)
+    {
+        type = 0;
+        pciAddress = 0;
+        if (!TryTranslatePhysical(address, out uint physical))
+            return false;
+
+        for (int index = 0; index < 2; index++)
+        {
+            uint pciWindow = ReadNileRegister32(NilePciWindow0Offset + (uint)(index * 8));
+            int mask = (int)(pciWindow & 0x0f);
+            if (mask <= 0)
+                continue;
+
+            ulong size = mask >= 5 ? 1UL << (36 - mask) : 0x1_0000_0000UL;
+            uint windowStart = pciWindow & 0xffe00000u;
+            ulong offset = physical - (ulong)windowStart;
+            if (offset >= size)
+                continue;
+
+            ulong pciMask = size - 1;
+            uint pciInit = ReadNileRegister32(NilePciInit0Offset + (uint)(index * 8));
+            type = (int)(pciInit & 0x0e);
+            pciAddress = (uint)((pciInit & ~(uint)pciMask) | (uint)(offset & pciMask));
+            return true;
+        }
+
+        return false;
+    }
+
+    private uint ReadPciMemory32(uint pciAddress)
+    {
+        if (pciAddress + 3 < _mainRam.Length)
+            return BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)pciAddress, 4));
+        return UnmappedReadValue;
+    }
+
+    private byte ReadPciMemory8(uint pciAddress)
+        => pciAddress < _mainRam.Length ? _mainRam[pciAddress] : (byte)0xff;
+
+    private void WritePciMemory32(uint pciAddress, uint value)
+    {
+        if (pciAddress + 3 < _mainRam.Length)
+            BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)pciAddress, 4), value);
+    }
+
+    private void WritePciMemory8(uint pciAddress, byte value)
+    {
+        if (pciAddress < _mainRam.Length)
+            _mainRam[pciAddress] = value;
+    }
+
+    internal void WritePciMemoryFromDevice(uint pciAddress, ReadOnlySpan<byte> data)
+    {
+        if (pciAddress >= _mainRam.Length)
+            return;
+
+        int count = Math.Min(data.Length, _mainRam.Length - (int)pciAddress);
+        data[..count].CopyTo(_mainRam.AsSpan((int)pciAddress, count));
+    }
+
+    internal uint ReadPciMemoryFromDevice32(uint pciAddress)
+        => ReadPciMemory32(pciAddress);
+
+    private uint ReadNileRegister32(uint offset)
+        => BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
+
+    private static uint DecodePciConfigAlias(uint nileOffset)
+        => nileOffset & 0xfc;
+
+    private static uint DecodePciType0ConfigAddress(uint pciAddress)
+    {
+        for (int dev = 0; dev < 10; dev++)
+        {
+            if (((pciAddress >> (21 + dev)) & 1) != 0)
+                return (uint)(dev << 11) | (pciAddress & 0xfc);
+        }
+
+        return 0xfffffffcu;
+    }
+
+    private void WritePciConfigByte(uint pciAddress, byte value)
+    {
+        uint offset = DecodePciType0ConfigAddress(pciAddress) & ~3u;
+        uint current = _idePci.ReadConfig32(offset);
+        int shift = (int)((pciAddress & 3) * 8);
+        uint merged = (current & ~(0xffu << shift)) | ((uint)value << shift);
+        _idePci.WriteConfig32(offset, merged);
+    }
+
+    private void WritePciConfigHalf(uint pciAddress, ushort value)
+    {
+        uint offset = DecodePciType0ConfigAddress(pciAddress) & ~3u;
+        uint current = _idePci.ReadConfig32(offset);
+        int shift = (int)((pciAddress & 2) * 8);
+        uint merged = (current & ~(0xffffu << shift)) | ((uint)value << shift);
+        _idePci.WriteConfig32(offset, merged);
     }
 
     private bool TryWriteNile64(ulong address, ulong value)
@@ -1515,9 +2020,19 @@ internal sealed class VegasMemoryMap
             return false;
         }
 
-        value = offset == 2
-            ? (byte)(_fpgaConfigDone ? 0x02 : 0x00)
-            : _fpgaConfigRegisters[offset];
+        if (offset == 2)
+        {
+            value = (byte)(_fpgaConfigRegisters[offset] & 0xf0);
+            if (_fpgaConfigStatusHigh)
+                value |= 0x02;
+            if (_fpgaConfigDone)
+                value |= 0x01;
+        }
+        else
+        {
+            value = _fpgaConfigRegisters[offset];
+        }
+
         return true;
     }
 
@@ -1532,15 +2047,22 @@ internal sealed class VegasMemoryMap
             if ((value & 0x01) == 0)
             {
                 _fpgaConfigSeenLow = true;
+                _fpgaConfigStatusHigh = false;
                 _fpgaConfigDone = false;
             }
             else if (_fpgaConfigSeenLow)
             {
-                _fpgaConfigDone = true;
+                _fpgaConfigStatusHigh = true;
             }
         }
 
         return true;
+    }
+
+    public void MarkFpgaConfigDone()
+    {
+        _fpgaConfigStatusHigh = true;
+        _fpgaConfigDone = true;
     }
 
     private static bool TryGetFpgaConfigOffset(ulong address, out uint offset)
@@ -1672,6 +2194,272 @@ internal sealed class VegasMemoryMap
 
 internal readonly record struct VegasMemoryRange(string Name, int ChipSelect, ulong Start, ulong End);
 
+internal sealed class VegasIdePciDevice
+{
+    private const uint VendorDeviceId = 0x06461095u;
+    private const uint ClassCode = 0x01018a05u;
+    private const byte PciInterruptPin = 0x01;
+    private const byte PciInterruptLine = 0x0e;
+    private const byte BusMasterCommandStart = 0x01;
+    private const byte BusMasterCommandRead = 0x08;
+    private const byte BusMasterStatusInterrupt = 0x04;
+    private const byte BusMasterStatusSimplex = 0x80;
+
+    private readonly uint[] _bars = { 0x1f0, 0x3f4, 0x170, 0x374, 0x0f00 };
+    private readonly byte[] _config = new byte[0x100];
+    private readonly byte[] _busMaster = new byte[0x10];
+    private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IDE") == "1";
+    private IdeDiskDevice? _disk;
+
+    public void AttachDisk(IdeDiskDevice disk) => _disk = disk;
+
+    public void Reset()
+    {
+        Array.Clear(_config);
+        Array.Clear(_busMaster);
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x00, 4), VendorDeviceId);
+        BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), 0x0003); // MAME keeps I/O and memory decode enabled.
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x08, 4), ClassCode);
+        _config[0x0e] = 0x00;
+        for (int i = 0; i < _bars.Length; i++)
+            WriteConfigBarBytes(i);
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x40, 4), 0x00000c40);
+        _config[0x3c] = PciInterruptLine;
+        _config[0x3d] = PciInterruptPin;
+        _busMaster[2] = BusMasterStatusSimplex;
+        _busMaster[10] = BusMasterStatusSimplex;
+    }
+
+    public uint ReadConfig32(uint address)
+    {
+        uint offset = address & 0xfc;
+        if (((address >> 11) & 0x1f) != 5)
+            return 0xffffffffu;
+        if (offset + 3 >= _config.Length)
+            return 0xffffffffu;
+
+        uint value = BinaryPrimitives.ReadUInt32LittleEndian(_config.AsSpan((int)offset, 4));
+        Trace($"pci cfg read off={offset:x2} value={value:x8}");
+        return value;
+    }
+
+    public void WriteConfig32(uint address, uint value)
+    {
+        uint offset = address & 0xfc;
+        if (((address >> 11) & 0x1f) != 5 || offset + 3 >= _config.Length)
+            return;
+
+        Trace($"pci cfg write off={offset:x2} value={value:x8}");
+        switch (offset)
+        {
+            case 0x04:
+                BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), (ushort)(value & 0x0007));
+                break;
+            case >= 0x10 and <= 0x20 when ((offset - 0x10) / 4) < _bars.Length:
+                int bar = (int)((offset - 0x10) / 4);
+                _bars[bar] = value;
+                WriteConfigBarBytes(bar);
+                break;
+            case 0x3c:
+                _config[0x3c] = (byte)value;
+                break;
+            case >= 0x40 and < 0x60:
+                BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan((int)offset, 4), value);
+                break;
+            case >= 0x70 and < 0x80:
+                WriteBusMasterConfigWindow(offset - 0x70, value);
+                break;
+        }
+    }
+
+    public byte ReadIo8(uint address)
+    {
+        if (TryGetIdeRegister(address, out byte register))
+            return register == 0 ? (byte)ReadIo16(address) : _disk?.ReadRegister8(register) ?? 0xff;
+        if (TryGetControlRegister(address))
+            return _disk?.ReadRegister8(7) ?? 0xff;
+        if (TryGetBusMasterOffset(address, out uint bmOffset))
+            return _busMaster[bmOffset];
+        return 0xff;
+    }
+
+    public ushort ReadIo16(uint address)
+    {
+        if (TryGetIdeRegister(address, out byte register) && register == 0)
+            return _disk?.ReadData16() ?? 0xffff;
+
+        return (ushort)(ReadIo8(address) | (ReadIo8(address + 1) << 8));
+    }
+
+    public uint ReadIo32(uint address)
+    {
+        if (TryGetIdeRegister(address, out byte register) && register == 0)
+        {
+            uint low = _disk?.ReadData16() ?? 0xffffu;
+            uint high = _disk?.ReadData16() ?? 0xffffu;
+            return low | (high << 16);
+        }
+
+        if (TryGetBusMasterOffset(address, out uint bmOffset) && bmOffset + 3 < _busMaster.Length)
+            return BinaryPrimitives.ReadUInt32LittleEndian(_busMaster.AsSpan((int)bmOffset, 4));
+
+        return (uint)(ReadIo8(address) |
+            (ReadIo8(address + 1) << 8) |
+            (ReadIo8(address + 2) << 16) |
+            (ReadIo8(address + 3) << 24));
+    }
+
+    public void WriteIo8(uint address, byte value)
+    {
+        if (TryGetIdeRegister(address, out byte register))
+        {
+            if (register != 0)
+                _disk?.WriteRegister8(register, value);
+            return;
+        }
+
+        if (TryGetControlRegister(address))
+            return;
+
+        if (TryGetBusMasterOffset(address, out uint bmOffset))
+            _busMaster[bmOffset] = value;
+    }
+
+    public void WriteIo16(uint address, ushort value)
+    {
+        if (TryGetIdeRegister(address, out byte register) && register == 0)
+        {
+            _disk?.WriteData16(value);
+            return;
+        }
+
+        WriteIo8(address, (byte)value);
+        WriteIo8(address + 1, (byte)(value >> 8));
+    }
+
+    public void WriteIo32(uint address, uint value, VegasMemoryMap memory)
+    {
+        if (TryGetIdeRegister(address, out byte register) && register == 0)
+        {
+            _disk?.WriteData16((ushort)value);
+            _disk?.WriteData16((ushort)(value >> 16));
+            return;
+        }
+
+        if (TryGetBusMasterOffset(address, out uint bmOffset))
+        {
+            WriteBusMaster(bmOffset, value, memory);
+            return;
+        }
+
+        WriteIo8(address, (byte)value);
+        WriteIo8(address + 1, (byte)(value >> 8));
+        WriteIo8(address + 2, (byte)(value >> 16));
+        WriteIo8(address + 3, (byte)(value >> 24));
+    }
+
+    private void WriteBusMaster(uint offset, uint value, VegasMemoryMap memory)
+    {
+        if (offset + 3 >= _busMaster.Length)
+            return;
+
+        BinaryPrimitives.WriteUInt32LittleEndian(_busMaster.AsSpan((int)offset, 4), value);
+        Trace($"bmdma write off={offset:x2} value={value:x8}");
+        if ((offset & 7) == 0 && (value & BusMasterCommandStart) != 0 && (value & BusMasterCommandRead) != 0)
+            RunPrimaryReadDma(memory);
+    }
+
+    private void RunPrimaryReadDma(VegasMemoryMap memory)
+    {
+        if (_disk is null)
+            return;
+
+        uint prd = BinaryPrimitives.ReadUInt32LittleEndian(_busMaster.AsSpan(4, 4)) & 0xfffffffc;
+        int copied = 0;
+        for (int entry = 0; entry < 256; entry++)
+        {
+            uint destination = ReadMainMemory32(memory, prd + (uint)(entry * 8));
+            uint descriptor = ReadMainMemory32(memory, prd + (uint)(entry * 8 + 4));
+            int byteCount = (int)(descriptor & 0xffff);
+            if (byteCount == 0)
+                byteCount = 0x10000;
+
+            byte[] buffer = _disk.ReadTransferBytes(byteCount);
+            memory.WritePciMemoryFromDevice(destination, buffer);
+            copied += buffer.Length;
+            if ((descriptor & 0x80000000u) != 0)
+                break;
+        }
+
+        _busMaster[0] &= unchecked((byte)~BusMasterCommandStart);
+        _busMaster[2] |= BusMasterStatusInterrupt;
+        Trace($"bmdma primary read copied={copied}");
+    }
+
+    private static uint ReadMainMemory32(VegasMemoryMap memory, uint address)
+        => memory.ReadPciMemoryFromDevice32(address);
+
+    private void WriteBusMasterConfigWindow(uint offset, uint value)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(_busMaster.AsSpan((int)offset, 4), value);
+    }
+
+    private bool TryGetIdeRegister(uint address, out byte register)
+    {
+        uint primaryBase = _bars[0] & 0xfffffffc;
+        uint secondaryBase = _bars[2] & 0xfffffffc;
+        if (address >= primaryBase && address < primaryBase + 8)
+        {
+            register = (byte)(address - primaryBase);
+            return true;
+        }
+
+        if (address >= secondaryBase && address < secondaryBase + 8)
+        {
+            register = (byte)(address - secondaryBase);
+            return true;
+        }
+
+        register = 0;
+        return false;
+    }
+
+    private bool TryGetControlRegister(uint address)
+    {
+        uint primaryControl = _bars[1] & 0xfffffffc;
+        uint secondaryControl = _bars[3] & 0xfffffffc;
+        return address >= primaryControl && address < primaryControl + 4 ||
+               address >= secondaryControl && address < secondaryControl + 4;
+    }
+
+    private bool TryGetBusMasterOffset(uint address, out uint offset)
+    {
+        uint baseAddress = _bars[4] & 0xfffffff0;
+        if (address >= baseAddress && address < baseAddress + 16)
+        {
+            offset = address - baseAddress;
+            return true;
+        }
+
+        offset = 0;
+        return false;
+    }
+
+    private void WriteConfigBarBytes(int index)
+    {
+        uint flags = 1;
+        uint mask = index == 4 ? 0xfffffff0u : index is 1 or 3 ? 0xfffffffcu : 0xfffffff8u;
+        uint value = (_bars[index] & mask) | flags;
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x10 + index * 4, 4), value);
+    }
+
+    private void Trace(string message)
+    {
+        if (_traceEnabled)
+            Console.WriteLine($"[GAUNTDL:IDEPCI] {message}");
+    }
+}
+
 internal sealed class IdeDiskDevice
 {
     private const byte StatusErr = 0x01;
@@ -1775,6 +2563,26 @@ internal sealed class IdeDiskDevice
         }
 
         return value;
+    }
+
+    public byte[] ReadTransferBytes(int byteCount)
+    {
+        if ((_status & StatusDrq) == 0 || byteCount <= 0)
+            return Array.Empty<byte>();
+
+        int count = Math.Min(byteCount, _transferBuffer.Length - _transferOffset);
+        byte[] data = new byte[count];
+        _transferBuffer.AsSpan(_transferOffset, count).CopyTo(data);
+        _transferOffset += count;
+        if (_transferOffset >= _transferBuffer.Length)
+        {
+            _transferBuffer = Array.Empty<byte>();
+            _transferOffset = 0;
+            _status = StatusDrdy;
+        }
+
+        Trace($"dma transfer bytes={count}");
+        return data;
     }
 
     public void WriteData16(ushort value)

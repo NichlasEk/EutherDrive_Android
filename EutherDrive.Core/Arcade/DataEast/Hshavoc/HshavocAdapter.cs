@@ -1,0 +1,232 @@
+using System;
+using System.IO;
+using System.IO.Compression;
+
+namespace EutherDrive.Core.Arcade.DataEast.Hshavoc;
+
+public sealed class HshavocAdapter : IEmulatorCore, IDisposable
+{
+    private const string EvenRomName = "d-25.11a";
+    private const string OddRomName = "d-26.9a";
+    private const int InterleavedSize = 0x100000;
+    private const int BaseDecodeEnd = 0x0E8000;
+
+    private static readonly int[] DataBitswap =
+    {
+        7, 15, 6, 14, 5, 2, 1, 10, 13, 4, 12, 3, 11, 0, 8, 9
+    };
+
+    private static readonly int[] TailBitswap =
+    {
+        7, 15, 6, 14, 5, 2, 1, 0, 13, 4, 12, 3, 11, 10, 9, 8
+    };
+
+    private static readonly int[] Typedat =
+    {
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1
+    };
+
+    private static readonly (int Address, ushort Value)[] BestStartupPatch =
+    {
+        (0x0C42, 0x007C), (0x0C44, 0x0700), (0x0C46, 0x4EB9), (0x0C48, 0x0000),
+        (0x0C4A, 0x10A2), (0x0C4C, 0x4EB9), (0x0C4E, 0x0000), (0x0C50, 0x1082),
+        (0x0C52, 0x2F3C), (0x0C54, 0x0000), (0x0C56, 0x1084), (0x0C58, 0x4EB9),
+        (0x0C5A, 0x0000), (0x0C5C, 0x107A), (0x0C5E, 0x4EB9), (0x0C60, 0x0000),
+        (0x0C62, 0x101C), (0x0C64, 0x4EB9), (0x0C66, 0x0000), (0x0C68, 0x10F8),
+        (0x0C6A, 0x4EB9), (0x0C6C, 0x0000), (0x0C6E, 0x10A8), (0x0C70, 0x4EB8),
+        (0x0C72, 0x00F8), (0x0C74, 0x01A6), (0x0C76, 0x4EB9), (0x0C78, 0x0000),
+        (0x0C7A, 0x0E2E), (0x0C7C, 0x4EB9), (0x0C7E, 0x0000), (0x0C80, 0x0ADC),
+        (0x0C82, 0x4EB9), (0x0C84, 0x0000), (0x0C86, 0x0ABA), (0x0C88, 0x4EB9),
+        (0x0C8A, 0x0000), (0x0C8C, 0x0AF4), (0x0C8E, 0x4EB9), (0x0C90, 0x0000),
+        (0x0C92, 0x0D34), (0x0C94, 0x2F3C), (0x0C96, 0x0000), (0x0C98, 0x0A1C),
+        (0x0C9A, 0x4E75)
+    };
+
+    private static readonly (int Address, ushort Value)[] OptionalPhase2OperandPatch =
+    {
+        (0x0C7A, 0x0E32),
+        (0x0C86, 0x0AB8),
+        (0x0C8C, 0x0AF8),
+        (0x0C92, 0x0D32)
+    };
+
+    private readonly MdTracerAdapter _md = new();
+
+    public RomInfo RomInfo => _md.RomInfo;
+
+    public static bool IsSupportedArchive(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return false;
+        if (!string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        try
+        {
+            using ZipArchive archive = ZipFile.OpenRead(path);
+            return FindEntry(archive, EvenRomName) != null && FindEntry(archive, OddRomName) != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public void LoadRom(string path)
+    {
+        byte[] decoded = DecodeArchive(path, applyPhase2Patch: UsePhase2Patch());
+        string tempPath = Path.Combine(Path.GetTempPath(), $"eutherdrive_hshavoc_{Guid.NewGuid():N}.gen");
+        File.WriteAllBytes(tempPath, decoded);
+        try
+        {
+            _md.PowerCycleAndLoadRom(tempPath);
+            RomInfo.Summary = "High Seas Havoc arcade probe | decoded in memory | MD core boot probe";
+            RomInfo.ExtraInfo =
+                "Data East hshavoc.zip via HshavocAdapter. Applies MAME base decode plus current startup probe patch. " +
+                "No decoded ROM is kept; temp image is deleted after load.";
+        }
+        finally
+        {
+            TryDelete(tempPath);
+        }
+    }
+
+    public void Reset() => _md.Reset();
+
+    public void RunFrame() => _md.RunFrame();
+
+    public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
+        => _md.GetFrameBuffer(out width, out height, out stride);
+
+    public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
+        => _md.GetAudioBuffer(out sampleRate, out channels);
+
+    public void SetInputState(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode,
+        PadType padType)
+    {
+        _md.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
+    }
+
+    public void Dispose() => _md.Dispose();
+
+    private static byte[] DecodeArchive(string path, bool applyPhase2Patch)
+    {
+        using ZipArchive archive = ZipFile.OpenRead(path);
+        byte[] even = ReadRequiredEntry(archive, EvenRomName);
+        byte[] odd = ReadRequiredEntry(archive, OddRomName);
+        if (even.Length != 0x80000 || odd.Length != 0x80000)
+            throw new InvalidDataException($"Unexpected HSHavoc ROM sizes: {EvenRomName}=0x{even.Length:X}, {OddRomName}=0x{odd.Length:X}");
+
+        byte[] rom = new byte[InterleavedSize];
+        for (int i = 0; i < even.Length; i++)
+        {
+            rom[i * 2] = even[i];
+            rom[i * 2 + 1] = odd[i];
+        }
+
+        DecodeBaseInPlace(rom);
+        ApplyPatch(rom, BestStartupPatch);
+        if (applyPhase2Patch)
+            ApplyPatch(rom, OptionalPhase2OperandPatch);
+        return rom;
+    }
+
+    private static void DecodeBaseInPlace(byte[] rom)
+    {
+        int wordCount = rom.Length / 2;
+        for (int index = 0; index < BaseDecodeEnd / 2; index++)
+        {
+            ushort word = BitSwap16(ReadWord(rom, index), DataBitswap);
+            word ^= Typedat[index & 0x0F] != 0 ? (ushort)0x0501 : (ushort)0x0406;
+            if ((word & 0x0400) != 0)
+                word ^= 0x0200;
+            if (Typedat[index & 0x0F] == 0)
+            {
+                if ((word & 0x0100) != 0)
+                    word ^= 0x0004;
+                word = BitSwap16(word, new[] { 15, 14, 13, 12, 11, 9, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0 });
+            }
+            WriteWord(rom, index, word);
+        }
+
+        for (int index = BaseDecodeEnd / 2; index < wordCount; index++)
+            WriteWord(rom, index, BitSwap16(ReadWord(rom, index), TailBitswap));
+
+        WriteWord(rom, 0, (ushort)(ReadWord(rom, 0) ^ 0x0107));
+        WriteWord(rom, 1, (ushort)(ReadWord(rom, 1) ^ 0x0107));
+        WriteWord(rom, 2, (ushort)(ReadWord(rom, 2) ^ 0x0107));
+        WriteWord(rom, 3, (ushort)(ReadWord(rom, 3) ^ 0x0707));
+    }
+
+    private static void ApplyPatch(byte[] rom, ReadOnlySpan<(int Address, ushort Value)> patch)
+    {
+        foreach ((int address, ushort value) in patch)
+            WriteWord(rom, address / 2, value);
+    }
+
+    private static ushort ReadWord(byte[] rom, int wordIndex)
+        => (ushort)((rom[wordIndex * 2] << 8) | rom[wordIndex * 2 + 1]);
+
+    private static void WriteWord(byte[] rom, int wordIndex, ushort value)
+    {
+        rom[wordIndex * 2] = (byte)(value >> 8);
+        rom[wordIndex * 2 + 1] = (byte)value;
+    }
+
+    private static ushort BitSwap16(ushort value, int[] order)
+    {
+        int output = 0;
+        for (int index = 0; index < order.Length; index++)
+            output |= ((value >> order[index]) & 1) << (order.Length - 1 - index);
+        return (ushort)output;
+    }
+
+    private static byte[] ReadRequiredEntry(ZipArchive archive, string name)
+    {
+        ZipArchiveEntry? entry = FindEntry(archive, name);
+        if (entry == null)
+            throw new InvalidDataException($"Missing required HSHavoc ROM entry '{name}'.");
+
+        using Stream stream = entry.Open();
+        using MemoryStream memory = new();
+        stream.CopyTo(memory);
+        return memory.ToArray();
+    }
+
+    private static ZipArchiveEntry? FindEntry(ZipArchive archive, string name)
+    {
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            if (string.Equals(Path.GetFileName(entry.FullName), name, StringComparison.OrdinalIgnoreCase))
+                return entry;
+        }
+        return null;
+    }
+
+    private static bool UsePhase2Patch()
+        => string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_PHASE2"), "1", StringComparison.Ordinal);
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // The decoded image is temporary research material; keep load path robust if deletion is delayed.
+        }
+    }
+}

@@ -850,13 +850,13 @@ public sealed class SegaCdMemory
                         $"[COMM-DEBUG] MAIN W 0xA12000 = 0x{value:X2} (pend->1) " +
                         $"PC=0x{MainPcProvider?.Invoke():X6} SUBPC=0x{SubPcProvider?.Invoke():X6}");
                 AppendTraceLine(
-                    $"[SCD-IRQ-FILE] MAIN A12000=0x{value:X2} pend={(requestSubInterrupt ? "set" : "noop")} " +
+                    $"[SCD-IRQ-FILE] MAIN A12000=0x{value:X2} pend={(requestSubInterrupt ? "set" : "clear")} " +
                     $"main_pc=0x{MainPcProvider?.Invoke():X6} sub_pc=0x{SubPcProvider?.Invoke():X6}");
-                if (requestSubInterrupt && Registers.SoftwareInterruptEnabled)
-                {
-                    Registers.MainToSubInterruptLatched = true;
-                    Registers.SubSoftwareInterruptPending = true;
-                }
+                // INT2 pending is a latched register bit. The sub CPU interrupt mask only affects
+                // whether the pending bit is presented as an interrupt level, not whether the
+                // main CPU write is remembered.
+                Registers.MainToSubInterruptLatched = requestSubInterrupt;
+                Registers.SubSoftwareInterruptPending = requestSubInterrupt;
                 break;
             case 0xA12001:
                 Registers.SubCpuBusReq = (value & 0x02) != 0;
