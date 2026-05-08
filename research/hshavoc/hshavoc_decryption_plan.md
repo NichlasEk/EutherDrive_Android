@@ -182,6 +182,18 @@ The instruction-path search now finds a plausible partial startup stream:
   - `$0c76` is dispatch-like: the same startup callsite has alternatives into `entry:ABG0FD` (`$0f26`, support 3), `entry:DA` (`$0f2e`), and `entry:CABG1` (`$0fa8`, support 4).
   - `$0c6a` is tail/join-control-like: alternatives land at `entry:DA-tail-control` (`$1026`), `entry:tail-param/control` (`$102e`), and `entry:B07-finalize` (`$103a`).
   - This makes the p5m alternatives more plausible as structured dispatch/join alternatives, not merely noisy false positives.
+- A boot-flow readiness model now uses the best startup skeleton as a start/render checklist:
+  - The structural anchors are solid enough to track: startup skeleton, token block family, `$1030` convergence, and callsite token classes.
+  - The best skeleton still contains six weak or ambiguous points before a meaningful render attempt: `$1082/$1084`, `$10a8`/its token-class alternatives, `$00f8.w`, `$0e2e`/its dispatch alternatives, `$0aba/$0af4`, and parts of `$0d34`.
+  - For a first MAME-side experiment, the target should not be "full gameplay"; it should be a minimal init patch plus instrumentation that proves expected VDP/register writes and stable control flow.
+  - The next proof target is side effects by token class: `CABG1`, `ABG0FD`, `DA`, tail/join, and B07-finalize.
+- A startup side-effect model now separates conservative `raw/x0/x1` effects from noisier `p5m/p5h` hypotheses:
+  - `$0a1c` is the strongest direct VDP-register-init candidate: it begins with raw writes such as `move.w #$9001,$00c00004`, followed by more VDP control-port writes.
+  - `$10a2`, `$107a`, `$10a8`, and the `$1082/$1084` neighborhood all converge on the raw `$10ba/$10c0` pattern: `lea $00c00004,a1` plus MMIO polling around `$00fffe00/$00ffff86`.
+  - `$0af4` likely wants the nearby `$0af8` entry: the conservative side-effect scan sees raw MMIO writes and a direct VDP write at `$0b0e` (`move.w d0,$00c00004`).
+  - `$0adc/$0aba` also show direct MMIO/VDP-like activity, but they remain alignment-sensitive because `$0ab8/$0abc` previously scored better than `$0aba`.
+  - `$101c`, `$1026`, `$102e`, `$103a`, `$0f26`, `$0f2e`, and `$0fa8` remain token/state entries. They are not render-ready side-effect routines until the table/token consumer is identified.
+  - `$00f8.w` and `$0d34` currently show no modeled VDP/MMIO side effects in the first `$60` bytes, so they should be instrumented as control-flow/data blockers rather than guessed render init code.
 
 ## Next steps
 
@@ -204,6 +216,8 @@ The instruction-path search now finds a plausible partial startup stream:
 14c. Treat `$0e38: 4fbd 0006` as a separate upstream/control marker candidate only. It fails the clean block-body test, so do not use it as part of the B01-B06 column model.
 14d. Use the pseudo-disassembly motifs to separate startup entry classes: `C A B G1 E`, `A B G0 F D`, `D A ...`, trailer-param tail entries, and B07 finalization entries.
 14e. Treat `$0c76` as the first candidate dispatch-like startup callsite and `$0c6a` as the first tail/join-control callsite. Search for the consumer logic that distinguishes those alternatives.
+14f. Before attempting rendering, keep refining the minimal side-effect checklist: `$0a1c`, `$10a2/$10a8`, and `$0af8` are the first VDP/MMIO candidates; token classes and `$1030` still need a consumer/return model before they can be treated as render-init code.
+14g. Build the first MAME-side instrumentation target around VDP control-port writes and MMIO polls rather than full gameplay: log execution of `$0a1c`, `$10ba-$10c0`, `$0af8-$0b14`, and the weak blockers `$00f8/$0d34`.
 15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
 16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
 17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.

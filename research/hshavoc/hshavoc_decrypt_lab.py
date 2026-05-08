@@ -3118,6 +3118,286 @@ def print_startup_callsite_token_class_model(base_words: list[int]) -> None:
         print(f"    @${call_addr:04x}: {interpretation}")
 
 
+def best_startup_word_at(addr: int) -> int:
+    return BEST_STARTUP_PATCH.get(addr, 0)
+
+
+def classify_boot_target(base_words: list[int], target: int, token_counts: dict[int, int]) -> tuple[str, str]:
+    if 0x0EA0 <= target < 0x1066:
+        seq5 = token_named_sequence(base_words, target, 5, token_counts)
+        cls = classify_token_entry_sequence(seq5)
+        return cls, " ".join(seq5)
+    kind = table_pointer_kind(target)
+    if kind:
+        score = target_sequence_score(base_words, target) if 0 <= target < len(base_words) * 2 else -100
+        return kind, f"score={score}"
+    if 0 <= target < len(base_words) * 2:
+        score = target_sequence_score(base_words, target)
+        return "code/data-candidate", f"score={score}"
+    return "outside-rom", "-"
+
+
+def print_boot_flow_readiness_model(base_words: list[int]) -> None:
+    print("\n== boot flow readiness model")
+    print("  summarizes the best startup skeleton, token entry roles, and remaining start/render blockers")
+    token_counts = token_counts_for_region(base_words, 0x0EA0, 0x1066)
+    token_alt_by_call: dict[int, list[tuple[str, int, str]]] = {}
+    for call_addr, mode, target, _record_label in startup_table_call_sites(base_words):
+        if not (0x0EA0 <= target < 0x1066):
+            continue
+        cls, _detail = classify_boot_target(base_words, target, token_counts)
+        token_alt_by_call.setdefault(call_addr, []).append((mode, target, cls))
+
+    flow = []
+    addr = 0x0C42
+    while addr <= 0x0C9A:
+        op = best_startup_word_at(addr)
+        if op in (0x4EB9, 0x4EF9):
+            target = (best_startup_word_at(addr + 2) << 16) | best_startup_word_at(addr + 4)
+            flow.append((addr, "jsr.l", target))
+            addr += 6
+            continue
+        if op == 0x4EB8:
+            target = best_startup_word_at(addr + 2)
+            flow.append((addr, "jsr.w", target))
+            addr += 4
+            continue
+        if op == 0x2F3C:
+            value = (best_startup_word_at(addr + 2) << 16) | best_startup_word_at(addr + 4)
+            flow.append((addr, "push.l", value))
+            addr += 6
+            continue
+        if op == 0x007C:
+            value = best_startup_word_at(addr + 2)
+            flow.append((addr, "ori-sr", value))
+            addr += 4
+            continue
+        if op == 0x4E75:
+            flow.append((addr, "rts", 0))
+            addr += 2
+            continue
+        flow.append((addr, f"word:{op:04x}", 0))
+        addr += 2
+
+    token_calls = 0
+    code_calls = 0
+    weak_calls = 0
+    print("  best-startup skeleton:")
+    for addr, kind, value in flow:
+        if kind in ("jsr.l", "jsr.w"):
+            cls, detail = classify_boot_target(base_words, value, token_counts)
+            alt_text = ""
+            if addr in token_alt_by_call:
+                alts = " ".join(f"{mode}->${target:04x}:{alt_cls}" for mode, target, alt_cls in token_alt_by_call[addr])
+                alt_text = f" alternatives=[{alts}]"
+            if cls.startswith("entry:"):
+                token_calls += 1
+            elif "code" in cls or "low" in cls or "vector" in cls:
+                code_calls += 1
+            if cls in {"code/data-candidate", "data/unknown"} or "score=-" in detail:
+                weak_calls += 1
+            print(f"    ${addr:04x}: {kind:<5} ${value:08x} -> {cls:<26} {detail}{alt_text}")
+        elif kind == "push.l":
+            cls, detail = classify_boot_target(base_words, value, token_counts)
+            print(f"    ${addr:04x}: {kind:<5} #${value:08x} -> {cls:<26} {detail}")
+        elif kind == "ori-sr":
+            print(f"    ${addr:04x}: {kind:<5} #${value:04x}")
+        elif kind == "rts":
+            print(f"    ${addr:04x}: rts")
+        else:
+            print(f"    ${addr:04x}: {kind}")
+
+    print("  readiness summary:")
+    print(f"    token-class calls={token_calls} code/init-like calls={code_calls} weak_or_ambiguous={weak_calls}")
+    print("    known-good structural anchors: startup skeleton, token block family, $1030 convergence, callsite classes")
+    print("    remaining blockers before a useful render attempt:")
+    print("      1. prove whether token entries are consumed by real 68000 code or by address/data tables")
+    print("      2. resolve weak init targets around $1082/$1084, $0e32, and $0d34 without overfitting p5? words")
+    print("      3. map token classes to side effects: CABG1, ABG0FD, DA, tail/join, B07-finalize")
+    print("      4. only then port a minimal MAME init patch and test for VDP/register writes instead of full gameplay")
+
+
+def effect_target_kind(target: int) -> str | None:
+    if 0x00C00000 <= target <= 0x00C0001F:
+        return "vdp"
+    if 0x00FF0000 <= target <= 0x00FFFFFF:
+        return "mmio"
+    if 0x000D0000 <= target <= 0x000DFFFF:
+        return "bank-d"
+    if 0 <= target < 0x20000:
+        return "rom-low"
+    return None
+
+
+def startup_flow_targets() -> list[tuple[int, str, int]]:
+    targets = []
+    addr = 0x0C42
+    while addr <= 0x0C9A:
+        op = best_startup_word_at(addr)
+        if op in (0x4EB9, 0x4EF9):
+            targets.append((addr, "call", (best_startup_word_at(addr + 2) << 16) | best_startup_word_at(addr + 4)))
+            addr += 6
+        elif op == 0x4EB8:
+            targets.append((addr, "call.w", best_startup_word_at(addr + 2)))
+            addr += 4
+        elif op == 0x2F3C:
+            targets.append((addr, "push", (best_startup_word_at(addr + 2) << 16) | best_startup_word_at(addr + 4)))
+            addr += 6
+        elif op == 0x007C:
+            addr += 4
+        else:
+            addr += 2
+    return targets
+
+
+def side_effect_mode_confidence(mode: str) -> tuple[str, int]:
+    if "p5" in mode:
+        return "p5-hyp", -5
+    if "/x1" in mode or mode.startswith("x1/"):
+        return "x1-hyp", -2
+    return "direct", 0
+
+
+def side_effect_records_in_window(base_words: list[int], start: int, end: int) -> list[tuple[int, int, str, str, str, str]]:
+    """Return modeled VDP/MMIO/RAM-ish instruction hits in a short window.
+
+    This is not a full 68000 disassembler. It intentionally recognizes only
+    effects that matter for a first render/init probe: absolute VDP/MMIO
+    stores, reads/polls, base loads, and obvious control transfers.
+    """
+    records = []
+    end = min(end, len(base_words) * 2)
+
+    def variants(at: int) -> list[tuple[str, int]]:
+        if not (0 <= at < end):
+            return []
+        return table_variant_sets(base_words[at // 2], at)
+
+    for addr in range(start, end, 2):
+        for op_name, op in variants(addr):
+            if op in (0x33FC, 0x23FC) and addr + 8 <= end:
+                size = "w" if op == 0x33FC else "l"
+                for imm_name, imm in variants(addr + 2):
+                    for hi_name, hi in variants(addr + 4):
+                        for lo_name, lo in variants(addr + 6):
+                            target = (hi << 16) | lo
+                            kind = effect_target_kind(target)
+                            if kind not in {"vdp", "mmio"}:
+                                continue
+                            mode = f"{op_name}/{imm_name}/{hi_name}/{lo_name}"
+                            confidence, penalty = side_effect_mode_confidence(mode)
+                            records.append((18 + penalty if kind == "vdp" else 16 + penalty, addr, kind, confidence, mode, f"move.{size} #${imm:04x},${target:08x}"))
+            elif op in (0x33C0, 0x4279, 0x4A79, 0x3039) and addr + 6 <= end:
+                mnemonic = {0x33C0: "move.w d0", 0x4279: "clr.w", 0x4A79: "tst.w", 0x3039: "move.w abs,d0"}[op]
+                for hi_name, hi in variants(addr + 2):
+                    for lo_name, lo in variants(addr + 4):
+                        target = (hi << 16) | lo
+                        kind = effect_target_kind(target)
+                        if kind not in {"vdp", "mmio"}:
+                            continue
+                        mode = f"{op_name}/{hi_name}/{lo_name}"
+                        verb = "poll/read" if op in (0x4A79, 0x3039) else "write"
+                        confidence, penalty = side_effect_mode_confidence(mode)
+                        records.append((14 + penalty if kind == "vdp" else 12 + penalty, addr, kind, confidence, mode, f"{verb}: {mnemonic} ${target:08x}"))
+            elif (op & 0xF1FF) == 0x41F9 and addr + 6 <= end:
+                reg = (op >> 9) & 7
+                for hi_name, hi in variants(addr + 2):
+                    for lo_name, lo in variants(addr + 4):
+                        target = (hi << 16) | lo
+                        kind = effect_target_kind(target)
+                        if kind not in {"vdp", "mmio"}:
+                            continue
+                        mode = f"{op_name}/{hi_name}/{lo_name}"
+                        confidence, penalty = side_effect_mode_confidence(mode)
+                        records.append((10 + penalty, addr, kind, confidence, mode, f"lea ${target:08x},a{reg}"))
+            elif op in (0x4EB9, 0x4EF9) and addr + 6 <= end:
+                mnemonic = "jsr" if op == 0x4EB9 else "jmp"
+                for hi_name, hi in variants(addr + 2):
+                    for lo_name, lo in variants(addr + 4):
+                        target = (hi << 16) | lo
+                        kind = effect_target_kind(target)
+                        if kind != "rom-low":
+                            continue
+                        mode = f"{op_name}/{hi_name}/{lo_name}"
+                        score = target_sequence_score(base_words, target)
+                        confidence, penalty = side_effect_mode_confidence(mode)
+                        records.append((6 + max(-3, min(score, 8)) + penalty, addr, kind, confidence, mode, f"{mnemonic} ${target:08x} target_score={score}"))
+            elif op == 0x4E75:
+                confidence, penalty = side_effect_mode_confidence(op_name)
+                records.append((3 + penalty, addr, "control", confidence, op_name, "rts"))
+            elif (op & 0xF1C0) == 0x51C8:
+                confidence, penalty = side_effect_mode_confidence(op_name)
+                records.append((3 + penalty, addr, "control", confidence, op_name, "dbf loop"))
+
+    deduped = []
+    seen = set()
+    for record in sorted(records, key=lambda item: (-item[0], item[1], item[2], item[5])):
+        key = (record[1], record[2], record[3], record[5])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(record)
+    return deduped
+
+
+def print_startup_side_effect_model(base_words: list[int]) -> None:
+    print("\n== startup side-effect model")
+    print("  scans startup targets and token-class alternatives for VDP/MMIO/RAM-init evidence before any render attempt")
+    token_counts = token_counts_for_region(base_words, 0x0EA0, 0x1066)
+    token_alts_by_call: dict[int, list[tuple[str, int, str]]] = {}
+    for call_addr, mode, target, _record_label in startup_table_call_sites(base_words):
+        if not (0x0EA0 <= target < 0x1066):
+            continue
+        seq5 = token_named_sequence(base_words, target, 5, token_counts)
+        token_alts_by_call.setdefault(call_addr, []).append((mode, target, classify_token_entry_sequence(seq5)))
+
+    targets: list[tuple[int, str, int, str]] = []
+    for call_addr, kind, target in startup_flow_targets():
+        targets.append((call_addr, kind, target, "best-startup"))
+        for mode, alt_target, cls in token_alts_by_call.get(call_addr, []):
+            if alt_target != target:
+                targets.append((call_addr, "token-alt", alt_target, f"{mode}:{cls}"))
+
+    for call_addr, kind, target, source in sorted(targets, key=lambda item: (item[0], item[2], item[3])):
+        if target & 1 or not (0 <= target < len(base_words) * 2):
+            print(f"  @${call_addr:04x} {kind:<9} ${target:08x} {source:<28} outside/odd")
+            continue
+
+        cls, detail = classify_boot_target(base_words, target, token_counts)
+        if cls.startswith("entry:"):
+            seq8 = " ".join(token_named_sequence(base_words, target, 8, token_counts))
+            print(f"  @${call_addr:04x} {kind:<9} ${target:08x} {source:<28} {cls:<24} {seq8}")
+            print("    effect: token/state entry; direct VDP/MMIO side effects depend on the still-unidentified consumer")
+            continue
+
+        window_end = min(len(base_words) * 2, target + 0x60)
+        records = side_effect_records_in_window(base_words, target, window_end)
+        direct_records = [record for record in records if record[3] == "direct"]
+        display_records = direct_records[:8]
+        if len(display_records) < 8:
+            display_records += [record for record in records if record[3] != "direct"][: 8 - len(display_records)]
+        vdp = sum(1 for _, _, effect_kind, confidence, _, _ in records if effect_kind == "vdp" and confidence == "direct")
+        mmio = sum(1 for _, _, effect_kind, confidence, _, _ in records if effect_kind == "mmio" and confidence == "direct")
+        control = sum(1 for _, _, effect_kind, confidence, _, _ in records if effect_kind == "control" and confidence == "direct")
+        hyp = sum(1 for _, _, effect_kind, confidence, _, _ in records if effect_kind in {"vdp", "mmio"} and confidence != "direct")
+        print(
+            f"  @${call_addr:04x} {kind:<9} ${target:08x} {source:<28} "
+            f"{cls:<18} {detail:<12} direct vdp={vdp} mmio={mmio} ctrl={control} p5/x1-hyp={hyp}"
+        )
+        if not records:
+            print("    no modeled side-effect hits in first $60 bytes")
+            continue
+        for _score, addr, effect_kind, confidence, mode, text in display_records:
+            print(f"    ${addr:04x}: {effect_kind:<7} {confidence:<7} {mode:<17} {text}")
+        if len(records) > len(display_records):
+            print(f"    ... {len(records) - len(display_records)} more modeled hits")
+
+    print("  render-gate interpretation:")
+    print("    strong VDP/MMIO targets are candidates for a minimal MAME init probe")
+    print("    token-class targets are not render-ready until their consumer routine is identified")
+    print("    ambiguous low-score targets should be instrumented for stable control flow, not patched blindly")
+
+
 def move_from_postincrement_role(word: int) -> str | None:
     size = (word >> 12) & 0xF
     if size not in (1, 2, 3):
@@ -3580,6 +3860,8 @@ def main() -> None:
     print_token_block_disassembly_model(base_words)
     print_token_entry_motif_model(base_words)
     print_startup_callsite_token_class_model(base_words)
+    print_boot_flow_readiness_model(base_words)
+    print_startup_side_effect_model(base_words)
     print_table_cluster_consumer_probe(base_words)
     print_table_cluster_indirect_reference_flow(base_words)
     if args.xref_search:
