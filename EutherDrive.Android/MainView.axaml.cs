@@ -1393,6 +1393,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1 => cps1.GetTargetFps(),
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2 => cps2.GetTargetFps(),
             EutherDrive.Core.Arcade.System32.System32Adapter system32 => system32.GetTargetFps(),
+            EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => DefaultTargetFrameRate,
             _ => DefaultTargetFrameRate
         };
     }
@@ -1461,6 +1462,7 @@ public partial class MainView : UserControl
             || _core is EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
             || _core is EutherDrive.Core.Arcade.System32.System32Adapter
+            || _core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
             || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
 
@@ -2597,9 +2599,11 @@ public partial class MainView : UserControl
             return false;
 
         string pseudoPath = Path.Combine("/__eutherdrive_probe__", fileName);
-        return EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(pseudoPath)
+        return fileName.Equals("hshavoc.zip", StringComparison.OrdinalIgnoreCase)
+            || EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(pseudoPath)
-            || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath);
+            || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(pseudoPath);
     }
 
     private async Task PickSystemFileAsync(string key, string title, string[] patterns)
@@ -4026,6 +4030,11 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.System32.System32Adapter();
         }
 
+        if (EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter();
+        }
+
         if (EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsSupportedPath(path))
         {
             return new EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter();
@@ -4141,6 +4150,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter => "Arcade",
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter => "Arcade CPS2",
             EutherDrive.Core.Arcade.System32.System32Adapter => "Sega System 32",
+            EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             EutherDrive.Core.Arcade.McsArcadeAdapter => "MAME",
             GbAdapter => GetEffectiveRomExtension(romPath) == ".gbc" ? "Game Boy Color" : "Game Boy",
             GbaAdapter => "Game Boy Advance",

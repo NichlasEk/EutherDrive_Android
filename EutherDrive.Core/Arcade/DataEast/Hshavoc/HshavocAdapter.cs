@@ -29,11 +29,11 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
         (0x0C42, 0x007C), (0x0C44, 0x0700), (0x0C46, 0x4EB9), (0x0C48, 0x0000),
-        (0x0C4A, 0x10A2), (0x0C4C, 0x4EB9), (0x0C4E, 0x0000), (0x0C50, 0x1082),
+        (0x0C4A, 0x109C), (0x0C4C, 0x4EB9), (0x0C4E, 0x0000), (0x0C50, 0x1082),
         (0x0C52, 0x2F3C), (0x0C54, 0x0000), (0x0C56, 0x1084), (0x0C58, 0x4EB9),
         (0x0C5A, 0x0000), (0x0C5C, 0x107A), (0x0C5E, 0x4EB9), (0x0C60, 0x0000),
         (0x0C62, 0x101C), (0x0C64, 0x4EB9), (0x0C66, 0x0000), (0x0C68, 0x10F8),
-        (0x0C6A, 0x4EB9), (0x0C6C, 0x0000), (0x0C6E, 0x10A8), (0x0C70, 0x4EB8),
+        (0x0C6A, 0x4EB9), (0x0C6C, 0x0000), (0x0C6E, 0x10F8), (0x0C70, 0x4EB8),
         (0x0C72, 0x00F8), (0x0C74, 0x01A6), (0x0C76, 0x4EB9), (0x0C78, 0x0000),
         (0x0C7A, 0x0E2E), (0x0C7C, 0x4EB9), (0x0C7E, 0x0000), (0x0C80, 0x0ADC),
         (0x0C82, 0x4EB9), (0x0C84, 0x0000), (0x0C86, 0x0ABA), (0x0C88, 0x4EB9),
@@ -74,13 +74,14 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public void LoadRom(string path)
     {
-        byte[] decoded = DecodeArchive(path, applyPhase2Patch: UsePhase2Patch());
+        string profile = GetDecodeProfile();
+        byte[] decoded = DecodeArchive(path, profile);
         string tempPath = Path.Combine(Path.GetTempPath(), $"eutherdrive_hshavoc_{Guid.NewGuid():N}.gen");
         File.WriteAllBytes(tempPath, decoded);
         try
         {
             _md.PowerCycleAndLoadRom(tempPath);
-            RomInfo.Summary = "High Seas Havoc arcade probe | decoded in memory | MD core boot probe";
+            RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile} | MD core boot probe";
             RomInfo.ExtraInfo =
                 "Data East hshavoc.zip via HshavocAdapter. Applies MAME base decode plus current startup probe patch. " +
                 "No decoded ROM is kept; temp image is deleted after load.";
@@ -94,6 +95,24 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     public void Reset() => _md.Reset();
 
     public void RunFrame() => _md.RunFrame();
+
+    public uint GetM68kPc() => _md.GetM68kPc();
+
+    public ushort GetZ80Pc() => _md.GetZ80Pc();
+
+    public ushort ReadM68kWord(uint address) => _md.DebugReadM68kWord(address);
+
+    public uint GetM68kDataRegister(int index) => _md.DebugGetM68kDataRegister(index);
+
+    public uint GetM68kAddressRegister(int index) => _md.DebugGetM68kAddressRegister(index);
+
+    public ushort GetM68kStatusRegister() => _md.DebugGetM68kStatusRegister();
+
+    public bool IsVdpDisplayOn() => _md.IsVdpDisplayOn();
+
+    public int GetVdpDisplayStatus() => _md.GetVdpDisplayStatus();
+
+    public string CaptureDebugSnapshot(string? directory = null) => _md.CaptureDebugSnapshot(directory);
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
         => _md.GetFrameBuffer(out width, out height, out stride);
@@ -121,7 +140,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public void Dispose() => _md.Dispose();
 
-    private static byte[] DecodeArchive(string path, bool applyPhase2Patch)
+    private static byte[] DecodeArchive(string path, string profile)
     {
         using ZipArchive archive = ZipFile.OpenRead(path);
         byte[] even = ReadRequiredEntry(archive, EvenRomName);
@@ -137,10 +156,28 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         }
 
         DecodeBaseInPlace(rom);
-        ApplyPatch(rom, BestStartupPatch);
-        if (applyPhase2Patch)
+        if (profile != "base")
+            ApplyPatch(rom, BestStartupPatch);
+        if (profile == "phase2" || profile == "island10a0")
             ApplyPatch(rom, OptionalPhase2OperandPatch);
+        if (profile == "island10a0")
+            ApplyIsland10A0Probe(rom);
         return rom;
+    }
+
+    private static void ApplyIsland10A0Probe(byte[] rom)
+    {
+        // Probe only: if the 0x10A6 clear loop is a false island, skip it and test the next startup region.
+        WriteWord(rom, 0x10A6 / 2, 0x4E71);
+        WriteWord(rom, 0x10A8 / 2, 0x4E71);
+        WriteWord(rom, 0x10AA / 2, 0x4E71);
+        WriteWord(rom, 0x10AC / 2, 0x4E71);
+        WriteWord(rom, 0x10AE / 2, 0x4E71);
+        WriteWord(rom, 0x10B0 / 2, 0x4E71);
+        WriteWord(rom, 0x10B2 / 2, 0x4E71);
+        WriteWord(rom, 0x10B4 / 2, 0x4E71);
+        WriteWord(rom, 0x10B6 / 2, 0x4E71);
+        WriteWord(rom, 0x10B8 / 2, 0x4E71);
     }
 
     private static void DecodeBaseInPlace(byte[] rom)
@@ -215,8 +252,24 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         return null;
     }
 
-    private static bool UsePhase2Patch()
-        => string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_PHASE2"), "1", StringComparison.Ordinal);
+    private static string GetDecodeProfile()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_DECODE_PROFILE");
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_PHASE2"), "1", StringComparison.Ordinal)
+                ? "phase2"
+                : "startup";
+
+        string profile = raw.Trim().ToLowerInvariant();
+        return profile switch
+        {
+            "base" => "base",
+            "startup" => "startup",
+            "phase2" => "phase2",
+            "island10a0" => "island10a0",
+            _ => throw new InvalidDataException($"Unknown HSHavoc decode profile '{raw}'. Use base, startup, phase2, or island10a0.")
+        };
+    }
 
     private static void TryDelete(string path)
     {

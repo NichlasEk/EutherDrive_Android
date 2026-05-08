@@ -205,6 +205,8 @@ public partial class MainWindow : Window
 
     private string? _romPath;
     private string? _romLibraryPath;
+    private const string MoomesaQuickStartPath = "/home/nichlas/roms/MAME/Moomesa/moomesa.zip";
+    private const string MoomesaMcsDriverName = "moomesa";
     private int _romPickerSortIndex;
     private int _romPickerStarsFilterIndex;
     private string? _pceBiosPath;
@@ -2282,6 +2284,31 @@ public partial class MainWindow : Window
         OnStart(null, null);
     }
 
+    private void OnMoomesaQuickStart(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (!File.Exists(MoomesaQuickStartPath))
+        {
+            StatusText.Text = $"Moo Mesa ROM missing: {MoomesaQuickStartPath}";
+            return;
+        }
+
+        _romPath = MoomesaQuickStartPath;
+        RomPathText.Text = _romPath;
+        ApplyPsxSbiSelectionForRom(_romPath);
+        AddRecentRom(_romPath);
+        RefreshAutoFireUi();
+        if (!McsDriverCatalog.Contains(MoomesaMcsDriverName))
+        {
+            StatusText.Text = "Cowboys of Moo Mesa selected, but MCS driver 'moomesa' is not present in this build yet.";
+            SaveSettings();
+            return;
+        }
+
+        StatusText.Text = "Starting Cowboys of Moo Mesa";
+        SaveSettings();
+        OnStart(null, null);
+    }
+
     private async void OnSelectPsxBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         IStorageFolder? startFolder = null;
@@ -2753,7 +2780,7 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
-    private async void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs? e)
     {
         try
         {
@@ -2790,6 +2817,15 @@ public partial class MainWindow : Window
 
             else
             {
+                if (IsUnavailableMcsArchive(_romPath, out string unavailableDriver))
+                {
+                    StatusText.Text = $"MCS driver '{unavailableDriver}' is not present in this build yet.";
+                    DeckMonitorHintText.Text = $"Cannot boot {Path.GetFileName(_romPath)} until MCS includes driver '{unavailableDriver}'.";
+                    ResetPresentationState(clearBitmap: true);
+                    await _ambientMusicController.SetRomActiveAsync(false);
+                    return;
+                }
+
                 _core = CreateCoreForRom(_romPath);
                 Console.WriteLine($"[UI] Core created ({_core.GetType().Name}).");
                 ApplyMasterVolumeToCore();
@@ -2964,6 +3000,22 @@ public partial class MainWindow : Window
             StopCrtPowerIntro(revealContent: false, showSplash: true);
             await _ambientMusicController.SetRomActiveAsync(false);
         }
+    }
+
+    private static bool IsUnavailableMcsArchive(string? path, out string driverName)
+    {
+        driverName = string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        string extension = Path.GetExtension(path);
+        if (!extension.Equals(".zip", StringComparison.OrdinalIgnoreCase)
+            && !extension.Equals(".7z", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        driverName = McsArcadeAdapter.GetArchiveDriverName(path);
+        return McsArcadeAdapter.IsLikelyArcadeArchive(path)
+            && !McsArcadeAdapter.IsDriverAvailableForArchive(path);
     }
 
     private async Task<bool> ShouldBlockSportTitleLaunchAsync()
@@ -4109,6 +4161,7 @@ public partial class MainWindow : Window
             EutherDrive.Core.Sega32XAdapter => "Sega 32X",
             N64Adapter => "Nintendo 64",
             Deco32Adapter => "Data East Deco32",
+            EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
         };
@@ -9044,6 +9097,7 @@ public partial class MainWindow : Window
     {
         bool applyScanlines = _crtScanlinesEnabled;
         bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter
+            || core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
             || core is Deco32Adapter;
         bool sharpPixels = _sharpPixelsEnabled || forceSharpPixels;
         bool applyAdvancedPixelFilter = sharpPixels && _advancedPixelFilterEnabled && !forceSharpPixels;

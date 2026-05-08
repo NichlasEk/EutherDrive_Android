@@ -3724,6 +3724,30 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         return MdTracerCore.md_m68k.g_reg_PC;
     }
 
+    public ushort DebugReadM68kWord(uint address)
+    {
+        return MdTracerCore.md_m68k.read16(address);
+    }
+
+    public uint DebugGetM68kDataRegister(int index)
+    {
+        if ((uint)index >= 8)
+            throw new ArgumentOutOfRangeException(nameof(index));
+        return MdTracerCore.md_m68k.g_reg_data[index].l;
+    }
+
+    public uint DebugGetM68kAddressRegister(int index)
+    {
+        if ((uint)index >= 8)
+            throw new ArgumentOutOfRangeException(nameof(index));
+        return MdTracerCore.md_m68k.g_reg_addr[index].l;
+    }
+
+    public ushort DebugGetM68kStatusRegister()
+    {
+        return MdTracerCore.md_m68k.g_reg_SR;
+    }
+
     public void ForceDumpZ80(string reason, bool extra, string? dumpPath)
     {
         md_main.g_md_z80?.ForceDumpRam(reason, extra, dumpPath);

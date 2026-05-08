@@ -28,6 +28,7 @@ using EutherDrive.Core.Savestates;
 using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.Cps2;
+using EutherDrive.Core.Arcade.DataEast.Hshavoc;
 using EutherDrive.Core.Arcade.Konami;
 using EutherDrive.Core.Arcade.System32;
 using EutherDrive.Platforms.DataEast.Deco32;
@@ -364,6 +365,10 @@ class Program
                 || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Deco32Adapter.IsSupportedArchive(romPath));
+            bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && HshavocAdapter.IsSupportedArchive(romPath));
             bool useTmnt = string.Equals(coreOverride, "tmnt", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "tmnt2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
@@ -390,6 +395,7 @@ class Program
                 useCps2 = false;
                 useSystem32 = false;
                 useDeco32 = false;
+                useHshavoc = false;
                 useTmnt = false;
                 useMcsArcade = false;
             }
@@ -398,6 +404,12 @@ class Program
             {
                 Console.WriteLine("[HEADLESS] Using CPS1 core");
                 return RunCps1Headless(romPath, framesToRun, dumpDir, statePayload: null);
+            }
+
+            if (useHshavoc)
+            {
+                Console.WriteLine("[HEADLESS] Using Data East HSHavoc probe core");
+                return RunHshavocHeadless(romPath, framesToRun, dumpDir);
             }
 
             if (useCps2)
@@ -2096,6 +2108,138 @@ class Program
             Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    private static int RunHshavocHeadless(string romPath, int framesToRun, string dumpDir)
+    {
+        using var hshavoc = new HshavocAdapter();
+        hshavoc.LoadRom(romPath);
+
+        string tracePath = Path.Combine(dumpDir, "hshavoc_boot_trace.log");
+        using var trace = new StreamWriter(tracePath, append: false, Encoding.UTF8);
+        trace.WriteLine("# EutherDrive HSHavoc headless boot trace");
+        trace.WriteLine($"rom={romPath}");
+        trace.WriteLine($"phase2={(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_PHASE2") == "1" ? 1 : 0)}");
+        trace.WriteLine($"decode_profile={Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_DECODE_PROFILE") ?? "<default>"}");
+        trace.WriteLine("frame,pc,z80,sr,d0,d1,d2,a0,a1,a2,a7,vdp_display,op0,op1,op2,fb_content,nonzero_pixels,first_x,first_y,fingerprint");
+        DumpHshavocCodeIslands(hshavoc, Path.Combine(dumpDir, "hshavoc_code_islands.txt"));
+
+        ReadOnlySpan<byte> fbIn = hshavoc.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+        var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+        ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+        int unchangedFrames = 0;
+        bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+
+        WriteHshavocTraceLine(trace, -1, hshavoc, statsIn, lastFingerprint);
+        Console.WriteLine(
+            $"[HEADLESS] HSHavoc load pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+            $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+            $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)} fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} " +
+            $"first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+        DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+        for (int frame = 0; frame < framesToRun; frame++)
+        {
+            hshavoc.SetInputState(
+                up: false,
+                down: false,
+                left: false,
+                right: false,
+                a: false,
+                b: false,
+                c: false,
+                start: false,
+                x: false,
+                y: false,
+                z: false,
+                mode: false,
+                padType: PadType.SixButton);
+            hshavoc.RunFrame();
+
+            ReadOnlySpan<byte> fb = hshavoc.GetFrameBuffer(out int w, out int h, out int s);
+            var stats = GetFrameStats(fb, w, h, s);
+            ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+            unchangedFrames = fingerprint == lastFingerprint ? (unchangedFrames + 1) : 0;
+            lastFingerprint = fingerprint;
+            WriteHshavocTraceLine(trace, frame, hshavoc, stats, fingerprint);
+
+            if (traceFrames || frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+            {
+                Console.WriteLine(
+                    $"[HEADLESS] Frame {frame}: hshavoc_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} " +
+                    $"first_nonzero=({stats.FirstX},{stats.FirstY}) pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+                    $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+                    $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)} fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+            }
+
+            if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10)
+                DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+        }
+
+        ReadOnlySpan<byte> fbOut = hshavoc.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+        var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+        ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+        DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_HSHAVOC_SNAPSHOT") == "1")
+        {
+            string snapPrefix = hshavoc.CaptureDebugSnapshot(dumpDir);
+            Console.WriteLine($"[HEADLESS] HSHavoc snapshot captured: {snapPrefix}");
+        }
+
+        Console.WriteLine(
+            $"[HEADLESS] HSHavoc final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} " +
+            $"first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+            $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+            $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)} fp=0x{finalFingerprint:X16}");
+        Console.WriteLine($"[HEADLESS] HSHavoc boot trace: {tracePath}");
+        Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+        return 0;
+    }
+
+    private static void WriteHshavocTraceLine(StreamWriter trace, int frame, HshavocAdapter hshavoc, FrameStats stats, ulong fingerprint)
+    {
+        uint pc = hshavoc.GetM68kPc() & 0x00FF_FFFE;
+        trace.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"{frame},{pc:X6},{hshavoc.GetZ80Pc():X4},{hshavoc.GetM68kStatusRegister():X4},{hshavoc.GetM68kDataRegister(0):X8},{hshavoc.GetM68kDataRegister(1):X8},{hshavoc.GetM68kDataRegister(2):X8},{hshavoc.GetM68kAddressRegister(0):X8},{hshavoc.GetM68kAddressRegister(1):X8},{hshavoc.GetM68kAddressRegister(2):X8},{hshavoc.GetM68kAddressRegister(7):X8},{hshavoc.GetVdpDisplayStatus()},{hshavoc.ReadM68kWord(pc):X4},{hshavoc.ReadM68kWord(pc + 2):X4},{hshavoc.ReadM68kWord(pc + 4):X4},{(stats.HasContent ? 1 : 0)},{stats.NonZeroPixels},{stats.FirstX},{stats.FirstY},{fingerprint:X16}"));
+    }
+
+    private static string FormatHshavocWords(HshavocAdapter hshavoc)
+    {
+        uint pc = hshavoc.GetM68kPc() & 0x00FF_FFFE;
+        return $"0x{hshavoc.ReadM68kWord(pc):X4},0x{hshavoc.ReadM68kWord(pc + 2):X4},0x{hshavoc.ReadM68kWord(pc + 4):X4}";
+    }
+
+    private static string FormatHshavocRegisters(HshavocAdapter hshavoc)
+    {
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"D0=0x{hshavoc.GetM68kDataRegister(0):X8} D1=0x{hshavoc.GetM68kDataRegister(1):X8} D2=0x{hshavoc.GetM68kDataRegister(2):X8} A0=0x{hshavoc.GetM68kAddressRegister(0):X8} A1=0x{hshavoc.GetM68kAddressRegister(1):X8} A2=0x{hshavoc.GetM68kAddressRegister(2):X8} A7=0x{hshavoc.GetM68kAddressRegister(7):X8}");
+    }
+
+    private static void DumpHshavocCodeIslands(HshavocAdapter hshavoc, string path)
+    {
+        using var writer = new StreamWriter(path, append: false, Encoding.UTF8);
+        DumpHshavocWords(writer, hshavoc, 0x000C40, 0x70);
+        DumpHshavocWords(writer, hshavoc, 0x001000, 0x140);
+        DumpHshavocWords(writer, hshavoc, 0x000A00, 0x140);
+        DumpHshavocWords(writer, hshavoc, 0x000E00, 0x80);
+    }
+
+    private static void DumpHshavocWords(StreamWriter writer, HshavocAdapter hshavoc, uint start, int length)
+    {
+        writer.WriteLine($"# 0x{start:X6}-0x{start + (uint)length:X6}");
+        for (int offset = 0; offset < length; offset += 16)
+        {
+            uint address = start + (uint)offset;
+            writer.Write($"{address:X6}:");
+            for (int word = 0; word < 8; word++)
+                writer.Write($" {hshavoc.ReadM68kWord(address + (uint)(word * 2)):X4}");
+            writer.WriteLine();
+        }
+        writer.WriteLine();
     }
 
     private static int RunCps1Headless(string romPath, int framesToRun, string dumpDir, byte[]? statePayload)

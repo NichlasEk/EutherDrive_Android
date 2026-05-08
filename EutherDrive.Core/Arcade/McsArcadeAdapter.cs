@@ -113,6 +113,16 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         }
     }
 
+    public static string GetArchiveDriverName(string path) => GetDriverNameFromPath(path);
+
+    public static bool IsDriverAvailableForArchive(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !RomArchiveExtractor.IsArchivePath(path))
+            return false;
+
+        return McsDriverCatalog.Contains(GetDriverNameFromPath(path));
+    }
+
     private static int ParseOutputSampleRate()
     {
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_AUDIO_OUTPUT_HZ");
@@ -156,7 +166,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             string examples = string.Join(", ", McsDriverCatalog.DriverNames.Take(12));
             throw new NotSupportedException(
                 $"MCS arcade core is installed, but this MCS snapshot does not contain driver '{_driverName}'. " +
-                "Rampage arcade needs the MAME MCR3/Rampage driver ported or added before it can boot. " +
+                "This arcade set needs its MAME driver ported or included in MCS before it can boot. " +
                 $"Available MCS examples: {examples}.");
         }
 
