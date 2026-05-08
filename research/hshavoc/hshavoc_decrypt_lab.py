@@ -2822,6 +2822,133 @@ def print_upstream_marker_block_test(base_words: list[int]) -> None:
         print("    " + " ".join(parts))
 
 
+TOKEN_NAMES = {
+    0x01A6: "A",
+    0x0102: "B",
+    0x1B3E: "C",
+    0x14C5: "D",
+    0x0101: "E",
+    0x0103: "F",
+    0x0981: "G0",
+    0x09C1: "G1",
+    0x08C6: "G2",
+    0x0004: "N4",
+    0x0005: "N5",
+    0x00A1: "N_A1",
+    0x4FBD: "JMP",
+    0x4EBA: "BR",
+    0x4F72: "CTL",
+    0x3B3B: "TERM",
+}
+
+
+def token_short_name(word: int, token_counts: dict[int, int]) -> str:
+    if word in TOKEN_NAMES:
+        return TOKEN_NAMES[word]
+    if token_counts.get(word, 0) >= 2:
+        return f"T{word:04x}"
+    return f"${word:04x}"
+
+
+def token_counts_for_region(base_words: list[int], start: int, end: int) -> dict[int, int]:
+    counts: dict[int, int] = {}
+    for addr in range(start, end, 2):
+        word = base_words[addr // 2]
+        counts[word] = counts.get(word, 0) + 1
+    return counts
+
+
+def print_token_block_disassembly_model(base_words: list[int]) -> None:
+    print("\n== token block pseudo-disassembly")
+    print("  renders the main token blocks with stable columns, startup entries, and trailer targets")
+    block_stride = 0x3A
+    block_words = block_stride // 2
+    blocks = [
+        ("P00", 0x0EA0),
+        ("B01", 0x0ED4),
+        ("B02", 0x0F0E),
+        ("B03", 0x0F48),
+        ("B04", 0x0F82),
+        ("B05", 0x0FBC),
+        ("B06", 0x0FF6),
+        ("B07", 0x1030),
+    ]
+    clean_starts = [0x0ED4, 0x0F0E, 0x0F48, 0x0F82, 0x0FBC, 0x0FF6]
+    clean_rows = [
+        [base_words[(start + column * 2) // 2] for column in range(block_words)]
+        for start in clean_starts
+    ]
+    stable_columns = {
+        column
+        for column in range(block_words)
+        if len({row[column] for row in clean_rows}) == 1
+    }
+    token_counts = token_counts_for_region(base_words, 0x0EA0, 0x1066)
+    startup_entries: dict[int, list[str]] = {}
+    for call_addr, mode, target, _record_label in startup_table_call_sites(base_words):
+        startup_entries.setdefault(target, []).append(f"@{call_addr:04x}:{mode}")
+
+    print("  dictionary:")
+    for word, count in sorted(token_counts.items(), key=lambda item: (-item[1], item[0]))[:24]:
+        print(f"    {token_short_name(word, token_counts):<6} = {word:04x} count={count}")
+
+    print("  block rows:")
+    for label, start in blocks:
+        words = [base_words[(start + column * 2) // 2] for column in range(block_words)]
+        trailer_marker = words[-2]
+        trailer_param = words[-1]
+        markers = []
+        rendered = []
+        for column, word in enumerate(words):
+            addr = start + column * 2
+            prefix = "=" if column in stable_columns and label.startswith("B") and label != "B07" else " "
+            if addr in startup_entries:
+                prefix = "@"
+                markers.append(f"w{column:02d}:{'/'.join(startup_entries[addr])}")
+            rendered.append(f"{prefix}{token_short_name(word, token_counts):<6}")
+
+        print(f"    {label} ${start:04x}: " + " ".join(rendered[:14]))
+        print(f"         ${start + 14 * 2:04x}: " + " ".join(rendered[14:]))
+        if markers:
+            print(f"         entries: {', '.join(markers)}")
+
+        if label == "P00":
+            marker_addr = 0x0ED0
+            param_addr = 0x0ED2
+            candidate_start = marker_addr - (block_stride - 4)
+        else:
+            marker_addr = start + block_stride - 4
+            param_addr = start + block_stride - 2
+            candidate_start = start
+        trailer_marker = base_words[marker_addr // 2]
+        trailer_param = base_words[param_addr // 2]
+        strong = token_block_trailer_candidates(base_words, candidate_start, marker_addr, param_addr)
+        strong = [candidate for candidate in strong if candidate[0] >= 7]
+        if strong:
+            best = strong[0]
+            score, mode, interp, target, param, reasons = best
+            target_label = token_block_label_for_named_address(target, blocks, block_stride)
+            print(
+                f"         trailer {token_short_name(trailer_marker, token_counts)} {trailer_param:04x}: "
+                f"{mode}/{interp} param={param:04x} -> ${target:04x} {target_label} score={score} {'/'.join(reasons)}"
+            )
+        else:
+            print(f"         trailer {token_short_name(trailer_marker, token_counts)} {trailer_param:04x}: no strong block target")
+
+    print("  startup-entry local traces:")
+    for target, entries in sorted(startup_entries.items()):
+        if not (0x0EA0 <= target <= 0x1064):
+            continue
+        start = max(0x0EA0, target - 8)
+        end = min(0x1066, target + 16)
+        parts = []
+        for addr in range(start, end, 2):
+            word = base_words[addr // 2]
+            mark = "@" if addr == target else " "
+            parts.append(f"{mark}${addr:04x}:{token_short_name(word, token_counts)}")
+        print(f"    ${target:04x} {'/'.join(entries)}: " + " ".join(parts))
+
+
 def move_from_postincrement_role(word: int) -> str | None:
     size = (word >> 12) & 0xF
     if size not in (1, 2, 3):
@@ -3281,6 +3408,7 @@ def main() -> None:
     print_token_block_trailer_confidence_model(base_words)
     print_token_marker_family_scan(base_words)
     print_upstream_marker_block_test(base_words)
+    print_token_block_disassembly_model(base_words)
     print_table_cluster_consumer_probe(base_words)
     print_table_cluster_indirect_reference_flow(base_words)
     if args.xref_search:

@@ -166,6 +166,12 @@ The instruction-path search now finds a plausible partial startup stream:
   - That candidate body has only `3/28` token-alphabet hits and `0/9` stable-column hits against the clean B01-B06 family.
   - Exact column matching against clean blocks is effectively absent: best body match is `0/27`, with only trailer-like overlap.
   - The `4fbd 0006` trailer shape is still real, and x0 parameter `$0180` can target B04/B05, but the body does not belong to the main token-block family. Treat it as a separate upstream/control marker candidate, not as a seventh block.
+- A pseudo-disassembly view now names the most common halfword tokens and annotates startup entries:
+  - Most frequent tokens are `A=01a6` (46), `B=0102` (44), `C=1b3e` (25), `D=14c5` (20), `E=0101` (16), `N5=0005` (11), `G0=0981` (10), `N_A1=00a1` (9), and `G1=09c1` (9).
+  - `$0fa8` and `$101c` both enter a similar `C A B G1 E ...` motif, so those two startup refs may be the same semantic entry class in different blocks.
+  - `$0f2e` and `$1026` both enter on `D` and continue into `D A ...` motifs, giving a second likely entry class.
+  - `$102e` lands on B06's trailer parameter immediately after `JMP`, then flows into `$1030`, so it is probably a tail/join entry rather than a normal body-token entry.
+  - `$103a` lands inside B07 on `N5 G0 E D A B ...`, strengthening `$1030-$1068` as a join/finalization block rather than just ordinary continuation data.
 
 ## Next steps
 
@@ -186,6 +192,7 @@ The instruction-path search now finds a plausible partial startup stream:
 14a. Treat mixed-transform opcode/operand call sites as false positives unless the opcode, high word, and low word can be justified by one coherent fetch context.
 14b. Decode the `4fbd/4eba + param` trailer semantics. The P00/B04/B05/B06 parameters landing at `$1030` are the strongest current clue for block-to-block control flow.
 14c. Treat `$0e38: 4fbd 0006` as a separate upstream/control marker candidate only. It fails the clean block-body test, so do not use it as part of the B01-B06 column model.
+14d. Use the pseudo-disassembly motifs to separate startup entry classes: `C A B G1 E`, `D A ...`, trailer-param tail entries, and B07 finalization entries.
 15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
 16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
 17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.
