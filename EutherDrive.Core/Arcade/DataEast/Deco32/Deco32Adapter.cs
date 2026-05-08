@@ -20,6 +20,8 @@ public sealed class Deco32Adapter : IEmulatorCore
     private const int CyclesPerFrame = ArmClockHz / 60;
     private static readonly bool TraceCpu =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_TRACE_CPU"), "1", StringComparison.Ordinal);
+    private static readonly bool DebugWorkRamTextOverlay =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_WORKRAM_TEXT_OVERLAY"), "1", StringComparison.Ordinal);
     private static readonly int TraceCpuLimit = ParseEnvInt("EUTHERDRIVE_DECO32_TRACE_LIMIT", 2000);
 
     private readonly object _frameSync = new();
@@ -67,7 +69,7 @@ public sealed class Deco32Adapter : IEmulatorCore
         ? "not-loaded"
         : string.Create(
             CultureInfo.InvariantCulture,
-            $"pc=0x{_mainCpu.Pc:X8} op=0x{_mainCpu.PeekOpcode():X8} vis=0x{_visiblePc:X8}/0x{_visibleOp:X8}/0x{_visibleCpsr:X8} vb=0x{_vblankPc:X8}/0x{_vblankOp:X8}/0x{_vblankCpsr:X8} post=0x{_postFramePc:X8}/0x{_postFrameOp:X8}/0x{_postFrameCpsr:X8} r0=0x{_mainCpu.Registers[0]:X8} r1=0x{_mainCpu.Registers[1]:X8} r2=0x{_mainCpu.Registers[2]:X8} r3=0x{_mainCpu.Registers[3]:X8} r9=0x{_mainCpu.Registers[9]:X8} sl=0x{_mainCpu.Registers[10]:X8} fp=0x{_mainCpu.Registers[11]:X8} sp=0x{_mainCpu.Registers[13]:X8} lr=0x{_mainCpu.Registers[14]:X8} cpsr=0x{_mainCpu.Cpsr:X8} halted={_mainCpu.Halted} reason='{_lastStopReason ?? _mainCpu.StopReason}' frame={_frameCounter} vram={_memory.VideoWriteCount} pal={_memory.PaletteWriteCount} spr={_memory.SpriteWriteCount} {_memory.ProtectionDebugSummary} {_memory.TilemapDebugSummary} {_memory.SpriteDebugSummary}");
+            $"pc=0x{_mainCpu.Pc:X8} op=0x{_mainCpu.PeekOpcode():X8} vis=0x{_visiblePc:X8}/0x{_visibleOp:X8}/0x{_visibleCpsr:X8} vb=0x{_vblankPc:X8}/0x{_vblankOp:X8}/0x{_vblankCpsr:X8} post=0x{_postFramePc:X8}/0x{_postFrameOp:X8}/0x{_postFrameCpsr:X8} r0=0x{_mainCpu.Registers[0]:X8} r1=0x{_mainCpu.Registers[1]:X8} r2=0x{_mainCpu.Registers[2]:X8} r3=0x{_mainCpu.Registers[3]:X8} r4=0x{_mainCpu.Registers[4]:X8} r5=0x{_mainCpu.Registers[5]:X8} r6=0x{_mainCpu.Registers[6]:X8} r7=0x{_mainCpu.Registers[7]:X8} r8=0x{_mainCpu.Registers[8]:X8} r9=0x{_mainCpu.Registers[9]:X8} sl=0x{_mainCpu.Registers[10]:X8} fp=0x{_mainCpu.Registers[11]:X8} sp=0x{_mainCpu.Registers[13]:X8} lr=0x{_mainCpu.Registers[14]:X8} cpsr=0x{_mainCpu.Cpsr:X8} halted={_mainCpu.Halted} reason='{_lastStopReason ?? _mainCpu.StopReason}' frame={_frameCounter} vram={_memory.VideoWriteCount} pal={_memory.PaletteWriteCount} spr={_memory.SpriteWriteCount} {_memory.ProtectionDebugSummary} {_memory.TilemapDebugSummary} {_memory.PaletteDebugSummary} {_memory.SpriteDebugSummary}");
 
     public void LoadRom(string path)
     {
@@ -254,7 +256,7 @@ public sealed class Deco32Adapter : IEmulatorCore
             {
                 Console.WriteLine(string.Create(
                     CultureInfo.InvariantCulture,
-                    $"[DECO32 ARM] pc=0x{pc:X8} op=0x{opcode:X8} next=0x{_mainCpu.Pc:X8} r0=0x{_mainCpu.Registers[0]:X8} r1=0x{_mainCpu.Registers[1]:X8} r2=0x{_mainCpu.Registers[2]:X8} r3=0x{_mainCpu.Registers[3]:X8} r4=0x{_mainCpu.Registers[4]:X8} r5=0x{_mainCpu.Registers[5]:X8} r6=0x{_mainCpu.Registers[6]:X8} r7=0x{_mainCpu.Registers[7]:X8} sp=0x{_mainCpu.Registers[13]:X8} lr=0x{_mainCpu.Registers[14]:X8} cpsr=0x{_mainCpu.Cpsr:X8}"));
+                    $"[DECO32 ARM] pc=0x{pc:X8} op=0x{opcode:X8} next=0x{_mainCpu.Pc:X8} r0=0x{_mainCpu.Registers[0]:X8} r1=0x{_mainCpu.Registers[1]:X8} r2=0x{_mainCpu.Registers[2]:X8} r3=0x{_mainCpu.Registers[3]:X8} r4=0x{_mainCpu.Registers[4]:X8} r5=0x{_mainCpu.Registers[5]:X8} r6=0x{_mainCpu.Registers[6]:X8} r7=0x{_mainCpu.Registers[7]:X8} r8=0x{_mainCpu.Registers[8]:X8} r9=0x{_mainCpu.Registers[9]:X8} sl=0x{_mainCpu.Registers[10]:X8} fp=0x{_mainCpu.Registers[11]:X8} ip=0x{_mainCpu.Registers[12]:X8} sp=0x{_mainCpu.Registers[13]:X8} lr=0x{_mainCpu.Registers[14]:X8} cpsr=0x{_mainCpu.Cpsr:X8}"));
             }
         }
 
@@ -266,9 +268,11 @@ public sealed class Deco32Adapter : IEmulatorCore
     {
         Array.Clear(_renderFrameBuffer);
         _palette?.FillBackdrop(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
-        _tilemaps?.Render(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
-        _sprites?.Render(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride, _frameCounter);
-        _memory?.RenderWorkRamTextOverlay(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
+        _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
+        _sprites?.Render(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride, _frameCounter, _memory?.Priority ?? 0);
+        _tilemaps?.RenderTextPlayfield(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
+        if (DebugWorkRamTextOverlay)
+            _memory?.RenderWorkRamTextOverlay(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
         lock (_frameSync)
             Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
     }
@@ -395,11 +399,10 @@ public sealed class NightSlashersGameProfile
 
     private static void Load40WordSwap(byte[] dest, byte[] src, int offset)
     {
-        for (int i = 0, d = offset; i + 1 < src.Length && d < dest.Length; i += 2, d += 5)
+        for (int i = 0, d = offset; i + 1 < src.Length && d + 1 < dest.Length; i += 2, d += 5)
         {
             dest[d] = src[i + 1];
-            if (d - 1 >= 0)
-                dest[d - 1] = src[i];
+            dest[d + 1] = src[i];
         }
     }
 
@@ -561,7 +564,6 @@ public sealed class Deco32MemoryMap : IArm6Bus
     private readonly OKI6295 _oki2;
     private readonly Action<bool> _setMainIrqLine;
     private readonly byte[] _workRam = new byte[0x20000];
-    private readonly byte[] _aceRam = new byte[0xa0];
     private readonly Deco104Protection _ioprot = new();
     private readonly SerialEeprom93C46 _eeprom = new();
     private ArcadeInputState _input;
@@ -588,8 +590,10 @@ public sealed class Deco32MemoryMap : IArm6Bus
     public int PaletteWriteCount { get; private set; }
     public int SpriteWriteCount { get; private set; }
     public bool EepromDirty => _eeprom.Dirty;
+    public int Priority => _priority;
     public string ProtectionDebugSummary => $"{_ioprot.DebugSummary} {RamDebugSummary}";
     public string TilemapDebugSummary => _tilemaps.DebugSummary;
+    public string PaletteDebugSummary => _palette.DebugSummary;
     public string SpriteDebugSummary => _sprites.DebugSummary;
 
     public void LoadEeprom(ReadOnlySpan<byte> data) => _eeprom.Import(data);
@@ -599,7 +603,6 @@ public sealed class Deco32MemoryMap : IArm6Bus
     public void Reset()
     {
         Array.Clear(_workRam);
-        Array.Clear(_aceRam);
         _ioprot.Reset();
         _eeprom.Reset();
         _vblank = false;
@@ -662,7 +665,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
         if (address is >= 0x100000 and <= 0x11ffff)
             return ReadWorkRam32(address);
         if (address is >= 0x163000 and <= 0x16309f)
-            return ReadMasked16(_aceRam, (int)(address - 0x163000));
+            return _palette.ReadAce32(address - 0x163000);
         if (address is >= 0x168000 and <= 0x169fff)
             return _palette.Read32(address - 0x168000);
         if (address is >= 0x170000 and <= 0x171fff)
@@ -710,7 +713,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
         }
         if (address is >= 0x163000 and <= 0x16309f)
         {
-            WriteLe32(_aceRam, (int)(address - 0x163000), value, mask & 0x0000ffff);
+            _palette.WriteAce32(address - 0x163000, value, mask);
             return;
         }
         if (address is >= 0x164000 and <= 0x16400f)
@@ -727,7 +730,10 @@ public sealed class Deco32MemoryMap : IArm6Bus
             return;
         }
         if (address == 0x16c008)
+        {
+            _palette.PaletteDma();
             return;
+        }
         if (address is >= 0x170000 and <= 0x171fff)
         {
             _sprites.Write32(0, address - 0x170000, value, mask);
@@ -799,8 +805,6 @@ public sealed class Deco32MemoryMap : IArm6Bus
     private uint ReadWorkRam32(uint address)
     {
         uint value = ReadLe32(_workRam, (int)(address - 0x100000));
-        if ((address & ~3u) == 0x100000)
-            value &= 0xffffff7fu;
         if (address is >= 0x11fd00 and <= 0x11fd7f)
         {
             _lastWorkRamReadAddress = address;
@@ -830,7 +834,6 @@ public sealed class Deco32MemoryMap : IArm6Bus
         if (!_vblank) value &= unchecked((ushort)~0x0010);
         if (_input.X) value &= unchecked((ushort)~0x0001);
         if (_input.Y) value &= unchecked((ushort)~0x0004);
-        if (_input.Mode) value &= unchecked((ushort)~0x0008);
         return value;
     }
 
@@ -844,6 +847,10 @@ public sealed class Deco32MemoryMap : IArm6Bus
             byte b000 = _workRam[0x00000];
             byte b001 = _workRam[0x00001];
             byte b003 = _workRam[0x00003];
+            byte b004 = _workRam[0x00004];
+            byte b005 = _workRam[0x00005];
+            byte b006 = _workRam[0x00006];
+            byte b007 = _workRam[0x00007];
             byte b008 = _workRam[0x00008];
             byte b00c = _workRam[0x0000c];
             byte b014 = _workRam[0x00014];
@@ -873,12 +880,9 @@ public sealed class Deco32MemoryMap : IArm6Bus
             uint magic1 = ReadLe32(_workRam, 0x1fd60);
             ushort chk0 = ReadLe16(_workRam, 0x1fd3c);
             ushort chk1 = ReadLe16(_workRam, 0x1fd7c);
-            return $"ram[000={b000:X2}/{b001:X2} 003={b003:X2} 008={b008:X2} 00c={b00c:X2} 014={b014:X2} 034={b034:X2}/{b035:X2}/{b036:X2} 038={b038:X2}/{b039:X2}/{b03a:X2} 100={b100:X2} 1fd00={sfd0:X2}{sfd1:X2}{sfd2:X2}{sfd3:X2}/{sfd4:X2}{sfd5:X2}{sfd6:X2}{sfd7:X2} bsum={block0Sum & 0xffff:X4}/{chk0:X4}:{magic0:X8},{block1Sum & 0xffff:X4}/{chk1:X4}:{magic1:X8} br=0x{_lastWorkRamReadAddress:X6}:0x{_lastWorkRamReadValue:X8}/{_workRamReadProbeCount}] {_eeprom.DebugSummary}";
+            return $"ram[000={b000:X2}/{b001:X2} 003={b003:X2} 004={b004:X2}{b005:X2}{b006:X2}{b007:X2} 008={b008:X2} 00c={b00c:X2} 014={b014:X2} 034={b034:X2}/{b035:X2}/{b036:X2} 038={b038:X2}/{b039:X2}/{b03a:X2} 100={b100:X2} 1fd00={sfd0:X2}{sfd1:X2}{sfd2:X2}{sfd3:X2}/{sfd4:X2}{sfd5:X2}{sfd6:X2}{sfd7:X2} bsum={block0Sum & 0xffff:X4}/{chk0:X4}:{magic0:X8},{block1Sum & 0xffff:X4}/{chk1:X4}:{magic1:X8} br=0x{_lastWorkRamReadAddress:X6}:0x{_lastWorkRamReadValue:X8}/{_workRamReadProbeCount}] {_eeprom.DebugSummary}";
         }
     }
-
-    private static uint ReadMasked16(byte[] data, int offset)
-        => ReadLe16(data, offset) | 0xffff0000u;
 
     private static uint ReadLe32(byte[] data, int offset)
     {
@@ -1257,7 +1261,7 @@ internal sealed class Deco104Protection
     private const short InputPortB = -2;
     private const short InputPortC = -3;
     private const byte Blank = 0xff;
-    private const byte ConfigRegion = 0x0c;
+    private const byte ConfigRegion = 0x08;
 
     private readonly ushort[][] _ram = { new ushort[0x80], new ushort[0x80] };
     private readonly byte[] _regionSelects = new byte[6];
@@ -1482,6 +1486,11 @@ public sealed class DecoTilemapDevice
     private readonly ushort[][] _control = { new ushort[0x10], new ushort[0x10] };
     private readonly int[] _nonzeroWriteCount = new int[4];
     private readonly int[] _nonzeroAttemptCount = new int[4];
+    private readonly int[] _dataWriteCount = new int[4];
+    private readonly int[] _ignoredHighHalfWriteCount = new int[4];
+    private readonly int[] _nonzeroHighHalfWriteCount = new int[4];
+    private readonly int[] _rowscrollWriteCount = new int[4];
+    private readonly int[] _controlWriteCount = new int[2];
     private readonly uint[] _lastDataOffset = new uint[4];
     private readonly ushort[] _lastDataValue = new ushort[4];
     private readonly uint[] _lastRawDataValue = new uint[4];
@@ -1514,7 +1523,7 @@ public sealed class DecoTilemapDevice
 
             return string.Create(
                 CultureInfo.InvariantCulture,
-                $"pf0={nonzero[0]}/0x{first[0]:X4}/nw{_nonzeroWriteCount[0]}/na{_nonzeroAttemptCount[0]}/@0x{_lastDataOffset[0]:X4}=0x{_lastDataValue[0]:X4}/raw0x{_lastRawDataValue[0]:X8}m0x{_lastRawDataMask[0]:X8} pf1={nonzero[1]}/0x{first[1]:X4}/nw{_nonzeroWriteCount[1]}/na{_nonzeroAttemptCount[1]}/@0x{_lastDataOffset[1]:X4}=0x{_lastDataValue[1]:X4}/raw0x{_lastRawDataValue[1]:X8}m0x{_lastRawDataMask[1]:X8} pf2={nonzero[2]}/0x{first[2]:X4}/nw{_nonzeroWriteCount[2]}/na{_nonzeroAttemptCount[2]}/@0x{_lastDataOffset[2]:X4}=0x{_lastDataValue[2]:X4}/raw0x{_lastRawDataValue[2]:X8}m0x{_lastRawDataMask[2]:X8} pf3={nonzero[3]}/0x{first[3]:X4}/nw{_nonzeroWriteCount[3]}/na{_nonzeroAttemptCount[3]}/@0x{_lastDataOffset[3]:X4}=0x{_lastDataValue[3]:X4}/raw0x{_lastRawDataValue[3]:X8}m0x{_lastRawDataMask[3]:X8} cb=0x{ColorBank:X2} c0=[0x{_control[0][1]:X4},0x{_control[0][2]:X4},0x{_control[0][3]:X4},0x{_control[0][4]:X4},0x{_control[0][5]:X4},0x{_control[0][6]:X4}] c1=[0x{_control[1][1]:X4},0x{_control[1][2]:X4},0x{_control[1][3]:X4},0x{_control[1][4]:X4},0x{_control[1][5]:X4},0x{_control[1][6]:X4}]");
+                $"pf0={nonzero[0]}/0x{first[0]:X4}/w{_dataWriteCount[0]}/nw{_nonzeroWriteCount[0]}/na{_nonzeroAttemptCount[0]}/hi{_ignoredHighHalfWriteCount[0]}/{_nonzeroHighHalfWriteCount[0]}/@0x{_lastDataOffset[0]:X4}=0x{_lastDataValue[0]:X4}/raw0x{_lastRawDataValue[0]:X8}m0x{_lastRawDataMask[0]:X8} pf1={nonzero[1]}/0x{first[1]:X4}/w{_dataWriteCount[1]}/nw{_nonzeroWriteCount[1]}/na{_nonzeroAttemptCount[1]}/hi{_ignoredHighHalfWriteCount[1]}/{_nonzeroHighHalfWriteCount[1]}/@0x{_lastDataOffset[1]:X4}=0x{_lastDataValue[1]:X4}/raw0x{_lastRawDataValue[1]:X8}m0x{_lastRawDataMask[1]:X8} pf2={nonzero[2]}/0x{first[2]:X4}/w{_dataWriteCount[2]}/nw{_nonzeroWriteCount[2]}/na{_nonzeroAttemptCount[2]}/hi{_ignoredHighHalfWriteCount[2]}/{_nonzeroHighHalfWriteCount[2]}/@0x{_lastDataOffset[2]:X4}=0x{_lastDataValue[2]:X4}/raw0x{_lastRawDataValue[2]:X8}m0x{_lastRawDataMask[2]:X8} pf3={nonzero[3]}/0x{first[3]:X4}/w{_dataWriteCount[3]}/nw{_nonzeroWriteCount[3]}/na{_nonzeroAttemptCount[3]}/hi{_ignoredHighHalfWriteCount[3]}/{_nonzeroHighHalfWriteCount[3]}/@0x{_lastDataOffset[3]:X4}=0x{_lastDataValue[3]:X4}/raw0x{_lastRawDataValue[3]:X8}m0x{_lastRawDataMask[3]:X8} rs=[{_rowscrollWriteCount[0]},{_rowscrollWriteCount[1]},{_rowscrollWriteCount[2]},{_rowscrollWriteCount[3]}] cb=0x{ColorBank:X2} cw=[{_controlWriteCount[0]},{_controlWriteCount[1]}] c0=[0x{_control[0][1]:X4},0x{_control[0][2]:X4},0x{_control[0][3]:X4},0x{_control[0][4]:X4},0x{_control[0][5]:X4},0x{_control[0][6]:X4}] c1=[0x{_control[1][1]:X4},0x{_control[1][2]:X4},0x{_control[1][3]:X4},0x{_control[1][4]:X4},0x{_control[1][5]:X4},0x{_control[1][6]:X4}]");
         }
     }
 
@@ -1525,6 +1534,11 @@ public sealed class DecoTilemapDevice
         foreach (ushort[] ram in _control) Array.Clear(ram);
         Array.Clear(_nonzeroWriteCount);
         Array.Clear(_nonzeroAttemptCount);
+        Array.Clear(_dataWriteCount);
+        Array.Clear(_ignoredHighHalfWriteCount);
+        Array.Clear(_nonzeroHighHalfWriteCount);
+        Array.Clear(_rowscrollWriteCount);
+        Array.Clear(_controlWriteCount);
         Array.Clear(_lastDataOffset);
         Array.Clear(_lastDataValue);
         Array.Clear(_lastRawDataValue);
@@ -1540,8 +1554,15 @@ public sealed class DecoTilemapDevice
         _lastRawDataMask[layer] = mask;
         if ((value & mask) != 0)
             _nonzeroAttemptCount[layer]++;
+        if ((mask & 0x0000ffff) == 0 && (mask & 0xffff0000) != 0)
+        {
+            _ignoredHighHalfWriteCount[layer]++;
+            if ((value & 0xffff0000) != 0)
+                _nonzeroHighHalfWriteCount[layer]++;
+        }
         if (WriteLow16Dword(_pf[layer], offset, value, mask, out ushort data))
         {
+            _dataWriteCount[layer]++;
             _lastDataOffset[layer] = offset;
             _lastDataValue[layer] = data;
             if (data != 0)
@@ -1549,28 +1570,49 @@ public sealed class DecoTilemapDevice
         }
     }
     public uint ReadRowscroll32(int chip, uint offset) => ReadLow16Dword(_rowscroll[chip * 2 + ((offset >> 13) & 1)], offset);
-    public void WriteRowscroll32(int chip, uint offset, uint value, uint mask) => WriteLow16Dword(_rowscroll[chip * 2 + ((offset >> 13) & 1)], offset, value, mask, out _);
-    public uint ReadControl32(int chip, uint offset) => ReadLow16Dword(_control[chip], offset);
-    public void WriteControl32(int chip, uint offset, uint value, uint mask) => WriteLow16Dword(_control[chip], offset, value, mask, out _);
-
-    public void Render(byte[] fb, int width, int height, int stride)
+    public void WriteRowscroll32(int chip, uint offset, uint value, uint mask)
     {
-        RenderLayer(fb, width, height, stride, 3, _profile.Tiles2, 0x30, opaque: true);
-        RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, 0x20, opaque: false);
-        RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
-        RenderLayer(fb, width, height, stride, 0, _profile.Tiles1, 0x00, opaque: false, charMode: true);
+        int layer = chip * 2 + (int)((offset >> 13) & 1);
+        if (WriteLow16Dword(_rowscroll[layer], offset, value, mask, out _))
+            _rowscrollWriteCount[layer]++;
+    }
+    public uint ReadControl32(int chip, uint offset) => ReadLow16Dword(_control[chip], offset);
+    public void WriteControl32(int chip, uint offset, uint value, uint mask)
+    {
+        if (WriteLow16Dword(_control[chip], offset, value, mask, out _))
+            _controlWriteCount[chip]++;
     }
 
-    private void RenderLayer(byte[] fb, int width, int height, int stride, int layer, byte[] gfx, int colorBase, bool opaque, bool charMode = false)
+    public void RenderBackPlayfields(byte[] fb, int width, int height, int stride)
+    {
+        RenderLayer(fb, width, height, stride, 3, _profile.Tiles2, 0x30 + (((ColorBank >> 3) & 7) << 4), opaque: true);
+        RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, 0x20 + (((ColorBank >> 0) & 7) << 4), opaque: false);
+        RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
+    }
+
+    public void RenderTextPlayfield(byte[] fb, int width, int height, int stride)
+    {
+        RenderLayer(fb, width, height, stride, 0, _profile.Tiles1, 0x80, opaque: false);
+    }
+
+    private void RenderLayer(byte[] fb, int width, int height, int stride, int layer, byte[] gfx, int colorBase, bool opaque)
     {
         ushort[] ram = _pf[layer];
         ushort[] ctrl = _control[layer >> 1];
-        int scrollX = ctrl[(layer & 1) == 0 ? 1 : 3] & 0x1ff;
+        int control0 = ((layer & 1) == 0 ? ctrl[5] : ctrl[5] >> 8) & 0xff;
+        int control1 = ((layer & 1) == 0 ? ctrl[6] : ctrl[6] >> 8) & 0xff;
+        if ((control0 & 0x80) == 0)
+            return;
+
+        int scrollX = ctrl[(layer & 1) == 0 ? 1 : 3] & 0x3ff;
         int scrollY = ctrl[(layer & 1) == 0 ? 2 : 4] & 0x1ff;
+        bool charMode = (control1 & 0x80) != 0;
         int tileSize = charMode ? 8 : 16;
         int mapCols = 64;
         int mapRows = 32;
-        int palBase = colorBase + ((ColorBank & 0xf) << 4);
+        int tileBank = DecoBankCallback((layer & 1) == 0 ? ctrl[7] & 0xff : ctrl[7] >> 8);
+        bool enableTileFlipX = (control1 & 0x01) != 0;
+        bool enableTileFlipY = (control1 & 0x02) != 0;
 
         for (int y = 0; y < height; y++)
         {
@@ -1582,28 +1624,50 @@ public sealed class DecoTilemapDevice
                 int sx = (x + scrollX) & (mapCols * tileSize - 1);
                 int tx = sx / tileSize;
                 int px = sx & (tileSize - 1);
-                int entry = (ty * mapCols + tx) & 0x7ff;
+                int entry = Deco16ScanRows(tx, ty) & 0x7ff;
                 ushort tile = ram[entry & (ram.Length - 1)];
-                int pen = charMode ? Decode4BppChar(gfx, tile & 0x0fff, px, py) : Decode4BppTile(gfx, ApplyBank(tile), px, py);
+                int colorNibble = (tile >> 12) & 0x0f;
+                bool tileFlipX = false;
+                bool tileFlipY = false;
+                if ((tile & 0x8000) != 0)
+                {
+                    if (enableTileFlipX)
+                    {
+                        tileFlipX = true;
+                        colorNibble &= 0x07;
+                    }
+                    if (enableTileFlipY)
+                    {
+                        tileFlipY = true;
+                        colorNibble &= 0x07;
+                    }
+                }
+                int srcX = tileFlipX ? tileSize - 1 - px : px;
+                int srcY = tileFlipY ? tileSize - 1 - py : py;
+                int code = (tile & 0x0fff) + tileBank;
+                int pen = charMode ? Decode4BppChar(gfx, code, srcX, srcY) : Decode4BppTile(gfx, code, srcX, srcY);
                 if (pen == 0 && !opaque)
                     continue;
-                int color = palBase + ((tile >> 12) & 0x0f);
+                int color = colorBase + colorNibble;
                 _palette.WritePixel(fb, stride, x, y, color * 16 + pen);
             }
         }
     }
 
-    private static int ApplyBank(ushort tile)
-        => tile & 0x0fff;
+    private static int Deco16ScanRows(int col, int row)
+        => (col & 0x1f) + ((row & 0x1f) << 5) + ((col & 0x20) << 5) + ((row & 0x20) << 6);
+
+    private static int DecoBankCallback(int bank)
+        => (bank & ~0x0f) << 8;
 
     private static int Decode4BppChar(byte[] rom, int code, int x, int y)
     {
         int half = rom.Length / 2;
         int baseBit = (code % Math.Max(1, half / 64)) * 16 * 8 + y * 16 + x;
-        int p0 = ReadBit(rom, baseBit);
-        int p1 = ReadBit(rom, baseBit + 8);
-        int p2 = ReadBit(rom, half * 8 + baseBit);
-        int p3 = ReadBit(rom, half * 8 + baseBit + 8);
+        int p0 = ReadBit(rom, half * 8 + baseBit + 8);
+        int p1 = ReadBit(rom, half * 8 + baseBit);
+        int p2 = ReadBit(rom, baseBit + 8);
+        int p3 = ReadBit(rom, baseBit);
         return p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
     }
 
@@ -1612,10 +1676,10 @@ public sealed class DecoTilemapDevice
         int half = rom.Length / 2;
         int tiles = Math.Max(1, half / 256);
         int baseBit = (code % tiles) * 64 * 8 + y * 16 + (x < 8 ? 128 : 0) + (x & 7);
-        int p0 = ReadBit(rom, baseBit);
-        int p1 = ReadBit(rom, baseBit + 8);
-        int p2 = ReadBit(rom, half * 8 + baseBit);
-        int p3 = ReadBit(rom, half * 8 + baseBit + 8);
+        int p0 = ReadBit(rom, half * 8 + baseBit + 8);
+        int p1 = ReadBit(rom, half * 8 + baseBit);
+        int p2 = ReadBit(rom, baseBit + 8);
+        int p3 = ReadBit(rom, baseBit);
         return p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
     }
 
@@ -1704,13 +1768,13 @@ public sealed class DecoSpriteDevice
     public void Buffer() { Buffer(0); Buffer(1); }
     public void Buffer(int list) => Array.Copy(_ram[list], _buffered[list], _ram[list].Length);
 
-    public void Render(byte[] fb, int width, int height, int stride, long frame)
+    public void Render(byte[] fb, int width, int height, int stride, long frame, int priority)
     {
-        RenderList(fb, width, height, stride, _buffered[1], _profile.Sprites2, false, ColorBank1, frame);
-        RenderList(fb, width, height, stride, _buffered[0], _profile.Sprites1, true, ColorBank0, frame);
+        RenderList(fb, width, height, stride, _buffered[1], _profile.Sprites2, false, ColorBank1, frame, 0);
+        RenderList(fb, width, height, stride, _buffered[0], _profile.Sprites1, true, ColorBank0, frame, (priority & 4) == 0 ? 0x800 : 0);
     }
 
-    private void RenderList(byte[] fb, int width, int height, int stride, ushort[] spr, byte[] gfx, bool fiveBpp, int colorBank, long frame)
+    private void RenderList(byte[] fb, int width, int height, int stride, ushort[] spr, byte[] gfx, bool fiveBpp, int colorBank, long frame, int paletteOffset)
     {
         for (int offs = 0; offs + 3 < spr.Length; offs += 4)
         {
@@ -1719,9 +1783,10 @@ public sealed class DecoSpriteDevice
                 continue;
             int sprite = spr[offs + 1];
             int xraw = spr[offs + 2];
-            int color = ((xraw >> 9) & 0x7f) + ((colorBank & 0xf) << 4);
+            int color = (xraw >> 9) & 0x7f;
             bool fx = (yraw & 0x2000) != 0;
             bool fy = (yraw & 0x4000) != 0;
+            bool wide = (yraw & 0x0800) != 0;
             int multi = (1 << (((yraw >> 9) & 1) | (((yraw >> 10) & 1) << 1))) - 1;
             sprite &= ~multi;
             int x = xraw & 0x1ff;
@@ -1732,17 +1797,28 @@ public sealed class DecoSpriteDevice
             x = 304 - x;
             int inc = fy ? -1 : 1;
             if (!fy) sprite += multi;
+            y = 240 - y;
+            x = 304 - x;
+            fx = !fx;
+            fy = !fy;
+            int mult = 16;
+            int mult2 = multi + 1;
             for (int m = multi; m >= 0; m--)
             {
                 int tile = sprite - m * inc;
-                int dy = y - 16 * m;
-                DrawSpriteTile(fb, width, height, stride, gfx, fiveBpp, tile, color, x, dy, fx, fy);
+                int dy = y + mult * m;
+                DrawSpriteTile(fb, width, height, stride, gfx, fiveBpp, tile, color, colorBank, paletteOffset, x, dy, fx, fy);
+                if (wide)
+                    DrawSpriteTile(fb, width, height, stride, gfx, fiveBpp, tile - mult2, color, colorBank, paletteOffset, x + 16, dy, fx, fy);
             }
         }
     }
 
-    private void DrawSpriteTile(byte[] fb, int width, int height, int stride, byte[] gfx, bool fiveBpp, int code, int color, int sx, int sy, bool fx, bool fy)
+    private void DrawSpriteTile(byte[] fb, int width, int height, int stride, byte[] gfx, bool fiveBpp, int code, int color, int colorBank, int paletteOffset, int sx, int sy, bool fx, bool fy)
     {
+        int granularity = fiveBpp ? 32 : 16;
+        int paletteBase = paletteOffset + ((colorBank & 7) << 8);
+        int paletteColor = (color % 16) * granularity;
         for (int y = 0; y < 16; y++)
         {
             int dy = sy + y;
@@ -1758,7 +1834,7 @@ public sealed class DecoSpriteDevice
                 int pen = fiveBpp ? Decode5Bpp(gfx, code, px, py) : Decode4Bpp(gfx, code, px, py);
                 if (pen == 0)
                     continue;
-                _palette.WritePixel(fb, stride, dx, dy, color * 16 + pen);
+                _palette.WritePixel(fb, stride, dx, dy, paletteBase + paletteColor + pen);
             }
         }
     }
@@ -1768,14 +1844,22 @@ public sealed class DecoSpriteDevice
         int half = rom.Length / 2;
         int tiles = Math.Max(1, half / 256);
         int baseBit = (code % tiles) * 64 * 8 + y * 16 + (x < 8 ? 128 : 0) + (x & 7);
-        return ReadBit(rom, baseBit) | (ReadBit(rom, baseBit + 8) << 1) | (ReadBit(rom, half * 8 + baseBit) << 2) | (ReadBit(rom, half * 8 + baseBit + 8) << 3);
+        int p0 = ReadBit(rom, half * 8 + baseBit + 8);
+        int p1 = ReadBit(rom, half * 8 + baseBit);
+        int p2 = ReadBit(rom, baseBit + 8);
+        int p3 = ReadBit(rom, baseBit);
+        return p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
     }
 
     private static int Decode5Bpp(byte[] rom, int code, int x, int y)
     {
         int tiles = Math.Max(1, rom.Length / (16 * 16 * 5 / 8));
-        int baseBit = (code % tiles) * 16 * 16 * 5 + y * 16 * 5 + (x < 8 ? 16 * 8 * 5 : 0) + (x & 7);
-        return ReadBit(rom, baseBit) | (ReadBit(rom, baseBit + 8) << 1) | (ReadBit(rom, baseBit + 16) << 2) | (ReadBit(rom, baseBit + 24) << 3) | (ReadBit(rom, baseBit + 32) << 4);
+        int baseBit = (code % tiles) * 16 * 16 * 5 + y * 8 * 5 + (x < 8 ? 16 * 8 * 5 : 0) + (x & 7);
+        return ReadBit(rom, baseBit)
+            | (ReadBit(rom, baseBit + 8) << 1)
+            | (ReadBit(rom, baseBit + 16) << 2)
+            | (ReadBit(rom, baseBit + 24) << 3)
+            | (ReadBit(rom, baseBit + 32) << 4);
     }
 
     private static int ReadBit(byte[] data, int bit)
@@ -1804,32 +1888,59 @@ public sealed class DecoSpriteDevice
 public sealed class PaletteDevice
 {
     private readonly uint[] _colors = new uint[2048];
-    private readonly ushort[] _ram = new ushort[0x1000];
+    private readonly uint[] _ram = new uint[2048];
+    private readonly uint[] _buffered = new uint[2048];
+    private readonly ushort[] _aceRam = new ushort[0x28];
+    private int _dmaCount;
 
     public void Reset()
     {
         Array.Clear(_ram);
-        for (int i = 0; i < _colors.Length; i++)
-        {
-            int r = (i * 37) & 0xff;
-            int g = (i * 67) & 0xff;
-            int b = (i * 101) & 0xff;
-            _colors[i] = 0xff000000u | (uint)(r << 16) | (uint)(g << 8) | (uint)b;
-        }
+        Array.Clear(_buffered);
+        Array.Clear(_aceRam);
+        Array.Clear(_colors);
+        _dmaCount = 0;
     }
 
-    public uint Read32(uint offset) => ReadWordPair(_ram, offset);
+    public uint ReadAce32(uint offset)
+    {
+        int index = (int)(offset >> 2) & (_aceRam.Length - 1);
+        return 0xffff0000u | _aceRam[index];
+    }
+
+    public void WriteAce32(uint offset, uint value, uint mask)
+    {
+        if ((mask & 0x0000ffff) == 0)
+            return;
+
+        int index = (int)(offset >> 2) & (_aceRam.Length - 1);
+        _aceRam[index] = (ushort)value;
+        if ((uint)(index - 0x20) <= 0x06)
+            UpdatePalette();
+    }
+
+    public uint Read32(uint offset)
+    {
+        int index = (int)(offset >> 2) & (_ram.Length - 1);
+        return _ram[index];
+    }
 
     public void Write32(uint offset, uint value, uint mask)
     {
-        int word = (int)(offset >> 1) & (_ram.Length - 1);
-        if ((mask & 0x0000ffff) != 0) Set(word, (ushort)value);
-        if ((mask & 0xffff0000) != 0) Set((word + 1) & (_ram.Length - 1), (ushort)(value >> 16));
+        int index = (int)(offset >> 2) & (_ram.Length - 1);
+        _ram[index] = CombineMasked(_ram[index], value, mask);
+    }
+
+    public void PaletteDma()
+    {
+        Array.Copy(_ram, _buffered, _ram.Length);
+        _dmaCount++;
+        UpdatePalette();
     }
 
     public void FillBackdrop(byte[] fb, int width, int height, int stride)
     {
-        uint color = _colors[0];
+        uint color = _colors[0x300];
         for (int y = 0; y < height; y++)
         {
             int row = y * stride;
@@ -1844,13 +1955,77 @@ public sealed class PaletteDevice
         WriteBgra(fb, y * stride + x * 4, color);
     }
 
-    private void Set(int index, ushort value)
+    public string DebugSummary
     {
-        _ram[index] = value;
-        int r = (value & 0x001f) << 3;
-        int g = ((value >> 5) & 0x001f) << 3;
-        int b = ((value >> 10) & 0x001f) << 3;
-        _colors[index & (_colors.Length - 1)] = 0xff000000u | (uint)(r << 16) | (uint)(g << 8) | (uint)b;
+        get
+        {
+            int rawNonzero = 0;
+            int stagedNonzero = 0;
+            int visibleNonzero = 0;
+            int firstVisible = -1;
+            for (int i = 0; i < _buffered.Length; i++)
+            {
+                if ((_ram[i] & 0x00ffffff) != 0)
+                    stagedNonzero++;
+                if ((_buffered[i] & 0x00ffffff) != 0)
+                    rawNonzero++;
+                if ((_colors[i] & 0x00ffffff) == 0)
+                    continue;
+                if (firstVisible < 0)
+                    firstVisible = i;
+                visibleNonzero++;
+            }
+
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"ace=[0x{_aceRam[0x20]:X4},0x{_aceRam[0x21]:X4},0x{_aceRam[0x22]:X4},0x{_aceRam[0x23]:X4},0x{_aceRam[0x24]:X4},0x{_aceRam[0x25]:X4},0x{_aceRam[0x26]:X4}] paldma={_dmaCount} palnz={stagedNonzero}/{rawNonzero}/{visibleNonzero}/first{firstVisible}");
+        }
+    }
+
+    private void UpdatePalette()
+    {
+        int fadePtr = _aceRam[0x20] & 0xff;
+        int fadePtg = _aceRam[0x21] & 0xff;
+        int fadePtb = _aceRam[0x22] & 0xff;
+        int fadeStr = _aceRam[0x23] & 0xff;
+        int fadeStg = _aceRam[0x24] & 0xff;
+        int fadeStb = _aceRam[0x25] & 0xff;
+        int mode = _aceRam[0x26] & 0xffff;
+
+        for (int i = 0; i < _colors.Length; i++)
+        {
+            uint value = _buffered[i];
+            int b = (int)((value >> 16) & 0xff);
+            int g = (int)((value >> 8) & 0xff);
+            int r = (int)(value & 0xff);
+
+            if (mode == 0x1000)
+            {
+                b = Math.Min(b + fadeStb, 0xff);
+                g = Math.Min(g + fadeStg, 0xff);
+                r = Math.Min(r + fadeStr, 0xff);
+            }
+            else
+            {
+                b = Math.Clamp(b + (((fadePtb - b) * fadeStb) / 255), 0, 255);
+                g = Math.Clamp(g + (((fadePtg - g) * fadeStg) / 255), 0, 255);
+                r = Math.Clamp(r + (((fadePtr - r) * fadeStr) / 255), 0, 255);
+            }
+
+            _colors[i] = 0xff000000u | (uint)(r << 16) | (uint)(g << 8) | (uint)b;
+        }
+    }
+
+    private static uint CombineMasked(uint oldValue, uint value, uint mask)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            uint byteMask = 0xffu << (i * 8);
+            if ((mask & byteMask) != 0)
+                oldValue = (oldValue & ~byteMask) | (value & byteMask);
+        }
+
+        return oldValue;
     }
 
     private static void WriteBgra(byte[] fb, int offset, uint argb)
@@ -1861,11 +2036,6 @@ public sealed class PaletteDevice
         fb[offset + 3] = 0xff;
     }
 
-    private static uint ReadWordPair(ushort[] ram, uint offset)
-    {
-        int word = (int)(offset >> 1) & (ram.Length - 1);
-        return (uint)(ram[word] | (ram[(word + 1) & (ram.Length - 1)] << 16));
-    }
 }
 
 public sealed class Z80SoundCpu
@@ -1916,6 +2086,12 @@ public interface IArm6Bus
 
 public sealed class Arm6Cpu
 {
+    private const uint Arm26PsrMask = 0xf0000000u;
+    private const uint Arm26IrqMask = 0x0c000000u;
+    private const uint Arm26AddressMask = 0x03fffffcu;
+    private const uint Arm26IMask = 0x08000000u;
+    private const uint Arm26FMask = 0x04000000u;
+
     private IArm6Bus? _bus;
     private bool _flagN;
     private bool _flagZ;
@@ -1933,6 +2109,7 @@ public sealed class Arm6Cpu
     private uint _userR13;
     private uint _userR14;
     private byte _mode = 0x13;
+    private bool _pcWritten;
 
     public uint[] Registers { get; } = new uint[16];
     public bool Halted { get; private set; }
@@ -1955,6 +2132,7 @@ public sealed class Arm6Cpu
         _svcR13 = _svcR14 = _irqR13 = _irqR14 = _userR13 = _userR14 = 0;
         Halted = false;
         StopReason = string.Empty;
+        _pcWritten = false;
     }
 
     public void SetIrqLine(bool asserted) => _irqLine = asserted;
@@ -1970,9 +2148,10 @@ public sealed class Arm6Cpu
 
         if (_irqLine && !_irqDisable)
         {
+            uint savedPc = PackArm26R15(Registers[15] + 4);
             _spsrIrq = Cpsr;
             ChangeMode(0x12);
-            Registers[14] = Registers[15] + 4;
+            Registers[14] = savedPc;
             Registers[15] = 0x18;
             _irqDisable = true;
             return 3;
@@ -1981,6 +2160,7 @@ public sealed class Arm6Cpu
         uint pc = Registers[15] & ~3u;
         uint op = _bus.Read32(pc);
         Registers[15] = pc + 8;
+        _pcWritten = false;
         if (!ConditionPassed(op >> 28))
         {
             Registers[15] = pc + 4;
@@ -2008,7 +2188,7 @@ public sealed class Arm6Cpu
             cycles = 1;
         }
 
-        if (!Halted && Registers[15] == pc + 8)
+        if (!Halted && !_pcWritten && Registers[15] == pc + 8)
             Registers[15] = pc + 4;
         return cycles;
     }
@@ -2016,11 +2196,12 @@ public sealed class Arm6Cpu
     private int Branch(uint op, uint pc)
     {
         if ((op & 0x01000000) != 0)
-            Registers[14] = pc + 4;
+            Registers[14] = PackArm26R15(pc + 4);
         int disp = (int)(op & 0x00ffffff);
         if ((disp & 0x00800000) != 0)
             disp |= unchecked((int)0xff000000);
         Registers[15] = (uint)(pc + 8 + (disp << 2));
+        _pcWritten = true;
         return 3;
     }
 
@@ -2030,19 +2211,6 @@ public sealed class Arm6Cpu
         bool setFlags = (op & 0x00100000) != 0;
         int rn = (int)((op >> 16) & 0xf);
         int rd = (int)((op >> 12) & 0xf);
-
-        // Night Slashers uses old ARM6/26-bit style startup code:
-        //   BICS pc, pc, #3
-        // to leave supervisor init and continue with normal IRQ-visible code.
-        // Treat it as the narrow mode transition it is for this board.
-        if (op == 0xe3dff003)
-        {
-            Registers[15] &= ~3u;
-            _irqDisable = false;
-            _fiqDisable = false;
-            ChangeMode(0x10);
-            return 1;
-        }
 
         if ((op & 0x0fbf0fff) == 0x010f0000)
         {
@@ -2055,7 +2223,7 @@ public sealed class Arm6Cpu
             return 1;
         }
 
-        uint a = ReadReg(rn);
+        uint a = rn == 15 ? Registers[15] & Arm26AddressMask : ReadReg(rn);
         uint b = Operand2(op, out bool shifterCarry);
         uint result;
         switch (opcode)
@@ -2065,24 +2233,18 @@ public sealed class Arm6Cpu
             case 0x2:
                 result = a - b;
                 WriteReg(rd, result);
-                if (setFlags)
-                {
-                    if (rd == 15)
-                        RestoreSavedStatusForPcWrite();
-                    else
-                        SetSubFlags(a, b, result);
-                }
+                if (setFlags) SetDataFlags(rd, result, () => SetSubFlags(a, b, result));
                 break;
-            case 0x3: result = b - a; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetSubFlags(b, a, result)); break;
-            case 0x4: result = a + b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetAddFlags(a, b, result)); break;
-            case 0x5: result = a + b + (_flagC ? 1u : 0u); WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetAddFlags(a, b + (_flagC ? 1u : 0u), result)); break;
-            case 0x6: result = a - b - (_flagC ? 0u : 1u); WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetSubFlags(a, b + (_flagC ? 0u : 1u), result)); break;
+            case 0x3: result = b - a; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, () => SetSubFlags(b, a, result)); break;
+            case 0x4: result = a + b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, () => SetAddFlags(a, b, result)); break;
+            case 0x5: result = a + b + (_flagC ? 1u : 0u); WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, () => SetAddFlags(a, b + (_flagC ? 1u : 0u), result)); break;
+            case 0x6: result = a - b - (_flagC ? 0u : 1u); WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, () => SetSubFlags(a, b + (_flagC ? 0u : 1u), result)); break;
             case 0x8: result = a & b; SetLogicFlags(result, shifterCarry); break;
             case 0x9: result = a ^ b; SetLogicFlags(result, shifterCarry); break;
             case 0xa: result = a - b; SetSubFlags(a, b, result); break;
             case 0xb: result = a + b; SetAddFlags(a, b, result); break;
             case 0xc: result = a | b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
-            case 0xd: result = b; WriteReg(rd, result); if (setFlags && rd != 15) SetLogicFlags(result, shifterCarry); break;
+            case 0xd: result = b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
             case 0xe: result = a & ~b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
             case 0xf: result = ~b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
             default: Halt($"unimplemented data op {opcode:X}"); break;
@@ -2123,7 +2285,7 @@ public sealed class Arm6Cpu
         uint offset = immediate
             ? (((op >> 4) & 0xf0) | (op & 0x0f))
             : ReadReg((int)(op & 0xf));
-        uint baseAddr = ReadReg(rn);
+        uint baseAddr = rn == 15 ? Registers[15] & Arm26AddressMask : ReadReg(rn);
         uint address = pre ? (up ? baseAddr + offset : baseAddr - offset) : baseAddr;
         uint newBase = up ? baseAddr + offset : baseAddr - offset;
 
@@ -2162,7 +2324,7 @@ public sealed class Arm6Cpu
         int rn = (int)((op >> 16) & 0xf);
         int rd = (int)((op >> 12) & 0xf);
         uint offset = immediateOffset ? op & 0xfff : SingleTransferRegisterOffset(op);
-        uint baseAddr = ReadReg(rn);
+        uint baseAddr = rn == 15 ? Registers[15] & Arm26AddressMask : ReadReg(rn);
         uint address = pre ? (up ? baseAddr + offset : baseAddr - offset) : baseAddr;
         uint newBase = up ? baseAddr + offset : baseAddr - offset;
 
@@ -2191,26 +2353,53 @@ public sealed class Arm6Cpu
     {
         bool pre = (op & 0x01000000) != 0;
         bool up = (op & 0x00800000) != 0;
+        bool sBit = (op & 0x00400000) != 0;
         bool writeback = (op & 0x00200000) != 0;
         bool load = (op & 0x00100000) != 0;
         int rn = (int)((op >> 16) & 0xf);
         uint list = op & 0xffff;
-        uint baseAddr = ReadReg(rn);
+        uint baseAddr = rn == 15 ? Registers[15] & Arm26AddressMask : ReadReg(rn);
         int count = 0;
         for (int i = 0; i < 16; i++) if (((list >> i) & 1) != 0) count++;
         uint address = up ? baseAddr : baseAddr - (uint)(count * 4);
         if (pre && up) address += 4;
         if (!pre && !up) address += 4;
+        bool transferUserBank = sBit && (!load || (list & 0x8000) == 0);
+        bool deferPc = false;
+        uint deferredPc = 0;
         for (int i = 0; i < 16; i++)
         {
             if (((list >> i) & 1) == 0)
                 continue;
-            if (load) WriteReg(i, _bus!.Read32(address));
-            else _bus!.Write32(address, ReadReg(i), 0xffffffff);
+            if (load)
+            {
+                uint value = _bus!.Read32(address);
+                if (i == 15)
+                {
+                    deferPc = true;
+                    deferredPc = sBit ? value : MergePcAddressPreserveStatus(value);
+                }
+                else
+                    WriteTransferReg(i, value, transferUserBank);
+            }
+            else
+            {
+                uint value = i == 15
+                    ? PackArm26R15(Registers[15] + 4)
+                    : ReadTransferReg(i, transferUserBank);
+                _bus!.Write32(address, value, 0xffffffff);
+            }
             address += 4;
         }
-        if (writeback)
+        if (writeback && (!load || (list & (1u << rn)) == 0))
             WriteReg(rn, up ? baseAddr + (uint)(count * 4) : baseAddr - (uint)(count * 4));
+        if (deferPc)
+        {
+            if (sBit)
+                ApplyArm26R15(deferredPc);
+            else
+                WritePcAddressPreserveStatus(deferredPc);
+        }
         return 2 + count;
     }
 
@@ -2225,10 +2414,10 @@ public sealed class Arm6Cpu
             return immediate;
         }
 
-        uint value = ReadReg((int)(op & 0xf));
+        uint value = ReadShiftOperandReg((int)(op & 0xf));
         int type = (int)((op >> 5) & 3);
         bool registerShift = (op & 0x10) != 0;
-        int amount = registerShift ? (int)(ReadReg((int)((op >> 8) & 0xf)) & 0xff) : (int)((op >> 7) & 0x1f);
+        int amount = registerShift ? (int)(ReadShiftAmountReg((int)((op >> 8) & 0xf)) & 0xff) : (int)((op >> 7) & 0x1f);
         if (amount == 0)
         {
             if (!registerShift)
@@ -2260,7 +2449,7 @@ public sealed class Arm6Cpu
 
     private uint SingleTransferRegisterOffset(uint op)
     {
-        uint value = ReadReg((int)(op & 0xf));
+        uint value = ReadShiftOperandReg((int)(op & 0xf));
         int type = (int)((op >> 5) & 3);
         int amount = (int)((op >> 7) & 0x1f);
         if (amount == 0)
@@ -2283,8 +2472,131 @@ public sealed class Arm6Cpu
         };
     }
 
-    private uint ReadReg(int reg) => reg == 15 ? Registers[15] : Registers[reg];
-    private void WriteReg(int reg, uint value) => Registers[reg] = reg == 15 ? value & ~3u : value;
+    private uint ReadReg(int reg) => reg == 15 ? PackArm26R15(Registers[15]) : Registers[reg];
+    private uint ReadShiftOperandReg(int reg) => reg == 15 ? PackArm26R15(Registers[15]) : Registers[reg];
+    private uint ReadShiftAmountReg(int reg) => reg == 15 ? PackArm26R15(Registers[15]) : Registers[reg];
+    private void WriteReg(int reg, uint value)
+    {
+        if (reg == 15)
+            WritePcAddressPreserveStatus(value);
+        else
+            Registers[reg] = value;
+    }
+
+    private void WritePcAddressPreserveStatus(uint value)
+    {
+        Registers[15] = value & Arm26AddressMask;
+        _pcWritten = true;
+    }
+
+    private uint MergePcAddressPreserveStatus(uint value)
+        => (value & Arm26AddressMask) | (PackArm26R15(Registers[15]) & ~Arm26AddressMask);
+
+    private uint ReadTransferReg(int reg, bool userBank)
+    {
+        if (!userBank)
+            return ReadReg(reg);
+        return reg switch
+        {
+            13 => _userR13,
+            14 => _userR14,
+            15 => PackArm26R15(Registers[15]),
+            _ => Registers[reg]
+        };
+    }
+
+    private void WriteTransferReg(int reg, uint value, bool userBank)
+    {
+        if (!userBank)
+        {
+            WriteReg(reg, value);
+            return;
+        }
+
+        switch (reg)
+        {
+            case 13:
+                _userR13 = value;
+                if (_mode == 0x10)
+                    Registers[13] = value;
+                break;
+            case 14:
+                _userR14 = value;
+                if (_mode == 0x10)
+                    Registers[14] = value;
+                break;
+            case 15:
+                WriteReg(reg, value);
+                break;
+            default:
+                Registers[reg] = value;
+                break;
+        }
+    }
+
+    private uint PackArm26R15(uint address)
+    {
+        uint value = address & Arm26AddressMask;
+        if (_flagN) value |= 0x80000000u;
+        if (_flagZ) value |= 0x40000000u;
+        if (_flagC) value |= 0x20000000u;
+        if (_flagV) value |= 0x10000000u;
+        if (_irqDisable) value |= Arm26IMask;
+        if (_fiqDisable) value |= Arm26FMask;
+        value |= ModeToArm26(_mode);
+        return value;
+    }
+
+    private void ApplyArm26R15(uint value)
+    {
+        byte newMode = Arm26ToMode(value & 3);
+        if (newMode == 0x10 && _mode != 0x10 && _userR13 == 0 && Registers[13] != 0)
+        {
+            _userR13 = Registers[13];
+            _userR14 = Registers[14];
+        }
+        _flagN = (value & 0x80000000u) != 0;
+        _flagZ = (value & 0x40000000u) != 0;
+        _flagC = (value & 0x20000000u) != 0;
+        _flagV = (value & 0x10000000u) != 0;
+        _irqDisable = (value & Arm26IMask) != 0;
+        _fiqDisable = (value & Arm26FMask) != 0;
+        ChangeMode(newMode);
+        Registers[15] = value & Arm26AddressMask;
+        _pcWritten = true;
+    }
+
+    private void WriteDataProcessingPcArm26(uint value)
+    {
+        if (ModeToArm26(_mode) != 0)
+        {
+            ApplyArm26R15(value);
+            return;
+        }
+
+        _flagN = (value & 0x80000000u) != 0;
+        _flagZ = (value & 0x40000000u) != 0;
+        _flagC = (value & 0x20000000u) != 0;
+        _flagV = (value & 0x10000000u) != 0;
+        Registers[15] = value & Arm26AddressMask;
+        _pcWritten = true;
+    }
+
+    private static uint ModeToArm26(byte mode) => mode switch
+    {
+        0x11 => 1,
+        0x12 => 2,
+        0x13 => 3,
+        _ => 0
+    };
+
+    private static byte Arm26ToMode(uint mode) => mode switch
+    {
+        1 => 0x11,
+        2 => 0x12,
+        3 => 0x13,
+        _ => 0x10
+    };
 
     private byte Read8(uint address)
     {
@@ -2345,23 +2657,17 @@ public sealed class Arm6Cpu
     private void SetDataFlags(int rd, uint result, bool carry)
     {
         if (rd == 15)
-            RestoreSavedStatusForPcWrite();
+            WriteDataProcessingPcArm26(result);
         else
             SetLogicFlags(result, carry);
     }
 
-    private void SetDataFlags(int rd, Action update)
+    private void SetDataFlags(int rd, uint result, Action update)
     {
         if (rd == 15)
-            RestoreSavedStatusForPcWrite();
+            WriteDataProcessingPcArm26(result);
         else
             update();
-    }
-
-    private void RestoreSavedStatusForPcWrite()
-    {
-        if (_mode == 0x12)
-            SetCpsr(_spsrIrq);
     }
 
     private void ChangeMode(byte newMode)
