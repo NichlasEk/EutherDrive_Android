@@ -5,6 +5,7 @@ using System.IO;
 using System.Security.Cryptography;
 using SharpCompress.Archives;
 using EutherDrive.Core;
+using EutherDrive.Core.Cpu.Z80Emu;
 using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Platforms.DataEast.Deco32;
@@ -31,6 +32,7 @@ public sealed class Deco32Adapter : IEmulatorCore
     private readonly byte[] _priorityFrame = new byte[FrameWidth * FrameHeight];
     private readonly ushort[] _alphaTilemapFrame = new ushort[FrameWidth * FrameHeight];
     private short[] _audioBuffer = new short[(OutputSampleRate / 60) * OutputChannels];
+    private short[] _scaledAudioBuffer = Array.Empty<short>();
     private readonly Arm6Cpu _mainCpu = new();
     private Deco32MemoryMap? _memory;
     private DecoTilemapDevice? _tilemaps;
@@ -41,6 +43,7 @@ public sealed class Deco32Adapter : IEmulatorCore
     private OKI6295? _oki1;
     private OKI6295? _oki2;
     private ArcadeInputState _input;
+    private int _masterVolumePercent = 100;
     private bool _loaded;
     private long _frameCounter;
     private int _traceLines;
@@ -71,7 +74,7 @@ public sealed class Deco32Adapter : IEmulatorCore
         ? "not-loaded"
         : string.Create(
             CultureInfo.InvariantCulture,
-            $"pc=0x{_mainCpu.Pc:X8} op=0x{_mainCpu.PeekOpcode():X8} vis=0x{_visiblePc:X8}/0x{_visibleOp:X8}/0x{_visibleCpsr:X8} vb=0x{_vblankPc:X8}/0x{_vblankOp:X8}/0x{_vblankCpsr:X8} post=0x{_postFramePc:X8}/0x{_postFrameOp:X8}/0x{_postFrameCpsr:X8} r0=0x{_mainCpu.Registers[0]:X8} r1=0x{_mainCpu.Registers[1]:X8} r2=0x{_mainCpu.Registers[2]:X8} r3=0x{_mainCpu.Registers[3]:X8} r4=0x{_mainCpu.Registers[4]:X8} r5=0x{_mainCpu.Registers[5]:X8} r6=0x{_mainCpu.Registers[6]:X8} r7=0x{_mainCpu.Registers[7]:X8} r8=0x{_mainCpu.Registers[8]:X8} r9=0x{_mainCpu.Registers[9]:X8} sl=0x{_mainCpu.Registers[10]:X8} fp=0x{_mainCpu.Registers[11]:X8} sp=0x{_mainCpu.Registers[13]:X8} lr=0x{_mainCpu.Registers[14]:X8} cpsr=0x{_mainCpu.Cpsr:X8} halted={_mainCpu.Halted} reason='{_lastStopReason ?? _mainCpu.StopReason}' frame={_frameCounter} vram={_memory.VideoWriteCount} pal={_memory.PaletteWriteCount} spr={_memory.SpriteWriteCount} {_memory.ProtectionDebugSummary} {_memory.TilemapDebugSummary} {_memory.PaletteDebugSummary} {_memory.SpriteDebugSummary}");
+            $"pc=0x{_mainCpu.Pc:X8} op=0x{_mainCpu.PeekOpcode():X8} vis=0x{_visiblePc:X8}/0x{_visibleOp:X8}/0x{_visibleCpsr:X8} vb=0x{_vblankPc:X8}/0x{_vblankOp:X8}/0x{_vblankCpsr:X8} post=0x{_postFramePc:X8}/0x{_postFrameOp:X8}/0x{_postFrameCpsr:X8} r0=0x{_mainCpu.Registers[0]:X8} r1=0x{_mainCpu.Registers[1]:X8} r2=0x{_mainCpu.Registers[2]:X8} r3=0x{_mainCpu.Registers[3]:X8} r4=0x{_mainCpu.Registers[4]:X8} r5=0x{_mainCpu.Registers[5]:X8} r6=0x{_mainCpu.Registers[6]:X8} r7=0x{_mainCpu.Registers[7]:X8} r8=0x{_mainCpu.Registers[8]:X8} r9=0x{_mainCpu.Registers[9]:X8} sl=0x{_mainCpu.Registers[10]:X8} fp=0x{_mainCpu.Registers[11]:X8} sp=0x{_mainCpu.Registers[13]:X8} lr=0x{_mainCpu.Registers[14]:X8} cpsr=0x{_mainCpu.Cpsr:X8} halted={_mainCpu.Halted} reason='{_lastStopReason ?? _mainCpu.StopReason}' frame={_frameCounter} vram={_memory.VideoWriteCount} pal={_memory.PaletteWriteCount} spr={_memory.SpriteWriteCount} {_memory.ProtectionDebugSummary} {_memory.TilemapDebugSummary} {_memory.PaletteDebugSummary} {_memory.SpriteDebugSummary} {_soundCpu?.DebugSummary ?? string.Empty}");
 
     public void LoadRom(string path)
     {
@@ -88,11 +91,11 @@ public sealed class Deco32Adapter : IEmulatorCore
         _palette = new PaletteDevice();
         _tilemaps = new DecoTilemapDevice(profile, _palette);
         _sprites = new DecoSpriteDevice(profile, _palette);
-        _soundCpu = new Z80SoundCpu(profile.AudioCpu);
         _ym2151 = new YM2151();
         _oki1 = new OKI6295(profile.Oki1);
         _oki2 = new OKI6295(profile.Oki2);
-        _memory = new Deco32MemoryMap(profile, _palette, _tilemaps, _sprites, _soundCpu, _ym2151, _oki1, _oki2, asserted => _mainCpu.SetIrqLine(asserted));
+        _soundCpu = new Z80SoundCpu(profile.AudioCpu, _ym2151, _oki1, _oki2);
+        _memory = new Deco32MemoryMap(profile, _palette, _tilemaps, _sprites, _soundCpu, _ym2151, _oki1, _oki2, asserted => _mainCpu.SetIrqLine(asserted), () => _mainCpu.Pc);
         _memory.Reset();
         string saveDirectory = PersistentStoragePath.ResolveSaveDirectory(path, "deco32");
         Directory.CreateDirectory(saveDirectory);
@@ -149,8 +152,7 @@ public sealed class Deco32Adapter : IEmulatorCore
             CaptureCpuPoint(out _postFramePc, out _postFrameOp, out _postFrameCpsr);
             _memory.EndFrame();
             RenderFrame();
-            Array.Clear(_audioBuffer);
-            _soundCpu?.RunFrame();
+            _soundCpu?.RunFrame(_audioBuffer);
             _frameCounter++;
         }
         finally
@@ -220,11 +222,21 @@ public sealed class Deco32Adapter : IEmulatorCore
     {
         sampleRate = OutputSampleRate;
         channels = OutputChannels;
-        return _audioBuffer;
+        if (_masterVolumePercent == 100 || _audioBuffer.Length == 0)
+            return _audioBuffer;
+
+        if (_scaledAudioBuffer.Length < _audioBuffer.Length)
+            _scaledAudioBuffer = new short[_audioBuffer.Length];
+
+        int volume = _masterVolumePercent;
+        for (int i = 0; i < _audioBuffer.Length; i++)
+            _scaledAudioBuffer[i] = (short)Math.Clamp((_audioBuffer[i] * volume) / 100, short.MinValue, short.MaxValue);
+        return _scaledAudioBuffer.AsSpan(0, _audioBuffer.Length);
     }
 
     public void SetMasterVolumePercent(int percent)
     {
+        _masterVolumePercent = Math.Clamp(percent, 0, 200);
     }
 
     public void SetInputState(
@@ -569,6 +581,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
     private readonly OKI6295 _oki1;
     private readonly OKI6295 _oki2;
     private readonly Action<bool> _setMainIrqLine;
+    private readonly Func<uint> _getMainPc;
     private readonly byte[] _workRam = new byte[0x20000];
     private readonly Deco104Protection _ioprot = new();
     private readonly SerialEeprom93C46 _eeprom = new();
@@ -579,7 +592,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
     private uint _lastWorkRamReadValue;
     private int _workRamReadProbeCount;
 
-    public Deco32MemoryMap(NightSlashersGameProfile profile, PaletteDevice palette, DecoTilemapDevice tilemaps, DecoSpriteDevice sprites, Z80SoundCpu soundCpu, YM2151 ym2151, OKI6295 oki1, OKI6295 oki2, Action<bool> setMainIrqLine)
+    public Deco32MemoryMap(NightSlashersGameProfile profile, PaletteDevice palette, DecoTilemapDevice tilemaps, DecoSpriteDevice sprites, Z80SoundCpu soundCpu, YM2151 ym2151, OKI6295 oki1, OKI6295 oki2, Action<bool> setMainIrqLine, Func<uint> getMainPc)
     {
         _profile = profile;
         _palette = palette;
@@ -590,6 +603,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
         _oki1 = oki1;
         _oki2 = oki2;
         _setMainIrqLine = setMainIrqLine;
+        _getMainPc = getMainPc;
     }
 
     public int VideoWriteCount { get; private set; }
@@ -620,7 +634,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
         _palette.Reset();
         _tilemaps.Reset();
         _sprites.Reset();
-        _soundCpu.Reset();
+        _soundCpu.ResetSound();
         _ym2151.Reset();
         _oki1.Reset();
         _oki2.Reset();
@@ -798,7 +812,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
         {
             byte? soundLatch = _ioprot.Write(address - 0x200000, (ushort)(value >> 16), (ushort)(mask >> 16));
             if (soundLatch.HasValue)
-                _soundCpu.SoundLatch = soundLatch.Value;
+                _soundCpu.WriteSoundLatch(soundLatch.Value, _getMainPc());
         }
     }
 
@@ -2303,30 +2317,256 @@ public sealed class PaletteDevice
 
 }
 
-public sealed class Z80SoundCpu
+public sealed class Z80SoundCpu : IOpcodeBusInterface
 {
+    private const int AudioCpuClock = 32_220_000 / 9;
+    private const int OutputSampleRate = 44_100;
+    private const int OutputChannels = 2;
+    private const int MaxChipLogsPerFrame = 100;
+    private const int DebugBeepFrequencyHz = 880;
+    private const int DebugBeepFrames = OutputSampleRate / 20;
+    private const int DebugBeepAmplitude = 3600;
+
     private readonly byte[] _rom;
-    public Z80SoundCpu(byte[] rom) => _rom = rom;
-    public byte SoundLatch { get; set; }
-    public void Reset() => SoundLatch = 0;
-    public void RunFrame() { _ = _rom; }
+    private readonly byte[] _ram = new byte[0x800];
+    private readonly Z80 _cpu = new();
+    private readonly YM2151 _ym;
+    private readonly OKI6295 _oki1;
+    private readonly OKI6295 _oki2;
+    private byte _soundLatch = 0xff;
+    private bool _irqAsserted;
+    private int _beepFramesRemaining;
+    private int _beepPhase;
+    private int _frameCounter;
+    private int _chipLogsThisFrame;
+    private int _latchWrites;
+    private int _latchReads;
+    private int _irqAccepts;
+    private int _lastPeak;
+
+    public Z80SoundCpu(byte[] rom, YM2151 ym, OKI6295 oki1, OKI6295 oki2)
+    {
+        _rom = rom;
+        _ym = ym;
+        _oki1 = oki1;
+        _oki2 = oki2;
+    }
+
+    public string DebugSummary
+        => $"z80pc=0x{_cpu.Pc:X4} sndLatch=0x{_soundLatch:X2} sndW={_latchWrites} sndR={_latchReads} z80Irq={(_irqAsserted ? 1 : 0)}/{_irqAccepts} audPeak={_lastPeak} {_ym.DebugSummary} oki1={_oki1.DebugSummary} oki2={_oki2.DebugSummary}";
+
+    public void ResetSound()
+    {
+        Array.Clear(_ram);
+        _cpu.ApplyResetLine();
+        _soundLatch = 0xff;
+        _irqAsserted = false;
+        _beepFramesRemaining = 0;
+        _beepPhase = 0;
+        _frameCounter = 0;
+        _chipLogsThisFrame = 0;
+        _latchWrites = 0;
+        _latchReads = 0;
+        _irqAccepts = 0;
+        _lastPeak = 0;
+    }
+
+    public void WriteSoundLatch(byte value, uint mainPc)
+    {
+        _soundLatch = value;
+        _irqAsserted = true;
+        _beepFramesRemaining = DebugBeepFrames;
+        _latchWrites++;
+        Console.WriteLine($"[SND CMD] pc=0x{mainPc:X8} val=0x{value:X2}");
+        Console.WriteLine($"[Z80 IRQ] assert pc=0x{_cpu.Pc:X4}");
+    }
+
+    public void RunFrame(short[] audioBuffer)
+    {
+        Array.Clear(audioBuffer);
+        _chipLogsThisFrame = 0;
+
+        int cycles = 0;
+        int budget = AudioCpuClock / 60;
+        while (cycles < budget)
+        {
+            uint elapsed = _cpu.ExecuteInstruction(this);
+            cycles += Math.Max(1, (int)elapsed);
+            if (_cpu.LastInterruptAccepted)
+            {
+                _irqAccepts++;
+                Console.WriteLine($"[Z80 IRQ] accepted pc=0x{_cpu.Pc:X4}");
+            }
+        }
+
+        int ymPeak = 0;
+        int oki1Peak = 0;
+        int oki2Peak = 0;
+        int mixPeak = RenderDebugBeep(audioBuffer);
+        _lastPeak = mixPeak;
+        if (mixPeak != 0 || (_frameCounter % 60) == 0)
+            Console.WriteLine($"[AUDIO] ym={ymPeak} oki1={oki1Peak} oki2={oki2Peak} mix={mixPeak}");
+        _frameCounter++;
+    }
+
+    private int RenderDebugBeep(short[] audioBuffer)
+    {
+        if (_beepFramesRemaining <= 0 || audioBuffer.Length == 0)
+            return 0;
+
+        int peak = 0;
+        int frames = audioBuffer.Length / OutputChannels;
+        int framesToRender = Math.Min(frames, _beepFramesRemaining);
+        int halfPeriod = Math.Max(1, OutputSampleRate / (DebugBeepFrequencyHz * 2));
+        for (int frame = 0; frame < framesToRender; frame++)
+        {
+            short sample = (short)(((_beepPhase / halfPeriod) & 1) == 0 ? DebugBeepAmplitude : -DebugBeepAmplitude);
+            int offset = frame * OutputChannels;
+            audioBuffer[offset] = sample;
+            audioBuffer[offset + 1] = sample;
+            _beepPhase++;
+            int abs = Math.Abs(sample);
+            if (abs > peak)
+                peak = abs;
+        }
+
+        _beepFramesRemaining -= framesToRender;
+        return peak;
+    }
+
+    public byte ReadOpcode(ushort address) => ReadMemory(address);
+
+    public byte ReadMemory(ushort address)
+    {
+        if (address < 0x8000)
+            return _rom.Length == 0 ? (byte)0xff : _rom[address % _rom.Length];
+        if (address is >= 0x8000 and <= 0x87ff)
+            return _ram[address - 0x8000];
+        if (address is >= 0xa000 and <= 0xa001)
+            return _ym.Read((byte)(address & 1));
+        if (address == 0xb000)
+            return _oki1.ReadStatus();
+        if (address == 0xc000)
+            return _oki2.ReadStatus();
+        if (address == 0xd000)
+        {
+            _latchReads++;
+            _irqAsserted = false;
+            Console.WriteLine($"[Z80 LATCH READ] pc=0x{_cpu.Pc:X4} val=0x{_soundLatch:X2}");
+            return _soundLatch;
+        }
+
+        return 0xff;
+    }
+
+    public void WriteMemory(ushort address, byte value)
+    {
+        if (address is >= 0x8000 and <= 0x87ff)
+        {
+            _ram[address - 0x8000] = value;
+            return;
+        }
+        if (address is >= 0xa000 and <= 0xa001)
+        {
+            LogChipWrite(address == 0xa000 ? "YM2151 reg" : "YM2151 data", address, value);
+            _ym.Write((byte)(address & 1), value);
+            return;
+        }
+        if (address == 0xb000)
+        {
+            LogChipWrite("OKI1 cmd", address, value);
+            _oki1.Write(value);
+            return;
+        }
+        if (address == 0xc000)
+        {
+            LogChipWrite("OKI2 cmd", address, value);
+            _oki2.Write(value);
+            return;
+        }
+    }
+
+    public byte ReadIo(ushort address) => 0xff;
+
+    public void WriteIo(ushort address, byte value)
+    {
+        if ((address & 0xff) == 0)
+        {
+            _oki1.SetRomBank((value >> 0) & 1);
+            _oki2.SetRomBank((value >> 1) & 1);
+            LogChipWrite("OKI bank", address, value);
+        }
+    }
+
+    public InterruptLine Nmi() => InterruptLine.High;
+    public InterruptLine Int() => _irqAsserted ? InterruptLine.Low : InterruptLine.High;
+    public byte InterruptVector() => 0xff;
+    public bool BusReq() => false;
+    public bool Reset() => false;
+
+    private void LogChipWrite(string target, ushort address, byte value)
+    {
+        if (_chipLogsThisFrame++ >= MaxChipLogsPerFrame)
+            return;
+        Console.WriteLine($"[Z80 WRITE] pc=0x{_cpu.Pc:X4} {target} addr=0x{address:X4} val=0x{value:X2}");
+    }
 }
 
 public sealed class YM2151
 {
-    public void Reset() { }
+    private byte _selectedRegister;
+    private int _registerWrites;
+    private int _dataWrites;
+
+    public string DebugSummary => $"ymReg=0x{_selectedRegister:X2} ymW={_registerWrites}/{_dataWrites}";
+
+    public void Reset()
+    {
+        _selectedRegister = 0;
+        _registerWrites = 0;
+        _dataWrites = 0;
+    }
     public byte ReadStatus() => 0;
-    public void WriteRegister(byte value) { _ = value; }
-    public void WriteData(byte value) { _ = value; }
+    public byte Read(byte offset) => ReadStatus();
+    public void Write(byte offset, byte value)
+    {
+        if ((offset & 1) == 0)
+            WriteRegister(value);
+        else
+            WriteData(value);
+    }
+    public void WriteRegister(byte value)
+    {
+        _selectedRegister = value;
+        _registerWrites++;
+    }
+    public void WriteData(byte value)
+    {
+        _ = value;
+        _dataWrites++;
+    }
 }
 
 public sealed class OKI6295
 {
     private readonly byte[] _rom;
+    private int _bank;
+    private int _writes;
     public OKI6295(byte[] rom) => _rom = rom;
-    public void Reset() { }
+    public string DebugSummary => $"bank={_bank} writes={_writes}";
+    public void Reset()
+    {
+        _bank = 0;
+        _writes = 0;
+    }
     public byte ReadStatus() => 0xf0;
-    public void Write(byte value) { _ = value; _ = _rom; }
+    public void Write(byte value)
+    {
+        _ = value;
+        _ = _rom;
+        _writes++;
+    }
+    public void SetRomBank(int bank) => _bank = bank;
 }
 
 public readonly record struct ArcadeInputState(
