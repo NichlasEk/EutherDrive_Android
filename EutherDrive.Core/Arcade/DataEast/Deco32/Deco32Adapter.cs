@@ -28,6 +28,7 @@ public sealed class Deco32Adapter : IEmulatorCore
     private byte[] _presentFrameBuffer = new byte[FrameHeight * FrameStride];
     private byte[] _renderFrameBuffer = new byte[FrameHeight * FrameStride];
     private byte[] _snapshotFrameBuffer = new byte[FrameHeight * FrameStride];
+    private readonly byte[] _priorityFrame = new byte[FrameWidth * FrameHeight];
     private short[] _audioBuffer = new short[(OutputSampleRate / 60) * OutputChannels];
     private readonly Arm6Cpu _mainCpu = new();
     private Deco32MemoryMap? _memory;
@@ -267,9 +268,10 @@ public sealed class Deco32Adapter : IEmulatorCore
     private void RenderFrame()
     {
         Array.Clear(_renderFrameBuffer);
+        Array.Clear(_priorityFrame);
         _palette?.FillBackdrop(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
-        _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride, _memory?.Priority ?? 0);
-        _sprites?.Render(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride, _frameCounter, _memory?.Priority ?? 0);
+        _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, _priorityFrame, FrameWidth, FrameHeight, FrameStride, _memory?.Priority ?? 0);
+        _sprites?.Render(_renderFrameBuffer, _priorityFrame, FrameWidth, FrameHeight, FrameStride, _frameCounter, _memory?.Priority ?? 0);
         _tilemaps?.RenderTextPlayfield(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
         if (DebugWorkRamTextOverlay)
             _memory?.RenderWorkRamTextOverlay(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
@@ -1584,35 +1586,87 @@ public sealed class DecoTilemapDevice
             _controlWriteCount[chip]++;
     }
 
-    public void RenderBackPlayfields(byte[] fb, int width, int height, int stride, int priority)
+    public void RenderBackPlayfields(byte[] fb, byte[] priorityMap, int width, int height, int stride, int priority)
     {
         if ((priority & 2) != 0)
         {
-            RenderLayer(fb, width, height, stride, 3, _profile.Tiles2, Chip1Pf2ColorBase, opaque: false);
-            RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false);
-            RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
+            RenderChip1Combined(fb, priorityMap, width, height, stride, priorityValue: 1);
+            RenderLayer(fb, priorityMap, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 4);
             return;
         }
 
-        RenderLayer(fb, width, height, stride, 3, _profile.Tiles2, Chip1Pf2ColorBase, opaque: false);
+        RenderLayer(fb, priorityMap, width, height, stride, 3, _profile.Tiles2, Chip1Pf2ColorBase, opaque: false, priorityValue: 1);
         if ((priority & 1) != 0)
         {
-            RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
-            RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false);
+            RenderLayer(fb, priorityMap, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 2);
+            RenderLayer(fb, priorityMap, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false, priorityValue: 4);
         }
         else
         {
-            RenderLayer(fb, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false);
-            RenderLayer(fb, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false);
+            RenderLayer(fb, priorityMap, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false, priorityValue: 2);
+            RenderLayer(fb, priorityMap, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 4);
         }
     }
 
     public void RenderTextPlayfield(byte[] fb, int width, int height, int stride)
     {
-        RenderLayer(fb, width, height, stride, 0, _profile.Tiles1, 0x80, opaque: false);
+        RenderLayer(fb, null, width, height, stride, 0, _profile.Tiles1, 0x80, opaque: false, priorityValue: 0);
     }
 
-    private void RenderLayer(byte[] fb, int width, int height, int stride, int layer, byte[] gfx, int colorBase, bool opaque)
+    private void RenderChip1Combined(byte[] fb, byte[] priorityMap, int width, int height, int stride, byte priorityValue)
+    {
+        ushort[] pf1 = _pf[2];
+        ushort[] pf2 = _pf[3];
+        ushort[] ctrl = _control[1];
+        int control0 = ctrl[5] & 0xff;
+        int control1 = ctrl[6] & 0xff;
+        if ((control0 & 0x80) == 0)
+            return;
+
+        int scrollX = ctrl[1] & 0x3ff;
+        int scrollY = ctrl[2] & 0x1ff;
+        ushort[] rowscroll = _rowscroll[2];
+        const int tileSize = 16;
+        const int mapCols = 64;
+        const int mapRows = 32;
+        int widthMask = mapCols * tileSize - 1;
+        int heightMask = mapRows * tileSize - 1;
+        int rowType = 1 << ((control0 >> 3) & 0x0f);
+        int colType = 8 << (control0 & 7);
+        int tileBank1 = DecoBankCallback(ctrl[7] & 0xff);
+        int tileBank2 = DecoBankCallback(ctrl[7] >> 8);
+        bool enableTileFlipX = (control1 & 0x01) != 0;
+        bool enableTileFlipY = (control1 & 0x02) != 0;
+        bool rowScroll = (control1 & 0x40) != 0;
+        bool columnScroll = (control1 & 0x20) != 0;
+
+        for (int y = 0; y < height; y++)
+        {
+            int baseSy = (y + scrollY) & heightMask;
+            int sourceX = rowScroll ? scrollX + rowscroll[(baseSy / rowType) & 0x7ff] : scrollX;
+            for (int x = 0; x < width; x++)
+            {
+                int sx = (x + sourceX) & widthMask;
+                int columnOffset = columnScroll ? rowscroll[0x200 + (((sx & 0x1ff) / colType) & 0x1ff)] : 0;
+                int sy = (baseSy + columnOffset) & heightMask;
+                int ty = sy / tileSize;
+                int py = sy & (tileSize - 1);
+                int tx = sx / tileSize;
+                int px = sx & (tileSize - 1);
+                int entry = Deco16ScanRows(tx, ty) & 0x7ff;
+                int p = ReadLayerPalettePixel(pf1, _profile.Tiles2, entry, tileBank1, Chip1Pf1ColorBase, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen1);
+                int p2 = ReadLayerPalettePixel(pf2, _profile.Tiles2, entry, tileBank2, Chip1Pf2ColorBase, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen2);
+                if ((pen1 | pen2) == 0)
+                    continue;
+
+                int mixed = MixNightSlashersTilePixel(p, p2);
+                _palette.WritePixel(fb, stride, x, y, mixed);
+                priorityMap[y * width + x] = priorityValue;
+            }
+        }
+    }
+
+    private void RenderLayer(byte[] fb, byte[]? priorityMap, int width, int height, int stride, int layer, byte[] gfx, int colorBase, bool opaque, byte priorityValue)
     {
         ushort[] ram = _pf[layer];
         ushort[] ctrl = _control[layer >> 1];
@@ -1623,53 +1677,97 @@ public sealed class DecoTilemapDevice
 
         int scrollX = ctrl[(layer & 1) == 0 ? 1 : 3] & 0x3ff;
         int scrollY = ctrl[(layer & 1) == 0 ? 2 : 4] & 0x1ff;
+        ushort[] rowscroll = _rowscroll[layer];
         bool charMode = (control1 & 0x80) != 0;
         int tileSize = charMode ? 8 : 16;
         int mapCols = 64;
         int mapRows = 32;
+        int widthMask = mapCols * tileSize - 1;
+        int heightMask = mapRows * tileSize - 1;
+        int rowType = 1 << ((control0 >> 3) & 0x0f);
+        int colType = 8 << (control0 & 7);
         int tileBank = DecoBankCallback((layer & 1) == 0 ? ctrl[7] & 0xff : ctrl[7] >> 8);
         bool enableTileFlipX = (control1 & 0x01) != 0;
         bool enableTileFlipY = (control1 & 0x02) != 0;
+        bool rowScroll = (control1 & 0x40) != 0;
+        bool columnScroll = (control1 & 0x20) != 0;
 
         for (int y = 0; y < height; y++)
         {
-            int sy = (y + scrollY) & (mapRows * tileSize - 1);
-            int ty = sy / tileSize;
-            int py = sy & (tileSize - 1);
+            int baseSy = (y + scrollY) & heightMask;
+            int sourceX = rowScroll ? scrollX + rowscroll[(baseSy / rowType) & 0x7ff] : scrollX;
             for (int x = 0; x < width; x++)
             {
-                int sx = (x + scrollX) & (mapCols * tileSize - 1);
+                int sx = (x + sourceX) & widthMask;
+                int columnOffset = columnScroll ? rowscroll[0x200 + (((sx & 0x1ff) / colType) & 0x1ff)] : 0;
+                int sy = (baseSy + columnOffset) & heightMask;
+                int ty = sy / tileSize;
+                int py = sy & (tileSize - 1);
                 int tx = sx / tileSize;
                 int px = sx & (tileSize - 1);
                 int entry = Deco16ScanRows(tx, ty) & 0x7ff;
-                ushort tile = ram[entry & (ram.Length - 1)];
-                int colorNibble = (tile >> 12) & 0x0f;
-                bool tileFlipX = false;
-                bool tileFlipY = false;
-                if ((tile & 0x8000) != 0)
+                int palettePixel = ReadLayerPalettePixel(ram, gfx, entry, tileBank, colorBase, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen);
+                if (charMode)
                 {
-                    if (enableTileFlipX)
+                    ushort tile = ram[entry & (ram.Length - 1)];
+                    int colorNibble = (tile >> 12) & 0x0f;
+                    bool tileFlipX = false;
+                    bool tileFlipY = false;
+                    if ((tile & 0x8000) != 0)
                     {
-                        tileFlipX = true;
-                        colorNibble &= 0x07;
+                        if (enableTileFlipX)
+                        {
+                            tileFlipX = true;
+                            colorNibble &= 0x07;
+                        }
+                        if (enableTileFlipY)
+                        {
+                            tileFlipY = true;
+                            colorNibble &= 0x07;
+                        }
                     }
-                    if (enableTileFlipY)
-                    {
-                        tileFlipY = true;
-                        colorNibble &= 0x07;
-                    }
+                    int srcX = tileFlipX ? tileSize - 1 - px : px;
+                    int srcY = tileFlipY ? tileSize - 1 - py : py;
+                    pen = Decode4BppChar(gfx, (tile & 0x0fff) + tileBank, srcX, srcY);
+                    palettePixel = (colorBase + colorNibble) * 16 + pen;
                 }
-                int srcX = tileFlipX ? tileSize - 1 - px : px;
-                int srcY = tileFlipY ? tileSize - 1 - py : py;
-                int code = (tile & 0x0fff) + tileBank;
-                int pen = charMode ? Decode4BppChar(gfx, code, srcX, srcY) : Decode4BppTile(gfx, code, srcX, srcY);
                 if (pen == 0 && !opaque)
                     continue;
-                int color = colorBase + colorNibble;
-                _palette.WritePixel(fb, stride, x, y, color * 16 + pen);
+                _palette.WritePixel(fb, stride, x, y, palettePixel);
+                if (priorityMap is not null)
+                    priorityMap[y * width + x] = priorityValue;
             }
         }
     }
+
+    private static int ReadLayerPalettePixel(ushort[] ram, byte[] gfx, int entry, int tileBank, int colorBase, int px, int py, int tileSize, bool enableTileFlipX, bool enableTileFlipY, out int pen)
+    {
+        ushort tile = ram[entry & (ram.Length - 1)];
+        int colorNibble = (tile >> 12) & 0x0f;
+        bool tileFlipX = false;
+        bool tileFlipY = false;
+        if ((tile & 0x8000) != 0)
+        {
+            if (enableTileFlipX)
+            {
+                tileFlipX = true;
+                colorNibble &= 0x07;
+            }
+            if (enableTileFlipY)
+            {
+                tileFlipY = true;
+                colorNibble &= 0x07;
+            }
+        }
+
+        int srcX = tileFlipX ? tileSize - 1 - px : px;
+        int srcY = tileFlipY ? tileSize - 1 - py : py;
+        pen = Decode4BppTile(gfx, (tile & 0x0fff) + tileBank, srcX, srcY);
+        return (colorBase + colorNibble) * 16 + pen;
+    }
+
+    private static int MixNightSlashersTilePixel(int p, int p2)
+        => ((p & 0x70f) + (((p & 0x30) | (p2 & 0x0f)) << 4)) & 0x7ff;
 
     private static int Deco16ScanRows(int col, int row)
         => (col & 0x1f) + ((row & 0x1f) << 5) + ((col & 0x20) << 5) + ((row & 0x20) << 6);
@@ -1735,8 +1833,10 @@ public sealed class DecoSpriteDevice
 {
     private readonly NightSlashersGameProfile _profile;
     private readonly PaletteDevice _palette;
-    private readonly ushort[][] _ram = { new ushort[0x1000], new ushort[0x1000] };
-    private readonly ushort[][] _buffered = { new ushort[0x1000], new ushort[0x1000] };
+    private readonly ushort[][] _ram = { new ushort[0x800], new ushort[0x800] };
+    private readonly ushort[][] _buffered = { new ushort[0x800], new ushort[0x800] };
+    private ushort[] _raw0 = Array.Empty<ushort>();
+    private ushort[] _raw1 = Array.Empty<ushort>();
 
     public DecoSpriteDevice(NightSlashersGameProfile profile, PaletteDevice palette)
     {
@@ -1789,15 +1889,28 @@ public sealed class DecoSpriteDevice
     public void Buffer() { Buffer(0); Buffer(1); }
     public void Buffer(int list) => Array.Copy(_ram[list], _buffered[list], _ram[list].Length);
 
-    public void Render(byte[] fb, int width, int height, int stride, long frame, int priority)
+    public void Render(byte[] fb, byte[] priorityMap, int width, int height, int stride, long frame, int priority)
     {
-        RenderList(fb, width, height, stride, _buffered[1], _profile.Sprites2, false, ColorBank1, frame, 0);
-        RenderList(fb, width, height, stride, _buffered[0], _profile.Sprites1, true, ColorBank0, frame, (priority & 4) == 0 ? 0x800 : 0);
+        EnsureRawBuffers(width * height);
+        Array.Clear(_raw0);
+        Array.Clear(_raw1);
+        RenderListRaw(_raw0, width, height, _buffered[0], _profile.Sprites1, fiveBpp: true, frame);
+        RenderListRaw(_raw1, width, height, _buffered[1], _profile.Sprites2, fiveBpp: false, frame);
+        MixRawSprites(fb, priorityMap, width, height, stride, priority);
     }
 
-    private void RenderList(byte[] fb, int width, int height, int stride, ushort[] spr, byte[] gfx, bool fiveBpp, int colorBank, long frame, int paletteOffset)
+    private void EnsureRawBuffers(int pixels)
     {
-        for (int offs = 0; offs + 3 < spr.Length; offs += 4)
+        if (_raw0.Length != pixels)
+        {
+            _raw0 = new ushort[pixels];
+            _raw1 = new ushort[pixels];
+        }
+    }
+
+    private void RenderListRaw(ushort[] raw, int width, int height, ushort[] spr, byte[] gfx, bool fiveBpp, long frame)
+    {
+        for (int offs = 0; offs + 3 < 0x800; offs += 4)
         {
             ushort yraw = spr[offs];
             if (((yraw >> 12) & 1) != 0 && (frame & 1) != 0)
@@ -1805,6 +1918,8 @@ public sealed class DecoSpriteDevice
             int sprite = spr[offs + 1];
             int xraw = spr[offs + 2];
             int color = (xraw >> 9) & 0x7f;
+            if ((yraw & 0x8000) != 0)
+                color |= 0x80;
             bool fx = (yraw & 0x2000) != 0;
             bool fy = (yraw & 0x4000) != 0;
             bool wide = (yraw & 0x0800) != 0;
@@ -1828,18 +1943,59 @@ public sealed class DecoSpriteDevice
             {
                 int tile = sprite - m * inc;
                 int dy = y + mult * m;
-                DrawSpriteTile(fb, width, height, stride, gfx, fiveBpp, tile, color, colorBank, paletteOffset, x, dy, fx, fy);
+                DrawSpriteTileRaw(raw, width, height, gfx, fiveBpp, tile, color, x, dy, fx, fy);
                 if (wide)
-                    DrawSpriteTile(fb, width, height, stride, gfx, fiveBpp, tile - mult2, color, colorBank, paletteOffset, x + 16, dy, fx, fy);
+                    DrawSpriteTileRaw(raw, width, height, gfx, fiveBpp, tile - mult2, color, x + 16, dy, fx, fy);
             }
         }
     }
 
-    private void DrawSpriteTile(byte[] fb, int width, int height, int stride, byte[] gfx, bool fiveBpp, int code, int color, int colorBank, int paletteOffset, int sx, int sy, bool fx, bool fy)
+    private void MixRawSprites(byte[] fb, byte[] priorityMap, int width, int height, int stride, int priority)
     {
-        int granularity = fiveBpp ? 32 : 16;
-        int paletteBase = paletteOffset + ((colorBank & 7) << 8);
-        int paletteColor = (color % 16) * granularity;
+        int sprite0ColorBase = (ColorBank0 & 7) << 8;
+        int sprite1ColorBase = (ColorBank1 & 7) << 8;
+        int sprite0ExtraBank = (priority & 4) == 0 ? 0x800 : 0;
+
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * width;
+            for (int x = 0; x < width; x++)
+            {
+                int offset = row + x;
+                ushort pix0 = _raw0[offset];
+                ushort pix1 = _raw1[offset];
+                int pri0 = (pix0 & 0x6000) >> 13;
+                int pri1 = (pix1 & 0x6000) >> 13;
+                int tilePri = priorityMap[offset];
+                bool sprite0Drawn = false;
+
+                if ((pix0 & 0xff) != 0)
+                {
+                    bool draw0 = pri0 <= 1 || (pri0 == 2 ? tilePri < 4 : tilePri < 2);
+                    if (draw0)
+                    {
+                        int color0 = (((pix0 & 0x1f00) >> 8) % 16) * 32;
+                        _palette.WritePixel(fb, stride, x, y, sprite0ColorBase | sprite0ExtraBank | color0 | (pix0 & 0xff));
+                        sprite0Drawn = true;
+                    }
+                }
+
+                if ((pix1 & 0xff) != 0)
+                {
+                    bool draw1 = pri1 == 0 ? !sprite0Drawn || pri0 != 0 : tilePri < Math.Max(1, 5 - pri1);
+                    if (draw1)
+                    {
+                        int color1 = (((pix1 & 0x0f00) >> 8) % 16) * 16;
+                        int coloffs = ((priority & 4) == 0 && sprite0Drawn) ? 0x800 : 0;
+                        _palette.WritePixel(fb, stride, x, y, sprite1ColorBase | coloffs | color1 | (pix1 & 0xff));
+                    }
+                }
+            }
+        }
+    }
+
+    private static void DrawSpriteTileRaw(ushort[] raw, int width, int height, byte[] gfx, bool fiveBpp, int code, int color, int sx, int sy, bool fx, bool fy)
+    {
         for (int y = 0; y < 16; y++)
         {
             int dy = sy + y;
@@ -1855,7 +2011,7 @@ public sealed class DecoSpriteDevice
                 int pen = fiveBpp ? Decode5Bpp(gfx, code, px, py) : Decode4Bpp(gfx, code, px, py);
                 if (pen == 0)
                     continue;
-                _palette.WritePixel(fb, stride, dx, dy, paletteBase + paletteColor + pen);
+                raw[dy * width + dx] = (ushort)((color << 8) | pen);
             }
         }
     }
