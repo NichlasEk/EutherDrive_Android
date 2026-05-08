@@ -92,8 +92,8 @@ public sealed class Deco32Adapter : IEmulatorCore
         _palette = new PaletteDevice();
         _tilemaps = new DecoTilemapDevice(profile, _palette);
         _sprites = new DecoSpriteDevice(profile, _palette);
-        _oki1 = new OKI6295(profile.Oki1, 32_220_000 / 32, 1.0f);
-        _oki2 = new OKI6295(profile.Oki2, 32_220_000 / 16, 0.35f);
+        _oki1 = new OKI6295(profile.Oki1, 32_220_000 / 32, 0.80f);
+        _oki2 = new OKI6295(profile.Oki2, 32_220_000 / 16, 0.10f);
         _ym2151 = new YM2151(SoundBankswitch);
         _soundCpu = new Z80SoundCpu(profile.AudioCpu, _ym2151, _oki1, _oki2);
         _memory = new Deco32MemoryMap(profile, _palette, _tilemaps, _sprites, _soundCpu, _ym2151, _oki1, _oki2, asserted => _mainCpu.SetIrqLine(asserted), () => _mainCpu.Pc);
@@ -2331,6 +2331,8 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     private const int MaxChipLogsPerFrame = 100;
     private static readonly bool TraceSound =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_TRACE_SOUND"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceOki =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_TRACE_OKI"), "1", StringComparison.Ordinal);
     private static readonly bool MuteYm =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_MUTE_YM"), "1", StringComparison.Ordinal);
     private static readonly bool MuteOki1 =
@@ -2352,6 +2354,8 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     private int _latchReads;
     private int _irqAccepts;
     private int _lastPeak;
+    private byte _lastOki1Status = 0xff;
+    private byte _lastOki2Status = 0xff;
 
     public Z80SoundCpu(byte[] rom, YM2151 ym, OKI6295 oki1, OKI6295 oki2)
     {
@@ -2376,6 +2380,8 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         _latchReads = 0;
         _irqAccepts = 0;
         _lastPeak = 0;
+        _lastOki1Status = 0xff;
+        _lastOki2Status = 0xff;
     }
 
     public void WriteSoundLatch(byte value, uint mainPc)
@@ -2383,23 +2389,47 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         _soundLatch = value;
         _latchIrqAsserted = true;
         _latchWrites++;
-        Console.WriteLine($"[SND CMD] pc=0x{mainPc:X8} val=0x{value:X2}");
-        Console.WriteLine($"[Z80 IRQ] assert pc=0x{_cpu.Pc:X4}");
+        if (TraceSound)
+        {
+            Console.WriteLine($"[SND CMD] pc=0x{mainPc:X8} val=0x{value:X2}");
+            Console.WriteLine($"[Z80 IRQ] assert pc=0x{_cpu.Pc:X4}");
+        }
     }
 
     public void RunFrame(short[] audioBuffer)
     {
         Array.Clear(audioBuffer);
         _chipLogsThisFrame = 0;
+        _ym.BeginFrame();
+        _oki1.BeginFrame();
+        _oki2.BeginFrame();
 
         int cycles = 0;
         int budget = AudioCpuClock / 60;
+        int sampleFrames = audioBuffer.Length / OutputChannels;
+        int ymIndex = 0;
+        int oki1Index = 0;
+        int oki2Index = 0;
+
+        void RenderAudioTo(int targetSampleFrames)
+        {
+            targetSampleFrames = Math.Clamp(targetSampleFrames, 0, sampleFrames);
+            if (!MuteYm)
+                _ym.RenderStereo(audioBuffer, ref ymIndex, targetSampleFrames);
+            if (!MuteOki1)
+                _oki1.RenderStereo(audioBuffer, ref oki1Index, targetSampleFrames);
+            if (!MuteOki2)
+                _oki2.RenderStereo(audioBuffer, ref oki2Index, targetSampleFrames);
+        }
+
         while (cycles < budget)
         {
             uint elapsed = _cpu.ExecuteInstruction(this);
             int elapsedCycles = Math.Max(1, (int)elapsed);
             cycles += elapsedCycles;
             _ym.AdvanceTimersByCpuCycles(elapsedCycles, AudioCpuClock);
+            int targetSampleFrames = (int)Math.Min(sampleFrames, ((long)cycles * sampleFrames) / budget);
+            RenderAudioTo(targetSampleFrames);
             if (_cpu.LastInterruptAccepted)
             {
                 _irqAccepts++;
@@ -2408,16 +2438,7 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
             }
         }
 
-        int sampleFrames = audioBuffer.Length / OutputChannels;
-        int ymIndex = 0;
-        int oki1Index = 0;
-        int oki2Index = 0;
-        if (!MuteYm)
-            _ym.RenderStereo(audioBuffer, ref ymIndex, sampleFrames);
-        if (!MuteOki1)
-            _oki1.RenderStereo(audioBuffer, ref oki1Index, sampleFrames);
-        if (!MuteOki2)
-            _oki2.RenderStereo(audioBuffer, ref oki2Index, sampleFrames);
+        RenderAudioTo(sampleFrames);
         int mixPeak = Deco32AudioUtil.Peak(audioBuffer, 0, sampleFrames);
         _lastPeak = mixPeak;
         if (TraceSound && (mixPeak != 0 || (_frameCounter % 60) == 0))
@@ -2436,14 +2457,31 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         if (address is >= 0xa000 and <= 0xa001)
             return _ym.Read((byte)(address & 1));
         if (address == 0xb000)
-            return _oki1.ReadStatus();
+        {
+            byte status = _oki1.ReadStatus();
+            if (status != _lastOki1Status)
+            {
+                _lastOki1Status = status;
+                LogOki("OKI1 status", address, status);
+            }
+            return status;
+        }
         if (address == 0xc000)
-            return _oki2.ReadStatus();
+        {
+            byte status = _oki2.ReadStatus();
+            if (status != _lastOki2Status)
+            {
+                _lastOki2Status = status;
+                LogOki("OKI2 status", address, status);
+            }
+            return status;
+        }
         if (address == 0xd000)
         {
             _latchReads++;
             _latchIrqAsserted = false;
-            Console.WriteLine($"[Z80 LATCH READ] pc=0x{_cpu.Pc:X4} val=0x{_soundLatch:X2}");
+            if (TraceSound)
+                Console.WriteLine($"[Z80 LATCH READ] pc=0x{_cpu.Pc:X4} val=0x{_soundLatch:X2}");
             return _soundLatch;
         }
 
@@ -2465,28 +2503,25 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         }
         if (address == 0xb000)
         {
-            LogChipWrite("OKI1 cmd", address, value);
+            LogOki("OKI1 write", address, value);
             _oki1.Write(value);
             return;
         }
         if (address == 0xc000)
         {
-            LogChipWrite("OKI2 cmd", address, value);
+            LogOki("OKI2 write", address, value);
             _oki2.Write(value);
             return;
         }
     }
 
-    public byte ReadIo(ushort address) => 0xff;
+    public byte ReadIo(ushort address)
+        => _rom.Length == 0 ? (byte)0xff : _rom[address % _rom.Length];
 
     public void WriteIo(ushort address, byte value)
     {
-        if ((address & 0xff) == 0)
-        {
-            _oki1.SetRomBank((value >> 0) & 1);
-            _oki2.SetRomBank((value >> 1) & 1);
-            LogChipWrite("OKI bank", address, value);
-        }
+        if (TraceSound)
+            LogChipWrite("unmapped IO", address, value);
     }
 
     public InterruptLine Nmi() => InterruptLine.High;
@@ -2502,6 +2537,19 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
             return;
         if (TraceSound)
             Console.WriteLine($"[Z80 WRITE] pc=0x{_cpu.Pc:X4} {target} addr=0x{address:X4} val=0x{value:X2}");
+    }
+
+    private void LogOki(string target, ushort address, byte value)
+    {
+        if (!TraceOki)
+        {
+            LogChipWrite(target, address, value);
+            return;
+        }
+
+        if (_chipLogsThisFrame++ >= MaxChipLogsPerFrame)
+            return;
+        Console.WriteLine($"[Z80 OKI] f={_frameCounter} pc=0x{_cpu.Pc:X4} {target} addr=0x{address:X4} val=0x{value:X2} oki1={_oki1.DebugSummary} oki2={_oki2.DebugSummary}");
     }
 }
 
@@ -2551,11 +2599,16 @@ public sealed class YM2151
     public void AdvanceTimersByCpuCycles(int cpuCycles, double cpuClockHz)
         => _core.AdvanceTimersByCpuCycles(cpuCycles, cpuClockHz);
 
+    public void BeginFrame()
+    {
+        LastPeak = 0;
+    }
+
     public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
     {
         int before = sampleFrameIndex;
-        _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: 0.42f);
-        LastPeak = Deco32AudioUtil.Peak(destination, before, sampleFrameIndex);
+        _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: 0.40f);
+        LastPeak = Math.Max(LastPeak, Deco32AudioUtil.Peak(destination, before, sampleFrameIndex));
     }
 }
 
@@ -2604,11 +2657,16 @@ public sealed class OKI6295
         LoadBank(bank, reset: false);
     }
 
+    public void BeginFrame()
+    {
+        LastPeak = 0;
+    }
+
     public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
     {
         int before = sampleFrameIndex;
         _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: _gain);
-        LastPeak = Deco32AudioUtil.Peak(destination, before, sampleFrameIndex);
+        LastPeak = Math.Max(LastPeak, Deco32AudioUtil.Peak(destination, before, sampleFrameIndex));
     }
 
     private void LoadBank(int bank, bool reset)

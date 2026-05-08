@@ -181,6 +181,14 @@ internal sealed class Cps1Ym2151
     private int _timerB;
     private int _timerACounter;
     private int _timerBCounter;
+    [NonSerialized] private int _keyOnWrites;
+    [NonSerialized] private byte _lastKeyOn;
+    [NonSerialized] private int _lastRawLeft;
+    [NonSerialized] private int _lastRawRight;
+    [NonSerialized] private int _lastKeyedOperators;
+    [NonSerialized] private int _lastAudibleOperators;
+    [NonSerialized] private int _lastMinEnvelope;
+    [NonSerialized] private byte _lastRouteMask;
     private int _timerClockCounter;
     private int _busyClocks;
     private double _busyClockAccumulator;
@@ -217,6 +225,14 @@ internal sealed class Cps1Ym2151
         _timerB = 0;
         _timerACounter = 0;
         _timerBCounter = 0;
+        _keyOnWrites = 0;
+        _lastKeyOn = 0;
+        _lastRawLeft = 0;
+        _lastRawRight = 0;
+        _lastKeyedOperators = 0;
+        _lastAudibleOperators = 0;
+        _lastMinEnvelope = 0x3ff;
+        _lastRouteMask = 0;
         _timerClockCounter = 0;
         _busyClocks = 0;
         _busyClockAccumulator = 0.0;
@@ -260,6 +276,9 @@ internal sealed class Cps1Ym2151
 
     public bool IrqAsserted
         => (_status & 0x03) != 0;
+
+    public string DebugSummary
+        => $"ymKey={_keyOnWrites}:0x{_lastKeyOn:X2} ymReg=0x{_selectedRegister:X2} ymStat=0x{ReadStatus():X2} ymRaw={_lastRawLeft}/{_lastRawRight} ymOps={_lastKeyedOperators}/{_lastAudibleOperators} ymEnv={_lastMinEnvelope:X3} ymRoute=0x{_lastRouteMask:X2}";
 
     public void Write(int offset, byte value)
     {
@@ -352,6 +371,8 @@ internal sealed class Cps1Ym2151
         switch (register)
         {
             case 0x08:
+                _keyOnWrites++;
+                _lastKeyOn = value;
                 _channels[value & 0x07].KeyOn((value >> 3) & 0x0f);
                 break;
             case 0x10:
@@ -416,11 +437,40 @@ internal sealed class Cps1Ym2151
         for (int channel = 0; channel < ChannelCount; channel++)
             _channels[channel].Generate(lfoRawPm, ref leftMix, ref rightMix);
 
+        UpdateDebugState(leftMix, rightMix);
+
         leftMix = RoundTripYm3012(leftMix);
         rightMix = RoundTripYm3012(rightMix);
 
         left = (short)Math.Clamp((int)Math.Round(leftMix * gain), short.MinValue, short.MaxValue);
         right = (short)Math.Clamp((int)Math.Round(rightMix * gain), short.MinValue, short.MaxValue);
+    }
+
+    private void UpdateDebugState(int leftMix, int rightMix)
+    {
+        _lastRawLeft = leftMix;
+        _lastRawRight = rightMix;
+        _lastKeyedOperators = 0;
+        _lastAudibleOperators = 0;
+        _lastMinEnvelope = 0x3ff;
+        _lastRouteMask = 0;
+
+        for (int channel = 0; channel < ChannelCount; channel++)
+        {
+            if (_channels[channel].Routed)
+                _lastRouteMask |= (byte)(1 << channel);
+        }
+
+        for (int op = 0; op < OperatorCount; op++)
+        {
+            YmOperator ymOperator = _operators[op];
+            if (ymOperator.Keyed)
+                _lastKeyedOperators++;
+            int attenuation = ymOperator.DebugEnvelopeAttenuation;
+            _lastMinEnvelope = Math.Min(_lastMinEnvelope, attenuation);
+            if (ymOperator.Keyed && attenuation <= EnvelopeQuiet)
+                _lastAudibleOperators++;
+        }
     }
 
     private void ClockTimers(int ticks)
@@ -669,6 +719,8 @@ internal sealed class Cps1Ym2151
         private int _algorithm;
         private int _feedback;
 
+        public bool Routed => _left || _right;
+
         public YmChannel(Cps1Ym2151 chip, int index, int[] operators)
         {
             _chip = chip;
@@ -802,6 +854,9 @@ internal sealed class Cps1Ym2151
         private readonly int[] _rate = new int[4];
         private bool _normalKeyOn;
         private bool _csmKeyOn;
+
+        public bool Keyed => _keyOn;
+        public int DebugEnvelopeAttenuation => EnvelopeAttenuation(0);
 
         public YmOperator(Cps1Ym2151 chip, int offset)
         {
