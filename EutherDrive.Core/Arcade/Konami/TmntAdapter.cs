@@ -79,7 +79,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "tmnt" or "tmntu" or "tmntj" or "tmhta" or "tmnt2p" or "tmht2p" or "tmnt2" or "ssriders" or "mystwarr" or "metamrph";
+        return name is "tmnt" or "tmntu" or "tmntj" or "tmhta" or "tmnt2p" or "tmht2p" or "tmnt2" or "ssriders" or "mystwarr" or "metamrph" or "moomesa";
     }
 
     public void LoadRom(string path)
@@ -319,7 +319,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         Tmnt2,
         Ssriders,
         Mystwarr,
-        Metamrph
+        Metamrph,
+        Moomesa
     }
 
     private static bool IsMystwarrFamily(TmntHardwareVariant variant)
@@ -330,6 +331,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private readonly byte[] _program = new byte[0x200000];
         private readonly byte[] _ram = new byte[0x10000];
         private readonly byte[] _metamrphExtraRam = new byte[0xf000];
+        private readonly byte[] _moomesaSpriteRam = new byte[0x10000];
         private readonly byte[] _paletteRam = new byte[0x4000];
         private readonly ushort[] _palette = new ushort[0x800];
         [NonSerialized] private readonly byte[] _tileRom = new byte[0x500000];
@@ -345,6 +347,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly Tmnt2SerialEeprom _tmnt2Eeprom = new();
         private readonly byte[] _tmnt2UnknownRam = new byte[0x80];
         private readonly ushort[] _tmnt2ProtRam = new ushort[0x10];
+        private readonly ushort[] _moomesaProtRam = new ushort[0x10];
         private readonly byte[] _k053251 = new byte[0x10];
         private readonly byte[] _k053251PaletteIndex = new byte[5];
         [NonSerialized] private TmntSound? _sound;
@@ -355,6 +358,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private TmntHardwareVariant _variant;
         private byte _interruptLevel;
         private bool _irq5Enabled;
+        private bool _moomesaSpriteIrqEnabled;
+        private bool _moomesaVblankIrqEnabled;
+        private ushort _moomesaControl2;
         private bool _tmnt2InVblank;
         private byte _soundLatch = 0xff;
         private byte _lastSoundIrqBit;
@@ -382,8 +388,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private bool UsesK053245Hardware => _variant is TmntHardwareVariant.Tmnt2 or TmntHardwareVariant.Ssriders;
         private bool UsesMystwarrHardware => IsMystwarrFamily(_variant);
         private bool UsesMetamrphHardware => _variant == TmntHardwareVariant.Metamrph;
+        private bool UsesMoomesaHardware => _variant == TmntHardwareVariant.Moomesa;
 
-        private int ProgramRomLength => UsesMystwarrHardware ? 0x200000 : UsesK053245Hardware ? 0x100000 : 0x60000;
+        private int ProgramRomLength => UsesMoomesaHardware ? 0x180000 : UsesMystwarrHardware ? 0x200000 : UsesK053245Hardware ? 0x100000 : 0x60000;
 
         public void AttachSound(TmntSound sound) => _sound = sound;
 
@@ -392,7 +399,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _sound = sound;
             _variant = loadedVariant;
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
-            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr;
+            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
         }
 
@@ -402,10 +409,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Fill(_program, (byte)0xff);
             Array.Clear(_ram);
             Array.Clear(_metamrphExtraRam);
+            Array.Clear(_moomesaSpriteRam);
             Array.Clear(_paletteRam);
             Array.Clear(_palette);
             Array.Clear(_tmnt2UnknownRam);
             Array.Clear(_tmnt2ProtRam);
+            Array.Clear(_moomesaProtRam);
             Array.Clear(_k053251);
             ResetK053251Indexes();
             Array.Copy(roms.Program, _program, Math.Min(roms.Program.Length, _program.Length));
@@ -416,11 +425,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k051960.Load(_spriteRom);
             _k053245.Load(_spriteRom);
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
-            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr;
+            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
             _k053250.Load(roms.K053250);
             _tmnt2Eeprom.ResetContents();
-            if (UsesK053245Hardware || UsesMystwarrHardware)
+            if (UsesK053245Hardware || UsesMystwarrHardware || UsesMoomesaHardware)
                 _tmnt2Eeprom.Import(roms.Eeprom);
             ResetMachine();
         }
@@ -429,10 +438,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             Array.Clear(_ram);
             Array.Clear(_metamrphExtraRam);
+            Array.Clear(_moomesaSpriteRam);
             Array.Clear(_paletteRam);
             Array.Clear(_palette);
             Array.Clear(_tmnt2UnknownRam);
             Array.Clear(_tmnt2ProtRam);
+            Array.Clear(_moomesaProtRam);
             Array.Clear(_k053251);
             ResetK053251Indexes();
             _k052109.Reset();
@@ -444,10 +455,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k054338.Reset();
             _k053252.Reset();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
-            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr;
+            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
             _interruptLevel = 0;
             _irq5Enabled = false;
+            _moomesaSpriteIrqEnabled = false;
+            _moomesaVblankIrqEnabled = false;
+            _moomesaControl2 = 0;
             _tmnt2InVblank = false;
             _soundLatch = 0xff;
             _lastSoundIrqBit = 0;
@@ -474,6 +488,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void BeginVisible()
         {
+            if (UsesMoomesaHardware)
+            {
+                _k053252.SetVpos(0);
+                return;
+            }
             if (UsesK053245Hardware)
                 _tmnt2InVblank = false;
             if (UsesMystwarrHardware)
@@ -488,6 +507,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void BeginVblank()
         {
+            if (UsesMoomesaHardware)
+            {
+                _k053252.SetVpos(ScreenVisibleLines);
+                if (_k053245.ObjectIrqEnabled)
+                    MoomesaObjectDma();
+                if (_moomesaSpriteIrqEnabled && _k053245.ObjectIrqEnabled)
+                    _interruptLevel = 4;
+                if (_moomesaVblankIrqEnabled)
+                    _interruptLevel = 5;
+                return;
+            }
             if (UsesK053245Hardware)
             {
                 _tmnt2InVblank = true;
@@ -517,6 +547,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void Render(byte[] frameBuffer)
         {
+            if (UsesMoomesaHardware)
+            {
+                RenderMoomesa(frameBuffer);
+                return;
+            }
             if (UsesK053245Hardware)
             {
                 RenderTmnt2(frameBuffer);
@@ -550,6 +585,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public byte ReadByte(uint address)
         {
             address &= 0x00ff_ffff;
+            if (UsesMoomesaHardware)
+                return ReadByteMoomesa(address);
             if (UsesK053245Hardware)
                 return ReadByteTmnt2(address);
             if (UsesMystwarrHardware)
@@ -579,6 +616,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public ushort ReadWord(uint address)
         {
             address &= 0x00ff_ffff;
+            if (UsesMoomesaHardware)
+                return ReadWordMoomesa(address);
             if (UsesK053245Hardware)
                 return ReadWordTmnt2(address);
             if (UsesMystwarrHardware)
@@ -623,6 +662,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteByte(uint address, byte value)
         {
             address &= 0x00ff_ffff;
+            if (UsesMoomesaHardware)
+            {
+                WriteByteMoomesa(address, value);
+                return;
+            }
             if (UsesK053245Hardware)
             {
                 WriteByteTmnt2(address, value);
@@ -686,6 +730,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteWord(uint address, ushort value)
         {
             address &= 0x00ff_ffff;
+            if (UsesMoomesaHardware)
+            {
+                WriteWordMoomesa(address, value);
+                return;
+            }
             if (UsesK053245Hardware)
             {
                 WriteWordTmnt2(address, value);
@@ -947,6 +996,54 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.FinishMystwarrRenderFrameStats();
         }
 
+        private void RenderMoomesa(byte[] frameBuffer)
+        {
+            string renderMask = Environment.GetEnvironmentVariable("EUTHERDRIVE_MOOMESA_RENDER_MASK") ?? "all";
+            bool drawLayer0 = renderMask == "all" || renderMask.Contains('0', StringComparison.Ordinal);
+            bool drawLayer1 = renderMask == "all" || renderMask.Contains('1', StringComparison.Ordinal);
+            bool drawLayer2 = renderMask == "all" || renderMask.Contains('2', StringComparison.Ordinal);
+            bool drawLayer3 = renderMask == "all" || renderMask.Contains('3', StringComparison.Ordinal);
+            bool drawSprites = renderMask == "all" || renderMask.Contains('s', StringComparison.OrdinalIgnoreCase);
+
+            _k056832.LayerColorBase[0] = _k053251PaletteIndex[0] << 4;
+            _k056832.LayerColorBase[1] = _k053251PaletteIndex[1] << 4;
+            _k056832.LayerColorBase[2] = _k053251PaletteIndex[2] << 4;
+            _k056832.LayerColorBase[3] = _k053251PaletteIndex[4] << 4;
+            _k056832.MetamrphTileCallback = false;
+            _k053245.SpriteColorBase = _k053251PaletteIndex[3] << 4;
+
+            _k054338.FillSolidBackground(frameBuffer);
+
+            Span<int> layer = stackalloc int[] { 0, 1, 2, 3 };
+            Span<int> priority = stackalloc int[]
+            {
+                K053251Priority(0),
+                K053251Priority(1),
+                K053251Priority(2),
+                K053251Priority(4)
+            };
+            SortKonamiLayers4(layer, priority);
+
+            _k053245.BeginMystwarrObjectFrame();
+            for (int i = 0; i < 4; i++)
+            {
+                int currentLayer = layer[i];
+                bool drawLayer = currentLayer switch
+                {
+                    0 => drawLayer0,
+                    1 => drawLayer1,
+                    2 => drawLayer2,
+                    _ => drawLayer3
+                };
+                if (drawLayer)
+                    _k056832.RenderLayer(frameBuffer, _palette, currentLayer, opaque: false);
+
+                if (drawSprites)
+                    _k053245.RenderMystwarrPriority(frameBuffer, _palette, priority[currentLayer], _k054338);
+            }
+            _k053245.FinishMystwarrRenderFrameStats();
+        }
+
         private bool BuildMystwarrLayerMixAlphas(int layer, int frameTileMixCode, Span<int> mixAlphas)
         {
             int shift = (layer & 3) << 1;
@@ -994,6 +1091,198 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int src = (y + Tmnt2VisibleStartY) * FrameStride;
                 int dst = y * FrameStride;
                 Buffer.BlockCopy(rawFrameBuffer, src, frameBuffer, dst, FrameStride);
+            }
+        }
+
+        private byte ReadByteMoomesa(uint address)
+        {
+            if (address < 0x080000 || (address >= 0x100000 && address < 0x180000))
+                return _program[address];
+            if (address >= 0x180000 && address <= 0x18ffff)
+                return _ram[address - 0x180000];
+            if (address >= 0x190000 && address <= 0x19ffff)
+                return _moomesaSpriteRam[address - 0x190000];
+            if (address >= 0x1a0000 && address <= 0x1a3fff)
+                return ReadWordByte(_k056832.ReadRamWord((int)(((address - 0x1a0000) & 0x1fff) >> 1)), address);
+            if (address >= 0x1b0000 && address <= 0x1b1fff)
+                return ReadWordByte(_k056832.ReadRomWord((int)((address - 0x1b0000) >> 1)), address);
+            if (address >= 0x1c0000 && address <= 0x1c1fff)
+                return _paletteRam[address - 0x1c0000];
+            if ((address >= 0x0c4000 && address <= 0x0c4001)
+                || (address >= 0x0d0000 && address <= 0x0d001f)
+                || (address >= 0x0d6000 && address <= 0x0d601f)
+                || (address >= 0x0da000 && address <= 0x0dc003)
+                || (address >= 0x0de000 && address <= 0x0de001))
+                return ReadWordByte(ReadWordMoomesa(address & ~1u), address);
+            return 0xff;
+        }
+
+        private ushort ReadWordMoomesa(uint address)
+        {
+            if (address < 0x07ffff || (address >= 0x100000 && address < 0x17ffff))
+                return ReadBigEndianWord(_program, (int)address);
+            if (address >= 0x180000 && address <= 0x18fffe)
+                return ReadBigEndianWord(_ram, (int)(address - 0x180000));
+            if (address >= 0x190000 && address <= 0x19fffe)
+                return ReadBigEndianWord(_moomesaSpriteRam, (int)(address - 0x190000));
+            if (address >= 0x0c4000 && address <= 0x0c4001)
+                return _k053245.ReadControlWordNoA1(0);
+            if (address >= 0x0d0000 && address <= 0x0d001e)
+                return (ushort)(0xff00 | _k053252.Read((int)((address - 0x0d0000) >> 1)));
+            if (address >= 0x0d6000 && address <= 0x0d601e)
+                return (ushort)(0xff00 | (_sound?.K054321MainRead((int)((address - 0x0d6000) >> 1)) ?? 0xff));
+            if (address >= 0x0da000 && address <= 0x0da001)
+                return (ushort)((Player(3) << 8) | Player(1));
+            if (address >= 0x0da002 && address <= 0x0da003)
+                return (ushort)((Player(2) << 8) | 0xff);
+            if (address >= 0x0dc000 && address <= 0x0dc001)
+                return (ushort)(0xff00 | MysticCoins());
+            if (address >= 0x0dc002 && address <= 0x0dc003)
+                return (ushort)(0xff00 | MoomesaEepromPort());
+            if (address >= 0x0de000 && address <= 0x0de001)
+                return _moomesaControl2;
+            if (address >= 0x1a0000 && address <= 0x1a3ffe)
+                return _k056832.ReadRamWord((int)(((address - 0x1a0000) & 0x1fff) >> 1));
+            if (address >= 0x1b0000 && address <= 0x1b1ffe)
+                return _k056832.ReadRomWord((int)((address - 0x1b0000) >> 1));
+            if (address >= 0x1c0000 && address <= 0x1c1ffe)
+                return ReadBigEndianWord(_paletteRam, (int)(address - 0x1c0000));
+            return 0xffff;
+        }
+
+        private void WriteByteMoomesa(uint address, byte value)
+        {
+            ushort word = ReadWordMoomesa(address & ~1u);
+            WriteWordByte(ref word, address, value);
+            WriteWordMoomesa(address & ~1u, word);
+        }
+
+        private void WriteWordMoomesa(uint address, ushort value)
+        {
+            if (address >= 0x180000 && address <= 0x18fffe)
+            {
+                WriteBigEndianWord(_ram, (int)(address - 0x180000), value);
+                return;
+            }
+            if (address >= 0x190000 && address <= 0x19fffe)
+            {
+                WriteBigEndianWord(_moomesaSpriteRam, (int)(address - 0x190000), value);
+                return;
+            }
+            if (address >= 0x0c0000 && address <= 0x0c003e)
+            {
+                _k056832.WriteRegWord((int)((address - 0x0c0000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0c2000 && address <= 0x0c2006)
+            {
+                _k053245.WriteControlWordNoA1((int)(address - 0x0c2000), value);
+                return;
+            }
+            if (address >= 0x0ca000 && address <= 0x0ca01e)
+            {
+                _k054338.WriteWord((int)((address - 0x0ca000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0cc000 && address <= 0x0cc01e)
+            {
+                WriteK053251((int)((address - 0x0cc000) >> 1), (byte)value);
+                return;
+            }
+            if (address >= 0x0ce000 && address <= 0x0ce01e)
+            {
+                WriteMoomesaProtection((int)((address - 0x0ce000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0d0000 && address <= 0x0d001e)
+            {
+                _k053252.Write((int)((address - 0x0d0000) >> 1), (byte)value);
+                return;
+            }
+            if (address >= 0x0d4000 && address <= 0x0d4001)
+            {
+                _sound?.PulseIrq();
+                return;
+            }
+            if (address >= 0x0d6000 && address <= 0x0d601e)
+            {
+                _sound?.K054321MainWrite((int)((address - 0x0d6000) >> 1), (byte)value);
+                return;
+            }
+            if (address >= 0x0d8000 && address <= 0x0d8006)
+            {
+                _k056832.WriteBoardRegWord((int)((address - 0x0d8000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0de000 && address <= 0x0de001)
+            {
+                WriteMoomesaControl2(value);
+                return;
+            }
+            if (address >= 0x1a0000 && address <= 0x1a3ffe)
+            {
+                _k056832.WriteRamWord((int)(((address - 0x1a0000) & 0x1fff) >> 1), value);
+                return;
+            }
+            if (address >= 0x1c0000 && address <= 0x1c1ffe)
+            {
+                int offset = (int)(address - 0x1c0000);
+                WriteBigEndianWord(_paletteRam, offset, value);
+                UpdatePaletteTmnt2(offset >> 1);
+            }
+        }
+
+        private void WriteMoomesaControl2(ushort value)
+        {
+            _moomesaControl2 = value;
+            _tmnt2Eeprom.Write((byte)value);
+            _moomesaVblankIrqEnabled = (value & 0x20) != 0;
+            _moomesaSpriteIrqEnabled = (value & 0x0800) != 0;
+        }
+
+        private byte MoomesaEepromPort()
+        {
+            int value = 0xac;
+            if (_tmnt2Eeprom.DataOut)
+                value |= 0x01;
+            if (_tmnt2Eeprom.Ready)
+                value |= 0x02;
+            return (byte)value;
+        }
+
+        private void MoomesaObjectDma()
+        {
+            for (int i = 0; i < 256; i++)
+            {
+                int source = i * 0x100;
+                ushort flags = ReadBigEndianWord(_moomesaSpriteRam, source);
+                if ((flags & 0x8000) == 0 || (flags & 0x00ff) == 0)
+                    continue;
+
+                int destination = i * 8;
+                for (int word = 0; word < 8; word++)
+                    _k053245.WriteHardwareWord(destination + word, ReadBigEndianWord(_moomesaSpriteRam, source + word * 2));
+            }
+        }
+
+        private void WriteMoomesaProtection(int offset, ushort value)
+        {
+            _moomesaProtRam[offset & 0x0f] = value;
+            if ((offset & 0x0f) != 0x0c)
+                return;
+
+            uint src1 = (uint)((_moomesaProtRam[1] & 0xff) << 16 | _moomesaProtRam[0]);
+            uint src2 = (uint)((_moomesaProtRam[3] & 0xff) << 16 | _moomesaProtRam[2]);
+            uint dst = (uint)((_moomesaProtRam[5] & 0xff) << 16 | _moomesaProtRam[4]);
+            int length = _moomesaProtRam[0x0f];
+            while (length-- > 0)
+            {
+                ushort a = ReadWordMoomesa(src1);
+                ushort b = ReadWordMoomesa(src2);
+                WriteWordMoomesa(dst, (ushort)(a + 2 * b));
+                src1 += 2;
+                src2 += 2;
+                dst += 2;
             }
         }
 
@@ -1922,6 +2211,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             SortKonamiLayerPair(layer, priority, 1, 2);
             SortKonamiLayerPair(layer, priority, 0, 2);
             SortKonamiLayerPair(layer, priority, 0, 1);
+        }
+
+        private static void SortKonamiLayers4(Span<int> layer, Span<int> priority)
+        {
+            SortKonamiLayerPair(layer, priority, 0, 1);
+            SortKonamiLayerPair(layer, priority, 2, 3);
+            SortKonamiLayerPair(layer, priority, 0, 2);
+            SortKonamiLayerPair(layer, priority, 1, 3);
+            SortKonamiLayerPair(layer, priority, 1, 2);
         }
 
         private static void SortKonamiLayerPair(Span<int> layer, Span<int> priority, int a, int b)
@@ -5262,7 +5560,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053260.Reset();
             _k054539_1.Reset();
             _k054539_2.Reset();
-            if (UsesMystwarrSound)
+            if (UsesMystwarrSound || UsesMoomesaSound)
             {
                 if (_variant == TmntHardwareVariant.Metamrph)
                 {
@@ -5273,6 +5571,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         _k054539_2.SetGain(i, 0.8);
                         _k054539_2.SetGain(i + 4, 0.8);
                     }
+                }
+                else if (_variant == TmntHardwareVariant.Moomesa)
+                {
+                    for (int i = 0; i <= 7; i++)
+                        _k054539_1.SetGain(i, 1.0);
                 }
                 else
                 {
@@ -5288,7 +5591,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _upd.Reset();
             _soundLatch = 0xff;
             _sres = 0xff;
-            _mystwarrSoundCtrl = UsesMystwarrSound ? (byte)2 : (byte)0;
+            _mystwarrSoundCtrl = (UsesMystwarrSound || UsesMoomesaSound) ? (byte)2 : (byte)0;
             _mystwarrNmiClock = false;
             _irqAsserted = false;
             _nmiAsserted = UsesK053260Sound;
@@ -5411,7 +5714,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _ym.AdvanceTimersByCpuCycles((int)elapsed, audioClock);
                 if (UsesK053260Sound)
                     _k053260.AdvanceControlCycles((int)elapsed, audioClock, OnK053260Sh1);
-                if (UsesMystwarrSound)
+                if (UsesMystwarrSound || UsesMoomesaSound)
                     _k054539_1.AdvanceTimerCycles((int)elapsed, audioClock, OnK054539Timer);
                 _pendingRenderCycles += (int)elapsed;
                 if (_nmiBlockArmedThisInstruction)
@@ -5455,6 +5758,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void RenderAudioRange(short[] audioBuffer, int startFrame, int targetFrame)
         {
+            if (UsesMoomesaSound)
+            {
+                int ymIndex = _audioFrameSampleIndex;
+                _ym.RenderStereo(audioBuffer, ref ymIndex, targetFrame, gain: Ym2151RouteGain, outputSampleRate: OutputSampleRate, routeToMono: false);
+                _audioFrameSampleIndex = ymIndex;
+                float gain = MystwarrK054539RouteGain * _k054321.OutputGain;
+                _k054539_1.RenderStereo(audioBuffer, startFrame, targetFrame, gain: gain, outputSampleRate: OutputSampleRate, swapStereo: true);
+                return;
+            }
+
             if (UsesMystwarrSound)
             {
                 float gain = MystwarrK054539RouteGain * _k054321.OutputGain;
@@ -5516,6 +5829,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public byte ReadOpcode(ushort address)
         {
+            if (UsesMoomesaSound)
+            {
+                if (address < 0x8000)
+                    return _program[address];
+                if (address is >= 0x8000 and <= 0xbfff)
+                    return _program[MystwarrBankedRomOffset(address)];
+                return ReadMemoryMoomesa(address);
+            }
+
             if (UsesMystwarrSound)
             {
                 if (address < 0x8000)
@@ -5539,6 +5861,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public byte ReadMemory(ushort address)
         {
+            if (UsesMoomesaSound)
+                return ReadMemoryMoomesa(address);
+
             if (UsesMystwarrSound)
                 return ReadMemoryMystwarr(address);
 
@@ -5582,6 +5907,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void WriteMemory(ushort address, byte value)
         {
+            if (UsesMoomesaSound)
+            {
+                WriteMemoryMoomesa(address, value);
+                return;
+            }
+
             if (UsesMystwarrSound)
             {
                 WriteMemoryMystwarr(address, value);
@@ -5666,9 +5997,62 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private bool UsesMystwarrSound => IsMystwarrFamily(_variant);
 
-        private int CurrentAudioCpuClock => UsesK053260Sound || UsesMystwarrSound ? Tmnt2AudioCpuClock : AudioCpuClock;
+        private bool UsesMoomesaSound => _variant == TmntHardwareVariant.Moomesa;
 
-        private int CurrentAudioCpuCyclesPerFrame => UsesK053260Sound || UsesMystwarrSound ? Tmnt2AudioCpuCyclesPerFrame : AudioCpuCyclesPerFrame;
+        private int CurrentAudioCpuClock => UsesK053260Sound || UsesMystwarrSound || UsesMoomesaSound ? Tmnt2AudioCpuClock : AudioCpuClock;
+
+        private int CurrentAudioCpuCyclesPerFrame => UsesK053260Sound || UsesMystwarrSound || UsesMoomesaSound ? Tmnt2AudioCpuCyclesPerFrame : AudioCpuCyclesPerFrame;
+
+        private byte ReadMemoryMoomesa(ushort address)
+        {
+            if (address < 0x8000)
+                return _program[address];
+            if (address is >= 0x8000 and <= 0xbfff)
+                return _program[MystwarrBankedRomOffset(address)];
+            if (address is >= 0xc000 and <= 0xdfff)
+                return _ram[address - 0xc000];
+            if (address is >= 0xe000 and <= 0xe22f)
+            {
+                FlushPendingAudioStream();
+                return _k054539_1.Read(address - 0xe000);
+            }
+            if (address is >= 0xec00 and <= 0xec01)
+                return _ym.ReadStatus();
+            if (address is >= 0xf000 and <= 0xf003)
+                return _k054321.SoundRead(address - 0xf000);
+            return 0xff;
+        }
+
+        private void WriteMemoryMoomesa(ushort address, byte value)
+        {
+            if (address is >= 0xc000 and <= 0xdfff)
+            {
+                _ram[address - 0xc000] = value;
+                return;
+            }
+            if (address is >= 0xe000 and <= 0xe22f)
+            {
+                FlushPendingAudioStream();
+                _k054539_1.Write(address - 0xe000, value, OnK054539Timer);
+                return;
+            }
+            if (address is >= 0xec00 and <= 0xec01)
+            {
+                _ym.Write(address - 0xec00, value);
+                _ymWrites++;
+                return;
+            }
+            if (address is >= 0xf000 and <= 0xf003)
+            {
+                _k054321.SoundWrite(address - 0xf000, value);
+                return;
+            }
+            if (address == 0xf800)
+            {
+                _mystwarrSoundCtrl = value;
+                _nmiAsserted = false;
+            }
+        }
 
         private byte ReadMemoryMystwarr(ushort address)
         {
@@ -8135,6 +8519,25 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 Find(entries, "224a06").CopyTo(roms.K054539, 0x000000);
                 Find(entries, "224a07").CopyTo(roms.K054539, 0x200000);
                 if (TryFind(entries, "metamrph.nv", out byte[]? nv))
+                    Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
+                return roms;
+            }
+            if (name == "moomesa")
+            {
+                roms.Variant = TmntHardwareVariant.Moomesa;
+                Load16Byte(entries, roms.Program, 0x000000, "151b01.q5");
+                Load16Byte(entries, roms.Program, 0x000001, "151eab02.q6");
+                Load16Byte(entries, roms.Program, 0x100000, "151a03.t5");
+                Load16Byte(entries, roms.Program, 0x100001, "151a04.t6");
+                Find(entries, "151a07.f5").CopyTo(roms.AudioCpu, 0);
+                Load32Word(entries, roms.TileRom, 0x000000, "151a05.t8");
+                Load32Word(entries, roms.TileRom, 0x000002, "151a06.t10");
+                Load64Word(entries, roms.SpriteRom, 0x000000, "151a10.b8");
+                Load64Word(entries, roms.SpriteRom, 0x000002, "151a11.a8");
+                Load64Word(entries, roms.SpriteRom, 0x000004, "151a12.b10");
+                Load64Word(entries, roms.SpriteRom, 0x000006, "151a13.a10");
+                Find(entries, "151a08.b6").CopyTo(roms.K054539, 0);
+                if (TryFind(entries, "moomesa.nv", out byte[]? nv))
                     Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
                 return roms;
             }
