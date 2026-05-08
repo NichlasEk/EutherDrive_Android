@@ -92,9 +92,9 @@ public sealed class Deco32Adapter : IEmulatorCore
         _palette = new PaletteDevice();
         _tilemaps = new DecoTilemapDevice(profile, _palette);
         _sprites = new DecoSpriteDevice(profile, _palette);
-        _ym2151 = new YM2151();
-        _oki1 = new OKI6295(profile.Oki1, 0.24f);
-        _oki2 = new OKI6295(profile.Oki2, 0.03f);
+        _oki1 = new OKI6295(profile.Oki1, 32_220_000 / 32, 1.0f);
+        _oki2 = new OKI6295(profile.Oki2, 32_220_000 / 16, 0.35f);
+        _ym2151 = new YM2151(SoundBankswitch);
         _soundCpu = new Z80SoundCpu(profile.AudioCpu, _ym2151, _oki1, _oki2);
         _memory = new Deco32MemoryMap(profile, _palette, _tilemaps, _sprites, _soundCpu, _ym2151, _oki1, _oki2, asserted => _mainCpu.SetIrqLine(asserted), () => _mainCpu.Pc);
         _memory.Reset();
@@ -117,6 +117,12 @@ public sealed class Deco32Adapter : IEmulatorCore
             romHash,
             PersistentStoragePath.ResolveSavestateDirectory(path, "deco32"));
         RenderFrame();
+    }
+
+    private void SoundBankswitch(byte data)
+    {
+        _oki1?.SetRomBank((data >> 0) & 1);
+        _oki2?.SetRomBank((data >> 1) & 1);
     }
 
     public void Reset()
@@ -2325,6 +2331,12 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     private const int MaxChipLogsPerFrame = 100;
     private static readonly bool TraceSound =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_TRACE_SOUND"), "1", StringComparison.Ordinal);
+    private static readonly bool MuteYm =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_MUTE_YM"), "1", StringComparison.Ordinal);
+    private static readonly bool MuteOki1 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_MUTE_OKI1"), "1", StringComparison.Ordinal);
+    private static readonly bool MuteOki2 =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_MUTE_OKI2"), "1", StringComparison.Ordinal);
 
     private readonly byte[] _rom;
     private readonly byte[] _ram = new byte[0x800];
@@ -2400,9 +2412,12 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         int ymIndex = 0;
         int oki1Index = 0;
         int oki2Index = 0;
-        _ym.RenderStereo(audioBuffer, ref ymIndex, sampleFrames);
-        _oki1.RenderStereo(audioBuffer, ref oki1Index, sampleFrames);
-        _oki2.RenderStereo(audioBuffer, ref oki2Index, sampleFrames);
+        if (!MuteYm)
+            _ym.RenderStereo(audioBuffer, ref ymIndex, sampleFrames);
+        if (!MuteOki1)
+            _oki1.RenderStereo(audioBuffer, ref oki1Index, sampleFrames);
+        if (!MuteOki2)
+            _oki2.RenderStereo(audioBuffer, ref oki2Index, sampleFrames);
         int mixPeak = Deco32AudioUtil.Peak(audioBuffer, 0, sampleFrames);
         _lastPeak = mixPeak;
         if (TraceSound && (mixPeak != 0 || (_frameCounter % 60) == 0))
@@ -2493,6 +2508,8 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
 public sealed class YM2151
 {
     private readonly Cps1Ym2151 _core = new();
+    private readonly Action<byte>? _portWrite;
+    private byte _selectedRegister;
     private int _registerWrites;
     private int _dataWrites;
     public int LastPeak { get; private set; }
@@ -2500,9 +2517,15 @@ public sealed class YM2151
     public bool IrqAsserted => _core.IrqAsserted;
     public string DebugSummary => $"{_core.DebugSummary} ymW={_registerWrites}/{_dataWrites} ymPeak={LastPeak}";
 
+    public YM2151(Action<byte>? portWrite = null)
+    {
+        _portWrite = portWrite;
+    }
+
     public void Reset()
     {
         _core.Reset();
+        _selectedRegister = 0;
         _registerWrites = 0;
         _dataWrites = 0;
         LastPeak = 0;
@@ -2513,9 +2536,16 @@ public sealed class YM2151
     {
         _core.Write(offset, value);
         if ((offset & 1) == 0)
+        {
+            _selectedRegister = value;
             _registerWrites++;
+        }
         else
+        {
             _dataWrites++;
+            if (_selectedRegister == 0x1b)
+                _portWrite?.Invoke((byte)(value >> 6));
+        }
     }
 
     public void AdvanceTimersByCpuCycles(int cpuCycles, double cpuClockHz)
@@ -2524,7 +2554,7 @@ public sealed class YM2151
     public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
     {
         int before = sampleFrameIndex;
-        _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: 0.60f);
+        _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: 0.42f);
         LastPeak = Deco32AudioUtil.Peak(destination, before, sampleFrameIndex);
     }
 }
@@ -2535,24 +2565,28 @@ public sealed class OKI6295
     private readonly byte[] _rom;
     private readonly Cps1Oki6295 _core = new();
     private readonly float _gain;
+    private readonly int _clockHz;
     private int _bank;
     private int _writes;
     public int LastPeak { get; private set; }
 
-    public OKI6295(byte[] rom, float gain = 0.30f)
+    public OKI6295(byte[] rom, int clockHz, float routeGain)
     {
         _rom = rom ?? Array.Empty<byte>();
-        _gain = gain;
-        LoadBank(0);
+        _clockHz = Math.Max(1, clockHz);
+        _gain = routeGain * 0.30f;
+        _core.SetClock(_clockHz);
+        _core.SetPin7(true);
+        LoadBank(0, reset: true);
     }
 
-    public string DebugSummary => $"bank={_bank} writes={_writes} peak={LastPeak}";
+    public string DebugSummary => $"bank={_bank} clk={_clockHz} writes={_writes} peak={LastPeak}";
     public void Reset()
     {
         _bank = 0;
         _writes = 0;
         LastPeak = 0;
-        LoadBank(0);
+        LoadBank(0, reset: true);
     }
     public byte ReadStatus() => _core.ReadStatus();
     public void Write(byte value)
@@ -2567,7 +2601,7 @@ public sealed class OKI6295
             return;
 
         _bank = bank;
-        LoadBank(bank);
+        LoadBank(bank, reset: false);
     }
 
     public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
@@ -2577,11 +2611,11 @@ public sealed class OKI6295
         LastPeak = Deco32AudioUtil.Peak(destination, before, sampleFrameIndex);
     }
 
-    private void LoadBank(int bank)
+    private void LoadBank(int bank, bool reset)
     {
         if (_rom.Length <= BankSize)
         {
-            _core.Load(_rom);
+            LoadRomWindow(_rom, reset);
             return;
         }
 
@@ -2590,7 +2624,15 @@ public sealed class OKI6295
         int count = Math.Min(BankSize, _rom.Length - source);
         if (count > 0)
             Array.Copy(_rom, source, window, 0, count);
-        _core.Load(window);
+        LoadRomWindow(window, reset);
+    }
+
+    private void LoadRomWindow(byte[] rom, bool reset)
+    {
+        if (reset)
+            _core.Load(rom);
+        else
+            _core.ReplaceRom(rom);
     }
 }
 

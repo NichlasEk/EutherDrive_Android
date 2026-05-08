@@ -41,6 +41,7 @@ internal sealed class Cps1Oki6295
     [NonSerialized]
     private byte[] _rom = Array.Empty<byte>();
     private int _pendingCommand = -1;
+    private int _clockHz = DefaultClockHz;
     private bool _pin7High = true;
     private double _sourcePhase;
     private short _lastSourceSample;
@@ -50,6 +51,11 @@ internal sealed class Cps1Oki6295
     {
         _rom = rom ?? Array.Empty<byte>();
         Reset();
+    }
+
+    public void ReplaceRom(byte[] rom)
+    {
+        _rom = rom ?? Array.Empty<byte>();
     }
 
     public void Reset()
@@ -80,6 +86,16 @@ internal sealed class Cps1Oki6295
             return;
 
         _pin7High = high;
+        _sourcePhase = 0.0;
+    }
+
+    public void SetClock(int clockHz)
+    {
+        clockHz = Math.Max(1, clockHz);
+        if (_clockHz == clockHz)
+            return;
+
+        _clockHz = clockHz;
         _sourcePhase = 0.0;
     }
 
@@ -165,7 +181,7 @@ internal sealed class Cps1Oki6295
     }
 
     private int GetSampleRate()
-        => DefaultClockHz / (_pin7High ? 132 : 165);
+        => _clockHz / (_pin7High ? 132 : 165);
 
     private short GenerateSourceSample()
     {
