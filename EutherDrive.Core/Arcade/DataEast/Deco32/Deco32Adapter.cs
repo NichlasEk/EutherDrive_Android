@@ -42,6 +42,7 @@ public sealed class Deco32Adapter : IEmulatorCore
     private int _traceLines;
     private string? _lastStopReason;
     private RomIdentity? _romIdentity;
+    private string? _eepromPath;
     private uint _visiblePc;
     private uint _visibleOp;
     private uint _visibleCpsr;
@@ -87,7 +88,12 @@ public sealed class Deco32Adapter : IEmulatorCore
         _ym2151 = new YM2151();
         _oki1 = new OKI6295(profile.Oki1);
         _oki2 = new OKI6295(profile.Oki2);
-        _memory = new Deco32MemoryMap(profile, _palette, _tilemaps, _sprites, _soundCpu, _ym2151, _oki1, _oki2);
+        _memory = new Deco32MemoryMap(profile, _palette, _tilemaps, _sprites, _soundCpu, _ym2151, _oki1, _oki2, asserted => _mainCpu.SetIrqLine(asserted));
+        _memory.Reset();
+        string saveDirectory = PersistentStoragePath.ResolveSaveDirectory(path, "deco32");
+        Directory.CreateDirectory(saveDirectory);
+        _eepromPath = Path.Combine(saveDirectory, Path.GetFileNameWithoutExtension(path) + ".eeprom");
+        LoadEeprom();
         _mainCpu.Reset(_memory);
         _loaded = true;
         _frameCounter = 0;
@@ -110,6 +116,7 @@ public sealed class Deco32Adapter : IEmulatorCore
         if (!_loaded || _memory is null)
             return;
         _memory.Reset();
+        LoadEeprom();
         _mainCpu.Reset(_memory);
         _frameCounter = 0;
         _traceLines = 0;
@@ -124,23 +131,73 @@ public sealed class Deco32Adapter : IEmulatorCore
         if (!_loaded || _memory is null)
             return;
 
-        _memory.SetInput(_input);
-        _memory.BeginFrame();
-        ExecuteMainCpu(CyclesPerFrame * 238 / 274);
-        CaptureCpuPoint(out _visiblePc, out _visibleOp, out _visibleCpsr);
-        _memory.AssertVblank();
-        _mainCpu.SetIrqLine(true);
-        ExecuteMainCpu(512);
-        CaptureCpuPoint(out _vblankPc, out _vblankOp, out _vblankCpsr);
-        _memory.ClearVblank();
-        ExecuteMainCpu((CyclesPerFrame * 36 / 274) - 512);
-        _mainCpu.SetIrqLine(false);
-        CaptureCpuPoint(out _postFramePc, out _postFrameOp, out _postFrameCpsr);
-        _memory.EndFrame();
-        RenderFrame();
-        Array.Clear(_audioBuffer);
-        _soundCpu?.RunFrame();
-        _frameCounter++;
+        try
+        {
+            _memory.SetInput(_input);
+            _memory.BeginFrame();
+            ExecuteMainCpu(CyclesPerFrame * 238 / 274);
+            CaptureCpuPoint(out _visiblePc, out _visibleOp, out _visibleCpsr);
+            _memory.AssertVblank();
+            ExecuteMainCpu(512);
+            CaptureCpuPoint(out _vblankPc, out _vblankOp, out _vblankCpsr);
+            _memory.EndVblank();
+            ExecuteMainCpu((CyclesPerFrame * 36 / 274) - 512);
+            CaptureCpuPoint(out _postFramePc, out _postFrameOp, out _postFrameCpsr);
+            _memory.EndFrame();
+            RenderFrame();
+            Array.Clear(_audioBuffer);
+            _soundCpu?.RunFrame();
+            _frameCounter++;
+        }
+        finally
+        {
+            SaveEepromIfDirty();
+        }
+    }
+
+    private void LoadEeprom()
+    {
+        if (_memory is null || string.IsNullOrWhiteSpace(_eepromPath))
+            return;
+
+        if (!File.Exists(_eepromPath))
+        {
+            PersistEepromSnapshot();
+            return;
+        }
+
+        try
+        {
+            _memory.LoadEeprom(File.ReadAllBytes(_eepromPath));
+        }
+        catch
+        {
+            // Corrupt NVRAM should not prevent the board from booting.
+        }
+    }
+
+    private void PersistEepromSnapshot()
+    {
+        if (_memory is null || string.IsNullOrWhiteSpace(_eepromPath))
+            return;
+
+        try
+        {
+            File.WriteAllBytes(_eepromPath, _memory.ExportEeprom());
+            _memory.ClearEepromDirty();
+        }
+        catch
+        {
+            // Save failures are non-fatal; the board can still run with volatile NVRAM.
+        }
+    }
+
+    private void SaveEepromIfDirty()
+    {
+        if (_memory is null || !_memory.EepromDirty || string.IsNullOrWhiteSpace(_eepromPath))
+            return;
+
+        PersistEepromSnapshot();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -502,6 +559,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
     private readonly YM2151 _ym2151;
     private readonly OKI6295 _oki1;
     private readonly OKI6295 _oki2;
+    private readonly Action<bool> _setMainIrqLine;
     private readonly byte[] _workRam = new byte[0x20000];
     private readonly byte[] _aceRam = new byte[0xa0];
     private readonly Deco104Protection _ioprot = new();
@@ -509,12 +567,11 @@ public sealed class Deco32MemoryMap : IArm6Bus
     private ArcadeInputState _input;
     private bool _vblank;
     private byte _priority;
-    private bool _backupGuardApplied;
     private uint _lastWorkRamReadAddress;
     private uint _lastWorkRamReadValue;
     private int _workRamReadProbeCount;
 
-    public Deco32MemoryMap(NightSlashersGameProfile profile, PaletteDevice palette, DecoTilemapDevice tilemaps, DecoSpriteDevice sprites, Z80SoundCpu soundCpu, YM2151 ym2151, OKI6295 oki1, OKI6295 oki2)
+    public Deco32MemoryMap(NightSlashersGameProfile profile, PaletteDevice palette, DecoTilemapDevice tilemaps, DecoSpriteDevice sprites, Z80SoundCpu soundCpu, YM2151 ym2151, OKI6295 oki1, OKI6295 oki2, Action<bool> setMainIrqLine)
     {
         _profile = profile;
         _palette = palette;
@@ -524,14 +581,20 @@ public sealed class Deco32MemoryMap : IArm6Bus
         _ym2151 = ym2151;
         _oki1 = oki1;
         _oki2 = oki2;
+        _setMainIrqLine = setMainIrqLine;
     }
 
     public int VideoWriteCount { get; private set; }
     public int PaletteWriteCount { get; private set; }
     public int SpriteWriteCount { get; private set; }
+    public bool EepromDirty => _eeprom.Dirty;
     public string ProtectionDebugSummary => $"{_ioprot.DebugSummary} {RamDebugSummary}";
     public string TilemapDebugSummary => _tilemaps.DebugSummary;
     public string SpriteDebugSummary => _sprites.DebugSummary;
+
+    public void LoadEeprom(ReadOnlySpan<byte> data) => _eeprom.Import(data);
+    public byte[] ExportEeprom() => _eeprom.Export();
+    public void ClearEepromDirty() => _eeprom.ClearDirty();
 
     public void Reset()
     {
@@ -541,7 +604,6 @@ public sealed class Deco32MemoryMap : IArm6Bus
         _eeprom.Reset();
         _vblank = false;
         _priority = 0;
-        _backupGuardApplied = false;
         _lastWorkRamReadAddress = 0;
         _lastWorkRamReadValue = 0;
         _workRamReadProbeCount = 0;
@@ -558,14 +620,17 @@ public sealed class Deco32MemoryMap : IArm6Bus
     public void SetInput(ArcadeInputState input) => _input = input;
     public void BeginFrame()
     {
-        // The real Z80 sound board acknowledges this boot-time command flag.
-        // Until the sound CPU is fully integrated, keep the main ARM from
-        // spinning forever in the sound handshake.
-        _workRam[0] &= 0x7f;
     }
     public void EndFrame() => _sprites.Buffer();
-    public void AssertVblank() => _vblank = true;
-    public void ClearVblank() => _vblank = false;
+    public void AssertVblank()
+    {
+        _vblank = true;
+        _setMainIrqLine(true);
+    }
+
+    public void EndVblank() => _vblank = false;
+
+    public void AcknowledgeVblankIrq() => _setMainIrqLine(false);
 
     public void RenderWorkRamTextOverlay(byte[] fb, int width, int height, int stride)
     {
@@ -627,12 +692,11 @@ public sealed class Deco32MemoryMap : IArm6Bus
         if (address is >= 0x100000 and <= 0x11ffff)
         {
             WriteLe32(_workRam, (int)(address - 0x100000), value, mask);
-            MaybeApplyNightSlashersBackupGuard(address - 0x100000);
             return;
         }
-        if (address == 0x140000)
+        if (address is >= 0x140000 and <= 0x140003)
         {
-            _vblank = false;
+            AcknowledgeVblankIrq();
             return;
         }
         if ((address & ~3u) == 0x150000)
@@ -734,7 +798,6 @@ public sealed class Deco32MemoryMap : IArm6Bus
 
     private uint ReadWorkRam32(uint address)
     {
-        MaybeApplyNightSlashersBackupGuard(address - 0x100000);
         uint value = ReadLe32(_workRam, (int)(address - 0x100000));
         if ((address & ~3u) == 0x100000)
             value &= 0xffffff7fu;
@@ -767,6 +830,7 @@ public sealed class Deco32MemoryMap : IArm6Bus
         if (!_vblank) value &= unchecked((ushort)~0x0010);
         if (_input.X) value &= unchecked((ushort)~0x0001);
         if (_input.Y) value &= unchecked((ushort)~0x0004);
+        if (_input.Mode) value &= unchecked((ushort)~0x0008);
         return value;
     }
 
@@ -809,38 +873,8 @@ public sealed class Deco32MemoryMap : IArm6Bus
             uint magic1 = ReadLe32(_workRam, 0x1fd60);
             ushort chk0 = ReadLe16(_workRam, 0x1fd3c);
             ushort chk1 = ReadLe16(_workRam, 0x1fd7c);
-            return $"ram[000={b000:X2}/{b001:X2} 003={b003:X2} 008={b008:X2} 00c={b00c:X2} 014={b014:X2} 034={b034:X2}/{b035:X2}/{b036:X2} 038={b038:X2}/{b039:X2}/{b03a:X2} 100={b100:X2} 1fd00={sfd0:X2}{sfd1:X2}{sfd2:X2}{sfd3:X2}/{sfd4:X2}{sfd5:X2}{sfd6:X2}{sfd7:X2} bsum={block0Sum & 0xffff:X4}/{chk0:X4}:{magic0:X8},{block1Sum & 0xffff:X4}/{chk1:X4}:{magic1:X8} br=0x{_lastWorkRamReadAddress:X6}:0x{_lastWorkRamReadValue:X8}/{_workRamReadProbeCount} bguard={(_backupGuardApplied ? 1 : 0)}] {_eeprom.DebugSummary}";
+            return $"ram[000={b000:X2}/{b001:X2} 003={b003:X2} 008={b008:X2} 00c={b00c:X2} 014={b014:X2} 034={b034:X2}/{b035:X2}/{b036:X2} 038={b038:X2}/{b039:X2}/{b03a:X2} 100={b100:X2} 1fd00={sfd0:X2}{sfd1:X2}{sfd2:X2}{sfd3:X2}/{sfd4:X2}{sfd5:X2}{sfd6:X2}{sfd7:X2} bsum={block0Sum & 0xffff:X4}/{chk0:X4}:{magic0:X8},{block1Sum & 0xffff:X4}/{chk1:X4}:{magic1:X8} br=0x{_lastWorkRamReadAddress:X6}:0x{_lastWorkRamReadValue:X8}/{_workRamReadProbeCount}] {_eeprom.DebugSummary}";
         }
-    }
-
-    private void MaybeApplyNightSlashersBackupGuard(uint offset)
-    {
-        if (offset < 0x1fd00 || offset > 0x1fd7f)
-            return;
-
-        Span<byte> block = stackalloc byte[0x40];
-        _workRam.AsSpan(0x1fd00, block.Length).CopyTo(block);
-        if (NightSlashersBackupBlockIsValid(block))
-            return;
-
-        SerialEeprom93C46.BuildNightSlashersFactoryBlock(block);
-        block.CopyTo(_workRam.AsSpan(0x1fd00, block.Length));
-        block.CopyTo(_workRam.AsSpan(0x1fd40, block.Length));
-        _backupGuardApplied = true;
-    }
-
-    private static bool NightSlashersBackupBlockIsValid(ReadOnlySpan<byte> block)
-    {
-        if (block.Length < 0x40)
-            return false;
-        if (block[0x20] != 0x30 || block[0x21] != 0x32 || block[0x22] != 0x4f || block[0x23] != 0x43)
-            return false;
-
-        int sum = 0;
-        for (int i = 0; i < 0x40; i++)
-            sum += block[i];
-        ushort expected = (ushort)(block[0x3c] | (block[0x3d] << 8));
-        return ((ushort)sum) == expected;
     }
 
     private static uint ReadMasked16(byte[] data, int offset)
@@ -960,6 +994,8 @@ public sealed class Deco32MemoryMap : IArm6Bus
 
 internal sealed class SerialEeprom93C46
 {
+    private static readonly bool Trace =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_TRACE_EEPROM"), "1", StringComparison.Ordinal);
     private readonly ushort[] _words = new ushort[64];
     private bool _cs;
     private bool _clk;
@@ -972,16 +1008,17 @@ internal sealed class SerialEeprom93C46
     private int _outBits;
     private ushort _outShift;
     private bool _writeEnabled;
+    private bool _writeAll;
     private int _reads;
     private int _writes;
     private byte _lastData;
+    public bool Dirty { get; private set; }
 
     public bool DoRead => _do;
 
     public void Reset()
     {
         Array.Fill(_words, (ushort)0xffff);
-        LoadNightSlashersFactoryDefaults();
         _cs = false;
         _clk = false;
         _di = false;
@@ -993,47 +1030,52 @@ internal sealed class SerialEeprom93C46
         _outBits = 0;
         _outShift = 0xffff;
         _writeEnabled = false;
+        _writeAll = false;
         _reads = 0;
         _writes = 0;
         _lastData = 0;
+        Dirty = false;
     }
 
-    private void LoadNightSlashersFactoryDefaults()
+    public byte[] Export()
     {
-        Span<byte> block = stackalloc byte[0x40];
-        BuildNightSlashersFactoryBlock(block);
-
-        for (int copy = 0; copy < 2; copy++)
+        byte[] data = new byte[_words.Length * 2];
+        for (int i = 0; i < _words.Length; i++)
         {
-            int baseOffset = copy * block.Length;
-            for (int i = 0; i < block.Length; i += 2)
-                _words[(baseOffset + i) >> 1] = (ushort)((block[i] << 8) | block[i + 1]);
+            data[i * 2] = (byte)_words[i];
+            data[i * 2 + 1] = (byte)(_words[i] >> 8);
         }
+        return data;
     }
 
-    internal static void BuildNightSlashersFactoryBlock(Span<byte> block)
+    public void Import(ReadOnlySpan<byte> data)
     {
-        block.Clear();
-        block[0x00] = 0x20;
-        block[0x04] = 0x01;
-        block[0x20] = 0x30;
-        block[0x21] = 0x32;
-        block[0x22] = 0x4f;
-        block[0x23] = 0x43;
+        if (data.Length < _words.Length * 2)
+            return;
 
-        int baseSum = 0;
-        for (int i = 0; i < block.Length; i++)
-        {
-            if (i is >= 0x3c and <= 0x3f)
-                continue;
-            baseSum += block[i];
-        }
+        for (int i = 0; i < _words.Length; i++)
+            _words[i] = (ushort)(data[i * 2] | (data[i * 2 + 1] << 8));
+        ResetLines();
+        Dirty = false;
+    }
 
-        ushort checksum = (ushort)(baseSum + 0x1fe);
-        block[0x3c] = (byte)checksum;
-        block[0x3d] = (byte)(checksum >> 8);
-        block[0x3e] = (byte)(0xff - (checksum >> 8));
-        block[0x3f] = (byte)(0xff - (checksum & 0xff));
+    public void ClearDirty() => Dirty = false;
+
+    private void ResetLines()
+    {
+        _cs = false;
+        _clk = false;
+        _di = false;
+        _do = true;
+        _state = 0;
+        _command = 0;
+        _bits = 0;
+        _address = 0;
+        _outBits = 0;
+        _outShift = 0xffff;
+        _writeEnabled = false;
+        _writeAll = false;
+        _lastData = 0;
     }
 
     public void Write(byte data)
@@ -1059,6 +1101,7 @@ internal sealed class SerialEeprom93C46
             _bits = 0;
             _command = 0;
             _outBits = 0;
+            _writeAll = false;
             _do = true;
             return;
         }
@@ -1068,11 +1111,12 @@ internal sealed class SerialEeprom93C46
         _bits = 0;
         _command = 0;
         _outBits = 0;
+        _writeAll = false;
         _do = true;
     }
 
     public string DebugSummary
-        => $"eep[cs={(_cs ? 1 : 0)} clk={(_clk ? 1 : 0)} di={(_di ? 1 : 0)} do={(_do ? 1 : 0)} st={_state} cmd=0x{_command:X} a=0x{_address:X2} r={_reads} w={_writes} last=0x{_lastData:X2}]";
+        => $"eep[cs={(_cs ? 1 : 0)} clk={(_clk ? 1 : 0)} di={(_di ? 1 : 0)} do={(_do ? 1 : 0)} st={_state} cmd=0x{_command:X} a=0x{_address:X2} r={_reads} w={_writes} last=0x{_lastData:X2} w00=0x{_words[0]:X4} w10=0x{_words[0x10]:X4} w1e=0x{_words[0x1e]:X4} w1f=0x{_words[0x1f]:X4}]";
 
     private void Clock(bool bit)
     {
@@ -1114,10 +1158,26 @@ internal sealed class SerialEeprom93C46
                 {
                     if (_writeEnabled)
                     {
-                        _words[_address] = _outShift;
-                        _writes++;
+                        if (_writeAll)
+                        {
+                            for (int i = 0; i < _words.Length; i++)
+                                _words[i] &= _outShift;
+                            _writes += _words.Length;
+                            Dirty = true;
+                            if (Trace)
+                                Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"[DECO32 EEPROM] WRITEALL v=0x{_outShift:X4}"));
+                        }
+                        else
+                        {
+                            _words[_address] = _outShift;
+                            _writes++;
+                            Dirty = true;
+                            if (Trace)
+                                Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"[DECO32 EEPROM] WRITE a=0x{_address:X2} v=0x{_outShift:X4}"));
+                        }
                     }
                     _state = 4;
+                    _writeAll = false;
                     _do = true;
                 }
                 break;
@@ -1134,6 +1194,8 @@ internal sealed class SerialEeprom93C46
                 _do = false;
                 _reads++;
                 _state = 4;
+                if (Trace)
+                    Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"[DECO32 EEPROM] READ a=0x{_address:X2} v=0x{_outShift:X4}"));
                 break;
             case 0b01:
                 _outShift = 0;
@@ -1145,17 +1207,45 @@ internal sealed class SerialEeprom93C46
                 {
                     _words[_address] = 0xffff;
                     _writes++;
+                    Dirty = true;
+                    if (Trace)
+                        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"[DECO32 EEPROM] ERASE a=0x{_address:X2}"));
                 }
                 _state = 4;
                 _do = true;
                 break;
             default:
-                if ((_address & 0x30) == 0x30)
-                    _writeEnabled = true;
-                else if ((_address & 0x30) == 0x00)
-                    _writeEnabled = false;
-                _state = 4;
-                _do = true;
+                switch (_address >> 4)
+                {
+                    case 0:
+                        _writeEnabled = false;
+                        _state = 4;
+                        _do = true;
+                        break;
+                    case 1:
+                        _outShift = 0;
+                        _bits = 0;
+                        _writeAll = true;
+                        _state = 3;
+                        break;
+                    case 2:
+                        if (_writeEnabled)
+                        {
+                            Array.Fill(_words, (ushort)0xffff);
+                            _writes += _words.Length;
+                            Dirty = true;
+                            if (Trace)
+                                Console.WriteLine("[DECO32 EEPROM] ERASEALL");
+                        }
+                        _state = 4;
+                        _do = true;
+                        break;
+                    case 3:
+                        _writeEnabled = true;
+                        _state = 4;
+                        _do = true;
+                        break;
+                }
                 break;
         }
     }
@@ -1972,7 +2062,17 @@ public sealed class Arm6Cpu
         {
             case 0x0: result = a & b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
             case 0x1: result = a ^ b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
-            case 0x2: result = a - b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetSubFlags(a, b, result)); break;
+            case 0x2:
+                result = a - b;
+                WriteReg(rd, result);
+                if (setFlags)
+                {
+                    if (rd == 15)
+                        RestoreSavedStatusForPcWrite();
+                    else
+                        SetSubFlags(a, b, result);
+                }
+                break;
             case 0x3: result = b - a; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetSubFlags(b, a, result)); break;
             case 0x4: result = a + b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetAddFlags(a, b, result)); break;
             case 0x5: result = a + b + (_flagC ? 1u : 0u); WriteReg(rd, result); if (setFlags) SetDataFlags(rd, () => SetAddFlags(a, b + (_flagC ? 1u : 0u), result)); break;
@@ -1982,7 +2082,7 @@ public sealed class Arm6Cpu
             case 0xa: result = a - b; SetSubFlags(a, b, result); break;
             case 0xb: result = a + b; SetAddFlags(a, b, result); break;
             case 0xc: result = a | b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
-            case 0xd: result = b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
+            case 0xd: result = b; WriteReg(rd, result); if (setFlags && rd != 15) SetLogicFlags(result, shifterCarry); break;
             case 0xe: result = a & ~b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
             case 0xf: result = ~b; WriteReg(rd, result); if (setFlags) SetDataFlags(rd, result, shifterCarry); break;
             default: Halt($"unimplemented data op {opcode:X}"); break;
@@ -2053,7 +2153,7 @@ public sealed class Arm6Cpu
 
     private int SingleDataTransfer(uint op)
     {
-        bool immediateShift = (op & 0x02000000) == 0;
+        bool immediateOffset = (op & 0x02000000) == 0;
         bool pre = (op & 0x01000000) != 0;
         bool up = (op & 0x00800000) != 0;
         bool byteAccess = (op & 0x00400000) != 0;
@@ -2061,7 +2161,7 @@ public sealed class Arm6Cpu
         bool load = (op & 0x00100000) != 0;
         int rn = (int)((op >> 16) & 0xf);
         int rd = (int)((op >> 12) & 0xf);
-        uint offset = immediateShift ? op & 0xfff : Operand2(op, out _);
+        uint offset = immediateOffset ? op & 0xfff : SingleTransferRegisterOffset(op);
         uint baseAddr = ReadReg(rn);
         uint address = pre ? (up ? baseAddr + offset : baseAddr - offset) : baseAddr;
         uint newBase = up ? baseAddr + offset : baseAddr - offset;
@@ -2155,6 +2255,31 @@ public sealed class Arm6Cpu
             1 => Lsr(value, amount, out carry),
             2 => Asr(value, amount, out carry),
             _ => RorWithCarry(value, amount, out carry)
+        };
+    }
+
+    private uint SingleTransferRegisterOffset(uint op)
+    {
+        uint value = ReadReg((int)(op & 0xf));
+        int type = (int)((op >> 5) & 3);
+        int amount = (int)((op >> 7) & 0x1f);
+        if (amount == 0)
+        {
+            return type switch
+            {
+                0 => value,
+                1 => 0,
+                2 => (value & 0x80000000) != 0 ? 0xffffffffu : 0,
+                _ => (_flagC ? 0x80000000u : 0) | (value >> 1)
+            };
+        }
+
+        return type switch
+        {
+            0 => value << amount,
+            1 => value >> amount,
+            2 => (uint)((int)value >> amount),
+            _ => Ror(value, amount)
         };
     }
 
