@@ -2747,6 +2747,81 @@ def print_token_marker_family_scan(base_words: list[int]) -> None:
         print(f"    ... {len(hits) - 32} more high-signal marker hits")
 
 
+def print_upstream_marker_block_test(base_words: list[int]) -> None:
+    print("\n== upstream marker block test")
+    print("  tests whether $0e38 can be a real 0x3a-byte trailer rather than a marker-shaped coincidence")
+    block_stride = 0x3A
+    block_words = block_stride // 2
+    alphabet = token_block_alphabet(base_words)
+    candidate_start = 0x0E38 - (block_stride - 4)
+    marker_addr = candidate_start + block_stride - 4
+    param_addr = candidate_start + block_stride - 2
+    marker = base_words[marker_addr // 2]
+    raw_param = base_words[param_addr // 2]
+    row = [base_words[(candidate_start + column * 2) // 2] for column in range(block_words)]
+    clean_starts = [0x0ED4, 0x0F0E, 0x0F48, 0x0F82, 0x0FBC, 0x0FF6]
+    clean_rows = [
+        [base_words[(start + column * 2) // 2] for column in range(block_words)]
+        for start in clean_starts
+    ]
+    stable_columns = []
+    for column in range(block_words):
+        values = [clean_row[column] for clean_row in clean_rows]
+        if len(set(values)) == 1:
+            stable_columns.append((column, values[0]))
+
+    token_hits = sum(1 for word in row[:-1] if word in alphabet)
+    stable_hits = sum(1 for column, value in stable_columns if row[column] == value)
+    stable_rendered = " ".join(
+        f"w{column:02d}:{row[column]:04x}{'*' if row[column] == value else ''}"
+        for column, value in stable_columns
+    )
+    print(
+        f"  candidate block ${candidate_start:04x}-${candidate_start + block_stride - 2:04x}: "
+        f"token_hits={token_hits}/{block_words - 1} stable_hits={stable_hits}/{len(stable_columns)} "
+        f"trailer={marker:04x} {raw_param:04x}"
+    )
+    print(f"  stable-column check: {stable_rendered}")
+
+    best = []
+    for label_idx, clean_row in enumerate(clean_rows, 1):
+        exact = sum(1 for column, word in enumerate(row) if clean_row[column] == word)
+        exact_without_trailer = sum(1 for column, word in enumerate(row[:-2]) if clean_row[column] == word)
+        best.append((exact, exact_without_trailer, f"B{label_idx:02d}"))
+    best.sort(reverse=True)
+    print("  exact column matches against clean blocks:")
+    for exact, exact_without_trailer, label in best:
+        print(f"    {label}: exact={exact:2d}/{block_words} body_exact={exact_without_trailer:2d}/{block_words - 2}")
+
+    print("  trailer interpretations:")
+    label_blocks = [
+        ("U00", candidate_start),
+        ("B04", 0x0F82),
+        ("B05", 0x0FBC),
+        ("B07", 0x1030),
+    ]
+    for score, mode, interp, target, param, reasons in token_block_trailer_candidates(
+        base_words, candidate_start, marker_addr, param_addr
+    ):
+        if score < 5:
+            continue
+        block_label = token_block_label_for_named_address(target, label_blocks, block_stride)
+        print(
+            f"    score={score:2d} {mode:<4} {interp:<10} param={param:04x} "
+            f"-> ${target:04x} {block_label:<18} {'/'.join(reasons)}"
+        )
+
+    print("  candidate block words:")
+    for offset in range(0, block_words, 8):
+        parts = []
+        for column in range(offset, min(block_words, offset + 8)):
+            addr = candidate_start + column * 2
+            word = row[column]
+            mark = "tok" if word in alphabet else "---"
+            parts.append(f"${addr:04x}:{mark}:{word:04x}")
+        print("    " + " ".join(parts))
+
+
 def move_from_postincrement_role(word: int) -> str | None:
     size = (word >> 12) & 0xF
     if size not in (1, 2, 3):
@@ -3205,6 +3280,7 @@ def main() -> None:
     print_token_block_trailer_param_model(base_words)
     print_token_block_trailer_confidence_model(base_words)
     print_token_marker_family_scan(base_words)
+    print_upstream_marker_block_test(base_words)
     print_table_cluster_consumer_probe(base_words)
     print_table_cluster_indirect_reference_flow(base_words)
     if args.xref_search:

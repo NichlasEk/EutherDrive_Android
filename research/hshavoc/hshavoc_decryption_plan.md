@@ -161,6 +161,11 @@ The instruction-path search now finds a plausible partial startup stream:
   - A global marker-family scan found the same pattern in the preceding prologue-like block: `$0ed0: 4fbd 0196` resolves from inferred `$0e9a`/P00 context to `$1030`.
   - The only other strong marker-family hit was `$0e38: 4fbd 0006`, whose x0 parameter `$0180` can target B04 (`$0f82`) or B05 (`$0fbc`) depending on whether the relative base is treated as block start or next block. This is a weaker but plausible feeder/control marker.
   - `$1030` is now a four-source convergence target (`P00`, B04, B05, B06), so it should be treated as the current best state-machine join point rather than an incidental table address.
+- A focused upstream-marker test now rejects `$0e38` as a normal `0x3a`-byte token block:
+  - If `$0e38` is treated as a trailer, the implied block is `$0e02-$0e3a`.
+  - That candidate body has only `3/28` token-alphabet hits and `0/9` stable-column hits against the clean B01-B06 family.
+  - Exact column matching against clean blocks is effectively absent: best body match is `0/27`, with only trailer-like overlap.
+  - The `4fbd 0006` trailer shape is still real, and x0 parameter `$0180` can target B04/B05, but the body does not belong to the main token-block family. Treat it as a separate upstream/control marker candidate, not as a seventh block.
 
 ## Next steps
 
@@ -180,7 +185,7 @@ The instruction-path search now finds a plausible partial startup stream:
 14. Search specifically for routines that walk repeated token transitions such as `01a6 -> 0102`, `1b3e -> 01a6`, `14c5 -> 01a6`, and `0101 -> 14c5`, including code using `(An)+`, indexed table reads, or A-register bases near `$0ea0`.
 14a. Treat mixed-transform opcode/operand call sites as false positives unless the opcode, high word, and low word can be justified by one coherent fetch context.
 14b. Decode the `4fbd/4eba + param` trailer semantics. The P00/B04/B05/B06 parameters landing at `$1030` are the strongest current clue for block-to-block control flow.
-14c. Test whether `$0e38: 4fbd 0006` is an upstream control marker feeding B04/B05, or whether it is only a coincidental marker-shaped word before the main token family.
+14c. Treat `$0e38: 4fbd 0006` as a separate upstream/control marker candidate only. It fails the clean block-body test, so do not use it as part of the B01-B06 column model.
 15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
 16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
 17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.
