@@ -31,6 +31,6 @@ Current strongest model:
 - `$0ea0-$1064` behaves like a dense halfword token/table region.
 - `$0ed4-$102e` contains six clean `0x3a`-byte blocks with repeated columns and
   trailer markers such as `4fbd + param`.
-- Several startup targets land on fixed block columns, and multiple trailer
-  parameters converge on `$1030`, suggesting a table interpreter or state
-  machine rather than a simple code decrypt pass.
+- Several startup targets land on fixed block columns, and P00/B04/B05/B06
+  trailer parameters converge on `$1030`, suggesting a table interpreter or
+  state machine rather than a simple code decrypt pass.

@@ -154,6 +154,13 @@ The instruction-path search now finds a plausible partial startup stream:
   - Startup table entries land on fixed block columns: B06/w19 (`$101c`), B06/w24 (`$1026`), B06/w28 (`$102e`), B04/w19 (`$0fa8`), B02/w12 (`$0f26`), and B02/w16 (`$0f2e`). This is stronger evidence for a table interpreter or state-machine entry model.
   - The block-column model shows many stable columns (`w01`, `w04`, `w07`, `w10`, `w13`, `w17`, `w20`, `w23`, `w26`) and low-cardinality variation elsewhere. That strongly argues against random encryption noise.
   - Trailer parameters are not yet decoded, but B04/B05/B06 all have simple relative interpretations that land at `$1030`, the next dense block/prologue region. Treat `$1030` as a likely block target/boundary until disproven.
+- A stricter trailer-confidence pass now filters out generic address noise and keeps only high-signal block targets:
+  - B04 has `4fbd 00ae`, and raw `from-start` resolves `$0f82 + $00ae = $1030`.
+  - B05 has `4eba 0074`, and raw `from-start` resolves `$0fbc + $0074 = $1030`.
+  - B06 has `4fbd 013d`, and x0 transforms the parameter to `$003a`, resolving `$0ff6 + $003a = $1030`.
+  - A global marker-family scan found the same pattern in the preceding prologue-like block: `$0ed0: 4fbd 0196` resolves from inferred `$0e9a`/P00 context to `$1030`.
+  - The only other strong marker-family hit was `$0e38: 4fbd 0006`, whose x0 parameter `$0180` can target B04 (`$0f82`) or B05 (`$0fbc`) depending on whether the relative base is treated as block start or next block. This is a weaker but plausible feeder/control marker.
+  - `$1030` is now a four-source convergence target (`P00`, B04, B05, B06), so it should be treated as the current best state-machine join point rather than an incidental table address.
 
 ## Next steps
 
@@ -172,7 +179,8 @@ The instruction-path search now finds a plausible partial startup stream:
 13. Find the code that consumes the 4-word records/halfword tokens. The direct startup refs prove entry points, but not yet the field semantics. Direct absolute base-load search was negative, so the next pass should model indirect argument/pointer flow.
 14. Search specifically for routines that walk repeated token transitions such as `01a6 -> 0102`, `1b3e -> 01a6`, `14c5 -> 01a6`, and `0101 -> 14c5`, including code using `(An)+`, indexed table reads, or A-register bases near `$0ea0`.
 14a. Treat mixed-transform opcode/operand call sites as false positives unless the opcode, high word, and low word can be justified by one coherent fetch context.
-14b. Decode the `4fbd/4eba + param` trailer semantics. The B04/B05/B06 parameters landing at `$1030` are the strongest current clue for block-to-block control flow.
+14b. Decode the `4fbd/4eba + param` trailer semantics. The P00/B04/B05/B06 parameters landing at `$1030` are the strongest current clue for block-to-block control flow.
+14c. Test whether `$0e38: 4fbd 0006` is an upstream control marker feeding B04/B05, or whether it is only a coincidental marker-shaped word before the main token family.
 15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
 16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
 17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.
@@ -181,7 +189,7 @@ The instruction-path search now finds a plausible partial startup stream:
 ## Useful commands
 
 ```sh
-python tools/hshavoc_decrypt_lab.py --runs 5
-python tools/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
-python tools/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
+python research/hshavoc/hshavoc_decrypt_lab.py --runs 5
+python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
+python research/hshavoc/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
 ```

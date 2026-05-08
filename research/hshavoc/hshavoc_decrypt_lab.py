@@ -2441,13 +2441,23 @@ def token_block_alphabet(base_words: list[int]) -> set[int]:
     return {word for word, count in counts.items() if count >= 2}
 
 
-def token_block_label_for_address(target: int, block_starts: list[int], block_stride: int) -> str:
-    for idx, start in enumerate(block_starts):
+def token_block_label_for_address(target: int, block_starts: list[int], block_stride: int, base_index: int = 0) -> str:
+    for idx, start in enumerate(block_starts, base_index):
         end = start + block_stride
         if start <= target < end:
             rel = target - start
             word = rel // 2
             return f"B{idx:02d}@${start:04x}+{rel:02x}/w{word:02d}"
+    return "-"
+
+
+def token_block_label_for_named_address(target: int, blocks: list[tuple[str, int]], block_stride: int) -> str:
+    for label, start in blocks:
+        end = start + block_stride
+        if start <= target < end:
+            rel = target - start
+            word = rel // 2
+            return f"{label}@${start:04x}+{rel:02x}/w{word:02d}"
     return "-"
 
 
@@ -2568,7 +2578,7 @@ def print_token_block_trailer_param_model(base_words: list[int]) -> None:
     print("\n== token block trailer parameter model")
     print("  interprets block trailer parameters as absolute or relative addresses")
     starts = [0x0ED4, 0x0F0E, 0x0F48, 0x0F82, 0x0FBC, 0x0FF6]
-    label_starts = starts + [0x1030]
+    label_blocks = [("P00", 0x0EA0)] + [(f"B{idx:02d}", start) for idx, start in enumerate(starts, 1)] + [("B07", 0x1030)]
     block_stride = 0x3A
     for idx, start in enumerate(starts, 1):
         marker_addr = start + block_stride - 4
@@ -2597,8 +2607,144 @@ def print_token_block_trailer_param_model(base_words: list[int]) -> None:
             continue
         for mode, interp, target, quality in candidates[:12]:
             label = table_record_label_for_address(base_words, target) if 0x0EA0 <= target < 0x1040 else "-"
-            block_label = token_block_label_for_address(target, label_starts, block_stride)
+            block_label = token_block_label_for_named_address(target, label_blocks, block_stride)
             print(f"    {mode:<4} {interp:<10} -> ${target:04x} {quality:<18} {block_label:<18} {label}")
+
+
+def trailer_target_score(target: int, block_start_set: set[int], startup_targets: set[int]) -> tuple[int, list[str]]:
+    score = 0
+    reasons = []
+    if target in block_start_set:
+        score += 5
+        reasons.append("block-start")
+    if target == 0x1030:
+        score += 4
+        reasons.append("1030-converge")
+    if target in startup_targets:
+        score += 3
+        reasons.append("startup-entry")
+    if 0x0EA0 <= target <= 0x1064 and not (target & 1):
+        score += 2
+        reasons.append("token-region")
+    if 0x0E46 <= target < 0x0EA0 and not (target & 1):
+        score += 1
+        reasons.append("early-token-region")
+    return score, reasons
+
+
+def token_block_trailer_candidates(base_words: list[int], start: int, marker_addr: int, param_addr: int) -> list[tuple[int, str, str, int, int, list[str]]]:
+    block_stride = 0x3A
+    marker = base_words[marker_addr // 2]
+    raw_param = base_words[param_addr // 2]
+    block_starts = {0x0EA0, 0x0ED4, 0x0F0E, 0x0F48, 0x0F82, 0x0FBC, 0x0FF6, 0x1030}
+    startup_targets = {target for _, _, target, _ in startup_table_call_sites(base_words)}
+    candidates = []
+    for mode, param in table_variant_sets(raw_param, param_addr):
+        signed = param if param < 0x8000 else param - 0x10000
+        interpretations = [
+            ("abs", param),
+            ("from-start", start + signed),
+            ("from-marker", marker_addr + signed),
+            ("from-next", start + block_stride + signed),
+        ]
+        for interp, target in interpretations:
+            if target & 1:
+                continue
+            score, reasons = trailer_target_score(target, block_starts, startup_targets)
+            if marker in (0x4FBD, 0x4EBA, 0x4F72):
+                score += 2
+                reasons.append(f"marker:{marker:04x}")
+            if score:
+                candidates.append((score, mode, interp, target, param, reasons))
+    candidates.sort(key=lambda item: (-item[0], item[3], item[1], item[2]))
+    return candidates
+
+
+def print_token_block_trailer_confidence_model(base_words: list[int]) -> None:
+    print("\n== token block trailer confidence model")
+    print("  keeps only high-signal trailer interpretations and suppresses generic address noise")
+    starts = [0x0ED4, 0x0F0E, 0x0F48, 0x0F82, 0x0FBC, 0x0FF6]
+    label_blocks = [("P00", 0x0EA0)] + [(f"B{idx:02d}", start) for idx, start in enumerate(starts, 1)] + [("B07", 0x1030)]
+    block_stride = 0x3A
+    hits = []
+    for idx, start in enumerate(starts, 1):
+        marker_addr = start + block_stride - 4
+        param_addr = start + block_stride - 2
+        marker = base_words[marker_addr // 2]
+        raw_param = base_words[param_addr // 2]
+        candidates = token_block_trailer_candidates(base_words, start, marker_addr, param_addr)
+        strong = [candidate for candidate in candidates if candidate[0] >= 7]
+        if not strong:
+            print(f"  B{idx:02d} marker={marker:04x} raw_param={raw_param:04x}: no strong target")
+            continue
+        for score, mode, interp, target, param, reasons in strong[:4]:
+            block_label = token_block_label_for_named_address(target, label_blocks, block_stride)
+            record_label = table_record_label_for_address(base_words, target) if 0x0EA0 <= target < 0x1040 else "-"
+            print(
+                f"  B{idx:02d} marker={marker:04x} raw={raw_param:04x}: "
+                f"score={score:2d} {mode:<4} {interp:<10} param={param:04x} "
+                f"-> ${target:04x} {block_label:<18} {'/'.join(reasons)} {record_label}"
+            )
+            hits.append((target, idx, mode, interp))
+
+    convergence: dict[int, list[str]] = {}
+    for target, idx, mode, interp in hits:
+        convergence.setdefault(target, []).append(f"B{idx:02d}:{mode}:{interp}")
+    print("  convergent strong targets:")
+    for target, sources in sorted(convergence.items(), key=lambda item: (-len(item[1]), item[0])):
+        if len(sources) < 2:
+            continue
+        block_label = token_block_label_for_named_address(target, label_blocks, block_stride)
+        print(f"    ${target:04x} {block_label:<18} <= {', '.join(sources)}")
+
+
+def print_token_marker_family_scan(base_words: list[int]) -> None:
+    print("\n== token marker-family scan")
+    print("  searches for 4fbd/4eba/4f72 trailers whose following word can target token blocks")
+    block_stride = 0x3A
+    max_scan = min(0x14000, len(base_words) * 2 - 2)
+    label_blocks = [
+        ("E00", 0x0E46),
+        ("P00", 0x0EA0),
+        ("B01", 0x0ED4),
+        ("B02", 0x0F0E),
+        ("B03", 0x0F48),
+        ("B04", 0x0F82),
+        ("B05", 0x0FBC),
+        ("B06", 0x0FF6),
+        ("B07", 0x1030),
+    ]
+    hits = []
+    for marker_addr in range(0, max_scan, 2):
+        marker = base_words[marker_addr // 2]
+        if marker not in (0x4FBD, 0x4EBA, 0x4F72):
+            continue
+        param_addr = marker_addr + 2
+        inferred_start = marker_addr - (block_stride - 4)
+        if inferred_start < 0:
+            continue
+        for score, mode, interp, target, param, reasons in token_block_trailer_candidates(
+            base_words, inferred_start, marker_addr, param_addr
+        ):
+            if score < 7:
+                continue
+            block_label = token_block_label_for_named_address(target, label_blocks, block_stride)
+            source_label = token_block_label_for_named_address(marker_addr, label_blocks, block_stride)
+            hits.append((score, marker_addr, marker, base_words[param_addr // 2], mode, interp, target, param, source_label, block_label, reasons))
+
+    if not hits:
+        print("  no high-signal marker-family hits")
+        return
+
+    hits.sort(key=lambda item: (-item[0], item[1], item[6], item[4], item[5]))
+    for score, marker_addr, marker, raw_param, mode, interp, target, param, source_label, block_label, reasons in hits[:32]:
+        print(
+            f"  ${marker_addr:04x} {source_label:<18} marker={marker:04x} raw={raw_param:04x} "
+            f"score={score:2d} {mode:<4} {interp:<10} param={param:04x} -> ${target:04x} "
+            f"{block_label:<18} {'/'.join(reasons)}"
+        )
+    if len(hits) > 32:
+        print(f"    ... {len(hits) - 32} more high-signal marker hits")
 
 
 def move_from_postincrement_role(word: int) -> str | None:
@@ -3057,6 +3203,8 @@ def main() -> None:
     print_token_block_trailer_model(base_words)
     print_token_block_column_model(base_words)
     print_token_block_trailer_param_model(base_words)
+    print_token_block_trailer_confidence_model(base_words)
+    print_token_marker_family_scan(base_words)
     print_table_cluster_consumer_probe(base_words)
     print_table_cluster_indirect_reference_flow(base_words)
     if args.xref_search:
