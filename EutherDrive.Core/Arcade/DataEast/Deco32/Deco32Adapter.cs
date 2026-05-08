@@ -1656,8 +1656,8 @@ public sealed class DecoTilemapDevice
         const int mapRows = 32;
         int widthMask = mapCols * tileSize - 1;
         int heightMask = mapRows * tileSize - 1;
-        int rowType = CustomRowType(control0);
-        int colType = CustomColumnType(control0);
+        int rowType = 1 << ((control0 >> 3) & 0x0f);
+        int colType = 8 << (control0 & 7);
         int tileBank1 = DecoBankCallback(ctrl[7] & 0xff);
         int tileBank2 = DecoBankCallback(ctrl[7] >> 8);
         bool enableTileFlipX = (control1 & 0x01) != 0;
@@ -1672,7 +1672,7 @@ public sealed class DecoTilemapDevice
             for (int x = 0; x < width; x++)
             {
                 int sx = (x + sourceX) & widthMask;
-                int columnOffset = columnScroll ? rowscroll[0x200 + ((sx & 0x1ff) / colType)] : 0;
+                int columnOffset = columnScroll ? rowscroll[0x200 + (((sx & 0x1ff) / colType) & 0x1ff)] : 0;
                 int sy = (baseSy + columnOffset) & heightMask;
                 int ty = sy / tileSize;
                 int py = sy & (tileSize - 1);
@@ -1712,34 +1712,19 @@ public sealed class DecoTilemapDevice
         int tileBank = DecoBankCallback((layer & 1) == 0 ? ctrl[7] & 0xff : ctrl[7] >> 8);
         bool enableTileFlipX = (control1 & 0x01) != 0;
         bool enableTileFlipY = (control1 & 0x02) != 0;
-        bool customScroll = (control1 & 0x60) == 0x60;
-        bool rowScroll = (control1 & 0x60) == 0x40;
-        bool columnScroll = (control1 & 0x60) == 0x20;
-        int rowScrollRows = RowScrollRows(control0, charMode, mapRows * tileSize);
-        int rowScrollHeight = Math.Max(1, (mapRows * tileSize) / rowScrollRows);
-        int columnScrollColumns = ColumnScrollColumns(control0, charMode);
-        int columnScrollWidth = Math.Max(1, (mapCols * tileSize) / columnScrollColumns);
-        int columnScrollMask = ColumnScrollMask(control0);
-        int customRowType = CustomRowType(control0);
-        int customColumnType = CustomColumnType(control0);
+        int rowType = 1 << ((control0 >> 3) & 0x0f);
+        int colType = 8 << (control0 & 7);
+        bool rowScroll = (control1 & 0x40) != 0;
+        bool columnScroll = (control1 & 0x20) != 0;
 
         for (int y = 0; y < height; y++)
         {
             int baseSy = (y + scrollY) & heightMask;
-            int sourceX = scrollX;
-            if (customScroll)
-                sourceX += rowscroll[(baseSy / customRowType) & 0x7ff];
-            else if (rowScroll)
-                sourceX += rowscroll[(baseSy / rowScrollHeight) & 0x7ff];
-
+            int sourceX = rowScroll ? scrollX + rowscroll[(baseSy / rowType) & 0x7ff] : scrollX;
             for (int x = 0; x < width; x++)
             {
                 int sx = (x + sourceX) & widthMask;
-                int columnOffset = 0;
-                if (customScroll)
-                    columnOffset = rowscroll[0x200 + ((sx & 0x1ff) / customColumnType)];
-                else if (columnScroll)
-                    columnOffset = rowscroll[0x200 + (((sx / columnScrollWidth) & columnScrollMask) & 0x1ff)];
+                int columnOffset = columnScroll ? rowscroll[0x200 + (((sx & 0x1ff) / colType) & 0x1ff)] : 0;
                 int sy = (baseSy + columnOffset) & heightMask;
                 int ty = sy / tileSize;
                 int py = sy & (tileSize - 1);
@@ -1817,52 +1802,6 @@ public sealed class DecoTilemapDevice
 
     private static int TilemapEntryIndex(int col, int row, int mapCols, bool charMode)
         => charMode ? col + row * mapCols : Deco16ScanRows(col, row);
-
-    private static int RowScrollRows(int control0, bool charMode, int tilemapHeight)
-    {
-        int rows = ((control0 >> 3) & 0x0f) switch
-        {
-            0 => 512,
-            1 => 256,
-            2 => 128,
-            3 => 64,
-            4 => 32,
-            5 => 16,
-            6 => 8,
-            7 => 4,
-            8 => 2,
-            _ => 1
-        };
-        if (charMode)
-            rows >>= 1;
-        return Math.Clamp(rows, 1, tilemapHeight);
-    }
-
-    private static int ColumnScrollColumns(int control0, bool charMode)
-    {
-        int columnWidth = (8 << (control0 & 7)) & 0x3ff;
-        if (columnWidth == 0)
-            columnWidth = 1024;
-        int columns = 1024 / columnWidth;
-        if (charMode)
-            columns >>= 1;
-        return Math.Max(1, columns);
-    }
-
-    private static int ColumnScrollMask(int control0)
-    {
-        int mask = (0x40 >> (control0 & 7)) - 1;
-        return mask < 0 ? 0 : mask;
-    }
-
-    private static int CustomRowType(int control0)
-        => 1 << ((control0 >> 3) & 0x0f);
-
-    private static int CustomColumnType(int control0)
-    {
-        int columnType = 8 << (control0 & 7);
-        return columnType == 0 ? 1024 : columnType;
-    }
 
     private static int DecoBankCallback(int bank)
         => (bank & ~0x0f) << 8;
