@@ -1794,7 +1794,7 @@ public sealed class DecoTilemapDevice
         int p1 = ReadBit(rom, half * 8 + baseBit);
         int p2 = ReadBit(rom, baseBit + 8);
         int p3 = ReadBit(rom, baseBit);
-        return p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
+        return (p0 << 3) | (p1 << 2) | (p2 << 1) | p3;
     }
 
     private static int Decode4BppTile(byte[] rom, int code, int x, int y)
@@ -1806,7 +1806,7 @@ public sealed class DecoTilemapDevice
         int p1 = ReadBit(rom, half * 8 + baseBit);
         int p2 = ReadBit(rom, baseBit + 8);
         int p3 = ReadBit(rom, baseBit);
-        return p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
+        return (p0 << 3) | (p1 << 2) | (p2 << 1) | p3;
     }
 
     private static int ReadBit(byte[] data, int bit)
@@ -1830,7 +1830,8 @@ public sealed class DecoTilemapDevice
         if ((mask & 0x0000ffff) == 0)
             return false;
 
-        data = (ushort)value;
+        uint lowMask = mask & 0x0000ffff;
+        data = (ushort)((ram[word] & ~lowMask) | (value & lowMask));
         ram[word] = data;
         return true;
     }
@@ -1880,7 +1881,7 @@ public sealed class DecoSpriteDevice
 
             return string.Create(
                 CultureInfo.InvariantCulture,
-                $"spr0={nonzero[0]}/y0x{firstY[0]:X4}c0x{firstCode[0]:X4}x0x{firstX[0]:X4} spr1={nonzero[1]}/y0x{firstY[1]:X4}c0x{firstCode[1]:X4}x0x{firstX[1]:X4}");
+                $"spr0={nonzero[0]}/y0x{firstY[0]:X4}c0x{firstCode[0]:X4}x0x{firstX[0]:X4} spr1={nonzero[1]}/y0x{firstY[1]:X4}c0x{firstCode[1]:X4}x0x{firstX[1]:X4} scb=[0x{ColorBank0:X2},0x{ColorBank1:X2}]");
         }
     }
 
@@ -1984,7 +1985,7 @@ public sealed class DecoSpriteDevice
                     if (draw0)
                     {
                         int color0 = (((pix0 & 0x1f00) >> 8) % 16) * 32;
-                        _palette.WritePixel(fb, stride, x, y, sprite0ColorBase | sprite0ExtraBank | color0 | (pix0 & 0xff));
+                        _palette.WritePixel(fb, stride, x, y, sprite0ColorBase + (sprite0ExtraBank | color0 | (pix0 & 0xff)));
                         sprite0Drawn = true;
                     }
                 }
@@ -2020,7 +2021,7 @@ public sealed class DecoSpriteDevice
                             ? _palette.GetAlpha((rawColor1 & 0x8) != 0 ? 0x4 + ((rawColor1 & 0x3) / 2) : ((rawColor1 & 0x7) / 2))
                             : 0xff;
                         int color1 = (rawColor1 % 16) * 16;
-                        _palette.BlendPixel(fb, stride, x, y, sprite1ColorBase | coloffs | color1 | (pix1 & 0xff), alpha);
+                        _palette.BlendPixel(fb, stride, x, y, sprite1ColorBase + (coloffs | color1 | (pix1 & 0xff)), alpha);
                     }
                 }
 
@@ -2070,18 +2071,18 @@ public sealed class DecoSpriteDevice
         int p1 = ReadBit(rom, half * 8 + baseBit);
         int p2 = ReadBit(rom, baseBit + 8);
         int p3 = ReadBit(rom, baseBit);
-        return p0 | (p1 << 1) | (p2 << 2) | (p3 << 3);
+        return (p0 << 3) | (p1 << 2) | (p2 << 1) | p3;
     }
 
     private static int Decode5Bpp(byte[] rom, int code, int x, int y)
     {
         int tiles = Math.Max(1, rom.Length / (16 * 16 * 5 / 8));
         int baseBit = (code % tiles) * 16 * 16 * 5 + y * 8 * 5 + (x < 8 ? 16 * 8 * 5 : 0) + (x & 7);
-        return ReadBit(rom, baseBit)
-            | (ReadBit(rom, baseBit + 8) << 1)
+        return (ReadBit(rom, baseBit) << 4)
+            | (ReadBit(rom, baseBit + 8) << 3)
             | (ReadBit(rom, baseBit + 16) << 2)
-            | (ReadBit(rom, baseBit + 24) << 3)
-            | (ReadBit(rom, baseBit + 32) << 4);
+            | (ReadBit(rom, baseBit + 24) << 1)
+            | ReadBit(rom, baseBit + 32);
     }
 
     private static int ReadBit(byte[] data, int bit)
@@ -2103,7 +2104,8 @@ public sealed class DecoSpriteDevice
         if ((mask & 0x0000ffff) == 0)
             return;
         int word = (int)(offset >> 2) & (ram.Length - 1);
-        ram[word] = (ushort)value;
+        uint lowMask = mask & 0x0000ffff;
+        ram[word] = (ushort)((ram[word] & ~lowMask) | (value & lowMask));
     }
 }
 
@@ -2136,7 +2138,7 @@ public sealed class PaletteDevice
             return;
 
         int index = (int)(offset >> 2) & (_aceRam.Length - 1);
-        _aceRam[index] = (ushort)value;
+        _aceRam[index] = CombineMasked16(_aceRam[index], value, mask);
         if ((uint)(index - 0x20) <= 0x06)
             UpdatePalette();
     }
@@ -2180,11 +2182,6 @@ public sealed class PaletteDevice
     public void BlendPixel(byte[] fb, int stride, int x, int y, int paletteIndex, int alpha)
     {
         alpha = Math.Clamp(alpha, 0, 255);
-        if (alpha >= 255)
-        {
-            WritePixel(fb, stride, x, y, paletteIndex);
-            return;
-        }
         if (alpha <= 0)
             return;
 
@@ -2196,9 +2193,10 @@ public sealed class PaletteDevice
         int db = fb[offset];
         int dg = fb[offset + 1];
         int dr = fb[offset + 2];
-        fb[offset] = (byte)(db + (((sb - db) * alpha) / 255));
-        fb[offset + 1] = (byte)(dg + (((sg - dg) * alpha) / 255));
-        fb[offset + 2] = (byte)(dr + (((sr - dr) * alpha) / 255));
+        int invAlpha = 256 - alpha;
+        fb[offset] = (byte)(((sb * alpha) + (db * invAlpha)) >> 8);
+        fb[offset + 1] = (byte)(((sg * alpha) + (dg * invAlpha)) >> 8);
+        fb[offset + 2] = (byte)(((sr * alpha) + (dr * invAlpha)) >> 8);
         fb[offset + 3] = 0xff;
     }
 
@@ -2287,6 +2285,12 @@ public sealed class PaletteDevice
         }
 
         return oldValue;
+    }
+
+    private static ushort CombineMasked16(ushort oldValue, uint value, uint mask)
+    {
+        uint lowMask = mask & 0x0000ffff;
+        return (ushort)((oldValue & ~lowMask) | (value & lowMask));
     }
 
     private static void WriteBgra(byte[] fb, int offset, uint argb)
