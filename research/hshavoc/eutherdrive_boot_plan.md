@@ -40,13 +40,21 @@ Latest checkpoint:
 
 - The startup patch now treats `$0d06d6` as a real subroutine. It reaches that
   block, returns through `$0d0766`, lands at the patched `$0cb2` continuation,
-  and jumps into the next startup stub at `$1104`.
-- This removes the earlier uncontrolled `RTS` path that returned to `$000000`.
-- The current blocker is now narrower: execution stops around `$00110a` inside
-  the `$1104` startup stub, so the next pass should verify whether `$1104` is
-  the correct continuation, whether that island needs the same startup decode
-  treatment, or whether the local 68000 handler is failing a valid
-  `move.w #imm,<abs.l>` form already used elsewhere.
+  and jumps into the next startup stub at `$1126`.
+- `$1104` was rejected as a continuation because it lands inside the
+  `4ef9 000d 0682` long jump operand. `$1126` is the next valid instruction
+  boundary and reaches the main dispatch area at `$2c6c`.
+- The `$29d4` helper copies/initializes state, writes `1` to `$fff906`, then
+  waits at `$2a16/$2a1c` for that word to clear before calling `$1a16a`.
+  A narrow proof patch changes the `$2a10` immediate from `0001` to `0000`;
+  this confirms the wait is a board/PIC/interrupt acknowledgement gate, not a
+  decode failure in that helper.
+- With that proof patch, execution reaches `$2a1e -> $1a16a -> $2a24` and
+  returns into the `$2c6c` dispatch loop. The next blocker is the same
+  `$fff906` acknowledgement pattern earlier in startup around `$0aa8/$0aae`.
+  A quick direct immediate patch there was rejected because it hit the wrong
+  word and caused an illegal opcode at `$0aa4`; the next pass should model the
+  acknowledgement behavior centrally instead of stacking more ROM edits.
 
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.
