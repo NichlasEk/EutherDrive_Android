@@ -29,6 +29,7 @@ public sealed class Deco32Adapter : IEmulatorCore
     private byte[] _renderFrameBuffer = new byte[FrameHeight * FrameStride];
     private byte[] _snapshotFrameBuffer = new byte[FrameHeight * FrameStride];
     private readonly byte[] _priorityFrame = new byte[FrameWidth * FrameHeight];
+    private readonly ushort[] _alphaTilemapFrame = new ushort[FrameWidth * FrameHeight];
     private short[] _audioBuffer = new short[(OutputSampleRate / 60) * OutputChannels];
     private readonly Arm6Cpu _mainCpu = new();
     private Deco32MemoryMap? _memory;
@@ -269,9 +270,12 @@ public sealed class Deco32Adapter : IEmulatorCore
     {
         Array.Clear(_renderFrameBuffer);
         Array.Clear(_priorityFrame);
+        Array.Clear(_alphaTilemapFrame);
         _palette?.FillBackdrop(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
-        _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, _priorityFrame, FrameWidth, FrameHeight, FrameStride, _memory?.Priority ?? 0);
-        _sprites?.Render(_renderFrameBuffer, _priorityFrame, FrameWidth, FrameHeight, FrameStride, _frameCounter, _memory?.Priority ?? 0);
+        int priority = _memory?.Priority ?? 0;
+        bool alphaTilemap = _palette is not null && _palette.GetAceRam(0x17) != 0 && (priority & 3) != 0;
+        _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, _priorityFrame, _alphaTilemapFrame, FrameWidth, FrameHeight, FrameStride, priority, alphaTilemap);
+        _sprites?.Render(_renderFrameBuffer, _priorityFrame, _alphaTilemapFrame, FrameWidth, FrameHeight, FrameStride, _frameCounter, priority, alphaTilemap);
         _tilemaps?.RenderTextPlayfield(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
         if (DebugWorkRamTextOverlay)
             _memory?.RenderWorkRamTextOverlay(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
@@ -1586,31 +1590,31 @@ public sealed class DecoTilemapDevice
             _controlWriteCount[chip]++;
     }
 
-    public void RenderBackPlayfields(byte[] fb, byte[] priorityMap, int width, int height, int stride, int priority)
+    public void RenderBackPlayfields(byte[] fb, byte[] priorityMap, ushort[] alphaMap, int width, int height, int stride, int priority, bool alphaTilemap)
     {
         if ((priority & 2) != 0)
         {
             RenderChip1Combined(fb, priorityMap, width, height, stride, priorityValue: 1);
-            RenderLayer(fb, priorityMap, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 4);
+            RenderLayer(fb, priorityMap, null, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 4);
             return;
         }
 
-        RenderLayer(fb, priorityMap, width, height, stride, 3, _profile.Tiles2, Chip1Pf2ColorBase, opaque: false, priorityValue: 1);
+        RenderLayer(fb, priorityMap, null, width, height, stride, 3, _profile.Tiles2, Chip1Pf2ColorBase, opaque: false, priorityValue: 1);
         if ((priority & 1) != 0)
         {
-            RenderLayer(fb, priorityMap, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 2);
-            RenderLayer(fb, priorityMap, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false, priorityValue: 4);
+            RenderLayer(fb, priorityMap, null, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 2);
+            RenderLayer(alphaTilemap ? null : fb, priorityMap, alphaTilemap ? alphaMap : null, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false, priorityValue: 4);
         }
         else
         {
-            RenderLayer(fb, priorityMap, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false, priorityValue: 2);
-            RenderLayer(fb, priorityMap, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 4);
+            RenderLayer(fb, priorityMap, null, width, height, stride, 2, _profile.Tiles2, Chip1Pf1ColorBase, opaque: false, priorityValue: 2);
+            RenderLayer(alphaTilemap ? null : fb, priorityMap, alphaTilemap ? alphaMap : null, width, height, stride, 1, _profile.Tiles1, 0x10, opaque: false, priorityValue: 4);
         }
     }
 
     public void RenderTextPlayfield(byte[] fb, int width, int height, int stride)
     {
-        RenderLayer(fb, null, width, height, stride, 0, _profile.Tiles1, 0x80, opaque: false, priorityValue: 0);
+        RenderLayer(fb, null, null, width, height, stride, 0, _profile.Tiles1, 0x80, opaque: false, priorityValue: 0);
     }
 
     private void RenderChip1Combined(byte[] fb, byte[] priorityMap, int width, int height, int stride, byte priorityValue)
@@ -1666,7 +1670,7 @@ public sealed class DecoTilemapDevice
         }
     }
 
-    private void RenderLayer(byte[] fb, byte[]? priorityMap, int width, int height, int stride, int layer, byte[] gfx, int colorBase, bool opaque, byte priorityValue)
+    private void RenderLayer(byte[]? fb, byte[]? priorityMap, ushort[]? alphaMap, int width, int height, int stride, int layer, byte[] gfx, int colorBase, bool opaque, byte priorityValue)
     {
         ushort[] ram = _pf[layer];
         ushort[] ctrl = _control[layer >> 1];
@@ -1733,7 +1737,10 @@ public sealed class DecoTilemapDevice
                 }
                 if (pen == 0 && !opaque)
                     continue;
-                _palette.WritePixel(fb, stride, x, y, palettePixel);
+                if (alphaMap is not null)
+                    alphaMap[y * width + x] = (ushort)palettePixel;
+                else if (fb is not null)
+                    _palette.WritePixel(fb, stride, x, y, palettePixel);
                 if (priorityMap is not null)
                     priorityMap[y * width + x] = priorityValue;
             }
@@ -1889,14 +1896,14 @@ public sealed class DecoSpriteDevice
     public void Buffer() { Buffer(0); Buffer(1); }
     public void Buffer(int list) => Array.Copy(_ram[list], _buffered[list], _ram[list].Length);
 
-    public void Render(byte[] fb, byte[] priorityMap, int width, int height, int stride, long frame, int priority)
+    public void Render(byte[] fb, byte[] priorityMap, ushort[] alphaMap, int width, int height, int stride, long frame, int priority, bool alphaTilemap)
     {
         EnsureRawBuffers(width * height);
         Array.Clear(_raw0);
         Array.Clear(_raw1);
         RenderListRaw(_raw0, width, height, _buffered[0], _profile.Sprites1, fiveBpp: true, frame);
         RenderListRaw(_raw1, width, height, _buffered[1], _profile.Sprites2, fiveBpp: false, frame);
-        MixRawSprites(fb, priorityMap, width, height, stride, priority);
+        MixRawSprites(fb, priorityMap, alphaMap, width, height, stride, priority, alphaTilemap);
     }
 
     private void EnsureRawBuffers(int pixels)
@@ -1950,7 +1957,7 @@ public sealed class DecoSpriteDevice
         }
     }
 
-    private void MixRawSprites(byte[] fb, byte[] priorityMap, int width, int height, int stride, int priority)
+    private void MixRawSprites(byte[] fb, byte[] priorityMap, ushort[] alphaMap, int width, int height, int stride, int priority, bool alphaTilemap)
     {
         int sprite0ColorBase = (ColorBank0 & 7) << 8;
         int sprite1ColorBase = (ColorBank1 & 7) << 8;
@@ -1968,10 +1975,12 @@ public sealed class DecoSpriteDevice
                 int pri1 = (pix1 & 0x6000) >> 13;
                 int tilePri = priorityMap[offset];
                 bool sprite0Drawn = false;
+                bool sprite1Alpha = (pix1 & 0x8000) != 0;
+                int coloffs = sprite0ExtraBank;
 
                 if ((pix0 & 0xff) != 0)
                 {
-                    bool draw0 = pri0 <= 1 || (pri0 == 2 ? tilePri < 4 : tilePri < 2);
+                    bool draw0 = pri0 <= 1 || (pri0 == 2 ? alphaTilemap || tilePri < 4 : tilePri < 2);
                     if (draw0)
                     {
                         int color0 = (((pix0 & 0x1f00) >> 8) % 16) * 32;
@@ -1980,14 +1989,50 @@ public sealed class DecoSpriteDevice
                     }
                 }
 
+                coloffs = ((priority & 4) == 0 && sprite0Drawn) ? 0x800 : 0;
                 if ((pix1 & 0xff) != 0)
                 {
-                    bool draw1 = pri1 == 0 ? !sprite0Drawn || pri0 != 0 : tilePri < Math.Max(1, 5 - pri1);
+                    bool draw1;
+                    if (sprite1Alpha)
+                    {
+                        draw1 = pri1 switch
+                        {
+                            0 => (pix0 & 0xff) == 0 || (pri0 != 0 && pri0 != 1 && pri0 != 2),
+                            1 => ((priority & 1) == 0 || tilePri < 4)
+                                && ((pix0 & 0xff) == 0 || (pri0 != 0 && pri0 != 1 && ((priority & 1) == 0 || pri0 != 2))),
+                            _ => true
+                        };
+                        if (draw1 && pri1 == 0 && (priority & 1) != 0)
+                            draw1 = tilePri < 4 || (alphaTilemap && (alphaMap[offset] & 0x0f) == 0);
+                    }
+                    else
+                    {
+                        draw1 = pri1 == 0
+                            ? (pix0 & 0xff) == 0 || pri0 != 0
+                            : true;
+                    }
+
                     if (draw1)
                     {
-                        int color1 = (((pix1 & 0x0f00) >> 8) % 16) * 16;
-                        int coloffs = ((priority & 4) == 0 && sprite0Drawn) ? 0x800 : 0;
-                        _palette.WritePixel(fb, stride, x, y, sprite1ColorBase | coloffs | color1 | (pix1 & 0xff));
+                        int rawColor1 = (pix1 & 0x0f00) >> 8;
+                        bool alpha2 = (pix1 & 0x1000) == 0;
+                        int alpha = (!sprite1Alpha || alpha2)
+                            ? _palette.GetAlpha((rawColor1 & 0x8) != 0 ? 0x4 + ((rawColor1 & 0x3) / 2) : ((rawColor1 & 0x7) / 2))
+                            : 0xff;
+                        int color1 = (rawColor1 % 16) * 16;
+                        _palette.BlendPixel(fb, stride, x, y, sprite1ColorBase | coloffs | color1 | (pix1 & 0xff), alpha);
+                    }
+                }
+
+                if (alphaTilemap)
+                {
+                    ushort alphaPix = alphaMap[offset];
+                    if ((alphaPix & 0x0f) != 0
+                        && ((pix0 & 0xff) == 0 || pri0 >= 2)
+                        && ((pix1 & 0xff) == 0 || pri1 >= 2 || sprite1Alpha))
+                    {
+                        int alpha = _palette.GetAlpha(0x17 + (((alphaPix & 0xf0) >> 4) / 2));
+                        _palette.BlendPixel(fb, stride, x, y, coloffs | alphaPix, alpha);
                     }
                 }
             }
@@ -2064,7 +2109,7 @@ public sealed class DecoSpriteDevice
 
 public sealed class PaletteDevice
 {
-    private readonly uint[] _colors = new uint[2048];
+    private readonly uint[] _colors = new uint[4096];
     private readonly uint[] _ram = new uint[2048];
     private readonly uint[] _buffered = new uint[2048];
     private readonly ushort[] _aceRam = new ushort[0x28];
@@ -2132,6 +2177,44 @@ public sealed class PaletteDevice
         WriteBgra(fb, y * stride + x * 4, color);
     }
 
+    public void BlendPixel(byte[] fb, int stride, int x, int y, int paletteIndex, int alpha)
+    {
+        alpha = Math.Clamp(alpha, 0, 255);
+        if (alpha >= 255)
+        {
+            WritePixel(fb, stride, x, y, paletteIndex);
+            return;
+        }
+        if (alpha <= 0)
+            return;
+
+        int offset = y * stride + x * 4;
+        uint src = _colors[paletteIndex & (_colors.Length - 1)];
+        int sr = (int)((src >> 16) & 0xff);
+        int sg = (int)((src >> 8) & 0xff);
+        int sb = (int)(src & 0xff);
+        int db = fb[offset];
+        int dg = fb[offset + 1];
+        int dr = fb[offset + 2];
+        fb[offset] = (byte)(db + (((sb - db) * alpha) / 255));
+        fb[offset + 1] = (byte)(dg + (((sg - dg) * alpha) / 255));
+        fb[offset + 2] = (byte)(dr + (((sr - dr) * alpha) / 255));
+        fb[offset + 3] = 0xff;
+    }
+
+    public int GetAlpha(int index)
+    {
+        index &= 0x1f;
+        int alpha = _aceRam[index] & 0xff;
+        if (alpha > 0x20)
+            return 0x80;
+        alpha = 255 - (alpha << 3);
+        return Math.Max(alpha, 0);
+    }
+
+    public ushort GetAceRam(int index)
+        => (uint)index < (uint)_aceRam.Length ? _aceRam[index] : (ushort)0;
+
     public string DebugSummary
     {
         get
@@ -2169,12 +2252,13 @@ public sealed class PaletteDevice
         int fadeStb = _aceRam[0x25] & 0xff;
         int mode = _aceRam[0x26] & 0xffff;
 
-        for (int i = 0; i < _colors.Length; i++)
+        for (int i = 0; i < _buffered.Length; i++)
         {
             uint value = _buffered[i];
             int b = (int)((value >> 16) & 0xff);
             int g = (int)((value >> 8) & 0xff);
             int r = (int)(value & 0xff);
+            _colors[i + 2048] = 0xff000000u | (uint)(r << 16) | (uint)(g << 8) | (uint)b;
 
             if (mode == 0x1000)
             {
@@ -2184,9 +2268,9 @@ public sealed class PaletteDevice
             }
             else
             {
-                b = Math.Clamp(b + (((fadePtb - b) * fadeStb) / 255), 0, 255);
-                g = Math.Clamp(g + (((fadePtg - g) * fadeStg) / 255), 0, 255);
-                r = Math.Clamp(r + (((fadePtr - r) * fadeStr) / 255), 0, 255);
+                b = (byte)(b + (((fadePtb - b) * fadeStb) / 255));
+                g = (byte)(g + (((fadePtg - g) * fadeStg) / 255));
+                r = (byte)(r + (((fadePtr - r) * fadeStr) / 255));
             }
 
             _colors[i] = 0xff000000u | (uint)(r << 16) | (uint)(g << 8) | (uint)b;
