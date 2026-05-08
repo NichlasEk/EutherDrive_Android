@@ -6,6 +6,7 @@ namespace EutherDrive.Core.Arcade.DataEast.Hshavoc;
 
 public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 {
+    private const string BoardModel = "Data East CG-2 / Sega Genesis-Mega Drive arcade board probe";
     private const string EvenRomName = "d-25.11a";
     private const string OddRomName = "d-26.9a";
     private const int InterleavedSize = 0x100000;
@@ -40,8 +41,9 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         (0x0C8A, 0x4E71), (0x0C8C, 0x4E71), (0x0C8E, 0x4E71), (0x0C90, 0x4E71),
         (0x0C92, 0x4E71), (0x0C94, 0x4EB9), (0x0C96, 0x0000), (0x0C98, 0x0A1C),
         (0x0C9A, 0x4EB9), (0x0C9C, 0x000D), (0x0C9E, 0x0000), (0x0CA0, 0x4EB9),
-        (0x0CA2, 0x000D), (0x0CA4, 0x0682), (0x0CA6, 0x4EF9), (0x0CA8, 0x000D),
-        (0x0CAA, 0x0692),
+        (0x0CA2, 0x000D), (0x0CA4, 0x0682), (0x0CA6, 0x4EB9), (0x0CA8, 0x000D),
+        (0x0CAA, 0x0692), (0x0CAC, 0x4EB9), (0x0CAE, 0x000D), (0x0CB0, 0x06D6),
+        (0x0CB2, 0x4EF9), (0x0CB4, 0x0000), (0x0CB6, 0x1104),
         (0x065E, 0x4E71), (0x0660, 0x4E71), (0x0662, 0x4E71), (0x0664, 0x4E71),
         (0x0666, 0x4E71),
         (0xD05CA, 0x4E71), (0xD05CC, 0x4E71), (0xD05CE, 0x4E71), (0xD05D0, 0x4E71),
@@ -88,9 +90,11 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         try
         {
             _md.PowerCycleAndLoadRom(tempPath);
-            RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile} | MD core boot probe";
+            RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile} | {BoardModel}";
             RomInfo.ExtraInfo =
-                "Data East hshavoc.zip via HshavocAdapter. Applies MAME base decode plus current startup probe patch. " +
+                "Data East hshavoc.zip via HshavocAdapter. This is not a Sega System 16 target; it runs the " +
+                "Mega Drive-compatible board path with arcade-only startup/PIC probing layered on top. " +
+                "Applies MAME base decode plus current startup probe patch. " +
                 "No decoded ROM is kept; temp image is deleted after load.";
         }
         finally

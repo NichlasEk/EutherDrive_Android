@@ -2225,6 +2225,8 @@ class Program
         DumpHshavocWords(writer, hshavoc, 0x000C40, 0x70);
         DumpHshavocWords(writer, hshavoc, 0x001000, 0x140);
         DumpHshavocWords(writer, hshavoc, 0x000A00, 0x140);
+        DumpHshavocWords(writer, hshavoc, 0x0D0000, 0x180);
+        DumpHshavocWords(writer, hshavoc, 0x0D0580, 0x500);
         DumpHshavocWords(writer, hshavoc, 0x000E00, 0x80);
     }
 

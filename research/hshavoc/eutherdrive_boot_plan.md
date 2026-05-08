@@ -16,6 +16,13 @@ deletes it after load.
 `EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter` is a wrapper around
 `MdTracerAdapter`.
 
+Hardware model: treat HSHavoc as a Data East CG-2 arcade board built around the
+Sega Genesis/Mega Drive base map, not as Sega System 16. The EutherDrive adapter
+should therefore keep the MD VDP/Z80/audio path as the execution harness and add
+only the arcade-specific layers that MAME identifies: even/odd program ROM
+decode, extra `0x200000-0x2023ff` RAM behavior, JAMMA/DIP input mapping, and a
+provisional PIC/startup response model.
+
 It currently:
 
 - Detects a supported archive by the MAME ROM names `d-25.11a` and `d-26.9a`.
@@ -28,6 +35,18 @@ It currently:
 - Optionally applies the phase-2 operand adjustments when
   `EUTHERDRIVE_HSHAVOC_PHASE2=1`.
 - Feeds the resulting temporary image into `MdTracerAdapter`.
+
+Latest checkpoint:
+
+- The startup patch now treats `$0d06d6` as a real subroutine. It reaches that
+  block, returns through `$0d0766`, lands at the patched `$0cb2` continuation,
+  and jumps into the next startup stub at `$1104`.
+- This removes the earlier uncontrolled `RTS` path that returned to `$000000`.
+- The current blocker is now narrower: execution stops around `$00110a` inside
+  the `$1104` startup stub, so the next pass should verify whether `$1104` is
+  the correct continuation, whether that island needs the same startup decode
+  treatment, or whether the local 68000 handler is failing a valid
+  `move.w #imm,<abs.l>` form already used elsewhere.
 
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.
