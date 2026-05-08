@@ -3398,6 +3398,88 @@ def print_startup_side_effect_model(base_words: list[int]) -> None:
     print("    ambiguous low-score targets should be instrumented for stable control flow, not patched blindly")
 
 
+def patch_word_line(addr: int, value: int) -> str:
+    return f"src[0x{addr:04x} / 2] = 0x{value:04x};"
+
+
+def print_mame_render_probe_plan(base_words: list[int]) -> None:
+    print("\n== MAME render-probe plan")
+    print("  concrete instrumentation checklist for the first start/render experiment; does not write ROM data")
+    print("  driver facts from hshavoc.cpp: ROM $000000-$1fffff, RAM $200000-$2023ff, init currently stops VDP timers")
+
+    startup_patch = [
+        addr for addr in sorted(BEST_STARTUP_PATCH)
+        if 0x0C42 <= addr <= 0x0C9A
+    ]
+    adjusted_operands = {
+        0x0C7A: (0x0E32, "$0c76 dispatch weak-code candidate"),
+        0x0C86: (0x0AB8, "$0c82 nearby prologue candidate"),
+        0x0C8C: (0x0AF8, "$0c88 VDP/MMIO candidate"),
+        0x0C92: (0x0D32, "$0c8e immediate-rts candidate"),
+    }
+
+    print("  phase 1 patch scope:")
+    print("    apply the best-startup words only, then log control flow and VDP/MMIO writes")
+    print("    keep adjusted operands disabled for the first run unless the log proves the original target stalls")
+    for offset in range(0, len(startup_patch), 6):
+        chunk = startup_patch[offset:offset + 6]
+        print("    " + " ".join(patch_word_line(addr, BEST_STARTUP_PATCH[addr]) for addr in chunk))
+
+    print("  optional phase 2 operand adjustments:")
+    for addr, (value, reason) in adjusted_operands.items():
+        original = BEST_STARTUP_PATCH.get(addr, base_words[addr // 2])
+        print(f"    {patch_word_line(addr, value)}  // was 0x{original:04x}; {reason}")
+
+    print("  PC break/log points:")
+    breakpoints = [
+        (0x0C42, "startup entry candidate"),
+        (0x0A1C, "direct VDP register init block"),
+        (0x10BA, "loads VDP control-port base"),
+        (0x10C0, "MMIO poll/read loop"),
+        (0x0AF8, "nearby fixed entry for $0c88"),
+        (0x0B0E, "direct VDP write from $0af8 path"),
+        (0x101C, "CABG1 token/state entry"),
+        (0x0F26, "ABG0FD token/state entry"),
+        (0x0F2E, "DA token/state entry"),
+        (0x1026, "tail-control token/state entry"),
+        (0x102E, "tail-parameter token/state entry"),
+        (0x1030, "four-source token-block convergence"),
+        (0x103A, "B07 finalization token entry"),
+        (0x00F8, "weak abs.w call target"),
+        (0x0D34, "weak pointer/data blocker"),
+    ]
+    for addr, note in breakpoints:
+        print(f"    pc=${addr:04x}: {note}")
+
+    print("  expected direct effects to confirm:")
+    expected_windows = [
+        (0x0A1C, 0x0A70, "$0a1c VDP init"),
+        (0x10A2, 0x1100, "$10a2/$10a8 VDP/MMIO setup"),
+        (0x0AF8, 0x0B20, "$0af8 adjusted startup path"),
+    ]
+    for start, end, label in expected_windows:
+        records = side_effect_records_in_window(base_words, start, end)
+        direct = [
+            (addr, effect_kind, mode, text)
+            for _score, addr, effect_kind, confidence, mode, text in records
+            if confidence == "direct" and effect_kind in {"vdp", "mmio"}
+        ]
+        print(f"    {label}:")
+        if not direct:
+            print("      no direct modeled VDP/MMIO effects")
+            continue
+        for addr, effect_kind, mode, text in direct[:8]:
+            print(f"      ${addr:04x}: {effect_kind:<4} {mode:<17} {text}")
+        if len(direct) > 8:
+            print(f"      ... {len(direct) - 8} more direct effects")
+
+    print("  decision gates:")
+    print("    if $0a1c writes multiple VDP registers, video-register init is usable enough for a render probe")
+    print("    if $10ba/$10c0 executes, log whether MMIO polling returns stable values or loops forever")
+    print("    if execution enters token entries, stop treating them as 68000 and find the table consumer")
+    print("    if execution reaches $00f8 or $0d34 before VDP writes, prioritize those as control-flow blockers")
+
+
 def move_from_postincrement_role(word: int) -> str | None:
     size = (word >> 12) & 0xF
     if size not in (1, 2, 3):
@@ -3862,6 +3944,7 @@ def main() -> None:
     print_startup_callsite_token_class_model(base_words)
     print_boot_flow_readiness_model(base_words)
     print_startup_side_effect_model(base_words)
+    print_mame_render_probe_plan(base_words)
     print_table_cluster_consumer_probe(base_words)
     print_table_cluster_indirect_reference_flow(base_words)
     if args.xref_search:

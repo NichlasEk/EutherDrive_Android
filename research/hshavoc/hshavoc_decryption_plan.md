@@ -194,6 +194,11 @@ The instruction-path search now finds a plausible partial startup stream:
   - `$0adc/$0aba` also show direct MMIO/VDP-like activity, but they remain alignment-sensitive because `$0ab8/$0abc` previously scored better than `$0aba`.
   - `$101c`, `$1026`, `$102e`, `$103a`, `$0f26`, `$0f2e`, and `$0fa8` remain token/state entries. They are not render-ready side-effect routines until the table/token consumer is identified.
   - `$00f8.w` and `$0d34` currently show no modeled VDP/MMIO side effects in the first `$60` bytes, so they should be instrumented as control-flow/data blockers rather than guessed render init code.
+- A MAME render-probe plan is now emitted by the lab:
+  - Phase 1 should patch only the best startup skeleton in `init_hshavoc()` and log execution, VDP control-port writes, and MMIO polls.
+  - Phase 2 adjustments should stay disabled until the log proves the original target stalls: `$0c7a->$0e32`, `$0c86->$0ab8`, `$0c8c->$0af8`, and `$0c92->$0d32`.
+  - First PC log points: `$0c42`, `$0a1c`, `$10ba-$10c0`, `$0af8-$0b14`, token entries `$101c/$0f26/$0f2e/$1026/$102e/$1030/$103a`, and blockers `$00f8/$0d34`.
+  - The first useful render signal is not gameplay; it is confirming the modeled VDP writes at `$0a1c` and `$0b0e` plus stable MMIO polling at `$10c0`.
 
 ## Next steps
 
@@ -217,7 +222,8 @@ The instruction-path search now finds a plausible partial startup stream:
 14d. Use the pseudo-disassembly motifs to separate startup entry classes: `C A B G1 E`, `A B G0 F D`, `D A ...`, trailer-param tail entries, and B07 finalization entries.
 14e. Treat `$0c76` as the first candidate dispatch-like startup callsite and `$0c6a` as the first tail/join-control callsite. Search for the consumer logic that distinguishes those alternatives.
 14f. Before attempting rendering, keep refining the minimal side-effect checklist: `$0a1c`, `$10a2/$10a8`, and `$0af8` are the first VDP/MMIO candidates; token classes and `$1030` still need a consumer/return model before they can be treated as render-init code.
-14g. Build the first MAME-side instrumentation target around VDP control-port writes and MMIO polls rather than full gameplay: log execution of `$0a1c`, `$10ba-$10c0`, `$0af8-$0b14`, and the weak blockers `$00f8/$0d34`.
+14g. Build the first MAME-side instrumentation target around VDP control-port writes and MMIO polls rather than full gameplay: log execution of `$0a1c`, `$10ba-$10c0`, `$0af8-$0b14`, and the weak blockers `$00f8/$0d34`. The lab now prints the exact patch words, breakpoints, and expected effects for this probe.
+14h. After the first instrumented run, classify the result by gate: VDP register writes seen, MMIO poll stable/looping, token-entry execution seen, or weak blocker reached before any video setup.
 15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
 16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
 17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.
