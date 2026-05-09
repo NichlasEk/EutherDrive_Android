@@ -460,6 +460,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRamNileTimerDelay(pc))
             return;
+        if (TryFastPathKnownRamFrameTickWait(pc))
+            return;
         if (TryFastPathKnownStdioInitErrorLoop(pc))
             return;
         if (TryFastPathKnownIoasicPicBitTestWait(pc))
@@ -1246,6 +1248,41 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRamFrameTickWait(ulong pc)
+    {
+        if (pc != 0xffffffff80017310UL)
+            return false;
+        if (_memory.Read32(pc - 8) != 0x0c005b99U ||
+            _memory.Read32(pc - 4) != 0x0000202dU ||
+            _memory.Read32(pc) != 0x8e222ed8U ||
+            _memory.Read32(pc + 4) != 0x00501023U ||
+            _memory.Read32(pc + 8) != 0x2c4200b4U ||
+            _memory.Read32(pc + 12) != 0x1440fffaU ||
+            _memory.Read32(pc + 16) != 0x00000000U)
+            return false;
+
+        ulong tickAddress = _gpr[17] + 0x2ed8UL;
+        if ((tickAddress & 0xffffffffUL) != 0x800b2ed8UL)
+            return false;
+        if (!IsMainRamRange(tickAddress, 4))
+            return false;
+
+        uint savedTick = (uint)_gpr[16];
+        uint currentTick = _memory.Read32(tickAddress);
+        if (unchecked(currentTick - savedTick) >= 0xb4U)
+            return false;
+
+        _memory.Write32(tickAddress, savedTick + 0xb4U);
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 5UL);
+        _instructionCounter += 5UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = 0xffffffff80017324UL;
         return true;
     }
 

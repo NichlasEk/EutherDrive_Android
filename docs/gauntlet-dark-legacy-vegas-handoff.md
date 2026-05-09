@@ -36,7 +36,7 @@ The working strategy is still:
 - `533c99e` Fast path Gauntlet BIOS text output
 - `3160c40` Initialize Gauntlet R5000 CP0 reset state
 - `bda14ab` Advance Gauntlet Vegas FPGA bring-up
-- pending/current pass: add minimal NILE/VRC5074 CPU-register window for `0x1fa00000..0x1fa003ff`
+- later commits continue NILE/VRC5074, Voodoo PCI/status, FIFO, and runtime wait bring-up
 
 There are unrelated dirty files in the worktree. Do not revert them unless explicitly asked.
 
@@ -216,9 +216,47 @@ voodoo regs=3829 fifoWords=63 fifoPackets=27 drawPackets=0 lfbWrites=0 texWrites
 
 - Focused trace of `0x80016e64..0x80016e94` shows this is not a hard wait. It is a small callback loop that loads a function pointer from `0x800b2e2c`, calls `0x8003b614`, decrements `s0` from 10, then returns through `0x80016e90`.
 
+Latest 2026-05-09 pass result:
+
+- Main build succeeds:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+377 Warning(s)
+0 Error(s)
+```
+
+- Probe build succeeds:
+
+```text
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+377 Warning(s)
+0 Error(s)
+```
+
+- Fixed the next deterministic runtime wait at `0xffffffff80017310`.
+  - The guest saves `0x800b2ed8`, repeatedly calls `0x80016e64`, then waits until `*(0x800b2ed8) - saved >= 0xb4`.
+  - Memory trace showed `0x800b2ed8` is initialized and then read repeatedly, but no emulated source advanced it.
+  - The fastpath is exact-opcode guarded and only fires when `s1 + 0x2ed8` resolves to main RAM `0x800b2ed8`.
+
+- Verified forward progress past the old blocker:
+
+```text
+frame=1500
+pc=0xffffffff80052d04
+lastOp=0x001118c0
+voodoo regs=10205001 fifoWords=11772114 fifoPackets=1572285 drawPackets=0 lfbWrites=0 texWrites=1
+peek 0x800b2ed0: 00000000,00000094,000000b4,00000000,807efde8,800e6748,800e6a60,00000000
+```
+
+- This is a new phase: the game is now heavily feeding the Voodoo FIFO, but the bring-up decoder still reports `drawPackets=0`. Next work should focus on FIFO packet framing/decoding or the active producer loop around `0xffffffff80052d04`.
+
 Next best step:
 
-- Follow the next state transition after the `0x8003b614` callback loop and find why no additional FIFO/draw packets are emitted after the first texture write.
+- Trace the active FIFO producer around `0xffffffff80052c80..0xffffffff80052d30` and capture a limited FIFO word stream with `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT`.
+- Check whether type-2/type-3 packet sizing is wrong, since current stats show millions of FIFO packets but zero decoded draw packets.
 - Keep short CPU windows plus `EUTHERDRIVE_GAUNTDL_DUMP_VOODOO=1`; full memory trace is too noisy unless filtered by target and address.
 
 ## Probe Setup
