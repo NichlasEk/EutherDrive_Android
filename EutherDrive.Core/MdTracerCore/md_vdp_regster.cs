@@ -865,7 +865,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         if (_traceScrollRegsRemaining != int.MaxValue)
                             _traceScrollRegsRemaining--;
-                        Console.WriteLine($"[VDP-REG10] frame={_frameCounter} old=0x{oldVal:X2} new=0x{g_vdp_reg_10_hint:X2}");
+                        Console.WriteLine($"[VDP-REG10] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} old=0x{oldVal:X2} new=0x{g_vdp_reg_10_hint:X2}");
                     }
                     break;
                 }
@@ -880,7 +880,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         if (_traceScrollRegsRemaining != int.MaxValue)
                             _traceScrollRegsRemaining--;
-                        Console.WriteLine($"[VDP-REG11] frame={_frameCounter} old=0x{oldVal:X2} new=0x{in_data:X2} hscroll={g_vdp_reg_11_1_hscroll} vscroll={g_vdp_reg_11_2_vscroll} ext={g_vdp_reg_11_3_ext}");
+                        Console.WriteLine($"[VDP-REG11] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} old=0x{oldVal:X2} new=0x{in_data:X2} hscroll={g_vdp_reg_11_1_hscroll} vscroll={g_vdp_reg_11_2_vscroll} ext={g_vdp_reg_11_3_ext}");
                     }
                     break;
                 }
@@ -938,7 +938,7 @@ namespace EutherDrive.Core.MdTracerCore
                     {
                         if (_traceScrollRegsRemaining != int.MaxValue)
                             _traceScrollRegsRemaining--;
-                        Console.WriteLine($"[VDP-REG13] frame={_frameCounter} old=0x{oldVal:X4} new=0x{g_vdp_reg_13_hscroll:X4} raw=0x{in_data:X2}");
+                        Console.WriteLine($"[VDP-REG13] frame={_frameCounter} pc=0x{md_m68k.g_reg_PC:X6} old=0x{oldVal:X4} new=0x{g_vdp_reg_13_hscroll:X4} raw=0x{in_data:X2}");
                     }
                     break;
                 }

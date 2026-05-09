@@ -85,6 +85,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_FORCE_HSCROLL_BASE", -1);
     private static readonly int ForceHScrollMode =
         ParseEnvInt("EUTHERDRIVE_HSHAVOC_FORCE_HSCROLL_MODE", -1);
+    private static readonly bool RepairHomeHScrollBase =
+        !IsEnvDisabled("EUTHERDRIVE_HSHAVOC_REPAIR_HOME_HSCROLL_BASE");
     private static readonly bool TraceForcedPlaneBases =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_FORCE_PLANE_BASES");
     private static readonly bool LatchVBlankGate =
@@ -287,12 +289,14 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ForceVdpPlaneBasesIfRequested();
         ForceVdpHScrollModeIfRequested();
         ForceVdpHScrollBaseIfRequested();
+        RepairHomeHScrollBaseIfRequested();
         SeedTestPaletteIfRequested();
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
         ForceVdpPlaneBasesIfRequested();
         ForceVdpHScrollModeIfRequested();
         ForceVdpHScrollBaseIfRequested();
+        RepairHomeHScrollBaseIfRequested();
         TraceVdpCommandBlocksIfRequested();
         FlushVdpCommandBlocksIfRequested();
         FlushLowPatternRamProbeIfRequested();
@@ -429,6 +433,25 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
         vdp.read16(0x00C00004);
         vdp.write16(0x00C00004, (ushort)(0x8B00 | (ForceHScrollMode & 0x03)));
+    }
+
+    private static void RepairHomeHScrollBaseIfRequested()
+    {
+        if (!RepairHomeHScrollBase || ForceHScrollBase >= 0)
+            return;
+
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        if (vdp.g_vdp_reg_11_1_hscroll != 3 || vdp.g_vdp_reg_13_hscroll != 0)
+            return;
+
+        // The home ROM enables line scroll with reg13=$34 (VRAM $D000).
+        // The arcade startup currently reaches the same reg11 mode but misses
+        // that base register, leaving line scroll to read tile data at $0000.
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, 0x8D34);
     }
 
     private void SeedTestPaletteIfRequested()
