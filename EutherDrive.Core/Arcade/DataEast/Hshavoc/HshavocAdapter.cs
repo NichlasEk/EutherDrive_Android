@@ -42,10 +42,30 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
     private static readonly bool TraceVdpCommandBlockFlush =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
+    private static readonly uint FlushVdpCommandBlockStart =
+        ParseEnvHex("EUTHERDRIVE_HSHAVOC_VDP_COMMAND_BLOCK_START", 0x00FFE900);
+    private static readonly uint FlushVdpCommandBlockEnd =
+        ParseEnvHex("EUTHERDRIVE_HSHAVOC_VDP_COMMAND_BLOCK_END", 0x00FFEA80);
+    private static readonly bool TraceVdpCommandBlockScan =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCK_SCAN");
+    private static readonly uint TraceVdpCommandBlockScanStart =
+        ParseEnvHex("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCK_SCAN_START", 0x00FF0000);
+    private static readonly uint TraceVdpCommandBlockScanEnd =
+        ParseEnvHex("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCK_SCAN_END", 0x00FFFFFF);
+    private static readonly int TraceVdpCommandBlockScanMax =
+        ParseEnvInt("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCK_SCAN_MAX", 256);
     private static readonly bool FlushStaticPalettePlan =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN");
     private static readonly bool TraceStaticPalettePlan =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_STATIC_PALETTE_PLAN");
+    private static readonly bool FlushLowPatternRamProbe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE");
+    private static readonly bool MirrorLowPatternRamProbePages =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_MIRROR_PAGES");
+    private static readonly bool RepeatLowPatternRamProbe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME");
+    private static readonly bool TraceLowPatternRamProbe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_LOW_PATTERN_RAM_PROBE");
     private static readonly bool LatchVBlankGate =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_LATCH_VBLANK_GATE");
     private static readonly bool TraceVBlankGate =
@@ -136,6 +156,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private readonly HashSet<ulong> _flushedQueueEntries = new();
     private readonly HashSet<ulong> _flushedVdpCommandBlocks = new();
     private readonly HashSet<ulong> _flushedStaticPalettePlans = new();
+    private readonly HashSet<ulong> _flushedLowPatternRamProbes = new();
+    private readonly HashSet<ulong> _tracedVdpCommandBlocks = new();
     private readonly HashSet<ulong> _tracedCramCommandBlocks = new();
     private bool _testPaletteSeeded;
     private long _lastVBlankGateTraceFrame = long.MinValue;
@@ -165,6 +187,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
         _flushedStaticPalettePlans.Clear();
+        _flushedLowPatternRamProbes.Clear();
+        _tracedVdpCommandBlocks.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         _lastVBlankGateTraceFrame = long.MinValue;
@@ -201,6 +225,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
         _flushedStaticPalettePlans.Clear();
+        _flushedLowPatternRamProbes.Clear();
+        _tracedVdpCommandBlocks.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         _lastVBlankGateTraceFrame = long.MinValue;
@@ -213,7 +239,9 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         LatchVBlankGateIfRequested();
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
+        TraceVdpCommandBlocksIfRequested();
         FlushVdpCommandBlocksIfRequested();
+        FlushLowPatternRamProbeIfRequested();
         FlushStaticPalettePlanIfRequested();
         TraceCramCommandBlocksIfRequested();
         FlushVdpDmaQueueIfRequested();
@@ -351,11 +379,16 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         if (!FlushVdpCommandBlocks || md_main.g_md_vdp == null)
             return;
 
-        // The startup code builds 14-byte command blocks near $ffe900:
+        // The startup code builds 14-byte command blocks in work RAM:
         // five VDP DMA register writes (93..97) followed by a two-word
         // control command. Feeding that exact stream lets the MD VDP core
         // perform the copy and avoids guessing VRAM destination addresses.
-        for (uint block = 0x00FFE900; block <= 0x00FFEA80; block += 2)
+        uint start = ClampM68kRamScanStart(FlushVdpCommandBlockStart);
+        uint end = ClampM68kRamScanEnd(FlushVdpCommandBlockEnd);
+        if (end < start)
+            return;
+
+        for (uint block = start; block <= end; block += 2)
         {
             ushort reg19 = _md.DebugReadM68kWord(block);
             ushort reg20 = _md.DebugReadM68kWord(block + 2);
@@ -373,6 +406,41 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
                 continue;
 
             ExecuteVdpCommandBlock(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+        }
+    }
+
+    private void TraceVdpCommandBlocksIfRequested()
+    {
+        if (!TraceVdpCommandBlockScan || md_main.g_md_vdp == null)
+            return;
+
+        uint start = ClampM68kRamScanStart(TraceVdpCommandBlockScanStart);
+        uint end = ClampM68kRamScanEnd(TraceVdpCommandBlockScanEnd);
+        if (end < start)
+            return;
+
+        int logged = 0;
+        for (uint block = start; block <= end; block += 2)
+        {
+            ushort reg19 = _md.DebugReadM68kWord(block);
+            ushort reg20 = _md.DebugReadM68kWord(block + 2);
+            ushort reg21 = _md.DebugReadM68kWord(block + 4);
+            ushort reg22 = _md.DebugReadM68kWord(block + 6);
+            ushort reg23 = _md.DebugReadM68kWord(block + 8);
+            ushort control1 = _md.DebugReadM68kWord(block + 10);
+            ushort control2 = _md.DebugReadM68kWord(block + 12);
+
+            if (!LooksLikeVdpCommandBlock(reg19, reg20, reg21, reg22, reg23, control1, control2))
+                continue;
+
+            ulong signature = BuildVdpCommandBlockSignature(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            if (!_tracedVdpCommandBlocks.Add(signature))
+                continue;
+
+            LogVdpCommandBlock("HSHAVOC-VDPBLK-CANDIDATE", block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            logged++;
+            if (TraceVdpCommandBlockScanMax > 0 && logged >= TraceVdpCommandBlockScanMax)
+                return;
         }
     }
 
@@ -408,6 +476,63 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         }
     }
 
+    private void FlushLowPatternRamProbeIfRequested()
+    {
+        if (!FlushLowPatternRamProbe || md_main.g_md_vdp == null)
+            return;
+
+        // Probe only: the home ROM's matching VDP queue eventually DMAs
+        // decompressed graphics from $ff0000 into low pattern VRAM. The current
+        // arcade path builds that RAM buffer but sends observed command blocks
+        // to high VRAM pages, leaving low tile indices black. This replay tests
+        // that single missing edge without storing or emitting decoded ROM data.
+        const uint source = 0x00FF0000;
+        const int words = 0x0800;
+        if (IsM68kWordRangeAllZero(source, words))
+            return;
+
+        ulong hash = HashM68kWords(source, words);
+        int[] destinations = MirrorLowPatternRamProbePages
+            ? new[] { 0x0000, 0x2000, 0x4000, 0x6000 }
+            : new[] { 0x0000 };
+
+        md_vdp? vdp = md_main.g_md_vdp;
+        foreach (int destination in destinations)
+        {
+            ulong signature = hash ^ ((ulong)destination << 32);
+            if (!RepeatLowPatternRamProbe && !_flushedLowPatternRamProbes.Add(signature))
+                continue;
+
+            vdp.read16(0x00C00004);
+            // The control latch may be waiting for an address second word when
+            // the frame-level probe runs. A duplicate register write makes the
+            // DMA enable transition deterministic without depending on caller timing.
+            vdp.write16(0x00C00004, 0x8174);
+            vdp.write16(0x00C00004, 0x8174);
+            vdp.read16(0x00C00004);
+            vdp.write16(0x00C00004, 0x8F02);
+            ExecuteVdpCommandBlock(
+                source,
+                0x9300,
+                0x9408,
+                0x9500,
+                0x9680,
+                0x977F,
+                (ushort)(0x4000 | (destination & 0x3FFF)),
+                (ushort)(0x0080 | ((destination >> 14) & 0x0007)));
+            vdp.read16(0x00C00004);
+            vdp.write16(0x00C00004, 0x8164);
+            vdp.write16(0x00C00004, 0x8164);
+
+            if (TraceLowPatternRamProbe)
+            {
+                Console.WriteLine(
+                    $"[HSHAVOC-LOWPAT-FLUSH] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+                    $"source=0x{source:X6} words=0x{words:X4} dest=0x{destination:X4} hash=0x{hash:X16}");
+            }
+        }
+    }
+
     private bool IsM68kWordRangeAllZero(uint source, int words)
     {
         for (int i = 0; i < words; i++)
@@ -424,8 +549,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         if (!TraceCramCommandBlockCandidates || md_main.g_md_vdp == null)
             return;
 
-        uint start = Math.Max(0x00FF0000, TraceCramCommandBlockStart & 0x00FFFFFE);
-        uint end = Math.Min(0x00FFFFF2, TraceCramCommandBlockEnd & 0x00FFFFFE);
+        uint start = ClampM68kRamScanStart(TraceCramCommandBlockStart);
+        uint end = ClampM68kRamScanEnd(TraceCramCommandBlockEnd);
         if (end < start)
             return;
 
@@ -457,6 +582,12 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
                 return;
         }
     }
+
+    private static uint ClampM68kRamScanStart(uint value)
+        => Math.Max(0x00FF0000, value & 0x00FFFFFE);
+
+    private static uint ClampM68kRamScanEnd(uint value)
+        => Math.Min(0x00FFFFF2, value & 0x00FFFFFE);
 
     private static bool LooksLikeVdpCommandBlock(
         ushort reg19,

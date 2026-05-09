@@ -323,3 +323,51 @@ parts back to MAME:
 - Any temporary PIC/MMIO response must be documented as provisional.
 - Token/state-table handling needs explicit comments so the driver does not
 pretend these regions are ordinary 68000 code.
+
+## 2026-05-09 Low Pattern DMA Checkpoint
+
+The black-screen blocker moved from palette/CRAM to pattern VRAM. With
+`initdispatcher`, the VBlank gate seed at `$fffe00:$8164`, and the precise
+`$fff906` gate read, CRAM is live and display is on, but the final snapshot only
+has graphics in high VRAM pages (`$b000-$efff`). The first visible nametable
+entries reference low tile indices such as `$127` and `$246`, whose pattern
+data remains zero.
+
+The broad RAM VDP command-block scan found only one generated block at
+`$ffe91a`, targeting `$d800` during early frames and `$b000` at frame 23. No RAM
+command block naturally targets `$0000-$7fff`. A home-ROM comparison showed the
+matching retail path later DMAing `$ff0000` to VRAM `$0000`, so the arcade path
+does build a familiar decompressed buffer but currently never replays the
+matching low-pattern copy in EutherDrive.
+
+New probe flags:
+
+- `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE=1` replays the observed
+  `$ff0000` RAM buffer to VRAM `$0000`.
+- `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_MIRROR_PAGES=1` additionally
+  tries `$2000/$4000/$6000` as opt-in evidence gathering for tile-index paging.
+- `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME=1` bypasses the
+  hash gate for this runtime-only proof.
+
+Important result: the replay must open a deterministic VDP register-1 DMA
+window (`$8174`) because the frame-level adapter runs outside the game's own
+DMA-enable timing. The control latch can also be mid-command, so the probe sends
+the register-1 transition twice before issuing the DMA block.
+
+Verified headless results:
+
+- Without the low-pattern probe: final 90-frame snapshot is effectively black
+  (`570` nonzero pixels) and `$0000-$4fff` pattern VRAM is empty except two
+  bytes.
+- With `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE=1`: final 90-frame
+  snapshot rises to `13811` nonzero pixels, and `$0000-$0fff` contains `2104`
+  nonzero bytes. This proves the missing low-pattern DMA edge is real.
+- Mirroring the same buffer into `$2000/$4000/$6000` does not improve the final
+  screen because the source buffer is transient and later startup work clears or
+  outlives those pages. A real fix should capture the protected VDP queue or
+  reconstruct the exact per-page DMA schedule while `$ff0000` is still valid,
+  not permanently mirror the same buffer.
+
+Next step: trace the producer around PCs `$1fe2-$2094` and the real home-ROM
+VDP queue around `$0efc/$0f00`, then model separate low-pattern command blocks
+per tile page instead of a single synthetic mirror.
