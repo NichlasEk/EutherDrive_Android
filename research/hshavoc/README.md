@@ -20,6 +20,9 @@ Useful commands:
 
 ```sh
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0
+python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --cross-runs 8 --only-cross-ref
+python research/hshavoc/hshavoc_decrypt_lab.py --only-token-graph
+python research/hshavoc/hshavoc_decrypt_lab.py --vdp-log /tmp/hsh_slot3_scan.log --only-vdp-log
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
 ```
@@ -34,3 +37,8 @@ Current strongest model:
 - Several startup targets land on fixed block columns, and P00/B04/B05/B06
   trailer parameters converge on `$1030`, suggesting a table interpreter or
   state machine rather than a simple code decrypt pass.
+- Current EutherDrive render traces can be fed back into the lab with
+  `--vdp-log`; slot 3 currently shows 21 unique ROM-sourced VDP operations,
+  and none of their source blocks have a same-offset or short exact anchor in
+  either home Genesis ROM. That makes the visible tile corruption a concrete
+  decryption/data-production problem, not just a layer compositor guess.

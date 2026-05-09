@@ -12,6 +12,7 @@ import argparse
 import binascii
 import hashlib
 import math
+import re
 import struct
 import zipfile
 from pathlib import Path
@@ -591,6 +592,110 @@ def print_runs(label: str, decoded: bytes, ref_name: str, ref: bytes, limit: int
     print(f"\n== {label} vs {ref_name}: longest exact byte runs")
     for start, length in runs[:limit]:
         print(f"  {start:06x}+{length:05x}")
+
+
+def cross_reference_runs(
+    decoded: bytes,
+    ref: bytes,
+    *,
+    seed_len: int = 32,
+    max_seed_refs: int = 24,
+) -> list[tuple[int, int, int]]:
+    """Find long exact runs between two ROM images at any offset.
+
+    The arcade program is not a flat byte-for-byte copy of the home ROM, so
+    same-offset comparisons miss useful anchors.  This indexes even-aligned
+    reference seeds, extends each seed forward from the run start, and returns
+    `(decoded_offset, reference_offset, length)` tuples.
+    """
+    if seed_len <= 0 or len(decoded) < seed_len or len(ref) < seed_len:
+        return []
+
+    ref_index: dict[bytes, list[int] | None] = {}
+    for ref_off in range(0, len(ref) - seed_len + 1, 2):
+        seed = ref[ref_off : ref_off + seed_len]
+        offsets = ref_index.get(seed)
+        if offsets is None and seed in ref_index:
+            continue
+        if offsets is None:
+            ref_index[seed] = [ref_off]
+        elif len(offsets) < max_seed_refs:
+            offsets.append(ref_off)
+        else:
+            ref_index[seed] = None
+
+    seen: set[tuple[int, int, int]] = set()
+    runs: list[tuple[int, int, int]] = []
+    for dec_off in range(0, len(decoded) - seed_len + 1, 2):
+        refs = ref_index.get(decoded[dec_off : dec_off + seed_len])
+        if not refs:
+            continue
+        for ref_off in refs:
+            if dec_off >= 2 and ref_off >= 2 and decoded[dec_off - 2 : dec_off] == ref[ref_off - 2 : ref_off]:
+                continue
+            right = seed_len
+            while (
+                dec_off + right < len(decoded)
+                and ref_off + right < len(ref)
+                and decoded[dec_off + right] == ref[ref_off + right]
+            ):
+                right += 1
+            key = (dec_off, ref_off, right)
+            if key not in seen:
+                seen.add(key)
+                runs.append(key)
+
+    runs.sort(key=lambda item: (-item[2], item[0], item[1]))
+    return runs
+
+
+def print_cross_reference_runs(label: str, decoded: bytes, ref_name: str, ref: bytes, limit: int) -> None:
+    print(f"\n== {label} vs {ref_name}: cross-offset exact anchors")
+    if limit <= 0:
+        print("  skipped; pass --cross-runs N to print cross-offset anchors")
+        return
+    runs = cross_reference_runs(decoded, ref)
+    if not runs:
+        print("  no exact anchors found")
+        return
+    for dec_off, ref_off, length in runs[:limit]:
+        delta = ref_off - dec_off
+        print(
+            f"  arcade ${dec_off:06x}-${dec_off + length - 1:06x} "
+            f"-> ref ${ref_off:06x}-${ref_off + length - 1:06x} "
+            f"len=${length:04x} delta={delta:+#x}"
+        )
+
+
+def print_protection_region_reference_anchors(label: str, decoded: bytes, ref_name: str, ref: bytes) -> None:
+    print(f"\n== {label} vs {ref_name}: protection-region anchors")
+    regions = [
+        ("startup skeleton", 0x0C42, 0x0C9C),
+        ("weak $0d34 island", 0x0D34, 0x0DB0),
+        ("early token run", 0x0E46, 0x0E82),
+        ("main token family", 0x0EA0, 0x1066),
+        ("$1082 neighborhood", 0x1082, 0x10A2),
+    ]
+    runs = cross_reference_runs(decoded, ref, seed_len=16, max_seed_refs=64)
+    for name, start, end in regions:
+        overlaps = [
+            (max(dec_off, start), min(dec_off + length, end), dec_off, ref_off, length)
+            for dec_off, ref_off, length in runs
+            if dec_off < end and dec_off + length > start
+        ]
+        overlaps = [item for item in overlaps if item[1] - item[0] >= 16]
+        overlaps.sort(key=lambda item: (-(item[1] - item[0]), item[2], item[3]))
+        print(f"  {name} ${start:04x}-${end - 1:04x}:")
+        if not overlaps:
+            print("    no 16-byte exact home-ROM anchor")
+            continue
+        for overlap_start, overlap_end, dec_off, ref_off, length in overlaps[:6]:
+            ref_overlap = ref_off + (overlap_start - dec_off)
+            print(
+                f"    overlap ${overlap_start:04x}-${overlap_end - 1:04x} "
+                f"-> ref ${ref_overlap:06x} len=${overlap_end - overlap_start:04x} "
+                f"run=${length:04x}"
+            )
 
 
 def print_startup_words(label: str, words: list[int]) -> None:
@@ -3118,6 +3223,112 @@ def print_startup_callsite_token_class_model(base_words: list[int]) -> None:
         print(f"    @${call_addr:04x}: {interpretation}")
 
 
+def token_state_blocks() -> list[tuple[str, int]]:
+    return [
+        ("P00", 0x0EA0),
+        ("B01", 0x0ED4),
+        ("B02", 0x0F0E),
+        ("B03", 0x0F48),
+        ("B04", 0x0F82),
+        ("B05", 0x0FBC),
+        ("B06", 0x0FF6),
+        ("B07", 0x1030),
+    ]
+
+
+def token_block_for_target(target: int) -> tuple[str, int, int] | None:
+    block_stride = 0x3A
+    for label, start in token_state_blocks():
+        if start <= target < start + block_stride:
+            return label, start, (target - start) // 2
+    return None
+
+
+def print_token_state_machine_graph(base_words: list[int]) -> None:
+    print("\n== token state-machine graph")
+    print("  turns startup entries and block trailers into a compact control-flow graph")
+    block_stride = 0x3A
+    block_words = block_stride // 2
+    blocks = token_state_blocks()
+    token_counts = token_counts_for_region(base_words, 0x0EA0, 0x1066)
+
+    entries_by_block: dict[str, list[tuple[int, int, str, str, tuple[str, ...]]]] = {}
+    for call_addr, mode, target, _record_label in startup_table_call_sites(base_words):
+        block = token_block_for_target(target)
+        if block is None:
+            continue
+        label, _start, column = block
+        seq5 = token_named_sequence(base_words, target, 5, token_counts)
+        cls = classify_token_entry_sequence(seq5)
+        entries_by_block.setdefault(label, []).append((target, call_addr, mode, cls, seq5))
+
+    print("  nodes and startup entrypoints:")
+    for label, start in blocks:
+        marker_addr = start + block_stride - 4
+        param_addr = start + block_stride - 2
+        marker = base_words[marker_addr // 2] if param_addr < len(base_words) * 2 else 0
+        param = base_words[param_addr // 2] if param_addr < len(base_words) * 2 else 0
+        print(f"    {label} ${start:04x}-${start + block_stride - 2:04x} trailer={marker:04x} {param:04x}")
+        for target, call_addr, mode, cls, seq5 in sorted(entries_by_block.get(label, [])):
+            column = (target - start) // 2
+            to_trailer = max(0, block_words - 2 - column)
+            print(
+                f"      entry ${target:04x} w{column:02d} @{call_addr:04x}:{mode:<9} "
+                f"{cls:<24} to_trailer={to_trailer:2d} {' '.join(seq5)}"
+            )
+
+    print("  strong trailer edges:")
+    incoming: dict[str, list[str]] = {}
+    for idx, (label, start) in enumerate(blocks):
+        marker_addr = start + block_stride - 4
+        param_addr = start + block_stride - 2
+        if param_addr >= len(base_words) * 2:
+            continue
+        candidates = [
+            candidate
+            for candidate in token_block_trailer_candidates(base_words, start, marker_addr, param_addr)
+            if candidate[0] >= 7
+        ]
+        if candidates:
+            for score, mode, interp, target, param, reasons in candidates[:4]:
+                target_block = token_block_for_target(target)
+                target_label = target_block[0] if target_block else f"${target:04x}"
+                incoming.setdefault(target_label, []).append(label)
+                print(
+                    f"    {label} --{mode}/{interp} param={param:04x} score={score:02d}--> "
+                    f"{target_label} ${target:04x} {'/'.join(reasons)}"
+                )
+            continue
+
+        if idx + 1 < len(blocks):
+            next_label, next_start = blocks[idx + 1]
+            incoming.setdefault(next_label, []).append(label)
+            print(f"    {label} --fallthrough?--> {next_label} ${next_start:04x}")
+        else:
+            print(f"    {label} --terminal/unknown--> ?")
+
+    print("  convergence:")
+    for label, sources in sorted(incoming.items(), key=lambda item: (-len(set(item[1])), item[0])):
+        unique_sources = sorted(set(sources))
+        if len(unique_sources) < 2:
+            continue
+        print(f"    {label} <= {', '.join(unique_sources)}")
+
+    print("  unresolved entry classes:")
+    for label, entries in sorted(entries_by_block.items()):
+        marker_addr = next(start for block_label, start in blocks if block_label == label) + block_stride - 4
+        param_addr = marker_addr + 2
+        strong = [
+            candidate
+            for candidate in token_block_trailer_candidates(base_words, marker_addr - (block_stride - 4), marker_addr, param_addr)
+            if candidate[0] >= 7
+        ]
+        if strong:
+            continue
+        classes = sorted({cls for _target, _call_addr, _mode, cls, _seq5 in entries})
+        print(f"    {label}: entries={len(entries)} classes={', '.join(classes)} no strong trailer edge")
+
+
 def best_startup_word_at(addr: int) -> int:
     return BEST_STARTUP_PATCH.get(addr, 0)
 
@@ -3863,6 +4074,178 @@ def print_peel4b_summary() -> None:
     print(f"  mame typedat    = {TYPEDAT}")
 
 
+VDP_CTRL_RE = re.compile(
+    r"\[VDP-CTRL-PC\] frame=(?P<frame>\d+) pc=0x(?P<pc>[0-9a-fA-F]+).* raw=0x(?P<raw>[0-9a-fA-F]{4})"
+)
+HSHAVOC_VDPBLK_RE = re.compile(
+    r"\[HSHAVOC-VDPBLK-[^\]]+\] (?:pc=0x(?P<pc>[0-9a-fA-F]+) )?frame=(?P<frame>-?\d+) "
+    r"block=0x(?P<block>[0-9a-fA-F]+) len=0x(?P<length>[0-9a-fA-F]+) "
+    r"sourceWord=0x(?P<source_word>[0-9a-fA-F]+) sourceByte=0x(?P<source>[0-9a-fA-F]+) "
+    r"dest=0x(?P<dest>[0-9a-fA-F]+) code=0x(?P<code>[0-9a-fA-F]+)"
+)
+
+
+def decode_vdp_code(control1: int, control2: int) -> int:
+    return ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C)
+
+
+def decode_vdp_dest(control1: int, control2: int) -> int:
+    return (control1 & 0x3FFF) | ((control2 & 0x0007) << 14)
+
+
+def parse_vdp_log_operations(log_path: Path) -> list[dict[str, int | str]]:
+    """Parse HSHavoc scanner logs and generic MD VDP control logs.
+
+    The result is metadata-only: source/destination ranges and command sizes,
+    not decoded ROM payloads.
+    """
+
+    operations: list[dict[str, int | str]] = []
+    regs: dict[int, int] = {}
+    pending_command: tuple[int, int, int] | None = None
+
+    for line in log_path.read_text(errors="replace").splitlines():
+        hsh = HSHAVOC_VDPBLK_RE.search(line)
+        if hsh:
+            pc_raw = hsh.group("pc")
+            operations.append(
+                {
+                    "kind": "hshavoc-block",
+                    "frame": int(hsh.group("frame")),
+                    "pc": int(pc_raw, 16) if pc_raw else -1,
+                    "length": int(hsh.group("length"), 16),
+                    "source": int(hsh.group("source"), 16),
+                    "dest": int(hsh.group("dest"), 16),
+                    "code": int(hsh.group("code"), 16),
+                    "block": int(hsh.group("block"), 16),
+                }
+            )
+            continue
+
+        ctrl = VDP_CTRL_RE.search(line)
+        if not ctrl:
+            continue
+
+        frame = int(ctrl.group("frame"))
+        pc = int(ctrl.group("pc"), 16)
+        raw = int(ctrl.group("raw"), 16)
+        if raw & 0x8000:
+            regs[(raw >> 8) & 0x1F] = raw & 0xFF
+            pending_command = None
+            continue
+
+        if pending_command is None:
+            pending_command = (frame, pc, raw)
+            continue
+
+        first_frame, first_pc, control1 = pending_command
+        pending_command = None
+        control2 = raw
+        code = decode_vdp_code(control1, control2)
+        if (control2 & 0x0080) == 0 or code not in {0x01, 0x03, 0x05}:
+            continue
+
+        length = (regs.get(0x13, 0) & 0xFF) | ((regs.get(0x14, 0) & 0xFF) << 8)
+        source_word = (
+            (regs.get(0x15, 0) & 0xFF)
+            | ((regs.get(0x16, 0) & 0xFF) << 8)
+            | ((regs.get(0x17, 0) & 0x7F) << 16)
+        )
+        operations.append(
+            {
+                "kind": "vdp-ctrl",
+                "frame": first_frame,
+                "pc": first_pc,
+                "length": length,
+                "source": source_word << 1,
+                "dest": decode_vdp_dest(control1, control2),
+                "code": code,
+                "control1": control1,
+                "control2": control2,
+            }
+        )
+
+    return operations
+
+
+def vdp_dest_role(dest: int) -> str:
+    if dest < 0xC000:
+        return "pattern"
+    if dest < 0xE000:
+        return "name/sat/hscroll"
+    return "name/window/high"
+
+
+def print_vdp_source_anchor_report(log_path: Path, decoded: bytes, base: Path) -> None:
+    print("\n== VDP render-source anchor report")
+    print(f"  log={log_path}")
+    operations = parse_vdp_log_operations(log_path)
+    if not operations:
+        print("  no VDP DMA-like operations found")
+        return
+
+    refs = [
+        (USA_REF, (base / USA_REF).read_bytes()[:0x100000]),
+        (EU_REF, (base / EU_REF).read_bytes()[:0x100000]),
+    ]
+    seen: set[tuple[int, int, int, int]] = set()
+    unique: list[dict[str, int | str]] = []
+    for op in operations:
+        key = (int(op["source"]), int(op["dest"]), int(op["length"]), int(op["code"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(op)
+
+    rom_ops = [
+        op for op in unique
+        if 0 <= int(op["source"]) < len(decoded) and 0 < int(op["length"]) <= 0x4000
+    ]
+    ram_ops = [op for op in unique if 0x00FF0000 <= int(op["source"]) <= 0x00FFFFFF]
+
+    print(f"  operations total={len(operations)} unique={len(unique)} rom={len(rom_ops)} ram={len(ram_ops)}")
+    print("  unique ROM-sourced VDP operations:")
+    for op in rom_ops[:48]:
+        source = int(op["source"])
+        length_words = int(op["length"])
+        byte_len = min(length_words * 2, len(decoded) - source)
+        block = decoded[source : source + byte_len]
+        crc = f"{binascii.crc32(block) & 0xffffffff:08x}"
+        ref_summaries = []
+        for ref_name, ref in refs:
+            same_offset = source + byte_len <= len(ref) and ref[source : source + byte_len] == block
+            exact_pos = ref.find(block) if 0 < byte_len <= 0x400 else -1
+            if same_offset:
+                ref_summaries.append(f"{ref_name}:same")
+            elif exact_pos >= 0:
+                ref_summaries.append(f"{ref_name}:@${exact_pos:06x}")
+            else:
+                ref_summaries.append(f"{ref_name}:no-anchor")
+
+        pc_text = f"pc=${int(op['pc']):06x}" if int(op["pc"]) >= 0 else "pc=?"
+        block_text = f" block=${int(op['block']):06x}" if "block" in op else ""
+        print(
+            f"    frame={int(op['frame']):5d} {pc_text}{block_text} "
+            f"src=${source:06x} len=${length_words:04x} bytes=${byte_len:04x} "
+            f"dest=${int(op['dest']):04x} {vdp_dest_role(int(op['dest'])):<16} "
+            f"code=${int(op['code']):02x} crc={crc} {'; '.join(ref_summaries)}"
+        )
+    if len(rom_ops) > 48:
+        print(f"    ... {len(rom_ops) - 48} more ROM operations")
+
+    print("  unique RAM-sourced VDP operations:")
+    for op in ram_ops[:24]:
+        pc_text = f"pc=${int(op['pc']):06x}" if int(op["pc"]) >= 0 else "pc=?"
+        block_text = f" block=${int(op['block']):06x}" if "block" in op else ""
+        print(
+            f"    frame={int(op['frame']):5d} {pc_text}{block_text} "
+            f"src=${int(op['source']):06x} len=${int(op['length']):04x} "
+            f"dest=${int(op['dest']):04x} {vdp_dest_role(int(op['dest'])):<16} code=${int(op['code']):02x}"
+        )
+    if len(ram_ops) > 24:
+        print(f"    ... {len(ram_ops) - 24} more RAM operations")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", type=Path, default=DEFAULT_DIR)
@@ -3870,6 +4253,11 @@ def main() -> None:
     parser.add_argument("--deep-peel-search", action="store_true")
     parser.add_argument("--strict-peel-search", action="store_true")
     parser.add_argument("--xref-search", action="store_true")
+    parser.add_argument("--cross-runs", type=int, default=0)
+    parser.add_argument("--only-cross-ref", action="store_true")
+    parser.add_argument("--only-token-graph", action="store_true")
+    parser.add_argument("--vdp-log", type=Path)
+    parser.add_argument("--only-vdp-log", action="store_true")
     parser.add_argument("--write-best-startup", type=Path)
     parser.add_argument("--write-adjusted-startup", type=Path)
     args = parser.parse_args()
@@ -3901,6 +4289,19 @@ def main() -> None:
             f"size={len(candidate):06x} crc={crc} sha1={sha1}"
         )
 
+    def print_reference_cross_reports() -> None:
+        for ref_name in (USA_REF, EU_REF):
+            ref = (args.base / ref_name).read_bytes()[:0x100000]
+            print_runs("base/no extra", base_decoded, ref_name, ref, args.runs)
+            print_runs("current MAME extra", mame_decoded, ref_name, ref, args.runs)
+            print_cross_reference_runs("base/no extra", base_decoded, ref_name, ref, args.cross_runs)
+            print_cross_reference_runs("current MAME extra", mame_decoded, ref_name, ref, args.cross_runs)
+            print_cross_reference_runs("best startup candidate", bytes_from(best_startup_words), ref_name, ref, args.cross_runs)
+            print_cross_reference_runs("adjusted startup candidate", bytes_from(adjusted_startup_words), ref_name, ref, args.cross_runs)
+            if args.cross_runs > 0:
+                print_protection_region_reference_anchors("base/no extra", base_decoded, ref_name, ref)
+                print_protection_region_reference_anchors("best startup candidate", bytes_from(best_startup_words), ref_name, ref)
+
     print("== inputs")
     for name, data in [
         ("arcade interleaved", raw),
@@ -3909,6 +4310,22 @@ def main() -> None:
     ]:
         crc, sha1 = crc_sha1(data)
         print(f"  {name}: size={len(data):06x} crc={crc} sha1={sha1}")
+
+    if args.only_cross_ref:
+        print_reference_cross_reports()
+        return
+
+    if args.only_token_graph:
+        print_startup_table_entry_interpretation(base_words)
+        print_token_entry_motif_model(base_words)
+        print_startup_callsite_token_class_model(base_words)
+        print_token_state_machine_graph(base_words)
+        return
+
+    if args.vdp_log:
+        print_vdp_source_anchor_report(args.vdp_log, base_decoded, args.base)
+        if args.only_vdp_log:
+            return
 
     print_startup_words("base/no extra", base_words)
     print_startup_words("current MAME extra", mame_words)
@@ -3942,6 +4359,7 @@ def main() -> None:
     print_token_block_disassembly_model(base_words)
     print_token_entry_motif_model(base_words)
     print_startup_callsite_token_class_model(base_words)
+    print_token_state_machine_graph(base_words)
     print_boot_flow_readiness_model(base_words)
     print_startup_side_effect_model(base_words)
     print_mame_render_probe_plan(base_words)
@@ -3959,10 +4377,7 @@ def main() -> None:
     print_peel5b_summary()
     print_peel4b_summary()
 
-    for ref_name in (USA_REF, EU_REF):
-        ref = (args.base / ref_name).read_bytes()[:0x100000]
-        print_runs("base/no extra", base_decoded, ref_name, ref, args.runs)
-        print_runs("current MAME extra", mame_decoded, ref_name, ref, args.runs)
+    print_reference_cross_reports()
 
 
 if __name__ == "__main__":

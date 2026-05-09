@@ -199,13 +199,32 @@ The instruction-path search now finds a plausible partial startup stream:
   - Phase 2 adjustments should stay disabled until the log proves the original target stalls: `$0c7a->$0e32`, `$0c86->$0ab8`, `$0c8c->$0af8`, and `$0c92->$0d32`.
   - First PC log points: `$0c42`, `$0a1c`, `$10ba-$10c0`, `$0af8-$0b14`, token entries `$101c/$0f26/$0f2e/$1026/$102e/$1030/$103a`, and blockers `$00f8/$0d34`.
   - The first useful render signal is not gameplay; it is confirming the modeled VDP writes at `$0a1c` and `$0b0e` plus stable MMIO polling at `$10c0`.
+- Cross-offset reference anchoring is now available through `--cross-runs N --only-cross-ref`.
+  - The decoded arcade image has large exact anchors against both Genesis references, so the MAME base decode is definitely recovering substantial real program/data content.
+  - Strong US anchors include `$07de16-$092dbd -> $07a88c-$08f833`, `$092dc0-$09f6c5 -> $0a2fc2-$0af8c7`, `$06c1f0-$076449 -> $068bec-$072e45`, and same-offset `$0d0e54-$0d3b07`.
+  - Strong EU anchors are similar, including `$0e075e-$0e7fff -> $0e05b6-$0e7e57` and same-offset `$0d0e54-$0d3b07`.
+  - The protected boot regions still have no 16-byte exact anchor in either Genesis ROM: startup `$0c42-$0c9b`, weak `$0d34-$0daf`, early token run `$0e46-$0e81`, main token family `$0ea0-$1065`, and `$1082-$10a1`.
+  - This strongly argues that the remaining blocker is not a simple misplaced Genesis code window. The startup/token material is arcade-specific, PIC/protection supplied, or behind a separate fetch/data transform.
+- A compact token state-machine graph is now emitted by `--only-token-graph`.
+  - `$0c5e` is a single repeated `CABG1` entry into B06 at `$101c`.
+  - `$0c76` is dispatch-like: alternatives land in `ABG0FD` at `$0f26`, `DA` at `$0f2e`, and `CABG1` at `$0fa8`.
+  - `$0c6a` is tail/join-control-like: alternatives land at `$1026`, `$102e`, and B07 finalization `$103a`.
+  - B04, B05, and B06 all have strong trailer edges to B07/`$1030`: B04 raw `from-start +$00ae`, B05 raw `from-start +$0074`, and B06 x0 `from-start +$003a`.
+  - B02 and B07 currently have no strong trailer edge. B02 is now the best target for finding the missing dispatch/consumer semantics; B07 is likely terminal/finalization or hands off to an external consumer.
+- The EutherDrive render bring-up now feeds back into the decryption lab through `--vdp-log`.
+  - Slot 3 VDP command-block scanning found 30 unique DMA-like operations: 21 ROM-sourced and 9 RAM-sourced.
+  - The visible corrupt layer updates write to VRAM destinations such as `$f000`, `$fd40-$fec0`, `$dce0-$ddc0`, `$da80/$dac0`, and `$c040/$c04a`.
+  - The ROM source blocks involved include `$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, and `$054494`.
+  - None of those ROM source blocks have a same-offset match or short exact anchor in either home Genesis reference when viewed through the current MAME base decode.
+  - That makes the latest corruption more likely to be wrong remaining data/table decryption or wrong list generation than a pure Mega Drive layer compositor bug. The renderer is showing real motion and input reaction, but it is being fed bad tile/list metadata.
 
 ## Next steps
 
-1. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
-2. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
-3. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.
-4. Investigate `$001082`, `$00101c`, `$000e2e/$000e32`, and `$000d34` as likely encrypted islands or data tables.
+1. Use the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a new data-region decryption target set, separate from the startup-code target set.
+2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
+3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
+4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.
+5. Investigate `$001082`, `$00101c`, `$000e2e/$000e32`, and `$000d34` as likely encrypted islands or data tables.
 5. Add a local transform search for each weak target, using surrounding valid code and known MMIO patterns (`00ffxxxx`, `00c00004`, `4e75`, `4eb9`, `33fc`) as constraints.
 6. Expand the strict common-mode validator beyond the current bounded two-word startup probe. It must prove the same PEEL control/bit-order across three or more adjacent or fetch-related words before allowing `p5?`-style candidates to score as code.
 7. Add a segment/layer scan that summarizes which decode form (`raw`, `x0`, `x1`, strict p5m, p5h, small-delta) dominates each local code/data island, rather than assuming one global mode.
@@ -218,9 +237,13 @@ The instruction-path search now finds a plausible partial startup stream:
 14. Search specifically for routines that walk repeated token transitions such as `01a6 -> 0102`, `1b3e -> 01a6`, `14c5 -> 01a6`, and `0101 -> 14c5`, including code using `(An)+`, indexed table reads, or A-register bases near `$0ea0`.
 14a. Treat mixed-transform opcode/operand call sites as false positives unless the opcode, high word, and low word can be justified by one coherent fetch context.
 14b. Decode the `4fbd/4eba + param` trailer semantics. The P00/B04/B05/B06 parameters landing at `$1030` are the strongest current clue for block-to-block control flow.
-14c. Treat `$0e38: 4fbd 0006` as a separate upstream/control marker candidate only. It fails the clean block-body test, so do not use it as part of the B01-B06 column model.
-14d. Use the pseudo-disassembly motifs to separate startup entry classes: `C A B G1 E`, `A B G0 F D`, `D A ...`, trailer-param tail entries, and B07 finalization entries.
-14e. Treat `$0c76` as the first candidate dispatch-like startup callsite and `$0c6a` as the first tail/join-control callsite. Search for the consumer logic that distinguishes those alternatives.
+14c. Use the cross-offset anchors as a negative filter: do not try to force `$0c42-$1065` to match Genesis unless a smaller exact local anchor appears. Focus instead on the PIC/state-machine model for the no-anchor regions.
+14d. Treat `$0e38: 4fbd 0006` as a separate upstream/control marker candidate only. It fails the clean block-body test, so do not use it as part of the B01-B06 column model.
+14e. Use the pseudo-disassembly motifs to separate startup entry classes: `C A B G1 E`, `A B G0 F D`, `D A ...`, trailer-param tail entries, and B07 finalization entries.
+14f. Treat `$0c76` as the first candidate dispatch-like startup callsite and `$0c6a` as the first tail/join-control callsite. Search for the consumer logic that distinguishes those alternatives.
+14g. Focus the next solver on B02 and B07:
+  - B02 contains both `$0f26` (`ABG0FD`) and `$0f2e` (`DA`) entries but lacks a strong trailer edge.
+  - B07 receives three strong edges and `$103a` finalization, so it should reveal whether tokens are executed by a PIC-like state machine, copied to RAM, or consumed by a 68000 routine outside the token block.
 14f. Before attempting rendering, keep refining the minimal side-effect checklist: `$0a1c`, `$10a2/$10a8`, and `$0af8` are the first VDP/MMIO candidates; token classes and `$1030` still need a consumer/return model before they can be treated as render-init code.
 14g. Build the first MAME-side instrumentation target around VDP control-port writes and MMIO polls rather than full gameplay: log execution of `$0a1c`, `$10ba-$10c0`, `$0af8-$0b14`, and the weak blockers `$00f8/$0d34`. The lab now prints the exact patch words, breakpoints, and expected effects for this probe.
 14h. After the first instrumented run, classify the result by gate: VDP register writes seen, MMIO poll stable/looping, token-entry execution seen, or weak blocker reached before any video setup.
