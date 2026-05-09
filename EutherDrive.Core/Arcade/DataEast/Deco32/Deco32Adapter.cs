@@ -379,7 +379,9 @@ public sealed class Deco32Adapter : IEmulatorCore, ISavestateCapable
         Array.Clear(_alphaTilemapFrame);
         _palette?.FillBackdrop(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
         int priority = _memory?.Priority ?? 0;
-        bool alphaTilemap = _palette is not null && _palette.GetAceRam(0x17) != 0 && (priority & 3) != 0;
+        bool alphaTilemap = _palette is not null
+            && (priority & 3) != 0
+            && (_palette.GetAceRam(0x17) != 0 || _palette.HasProgrammedObjectAlphaControls());
         _tilemaps?.RenderBackPlayfields(_renderFrameBuffer, _priorityFrame, _alphaTilemapFrame, FrameWidth, FrameHeight, FrameStride, priority, alphaTilemap);
         _sprites?.Render(_renderFrameBuffer, _priorityFrame, _alphaTilemapFrame, FrameWidth, FrameHeight, FrameStride, _frameCounter, priority, alphaTilemap);
         _tilemaps?.RenderTextPlayfield(_renderFrameBuffer, FrameWidth, FrameHeight, FrameStride);
@@ -1955,16 +1957,7 @@ public sealed class DecoTilemapDevice
                 if (alphaMap is not null)
                     alphaMap[y * width + x] = (ushort)palettePixel;
                 else if (fb is not null)
-                {
-                    if (ShouldBlendNightSlashersStagecoachPlayfield(layer, priorityValue, colorBase, tileWord, palettePixel))
-                    {
-                        if (layer == 2 && _palette.IsBlack(palettePixel))
-                            continue;
-                        _palette.BlendPixel(fb, stride, x, y, palettePixel, 0x80);
-                    }
-                    else
-                        _palette.WritePixel(fb, stride, x, y, palettePixel);
-                }
+                    _palette.WritePixel(fb, stride, x, y, palettePixel);
                 if (priorityMap is not null)
                     priorityMap[y * width + x] = priorityValue;
             }
@@ -2011,23 +2004,6 @@ public sealed class DecoTilemapDevice
 
     private int Chip1Pf1ColorBase => ((ColorBank >> 0) & 7) << 4;
     private int Chip1Pf2ColorBase => ((ColorBank >> 3) & 7) << 4;
-
-    private bool ShouldBlendNightSlashersStagecoachPlayfield(int layer, byte priorityValue, int colorBase, ushort tileWord, int palettePixel)
-    {
-        int tileCode = tileWord & 0x0fff;
-        return (layer == 2
-                && priorityValue == 4
-                && colorBase == Chip1Pf1ColorBase
-                && (palettePixel & 0x7f0) == 0x200
-                && tileCode >= 0x600
-                && tileCode <= 0x7ff)
-            || (layer == 1
-                && priorityValue == 2
-                && colorBase == 0x10
-                && (palettePixel & 0x7f0) == 0x180
-                && tileCode >= 0xa00
-                && tileCode <= 0xbff);
-    }
 
     private static int Decode4BppChar(byte[] rom, int code, int x, int y)
     {
@@ -2280,7 +2256,7 @@ public sealed class DecoSpriteDevice
                         int rawColor1 = (pix1 & 0x0f00) >> 8;
                         bool alpha2 = (pix1 & 0x1000) == 0;
                         int alpha = (!sprite1Alpha || alpha2)
-                            ? _palette.GetAlpha((rawColor1 & 0x8) != 0 ? 0x4 + ((rawColor1 & 0x3) / 2) : ((rawColor1 & 0x7) / 2))
+                            ? _palette.GetObjectAlpha((rawColor1 & 0x8) != 0 ? 0x4 + ((rawColor1 & 0x3) / 2) : ((rawColor1 & 0x7) / 2))
                             : 0xff;
                         int color1 = (rawColor1 % 16) * 16;
                         _palette.BlendPixel(fb, stride, x, y, sprite1ColorBase + (coloffs | color1 | (pix1 & 0xff)), alpha);
@@ -2294,8 +2270,8 @@ public sealed class DecoSpriteDevice
                         && ((pix0 & 0xff) == 0 || pri0 >= 2)
                         && ((pix1 & 0xff) == 0 || pri1 >= 2 || sprite1Alpha))
                     {
-                        int alpha = _palette.GetAlpha(0x17 + (((alphaPix & 0xf0) >> 4) / 2));
-                        _palette.BlendPixel(fb, stride, x, y, alphaPix, alpha);
+                        int alpha = _palette.GetTilemapAlpha(0x17 + (((alphaPix & 0xf0) >> 4) / 2));
+                        _palette.BlendPixel(fb, stride, x, y, coloffs | alphaPix, alpha);
                     }
                 }
             }
@@ -2453,9 +2429,6 @@ public sealed class PaletteDevice
         WriteBgra(fb, y * stride + x * 4, color);
     }
 
-    public bool IsBlack(int paletteIndex)
-        => (_colors[paletteIndex & (_colors.Length - 1)] & 0x00ffffff) == 0;
-
     public void BlendPixel(byte[] fb, int stride, int x, int y, int paletteIndex, int alpha)
     {
         alpha = Math.Clamp(alpha, 0, 255);
@@ -2481,15 +2454,37 @@ public sealed class PaletteDevice
     {
         index &= 0x1f;
         int alpha = _aceRam[index] & 0xff;
-        // Night Slashers leaves the object alpha slots at zero for common shadow
-        // overlays; hardware still blends those sprite-1 pixels instead of making
-        // them solid black.
-        if (alpha == 0 && index <= 0x05)
-            return 0x80;
         if (alpha > 0x20)
             return 0x80;
         alpha = 255 - (alpha << 3);
         return Math.Max(alpha, 0);
+    }
+
+    public int GetObjectAlpha(int index)
+    {
+        index &= 0x1f;
+        if ((_aceRam[index] & 0xff) == 0 && index <= 0x05)
+            return 0x80;
+        return GetAlpha(index);
+    }
+
+    public int GetTilemapAlpha(int index)
+    {
+        index &= 0x1f;
+        if ((_aceRam[index] & 0xff) == 0)
+            return 0x80;
+        return GetAlpha(index);
+    }
+
+    public bool HasProgrammedObjectAlphaControls()
+    {
+        for (int i = 0; i <= 0x05; i++)
+        {
+            if ((_aceRam[i] & 0xff) != 0)
+                return true;
+        }
+
+        return false;
     }
 
     public ushort GetAceRam(int index)
