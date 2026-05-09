@@ -338,12 +338,18 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_WRITE_COUNTER"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRamRangeFirstWritePerFrame =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_FIRST_WRITE"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRamRangeRegs =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_REGS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRamRangePc =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_PC"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRamRangePcFocus6fb =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_PC_FOCUS_6FB"), "1", StringComparison.Ordinal);
         private static readonly int TraceRamRangePcLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_RAM_RANGE_PC_LIMIT", 512);
+        private static readonly int TraceRamRangeFrameMin =
+            ParseFrameFilter("EUTHERDRIVE_TRACE_RAM_RANGE_FRAME_MIN", int.MinValue);
+        private static readonly int TraceRamRangeFrameMax =
+            ParseFrameFilter("EUTHERDRIVE_TRACE_RAM_RANGE_FRAME_MAX", int.MaxValue);
         private static uint _traceRamRangeStart;
         private static uint _traceRamRangeEnd;
         private int _ramRangePcRemaining = TraceRamRangePcLimit;
@@ -557,6 +563,9 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             if (addr < _traceRamRangeStart || addr > _traceRamRangeEnd)
                 return;
+            long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frameNow < TraceRamRangeFrameMin || frameNow > TraceRamRangeFrameMax)
+                return;
             if (TraceRamRangePc && write && _ramRangePcRemaining > 0)
             {
                 uint pc = md_m68k.g_reg_PC;
@@ -590,7 +599,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             if (TraceRamRangeWriteCounter || TraceRamRangeFirstWritePerFrame)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                long frame = frameNow;
                 if (frame != _ramRangeCountFrame)
                 {
                     if (TraceRamRangeWriteCounter && _ramRangeCountFrame >= 0 && _ramRangeWriteCount > 0)
@@ -617,7 +626,7 @@ namespace EutherDrive.Core.MdTracerCore
                 return;
             if (TraceRamRangeFirstPerFrame)
             {
-                long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+                long frame = frameNow;
                 if (frame != _ramRangeLastFrame)
                 {
                     _ramRangeLastFrame = frame;
@@ -631,8 +640,10 @@ namespace EutherDrive.Core.MdTracerCore
                 _ramRangeRemaining--;
             char rw = write ? 'W' : 'R';
             string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
-            long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
-            Console.WriteLine($"[RAM-RANGE] frame={frameNow} {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}");
+            string regs = TraceRamRangeRegs
+                ? $" d0=0x{md_m68k.g_reg_data[0].l:X8} d1=0x{md_m68k.g_reg_data[1].l:X8} d2=0x{md_m68k.g_reg_data[2].l:X8} d3=0x{md_m68k.g_reg_data[3].l:X8} d4=0x{md_m68k.g_reg_data[4].l:X8} a0=0x{md_m68k.g_reg_addr[0].l:X8} a1=0x{md_m68k.g_reg_addr[1].l:X8} a2=0x{md_m68k.g_reg_addr[2].l:X8}"
+                : string.Empty;
+            Console.WriteLine($"[RAM-RANGE] frame={frameNow} {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}{regs}");
 
             // RAM-RANGE-PC handled above to avoid being throttled by RAM-RANGE limits.
         }
@@ -691,6 +702,17 @@ namespace EutherDrive.Core.MdTracerCore
             if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
                 return fallback;
             return value < 0 ? fallback : value;
+        }
+
+        private static int ParseFrameFilter(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value;
         }
 
         private static ushort? ParseZ80WinRangeOffset(string name)

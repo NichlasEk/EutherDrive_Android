@@ -73,3 +73,11 @@ Current strongest model:
   `EUTHERDRIVE_HSHAVOC_RAM_SEED_EVERY_FRAME=1` only as a diagnostic override.
   The current best proof is `FFDBEC`: forcing `0x000b` moves the cold frame
   5147 VDP queue much closer to user slot 3, but it is not a final fix.
+- Focused queue tracing now supports frame windows:
+  `EUTHERDRIVE_TRACE_RAM_RANGE_FRAME_MIN/MAX`,
+  `EUTHERDRIVE_TRACE_RAM_RANGE_REGS=1`, and
+  `EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_FRAME_START/END`. The current
+  late-scene fault is `$ffe998`, built at frame 5011 by `$001eb8-$001f00` and
+  later flushed as `$ffcc00 -> $c200`. The bad builder packet has
+  `D3=$00ffcc00` and `D4=$0000c200`; the next target is the caller that fed
+  those selector registers into the generic builder.

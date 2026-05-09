@@ -49,6 +49,12 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
     private static readonly bool TraceVdpCommandBlockFlush =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
+    private static readonly long TraceVdpCommandBlockFlushFrameStart =
+        ParseEnvLong("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_FRAME_START", long.MinValue);
+    private static readonly long TraceVdpCommandBlockFlushFrameEnd =
+        ParseEnvLong("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_FRAME_END", long.MaxValue);
+    private static readonly int TraceVdpCommandBlockFlushMax =
+        ParseEnvInt("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_MAX", 256);
     private static readonly bool SkipRomVdpDma =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_SKIP_ROM_VDP_DMA");
     private static readonly uint FlushVdpCommandBlockStart =
@@ -241,6 +247,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
     private int _lowPatternQueueWords;
     private long _lastVBlankGateTraceFrame = long.MinValue;
     private long _lastPlaneBTileOffsetTraceFrame = long.MinValue;
+    private int _vdpCommandBlockFlushLogRemaining = TraceVdpCommandBlockFlushMax;
     private byte[]? _decodedRomImage;
     private RomIdentity? _romIdentity;
     private HshavocBoardBusOverride? _boardOverride;
@@ -754,7 +761,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
             if (!_tracedVdpCommandBlocks.Add(signature))
                 continue;
 
-            LogVdpCommandBlock("HSHAVOC-VDPBLK-CANDIDATE", block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            LogVdpCommandBlock("HSHAVOC-VDPBLK-CANDIDATE", md_main.g_md_vdp?.FrameCounter ?? -1, block, reg19, reg20, reg21, reg22, reg23, control1, control2);
             logged++;
             if (TraceVdpCommandBlockScanMax > 0 && logged >= TraceVdpCommandBlockScanMax)
                 return;
@@ -1014,7 +1021,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
             if (!_tracedCramCommandBlocks.Add(signature))
                 continue;
 
-            LogVdpCommandBlock("HSHAVOC-CRAMBLK-CANDIDATE", block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            LogVdpCommandBlock("HSHAVOC-CRAMBLK-CANDIDATE", md_main.g_md_vdp?.FrameCounter ?? -1, block, reg19, reg20, reg21, reg22, reg23, control1, control2);
             logged++;
             if (TraceCramCommandBlockMax > 0 && logged >= TraceCramCommandBlockMax)
                 return;
@@ -1115,7 +1122,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
     private static int DecodeVdpDestination(ushort control1, ushort control2)
         => (control1 & 0x3FFF) | ((control2 & 0x0007) << 14);
 
-    private static void ExecuteVdpCommandBlock(
+    private void ExecuteVdpCommandBlock(
         uint block,
         ushort reg19,
         ushort reg20,
@@ -1140,14 +1147,21 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         vdp.write16(0x00C00004, control1);
         vdp.write16(0x00C00004, control2);
 
-        if (TraceVdpCommandBlockFlush)
+        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+        if (TraceVdpCommandBlockFlush &&
+            _vdpCommandBlockFlushLogRemaining != 0 &&
+            frame >= TraceVdpCommandBlockFlushFrameStart &&
+            frame <= TraceVdpCommandBlockFlushFrameEnd)
         {
-            LogVdpCommandBlock("HSHAVOC-VDPBLK-FLUSH", block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            if (_vdpCommandBlockFlushLogRemaining > 0)
+                _vdpCommandBlockFlushLogRemaining--;
+            LogVdpCommandBlock("HSHAVOC-VDPBLK-FLUSH", frame, block, reg19, reg20, reg21, reg22, reg23, control1, control2);
         }
     }
 
     private static void LogVdpCommandBlock(
         string tag,
+        long frame,
         uint block,
         ushort reg19,
         ushort reg20,
@@ -1162,7 +1176,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
         int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
         Console.WriteLine(
-            $"[{tag}] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+            $"[{tag}] frame={frame} " +
             $"block=0x{block:X6} len=0x{length:X4} sourceWord=0x{sourceWord:X6} " +
             $"sourceByte=0x{(sourceWord << 1):X6} dest=0x{dest:X4} code=0x{codeLow:X2} " +
             $"regs={reg19:X4},{reg20:X4},{reg21:X4},{reg22:X4},{reg23:X4} cmd={control1:X4},{control2:X4}");
@@ -1237,6 +1251,14 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         if (string.IsNullOrWhiteSpace(raw))
             return fallback;
         return int.TryParse(raw, out int parsed) ? parsed : fallback;
+    }
+
+    private static long ParseEnvLong(string name, long fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        return long.TryParse(raw, out long parsed) ? parsed : fallback;
     }
 
     private static uint ParseEnvHex(string name, uint fallback)
