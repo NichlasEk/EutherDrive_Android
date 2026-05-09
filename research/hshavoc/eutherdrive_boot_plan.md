@@ -214,6 +214,23 @@ VDP/IO checkpoint:
   a 90-frame headless run reaches `fb_has_content=True` with 28,695 nonzero
   pixels. That means the next real target is the missing main-loop dispatcher
   call/gate, not palette data generation.
+- The startup bridge now preserves the home-style `andi.w #$f8ff,SR` tail at
+  `$0cb2` before jumping to `$1126`. This drops the 68000 interrupt mask after
+  protected startup. VINT is then accepted on vector `$0078` and enters the
+  arcade handler at `$0ab8`.
+- The VBlank handler reads the board/PIC gate at `$fff906` from PC `$000ac2`
+  before it reaches `$0ae8 -> $1332 -> $13fe`. A broad frame-start RAM latch
+  was useful as a probe, but the current model is narrower:
+  `HshavocBoardBusOverride` returns `1` only for that VBlank gate read by
+  default. It can be disabled with
+  `EUTHERDRIVE_HSHAVOC_FORCE_VBLANK_GATE_READ=0`; the older
+  `EUTHERDRIVE_HSHAVOC_LATCH_VBLANK_GATE=1` remains opt-in.
+- With the PC-specific VBlank gate read, `$0ae8`, `$1332`, and `$13fe` continue
+  after `$009aac` starts filling `$fff700-$fff77f`. CRAM tracing confirms real
+  nonzero palette uploads from `$13fe` beginning around frame 26, with values
+  matching the `$fff700` fade/palette producer. A pure headless run is still
+  black because the real VRAM command-block scheduler is not yet fully modeled;
+  the palette path is no longer the primary blocker.
 
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.

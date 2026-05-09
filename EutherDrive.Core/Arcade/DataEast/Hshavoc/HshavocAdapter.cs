@@ -46,6 +46,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN");
     private static readonly bool TraceStaticPalettePlan =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_STATIC_PALETTE_PLAN");
+    private static readonly bool LatchVBlankGate =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_LATCH_VBLANK_GATE");
+    private static readonly bool TraceVBlankGate =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VBLANK_GATE");
     private static readonly bool TraceCramCommandBlockCandidates =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCKS");
     private static readonly uint TraceCramCommandBlockStart =
@@ -73,7 +77,11 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         (0x0C9A, 0x4EB9), (0x0C9C, 0x000D), (0x0C9E, 0x0000), (0x0CA0, 0x4EB9),
         (0x0CA2, 0x000D), (0x0CA4, 0x0682), (0x0CA6, 0x4EB9), (0x0CA8, 0x000D),
         (0x0CAA, 0x0692), (0x0CAC, 0x4EB9), (0x0CAE, 0x000D), (0x0CB0, 0x06D6),
-        (0x0CB2, 0x4EF9), (0x0CB4, 0x0000), (0x0CB6, 0x1126),
+        // Preserve the home startup tail that lowers the 68000 interrupt mask
+        // before entering the main loop; otherwise the real VBlank dispatcher
+        // at $0ab8 never reaches its $1332 VDP flush call.
+        (0x0CB2, 0x027C), (0x0CB4, 0xF8FF), (0x0CB6, 0x4EF9),
+        (0x0CB8, 0x0000), (0x0CBA, 0x1126),
         (0x065E, 0x4E71), (0x0660, 0x4E71), (0x0662, 0x4E71), (0x0664, 0x4E71),
         (0x0666, 0x4E71),
         (0xD05CA, 0x4E71), (0xD05CC, 0x4E71), (0xD05CE, 0x4E71), (0xD05D0, 0x4E71),
@@ -130,6 +138,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private readonly HashSet<ulong> _flushedStaticPalettePlans = new();
     private readonly HashSet<ulong> _tracedCramCommandBlocks = new();
     private bool _testPaletteSeeded;
+    private long _lastVBlankGateTraceFrame = long.MinValue;
 
     public RomInfo RomInfo => _md.RomInfo;
 
@@ -158,6 +167,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _flushedStaticPalettePlans.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
+        _lastVBlankGateTraceFrame = long.MinValue;
         string profile = GetDecodeProfile();
         byte[] decoded = DecodeArchive(path, profile);
         string tempPath = Path.Combine(Path.GetTempPath(), $"eutherdrive_hshavoc_{Guid.NewGuid():N}.gen");
@@ -193,12 +203,14 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _flushedStaticPalettePlans.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
+        _lastVBlankGateTraceFrame = long.MinValue;
         _md.Reset();
         ApplyRamSeedWordsIfRequested();
     }
 
     public void RunFrame()
     {
+        LatchVBlankGateIfRequested();
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
         FlushVdpCommandBlocksIfRequested();
@@ -626,6 +638,27 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static bool IsEnvEnabled(string name)
         => string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
 
+    private static bool IsEnvDisabled(string name)
+        => string.Equals(Environment.GetEnvironmentVariable(name), "0", StringComparison.Ordinal);
+
+    private void LatchVBlankGateIfRequested()
+    {
+        if (!LatchVBlankGate)
+            return;
+
+        WriteM68kRamWord(0x00FFF906, 0x0001);
+
+        if (!TraceVBlankGate)
+            return;
+
+        long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+        if (frame == _lastVBlankGateTraceFrame)
+            return;
+
+        _lastVBlankGateTraceFrame = frame;
+        Console.WriteLine($"[HSHAVOC-VBLANK-GATE] frame={frame} addr=0xFFF906 value=0x0001");
+    }
+
     private static int ParseEnvInt(string name, int fallback)
     {
         string? raw = Environment.GetEnvironmentVariable(name);
@@ -665,12 +698,22 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             ushort value = checked((ushort)ParseHexLiteral(parts[1]));
             if ((address & 1) != 0 || address >= memory.Length - 1)
                 throw new InvalidDataException($"Invalid HSHavoc RAM seed address 0x{address:X8}.");
-            memory[address] = (byte)(value >> 8);
-            memory[address + 1] = (byte)value;
+            WriteM68kRamWord(address, value);
             applied++;
         }
 
         Console.WriteLine($"[HSHAVOC-RAM-SEED] words={applied}");
+    }
+
+    private static void WriteM68kRamWord(uint address, ushort value)
+    {
+        md_m68k.InitMemoryIfNeeded();
+        byte[]? memory = md_m68k.g_memory;
+        if (memory == null || (address & 1) != 0 || address >= memory.Length - 1)
+            return;
+
+        memory[address] = (byte)(value >> 8);
+        memory[address + 1] = (byte)value;
     }
 
     private static uint ParseHexLiteral(string raw)

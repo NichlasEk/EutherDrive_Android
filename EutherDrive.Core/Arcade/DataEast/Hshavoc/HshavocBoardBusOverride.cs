@@ -24,6 +24,10 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     private static readonly bool UiProofMode = IsUiProofMode();
     private static readonly bool RepairVdpRegisterPending =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING") || UiProofMode;
+    private static readonly bool ForceVBlankGateRead =
+        !IsEnvDisabled("EUTHERDRIVE_HSHAVOC_FORCE_VBLANK_GATE_READ");
+    private static readonly bool TraceVBlankGateRead =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VBLANK_GATE_READ");
     private static readonly uint TraceRamStart = ParseHex("EUTHERDRIVE_HSHAVOC_TRACE_RAM_START", DefaultTraceRamStart);
     private static readonly uint TraceRamEnd = ParseHex("EUTHERDRIVE_HSHAVOC_TRACE_RAM_END", DefaultTraceRamEnd);
     private static readonly long TraceVdpFrameStart = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_VDP_FRAME_START", long.MinValue);
@@ -37,6 +41,7 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     private int _ioLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_IO_MAX", 128);
     private int _ramLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_RAM_MAX", 160);
     private int _vdpRepairLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING_MAX", 32);
+    private int _vblankGateReadLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_VBLANK_GATE_READ_MAX", 32);
 
     public HshavocBoardBusOverride(IM68kBusOverride? inner)
     {
@@ -56,6 +61,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     public bool TryRead16(uint address, out ushort value)
     {
         if (_inner?.TryRead16(address, out value) == true)
+            return true;
+
+        if (TryReadVBlankGate(address, out value))
             return true;
 
         TraceIoRead(address, 2);
@@ -132,6 +140,29 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         uint start = address & 0x00FFFFFF;
         uint end = start + size - 1;
         return start <= AckWordAddress + 1 && end >= AckWordAddress;
+    }
+
+    private bool TryReadVBlankGate(uint address, out ushort value)
+    {
+        value = 0;
+        if (!ForceVBlankGateRead || (address & 0x00FFFFFF) != AckWordAddress)
+            return false;
+
+        // The VBlank handler probes this PIC/board gate before calling the
+        // shared VDP dispatcher. Other $fff906 polls remain backed by RAM so
+        // startup/acknowledgement waits still exercise the board model.
+        if (md_m68k.g_reg_PC != 0x000AC2)
+            return false;
+
+        value = 0x0001;
+        if (TraceVBlankGateRead && _vblankGateReadLogRemaining > 0)
+        {
+            _vblankGateReadLogRemaining--;
+            System.Console.WriteLine(
+                $"[HSHAVOC-VBLANK-GATE-R] pc=0x{md_m68k.g_reg_PC:X6} frame={FrameCounter()} addr=0x{AckWordAddress:X6} value=0x{value:X4}");
+        }
+
+        return true;
     }
 
     private void TraceVdpWrite(uint address, int size, uint value)
@@ -276,6 +307,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
 
     private static bool IsEnvEnabled(string name)
         => string.Equals(System.Environment.GetEnvironmentVariable(name), "1", System.StringComparison.Ordinal);
+
+    private static bool IsEnvDisabled(string name)
+        => string.Equals(System.Environment.GetEnvironmentVariable(name), "0", System.StringComparison.Ordinal);
 
     private static uint ParseHex(string name, uint fallback)
     {
