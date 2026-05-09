@@ -42,3 +42,7 @@ Current strongest model:
   and none of their source blocks have a same-offset or short exact anchor in
   either home Genesis ROM. That makes the visible tile corruption a concrete
   decryption/data-production problem, not just a layer compositor guess.
+- `EUTHERDRIVE_HSHAVOC_VDP_SOURCE_PROBE=1` can replay the current local
+  source-block hypothesis in EutherDrive. It is intentionally disabled by
+  default; the first slot-3 test proved that it changes ROM DMA source words
+  but does not improve the visible corrupt framebuffer.

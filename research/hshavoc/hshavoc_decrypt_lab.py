@@ -28,6 +28,7 @@ EU_REF = "Capt'n Havoc (E) [!].gen"
 DATA_BITSWAP = [7, 15, 6, 14, 5, 2, 1, 10, 13, 4, 12, 3, 11, 0, 8, 9]
 TAIL_BITSWAP = [7, 15, 6, 14, 5, 2, 1, 0, 13, 4, 12, 3, 11, 10, 9, 8]
 EXTRA_BITSWAP = [15, 13, 14, 12, 11, 10, 9, 0, 8, 6, 5, 4, 3, 2, 1, 7]
+BASE_DECODE_END = 0xE8000
 TYPEDAT = [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1]
 STRICT_PEEL5B_CONTROL = (0, 1, 1, 0, 0)
 STRICT_PEEL5B_BIT_ORDER = (1, 2, 7, 4, 0, 3)
@@ -184,18 +185,7 @@ def decode_base(raw: bytes) -> list[int]:
     words = words_from(raw)
 
     for x in range(0xE8000 // 2):
-        word = bitswap(words[x], DATA_BITSWAP)
-        word ^= 0x0501 if TYPEDAT[x & 0xF] else 0x0406
-
-        if word & 0x0400:
-            word ^= 0x0200
-
-        if TYPEDAT[x & 0xF] == 0:
-            if word & 0x0100:
-                word ^= 0x0004
-            word = bitswap(word, [15, 14, 13, 12, 11, 9, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0])
-
-        words[x] = word
+        words[x] = decode_data_word(words[x], TYPEDAT[x & 0xF])
 
     for x in range(0xE8000 // 2, 0x100000 // 2):
         words[x] = bitswap(words[x], TAIL_BITSWAP)
@@ -204,6 +194,21 @@ def decode_base(raw: bytes) -> list[int]:
         words[i] ^= xor
 
     return words
+
+
+def decode_data_word(raw_word: int, typedat: int) -> int:
+    word = bitswap(raw_word, DATA_BITSWAP)
+    word ^= 0x0501 if typedat else 0x0406
+
+    if word & 0x0400:
+        word ^= 0x0200
+
+    if typedat == 0:
+        if word & 0x0100:
+            word ^= 0x0004
+        word = bitswap(word, [15, 14, 13, 12, 11, 9, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0])
+
+    return word
 
 
 def typedat_from_peel4b() -> list[int]:
@@ -4176,6 +4181,173 @@ def vdp_dest_role(dest: int) -> str:
     return "name/window/high"
 
 
+def vdp_source_word_variants(
+    raw_words: list[int],
+    base_words: list[int],
+    source: int,
+    length_words: int,
+) -> list[tuple[str, list[int]]]:
+    start = source // 2
+    end = min(start + length_words, len(raw_words), len(base_words))
+    base_block = base_words[start:end]
+    variants: list[tuple[str, list[int]]] = [("base", base_block)]
+
+    if source < BASE_DECODE_END:
+        for phase in range(16):
+            phase_block = [
+                decode_data_word(raw_words[idx], TYPEDAT[(idx + phase) & 0x0F])
+                for idx in range(start, end)
+            ]
+            variants.append((f"typedat+{phase:02x}", phase_block))
+
+        for phase in range(16):
+            phase_block = [
+                decode_data_word(raw_words[idx], 1 - TYPEDAT[(idx + phase) & 0x0F])
+                for idx in range(start, end)
+            ]
+            variants.append((f"typedat-inv+{phase:02x}", phase_block))
+
+    transforms = [
+        ("x0", lambda word, addr: bitswap(word ^ 0x0107, EXTRA_BITSWAP)),
+        ("x1", lambda word, addr: bitswap(word ^ 0x0107, EXTRA_BITSWAP) ^ 0x0001),
+        ("p5m", lambda word, addr: apply_peel5b_to_word(word, STRICT_PEEL5B_CONTROL, STRICT_PEEL5B_BIT_ORDER)),
+        ("p5h", lambda word, addr: apply_peel5b_to_word(word, SECOND_PEEL5B_CONTROL, SECOND_PEEL5B_BIT_ORDER)),
+    ]
+    for name, transform in transforms:
+        variants.append(
+            (
+                name,
+                [transform(word, source + offset * 2) for offset, word in enumerate(base_block)],
+            )
+        )
+
+    deduped: list[tuple[str, list[int]]] = []
+    seen: set[tuple[int, ...]] = set()
+    for name, block in variants:
+        key = tuple(block)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((name, block))
+    return deduped
+
+
+def score_name_table_words(words: list[int]) -> tuple[int, list[str]]:
+    if not words:
+        return -1000, ["empty"]
+
+    tiles = [word & 0x07FF for word in words]
+    palettes = [(word >> 13) & 0x03 for word in words]
+    priorities = [(word >> 15) & 0x01 for word in words]
+    unique_tiles = len(set(tiles))
+    unique_words = len(set(words))
+    zero_tiles = sum(1 for tile in tiles if tile == 0)
+    high_tiles = sum(1 for tile in tiles if tile >= 0x700)
+    low_tiles = sum(1 for tile in tiles if tile < 0x400)
+    repeated_pairs = sum(1 for a, b in zip(words, words[1:]) if a == b)
+    local_steps = sum(1 for a, b in zip(tiles, tiles[1:]) if abs(a - b) <= 2)
+    palette_switches = sum(1 for a, b in zip(palettes, palettes[1:]) if a != b)
+    priority_switches = sum(1 for a, b in zip(priorities, priorities[1:]) if a != b)
+
+    n = len(words)
+    score = 0
+    score += min(unique_tiles, n // 2) * 2
+    score += low_tiles
+    score += local_steps // 2
+    score -= high_tiles * 2
+    score -= zero_tiles * 3
+    score -= repeated_pairs
+    score -= palette_switches
+    score -= priority_switches * 2
+    if unique_words <= max(2, n // 8):
+        score -= 20
+    if unique_tiles <= max(2, n // 8):
+        score -= 20
+
+    notes = [
+        f"uniqw={unique_words}",
+        f"uniqt={unique_tiles}",
+        f"low={low_tiles}/{n}",
+        f"high={high_tiles}/{n}",
+        f"zero={zero_tiles}",
+        f"local={local_steps}",
+        f"rep={repeated_pairs}",
+        f"palSw={palette_switches}",
+    ]
+    return score, notes
+
+
+def score_pattern_words(words: list[int]) -> tuple[int, list[str]]:
+    if not words:
+        return -1000, ["empty"]
+
+    nibbles = [((word >> shift) & 0x0F) for word in words for shift in (12, 8, 4, 0)]
+    zero_nibbles = sum(1 for nibble in nibbles if nibble == 0)
+    f_nibbles = sum(1 for nibble in nibbles if nibble == 0x0F)
+    colors = len(set(nibbles))
+    unique_words = len(set(words))
+    repeated_words = sum(1 for a, b in zip(words, words[1:]) if a == b)
+    score = colors * 8 + min(unique_words, len(words) // 2) - repeated_words
+    if zero_nibbles == len(nibbles) or f_nibbles == len(nibbles):
+        score -= 60
+    if unique_words <= max(2, len(words) // 16):
+        score -= 25
+    notes = [
+        f"uniqw={unique_words}",
+        f"colors={colors}",
+        f"zeroNib={zero_nibbles}/{len(nibbles)}",
+        f"fNib={f_nibbles}/{len(nibbles)}",
+        f"rep={repeated_words}",
+    ]
+    return score, notes
+
+
+def score_vdp_source_words(dest: int, words: list[int]) -> tuple[int, list[str]]:
+    if dest < 0xC000:
+        return score_pattern_words(words)
+    return score_name_table_words(words)
+
+
+def print_vdp_source_transform_score_report(
+    log_path: Path,
+    raw_words: list[int],
+    base_words: list[int],
+) -> None:
+    print("\n== VDP source transform score report")
+    print("  heuristic: ranks alternate local decodes for ROM blocks copied into VDP")
+    operations = parse_vdp_log_operations(log_path)
+    seen: set[tuple[int, int, int, int]] = set()
+    rom_ops: list[dict[str, int | str]] = []
+    for op in operations:
+        key = (int(op["source"]), int(op["dest"]), int(op["length"]), int(op["code"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        source = int(op["source"])
+        if 0 <= source < len(raw_words) * 2 and 0 < int(op["length"]) <= 0x4000:
+            rom_ops.append(op)
+
+    for op in rom_ops[:48]:
+        source = int(op["source"])
+        length_words = min(int(op["length"]), (len(raw_words) * 2 - source) // 2)
+        dest = int(op["dest"])
+        variants = []
+        for name, words in vdp_source_word_variants(raw_words, base_words, source, length_words):
+            score, notes = score_vdp_source_words(dest, words)
+            variants.append((score, name, notes))
+        variants.sort(key=lambda item: (-item[0], item[1]))
+        base_score = next((score for score, name, _ in variants if name == "base"), None)
+        best_score, best_name, best_notes = variants[0]
+        delta = best_score - base_score if base_score is not None else 0
+        block_text = f" block=${int(op['block']):06x}" if "block" in op else ""
+        print(
+            f"  src=${source:06x} len=${length_words:04x} dest=${dest:04x}{block_text} "
+            f"best={best_name} score={best_score} delta={delta:+d} {' '.join(best_notes)}"
+        )
+        for score, name, notes in variants[:5]:
+            print(f"    {name:<16} score={score:5d} {' '.join(notes)}")
+
+
 def print_vdp_source_anchor_report(log_path: Path, decoded: bytes, base: Path) -> None:
     print("\n== VDP render-source anchor report")
     print(f"  log={log_path}")
@@ -4324,6 +4496,7 @@ def main() -> None:
 
     if args.vdp_log:
         print_vdp_source_anchor_report(args.vdp_log, base_decoded, args.base)
+        print_vdp_source_transform_score_report(args.vdp_log, words_from(raw), base_words)
         if args.only_vdp_log:
             return
 

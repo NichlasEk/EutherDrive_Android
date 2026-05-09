@@ -3,10 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using EutherDrive.Core.MdTracerCore;
+using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core.Arcade.DataEast.Hshavoc;
 
-public sealed class HshavocAdapter : IEmulatorCore, IDisposable
+public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposable
 {
     private const string BoardModel = "Data East CG-2 / Sega Genesis-Mega Drive arcade board probe";
     private const string EvenRomName = "d-25.11a";
@@ -14,6 +15,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private const int InterleavedSize = 0x100000;
     private const int BaseDecodeEnd = 0x0E8000;
     private const uint LatchedVdpQueueBlock = 0x00FFE91A;
+    private const string SavestateMagic = "HSHAVOCST";
+    private const int SavestateVersion = 1;
 
     private static readonly int[] DataBitswap =
     {
@@ -45,6 +48,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
     private static readonly bool TraceVdpCommandBlockFlush =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
+    private static readonly bool SkipRomVdpDma =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_SKIP_ROM_VDP_DMA");
     private static readonly uint FlushVdpCommandBlockStart =
         ParseEnvHex("EUTHERDRIVE_HSHAVOC_VDP_COMMAND_BLOCK_START", 0x00FFE900);
     private static readonly uint FlushVdpCommandBlockEnd =
@@ -105,6 +110,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_RAM_SEED_WORDS");
     private static readonly bool PatchInputIllegalBridge =
         !IsEnvDisabled("EUTHERDRIVE_HSHAVOC_PATCH_INPUT_ILLEGAL_BRIDGE");
+    private static readonly bool ApplyVdpSourceProbe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_VDP_SOURCE_PROBE");
+    private static readonly bool TraceVdpSourceProbe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_SOURCE_PROBE");
 
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
@@ -205,8 +214,14 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private int _lowPatternQueueSourceDest;
     private int _lowPatternQueueWords;
     private long _lastVBlankGateTraceFrame = long.MinValue;
+    private byte[]? _decodedRomImage;
+    private RomIdentity? _romIdentity;
 
     public RomInfo RomInfo => _md.RomInfo;
+
+    public RomIdentity? RomIdentity => _romIdentity ?? _md.RomIdentity;
+
+    public long? FrameCounter => _md.FrameCounter;
 
     public static bool IsSupportedArchive(string path)
     {
@@ -228,18 +243,14 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public void LoadRom(string path)
     {
-        _flushedQueueEntries.Clear();
-        _flushedVdpCommandBlocks.Clear();
-        _flushedStaticPalettePlans.Clear();
-        _flushedLowPatternRamProbes.Clear();
-        _tracedVdpCommandBlocks.Clear();
-        _tracedCramCommandBlocks.Clear();
-        _testPaletteSeeded = false;
-        _realStaticPalettePlanSeen = false;
-        _lowPatternQueueArmed = false;
-        _lastVBlankGateTraceFrame = long.MinValue;
+        ClearTransientProbeState();
         string profile = GetDecodeProfile();
         byte[] decoded = DecodeArchive(path, profile);
+        _decodedRomImage = decoded.ToArray();
+        _romIdentity = new RomIdentity(
+            $"hshavoc:{profile}:{Path.GetFileName(path)}",
+            RomIdentity.ComputeSha256(decoded),
+            PersistentStoragePath.ResolveSavestateDirectory(path, "hshavoc"));
         string tempPath = Path.Combine(Path.GetTempPath(), $"eutherdrive_hshavoc_{Guid.NewGuid():N}.gen");
         File.WriteAllBytes(tempPath, decoded);
         try
@@ -268,16 +279,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public void Reset()
     {
-        _flushedQueueEntries.Clear();
-        _flushedVdpCommandBlocks.Clear();
-        _flushedStaticPalettePlans.Clear();
-        _flushedLowPatternRamProbes.Clear();
-        _tracedVdpCommandBlocks.Clear();
-        _tracedCramCommandBlocks.Clear();
-        _testPaletteSeeded = false;
-        _realStaticPalettePlanSeen = false;
-        _lowPatternQueueArmed = false;
-        _lastVBlankGateTraceFrame = long.MinValue;
+        ClearTransientProbeState();
         _md.Reset();
         ApplyRamSeedWordsIfRequested();
     }
@@ -324,6 +326,55 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public string CaptureDebugSnapshot(string? directory = null) => _md.CaptureDebugSnapshot(directory);
 
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.Write(SavestateMagic);
+        writer.Write(SavestateVersion);
+        writer.Write(GetDecodeProfile());
+        _md.SaveState(writer);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ClearTransientProbeState();
+
+        Stream stream = reader.BaseStream;
+        long start = stream.CanSeek ? stream.Position : -1;
+        if (stream.CanSeek)
+        {
+            try
+            {
+                string magic = reader.ReadString();
+                if (string.Equals(magic, SavestateMagic, StringComparison.Ordinal))
+                {
+                    int version = reader.ReadInt32();
+                    if (version != SavestateVersion)
+                        throw new InvalidDataException($"Unsupported HSHavoc savestate version: {version}.");
+
+                    _ = reader.ReadString(); // decode profile note; ROM identity already guards normal UI slots.
+                    _md.LoadState(reader);
+                    RestoreDecodedRomImageAfterStateLoad();
+                    InstallBoardAckProbe();
+                    return;
+                }
+            }
+            catch (EndOfStreamException)
+            {
+            }
+
+            stream.Position = start;
+        }
+
+        // Debug snapshots captured through MdTracerAdapter contain the raw MD
+        // payload only. Accept those too, so a UI debug state can be replayed in
+        // the HSHavoc headless adapter.
+        _md.LoadState(reader);
+        RestoreDecodedRomImageAfterStateLoad();
+        InstallBoardAckProbe();
+    }
+
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
         => _md.GetFrameBuffer(out width, out height, out stride);
 
@@ -350,6 +401,23 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public void Dispose() => _md.Dispose();
 
+    private void ClearTransientProbeState()
+    {
+        _flushedQueueEntries.Clear();
+        _flushedVdpCommandBlocks.Clear();
+        _flushedStaticPalettePlans.Clear();
+        _flushedLowPatternRamProbes.Clear();
+        _tracedVdpCommandBlocks.Clear();
+        _tracedCramCommandBlocks.Clear();
+        _testPaletteSeeded = false;
+        _realStaticPalettePlanSeen = false;
+        _lowPatternQueueArmed = false;
+        _lowPatternQueueBlock = 0;
+        _lowPatternQueueSourceDest = 0;
+        _lowPatternQueueWords = 0;
+        _lastVBlankGateTraceFrame = long.MinValue;
+    }
+
     private static void InstallBoardAckProbe()
     {
         if (md_main.g_md_bus == null)
@@ -360,6 +428,23 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             return;
 
         md_main.g_md_bus.OverrideBus = new HshavocBoardBusOverride(existing);
+    }
+
+    private void RestoreDecodedRomImageAfterStateLoad()
+    {
+        if (_decodedRomImage == null)
+            return;
+
+        md_m68k.InitMemoryIfNeeded();
+        byte[]? memory = md_m68k.g_memory;
+        if (memory != null)
+            Buffer.BlockCopy(_decodedRomImage, 0, memory, 0, Math.Min(_decodedRomImage.Length, memory.Length));
+
+        md_cartridge? cartridge = md_main.g_md_cartridge;
+        if (cartridge?.g_file == null || cartridge.g_file.Length <= 0)
+            return;
+
+        Buffer.BlockCopy(_decodedRomImage, 0, cartridge.g_file, 0, Math.Min(_decodedRomImage.Length, cartridge.g_file.Length));
     }
 
     private static void ForceVdpDisplayIfRequested()
@@ -812,7 +897,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
         uint sourceByte = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
         uint byteLength = (uint)length * 2;
-        bool romSource = sourceByte < InterleavedSize && sourceByte + byteLength <= InterleavedSize;
+        bool romSource = !SkipRomVdpDma && sourceByte < InterleavedSize && sourceByte + byteLength <= InterleavedSize;
         bool ramSource = sourceByte >= 0x00FF0000 && sourceByte + byteLength - 1 <= 0x00FFFFFF;
         return romSource || ramSource;
     }
@@ -1078,7 +1163,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             rom[i * 2 + 1] = odd[i];
         }
 
+        byte[] rawInterleaved = rom.ToArray();
         DecodeBaseInPlace(rom);
+        if (ApplyVdpSourceProbe)
+            ApplyVdpSourceProbeTransforms(rom, rawInterleaved);
         if (profile != "base")
             ApplyPatch(rom, BestStartupPatch);
         if (PatchInputIllegalBridge)
@@ -1118,16 +1206,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         int wordCount = rom.Length / 2;
         for (int index = 0; index < BaseDecodeEnd / 2; index++)
         {
-            ushort word = BitSwap16(ReadWord(rom, index), DataBitswap);
-            word ^= Typedat[index & 0x0F] != 0 ? (ushort)0x0501 : (ushort)0x0406;
-            if ((word & 0x0400) != 0)
-                word ^= 0x0200;
-            if (Typedat[index & 0x0F] == 0)
-            {
-                if ((word & 0x0100) != 0)
-                    word ^= 0x0004;
-                word = BitSwap16(word, new[] { 15, 14, 13, 12, 11, 9, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0 });
-            }
+            ushort word = DecodeDataWord(ReadWord(rom, index), Typedat[index & 0x0F]);
             WriteWord(rom, index, word);
         }
 
@@ -1138,6 +1217,173 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         WriteWord(rom, 1, (ushort)(ReadWord(rom, 1) ^ 0x0107));
         WriteWord(rom, 2, (ushort)(ReadWord(rom, 2) ^ 0x0107));
         WriteWord(rom, 3, (ushort)(ReadWord(rom, 3) ^ 0x0707));
+    }
+
+    private static ushort DecodeDataWord(ushort rawWord, int typedat)
+    {
+        ushort word = BitSwap16(rawWord, DataBitswap);
+        word ^= typedat != 0 ? (ushort)0x0501 : (ushort)0x0406;
+        if ((word & 0x0400) != 0)
+            word ^= 0x0200;
+        if (typedat == 0)
+        {
+            if ((word & 0x0100) != 0)
+                word ^= 0x0004;
+            word = BitSwap16(word, new[] { 15, 14, 13, 12, 11, 9, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0 });
+        }
+        return word;
+    }
+
+    private static void ApplyVdpSourceProbeTransforms(byte[] rom, byte[] rawInterleaved)
+    {
+        // Probe only: these ranges are the ROM DMA sources observed in slot-3
+        // VDP command blocks. The transform choice comes from the research
+        // source scorer and is intentionally local until a hardware-wide rule
+        // is proven.
+        ApplyP5HProbeRange(rom, 0x04043A, 0x0300);
+        ApplyP5HProbeRange(rom, 0x04139A, 0x0260);
+        ApplyP5HProbeRange(rom, 0x04FEFA, 0x0040);
+        ApplyP5HProbeRange(rom, 0x053F94, 0x0040);
+        ApplyTypedatInvertProbeRange(rom, rawInterleaved, 0x054494, 0x0020, 0x08);
+
+        if (TraceVdpSourceProbe)
+        {
+            Console.WriteLine(
+                "[HSHAVOC-VDP-SOURCE-PROBE] patched p5h=$04043a/$04139a/$04fefa/$053f94 " +
+                "typedat-inv+08=$054494");
+        }
+    }
+
+    private static void ApplyP5HProbeRange(byte[] rom, int byteAddress, int byteLength)
+    {
+        int startWord = byteAddress / 2;
+        int words = byteLength / 2;
+        for (int i = 0; i < words; i++)
+            WriteWord(rom, startWord + i, ApplyPeel5BHypothesis(ReadWord(rom, startWord + i)));
+    }
+
+    private static void ApplyTypedatInvertProbeRange(byte[] rom, byte[] rawInterleaved, int byteAddress, int byteLength, int phase)
+    {
+        int startWord = byteAddress / 2;
+        int words = byteLength / 2;
+        for (int i = 0; i < words; i++)
+        {
+            int wordIndex = startWord + i;
+            int typedat = 1 - Typedat[(wordIndex + phase) & 0x0F];
+            WriteWord(rom, wordIndex, DecodeDataWord(ReadWord(rawInterleaved, wordIndex), typedat));
+        }
+    }
+
+    private static ushort ApplyPeel5BHypothesis(ushort word)
+    {
+        // SECOND_PEEL5B_CONTROL=(0,1,1,0,0), bit order=(4,0,3,1,7,8).
+        int[] bitOrder = { 4, 0, 3, 1, 7, 8 };
+        int[] values = new int[6];
+        for (int i = 0; i < values.Length; i++)
+            values[i] = (word >> bitOrder[i]) & 1;
+
+        (int o14, int o15, int o16, int o17, int o18, int o19) = Peel5BOutputs(
+            i1: 0,
+            i2: values[5],
+            i3: values[4],
+            i4: values[3],
+            i5: values[2],
+            i6: values[1],
+            i7: values[0],
+            i8: 1,
+            i9: 1,
+            i12: 0,
+            rf13: 0);
+        int[] outputs = { o14, o15, o16, o17, o18, o19 };
+
+        int result = word;
+        for (int i = 0; i < bitOrder.Length; i++)
+        {
+            int mask = 1 << bitOrder[i];
+            result = outputs[i] != 0 ? result | mask : result & ~mask;
+        }
+        return (ushort)result;
+    }
+
+    private static (int O14, int O15, int O16, int O17, int O18, int O19) Peel5BOutputs(
+        int i1,
+        int i2,
+        int i3,
+        int i4,
+        int i5,
+        int i6,
+        int i7,
+        int i8,
+        int i9,
+        int i12,
+        int rf13)
+    {
+        bool b1 = i1 != 0;
+        bool b2 = i2 != 0;
+        bool b3 = i3 != 0;
+        bool b4 = i4 != 0;
+        bool b5 = i5 != 0;
+        bool b6 = i6 != 0;
+        bool b7 = i7 != 0;
+        bool b8 = i8 != 0;
+        bool b9 = i9 != 0;
+        bool b12 = i12 != 0;
+        bool brf13 = rf13 != 0;
+
+        bool o14 =
+            (!b1 && !b6 && !b7 && b8) ||
+            (b1 && b6 && b8 && !b9 && !b12 && !brf13) ||
+            (b1 && !b6 && b8 && !b9 && !b12 && brf13) ||
+            (!b6 && !b7 && b8 && b9 && !b12) ||
+            (b6 && b7 && b9) ||
+            (b1 && b7 && b12) ||
+            (!b1 && !b7 && b8 && !b9) ||
+            (b7 && !b8);
+        bool o15 =
+            (b1 && !b7 && b8 && !b9 && !b12 && !brf13) ||
+            (b6 && !b7 && b9) ||
+            (b1 && b7 && b8 && !b9 && !b12 && brf13) ||
+            (!b1 && b6 && b7 && !b9) ||
+            (!b1 && !b6 && !b7 && b8) ||
+            (b1 && b6 && b12) ||
+            (b1 && b6 && b9) ||
+            (b6 && !b8);
+        bool o16 =
+            (!b4 && b5 && !b9 && !brf13) ||
+            (b1 && !b4 && !b5 && b8 && !b12 && brf13) ||
+            (b1 && b4 && !b5 && b8 && !b9 && !b12) ||
+            (b1 && !b4 && b8 && b9 && !b12) ||
+            (!b1 && b4 && b8 && b9) ||
+            (b1 && b5 && b12) ||
+            (!b1 && !b4 && b8 && !b9) ||
+            (b5 && !b8);
+        bool no17 =
+            (b4 && !b5 && b8 && !b9 && !b12 && !brf13) ||
+            (!b1 && !b5 && b8 && !b9) ||
+            (b1 && b4 && b5 && b8 && !b12) ||
+            (!b1 && b4 && !b5 && b8) ||
+            (!b4 && !b5 && !b9 && brf13) ||
+            (!b4 && b5 && b9) ||
+            (b1 && !b4 && b12) ||
+            (!b4 && !b8);
+        bool o18 =
+            (b1 && b3 && !b9 && !brf13) ||
+            (b1 && !b3 && b8 && !b9 && !b12 && brf13) ||
+            (!b2 && b8 && b9 && !b12) ||
+            (!b1 && b2 && b8 && !b9) ||
+            (!b1 && !b2 && b8 && b9) ||
+            (b1 && b3 && b12) ||
+            (b3 && !b8);
+        bool o19 =
+            (b1 && !b2 && b8 && !b9 && !b12 && !brf13) ||
+            (b1 && !b3 && b8 && b9 && !b12) ||
+            (!b1 && b3 && b8 && b9) ||
+            (b1 && b2 && !b9 && brf13) ||
+            (!b1 && !b3 && b8 && !b9) ||
+            (b1 && b2 && b12) ||
+            (b2 && !b8);
+
+        return (o14 ? 1 : 0, o15 ? 1 : 0, o16 ? 1 : 0, !no17 ? 1 : 0, o18 ? 1 : 0, o19 ? 1 : 0);
     }
 
     private static void ApplyPatch(byte[] rom, ReadOnlySpan<(int Address, ushort Value)> patch)

@@ -217,10 +217,16 @@ The instruction-path search now finds a plausible partial startup stream:
   - The ROM source blocks involved include `$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, and `$054494`.
   - None of those ROM source blocks have a same-offset match or short exact anchor in either home Genesis reference when viewed through the current MAME base decode.
   - That makes the latest corruption more likely to be wrong remaining data/table decryption or wrong list generation than a pure Mega Drive layer compositor bug. The renderer is showing real motion and input reaction, but it is being fed bad tile/list metadata.
+- A first VDP-source transform scorer/probe has now been tested end-to-end:
+  - The source scorer prefers `p5h` for `$04043a`, `$04139a`, `$04fefa`, and `$053f94`, and `typedat-inv+08` around `$054494`.
+  - EutherDrive can apply that hypothesis behind `EUTHERDRIVE_HSHAVOC_VDP_SOURCE_PROBE=1`.
+  - Savestate testing needed `EUTHERDRIVE_HEADLESS_IGNORE_SAVESTATE_ROM_HASH=1`, plus runtime restoration of the selected decoded ROM image into both the 68000 ROM window and cartridge buffer after state load. Without that, the state payload masks ROM-probe changes.
+  - With command-block flushing enabled, DMA source traces confirm the probe changes the ROM words read by the VDP, e.g. `$053f94` changes from `0606/0701/...` to `069d/0603/...`.
+  - The framebuffer remains visually unchanged except for tiny transient differences. Treat this as a negative visual result: the current `p5h`/typedat-invert source hypothesis is real enough to alter bytes, but it is not the missing visible tilemap/layer fix.
 
 ## Next steps
 
-1. Use the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a new data-region decryption target set, separate from the startup-code target set.
+1. Keep the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a target set, but do not treat the first `p5h`/typedat-invert probe as solved; it changes DMA data without improving the corrupt framebuffer.
 2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
 3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
 4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.

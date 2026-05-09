@@ -2625,6 +2625,52 @@ class Program
             || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+        bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && HshavocAdapter.IsSupportedArchive(romPath));
+
+        if (useHshavoc)
+        {
+            using var hshavoc = new HshavocAdapter();
+            hshavoc.LoadRom(romPath);
+
+            for (int i = 0; i < 30; i++)
+                hshavoc.RunFrame();
+
+            byte[] snapshotHshavoc;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                hshavoc.SaveState(writer);
+                writer.Flush();
+                snapshotHshavoc = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotHshavoc))
+            using (var reader = new BinaryReader(ms))
+            {
+                hshavoc.LoadState(reader);
+            }
+
+            byte[] snapshotAfterHshavoc;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                hshavoc.SaveState(writer);
+                writer.Flush();
+                snapshotAfterHshavoc = ms.ToArray();
+            }
+
+            if (!snapshotHshavoc.SequenceEqual(snapshotAfterHshavoc))
+            {
+                Console.Error.WriteLine("[HEADLESS] HSHavoc savestate roundtrip failed: payload mismatch.");
+                return 1;
+            }
+
+            Console.WriteLine($"[HEADLESS] HSHavoc savestate roundtrip ok. payload_bytes={snapshotHshavoc.Length}");
+            return 0;
+        }
 
         if (useCps1)
         {
@@ -3399,6 +3445,92 @@ class Program
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+            bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && HshavocAdapter.IsSupportedArchive(romPath));
+
+            if (useHshavoc)
+            {
+                using var hshavoc = new HshavocAdapter();
+                hshavoc.LoadRom(romPath);
+
+                int? slotOverrideHshavoc = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadHshavoc = TryLoadSavestatePayload(savestatePath, hshavoc.RomIdentity, slotOverrideHshavoc, out var hshavocError);
+                if (payloadHshavoc == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {hshavocError}");
+                    return 1;
+                }
+
+                using (var hshavocStateStream = new MemoryStream(payloadHshavoc, writable: false))
+                using (var hshavocStateReader = new BinaryReader(hshavocStateStream))
+                    hshavoc.LoadState(hshavocStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (HSHavoc)");
+                DumpHshavocCodeIslands(hshavoc, Path.Combine(dumpDir, "hshavoc_state_code_islands.txt"));
+                ReadOnlySpan<byte> fbBefore = hshavoc.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong fingerprintBefore = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine(
+                    $"[HEADLESS] HSHavoc state before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} " +
+                    $"first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+                    $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+                    $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)} fp=0x{fingerprintBefore:X16}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_hshavoc_state_before.ppm"));
+
+                var hshavocInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_HEADLESS_INPUT_SCRIPT"));
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, hshavocInputScript);
+                    hshavoc.SetInputState(
+                        up: input.Up,
+                        down: input.Down,
+                        left: input.Left,
+                        right: input.Right,
+                        a: input.A,
+                        b: input.B,
+                        c: input.X,
+                        start: input.Start,
+                        x: input.Y,
+                        y: input.L,
+                        z: input.R,
+                        mode: input.Select,
+                        padType: PadType.SixButton);
+                    hshavoc.RunFrame();
+
+                    ReadOnlySpan<byte> fb = hshavoc.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] HSHavoc state frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} " +
+                            $"first_nonzero=({stats.FirstX},{stats.FirstY}) pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+                            $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+                            $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)} fp=0x{fingerprint:X16}");
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_hshavoc_state_frame{frame}.ppm"));
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = hshavoc.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_HSHAVOC_SNAPSHOT") == "1")
+                {
+                    string snapPrefix = hshavoc.CaptureDebugSnapshot(dumpDir);
+                    Console.WriteLine($"[HEADLESS] HSHavoc snapshot captured: {snapPrefix}");
+                }
+
+                Console.WriteLine(
+                    $"[HEADLESS] HSHavoc state final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} " +
+                    $"first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+                    $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+                    $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)} fp=0x{finalFingerprint:X16}");
+                return 0;
+            }
 
             if (useTmnt)
             {
@@ -4628,6 +4760,54 @@ class Program
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+            bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && HshavocAdapter.IsSupportedArchive(romPath));
+
+            if (useHshavoc)
+            {
+                using var hshavoc = new HshavocAdapter();
+                hshavoc.LoadRom(romPath);
+
+                using (var fs = new FileStream(rawStatePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var reader = new BinaryReader(fs))
+                {
+                    hshavoc.LoadState(reader);
+                }
+
+                ReadOnlySpan<byte> fbBefore = hshavoc.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine(
+                    $"[HEADLESS] HSHavoc raw state before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} " +
+                    $"first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+                    $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+                    $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_hshavoc_raw_state_before.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    hshavoc.RunFrame();
+                    ReadOnlySpan<byte> fb = hshavoc.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        Console.WriteLine(
+                            $"[HEADLESS] HSHavoc raw state frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} " +
+                            $"first_nonzero=({stats.FirstX},{stats.FirstY}) pc=0x{hshavoc.GetM68kPc():X6} z80=0x{hshavoc.GetZ80Pc():X4} " +
+                            $"sr=0x{hshavoc.GetM68kStatusRegister():X4} regs={FormatHshavocRegisters(hshavoc)} " +
+                            $"vdp={hshavoc.GetVdpDisplayStatus()} op={FormatHshavocWords(hshavoc)} fp=0x{fingerprint:X16}");
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_hshavoc_raw_state_frame{frame}.ppm"));
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = hshavoc.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                string outPathHshavoc = Path.Combine(dumpDir, "headless_output.ppm");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, outPathHshavoc);
+                Console.WriteLine($"[HEADLESS] HSHavoc raw state framebuffer dumped to {outPathHshavoc}");
+                return 0;
+            }
 
             if (use32X)
             {
@@ -4826,8 +5006,15 @@ class Program
         byte[] fileRomHash = reader.ReadBytes(romIdentity.Hash.Length);
         if (!fileRomHash.SequenceEqual(romIdentity.Hash))
         {
-            error = "Savestate ROM hash mismatch.";
-            return null;
+            if (IsEnvEnabled("EUTHERDRIVE_HEADLESS_IGNORE_SAVESTATE_ROM_HASH"))
+            {
+                Console.WriteLine("[HEADLESS] Savestate ROM hash mismatch ignored by EUTHERDRIVE_HEADLESS_IGNORE_SAVESTATE_ROM_HASH=1");
+            }
+            else
+            {
+                error = "Savestate ROM hash mismatch.";
+                return null;
+            }
         }
 
         int nameLength = reader.ReadInt32();
