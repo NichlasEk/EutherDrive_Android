@@ -1958,7 +1958,7 @@ public sealed class DecoTilemapDevice
                 {
                     if (ShouldBlendNightSlashersStagecoachPlayfield(layer, priorityValue, colorBase, tileWord, palettePixel))
                     {
-                        if (_palette.IsBlack(palettePixel))
+                        if (layer == 2 && _palette.IsBlack(palettePixel))
                             continue;
                         _palette.BlendPixel(fb, stride, x, y, palettePixel, 0x80);
                     }
