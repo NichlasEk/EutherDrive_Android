@@ -182,6 +182,23 @@ VDP/IO checkpoint:
   fix: the routine is entered without the correct startup context, repeatedly
   hits illegal opcode handling via PC `$000000`, leaves CRAM untouched, and
   renders black after 120 frames.
+- Follow-up probes split that failure apart. `$13fe`, `$160e`, and `$161e` are
+  useful anchors but not safe standalone subroutine entries: they return through
+  the shared `movem` restore at `$19ac` and corrupt the caller stack if entered
+  without the prologue. The stack-correct mirrored VDP dispatcher entry is
+  `$1332`.
+- `EUTHERDRIVE_HSHAVOC_DECODE_PROFILE=initdispatcher` patches the startup bridge
+  to call `$1332`. With no RAM seed it no longer crashes and it reaches the
+  real dispatcher restore/RTS path, but `$fffe00` is zero, so the dispatcher
+  emits VDP commands without the expected register-1/DMA-enable state and still
+  renders black.
+- `EUTHERDRIVE_HSHAVOC_RAM_SEED_WORDS=0xfffe00:0x8164` is a narrow, opt-in RAM
+  context probe. Combined with `initdispatcher`, it enables the same VDP
+  register-1 baseline observed in the home ROM path: DMA requests decode with
+  `dmaEn=1`, Z80 startup becomes active, display status reaches `vdp=1`, and
+  natural CRAM write callbacks fire from `$13fe`. The CRAM payload is still all
+  zero, so the next blocker is the palette payload/producer or its board/PIC
+  gate, not the dispatcher entry or the MD renderer.
 
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.

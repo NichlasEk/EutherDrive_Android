@@ -50,6 +50,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ParseEnvHex("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCK_END", 0x00FFFFFF);
     private static readonly int TraceCramCommandBlockMax =
         ParseEnvInt("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCK_MAX", 128);
+    private static readonly string? RamSeedWords =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_RAM_SEED_WORDS");
 
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
@@ -92,6 +94,32 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         (0x0C76, 0x4EB9), (0x0C78, 0x0000), (0x0C7A, 0x161E)
     };
 
+    private static readonly (int Address, ushort Value)[] InitQueueProbePatch =
+    {
+        // Probe only: $13fe is the executable queue-flush entry observed in the
+        // home ROM at $0ed8. $13f6 includes the preceding table/entry word.
+        (0x0C70, 0x4EB9), (0x0C72, 0x0000), (0x0C74, 0x13FE),
+        (0x0C76, 0x4EB9), (0x0C78, 0x0000), (0x0C7A, 0x161E)
+    };
+
+    private static readonly (int Address, ushort Value)[] InitListProbePatch =
+    {
+        // Probe only: isolate the mirrored home VDP-list dispatcher without
+        // entering the queue flusher. $161e is inside the first slot writer;
+        // $160e includes the flag check for that slot.
+        (0x0C70, 0x4EB9), (0x0C72, 0x0000), (0x0C74, 0x160E),
+        (0x0C76, 0x4E71), (0x0C78, 0x4E71), (0x0C7A, 0x4E71)
+    };
+
+    private static readonly (int Address, ushort Value)[] InitDispatcherProbePatch =
+    {
+        // Probe only: $1332 is the stack-correct entry for the mirrored VDP
+        // dispatcher. The narrower anchors below it return through the shared
+        // movem restore at $19ac and corrupt the caller stack if entered alone.
+        (0x0C70, 0x4EB9), (0x0C72, 0x0000), (0x0C74, 0x1332),
+        (0x0C76, 0x4E71), (0x0C78, 0x4E71), (0x0C7A, 0x4E71)
+    };
+
     private readonly MdTracerAdapter _md = new();
     private readonly HashSet<ulong> _flushedQueueEntries = new();
     private readonly HashSet<ulong> _flushedVdpCommandBlocks = new();
@@ -132,6 +160,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         {
             _md.PowerCycleAndLoadRom(tempPath);
             InstallBoardAckProbe();
+            ApplyRamSeedWordsIfRequested();
             ForceVdpDisplayIfRequested();
             SeedTestPaletteIfRequested();
             string proofSuffix = UiProofMode ? " | ui-proof=display+vram-dma+synthetic-palette" : string.Empty;
@@ -158,6 +187,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         _md.Reset();
+        ApplyRamSeedWordsIfRequested();
     }
 
     public void RunFrame()
@@ -564,6 +594,43 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             : fallback;
     }
 
+    private static void ApplyRamSeedWordsIfRequested()
+    {
+        if (string.IsNullOrWhiteSpace(RamSeedWords))
+            return;
+
+        md_m68k.InitMemoryIfNeeded();
+        byte[]? memory = md_m68k.g_memory;
+        if (memory == null)
+            return;
+
+        int applied = 0;
+        foreach (string entry in RamSeedWords.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = entry.Split(':', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length != 2)
+                throw new InvalidDataException($"Invalid HSHavoc RAM seed word '{entry}'. Use address:value.");
+            uint address = ParseHexLiteral(parts[0]);
+            ushort value = checked((ushort)ParseHexLiteral(parts[1]));
+            if ((address & 1) != 0 || address >= memory.Length - 1)
+                throw new InvalidDataException($"Invalid HSHavoc RAM seed address 0x{address:X8}.");
+            memory[address] = (byte)(value >> 8);
+            memory[address + 1] = (byte)value;
+            applied++;
+        }
+
+        Console.WriteLine($"[HSHAVOC-RAM-SEED] words={applied}");
+    }
+
+    private static uint ParseHexLiteral(string raw)
+    {
+        string text = raw.Trim();
+        text = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
+        if (!uint.TryParse(text, System.Globalization.NumberStyles.HexNumber, null, out uint value))
+            throw new InvalidDataException($"Invalid hex literal '{raw}'.");
+        return value;
+    }
+
     private static byte[] DecodeArchive(string path, string profile)
     {
         using ZipArchive archive = ZipFile.OpenRead(path);
@@ -586,6 +653,12 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             ApplyPatch(rom, OptionalPhase2OperandPatch);
         if (profile == "initmirror")
             ApplyPatch(rom, InitMirrorProbePatch);
+        if (profile == "initqueue")
+            ApplyPatch(rom, InitQueueProbePatch);
+        if (profile == "initlist")
+            ApplyPatch(rom, InitListProbePatch);
+        if (profile == "initdispatcher")
+            ApplyPatch(rom, InitDispatcherProbePatch);
         if (profile == "island10a0")
             ApplyIsland10A0Probe(rom);
         return rom;
@@ -694,7 +767,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             "phase2" => "phase2",
             "island10a0" => "island10a0",
             "initmirror" => "initmirror",
-            _ => throw new InvalidDataException($"Unknown HSHavoc decode profile '{raw}'. Use base, startup, phase2, island10a0, or initmirror.")
+            "initqueue" => "initqueue",
+            "initlist" => "initlist",
+            "initdispatcher" => "initdispatcher",
+            _ => throw new InvalidDataException($"Unknown HSHavoc decode profile '{raw}'. Use base, startup, phase2, island10a0, initmirror, initqueue, initlist, or initdispatcher.")
         };
     }
 
