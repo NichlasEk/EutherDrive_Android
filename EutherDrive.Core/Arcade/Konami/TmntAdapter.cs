@@ -376,6 +376,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private bool _irq5Enabled;
         private bool _moomesaSpriteIrqEnabled;
         private bool _moomesaVblankIrqEnabled;
+        private bool _moomesaPendingSpriteIrq;
         private ushort _moomesaControl2;
         private bool _tmnt2InVblank;
         private byte _soundLatch = 0xff;
@@ -425,6 +426,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _variant = loadedVariant;
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
+            _k053245.NormalPlaneSpriteDecode = UsesMoomesaHardware;
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
@@ -454,6 +456,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.Load(_spriteRom);
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
+            _k053245.NormalPlaneSpriteDecode = UsesMoomesaHardware;
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
@@ -487,6 +490,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053252.Reset();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
+            _k053245.NormalPlaneSpriteDecode = UsesMoomesaHardware;
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
@@ -495,6 +499,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _irq5Enabled = false;
             _moomesaSpriteIrqEnabled = false;
             _moomesaVblankIrqEnabled = false;
+            _moomesaPendingSpriteIrq = false;
             _moomesaControl2 = 0;
             _tmnt2InVblank = false;
             _soundLatch = 0xff;
@@ -544,12 +549,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (UsesMoomesaHardware)
             {
                 _k053252.SetVpos(ScreenVisibleLines);
+                bool spriteIrq = _moomesaSpriteIrqEnabled && _k053245.ObjectIrqEnabled;
                 if (_k053245.ObjectIrqEnabled)
                     MoomesaObjectDma();
-                if (_moomesaSpriteIrqEnabled && _k053245.ObjectIrqEnabled)
-                    _interruptLevel = 4;
                 if (_moomesaVblankIrqEnabled)
+                {
                     _interruptLevel = 5;
+                    _moomesaPendingSpriteIrq = spriteIrq;
+                }
+                else if (spriteIrq)
+                {
+                    _interruptLevel = 4;
+                }
                 return;
             }
             if (UsesK053245Hardware)
@@ -872,7 +883,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void AcknowledgeInterrupt(byte level)
         {
             if (_interruptLevel == level)
+            {
                 _interruptLevel = 0;
+                if (UsesMoomesaHardware && level == 5 && _moomesaPendingSpriteIrq)
+                {
+                    _moomesaPendingSpriteIrq = false;
+                    _interruptLevel = 4;
+                }
+            }
         }
 
         public bool Reset() => false;
@@ -1083,7 +1101,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (ShouldDrawMoomesaLayer(layer[2], drawLayer1, drawLayer2, drawLayer3))
                 _k056832.RenderLayer(frameBuffer, _palette, layer[2], opaque: false);
             if (drawSprites)
-                _k053245.RenderMystwarrPriority(frameBuffer, _palette, 0, _k054338);
+                _k053245.RenderMystwarrPriority(frameBuffer, _palette, -1, _k054338);
             if (drawLayer0)
                 _k056832.RenderLayer(frameBuffer, _palette, 0, opaque: false);
             _k053245.FinishMystwarrRenderFrameStats();
@@ -1409,7 +1427,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             {
                 int source = i * 0x100;
                 ushort flags = ReadBigEndianWord(_moomesaSpriteRam, source);
-                if ((flags & 0x8000) == 0 || (flags & 0x00ff) == 0)
+                if ((flags & 0x8000) == 0)
                     continue;
 
                 for (int word = 0; word < 8; word++)
@@ -4326,6 +4344,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private bool _tmnt2CoordinateMode;
         [NonSerialized] private bool _mystwarrSpriteLayout;
         [NonSerialized] private bool _metamrphSpriteLayout;
+        [NonSerialized] private bool _normalPlaneSpriteDecode;
         [NonSerialized] private readonly byte[] _mystwarrObjZBuffer = new byte[FrameWidth * FrameHeight];
         [NonSerialized] private readonly byte[] _mystwarrShadowZBuffer = new byte[FrameWidth * FrameHeight];
         [NonSerialized] private readonly byte[] _mystwarrShadowPriorityBuffer = new byte[FrameWidth * FrameHeight];
@@ -4347,6 +4366,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             get => _metamrphSpriteLayout;
             set => _metamrphSpriteLayout = value;
+        }
+
+        public bool NormalPlaneSpriteDecode
+        {
+            get => _normalPlaneSpriteDecode;
+            set => _normalPlaneSpriteDecode = value;
         }
 
         public bool ObjectIrqEnabled => (_regs[5] & 0x10) != 0;
@@ -4379,6 +4404,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _tmnt2CoordinateMode = false;
             _mystwarrSpriteLayout = false;
             _metamrphSpriteLayout = false;
+            _normalPlaneSpriteDecode = false;
         }
 
         public void BufferSprites() => Array.Copy(_ram, _buffer, _ram.Length);
@@ -5192,7 +5218,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask, bool shadow, int alpha, int gxDrawMode, int gxShadowMode, int gxZCode, int gxPriority, K054338? k054338)
         {
             int drawn = 0;
-            int tileMask = _metamrphSpriteLayout ? 0xffff : 0x7fff;
+            int tileMask = (_metamrphSpriteLayout || _normalPlaneSpriteDecode) ? 0xffff : 0x7fff;
             int baseAddress = ((code & tileMask) * 128) & (_rom.Length - 1);
             bool gxLayout = _mystwarrSpriteLayout || _metamrphSpriteLayout;
             bool gxShadowDraw = gxLayout && gxDrawMode >= 4;
@@ -5261,7 +5287,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         drawn++;
                         continue;
                     }
-                    int paletteIndex = _mystwarrSpriteLayout ? colorBase * 32 + pen : colorBase * 16 + pen;
+                    int paletteIndex = (_mystwarrSpriteLayout && !_normalPlaneSpriteDecode) ? colorBase * 32 + pen : colorBase * 16 + pen;
                     WriteSpritePixel(frameBuffer, px, py, palette[paletteIndex & 0x7ff], alpha);
                     drawn++;
                 }
@@ -5298,6 +5324,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private int DecodeSpritePixel(int baseAddress, int x, int y)
         {
+            if (_normalPlaneSpriteDecode)
+                return DecodeNormalPlaneSpritePixel(baseAddress / 128, x, y);
             if (_mystwarrSpriteLayout)
                 return DecodeMystwarrSpritePixel(baseAddress / 128, x, y);
             if (_metamrphSpriteLayout)
@@ -5318,6 +5346,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private int DecodeMetamrphSpritePixel(int code, int x, int y)
             => _metamrphDecodedSprites[((code & 0xffff) << 8) | ((y & 15) << 4) | (x & 15)];
+
+        private int DecodeNormalPlaneSpritePixel(int code, int x, int y)
+        {
+            ReadOnlySpan<int> xoffset = stackalloc[] { 8, 12, 0, 4, 24, 28, 16, 20, 40, 44, 32, 36, 56, 60, 48, 52 };
+            int bitIndex = ((code & 0xffff) << 10) + ((y & 15) << 6) + xoffset[x & 15];
+            return ReadRomBit(bitIndex)
+                   | (ReadRomBit(bitIndex + 1) << 1)
+                   | (ReadRomBit(bitIndex + 2) << 2)
+                   | (ReadRomBit(bitIndex + 3) << 3);
+        }
 
         private void DecodeMystwarrSprites()
         {
