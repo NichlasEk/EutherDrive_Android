@@ -42,6 +42,14 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
     private static readonly bool TraceVdpCommandBlockFlush =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
+    private static readonly bool TraceCramCommandBlockCandidates =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCKS");
+    private static readonly uint TraceCramCommandBlockStart =
+        ParseEnvHex("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCK_START", 0x00FF0000);
+    private static readonly uint TraceCramCommandBlockEnd =
+        ParseEnvHex("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCK_END", 0x00FFFFFF);
+    private static readonly int TraceCramCommandBlockMax =
+        ParseEnvInt("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCK_MAX", 128);
 
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
@@ -75,9 +83,19 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         (0x0C92, 0x0D32)
     };
 
+    private static readonly (int Address, ushort Value)[] InitMirrorProbePatch =
+    {
+        // Probe only: these arcade addresses match the home ROM VDP-list
+        // startup routines at $0ed0 and $10f8. The current startup bridge
+        // never reaches them naturally.
+        (0x0C70, 0x4EB9), (0x0C72, 0x0000), (0x0C74, 0x13F6),
+        (0x0C76, 0x4EB9), (0x0C78, 0x0000), (0x0C7A, 0x161E)
+    };
+
     private readonly MdTracerAdapter _md = new();
     private readonly HashSet<ulong> _flushedQueueEntries = new();
     private readonly HashSet<ulong> _flushedVdpCommandBlocks = new();
+    private readonly HashSet<ulong> _tracedCramCommandBlocks = new();
     private bool _testPaletteSeeded;
 
     public RomInfo RomInfo => _md.RomInfo;
@@ -104,6 +122,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     {
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
+        _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         string profile = GetDecodeProfile();
         byte[] decoded = DecodeArchive(path, profile);
@@ -136,6 +155,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     {
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
+        _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         _md.Reset();
     }
@@ -145,6 +165,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
         FlushVdpCommandBlocksIfRequested();
+        TraceCramCommandBlocksIfRequested();
         FlushVdpDmaQueueIfRequested();
         SeedTestPaletteIfRequested();
     }
@@ -305,6 +326,45 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         }
     }
 
+    private void TraceCramCommandBlocksIfRequested()
+    {
+        if (!TraceCramCommandBlockCandidates || md_main.g_md_vdp == null)
+            return;
+
+        uint start = Math.Max(0x00FF0000, TraceCramCommandBlockStart & 0x00FFFFFE);
+        uint end = Math.Min(0x00FFFFF2, TraceCramCommandBlockEnd & 0x00FFFFFE);
+        if (end < start)
+            return;
+
+        int logged = 0;
+        for (uint block = start; block <= end; block += 2)
+        {
+            ushort reg19 = _md.DebugReadM68kWord(block);
+            ushort reg20 = _md.DebugReadM68kWord(block + 2);
+            ushort reg21 = _md.DebugReadM68kWord(block + 4);
+            ushort reg22 = _md.DebugReadM68kWord(block + 6);
+            ushort reg23 = _md.DebugReadM68kWord(block + 8);
+            ushort control1 = _md.DebugReadM68kWord(block + 10);
+            ushort control2 = _md.DebugReadM68kWord(block + 12);
+
+            if (!LooksLikeVdpCommandBlock(reg19, reg20, reg21, reg22, reg23, control1, control2))
+                continue;
+
+            int codeLow = DecodeVdpCodeLow(control1, control2);
+            if (codeLow != 0x03)
+                continue;
+
+            ulong signature = BuildVdpCommandBlockSignature(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            if (!_tracedCramCommandBlocks.Add(signature))
+                continue;
+
+            LogVdpCommandBlock("HSHAVOC-CRAMBLK-CANDIDATE", block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            logged++;
+            if (TraceCramCommandBlockMax > 0 && logged >= TraceCramCommandBlockMax)
+                return;
+        }
+    }
+
     private static bool LooksLikeVdpCommandBlock(
         ushort reg19,
         ushort reg20,
@@ -322,7 +382,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         if ((control1 & 0xC000) == 0x8000)
             return false;
 
-        int codeLow = ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C);
+        int codeLow = DecodeVdpCodeLow(control1, control2);
         if (codeLow != 0x01 && codeLow != 0x03 && codeLow != 0x05)
             return false;
 
@@ -387,6 +447,9 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         return sourceWord << 1;
     }
 
+    private static int DecodeVdpCodeLow(ushort control1, ushort control2)
+        => ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C);
+
     private static void ExecuteVdpCommandBlock(
         uint block,
         ushort reg19,
@@ -414,16 +477,30 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
         if (TraceVdpCommandBlockFlush)
         {
-            int codeLow = ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C);
-            int dest = (control1 & 0x3FFF) | ((control2 & 0x0007) << 14);
-            int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
-            int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
-            Console.WriteLine(
-                $"[HSHAVOC-VDPBLK-FLUSH] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
-                $"block=0x{block:X6} len=0x{length:X4} sourceWord=0x{sourceWord:X6} " +
-                $"sourceByte=0x{(sourceWord << 1):X6} dest=0x{dest:X4} code=0x{codeLow:X2} " +
-                $"regs={reg19:X4},{reg20:X4},{reg21:X4},{reg22:X4},{reg23:X4} cmd={control1:X4},{control2:X4}");
+            LogVdpCommandBlock("HSHAVOC-VDPBLK-FLUSH", block, reg19, reg20, reg21, reg22, reg23, control1, control2);
         }
+    }
+
+    private static void LogVdpCommandBlock(
+        string tag,
+        uint block,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        int codeLow = DecodeVdpCodeLow(control1, control2);
+        int dest = (control1 & 0x3FFF) | ((control2 & 0x0007) << 14);
+        int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
+        int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
+        Console.WriteLine(
+            $"[{tag}] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+            $"block=0x{block:X6} len=0x{length:X4} sourceWord=0x{sourceWord:X6} " +
+            $"sourceByte=0x{(sourceWord << 1):X6} dest=0x{dest:X4} code=0x{codeLow:X2} " +
+            $"regs={reg19:X4},{reg20:X4},{reg21:X4},{reg22:X4},{reg23:X4} cmd={control1:X4},{control2:X4}");
     }
 
     private void FlushCramQueueEntry(uint slot, uint source, ushort commandWord, ushort byteCount)
@@ -468,6 +545,25 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static bool IsEnvEnabled(string name)
         => string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
 
+    private static int ParseEnvInt(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        return int.TryParse(raw, out int parsed) ? parsed : fallback;
+    }
+
+    private static uint ParseEnvHex(string name, uint fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        raw = raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? raw[2..] : raw;
+        return uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out uint parsed)
+            ? parsed
+            : fallback;
+    }
+
     private static byte[] DecodeArchive(string path, string profile)
     {
         using ZipArchive archive = ZipFile.OpenRead(path);
@@ -488,6 +584,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             ApplyPatch(rom, BestStartupPatch);
         if (profile == "phase2" || profile == "island10a0")
             ApplyPatch(rom, OptionalPhase2OperandPatch);
+        if (profile == "initmirror")
+            ApplyPatch(rom, InitMirrorProbePatch);
         if (profile == "island10a0")
             ApplyIsland10A0Probe(rom);
         return rom;
@@ -595,7 +693,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             "startup" => "startup",
             "phase2" => "phase2",
             "island10a0" => "island10a0",
-            _ => throw new InvalidDataException($"Unknown HSHavoc decode profile '{raw}'. Use base, startup, phase2, or island10a0.")
+            "initmirror" => "initmirror",
+            _ => throw new InvalidDataException($"Unknown HSHavoc decode profile '{raw}'. Use base, startup, phase2, island10a0, or initmirror.")
         };
     }
 

@@ -158,6 +158,30 @@ VDP/IO checkpoint:
   `$ffe900-$ffea80`, trace RAM writes around candidate palette buffers, and
   map callers in `$1e00-$2020`/`$39800-$39900` to determine whether palette
   upload is gated by a missing PIC/board response or by another decode island.
+- A full `$ff0000-$ffffff` RAM scan for generated CRAM command blocks found no
+  `codeLow=3` DMA candidates through 180 frames. Focused tracing of MAME's
+  extra board RAM range `$200000-$2023ff` also showed no accesses through
+  120 frames. The current failure is therefore still upstream of any visible
+  CRAM queue: the decoded runtime is producing VRAM work, but it is not reaching
+  the natural palette/upload state.
+- Local MAME confirms this is the Genesis/Mega Drive-derived Data East CG-2
+  board with a protected PIC16C55 and incomplete coin-op program decryption.
+  The driver maps ROM at `$000000-$1fffff`, board RAM at `$200000-$2023ff`,
+  and currently nops writes to `$200000-$201fff` in `init_hshavoc()`.
+- Comparing the decoded arcade image against the home `High Seas Havoc (U) [!]`
+  ROM gave several exact anchors: the arcade tail `$0e8000-$100000` is
+  byte-identical to the home ROM tail, arcade `$001e00` matches home `$0018da`,
+  arcade `$039800` matches home `$03c6d6`, home CRAM clear/upload `$000ed8`
+  matches arcade `$0013fe`, and home VDP-list startup `$0010f8` matches arcade
+  `$00161e`.
+- PC taps show the current arcade runtime reaches `$001fd8`, `$03988e`, and
+  `$0398e0`, but not `$0013f6/$0013fe/$00161e`. The experimental
+  `EUTHERDRIVE_HSHAVOC_DECODE_PROFILE=initmirror` profile patches calls to
+  `$0013f6` and `$00161e` into the current startup bridge. It proves those
+  mirrored routines are executable VDP setup code, but it is not a working boot
+  fix: the routine is entered without the correct startup context, repeatedly
+  hits illegal opcode handling via PC `$000000`, leaves CRAM untouched, and
+  renders black after 120 frames.
 
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.
