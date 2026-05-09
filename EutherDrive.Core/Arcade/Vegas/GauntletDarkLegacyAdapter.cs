@@ -4620,14 +4620,21 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _fifoDrawPacketCount;
     private int _lfbWriteCount;
     private int _textureWriteCount;
+    private int _fastFillCount;
+    private int _swapBufferCount;
     private int _renderFrame;
 
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
 
     public virtual void WriteRegister(uint address, uint value)
     {
-        _registers[(address >> 2) & 0x3ffu] = value;
+        uint register = (address >> 2) & 0x3ffu;
+        _registers[register] = value;
         _registerWriteCount++;
+        if (register == 0x49u)
+            FastFill();
+        else if (register == 0x4au)
+            _swapBufferCount++;
     }
 
     public virtual void WriteFifo(ReadOnlySpan<uint> words)
@@ -4752,6 +4759,46 @@ internal class VoodooBringupBackend : IVoodooBackend
         FillRect(target, 16, target.Height - 18, Math.Min(target.Width - 32, _lfbWriteCount / 64), 8, 0xfff7b955u);
         FillRect(target, 16, target.Height - 8, Math.Min(target.Width - 32, (_fifoWriteCount + _fifoPacketCount * 8 + _textureWriteCount) / 256), 6, 0xffc678ddU);
         FillRect(target, target.Width - 24, 16, 8, Math.Min(target.Height - 32, _fifoDrawPacketCount * 4), 0xffff6b6bu);
+        FillRect(target, target.Width - 40, 16, 8, Math.Min(target.Height - 32, _fastFillCount * 4), 0xff39d353u);
+        FillRect(target, target.Width - 56, 16, 8, Math.Min(target.Height - 32, _swapBufferCount * 4), 0xfff7b955u);
+    }
+
+    private void FastFill()
+    {
+        uint clipX = _registers[0x46];
+        uint clipY = _registers[0x47];
+        int x0 = Math.Clamp((int)((clipX >> 16) & 0x7ff), 0, 1024);
+        int x1 = Math.Clamp((int)(clipX & 0x7ff), 0, 1024);
+        int y0 = Math.Clamp((int)((clipY >> 16) & 0x7ff), 0, 1024);
+        int y1 = Math.Clamp((int)(clipY & 0x7ff), 0, 1024);
+        if (x1 <= x0)
+        {
+            x0 = 0;
+            x1 = 640;
+        }
+        if (y1 <= y0)
+        {
+            y0 = 0;
+            y1 = 480;
+        }
+
+        x1 = Math.Min(x1, 1024);
+        y1 = Math.Min(y1, LfbPixels / 1024);
+        ushort color = ArgbToRgb565(_registers[0x52]);
+        if (color == 0)
+            color = ArgbToRgb565(_registers[0x51]);
+        if (color == 0)
+            color = (ushort)_registers[0x4c];
+
+        for (int y = y0; y < y1; y++)
+        {
+            int offset = y * 1024 + x0;
+            for (int x = x0; x < x1; x++)
+                _lfb[(offset++) & (LfbPixels - 1)] = color;
+        }
+
+        _fastFillCount++;
+        _lfbWriteCount += Math.Max(1, ((x1 - x0) * (y1 - y0) + 1) / 2);
     }
 
     private void DecodeFifoPackets()
@@ -4900,6 +4947,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         g = (g << 2) | (g >> 4);
         b = (b << 3) | (b >> 2);
         return 0xff000000u | (r << 16) | (g << 8) | b;
+    }
+
+    private static ushort ArgbToRgb565(uint value)
+    {
+        uint r = (value >> 16) & 0xff;
+        uint g = (value >> 8) & 0xff;
+        uint b = value & 0xff;
+        return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
     }
 
     private static void Clear(EutherFrameTarget target, uint bgra)

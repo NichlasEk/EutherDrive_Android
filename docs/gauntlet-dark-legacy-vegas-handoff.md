@@ -253,10 +253,28 @@ peek 0x800b2ed0: 00000000,00000094,000000b4,00000000,807efde8,800e6748,800e6a60,
 
 - This is a new phase: the game is now heavily feeding the Voodoo FIFO, but the bring-up decoder still reports `drawPackets=0`. Next work should focus on FIFO packet framing/decoding or the active producer loop around `0xffffffff80052d04`.
 
+Follow-up same pass:
+
+- Limited FIFO trace proved the first heavy stream is mostly type-1/type-4 Voodoo register packets, not type-3 triangle packets.
+- The repeated packet sequence writes `fastfillCMD` at register `0x124` and `swapbufferCMD` at `0x128`; the backend previously only stored these registers.
+- Added a bring-up fastfill path:
+  - `fastfillCMD` fills the current LFB clip rectangle from `clipLeftRight`/`clipLowYHighY`.
+  - The fill color comes from `color1`, falling back to `color0` and then `zaColor`.
+  - `swapbufferCMD` is counted for overlay/debug state.
+
+Short verification after fastfill:
+
+```text
+frame=300
+pc=0xffffffff80052ee4
+voodoo regs=140583 fifoWords=159324 fifoPackets=23913 drawPackets=0 lfbWrites=43315200 texWrites=1
+framebuffer width=640 height=480 nonblack=307200 first=(0,0)
+```
+
 Next best step:
 
-- Trace the active FIFO producer around `0xffffffff80052c80..0xffffffff80052d30` and capture a limited FIFO word stream with `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT`.
-- Check whether type-2/type-3 packet sizing is wrong, since current stats show millions of FIFO packets but zero decoded draw packets.
+- Open/render the Gauntlet adapter and check whether the fastfilled LFB now produces the first visible graphics surface.
+- Then trace the active FIFO producer around `0xffffffff80052c80..0xffffffff80052d30` and continue toward type-3 triangle or setup-packet decoding.
 - Keep short CPU windows plus `EUTHERDRIVE_GAUNTDL_DUMP_VOODOO=1`; full memory trace is too noisy unless filtered by target and address.
 
 ## Probe Setup
