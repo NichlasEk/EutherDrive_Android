@@ -574,6 +574,23 @@ Trace proof with `EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS=1`:
 - frame 19: destination `$7e00`, length `$10f0`
 - frame 23: destination `$b000`, length `$0800`
 
+Follow-up RAM-source tracing tightened the model:
+
+- frame-stamped `[RAM-RANGE]` logs show `$001fe2` and the `$002032-$00208e`
+  copy helpers produce the `$ff0000` buffer before the VDP queue reads it.
+- frame 7: `$01943e` reads the first generated buffer, then the decompressor
+  updates `$ff002c-$ff003f` with the words later seen in low pattern VRAM.
+- frame 11: `$019340` reads those same `$ff002c-$ff003f` words just before the
+  `$019338` ack-latched `$ff0000 -> $0000` DMA.
+- the decoded arcade compressed source at `$08ec72` matches the retail USA ROM
+  at `$08b6e8`, so this startup graphics source is already decoded correctly.
+- Plane/layer probes must be run with `EUTHERDRIVE_ALLOW_RENDER_DEBUG=1`.
+  With that gate enabled, Plane B alone fills almost the full frame, Plane A is
+  overlay-like, direct VRAM plane reads do not change the image, and scroll-zero
+  changes the fingerprint without fixing content. The remaining corruption is
+  therefore more likely RAM-produced VDP records or scroll/layer state than a
+  renderer cache issue.
+
 Controlled 120-frame result with UI-proof disabled, no standalone low-pattern
 probe, no queue-derived low-pattern replay, forced display, VDP register repair,
 and generated command-block flushing:

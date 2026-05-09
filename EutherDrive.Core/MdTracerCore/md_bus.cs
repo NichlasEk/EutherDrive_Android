@@ -631,7 +631,8 @@ namespace EutherDrive.Core.MdTracerCore
                 _ramRangeRemaining--;
             char rw = write ? 'W' : 'R';
             string fmt = size == 1 ? "X2" : size == 2 ? "X4" : "X8";
-            Console.WriteLine($"[RAM-RANGE] {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}");
+            long frameNow = md_main.g_md_vdp?.FrameCounter ?? -1;
+            Console.WriteLine($"[RAM-RANGE] frame={frameNow} {rw}{size} pc=0x{md_m68k.g_reg_PC:X6} addr=0x{addr:X6} val=0x{value.ToString(fmt)}");
 
             // RAM-RANGE-PC handled above to avoid being throttled by RAM-RANGE limits.
         }
