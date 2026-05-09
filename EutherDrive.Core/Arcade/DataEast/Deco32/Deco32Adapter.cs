@@ -1925,14 +1925,14 @@ public sealed class DecoTilemapDevice
                 int tx = sx / tileSize;
                 int px = sx & (tileSize - 1);
                 int entry = TilemapEntryIndex(tx, ty, mapCols, charMode) & 0x7ff;
+                ushort tileWord = ram[entry & (ram.Length - 1)];
                 int palettePixel = ReadLayerPalettePixel(ram, gfx, entry, tileBank, colorBase, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen);
                 if (charMode)
                 {
-                    ushort tile = ram[entry & (ram.Length - 1)];
-                    int colorNibble = (tile >> 12) & 0x0f;
+                    int colorNibble = (tileWord >> 12) & 0x0f;
                     bool tileFlipX = false;
                     bool tileFlipY = false;
-                    if ((tile & 0x8000) != 0)
+                    if ((tileWord & 0x8000) != 0)
                     {
                         if (enableTileFlipX)
                         {
@@ -1947,7 +1947,7 @@ public sealed class DecoTilemapDevice
                     }
                     int srcX = tileFlipX ? tileSize - 1 - px : px;
                     int srcY = tileFlipY ? tileSize - 1 - py : py;
-                    pen = Decode4BppChar(gfx, (tile & 0x0fff) + tileBank, srcX, srcY);
+                    pen = Decode4BppChar(gfx, (tileWord & 0x0fff) + tileBank, srcX, srcY);
                     palettePixel = (colorBase + colorNibble) * 16 + pen;
                 }
                 if (pen == 0 && !opaque)
@@ -1955,7 +1955,16 @@ public sealed class DecoTilemapDevice
                 if (alphaMap is not null)
                     alphaMap[y * width + x] = (ushort)palettePixel;
                 else if (fb is not null)
-                    _palette.WritePixel(fb, stride, x, y, palettePixel);
+                {
+                    if (ShouldBlendNightSlashersStagecoachPlayfield(layer, priorityValue, colorBase, tileWord, palettePixel))
+                    {
+                        if (_palette.IsBlack(palettePixel))
+                            continue;
+                        _palette.BlendPixel(fb, stride, x, y, palettePixel, 0x80);
+                    }
+                    else
+                        _palette.WritePixel(fb, stride, x, y, palettePixel);
+                }
                 if (priorityMap is not null)
                     priorityMap[y * width + x] = priorityValue;
             }
@@ -2002,6 +2011,23 @@ public sealed class DecoTilemapDevice
 
     private int Chip1Pf1ColorBase => ((ColorBank >> 0) & 7) << 4;
     private int Chip1Pf2ColorBase => ((ColorBank >> 3) & 7) << 4;
+
+    private bool ShouldBlendNightSlashersStagecoachPlayfield(int layer, byte priorityValue, int colorBase, ushort tileWord, int palettePixel)
+    {
+        int tileCode = tileWord & 0x0fff;
+        return (layer == 2
+                && priorityValue == 4
+                && colorBase == Chip1Pf1ColorBase
+                && (palettePixel & 0x7f0) == 0x200
+                && tileCode >= 0x600
+                && tileCode <= 0x7ff)
+            || (layer == 1
+                && priorityValue == 2
+                && colorBase == 0x10
+                && (palettePixel & 0x7f0) == 0x180
+                && tileCode >= 0xa00
+                && tileCode <= 0xbff);
+    }
 
     private static int Decode4BppChar(byte[] rom, int code, int x, int y)
     {
@@ -2426,6 +2452,9 @@ public sealed class PaletteDevice
         uint color = _colors[paletteIndex & (_colors.Length - 1)];
         WriteBgra(fb, y * stride + x * 4, color);
     }
+
+    public bool IsBlack(int paletteIndex)
+        => (_colors[paletteIndex & (_colors.Length - 1)] & 0x00ffffff) == 0;
 
     public void BlendPixel(byte[] fb, int stride, int x, int y, int paletteIndex, int alpha)
     {
