@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using EutherDrive.Core.MdTracerCore;
@@ -28,10 +29,19 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1
     };
 
+    private static readonly bool UiProofMode = IsUiProofMode();
     private static readonly bool ForceDisplayEnable =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY"), "1", StringComparison.Ordinal);
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY") || UiProofMode;
     private static readonly bool ForceTestPalette =
-        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_FORCE_TEST_PALETTE"), "1", StringComparison.Ordinal);
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FORCE_TEST_PALETTE") || UiProofMode;
+    private static readonly bool FlushDmaQueue =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_DMA_QUEUE");
+    private static readonly bool TraceDmaQueueFlush =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_DMA_QUEUE_FLUSH");
+    private static readonly bool FlushVdpCommandBlocks =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
+    private static readonly bool TraceVdpCommandBlockFlush =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
 
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
@@ -66,6 +76,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     };
 
     private readonly MdTracerAdapter _md = new();
+    private readonly HashSet<ulong> _flushedQueueEntries = new();
+    private readonly HashSet<ulong> _flushedVdpCommandBlocks = new();
 
     public RomInfo RomInfo => _md.RomInfo;
 
@@ -89,6 +101,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public void LoadRom(string path)
     {
+        _flushedQueueEntries.Clear();
+        _flushedVdpCommandBlocks.Clear();
         string profile = GetDecodeProfile();
         byte[] decoded = DecodeArchive(path, profile);
         string tempPath = Path.Combine(Path.GetTempPath(), $"eutherdrive_hshavoc_{Guid.NewGuid():N}.gen");
@@ -99,12 +113,16 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             InstallBoardAckProbe();
             ForceVdpDisplayIfRequested();
             ForceTestPaletteIfRequested();
-            RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile} | {BoardModel}";
+            string proofSuffix = UiProofMode ? " | ui-proof=display+vram-dma+synthetic-palette" : string.Empty;
+            RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile}{proofSuffix} | {BoardModel}";
             RomInfo.ExtraInfo =
                 "Data East hshavoc.zip via HshavocAdapter. This is not a Sega System 16 target; it runs the " +
                 "Mega Drive-compatible board path with arcade-only startup/PIC probing layered on top. " +
                 "Applies MAME base decode plus current startup probe patch. " +
-                "No decoded ROM is kept; temp image is deleted after load.";
+                "No decoded ROM is kept; temp image is deleted after load." +
+                (UiProofMode
+                    ? " UI proof mode is active: generated VDP DMA command blocks are flushed and a synthetic palette is supplied until the real palette producer is mapped."
+                    : string.Empty);
         }
         finally
         {
@@ -112,12 +130,19 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         }
     }
 
-    public void Reset() => _md.Reset();
+    public void Reset()
+    {
+        _flushedQueueEntries.Clear();
+        _flushedVdpCommandBlocks.Clear();
+        _md.Reset();
+    }
 
     public void RunFrame()
     {
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
+        FlushVdpCommandBlocksIfRequested();
+        FlushVdpDmaQueueIfRequested();
         ForceTestPaletteIfRequested();
     }
 
@@ -201,6 +226,195 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             md_main.g_md_vdp.write16(0x00C00000, color);
         }
     }
+
+    private void FlushVdpDmaQueueIfRequested()
+    {
+        if (!FlushDmaQueue || md_main.g_md_vdp == null)
+            return;
+
+        // Legacy false-color probe for the RAM-side list around $ffe800.
+        // The generated command blocks are authoritative for VRAM; this path
+        // only proves that queued data can light the renderer when treated as
+        // CRAM and should not be considered the final palette model.
+        for (uint slot = 0x00FFE800; slot <= 0x00FFEA00; slot += 2)
+        {
+            uint source = ReadLong(slot);
+            ushort commandWord = _md.DebugReadM68kWord(slot + 4);
+            ushort byteCount = _md.DebugReadM68kWord(slot + 6);
+            ushort active = _md.DebugReadM68kWord(slot + 8);
+
+            if (active == 0 || byteCount == 0 || byteCount > 0x0400)
+                continue;
+            if ((source & 0x00FF0000) != 0x00FF0000)
+                continue;
+            if ((commandWord & 0xC000) != 0xC000)
+                continue;
+
+            ulong signature =
+                ((ulong)slot << 40) |
+                ((ulong)(source & 0x00FFFFFF) << 16) |
+                ((ulong)commandWord << 0) ^
+                ((ulong)byteCount << 24);
+            if (!_flushedQueueEntries.Add(signature))
+                continue;
+
+            FlushCramQueueEntry(slot, source, commandWord, byteCount);
+        }
+    }
+
+    private void FlushVdpCommandBlocksIfRequested()
+    {
+        if (!FlushVdpCommandBlocks || md_main.g_md_vdp == null)
+            return;
+
+        // The startup code builds 14-byte command blocks near $ffe900:
+        // five VDP DMA register writes (93..97) followed by a two-word
+        // control command. Feeding that exact stream lets the MD VDP core
+        // perform the copy and avoids guessing VRAM destination addresses.
+        for (uint block = 0x00FFE900; block <= 0x00FFEA80; block += 2)
+        {
+            ushort reg19 = _md.DebugReadM68kWord(block);
+            ushort reg20 = _md.DebugReadM68kWord(block + 2);
+            ushort reg21 = _md.DebugReadM68kWord(block + 4);
+            ushort reg22 = _md.DebugReadM68kWord(block + 6);
+            ushort reg23 = _md.DebugReadM68kWord(block + 8);
+            ushort control1 = _md.DebugReadM68kWord(block + 10);
+            ushort control2 = _md.DebugReadM68kWord(block + 12);
+
+            if (!LooksLikeVdpCommandBlock(reg19, reg20, reg21, reg22, reg23, control1, control2))
+                continue;
+
+            ulong signature =
+                ((ulong)block << 40) ^
+                ((ulong)reg19 << 48) ^
+                ((ulong)reg20 << 32) ^
+                ((ulong)reg21 << 16) ^
+                reg22 ^
+                ((ulong)reg23 << 8) ^
+                ((ulong)control1 << 24) ^
+                ((ulong)control2 << 4);
+            if (!_flushedVdpCommandBlocks.Add(signature))
+                continue;
+
+            ExecuteVdpCommandBlock(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+        }
+    }
+
+    private static bool LooksLikeVdpCommandBlock(
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        if ((reg19 & 0xFF00) != 0x9300 || (reg20 & 0xFF00) != 0x9400 ||
+            (reg21 & 0xFF00) != 0x9500 || (reg22 & 0xFF00) != 0x9600 ||
+            (reg23 & 0xFF00) != 0x9700)
+            return false;
+
+        if ((control1 & 0xC000) == 0x8000)
+            return false;
+
+        int codeLow = ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C);
+        if (codeLow != 0x01 && codeLow != 0x03 && codeLow != 0x05)
+            return false;
+
+        if ((control2 & 0x0080) == 0)
+            return false;
+
+        int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
+        if (length == 0 || length > 0x4000)
+            return false;
+
+        int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
+        int sourceByte = sourceWord << 1;
+        bool romSource = sourceByte >= 0 && sourceByte < InterleavedSize;
+        bool ramSource = sourceByte >= 0x00FF0000 && sourceByte <= 0x00FFFFFF;
+        return romSource || ramSource;
+    }
+
+    private static void ExecuteVdpCommandBlock(
+        uint block,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        ushort[] words = { reg19, reg20, reg21, reg22, reg23 };
+        foreach (ushort word in words)
+        {
+            vdp.read16(0x00C00004);
+            vdp.write16(0x00C00004, word);
+        }
+
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, control1);
+        vdp.write16(0x00C00004, control2);
+
+        if (TraceVdpCommandBlockFlush)
+        {
+            int codeLow = ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C);
+            int dest = (control1 & 0x3FFF) | ((control2 & 0x0007) << 14);
+            int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
+            int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
+            Console.WriteLine(
+                $"[HSHAVOC-VDPBLK-FLUSH] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+                $"block=0x{block:X6} len=0x{length:X4} sourceWord=0x{sourceWord:X6} " +
+                $"sourceByte=0x{(sourceWord << 1):X6} dest=0x{dest:X4} code=0x{codeLow:X2} " +
+                $"regs={reg19:X4},{reg20:X4},{reg21:X4},{reg22:X4},{reg23:X4} cmd={control1:X4},{control2:X4}");
+        }
+    }
+
+    private void FlushCramQueueEntry(uint slot, uint source, ushort commandWord, ushort byteCount)
+    {
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, commandWord);
+        vdp.write16(0x00C00004, 0x0000);
+
+        int words = byteCount / 2;
+        for (int i = 0; i < words; i++)
+        {
+            ushort data = _md.DebugReadM68kWord(source + (uint)(i * 2));
+            vdp.write16(0x00C00000, data);
+        }
+
+        if (TraceDmaQueueFlush)
+        {
+            Console.WriteLine(
+                $"[HSHAVOC-DMAQ-FLUSH] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+                $"slot=0x{slot:X6} source=0x{source:X6} command=0x{commandWord:X4} bytes=0x{byteCount:X4} words={words}");
+        }
+    }
+
+    private uint ReadLong(uint address)
+        => ((uint)_md.DebugReadM68kWord(address) << 16) | _md.DebugReadM68kWord(address + 2);
+
+    private static bool IsUiProofMode()
+    {
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE");
+        if (string.Equals(raw, "0", StringComparison.Ordinal))
+            return false;
+        if (string.Equals(raw, "1", StringComparison.Ordinal))
+            return true;
+
+        return string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE"));
+    }
+
+    private static bool IsEnvEnabled(string name)
+        => string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
 
     private static byte[] DecodeArchive(string path, string profile)
     {

@@ -19,10 +19,17 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_TRACE_IO"), "1", System.StringComparison.Ordinal);
     private static readonly bool TraceRam =
         string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_TRACE_RAM"), "1", System.StringComparison.Ordinal);
+    private static readonly bool TraceRamSkipZero =
+        string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_TRACE_RAM_SKIP_ZERO"), "1", System.StringComparison.Ordinal);
+    private static readonly bool UiProofMode = IsUiProofMode();
     private static readonly bool RepairVdpRegisterPending =
-        string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING"), "1", System.StringComparison.Ordinal);
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING") || UiProofMode;
     private static readonly uint TraceRamStart = ParseHex("EUTHERDRIVE_HSHAVOC_TRACE_RAM_START", DefaultTraceRamStart);
     private static readonly uint TraceRamEnd = ParseHex("EUTHERDRIVE_HSHAVOC_TRACE_RAM_END", DefaultTraceRamEnd);
+    private static readonly long TraceVdpFrameStart = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_VDP_FRAME_START", long.MinValue);
+    private static readonly long TraceVdpFrameEnd = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_VDP_FRAME_END", long.MaxValue);
+    private static readonly long TraceRamFrameStart = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_RAM_FRAME_START", long.MinValue);
+    private static readonly long TraceRamFrameEnd = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_RAM_FRAME_END", long.MaxValue);
 
     private readonly IM68kBusOverride? _inner;
     private int _ackLogRemaining = 16;
@@ -135,10 +142,13 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         uint masked = address & 0x00FFFFFF;
         if (masked < VdpStartAddress || masked > VdpEndAddress)
             return;
+        long frame = FrameCounter();
+        if (frame < TraceVdpFrameStart || frame > TraceVdpFrameEnd)
+            return;
 
         _vdpLogRemaining--;
         System.Console.WriteLine(
-            $"[HSHAVOC-VDP] pc=0x{md_m68k.g_reg_PC:X6} frame={FrameCounter()} size={size} addr=0x{masked:X6} value=0x{value:X8}");
+            $"[HSHAVOC-VDP] pc=0x{md_m68k.g_reg_PC:X6} frame={frame} size={size} addr=0x{masked:X6} value=0x{value:X8}");
     }
 
     private bool TryRepairVdpRegisterPending(uint address, ushort value)
@@ -198,15 +208,20 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     {
         if (!TraceRam || _ramLogRemaining <= 0)
             return;
+        if (TraceRamSkipZero && value == 0)
+            return;
 
         uint masked = address & 0x00FFFFFF;
         uint end = masked + (uint)size - 1;
         if (masked > TraceRamEnd || end < TraceRamStart)
             return;
+        long frame = FrameCounter();
+        if (frame < TraceRamFrameStart || frame > TraceRamFrameEnd)
+            return;
 
         _ramLogRemaining--;
         System.Console.WriteLine(
-            $"[HSHAVOC-{tag}] pc=0x{md_m68k.g_reg_PC:X6} frame={FrameCounter()} size={size} addr=0x{masked:X6} value=0x{value:X8}");
+            $"[HSHAVOC-{tag}] pc=0x{md_m68k.g_reg_PC:X6} frame={frame} size={size} addr=0x{masked:X6} value=0x{value:X8}");
     }
 
     private void ClearAckWord(uint attemptedValue)
@@ -241,6 +256,26 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         string? raw = System.Environment.GetEnvironmentVariable(name);
         return int.TryParse(raw, out int value) && value >= 0 ? value : fallback;
     }
+
+    private static long ParseLong(string name, long fallback)
+    {
+        string? raw = System.Environment.GetEnvironmentVariable(name);
+        return long.TryParse(raw, out long value) ? value : fallback;
+    }
+
+    private static bool IsUiProofMode()
+    {
+        string? raw = System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE");
+        if (string.Equals(raw, "0", System.StringComparison.Ordinal))
+            return false;
+        if (string.Equals(raw, "1", System.StringComparison.Ordinal))
+            return true;
+
+        return string.IsNullOrWhiteSpace(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE"));
+    }
+
+    private static bool IsEnvEnabled(string name)
+        => string.Equals(System.Environment.GetEnvironmentVariable(name), "1", System.StringComparison.Ordinal);
 
     private static uint ParseHex(string name, uint fallback)
     {
