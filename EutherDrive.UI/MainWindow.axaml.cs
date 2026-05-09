@@ -25,6 +25,8 @@ using EutherDrive.Rendering;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
+using EutherDrive.Core.Arcade.DataEast.Hshavoc;
+using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Platforms.DataEast.Deco32;
@@ -212,6 +214,7 @@ public partial class MainWindow : Window
     private string? _pceBiosPath;
     private string? _gbaBiosPath;
     private string? _psxBiosPath;
+    private string? _neoGeoBiosPath;
     private string? _psxSbiPath;
     private readonly List<string> _recentRomPaths = new();
     private bool _recentRomUpdating;
@@ -231,6 +234,7 @@ public partial class MainWindow : Window
 
     // Input “håll nere”
     private readonly HashSet<Key> _keysDown = new();
+    private readonly HashSet<PhysicalKey> _physicalKeysDown = new();
     private InputMappingSettings _inputMappings = new InputMappingSettings();
     private IAudioSink? _audioOutput;
     private AudioEngine? _audioEngine;
@@ -371,6 +375,15 @@ public partial class MainWindow : Window
         new("B", "B"),
         new("C", "C")
     ];
+    private static readonly AutoFireButtonDefinition[] s_autoFireArcadeButtons =
+    [
+        new("A", "1"),
+        new("B", "2"),
+        new("C", "3"),
+        new("X", "4"),
+        new("Y", "5"),
+        new("Z", "6")
+    ];
     private static readonly AutoFireButtonDefinition[] s_autoFireSnesButtons =
     [
         new("Y", "Y"),
@@ -386,6 +399,21 @@ public partial class MainWindow : Window
         new("B", "B")
     ];
     private sealed record InputActionDefinition(string Action, string Display, string? Symbol = null, string? SymbolColor = null);
+    private static readonly InputActionDefinition[] s_arcadeActionDefinitions =
+    [
+        new("Up", "Up"),
+        new("Down", "Down"),
+        new("Left", "Left"),
+        new("Right", "Right"),
+        new("A", "Button 1"),
+        new("B", "Button 2"),
+        new("C", "Button 3"),
+        new("X", "Button 4"),
+        new("Y", "Button 5"),
+        new("Z", "Button 6"),
+        new("Start", "P1 Start"),
+        new("Coin", "Coin")
+    ];
     private static readonly InputActionDefinition[] s_psxActionDefinitions =
     [
         new("Up", "Up"),
@@ -789,6 +817,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Technos.XainSleenaAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Technos.XainSleenaAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && NeoGeoAdapter.IsSupportedArchive(path))
+            return new NeoGeoAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
@@ -984,6 +1014,8 @@ public partial class MainWindow : Window
             target = deco32.GetTargetFps();
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             target = tmnt.GetTargetFps();
+        else if (_core is NeoGeoAdapter neoGeo)
+            target = neoGeo.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -1282,6 +1314,11 @@ public partial class MainWindow : Window
 
         lock (_keysDown)
             _keysDown.Add(e.Key);
+        if (e.PhysicalKey != PhysicalKey.None)
+        {
+            lock (_physicalKeysDown)
+                _physicalKeysDown.Add(e.PhysicalKey);
+        }
         e.Handled = true;
     }
 
@@ -1292,6 +1329,8 @@ public partial class MainWindow : Window
 
         if (_core is MdTracerAdapter md)
             snapshotBase = md.CaptureDebugSnapshot(dumpDir);
+        else if (_core is HshavocAdapter hshavoc)
+            snapshotBase = hshavoc.CaptureDebugSnapshot(dumpDir);
         else if (_core is PceCdAdapter pce)
             snapshotBase = pce.CaptureDebugSnapshot(dumpDir);
 
@@ -1303,6 +1342,11 @@ public partial class MainWindow : Window
     {
         lock (_keysDown)
             _keysDown.Remove(e.Key);
+        if (e.PhysicalKey != PhysicalKey.None)
+        {
+            lock (_physicalKeysDown)
+                _physicalKeysDown.Remove(e.PhysicalKey);
+        }
         e.Handled = true;
     }
 
@@ -1310,6 +1354,12 @@ public partial class MainWindow : Window
     {
         lock (_keysDown)
             return _keysDown.Contains(key);
+    }
+
+    private bool IsPhysicalKeyDown(PhysicalKey key)
+    {
+        lock (_physicalKeysDown)
+            return _physicalKeysDown.Contains(key);
     }
 
     private bool HandleSavestateHotkey(Key key)
@@ -1756,6 +1806,8 @@ public partial class MainWindow : Window
         return core switch
         {
             PsxAdapter => new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons),
+            NeoGeoAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
+            McsArcadeAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
             GbaAdapter => new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons),
             SnesAdapter => new AutoFireProfile("snes", _inputMappings.Snes, s_autoFireSnesButtons),
@@ -1776,6 +1828,8 @@ public partial class MainWindow : Window
             return CreateMdFamilyAutoFireProfile("md", useSixButtonPad);
         if (IsPsxRom(path))
             return new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons);
+        if (NeoGeoAdapter.IsSupportedArchive(path))
+            return new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons);
         if (IsPceRom(path))
             return CreatePceAutoFireProfile(useSixButtonPad);
         if (IsGbRom(path))
@@ -2475,6 +2529,51 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private async void OnSelectNeoGeoBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(_neoGeoBiosPath))
+        {
+            string? folderPath = Path.GetDirectoryName(_neoGeoBiosPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        if (startFolder == null && !string.IsNullOrWhiteSpace(NeoGeoAdapter.DefaultMameRomDirectory))
+        {
+            string mameRoms = NeoGeoAdapter.DefaultMameRomDirectory!;
+            if (Directory.Exists(mameRoms))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(mameRoms);
+        }
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = "Select Neo Geo BIOS (neogeo.zip)",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("Neo Geo BIOS")
+                {
+                    Patterns = new[] { "neogeo.zip", "*.zip", "*.7z", "*.*" }
+                }
+            }
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return;
+
+        _neoGeoBiosPath = files[0].TryGetLocalPath();
+        NeoGeoAdapter.BiosPath = _neoGeoBiosPath;
+        if (NeoGeoBiosPathText != null)
+            NeoGeoBiosPathText.Text = _neoGeoBiosPath ?? files[0].Name;
+        StatusText.Text = "Neo Geo BIOS selected";
+        SaveSettings();
+    }
+
     private void OnClearPceBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         _pceBiosPath = null;
@@ -2482,6 +2581,16 @@ public partial class MainWindow : Window
         if (PceBiosPathText != null)
             PceBiosPathText.Text = "(auto: ./bios/syscard*.pce|.bin)";
         StatusText.Text = "PCE BIOS cleared";
+        SaveSettings();
+    }
+
+    private void OnClearNeoGeoBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        _neoGeoBiosPath = null;
+        NeoGeoAdapter.BiosPath = null;
+        if (NeoGeoBiosPathText != null)
+            NeoGeoBiosPathText.Text = "(auto: ~/mame/roms/neogeo.zip)";
+        StatusText.Text = "Neo Geo BIOS cleared";
         SaveSettings();
     }
 
@@ -2918,6 +3027,11 @@ public partial class MainWindow : Window
                         {
                             UpdateRomInfo(hshavoc.RomInfo);
                             Console.WriteLine(hshavoc.RomInfo.Summary);
+                        }
+                        else if (_core is NeoGeoAdapter neoGeo)
+                        {
+                            UpdateRomInfo(neoGeo.RomInfo);
+                            Console.WriteLine(neoGeo.RomInfo.Summary);
                         }
                         _audioPullReady = true;
                         PrimePullAudio();
@@ -3702,6 +3816,8 @@ public partial class MainWindow : Window
             n64.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is McsArcadeAdapter mcs)
             mcs.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is NeoGeoAdapter neoGeo)
+            neoGeo.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter xain)
             xain.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is Deco32Adapter deco32)
@@ -4130,6 +4246,7 @@ public partial class MainWindow : Window
             N64Adapter => "Nintendo 64",
             Deco32Adapter => "Data East Deco32",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
+            NeoGeoAdapter => "Neo Geo",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
         };
@@ -5116,6 +5233,7 @@ public partial class MainWindow : Window
         public InputMappingSet Snes { get; set; } = new();
         public InputMappingSet Pce { get; set; } = new();
         public InputMappingSet Psx { get; set; } = new();
+        public InputMappingSet Arcade { get; set; } = new();
 
         // Legacy accessors (MD/SMS)
         public Dictionary<string, Key> KeyboardMappings
@@ -5142,6 +5260,7 @@ public partial class MainWindow : Window
             ApplySnesDefaults(Snes);
             ApplyPceDefaults(Pce);
             ApplyPsxDefaults(Psx);
+            ApplyArcadeDefaults(Arcade);
         }
 
         private static void ApplyMdSmsDefaults(InputMappingSet set)
@@ -5267,6 +5386,35 @@ public partial class MainWindow : Window
             set.GamepadMappings["Start"] = GamepadButton.Start;
             set.GamepadMappings["Mode"] = GamepadButton.Back;
         }
+
+        private static void ApplyArcadeDefaults(InputMappingSet set)
+        {
+            set.KeyboardMappings["Up"] = Key.Up;
+            set.KeyboardMappings["Down"] = Key.Down;
+            set.KeyboardMappings["Left"] = Key.Left;
+            set.KeyboardMappings["Right"] = Key.Right;
+            set.KeyboardMappings["A"] = Key.Z;
+            set.KeyboardMappings["B"] = Key.X;
+            set.KeyboardMappings["C"] = Key.C;
+            set.KeyboardMappings["X"] = Key.A;
+            set.KeyboardMappings["Y"] = Key.S;
+            set.KeyboardMappings["Z"] = Key.D;
+            set.KeyboardMappings["Start"] = Key.Enter;
+            set.KeyboardMappings["Coin"] = Key.D5;
+
+            set.GamepadMappings["Up"] = GamepadButton.DPadUp;
+            set.GamepadMappings["Down"] = GamepadButton.DPadDown;
+            set.GamepadMappings["Left"] = GamepadButton.DPadLeft;
+            set.GamepadMappings["Right"] = GamepadButton.DPadRight;
+            set.GamepadMappings["A"] = GamepadButton.A;
+            set.GamepadMappings["B"] = GamepadButton.B;
+            set.GamepadMappings["C"] = GamepadButton.X;
+            set.GamepadMappings["X"] = GamepadButton.Y;
+            set.GamepadMappings["Y"] = GamepadButton.LeftShoulder;
+            set.GamepadMappings["Z"] = GamepadButton.RightShoulder;
+            set.GamepadMappings["Start"] = GamepadButton.Start;
+            set.GamepadMappings["Coin"] = GamepadButton.Back;
+        }
     }
 
     private sealed class MappingItem
@@ -5297,6 +5445,7 @@ public partial class MainWindow : Window
         private readonly List<MappingItem> _snesItems = new();
         private readonly List<MappingItem> _pceItems = new();
         private readonly List<MappingItem> _psxItems = new();
+        private readonly List<MappingItem> _arcadeItems = new();
         private MappingItem? _currentlyRecording;
         private TextBlock? _recordingHint;
         private readonly Func<GamepadButton?>? _gamepad1ButtonProvider;
@@ -5321,6 +5470,7 @@ public partial class MainWindow : Window
             BuildMappingItems(Mappings.Snes, _snesItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Start", "Select" });
             BuildMappingItems(Mappings.Pce, _pceItems, new[] { "Up", "Down", "Left", "Right", "A", "B", "C", "X", "Y", "Z", "Start", "Select" });
             BuildMappingItems(Mappings.Psx, _psxItems, s_psxActionDefinitions);
+            BuildMappingItems(Mappings.Arcade, _arcadeItems, s_arcadeActionDefinitions);
 
             BuildUi();
         }
@@ -5354,6 +5504,11 @@ public partial class MainWindow : Window
             {
                 Header = "MD/SMS",
                 Content = BuildMappingGrid(_mdItems)
+            });
+            tabControl.Items.Add(new TabItem
+            {
+                Header = "Arcade/Neo Geo",
+                Content = BuildMappingGrid(_arcadeItems)
             });
             tabControl.Items.Add(new TabItem
             {
@@ -5502,6 +5657,7 @@ public partial class MainWindow : Window
             ApplyItemsToMappings(_snesItems, Mappings.Snes);
             ApplyItemsToMappings(_pceItems, Mappings.Pce);
             ApplyItemsToMappings(_psxItems, Mappings.Psx);
+            ApplyItemsToMappings(_arcadeItems, Mappings.Arcade);
             Close(true);
         }
 
@@ -5675,6 +5831,7 @@ public partial class MainWindow : Window
         public string? PceBiosPath { get; set; }
         public string? GbaBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public string? NeoGeoBiosPath { get; set; }
         public RenderBackendMode RenderBackendMode { get; set; } = RenderBackendMode.Bitmap;
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
@@ -5728,6 +5885,7 @@ public partial class MainWindow : Window
         public string? PceBiosPath { get; set; }
         public string? GbaBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
+        public string? NeoGeoBiosPath { get; set; }
         public string? RenderBackendMode { get; set; }
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
@@ -5783,6 +5941,9 @@ public partial class MainWindow : Window
         public Dictionary<string, string>? PsxKeyboardMappings { get; set; }
         public Dictionary<string, string>? PsxGamepadMappings { get; set; }
         public Dictionary<string, string>? PsxGamepad2Mappings { get; set; }
+        public Dictionary<string, string>? ArcadeKeyboardMappings { get; set; }
+        public Dictionary<string, string>? ArcadeGamepadMappings { get; set; }
+        public Dictionary<string, string>? ArcadeGamepad2Mappings { get; set; }
     }
 
     private sealed class TitleStatsEntry
@@ -5851,13 +6012,15 @@ public partial class MainWindow : Window
         bool legacyMigrated = LoadLegacySettings();
         if (legacyMigrated)
             SaveSettings();
+        else
+            _romLibraryPath ??= ResolveDefaultRomLibraryPath();
     }
 
     private void ApplySettings(UiSettings settings)
     {
         _romLibraryPath = !string.IsNullOrWhiteSpace(settings.RomLibraryPath)
             ? settings.RomLibraryPath
-            : null;
+            : ResolveDefaultRomLibraryPath();
         _romPickerSortIndex = NormalizeRomPickerSortIndex(settings.RomPickerSortIndex);
         _romPickerStarsFilterIndex = NormalizeRomPickerStarsFilterIndex(settings.RomPickerStarsFilterIndex);
         _machineRoomMp3FolderPath = !string.IsNullOrWhiteSpace(settings.MachineRoomMp3FolderPath)
@@ -5887,6 +6050,13 @@ public partial class MainWindow : Window
             PsxAdapter.BiosPath = _psxBiosPath;
             if (PsxBiosPathText != null)
                 PsxBiosPathText.Text = _psxBiosPath;
+        }
+        if (!string.IsNullOrWhiteSpace(settings.NeoGeoBiosPath))
+        {
+            _neoGeoBiosPath = settings.NeoGeoBiosPath;
+            NeoGeoAdapter.BiosPath = _neoGeoBiosPath;
+            if (NeoGeoBiosPathText != null)
+                NeoGeoBiosPathText.Text = _neoGeoBiosPath;
         }
         if (!string.IsNullOrWhiteSpace(settings.GbaBiosPath))
         {
@@ -6033,6 +6203,7 @@ public partial class MainWindow : Window
             NormalizeMappingSet(_inputMappings.Snes, includePause: false);
             NormalizeMappingSet(_inputMappings.Pce, includePause: false);
             NormalizePsxMappingSet(_inputMappings.Psx);
+            NormalizeArcadeMappingSet(_inputMappings.Arcade);
         }
         RefreshAutoFireUi();
         UpdateYmResampleUi();
@@ -6079,6 +6250,61 @@ public partial class MainWindow : Window
             set.GamepadMappings["L2"] = GamepadButton.LeftTrigger;
         if (!set.GamepadMappings.ContainsKey("R2"))
             set.GamepadMappings["R2"] = GamepadButton.RightTrigger;
+    }
+
+    private static void NormalizeArcadeMappingSet(InputMappingSet set)
+    {
+        NormalizeMappingSet(set, includePause: false);
+
+        if (!set.KeyboardMappings.ContainsKey("Up"))
+            set.KeyboardMappings["Up"] = Key.Up;
+        if (!set.KeyboardMappings.ContainsKey("Down"))
+            set.KeyboardMappings["Down"] = Key.Down;
+        if (!set.KeyboardMappings.ContainsKey("Left"))
+            set.KeyboardMappings["Left"] = Key.Left;
+        if (!set.KeyboardMappings.ContainsKey("Right"))
+            set.KeyboardMappings["Right"] = Key.Right;
+        if (!set.KeyboardMappings.ContainsKey("A"))
+            set.KeyboardMappings["A"] = Key.Z;
+        if (!set.KeyboardMappings.ContainsKey("B"))
+            set.KeyboardMappings["B"] = Key.X;
+        if (!set.KeyboardMappings.ContainsKey("C"))
+            set.KeyboardMappings["C"] = Key.C;
+        if (!set.KeyboardMappings.ContainsKey("X"))
+            set.KeyboardMappings["X"] = Key.A;
+        if (!set.KeyboardMappings.ContainsKey("Y"))
+            set.KeyboardMappings["Y"] = Key.S;
+        if (!set.KeyboardMappings.ContainsKey("Z"))
+            set.KeyboardMappings["Z"] = Key.D;
+        if (!set.KeyboardMappings.ContainsKey("Start"))
+            set.KeyboardMappings["Start"] = Key.Enter;
+        if (!set.KeyboardMappings.ContainsKey("Coin"))
+            set.KeyboardMappings["Coin"] = Key.D5;
+
+        if (!set.GamepadMappings.ContainsKey("Up"))
+            set.GamepadMappings["Up"] = GamepadButton.DPadUp;
+        if (!set.GamepadMappings.ContainsKey("Down"))
+            set.GamepadMappings["Down"] = GamepadButton.DPadDown;
+        if (!set.GamepadMappings.ContainsKey("Left"))
+            set.GamepadMappings["Left"] = GamepadButton.DPadLeft;
+        if (!set.GamepadMappings.ContainsKey("Right"))
+            set.GamepadMappings["Right"] = GamepadButton.DPadRight;
+        if (!set.GamepadMappings.ContainsKey("A"))
+            set.GamepadMappings["A"] = GamepadButton.A;
+        if (!set.GamepadMappings.ContainsKey("B"))
+            set.GamepadMappings["B"] = GamepadButton.B;
+        if (!set.GamepadMappings.ContainsKey("C"))
+            set.GamepadMappings["C"] = GamepadButton.X;
+        if (!set.GamepadMappings.ContainsKey("X"))
+            set.GamepadMappings["X"] = GamepadButton.Y;
+        if (!set.GamepadMappings.ContainsKey("Y"))
+            set.GamepadMappings["Y"] = GamepadButton.LeftShoulder;
+        if (!set.GamepadMappings.ContainsKey("Z"))
+            set.GamepadMappings["Z"] = GamepadButton.RightShoulder;
+        if (!set.GamepadMappings.ContainsKey("Start"))
+            set.GamepadMappings["Start"] = GamepadButton.Start;
+        if (!set.GamepadMappings.ContainsKey("Coin"))
+            set.GamepadMappings["Coin"] = GamepadButton.Back;
     }
 
     private static int ClampPercent(int value)
@@ -6128,6 +6354,7 @@ public partial class MainWindow : Window
             PceBiosPath = _pceBiosPath,
             GbaBiosPath = _gbaBiosPath,
             PsxBiosPath = _psxBiosPath,
+            NeoGeoBiosPath = _neoGeoBiosPath,
             RenderBackendMode = _renderBackendMode,
             SnesSpecialRomPaths = _snesSpecialRomPaths.Count > 0
                 ? new Dictionary<string, string>(_snesSpecialRomPaths, StringComparer.OrdinalIgnoreCase)
@@ -6177,6 +6404,14 @@ public partial class MainWindow : Window
 
     private static string GetSettingsPath()
         => Path.Combine(Directory.GetCurrentDirectory(), SettingsFileName);
+
+    private static string? ResolveDefaultRomLibraryPath()
+    {
+        string? mameRoms = NeoGeoAdapter.DefaultMameRomDirectory;
+        return !string.IsNullOrWhiteSpace(mameRoms) && Directory.Exists(mameRoms)
+            ? mameRoms
+            : null;
+    }
 
     private static string GetLegacyJsonSettingsPath()
         => Path.Combine(Directory.GetCurrentDirectory(), LegacyJsonSettingsFileName);
@@ -6285,6 +6520,7 @@ public partial class MainWindow : Window
             PceBiosPath = settings.PceBiosPath,
             GbaBiosPath = settings.GbaBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
+            NeoGeoBiosPath = settings.NeoGeoBiosPath,
             RenderBackendMode = settings.RenderBackendMode.ToString(),
             SnesSpecialRomPaths = settings.SnesSpecialRomPaths,
             RomPsxSbiPaths = settings.RomPsxSbiPaths,
@@ -6359,7 +6595,10 @@ public partial class MainWindow : Window
                 PceGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Pce.Gamepad2Mappings),
                 PsxKeyboardMappings = ConvertKeyDict(settings.InputMappings.Psx.KeyboardMappings),
                 PsxGamepadMappings = ConvertGamepadDict(settings.InputMappings.Psx.GamepadMappings),
-                PsxGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Psx.Gamepad2Mappings)
+                PsxGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Psx.Gamepad2Mappings),
+                ArcadeKeyboardMappings = ConvertKeyDict(settings.InputMappings.Arcade.KeyboardMappings),
+                ArcadeGamepadMappings = ConvertGamepadDict(settings.InputMappings.Arcade.GamepadMappings),
+                ArcadeGamepad2Mappings = ConvertGamepadDict(settings.InputMappings.Arcade.Gamepad2Mappings)
             };
             if (model.InputMappings.KeyboardMappings == null
                 && model.InputMappings.GamepadMappings == null
@@ -6372,7 +6611,10 @@ public partial class MainWindow : Window
                 && model.InputMappings.PceGamepad2Mappings == null
                 && model.InputMappings.PsxKeyboardMappings == null
                 && model.InputMappings.PsxGamepadMappings == null
-                && model.InputMappings.PsxGamepad2Mappings == null)
+                && model.InputMappings.PsxGamepad2Mappings == null
+                && model.InputMappings.ArcadeKeyboardMappings == null
+                && model.InputMappings.ArcadeGamepadMappings == null
+                && model.InputMappings.ArcadeGamepad2Mappings == null)
             {
                 model.InputMappings = null;
             }
@@ -6398,6 +6640,7 @@ public partial class MainWindow : Window
             PceBiosPath = raw.PceBiosPath,
             GbaBiosPath = raw.GbaBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
+            NeoGeoBiosPath = raw.NeoGeoBiosPath,
             RenderBackendMode = ParseRenderBackendMode(raw.RenderBackendMode),
             PsxAnalogControllerEnabled = raw.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = raw.PsxFastLoadEnabled,
@@ -6535,6 +6778,10 @@ public partial class MainWindow : Window
         any |= ApplyTomlMappings(raw.PsxKeyboardMappings, mappings.Psx.KeyboardMappings);
         any |= ApplyTomlMappings(raw.PsxGamepadMappings, mappings.Psx.GamepadMappings);
         any |= ApplyTomlMappings(raw.PsxGamepad2Mappings, mappings.Psx.Gamepad2Mappings);
+
+        any |= ApplyTomlMappings(raw.ArcadeKeyboardMappings, mappings.Arcade.KeyboardMappings);
+        any |= ApplyTomlMappings(raw.ArcadeGamepadMappings, mappings.Arcade.GamepadMappings);
+        any |= ApplyTomlMappings(raw.ArcadeGamepad2Mappings, mappings.Arcade.Gamepad2Mappings);
 
         return any ? mappings : null;
     }
@@ -8130,8 +8377,11 @@ public partial class MainWindow : Window
         bool isGb = core is GbAdapter;
         bool isGba = core is GbaAdapter;
         bool isPsx = core is PsxAdapter;
+        bool isNeoGeo = core is NeoGeoAdapter;
+        bool isMcsArcade = core is McsArcadeAdapter;
+        bool isMcsArcadeLike = isNeoGeo || isMcsArcade;
         bool isSnesLike = isSnes || isNes || isGb || isGba;
-        var mappingSet = isPsx ? _inputMappings.Psx : (isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms));
+        var mappingSet = isMcsArcadeLike ? _inputMappings.Arcade : (isPsx ? _inputMappings.Psx : (isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms)));
         bool up;
         bool down;
         bool left;
@@ -8195,7 +8445,9 @@ public partial class MainWindow : Window
                 out mouseSecondaryDown,
                 out mouseCaptureActive);
         }
-        if (isPce || isNes)
+        if (isMcsArcadeLike)
+            mode = mappingSet.KeyboardMappings.TryGetValue("Coin", out Key coinKey) && IsKeyDownMapped(coinKey);
+        else if (isPce || isNes)
             mode = mappingSet.KeyboardMappings.TryGetValue("Select", out Key selKey) && IsKeyDownMapped(selKey);
         else
             mode = mappingSet.KeyboardMappings.TryGetValue("Mode", out Key modeKey) && IsKeyDownMapped(modeKey);
@@ -8243,7 +8495,12 @@ public partial class MainWindow : Window
             if (mappingSet.GamepadMappings.TryGetValue("R2", out GamepadButton gpR2) && gpR2 != GamepadButton.None)
                 r2 |= IsGamepadButtonPressed(gpR2);
         }
-        if (isPce || isNes)
+        if (isMcsArcadeLike)
+        {
+            if (mappingSet.GamepadMappings.TryGetValue("Coin", out GamepadButton gpCoin) && gpCoin != GamepadButton.None)
+                mode |= IsGamepadButtonPressed(gpCoin);
+        }
+        else if (isPce || isNes)
         {
             if (mappingSet.GamepadMappings.TryGetValue("Select", out GamepadButton gpSelPce) && gpSelPce != GamepadButton.None)
                 mode |= IsGamepadButtonPressed(gpSelPce);
@@ -8279,7 +8536,12 @@ public partial class MainWindow : Window
                 y2 |= IsGamepad2ButtonPressed(gp2Y);
             if (mappingSet.Gamepad2Mappings.TryGetValue("Z", out GamepadButton gp2Z) && gp2Z != GamepadButton.None)
                 z2 |= IsGamepad2ButtonPressed(gp2Z);
-            if (isPce || isNes)
+            if (isMcsArcadeLike)
+            {
+                if (mappingSet.Gamepad2Mappings.TryGetValue("Coin", out GamepadButton gp2Coin) && gp2Coin != GamepadButton.None)
+                    mode2 |= IsGamepad2ButtonPressed(gp2Coin);
+            }
+            else if (isPce || isNes)
             {
                 if (mappingSet.Gamepad2Mappings.TryGetValue("Select", out GamepadButton gp2SelPce) && gp2SelPce != GamepadButton.None)
                     mode2 |= IsGamepad2ButtonPressed(gp2SelPce);
@@ -8446,6 +8708,8 @@ public partial class MainWindow : Window
                 down.Add(button);
         }
 
+        AddLeftStickDirectionalButtons(controllerPtr, down);
+
         if (TracePadRaw && !down.SetEquals(prev))
         {
             string raw = down.Count == 0 ? "-" : string.Join(",", down);
@@ -8509,6 +8773,29 @@ public partial class MainWindow : Window
         {
             var controller = (Silk.NET.SDL.GameController*)controllerPtr;
             return _sdl.GameControllerGetButton(controller, sdlButton) != 0;
+        }
+    }
+
+    private void AddLeftStickDirectionalButtons(IntPtr controllerPtr, HashSet<GamepadButton> down)
+    {
+        if (controllerPtr == IntPtr.Zero || _sdl == null)
+            return;
+
+        const short deadZone = 12000;
+        unsafe
+        {
+            var controller = (Silk.NET.SDL.GameController*)controllerPtr;
+            short x = _sdl.GameControllerGetAxis(controller, GameControllerAxis.Leftx);
+            short y = _sdl.GameControllerGetAxis(controller, GameControllerAxis.Lefty);
+            if (x <= -deadZone)
+                down.Add(GamepadButton.DPadLeft);
+            else if (x >= deadZone)
+                down.Add(GamepadButton.DPadRight);
+
+            if (y <= -deadZone)
+                down.Add(GamepadButton.DPadUp);
+            else if (y >= deadZone)
+                down.Add(GamepadButton.DPadDown);
         }
     }
 
@@ -9970,7 +10257,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is NeoGeoAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -9979,6 +10266,7 @@ public partial class MainWindow : Window
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
                                     || core is McsArcadeAdapter
+                                    || core is NeoGeoAdapter
                                     || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
                                     || core is Deco32Adapter)
                                 {
@@ -10327,6 +10615,7 @@ public partial class MainWindow : Window
             || _core is N64Adapter
             || _core is SegaCdAdapter
             || _core is McsArcadeAdapter
+            || _core is NeoGeoAdapter
             || _core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
             || _core is Cps1DinoAdapter
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
@@ -10893,6 +11182,8 @@ public partial class MainWindow : Window
             return deco32.GetTargetFps() * _speedScale;
         if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             return tmnt.GetTargetFps() * _speedScale;
+        if (_core is NeoGeoAdapter neoGeo)
+            return neoGeo.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 

@@ -37,6 +37,8 @@ internal sealed partial class InstructionExecutor
     {
         var address = ResolveToMemoryAddress(source);
         if (!address.IsOk) return ExecuteResult<uint>.Err(address.Error!.Value);
+        if (ShouldTracePc(_tracePc))
+            EmitPcTraceLine($"[M68K-JMP] cpu={_name} pc=0x{_tracePc:X8} target=0x{address.Value & 0x00FF_FFFF:X8}");
         var r0 = JumpToAddress(address.Value);
         if (!r0.IsOk) return ExecuteResult<uint>.Err(r0.Error!.Value);
         return ExecuteResult<uint>.Ok(JumpCycles(source));
@@ -47,6 +49,8 @@ internal sealed partial class InstructionExecutor
         var address = ResolveToMemoryAddress(source);
         if (!address.IsOk) return ExecuteResult<uint>.Err(address.Error!.Value);
         uint oldPc = _registers.Pc;
+        if (ShouldTracePc(_tracePc))
+            EmitPcTraceLine($"[M68K-JSR] cpu={_name} pc=0x{_tracePc:X8} ret=0x{oldPc & 0x00FF_FFFF:X8} target=0x{address.Value & 0x00FF_FFFF:X8}");
         var r0 = JumpToAddress(address.Value);
         if (!r0.IsOk) return ExecuteResult<uint>.Err(r0.Error!.Value);
         var r1 = PushStackU32(oldPc);
@@ -172,6 +176,8 @@ internal sealed partial class InstructionExecutor
             // Branch displacement is relative to PC after opcode fetch (extension word address)
             uint basePc = pc;
             uint address = unchecked(basePc + (uint)disp.Value.Displacement);
+            if (ShouldTracePc(_tracePc))
+                EmitPcTraceLine($"[M68K-BR] cpu={_name} pc=0x{_tracePc:X8} cond={condition} disp={disp.Value.Displacement} target=0x{address & 0x00FF_FFFF:X8}");
             var jump = JumpToAddress(address);
             if (!jump.IsOk) return ExecuteResult<uint>.Err(jump.Error!.Value);
             return ExecuteResult<uint>.Ok(10);
@@ -192,6 +198,8 @@ internal sealed partial class InstructionExecutor
         // Branch displacement is relative to PC after opcode fetch (extension word address)
         uint basePc = pc;
         uint address = unchecked(basePc + (uint)disp.Value.Displacement);
+        if (ShouldTracePc(_tracePc))
+            EmitPcTraceLine($"[M68K-BSR] cpu={_name} pc=0x{_tracePc:X8} disp={disp.Value.Displacement} target=0x{address & 0x00FF_FFFF:X8}");
         var jump = JumpToAddress(address);
         if (!jump.IsOk) return ExecuteResult<uint>.Err(jump.Error!.Value);
         return ExecuteResult<uint>.Ok(18);
@@ -213,10 +221,14 @@ internal sealed partial class InstructionExecutor
             {
                 // DBcc displacement is relative to the extension word address (PC before FetchOperand)
                 uint address = unchecked(pcBefore + (uint)disp);
+                if (ShouldTracePc(_tracePc))
+                    EmitPcTraceLine($"[M68K-DBCC] cpu={_name} pc=0x{_tracePc:X8} cond={condition} reg=D{register.Index} before=0x{value:X4} after=0x{(ushort)(value - 1):X4} target=0x{address & 0x00FF_FFFF:X8}");
                 var jump = JumpToAddress(address);
                 if (!jump.IsOk) return ExecuteResult<uint>.Err(jump.Error!.Value);
                 return ExecuteResult<uint>.Ok(10);
             }
+            if (ShouldTracePc(_tracePc))
+                EmitPcTraceLine($"[M68K-DBCC] cpu={_name} pc=0x{_tracePc:X8} cond={condition} reg=D{register.Index} before=0x{value:X4} after=0xFFFF fallthrough=1");
             return ExecuteResult<uint>.Ok(14);
         }
 

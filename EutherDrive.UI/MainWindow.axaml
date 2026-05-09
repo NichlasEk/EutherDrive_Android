@@ -603,6 +603,13 @@
               <Button Classes="ghost" Content="Clear" Click="OnClearPceBios"/>
             </StackPanel>
             <Separator/>
+            <TextBlock Text="Neo Geo BIOS" FontWeight="Bold"/>
+            <TextBlock Name="NeoGeoBiosPathText" Text="(auto: ~/mame/roms/neogeo.zip)" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Select BIOS…" Click="OnSelectNeoGeoBios"/>
+              <Button Classes="ghost" Content="Clear" Click="OnClearNeoGeoBios"/>
+            </StackPanel>
+            <Separator/>
             <TextBlock Text="GBA BIOS" FontWeight="Bold"/>
             <TextBlock Name="GbaBiosPathText" Text="(auto: ./bios/gba_bios.bin)" TextWrapping="Wrap"/>
             <StackPanel Orientation="Horizontal" Spacing="6">

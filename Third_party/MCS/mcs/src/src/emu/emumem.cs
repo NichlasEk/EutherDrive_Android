@@ -1001,7 +1001,7 @@ namespace mame
                 if (Aligned || (offsbits2 + TARGET_BITS <= NATIVE_BITS))
                 {
                     if (Endian != ENDIANNESS_LITTLE) offsbits2 = NATIVE_BITS - TARGET_BITS - offsbits2;
-                    return rop(address & ~NATIVE_MASK, new uX(Width, mask) << (int)offsbits2) >> (int)offsbits2;  //return rop(address & ~NATIVE_MASK, (NativeType)mask << offsbits) >> offsbits;
+                    return new uX(TargetWidth, rop(address & ~NATIVE_MASK, new uX(Width, mask) << (int)offsbits2) >> (int)offsbits2);  //return rop(address & ~NATIVE_MASK, (NativeType)mask << offsbits) >> offsbits;
                 }
             }
 
@@ -1032,20 +1032,20 @@ namespace mame
                 {
                     // left-justify the mask to the target type
                     u32 LEFT_JUSTIFY_TARGET_TO_NATIVE_SHIFT = ((NATIVE_BITS >= TARGET_BITS) ? (NATIVE_BITS - TARGET_BITS) : 0);
-                    uX result = new uX(Width, 0);  //NativeType result = 0;
+                    uX result = new uX(TargetWidth, 0);  //TargetType result = 0;
                     uX ljmask = new uX(Width, mask) << (int)LEFT_JUSTIFY_TARGET_TO_NATIVE_SHIFT;  //NativeType ljmask = (NativeType)mask << LEFT_JUSTIFY_TARGET_TO_NATIVE_SHIFT;
                     uX curmask = ljmask >> (int)offsbits;  //NativeType curmask = ljmask >> offsbits;
 
                     // read upper bits from lower address
-                    if (curmask != 0) result = rop(address, curmask) << (int)offsbits;
+                    if (curmask != 0) result = new uX(TargetWidth, rop(address, curmask) << (int)offsbits);
                     offsbits = NATIVE_BITS - offsbits;
 
                     // read lower bits from upper address
                     curmask = ljmask << (int)offsbits;
-                    if (curmask != 0) result |= rop(address + NATIVE_STEP, curmask) >> (int)offsbits;
+                    if (curmask != 0) result |= new uX(TargetWidth, rop(address + NATIVE_STEP, curmask) >> (int)offsbits);
 
                     // return the un-justified result
-                    return result >> (int)LEFT_JUSTIFY_TARGET_TO_NATIVE_SHIFT;
+                    return new uX(TargetWidth, result >> (int)LEFT_JUSTIFY_TARGET_TO_NATIVE_SHIFT);
                 }
             }
 
@@ -1116,7 +1116,46 @@ namespace mame
         // generic direct write
         //template<int Width, int AddrShift, endianness_t Endian, int TargetWidth, bool Aligned, typename T>
         public static void memory_write_generic<int_Width, int_AddrShift, endianness_t_Endian, int_TargetWidth, bool_Aligned>(Action<offs_t, uX, uX> wop, offs_t address, uX data, uX mask)  //void memory_write_generic(T wop, offs_t address, typename emu::detail::handler_entry_size<TargetWidth>::uX data, typename emu::detail::handler_entry_size<TargetWidth>::uX mask)
+            where int_Width : int_const, new()
+            where int_AddrShift : int_const, new()
+            where endianness_t_Endian : endianness_t_const, new()
+            where int_TargetWidth : int_const, new()
+            where bool_Aligned : bool_const, new()
         {
+            int Width = new int_Width().value;
+            int AddrShift = new int_AddrShift().value;
+            endianness_t Endian = new endianness_t_Endian().value;
+            int TargetWidth = new int_TargetWidth().value;
+            bool Aligned = new bool_Aligned().value;
+
+            u32 TARGET_BYTES = 1U << TargetWidth;
+            u32 TARGET_BITS = 8 * TARGET_BYTES;
+            u32 NATIVE_BYTES = 1U << Width;
+            u32 NATIVE_BITS = 8 * NATIVE_BYTES;
+            u32 NATIVE_MASK = Width + AddrShift >= 0 ? make_bitmask32(Width + AddrShift) : 0;
+
+            if (NATIVE_BYTES == TARGET_BYTES && (Aligned || (address & NATIVE_MASK) == 0))
+            {
+                wop(address & ~NATIVE_MASK, new uX(Width, data), new uX(Width, mask));
+                return;
+            }
+
+            if (NATIVE_BYTES > TARGET_BYTES)
+            {
+                u32 offsbits = 8 * (memory_offset_to_byte(address, AddrShift) & (NATIVE_BYTES - (Aligned ? TARGET_BYTES : 1)));
+                if (Aligned || (offsbits + TARGET_BITS <= NATIVE_BITS))
+                {
+                    if (Endian != ENDIANNESS_LITTLE)
+                        offsbits = NATIVE_BITS - TARGET_BITS - offsbits;
+
+                    wop(
+                        address & ~NATIVE_MASK,
+                        new uX(Width, data) << (int)offsbits,
+                        new uX(Width, mask) << (int)offsbits);
+                    return;
+                }
+            }
+
             throw new emu_unimplemented();
         }
 

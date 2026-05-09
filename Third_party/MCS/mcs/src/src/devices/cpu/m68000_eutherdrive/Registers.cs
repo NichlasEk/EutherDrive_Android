@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 
 namespace mame.eutherdrive_m68000;
 
@@ -142,6 +143,14 @@ internal readonly struct AddressRegister
     private readonly byte _index;
     private static readonly bool TraceA0 =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_A0"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceA0Odd =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_A0_ODD"), "1", StringComparison.Ordinal);
+    private static readonly string? TraceA0OddFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_A0_ODD_FILE");
+    private static readonly uint? TraceA0OddMin = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_A0_ODD_MIN");
+    private static readonly uint? TraceA0OddMax = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_A0_ODD_MAX");
+    private static readonly int TraceA0OddLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_A0_ODD_LIMIT", 32);
+    private static int _traceA0OddRemaining = TraceA0Odd ? TraceA0OddLimit : 0;
 
     public AddressRegister(byte index)
     {
@@ -186,8 +195,70 @@ internal readonly struct AddressRegister
                 regs.Usp = value;
             return;
         }
-        if (_index == 0 && TraceA0 && regs.Address[_index] != value)
-            Console.WriteLine($"[M68K-A0] pc=0x{regs.Pc:X8} op=0x{regs.Prefetch:X4} value=0x{value:X8}");
+        if (_index == 0 && regs.Address[_index] != value)
+        {
+            if (TraceA0)
+                Console.WriteLine($"[M68K-A0] pc=0x{regs.Pc:X8} op=0x{regs.Prefetch:X4} value=0x{value:X8}");
+            if (TraceA0Odd && _traceA0OddRemaining > 0 && (value & 1) != 0 && IsTraceA0OddInRange(value))
+            {
+                _traceA0OddRemaining--;
+                string line =
+                    $"[M68K-A0ODD] pc=0x{regs.Pc:X8} op=0x{regs.Prefetch:X4} old=0x{regs.Address[_index]:X8} value=0x{value:X8} " +
+                    $"A1=0x{regs.Address[1]:X8} A2=0x{regs.Address[2]:X8} A3=0x{regs.Address[3]:X8} " +
+                    $"D0=0x{regs.Data[0]:X8} D1=0x{regs.Data[1]:X8} D2=0x{regs.Data[2]:X8} D3=0x{regs.Data[3]:X8}";
+                Console.WriteLine(line);
+                AppendTraceLine(TraceA0OddFile, line);
+            }
+        }
         regs.Address[_index] = value;
+    }
+
+    private static void AppendTraceLine(string? path, string line)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            File.AppendAllText(path, line + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
+
+    private static int ParseTraceLimit(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        raw = raw.Trim();
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int value))
+            return fallback;
+        if (value <= 0)
+            return int.MaxValue;
+        return value;
+    }
+
+    private static bool IsTraceA0OddInRange(uint value)
+    {
+        if (TraceA0OddMin.HasValue && value < TraceA0OddMin.Value)
+            return false;
+        if (TraceA0OddMax.HasValue && value > TraceA0OddMax.Value)
+            return false;
+        return true;
+    }
+
+    private static uint? ReadHexEnv(string name)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw[2..];
+        if (uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint value))
+            return value;
+        return null;
     }
 }

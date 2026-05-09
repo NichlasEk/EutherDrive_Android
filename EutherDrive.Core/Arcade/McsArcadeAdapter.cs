@@ -23,6 +23,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     private static readonly int MaxQueuedAudioSamples = OutputSampleRate * OutputChannels * 2;
     private static readonly bool TraceMcsProfile =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_PROFILE") == "1";
+    private static readonly bool TraceMcsInput =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_INPUT_TRACE") == "1";
     private static readonly object McsInitLock = new();
     private static readonly McsHostCore HostCore = new();
     private static readonly McsHostFileSystem HostFileSystem = new();
@@ -1265,6 +1267,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private mame.running_machine? _machine;
         private mame.render_target? _target;
         private int _captureFailuresRemaining = 3;
+        private long _lastInputTraceTicks;
 
         public McsOsd(McsRuntime runtime, McsArcadeAdapter owner)
         {
@@ -1282,6 +1285,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         public void machine_update(mame.running_machine machine)
         {
+            ApplyInput(machine);
             _runtime.ProcessMachineUpdate(machine);
         }
 
@@ -1450,9 +1454,23 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 return;
             }
 
+            ApplyInput(machine);
+
+            if (TraceMcsProfile)
+                _runtime.AddProfileInput(Stopwatch.GetTimestamp() - inputStart);
+        }
+
+        private void ApplyInput(mame.running_machine machine)
+        {
             ArcadeInputState input = _owner.SnapshotInput();
+            machine.set_ui_active(false);
+            bool anyInput =
+                input.Up || input.Down || input.Left || input.Right ||
+                input.Button1 || input.Button2 || input.Button3 || input.Button4 ||
+                input.Button5 || input.Button6 || input.Start || input.Coin;
             foreach (KeyValuePair<string, mame.ioport_port> port in machine.ioport().ports())
             {
+                uint digital = port.Value.live().digital;
                 foreach (mame.ioport_field field in port.Value.fields())
                 {
                     bool? pressed = field.type() switch
@@ -1473,12 +1491,43 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                     };
 
                     if (pressed.HasValue)
+                    {
                         field.set_value(pressed.Value ? 1u : 0u);
+                        digital &= ~field.mask();
+                        if (pressed.Value)
+                            digital |= field.mask();
+                    }
                 }
+
+                port.Value.live().digital = digital;
             }
 
-            if (TraceMcsProfile)
-                _runtime.AddProfileInput(Stopwatch.GetTimestamp() - inputStart);
+            if (TraceMcsInput && anyInput)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (now - _lastInputTraceTicks > Stopwatch.Frequency / 8)
+                {
+                    _lastInputTraceTicks = now;
+                    Console.Error.WriteLine(
+                        $"[MCS-INPUT] up={input.Up} down={input.Down} left={input.Left} right={input.Right} " +
+                        $"b1={input.Button1} b2={input.Button2} b3={input.Button3} b4={input.Button4} " +
+                        $"start={input.Start} coin={input.Coin}");
+                    foreach (KeyValuePair<string, mame.ioport_port> port in machine.ioport().ports())
+                    {
+                        string tag = port.Key;
+                        if (!tag.EndsWith(":P1", StringComparison.Ordinal)
+                            && !tag.EndsWith(":SYSTEM", StringComparison.Ordinal)
+                            && !tag.EndsWith(":AUDIO_COIN", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        Console.Error.WriteLine(
+                            $"[MCS-INPUT-PORT] {tag} digital=0x{port.Value.live().digital:x4} " +
+                            $"def=0x{port.Value.live().defvalue:x4} read=0x{port.Value.read():x4}");
+                    }
+                }
+            }
         }
 
         public void update_audio_stream(mame.Pointer<short> buffer, int samplesThisFrame)
@@ -1559,6 +1608,12 @@ public static class McsDriverCatalog
 
     public static bool TryFind(string driverName, out McsDriverInfo? driver)
         => Drivers.TryGetValue(driverName, out driver);
+
+    internal static void Invalidate()
+    {
+        lock (InitLock)
+            _drivers = null;
+    }
 
     private static IReadOnlyDictionary<string, McsDriverInfo> Drivers
     {

@@ -324,6 +324,7 @@ namespace mame
         long m_profile_last_ticks = Stopwatch.GetTimestamp();
         long m_profile_execute_ticks;
         long m_profile_instructions;
+        long m_debug_instruction_count;
         uint8_t m_rtemp;
         uint8_t [] m_cc_op;  //const uint8_t *   m_cc_op;
         uint8_t [] m_cc_cb;
@@ -333,6 +334,10 @@ namespace mame
         uint8_t [] m_cc_ex;
         //#define m_cc_dd   m_cc_xy
         //#define m_cc_fd   m_cc_xy
+
+
+        public uint16_t DebugPc => PC;
+        public long DebugInstructionCount => m_debug_instruction_count;
         uint8_t [] m_cc_dd;
         uint8_t [] m_cc_fd;
 
@@ -737,6 +742,7 @@ namespace mame
 
 
                 opcount++;
+                m_debug_instruction_count++;
                 if (profileCpu)
                     profileInstructions++;
 

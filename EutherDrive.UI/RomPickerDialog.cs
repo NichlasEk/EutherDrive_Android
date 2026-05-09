@@ -19,6 +19,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using EutherDrive.Core;
+using EutherDrive.Core.Arcade.Snk;
 using SharpCompress.Archives;
 using Tomlyn;
 
@@ -255,6 +256,12 @@ public sealed class RomPickerDialog : Window
         var homeButton = new Button { Content = "Home", MinWidth = 84 };
         homeButton.Click += (_, _) => NavigateTo(ResolveHomeDirectory());
 
+        var mameButton = new Button { Content = "MAME", MinWidth = 84 };
+        mameButton.Click += (_, _) => NavigateToLocalMameRoms();
+
+        var neoGeoButton = new Button { Content = "Neo Geo", MinWidth = 92 };
+        neoGeoButton.Click += (_, _) => NavigateToLocalNeoGeoRoms();
+
         _romsButton = new Button { Content = "Roms", MinWidth = 84 };
         _romsButton.Click += (_, _) => NavigateToRomLibrary();
 
@@ -357,7 +364,7 @@ public sealed class RomPickerDialog : Window
                             {
                                 Orientation = Orientation.Horizontal,
                                 Spacing = 8,
-                                Children = { upButton, homeButton, _romsButton, drivesButton, refreshButton }
+                                Children = { upButton, homeButton, mameButton, neoGeoButton, _romsButton, drivesButton, refreshButton }
                             },
                             new StackPanel
                             {
@@ -606,6 +613,35 @@ public sealed class RomPickerDialog : Window
         NavigateTo(_romLibraryPath);
     }
 
+    private void NavigateToLocalMameRoms()
+    {
+        string? mameRoms = NeoGeoAdapter.DefaultMameRomDirectory;
+        if (string.IsNullOrWhiteSpace(mameRoms) || !Directory.Exists(mameRoms))
+        {
+            _statusText.Text = "Local MAME ROM folder not found at ~/mame/roms.";
+            return;
+        }
+
+        NavigateTo(mameRoms);
+    }
+
+    private void NavigateToLocalNeoGeoRoms()
+    {
+        string? neoGeoRoms = NeoGeoAdapter.FindLocalMameRomDirectories()
+            .FirstOrDefault(path => !string.Equals(path, NeoGeoAdapter.DefaultMameRomDirectory, StringComparison.OrdinalIgnoreCase));
+
+        if (string.IsNullOrWhiteSpace(neoGeoRoms))
+            neoGeoRoms = NeoGeoAdapter.FindLocalMameRomDirectories().FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(neoGeoRoms) || !Directory.Exists(neoGeoRoms))
+        {
+            _statusText.Text = "Local Neo Geo ROM folder not found under ~/roms/MAME or ~/mame/roms.";
+            return;
+        }
+
+        NavigateTo(neoGeoRoms);
+    }
+
     private void SetCurrentDirectoryAsRomLibrary()
     {
         _romLibraryPath = NormalizeDirectoryPath(_currentDirectory);
@@ -651,12 +687,14 @@ public sealed class RomPickerDialog : Window
             foreach (string file in Directory.EnumerateFiles(_currentDirectory).Where(IsSupportedRomFile).OrderBy(static p => p, StringComparer.OrdinalIgnoreCase))
             {
                 RomPickerStats stats = _statsProvider(file);
+                string name = BuildRomEntryName(file);
+                string detail = BuildRomEntryDetail(file, stats.DetailText);
                 _allEntries.Add(new RomPickerEntry(
-                    Path.GetFileName(file),
+                    name,
                     file,
                     IsDirectory: false,
                     Stars: stats.Stars,
-                    DetailText: stats.DetailText)
+                    DetailText: detail)
                 {
                     LaunchCount = stats.LaunchCount,
                     PlaySeconds = stats.PlaySeconds
@@ -835,12 +873,14 @@ public sealed class RomPickerDialog : Window
                 continue;
 
             RomPickerStats stats = _statsProvider(romPath);
+            string name = BuildRomEntryName(romPath);
+            string detail = BuildRomEntryDetail(romPath, BuildRomSearchDetailText(romLibraryPath, romPath, stats.DetailText));
             matches.Add(new RomPickerEntry(
-                Path.GetFileName(romPath),
+                name,
                 romPath,
                 IsDirectory: false,
                 Stars: stats.Stars,
-                DetailText: BuildRomSearchDetailText(romLibraryPath, romPath, stats.DetailText))
+                DetailText: detail)
             {
                 LaunchCount = stats.LaunchCount,
                 PlaySeconds = stats.PlaySeconds
@@ -860,8 +900,39 @@ public sealed class RomPickerDialog : Window
         if (stem.Contains(query, StringComparison.OrdinalIgnoreCase))
             return true;
 
+        if (NeoGeoAdapter.TryGetRomSetMetadata(romPath, out NeoGeoRomSetInfo neoGeoInfo) &&
+            (neoGeoInfo.Description.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+             (!string.IsNullOrWhiteSpace(neoGeoInfo.CloneOf) && neoGeoInfo.CloneOf.Contains(query, StringComparison.OrdinalIgnoreCase))))
+        {
+            return true;
+        }
+
         string relativePath = Path.GetRelativePath(romLibraryPath, romPath);
         return relativePath.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRomEntryName(string romPath)
+    {
+        if (NeoGeoAdapter.TryGetRomSetMetadata(romPath, out NeoGeoRomSetInfo neoGeoInfo) &&
+            !string.IsNullOrWhiteSpace(neoGeoInfo.Description) &&
+            !string.Equals(neoGeoInfo.Description, neoGeoInfo.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return neoGeoInfo.Description;
+        }
+
+        return Path.GetFileName(romPath);
+    }
+
+    private static string BuildRomEntryDetail(string romPath, string statsDetailText)
+    {
+        if (!NeoGeoAdapter.TryGetRomSetMetadata(romPath, out NeoGeoRomSetInfo neoGeoInfo))
+            return statsDetailText;
+
+        string setName = string.IsNullOrWhiteSpace(neoGeoInfo.CloneOf)
+            ? neoGeoInfo.Name
+            : $"{neoGeoInfo.Name} clone of {neoGeoInfo.CloneOf}";
+
+        return $"Neo Geo MAME set: {setName} • {statsDetailText}";
     }
 
     private static string BuildRomSearchDetailText(string romLibraryPath, string romPath, string statsDetailText)

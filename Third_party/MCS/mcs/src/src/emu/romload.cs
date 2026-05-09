@@ -1144,7 +1144,7 @@ namespace mame
                             if (!ROM_INHERITSFLAGS(modified_romp))
                                 lastflags = modified_romp.op.get_flags();
                             else
-                                modified_romp.op.set_flags((modified_romp.op.get_flags() & ~ROM_INHERITEDFLAGS) | lastflags);
+                                modified_romp.op.set_flags((modified_romp.op.get_flags() & ~(ROM_INHERITEDFLAGS | ROM_INHERITFLAGSMASK)) | lastflags);
 
                             explength += (int)ROM_GETLENGTH(modified_romp);
 

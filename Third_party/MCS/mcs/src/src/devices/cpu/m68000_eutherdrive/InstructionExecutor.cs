@@ -13,6 +13,7 @@ internal sealed partial class InstructionExecutor
     private ushort _opcode;
     private Instruction? _instruction;
     private uint _tracePc;
+    private bool _traceThisInstruction;
 
     private static readonly bool TraceExceptions =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
@@ -20,6 +21,10 @@ internal sealed partial class InstructionExecutor
         Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX_FILE");
     private static readonly uint? TracePcMin = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MIN");
     private static readonly uint? TracePcMax = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MAX");
+    private static readonly string? TracePcFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_PC_FILE");
+    private static readonly int TracePcLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_PC_LIMIT", 1024);
+    private static int _tracePcRemaining = TracePcLimit;
     private static readonly uint? TraceWriteAddress = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_WRITE_ADDR");
     private static readonly string? TraceWriteFile =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_WRITE_FILE");
@@ -27,6 +32,12 @@ internal sealed partial class InstructionExecutor
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PC_INDEXED"), "1", StringComparison.Ordinal);
     private static readonly int TracePcIndexedLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_PC_INDEXED_LIMIT", 64);
     private static int _tracePcIndexedRemaining = TracePcIndexed ? TracePcIndexedLimit : 0;
+    private static readonly bool TraceOddIndexed =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_ODD_INDEXED"), "1", StringComparison.Ordinal);
+    private static readonly string? TraceOddIndexedFile =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_ODD_INDEXED_FILE");
+    private static readonly int TraceOddIndexedLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_ODD_INDEXED_LIMIT", 32);
+    private static int _traceOddIndexedRemaining = TraceOddIndexed ? TraceOddIndexedLimit : 0;
     private static readonly bool TraceInterrupts =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ"), "1", StringComparison.Ordinal);
     private static readonly string? TraceInterruptsFile =
@@ -94,18 +105,20 @@ internal sealed partial class InstructionExecutor
         _tracePc = pcBefore;
         _opcode = _registers.Prefetch;
         _instruction = InstructionTable.Decode(_opcode);
+        _traceThisInstruction = TracePcInRange(pcBefore) && _tracePcRemaining > 0;
 
         if (_instruction.Value.Kind == InstructionKind.Illegal)
             return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
 
-        if (ShouldTracePc(pcBefore))
+        if (_traceThisInstruction)
         {
+            _tracePcRemaining--;
             Instruction traceInst = _instruction.Value;
-            Console.WriteLine(
+            EmitPcTraceLine(
                 $"[M68K-PC] cpu={_name} pc=0x{pcBefore:X8} op=0x{_opcode:X4} inst={traceInst.Kind} size={traceInst.Size} " +
                 $"src={FormatMode(traceInst.Source)} dst={FormatMode(traceInst.Dest)} " +
                 $"A0=0x{_registers.Address[0]:X8} A1=0x{_registers.Address[1]:X8} A2=0x{_registers.Address[2]:X8} A4=0x{_registers.Address[4]:X8} A5=0x{_registers.Address[5]:X8} " +
-                $"D0=0x{_registers.Data[0]:X8} D1=0x{_registers.Data[1]:X8} D5=0x{_registers.Data[5]:X8}");
+                $"D0=0x{_registers.Data[0]:X8} D1=0x{_registers.Data[1]:X8} D2=0x{_registers.Data[2]:X8} D5=0x{_registers.Data[5]:X8} D6=0x{_registers.Data[6]:X8} D7=0x{_registers.Data[7]:X8}");
         }
 
         var next = ReadBusWord(_registers.Pc + 2);
@@ -326,9 +339,12 @@ internal sealed partial class InstructionExecutor
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
                     var (idxReg, idxSize) = Indexing.ParseIndex(ext.Value);
+                    uint baseAddress = mode.AddrReg.Read(_registers);
                     uint index = idxReg.Read(_registers, idxSize);
                     sbyte disp = (sbyte)ext.Value;
-                    uint addr = mode.AddrReg.Read(_registers) + index + (uint)disp;
+                    uint addr = baseAddress + index + (uint)disp;
+                    if (size != OpSize.Byte && (addr & 1) != 0)
+                        MaybeTraceOddIndexed(mode, ext.Value, idxReg, idxSize, baseAddress, index, disp, addr, size);
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }
@@ -389,7 +405,7 @@ internal sealed partial class InstructionExecutor
                     if (!lo.IsOk) return ExecuteResult<ResolvedAddress>.Err(lo.Error!.Value);
                     uint addr = ((uint)hi.Value << 16) | lo.Value;
                     if (ShouldTracePc(_tracePc))
-                        Console.WriteLine($"[M68K-ABS] pc=0x{_tracePc:X8} hi=0x{hi.Value:X4} lo=0x{lo.Value:X4} addr=0x{addr:X8}");
+                        EmitPcTraceLine($"[M68K-ABS] pc=0x{_tracePc:X8} hi=0x{hi.Value:X4} lo=0x{lo.Value:X4} addr=0x{addr:X8}");
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }
@@ -452,7 +468,7 @@ internal sealed partial class InstructionExecutor
             _ => ExecuteResult<uint>.Ok(0)
         };
         if (ShouldTracePc(_tracePc) && result.IsOk && resolved.Kind is ResolvedAddressKind.Memory or ResolvedAddressKind.MemoryPostincrement)
-            Console.WriteLine($"[M68K-RL] pc=0x{_tracePc:X8} addr=0x{resolved.Address:X8} value=0x{result.Value:X8}");
+            EmitPcTraceLine($"[M68K-RL] pc=0x{_tracePc:X8} addr=0x{resolved.Address:X8} value=0x{result.Value:X8}");
         return result;
     }
 
@@ -686,7 +702,19 @@ internal sealed partial class InstructionExecutor
         }
     }
 
-    private static bool ShouldTracePc(uint pc)
+    private void EmitPcTraceLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(TracePcFile))
+            Console.WriteLine(line);
+        AppendTraceLine(TracePcFile, line);
+    }
+
+    private bool ShouldTracePc(uint pc)
+    {
+        return _traceThisInstruction && pc == _tracePc;
+    }
+
+    private static bool TracePcInRange(uint pc)
     {
         if (!TracePcMin.HasValue || !TracePcMax.HasValue)
             return false;
@@ -717,6 +745,36 @@ internal sealed partial class InstructionExecutor
         if (value <= 0)
             return int.MaxValue;
         return value;
+    }
+
+    private void MaybeTraceOddIndexed(
+        AddressingMode mode,
+        ushort extension,
+        IndexRegister idxReg,
+        IndexSize idxSize,
+        uint baseAddress,
+        uint index,
+        sbyte displacement,
+        uint address,
+        OpSize size)
+    {
+        if (!TraceOddIndexed || _traceOddIndexedRemaining <= 0)
+            return;
+
+        _traceOddIndexedRemaining--;
+        string idxKind = idxReg.IsAddress ? "A" : "D";
+        int idxNum = idxReg.IsAddress ? idxReg.AddrReg.Index : idxReg.DataReg.Index;
+        uint rawIndex = idxReg.IsAddress ? idxReg.AddrReg.Read(_registers) : idxReg.DataReg.Read(_registers);
+        string instKind = _instruction.HasValue ? _instruction.Value.Kind.ToString() : "?";
+        string line =
+            $"[M68K-ODDIDX] cpu={_name} pc=0x{_tracePc:X8} curPc=0x{_registers.Pc:X8} op=0x{_opcode:X4} inst={instKind} size={size} " +
+            $"base=A{mode.AddrReg.Index}=0x{baseAddress:X8} ext=0x{extension:X4} " +
+            $"idx={idxKind}{idxNum}.{(idxSize == IndexSize.LongWord ? "L" : "W")} raw=0x{rawIndex:X8} value=0x{index:X8} " +
+            $"disp=0x{(byte)displacement:X2} addr=0x{address:X8} " +
+            $"A0=0x{_registers.Address[0]:X8} A1=0x{_registers.Address[1]:X8} A2=0x{_registers.Address[2]:X8} A3=0x{_registers.Address[3]:X8} " +
+            $"D0=0x{_registers.Data[0]:X8} D1=0x{_registers.Data[1]:X8} D2=0x{_registers.Data[2]:X8} D3=0x{_registers.Data[3]:X8}";
+        Console.WriteLine(line);
+        AppendTraceLine(TraceOddIndexedFile, line);
     }
 
     private void MaybeTraceInterrupt(string phase, byte busLevel, ushort sr, byte mask, byte? pending)
