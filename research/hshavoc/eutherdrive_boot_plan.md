@@ -345,7 +345,17 @@ matching low-pattern copy in EutherDrive.
 New probe flags:
 
 - `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE=1` replays the observed
-  `$ff0000` RAM buffer to VRAM `$0000`.
+  `$ff0000` RAM buffer to VRAM `$0000`. This is now the explicit legacy
+  standalone probe.
+- `EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_FROM_QUEUE=1` arms the
+  same low-pattern replay only after the adapter has observed a generated
+  RAM-sourced VDP queue block from `$ff0000` to high pattern VRAM
+  (`$b000+` by default). The armed replay waits until `$ff0000` contains data,
+  so it models the protected queue timing more closely than the old blind
+  every-frame copy.
+- `EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_MIN_SOURCE_DEST=0xNNNN`
+  controls the minimum observed source command destination used to arm the
+  derived replay. The default is `0xb000`.
 - `EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS=0xNNNN` controls that replay
   length in VDP words. The original probe used `0x0800`; the stronger proven
   UI-proof length is `0x2000`.
@@ -354,9 +364,9 @@ New probe flags:
 - `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME=1` bypasses the
   hash gate for this runtime-only proof.
 - UI-proof mode now enables the low-pattern replay automatically, repeats it
-  each frame, and defaults the length to `0x2000` words. Headless experiments
-  should keep using `EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0` when measuring the
-  natural boot path.
+  each frame, derives it from the observed queue, and defaults the length to
+  `0x2000` words. Headless experiments should keep using
+  `EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0` when measuring the natural boot path.
 
 Important result: the replay must open a deterministic VDP register-1 DMA
 window (`$8174`) because the frame-level adapter runs outside the game's own
@@ -465,3 +475,66 @@ New palette controls:
 - `EUTHERDRIVE_HSHAVOC_DISABLE_TEST_PALETTE=1` disables the synthetic fallback,
   useful when verifying that any visible framebuffer is using only runtime
   palette data.
+
+Follow-up verification removed the static palette bridge from the controlled
+run. With UI-proof disabled, synthetic palette disabled, forced display,
+VDP-register repair, generated VDP command-block flushing, and the standalone
+low-pattern probe, the real CRAM path still reaches the same framebuffer
+fingerprint:
+
+- natural CRAM writes from PC `$0013fe` begin with zero payload around frames
+  4-6, then become nonzero around frame 28
+- the `$fff700` palette reaches its full 64-word runtime values by frame 34
+- final 120-frame framebuffer: `20615` nonzero pixels, fingerprint
+  `0x479ED41C9943AFB6`
+- final CRAM snapshot: 58 of 64 entries nonzero; first 16 words are
+  `0000 0000 0208 060e 066e 08ae 0600 0644 0a68 024a 02ae 00ee 0222 0888 0ccc 0eee`
+
+That moves the main proof burden away from palette generation/upload. The
+remaining artificial edge is low-pattern VRAM timing: the arcade runtime creates
+and uses the `$ff0000` decompressed graphics buffer, but the observed generated
+queue only naturally targets high pattern VRAM in the current harness.
+
+## 2026-05-09 Queue-Derived Low Pattern Checkpoint
+
+The broad generated-command scan without low-pattern replay found the natural
+RAM-sourced VDP block at `$ffe91a`:
+
+- frames 6-23: source byte `$ff0000`
+- early destination `$d800`, later `$b000`
+- code `0x01` VRAM DMA
+- no naturally generated low-VRAM destination was found in
+  `$ff0000-$ffffff` during the scan window
+
+The adapter now records that queue evidence and uses it to arm the low-pattern
+replay. The replay is no longer just `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE=1`;
+it can be derived from the observed `$ff0000 -> $b000/$d800` command and then
+applied to VRAM `$0000` once the source buffer is populated.
+
+Controlled 120-frame result with the old standalone low-pattern flag off:
+
+```sh
+EUTHERDRIVE_HEADLESS_CORE=hshavoc \
+EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0 \
+EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY=1 \
+EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING=1 \
+EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS=1 \
+EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_FROM_QUEUE=1 \
+EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS=0x2000 \
+EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME=1 \
+dotnet run --project EutherDrive.Headless/EutherDrive.Headless.csproj --no-build -- \
+  /home/nichlas/roms/MAME/DataEast/hshavoc/hshavoc.zip 120
+```
+
+Result:
+
+- derived replay logs start at frame 6 after the queue block is observed
+- frame 59: `21716` nonzero pixels
+- frame 119/final: `21731` nonzero pixels, first nonzero at `(1,0)`
+- final fingerprint: `0xBC9341E5369A046A`
+
+UI-proof remains intentionally visibility-first. It still uses the synthetic
+palette fallback and the `$fff700` palette bridge so the UI does not overwrite
+or hide runtime color progress, but its low-pattern proof is now tied to the
+observed generated VDP queue. A 120-frame UI-proof run after this change ends
+with `20876` nonzero pixels and fingerprint `0x479ED41C9943AFB6`.

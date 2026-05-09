@@ -63,7 +63,11 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static readonly bool TraceStaticPalettePlan =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_STATIC_PALETTE_PLAN");
     private static readonly bool FlushLowPatternRamProbe =
-        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE") || UiProofMode;
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE");
+    private static readonly bool DeriveLowPatternRamProbeFromQueue =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_FROM_QUEUE") || UiProofMode;
+    private static readonly int DeriveLowPatternRamProbeMinSourceDest =
+        ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_MIN_SOURCE_DEST", 0xB000);
     private static readonly bool MirrorLowPatternRamProbePages =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_MIRROR_PAGES");
     private static readonly bool RepeatLowPatternRamProbe =
@@ -173,6 +177,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private readonly HashSet<ulong> _tracedCramCommandBlocks = new();
     private bool _testPaletteSeeded;
     private bool _realStaticPalettePlanSeen;
+    private bool _lowPatternQueueArmed;
+    private uint _lowPatternQueueBlock;
+    private int _lowPatternQueueSourceDest;
+    private int _lowPatternQueueWords;
     private long _lastVBlankGateTraceFrame = long.MinValue;
 
     public RomInfo RomInfo => _md.RomInfo;
@@ -205,6 +213,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         _realStaticPalettePlanSeen = false;
+        _lowPatternQueueArmed = false;
         _lastVBlankGateTraceFrame = long.MinValue;
         string profile = GetDecodeProfile();
         byte[] decoded = DecodeArchive(path, profile);
@@ -244,6 +253,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         _realStaticPalettePlanSeen = false;
+        _lowPatternQueueArmed = false;
         _lastVBlankGateTraceFrame = long.MinValue;
         _md.Reset();
         ApplyRamSeedWordsIfRequested();
@@ -456,11 +466,16 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
                 continue;
 
             ulong signature = BuildVdpCommandBlockSignature(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
-            if (!_flushedVdpCommandBlocks.Add(signature))
+            bool firstFlush = _flushedVdpCommandBlocks.Add(signature);
+            if (!firstFlush && !RepeatLowPatternRamProbe)
                 continue;
 
-            ExecuteVdpCommandBlock(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            if (firstFlush)
+                ExecuteVdpCommandBlock(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            DeriveLowPatternRamProbeFromQueueIfRequested(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
         }
+
+        ReplayArmedLowPatternRamProbeIfRequested();
     }
 
     private void TraceVdpCommandBlocksIfRequested()
@@ -551,40 +566,85 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             ? new[] { 0x0000, 0x2000, 0x4000, 0x6000 }
             : new[] { 0x0000 };
 
-        md_vdp? vdp = md_main.g_md_vdp;
         foreach (int destination in destinations)
+            ReplayLowPatternRamProbe(source, destination, words, hash, "HSHAVOC-LOWPAT-FLUSH");
+    }
+
+    private void DeriveLowPatternRamProbeFromQueueIfRequested(
+        uint block,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        if (!DeriveLowPatternRamProbeFromQueue || md_main.g_md_vdp == null)
+            return;
+
+        uint source = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
+        int codeLow = DecodeVdpCodeLow(control1, control2);
+        int sourceDest = DecodeVdpDestination(control1, control2);
+        if (source != 0x00FF0000 || codeLow != 0x01 || sourceDest < DeriveLowPatternRamProbeMinSourceDest)
+            return;
+
+        _lowPatternQueueArmed = true;
+        _lowPatternQueueBlock = block;
+        _lowPatternQueueSourceDest = sourceDest;
+        _lowPatternQueueWords = Math.Clamp((int)LowPatternRamProbeWords, 1, 0x8000);
+    }
+
+    private void ReplayArmedLowPatternRamProbeIfRequested()
+    {
+        if (!_lowPatternQueueArmed || md_main.g_md_vdp == null)
+            return;
+
+        const uint source = 0x00FF0000;
+        int words = _lowPatternQueueWords;
+        if (IsM68kWordRangeAllZero(source, words))
+            return;
+
+        ulong hash = HashM68kWords(source, words) ^ ((ulong)_lowPatternQueueBlock << 16) ^ (uint)_lowPatternQueueSourceDest;
+        ReplayLowPatternRamProbe(source, 0x0000, words, hash, "HSHAVOC-LOWPAT-QUEUE-DERIVE");
+    }
+
+    private void ReplayLowPatternRamProbe(uint source, int destination, int words, ulong hash, string tag)
+    {
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        ulong signature = hash ^ ((ulong)destination << 32);
+        if (!RepeatLowPatternRamProbe && !_flushedLowPatternRamProbes.Add(signature))
+            return;
+
+        vdp.read16(0x00C00004);
+        // The control latch may be waiting for an address second word when
+        // the frame-level probe runs. A duplicate register write makes the
+        // DMA enable transition deterministic without depending on caller timing.
+        vdp.write16(0x00C00004, 0x8174);
+        vdp.write16(0x00C00004, 0x8174);
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, 0x8F02);
+        ExecuteVdpCommandBlock(
+            source,
+            (ushort)(0x9300 | (words & 0x00FF)),
+            (ushort)(0x9400 | ((words >> 8) & 0x00FF)),
+            0x9500,
+            0x9680,
+            0x977F,
+            (ushort)(0x4000 | (destination & 0x3FFF)),
+            (ushort)(0x0080 | ((destination >> 14) & 0x0007)));
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, 0x8164);
+        vdp.write16(0x00C00004, 0x8164);
+
+        if (TraceLowPatternRamProbe)
         {
-            ulong signature = hash ^ ((ulong)destination << 32);
-            if (!RepeatLowPatternRamProbe && !_flushedLowPatternRamProbes.Add(signature))
-                continue;
-
-            vdp.read16(0x00C00004);
-            // The control latch may be waiting for an address second word when
-            // the frame-level probe runs. A duplicate register write makes the
-            // DMA enable transition deterministic without depending on caller timing.
-            vdp.write16(0x00C00004, 0x8174);
-            vdp.write16(0x00C00004, 0x8174);
-            vdp.read16(0x00C00004);
-            vdp.write16(0x00C00004, 0x8F02);
-            ExecuteVdpCommandBlock(
-                source,
-                (ushort)(0x9300 | (words & 0x00FF)),
-                (ushort)(0x9400 | ((words >> 8) & 0x00FF)),
-                0x9500,
-                0x9680,
-                0x977F,
-                (ushort)(0x4000 | (destination & 0x3FFF)),
-                (ushort)(0x0080 | ((destination >> 14) & 0x0007)));
-            vdp.read16(0x00C00004);
-            vdp.write16(0x00C00004, 0x8164);
-            vdp.write16(0x00C00004, 0x8164);
-
-            if (TraceLowPatternRamProbe)
-            {
-                Console.WriteLine(
-                    $"[HSHAVOC-LOWPAT-FLUSH] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
-                    $"source=0x{source:X6} words=0x{words:X4} dest=0x{destination:X4} hash=0x{hash:X16}");
-            }
+            Console.WriteLine(
+                $"[{tag}] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+                $"source=0x{source:X6} words=0x{words:X4} dest=0x{destination:X4} hash=0x{hash:X16}");
         }
     }
 
@@ -729,6 +789,9 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static int DecodeVdpCodeLow(ushort control1, ushort control2)
         => ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C);
 
+    private static int DecodeVdpDestination(ushort control1, ushort control2)
+        => (control1 & 0x3FFF) | ((control2 & 0x0007) << 14);
+
     private static void ExecuteVdpCommandBlock(
         uint block,
         ushort reg19,
@@ -772,7 +835,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ushort control2)
     {
         int codeLow = DecodeVdpCodeLow(control1, control2);
-        int dest = (control1 & 0x3FFF) | ((control2 & 0x0007) << 14);
+        int dest = DecodeVdpDestination(control1, control2);
         int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
         int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
         Console.WriteLine(
