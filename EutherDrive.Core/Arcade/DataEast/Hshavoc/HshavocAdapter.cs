@@ -32,8 +32,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static readonly bool UiProofMode = IsUiProofMode();
     private static readonly bool ForceDisplayEnable =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY") || UiProofMode;
+    private static readonly bool DisableTestPalette =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_DISABLE_TEST_PALETTE");
     private static readonly bool ForceTestPalette =
-        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FORCE_TEST_PALETTE") || UiProofMode;
+        (IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FORCE_TEST_PALETTE") || UiProofMode) && !DisableTestPalette;
     private static readonly bool FlushDmaQueue =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_DMA_QUEUE");
     private static readonly bool TraceDmaQueueFlush =
@@ -55,7 +57,9 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static readonly int TraceVdpCommandBlockScanMax =
         ParseEnvInt("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCK_SCAN_MAX", 256);
     private static readonly bool FlushStaticPalettePlan =
-        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN");
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN") || UiProofMode;
+    private static readonly bool RepeatStaticPalettePlan =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN_EVERY_FRAME") || UiProofMode;
     private static readonly bool TraceStaticPalettePlan =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_STATIC_PALETTE_PLAN");
     private static readonly bool FlushLowPatternRamProbe =
@@ -168,6 +172,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private readonly HashSet<ulong> _tracedVdpCommandBlocks = new();
     private readonly HashSet<ulong> _tracedCramCommandBlocks = new();
     private bool _testPaletteSeeded;
+    private bool _realStaticPalettePlanSeen;
     private long _lastVBlankGateTraceFrame = long.MinValue;
 
     public RomInfo RomInfo => _md.RomInfo;
@@ -199,6 +204,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _tracedVdpCommandBlocks.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
+        _realStaticPalettePlanSeen = false;
         _lastVBlankGateTraceFrame = long.MinValue;
         string profile = GetDecodeProfile();
         byte[] decoded = DecodeArchive(path, profile);
@@ -211,7 +217,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             ApplyRamSeedWordsIfRequested();
             ForceVdpDisplayIfRequested();
             SeedTestPaletteIfRequested();
-            string proofSuffix = UiProofMode ? " | ui-proof=display+vram-dma+synthetic-palette" : string.Empty;
+            string proofSuffix = UiProofMode ? " | ui-proof=display+vram-dma+real-palette-fallback" : string.Empty;
             RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile}{proofSuffix} | {BoardModel}";
             RomInfo.ExtraInfo =
                 "Data East hshavoc.zip via HshavocAdapter. This is not a Sega System 16 target; it runs the " +
@@ -219,7 +225,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
                 "Applies MAME base decode plus current startup probe patch. " +
                 "No decoded ROM is kept; temp image is deleted after load." +
                 (UiProofMode
-                    ? " UI proof mode is active: generated VDP DMA command blocks are flushed and a synthetic palette is supplied until the real palette producer is mapped."
+                    ? " UI proof mode is active: generated VDP DMA command blocks are flushed, the real $fff700 palette bridge is preferred, and a synthetic palette is used only before that producer is live."
                     : string.Empty);
         }
         finally
@@ -237,6 +243,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _tracedVdpCommandBlocks.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
+        _realStaticPalettePlanSeen = false;
         _lastVBlankGateTraceFrame = long.MinValue;
         _md.Reset();
         ApplyRamSeedWordsIfRequested();
@@ -365,6 +372,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private void SeedTestPaletteIfRequested()
     {
         if (!ForceTestPalette || (!UiProofMode && _testPaletteSeeded) || md_main.g_md_vdp == null)
+            return;
+        if (UiProofMode && _realStaticPalettePlanSeen)
             return;
 
         md_vdp vdp = md_main.g_md_vdp;
@@ -500,7 +509,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             return;
 
         ulong signature = HashM68kWords(source, words);
-        if (!_flushedStaticPalettePlans.Add(signature))
+        if (!RepeatStaticPalettePlan && !_flushedStaticPalettePlans.Add(signature))
             return;
 
         ExecuteVdpCommandBlock(
@@ -512,6 +521,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             0x977F,
             0xC000,
             0x0080);
+        _realStaticPalettePlanSeen = true;
 
         if (TraceStaticPalettePlan)
         {

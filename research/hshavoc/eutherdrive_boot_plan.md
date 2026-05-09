@@ -238,16 +238,18 @@ fallbacks.
 As of the UI visibility pass, normal UI launches automatically enable a
 probe-only proof mode unless `EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0` is set. That
 mode combines VDP register-pending repair, generated VDP command-block flushing,
-forced display, and a synthetic CRAM ramp. It is intentionally not claimed as
-correct emulation: it makes the UI render the decoded/queued VRAM path while the
-real palette/CRAM producer is still being mapped. Headless runs with
-`EUTHERDRIVE_HEADLESS_CORE` keep the older opt-in behavior for controlled
-experiments.
+forced display, low-pattern RAM replay, and a palette fallback. It is
+intentionally not claimed as correct emulation: it makes the UI render the
+decoded/queued VRAM path while the protected VDP queue timing is still being
+mapped. Headless runs with `EUTHERDRIVE_HEADLESS_CORE` keep the older opt-in
+behavior for controlled experiments.
 
-The synthetic palette is now seeded once per load/reset instead of being
-rewritten every frame, and each CRAM/register probe clears pending VDP command
-state first. That keeps the proof mode from masking later natural palette writes
-while still making UI bring-up visible.
+The proof palette path now prefers the real `$fff700` palette buffer. A
+synthetic CRAM ramp is used only before that producer becomes nonzero; once the
+static palette bridge has replayed real palette data, UI-proof stops refreshing
+the synthetic ramp so it cannot overwrite the runtime palette. The synthetic
+fallback can be disabled explicitly with
+`EUTHERDRIVE_HSHAVOC_DISABLE_TEST_PALETTE=1`.
 
 ## Phase 1: Startup Probe
 
@@ -413,8 +415,53 @@ Testing likely high-table candidates (`$c000/$e000`, `$e000/$c000`,
 change the black result before palette repeat. Therefore the immediate UI black
 failure was CRAM/palette visibility, not simply the active Plane A/B base.
 
-Next step: keep the UI proof palette repeat in place for visibility, but return
-the real investigation to the natural CRAM producer and VDP command queue:
-trace why the arcade path clears CRAM after the nonzero `$fff700` palette data
-appears, and model the protected queue timing closely enough that synthetic
-palette refresh can be removed.
+Next step: keep the UI proof palette fallback in place for visibility, but
+return the real investigation to the natural CRAM producer and VDP command
+queue: trace why the arcade path needs the adapter to replay the nonzero
+`$fff700` palette data, and model the protected queue timing closely enough that
+the bridge can be removed.
+
+## 2026-05-09 Real Palette Framebuffer Checkpoint
+
+A controlled 120-frame headless run with UI-proof disabled, no synthetic test
+palette, forced display, VDP register-pending repair, generated VDP command
+block flushing, low-pattern RAM replay, and the `$fff700` static palette bridge
+now reaches a visible framebuffer:
+
+- frame 59: `20615` nonzero pixels
+- frame 119/final: `20615` nonzero pixels, first nonzero at `(0,0)`
+- final fingerprint: `0x479ED41C9943AFB6`
+
+The key command set was:
+
+```sh
+EUTHERDRIVE_HEADLESS_CORE=hshavoc \
+EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0 \
+EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY=1 \
+EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING=1 \
+EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS=1 \
+EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE=1 \
+EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME=1 \
+EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS=0x2000 \
+EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN=1 \
+dotnet run --project EutherDrive.Headless/EutherDrive.Headless.csproj --no-build -- \
+  /home/nichlas/roms/MAME/DataEast/hshavoc/hshavoc.zip 120
+```
+
+This is the first stronger framebuffer proof because the colors come from the
+arcade runtime's `$fff700-$fff77f` palette buffer rather than from the synthetic
+CRAM ramp. The bridge still replays that palette into the MD VDP from adapter
+code, so the remaining target is not color generation; it is the protected board
+queue/timing edge that should naturally issue the same CRAM DMA at the right
+time.
+
+New palette controls:
+
+- `EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN_EVERY_FRAME=1` repeats the
+  `$fff700` CRAM replay even when the palette hash is unchanged.
+- UI-proof mode enables the real static palette bridge and repeat automatically.
+  This lets the UI start with synthetic fallback pixels, then switch to the
+  real palette once `$fff700` becomes nonzero.
+- `EUTHERDRIVE_HSHAVOC_DISABLE_TEST_PALETTE=1` disables the synthetic fallback,
+  useful when verifying that any visible framebuffer is using only runtime
+  palette data.
