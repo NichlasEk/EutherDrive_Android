@@ -4,6 +4,8 @@ Date: 2026-05-06
 
 Update: 2026-05-07
 
+Update: 2026-05-09
+
 ## Scope
 
 This pass continued the Gauntlet Dark Legacy / Midway Vegas bring-up in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`.
@@ -133,6 +135,39 @@ s8=0x00000000bfc00000
 ```
 
 This means the BIOS is now executing the NILE register POST path instead of reading `bfa00000` as unmapped. It then repeatedly enters the exception/POST handler around `0xbfc00880..0xbfc00970`.
+
+2026-05-09 pass result:
+
+- `dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly` succeeds.
+- Added a narrow RAM qword-fill fastpath for the runtime loop at `0xffffffff80005b18`:
+  - signature: `addiu t0,-1; sd a1,0(a0); bgtz t0,-3; addiu a0,8`
+  - verified by CPU trace with `t0=0x62`, aligned `a0`, and zero `a1`
+  - constrained to main RAM ranges and exact instruction words
+- Added `EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET` so memory traces can be filtered by target name such as `CS6`, `PCI`, or `NILE`.
+- Added a minimal Voodoo 2 PCI function at device 3:
+  - vendor/device `121a:0002`
+  - class/revision `0x03800002`
+  - BAR0 defaults to `0xff000000`, 16 MiB, prefetchable memory
+  - register/LFB/texture writes route to the existing Voodoo facade/trace backend
+  - status reads return a ready FIFO-style value
+- Probe with `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO=1` now proves the guest can see Voodoo on PCI:
+
+```text
+[GAUNTDL:VOODOO-PCI] pci cfg read off=00 value=121a0002
+[GAUNTDL:VOODOO-PCI] pci cfg read off=00 value=121a0002
+```
+
+Latest traced run after exposing Voodoo:
+
+```text
+frame=1800
+pc=0xffffffff80040bc8
+lastOp=0x8c622ed8
+cp0 status=0x000000003400ff01 cause=0x0000000000000000 epc=0x00000000800147bc errorepc=0x0000000000000000
+attached=True
+```
+
+The guest reads the Voodoo ID but has not yet issued BAR/config writes or Voodoo register writes in the 1800-frame probe. The active code path is a scheduler/callback loop around `0xffffffff80040bb4..0xffffffff80040c30`; callback `0xffffffff800043d4` is a small wrapper around a queue/allocation routine at `0xffffffff80042db0` and returns list nodes around `0xffffffff800f08xx`. This does not look like an unsupported-op halt.
 
 ## Probe Setup
 
@@ -617,3 +652,484 @@ Next useful steps after resuming:
 - The probe output can be slow because each frame runs `200000` CPU steps. Use progress every 100 frames or targeted trace windows.
 - `EUTHERDRIVE_GAUNTDL_TRACE_MEM=1` is very noisy because ROM fetches are traced too.
 - There are unrelated dirty files in the repo, including CPS1/TMNT/32X/SegaCD/UI/README work. Keep Gauntlet edits isolated.
+
+## 2026-05-09 Interpreter/IDE Progress
+
+The current workspace rebuilds the isolated probe again:
+
+```text
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+```
+
+This pass fixed several real R5000 interpreter gaps hit by RAM code after the NILE timer-delay fastpath:
+
+- REGIMM branch-likely forms: `BLTZL`, `BGEZL`, `BLTZALL`, `BGEZALL`.
+- 32-bit signed `ADD`/`SUB` while leaving the previously working unsigned fastpath behavior intact.
+- FPU register load/store spills: `LWC1`, `LDC1`, `SWC1`, `SDC1`.
+- Conditional moves: `MOVZ`, `MOVN`.
+- Little-endian unaligned word access: `LWL`, `LWR`, `SWL`, `SWR`.
+
+Important correction: the first LWL/LWR implementation accidentally used the local Ryu64/N64 big-endian behavior. The correct formulas were copied from MAME `mips3_device::*_le`. Before that fix, a copy from `0x8008d5f4` produced a corrupt prefix in the stack string. After the fix it copies `??? error...` correctly.
+
+The first real IDE/PCI config access is now visible:
+
+```text
+[GAUNTDL:IDEPCI] pci cfg read off=00 value=06461095
+```
+
+Current endpoint with a high step budget:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_IDE=1 EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 400
+
+frame=400
+pc=0xffffffff8004dacc
+lastOp=0x080136b2
+cp0 status=0x000000003400ff01
+```
+
+`0x8004dac8/0x8004dacc` is not an interpreter halt. It is the guest's own infinite halt loop after its stdio error formatter emits:
+
+```text
+??? error, Unknown status of 0x00000000
+```
+
+Nearby string table context includes `/tty0`, `Error reopening stdin`, `Error opening /tty0 for input`, and `Error queing first read on /tty0`. The next useful target is not more generic CPU opcodes; it is the `/tty0`/stdio open path and the device/status value that becomes zero before the error formatter. Trace around `0xffffffff8004d840..0xffffffff8004da20` is noisy because it mostly captures formatter loops. A better next trace is earlier in the call path that attempts to open or queue reads for `/tty0`, with targeted device/memory tracing for CS2/SIO and CS5 CPU I/O.
+
+## 2026-05-09 Vegas Device/Interrupt Progress
+
+This continuation supersedes the `/tty0` endpoint above.
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- NILE/VRC5074 chip-select window decode using the CS2..CS8 config registers. This lets CPU physical windows like `0xa1000000`, `0xa1600000`, `0xa1800000`, and `0xa1a00000` reach mapped Vegas devices.
+- Minimal CS5 CPU-I/O / FPGA config model, matching the MAME-observed CPU I/O register behavior closely enough for the guest to leave the old `/tty0` failure path.
+- Extracted `/tmp/gauntd24.raw` from `gauntd24.chd` with `chdman extractraw`, so IDE reads now use a real raw sidecar instead of the CHD metadata-only fallback.
+- RAM CP0 count-delay fastpath for the guest routine at `0xffffffff80010fec`, guarded by RAM return addresses and sane delay arguments.
+- ATA `DSC` status bit support. Idle status is now `0x50` instead of `0x40`.
+- ATA `SET FEATURES` command `0xef` as a successful no-op. The guest sends feature `0x03`, value `0x08` after IDENTIFY.
+- Minimal CP0 interrupt exception entry plus `eret`. This is enough for guest software interrupt `Cause=0x200` to vector through the OS handler and leave the wait loop at `0x80022aa8`.
+
+Verification:
+
+```text
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+367/368 Warning(s)
+0 Error(s)
+```
+
+Short IDE trace now reaches IDENTIFY and SET FEATURES:
+
+```text
+[GAUNTDL:IDE] read r7=50
+[GAUNTDL:IDE] write r7=ec
+[GAUNTDL:IDE] identify
+[GAUNTDL:IDE] read r7=58
+[GAUNTDL:IDE] read r7=50
+[GAUNTDL:IDE] write r2=08
+[GAUNTDL:IDE] write r1=03
+[GAUNTDL:IDE] write r7=ef
+[GAUNTDL:IDE] set features feature=03 value=08
+[GAUNTDL:IDE] read r7=50
+```
+
+Current long probe with the raw disk sidecar:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 2000
+
+frame=2000
+pc=0xffffffff80040bd4
+lastOp=0x1440fff2
+cp0 status=0x000000003400ff01 cause=0x0000000000000000 epc=0x00000000800147bc errorepc=0x0000000000000000
+attached=True
+```
+
+`0x80040bb4..0x80040c10` appears to be an active dispatcher/callback path, not a hard halt. Targeted trace showed repeated calls through `0xffffffff800043d4` with no pending cause. Next useful bring-up targets are:
+
+1. Trace the next device writes after SET FEATURES with `EUTHERDRIVE_GAUNTDL_TRACE_MEM=1`, filtered externally if possible; raw unfiltered IDE trace can produce millions of `r7` lines.
+2. Start modeling enough of CS6/CS7 IOASIC/DCS and video-side registers for the first graphics path.
+3. Add a proper interrupt/device pending model instead of only CP0 software interrupt entry.
+
+## 2026-05-09 Late Bringup: IOASIC/PIC to First Voodoo/Glide
+
+This continuation moved the endpoint from the dispatcher/stdio/IOASIC waits into the first real Voodoo/Glide startup failure.
+
+Build checks completed during this pass:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+0 Error(s)
+```
+
+Main implementation changes in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- CP0 Count/Compare timer pending:
+  - Count advances through `AdvanceCp0Count(...)`.
+  - Compare crossing sets Cause IP7 (`0x8000`).
+  - Compare writes clear timer pending.
+- SIO/NILE interrupt path:
+  - SIO IRQ line now feeds NILE PCI INT C.
+  - NILE INTCTRL/INTSTAT minimal decode updates CPU pending bits.
+  - IOASIC interrupt model sets SIO IRQ bit `0x04`.
+- CS6 IOASIC packed register model:
+  - proper packed offset -> 16-bit IOASIC register mapping.
+  - reg 0 returns `0x2001`.
+  - reg 10 returns `0x0048`.
+  - reg 11 returns `0x000a` for the current sound/PIC ack poll.
+  - reg 13 returns `0x0100`.
+  - reg 14 is computed INTSTAT.
+  - reg 15 is INTCTL and asserts SIO IOASIC IRQ when enabled.
+- Tightly signature-gated bringup fastpaths:
+  - stdio/TTY init error loop at `0x8004dac8` / `0xffffffff8004dac8`.
+  - IOASIC PIC bit-test waits at `0x80040f2c` and `0x80040f8c`.
+- Voodoo PCI:
+  - fixed Voodoo2 PCI vendor/device dword from wrong `0x121a0002` to correct `0x0002121a`.
+  - status ready value changed from `0x0fffff3f` to `0x0fffff7f`.
+  - PCI config `initEnable` default at offset `0x40` set to `0x00000003`.
+- Trace filter:
+  - `EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET=PCI` no longer matches unrelated `PCI_ID_NILE:rom`.
+
+Current useful Voodoo trace:
+
+```text
+[GAUNTDL:VOODOO-PCI] pci cfg read off=00 value=0002121a
+[GAUNTDL:VOODOO-PCI] pci cfg write off=10 value=ffffffff
+[GAUNTDL:MEM] read32 00000000a9000010 ff000008 PCI
+[GAUNTDL:VOODOO-PCI] pci cfg write off=10 value=08000000
+[GAUNTDL:MEM] read32 00000000a9000010 08000008 PCI
+[GAUNTDL:VOODOO-PCI] pci cfg read off=40 value=00000003
+[GAUNTDL:VOODOO-PCI] pci cfg write off=04 value=00000002
+[GAUNTDL:VOODOO-PCI] mem read off=000214 value=00000000
+[GAUNTDL:VOODOO] reg[00000214]=00001000
+[GAUNTDL:VOODOO-PCI] mem read off=000000 value=0fffff7f
+[GAUNTDL:VOODOO-PCI] mem read off=000244 value=00000000
+[GAUNTDL:VOODOO] reg[00000244]=00000000
+[GAUNTDL:VOODOO-PCI] mem read off=000000 value=0fffff7f
+[GAUNTDL:CPU] halt pc=ffffffff80016eec op=0000000d reason=special 0d
+```
+
+Latest endpoint:
+
+```text
+frame=1000
+pc=0xffffffff80016ef0
+lastOp=0x0000000d
+cp0 status=0x0000000034006f01 cause=0x0000000000009000 epc=0x000000008001128c errorepc=0x0000000000000000
+attached=True
+```
+
+Meaning:
+
+- We are past the earlier BIOS/stdio/IOASIC/PIC blockers.
+- Before the PCI ID fix, the visible panic string was `main: grSstQueryHardware failed!`.
+- After the PCI ID fix, the guest finds/configures Voodoo, maps BAR0 to `0x08000000`, reads status, and writes Voodoo registers.
+- It still reaches the same generic `break` panic routine at `0xffffffff80016eec`.
+- Adjacent string table around `0x80089940` contains:
+
+```text
+main: grSstQueryHardware failed!
+SST_RESOLUTION
+SST_REFRESH_RATE
+SST_COLOR_FORMAT
+SST_ORIGIN
+SST_COLOR_BUFF_CNT
+SST_AUX_BUFF_CNT
+main: grSstWinOpen failed!
+Unable to get LfbLock
+Unable to LfbUnlock
+```
+
+Next recommended step:
+
+1. Confirm the current panic string after the PCI ID/initEnable/status changes by dumping `a0` at the `0x80016eec` halt.
+2. Add stored readback for Voodoo registers instead of returning zero for most MMIO reads. The immediate suspects are `0x214`, `0x244` (`fbiInit5`), and any LFB lock/status path used after `grSstWinOpen`.
+3. Continue Voodoo/Glide startup until `grSstWinOpen` succeeds and command writes become frame/content related.
+
+Temp probe note:
+
+- `/tmp/eutherdrive-gauntlet-probe/Program.cs` was extended with:
+  - `EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1`
+  - longer `EUTHERDRIVE_GAUNTDL_PEEK` first-word dumps
+- This probe is outside the repo.
+
+## 2026-05-09 WinOpen/FPU Continuation
+
+This pass moved the endpoint deeper into `grSstWinOpen`; it no longer fails immediately after the first Voodoo status reads.
+
+New implementation work:
+
+- Added a narrow guest config hook at `0x80016774` for `SST_RESOLUTION`.
+  - Default behavior now preserves the guest's default argument.
+  - Host `SST_RESOLUTION` can override it for probes.
+- Corrected the `grSstQueryHardware` fastpath shape enough to expose the mapped Voodoo base.
+- Added signature-gated Glide/Voodoo bring-up hooks:
+  - `grSstSelect` at `0x80064cd0`
+  - board map at `0x8005aacc`
+  - post-init checks at `0x80053f64` and `0x80054064`
+  - board-state fill for the `0xa8000001` mapped-base path
+- Added missing COP1 interpreter coverage used after `grSstWinOpen` gets deeper:
+  - `cvt.s.w`, `cvt.d.w`
+  - S/D format add/sub/mul/div, abs/mov/neg
+  - S/D format `cvt.s`, `cvt.d`, `cvt.w`
+  - S/D format round/trunc/ceil/floor to word
+  - COP1 FCC0 comparisons `c.eq`, `c.lt`, `c.le`
+  - `bc1f`, `bc1t`, `bc1fl`, `bc1tl`
+
+Observed forward progress:
+
+```text
+[GAUNTDL:VOODOO-PCI] pci cfg write off=40 value=00000001
+[GAUNTDL:VOODOO-PCI] pci cfg write off=44 value=00000000
+[GAUNTDL:VOODOO-PCI] pci cfg write off=48 value=00000000
+[GAUNTDL:VOODOO] reg[0000021c]=00110040
+[GAUNTDL:VOODOO] reg[00000214]=00001100
+[GAUNTDL:VOODOO] reg[00000210]=00000006
+[GAUNTDL:VOODOO] reg[00000210]=00000002
+[GAUNTDL:VOODOO] reg[00000210]=00000000
+[GAUNTDL:VOODOO] reg[00000210]=00001c10
+[GAUNTDL:VOODOO] reg[00000214]=00201102
+[GAUNTDL:VOODOO] reg[00000218]=80000040
+[GAUNTDL:VOODOO] reg[00000244]=00408000
+[GAUNTDL:VOODOO] reg[0000024c]=08080000
+```
+
+Latest probe still reaches the generic break routine with `a0=0x800899ec`, which is the `main: grSstWinOpen failed!` string:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 4000
+
+frame=4000
+pc=0xffffffff80016ef0
+lastOp=0x0000000d
+a0=0x00000000800899ec
+```
+
+Current most useful next trace window:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_CPU=1
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN=ffffffff800541b0
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX=ffffffff80054890
+```
+
+The next blocker is still inside the later `grSstWinOpen` tail, after the `0xa8000001` mapped-base path. Keep tracing the branch to `0x80054870` and fill the missing board/global state only where a signature proves the expected field.
+
+## 2026-05-09 WinOpen Cleared / First Voodoo Activity
+
+This continuation moved the current endpoint past the `main: grSstWinOpen failed!` panic.
+
+Additional signature-gated WinOpen tail hooks added:
+
+- `0x80054230`: post-aux status check after the `0x80060d70` call.
+- `0x800543f0`: post-LFB/status check after the `0x80057eb8` call, including the delay-slot `a1=1` effect.
+- `0x80054424`: post-swap/status check after the `0x8005ee08` call, including the delay-slot `a2=0` effect.
+
+Current normal probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 5000
+
+frame=5000
+pc=0xffffffff800654b4
+lastOp=0x01455021
+s4=0x0000000000000001
+s5=0x0000000000000001
+s6=0x00000000000001e0
+s7=0x0000000000000280
+```
+
+The old panic is gone in this run. The guest is now in the `0x800654xx` Glide/Voodoo path with 640x480 state.
+
+Voodoo trace after WinOpen shows real post-open video setup and repeated render-side register traffic. Useful examples:
+
+```text
+[GAUNTDL:VOODOO] reg[00000220]=02c00060
+[GAUNTDL:VOODOO] reg[00000224]=020b0002
+[GAUNTDL:VOODOO] reg[00000208]=00190026
+[GAUNTDL:VOODOO] reg[0000020c]=01e0027f
+[GAUNTDL:VOODOO] reg[00000218]=8004b040
+[GAUNTDL:VOODOO] reg[00000214]=2241e1a2
+[GAUNTDL:VOODOO] reg[00000230]=00080408
+[GAUNTDL:VOODOO] reg[00000b1c]=0000dead
+[GAUNTDL:VOODOO] reg[00001320]=00186ead
+```
+
+Frame presentation change:
+
+- `EutherFrameTarget` now carries the adapter BGRA framebuffer.
+- The default Voodoo backend records register writes and renders a simple register-driven bringup frame once Voodoo activity starts.
+- The trace backend still logs register writes and also inherits that bringup frame.
+- This is a visible bringup visualization, not a real Voodoo rasterizer yet.
+
+Latest build checks:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+0 Error(s)
+```
+
+Short verifier after the framebuffer wiring:
+
+```text
+frame=1000
+pc=0xffffffff80065434
+s4=0x0000000000000001
+s5=0x0000000000000001
+s6=0x00000000000001e0
+s7=0x0000000000000280
+```
+
+Next useful steps:
+
+1. Replace the register-driven bringup frame with a minimal Voodoo front-buffer/LFB model.
+2. Track writes outside the register aperture (`lfb write` / `tex write`) without flooding trace output.
+3. Decode the repeated `0x800654xx` path to decide whether it is buffer swap, FIFO wait, or draw dispatch.
+4. Start mapping the high-value Voodoo registers currently being hit: `0x200`, `0x208`, `0x20c`, `0x210`, `0x214`, `0x218`, `0x21c`, `0x220`, `0x224`, `0x22c`, `0x230`, `0x244`, and TMU ranges around `0xb1c`/`0x1320`.
+
+## 2026-05-09 FIFO/LFB Continuation
+
+This continuation made the post-WinOpen Voodoo path more explicit:
+
+- `EutherFrameTarget` presentation now has a minimal LFB path:
+  - Voodoo LFB writes are stored as RGB565 pixels.
+  - LFB reads return the stored 32-bit pair.
+  - If no non-zero LFB pixels exist yet, the register-driven bringup visualization remains the fallback.
+- Added focused trace flags:
+  - `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO=1`
+  - `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT=N`
+  - `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB=1`
+  - `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX=1`
+- `0x800654xx` was traced and identified as a swap/FIFO-style wait/fill path.
+- Voodoo register `0x1e8` is now modeled as a monotonic swap/status counter. This moves the loop forward from the earlier `0x800654a0` sample point.
+- The board-state FIFO pointer was still being restored to bare offset `0x00200000`, so the loop was writing command words into RAM. A narrow `0x80065410..0x80065504` state normalizer now maps those FIFO pointer fields to `0xa8200000`.
+- BAR offset `0x200000..0x3fffff` is routed as Voodoo command FIFO instead of ordinary register writes.
+
+Focused FIFO trace now proves the guest is feeding the Voodoo FIFO path:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO=1 \
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT=48 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 1100
+
+[GAUNTDL:VOODOO] fifo[000000]=00000018
+[GAUNTDL:VOODOO] fifo[000001]=00000018
+...
+[GAUNTDL:VOODOO] fifo[00002f]=00000018
+frame=1100
+pc=0xffffffff800654e8
+```
+
+Focused LFB/texture trace through 2500 frames still shows no direct LFB or texture aperture writes. The immediate next target is therefore the repeated FIFO token `0x18` and the swap/FIFO routine around `0x800654c0..0x80065504`, not LFB upload yet.
+
+Latest build checks after FIFO routing:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+0 Error(s)
+```
+
+## 2026-05-09 FIFO Room / COP1X Cleared
+
+This continuation moved the bring-up into the next phase: the guest is now issuing varied Voodoo FIFO setup packets instead of sitting in the earlier swap/FIFO room path.
+
+Key fixes:
+
+- Corrected the signature for the known Glide FIFO-room helper at `0x800653d8`.
+  - Actual entry starts with `3c02800b 8c464d2c 0080c82d 8cc20384`.
+  - The hook now refreshes the board-state FIFO fields at `0x800b5174..0x800b5188` and returns `0x10000` bytes of apparent room.
+- Added COP1X/R5000 MIPS IV interpreter support for:
+  - `lwxc1`, `ldxc1`, `swxc1`, `sdxc1`, `prefx`
+  - `madd.s/d`, `msub.s/d`, `nmadd.s/d`, `nmsub.s/d`
+- This cleared the previous unsupported instruction:
+
+```text
+halt pc=ffffffff80072d70 op=4c002860 reason=opcode 13
+```
+
+Verification after the COP1X patch:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+328 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+375 Warning(s)
+0 Error(s)
+```
+
+Normal 2500-frame probe now runs past the old COP1X stop and remains live in Glide code:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 2500
+
+frame=2500
+pc=0xffffffff80054b64
+lastOp=0x27bdffe8
+v0=0x0000000000000001
+ra=0xffffffff80017a14
+attached=True
+```
+
+Focused FIFO trace now shows real setup packets around frame 300, including the expected 640x480 values:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO=1 \
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT=96 \
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB=1 \
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX=1 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 2600
+
+[GAUNTDL:VOODOO] fifo[000000]=00010221
+[GAUNTDL:VOODOO] fifo[000001]=00034001
+[GAUNTDL:VOODOO] fifo[00000d]=00018234
+[GAUNTDL:VOODOO] fifo[00000e]=00000280
+[GAUNTDL:VOODOO] fifo[00000f]=000001e0
+[GAUNTDL:VOODOO] fifo[000028]=00019604
+[GAUNTDL:VOODOO] fifo[000029]=04221000
+frame=2600
+pc=0xffffffff80054be8
+```
+
+No direct LFB/texture aperture writes have shown up yet in this trace window. The next phase should treat FIFO packet decode as the main path to first recognizable graphics.
+
+Next-phase plan:
+
+1. Add a small Voodoo FIFO packet decoder for the packets now visible in trace. Start with register-write packets and update the existing register bank from FIFO, not just direct MMIO writes.
+2. Use the decoded register writes to drive the bringup framebuffer: clip/window registers, buffer selection, color/depth mode, and swap status.
+3. Keep tracing LFB/texture apertures, but do not expect first pixels there yet. The guest is currently using FIFO command streams for setup.
+4. Once packet decode is stable, add minimal triangle/rect handling only for packets proven by trace. The immediate goal is a first recognizable clear/viewport/frame transition, not full Voodoo emulation.
+5. Keep each fastpath signature-gated. The current stack has enough narrow hooks to reach graphics; the next quality step is replacing hooks with small hardware models where the trace proves the contract.

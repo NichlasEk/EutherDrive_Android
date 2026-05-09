@@ -64,9 +64,10 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
         if (!_loaded)
             return;
 
-        _machine.RunFrame();
+        _machine.RunFrame(new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride));
         _frameCounter++;
-        DrawDiagnosticFrame();
+        if (!_machine.Voodoo.HasVideoActivity)
+            DrawDiagnosticFrame();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -176,10 +177,12 @@ internal sealed class GauntletDarkLegacyMachine
         Voodoo.Reset();
     }
 
-    public void RunFrame()
+    public void RunFrame(EutherFrameTarget target)
     {
+        Sio.PulseVblank(state: true);
         Cpu.RunProbeFrame();
-        Voodoo.RenderFrame(new EutherFrameTarget());
+        Sio.PulseVblank(state: false);
+        Voodoo.RenderFrame(target);
     }
 }
 
@@ -352,6 +355,14 @@ internal sealed class MipsR5000Core
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
     private const ulong Cp0StatusWriteMask = 0xfffffffffe57ffffUL;
     private const ulong Cp0CauseSoftwareInterruptMask = 0x00000300UL;
+    private const ulong Cp0StatusIe = 0x00000001UL;
+    private const ulong Cp0StatusExl = 0x00000002UL;
+    private const ulong Cp0StatusErl = 0x00000004UL;
+    private const ulong Cp0StatusBev = 0x00400000UL;
+    private const ulong Cp0StatusInterruptMask = 0x0000ff00UL;
+    private const ulong Cp0CauseInterruptPendingMask = 0x0000ff00UL;
+    private const ulong Cp0CauseExceptionCodeMask = 0x0000007cUL;
+    private const ulong Cp0CauseTimerInterrupt = 0x00008000UL;
     private const ulong Cp0ConfigWriteMask = 0x0000003fUL;
     private bool _halted;
     private bool _hasPendingBranch;
@@ -360,6 +371,7 @@ internal sealed class MipsR5000Core
     private ulong _immediatePcOverride;
     private ulong _instructionCounter;
     private int _traceInstructionCount;
+    private bool _timerInterruptPending;
     private ulong _hi;
     private ulong _lo;
 
@@ -395,6 +407,7 @@ internal sealed class MipsR5000Core
         _immediatePcOverride = 0;
         _instructionCounter = 0;
         _traceInstructionCount = 0;
+        _timerInterruptPending = false;
         _hi = 0;
         _lo = 0;
     }
@@ -411,6 +424,10 @@ internal sealed class MipsR5000Core
     private void Step()
     {
         ulong pc = Pc;
+        UpdateInterruptPendingBits();
+        if (TryEnterPendingInterrupt(pc))
+            return;
+        NormalizeKnownGlideFifoState(pc);
         if (TryFastPathKnownBootLoop(pc))
             return;
         if (TryFastPathKnownCacheLoop(pc))
@@ -439,7 +456,35 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRamTest(pc))
             return;
+        if (TryFastPathKnownRamQwordFill(pc))
+            return;
         if (TryFastPathKnownRamNileTimerDelay(pc))
+            return;
+        if (TryFastPathKnownStdioInitErrorLoop(pc))
+            return;
+        if (TryFastPathKnownIoasicPicBitTestWait(pc))
+            return;
+        if (TryFastPathKnownGlideResolutionConfig(pc))
+            return;
+        if (TryFastPathKnownGlideQueryHardware(pc))
+            return;
+        if (TryFastPathKnownGlideSelect(pc))
+            return;
+        if (TryFastPathKnownGlideMapBoard(pc))
+            return;
+        if (TryFastPathKnownGlideWinOpenPostInit(pc))
+            return;
+        if (TryFastPathKnownGlideWinOpenPostMode(pc))
+            return;
+        if (TryFastPathKnownGlideWinOpenPostBuffer(pc))
+            return;
+        if (TryFastPathKnownGlideWinOpenPostAux(pc))
+            return;
+        if (TryFastPathKnownGlideWinOpenPostLfb(pc))
+            return;
+        if (TryFastPathKnownGlideWinOpenPostSwap(pc))
+            return;
+        if (TryFastPathKnownGlideFifoMakeRoom(pc))
             return;
 
         uint op = _memory.Read32(pc);
@@ -454,7 +499,7 @@ internal sealed class MipsR5000Core
 
         Execute(pc, op);
         _gpr[0] = 0;
-        _cp0[9] += _cp0CountStep;
+        AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
 
         Pc = branchFromPreviousInstruction
@@ -491,7 +536,7 @@ internal sealed class MipsR5000Core
         _gpr[8] = acc0;
         _gpr[9] = acc1;
         _gpr[0] = 0;
-        _cp0[9] += _cp0CountStep;
+        AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
         Pc = (pc & 0xffffffffe0000000UL) | 0x1fc038ecUL;
         return true;
@@ -535,7 +580,7 @@ internal sealed class MipsR5000Core
 
         _gpr[4] = end;
         _gpr[0] = 0;
-        _cp0[9] += _cp0CountStep;
+        AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
         Pc = (pc & 0xffffffffe0000000UL) | exitOffset;
         return true;
@@ -805,8 +850,49 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRamQwordFill(ulong pc)
+    {
+        if (pc != 0xffffffff80005b18UL)
+            return false;
+        if (_memory.Read32(pc) != 0x2508ffffU ||
+            _memory.Read32(pc + 4) != 0xfc850000U ||
+            _memory.Read32(pc + 8) != 0x1d00fffdU ||
+            _memory.Read32(pc + 12) != 0x24840008U)
+            return false;
+
+        ulong count = _gpr[8];
+        if (count == 0 || unchecked((long)count) <= 0 || count > 0x00400000UL)
+            return false;
+
+        ulong start = _gpr[4];
+        ulong byteLength = count * 8UL;
+        if ((start & 7UL) != 0 || !IsMainRamRange(start, byteLength))
+            return false;
+
+        ulong cursor = start;
+        ulong value = _gpr[5];
+        for (ulong i = 0; i < count; i++)
+        {
+            _memory.Write64(cursor, value);
+            cursor += 8;
+        }
+
+        _gpr[4] = cursor;
+        _gpr[8] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(Math.Max(_cp0CountStep, count * 4UL * _cp0CountStep));
+        _instructionCounter += count * 4UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = 0xffffffff80005b28UL;
+        return true;
+    }
+
     private bool TryFastPathKnownRamNileTimerDelay(ulong pc)
     {
+        if (TryFastPathKnownRamCountDelay(pc))
+            return true;
+
         if (pc != 0x000000008000468cUL)
             return false;
         if ((_gpr[17] & 0xffffffffUL) != 0xbfa001e0UL)
@@ -817,6 +903,369 @@ internal sealed class MipsR5000Core
         Pc = 0x000000008000469cUL;
         CompleteFastPathStep();
         return true;
+    }
+
+    private bool TryFastPathKnownStdioInitErrorLoop(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x0004dac8UL)
+            return false;
+        if (_memory.Read32(pc - 8) != 0x12400003U ||
+            _memory.Read32(pc) != 0x080136b2U ||
+            _memory.Read32(pc + 4) != 0x00000000U)
+            return false;
+        if (_gpr[18] == 0)
+            return false;
+
+        _gpr[18] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep);
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = (pc & 0xffffffffe0000000UL) | 0x0004dad0UL;
+        return true;
+    }
+
+    private bool TryFastPathKnownIoasicPicBitTestWait(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x00040f2cUL or 0x00040f8cUL))
+            return false;
+        if (_memory.Read32(pc) != 0x8fa2002cU ||
+            _memory.Read32(pc + 4) != 0x1040fffeU ||
+            _memory.Read32(pc + 8) != 0x00000000U)
+            return false;
+
+        ulong sp = _gpr[29];
+        ushort mask = _memory.Read16(sp + 0x12);
+        _memory.Write16(sp + 0x30, (ushort)~mask);
+        _memory.Write32(sp + 0x2c, 1);
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep);
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = pc + 12;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideResolutionConfig(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x00016774UL)
+            return false;
+        if (_memory.Read32(pc) != 0x27bdffe8U ||
+            _memory.Read32(pc + 4) != 0xafb00010U ||
+            _memory.Read32(pc + 8) != 0x00a0802dU ||
+            _memory.Read32(pc + 12) != 0xafbf0014U)
+            return false;
+        if (!TryReadNullTerminatedAscii(_gpr[4], 64, out string name) ||
+            !string.Equals(name, "SST_RESOLUTION", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        _gpr[2] = ParseGlideConfigInt(Environment.GetEnvironmentVariable("SST_RESOLUTION"), _gpr[5]);
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideQueryHardware(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x00064c28UL)
+            return false;
+        if (_memory.Read32(pc) != 0x0080302dU ||
+            _memory.Read32(pc + 4) != 0x3c02800bU ||
+            _memory.Read32(pc + 8) != 0x24424d20U)
+            return false;
+
+        ulong config = _gpr[4];
+        _memory.Write32(config + 0x00, 1); // num_sst
+        _memory.Write32(config + 0x04, 0xa8000000u); // mapped Voodoo register base
+        _memory.Write32(config + 0x08, 4); // framebuffer RAM, MB
+        _memory.Write32(config + 0x0c, 2); // FBI revision
+        _memory.Write32(config + 0x10, 2); // two TMUs
+        _memory.Write32(config + 0x14, 0); // no SLI
+        _memory.Write32(config + 0x18, 2); // TMU0 revision
+        _memory.Write32(config + 0x1c, 4); // TMU0 RAM, MB
+        _memory.Write32(config + 0x20, 2); // TMU1 revision
+        _memory.Write32(config + 0x24, 4); // TMU1 RAM, MB
+
+        _gpr[2] = 1;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep);
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideSelect(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x00064cd0UL)
+            return false;
+        if (_memory.Read32(pc) != 0x27bdffe0U ||
+            _memory.Read32(pc + 4) != 0x3c02800bU ||
+            _memory.Read32(pc + 8) != 0xafb10014U ||
+            _memory.Read32(pc + 12) != 0x24514d20U)
+            return false;
+        if ((_gpr[4] & 0xffffffffUL) != 0)
+            return false;
+
+        const ulong state = 0xffffffff800b4d20UL;
+        _memory.Write32(state + 0x04, 0xa8000000u);
+        _memory.Write32(state + 0x0c, 0x800b4e04u);
+        _memory.Write32(state + 0x10, 0x00620000u);
+        _memory.Write32(0xffffffff800b4e08UL, 0xa8000000u);
+        _gpr[2] = 0x1c;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideMapBoard(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x0005aaccUL)
+            return false;
+        if (_memory.Read32(pc) != 0x27bdffe8U ||
+            _memory.Read32(pc + 4) != 0xafbf0014U ||
+            _memory.Read32(pc + 8) != 0xafbe0010U ||
+            _memory.Read32(pc + 12) != 0x03a0f02dU)
+            return false;
+        ulong mappedBase = _gpr[4] & 0xffffffffUL;
+        if (mappedBase is not (0xa8000000UL or 0xa8000001UL))
+            return false;
+
+        _memory.Write32(0xffffffff800b4d24UL, 0xa8000000u);
+        _memory.Write32(0xffffffff800b4e08UL, 0xa8000000u);
+        if (mappedBase == 0xa8000001UL)
+            _memory.Write32(0xffffffff800e6228UL, 0xa8000001u);
+        _gpr[2] = 0xffffffff00000000UL | mappedBase;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideWinOpenPostInit(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x00053f64UL)
+            return false;
+        if (_memory.Read32(pc) != 0x0040a02dU ||
+            _memory.Read32(pc + 4) != 0x12800242U ||
+            _memory.Read32(pc + 8) != 0x0280102dU)
+            return false;
+        if (_gpr[2] != 0 || _gpr[16] != 0xffffffffa8000000UL)
+            return false;
+
+        _gpr[2] = 1;
+        _gpr[20] = 1;
+        Pc = pc + 12;
+        AdvanceCp0Count(_cp0CountStep * 3UL);
+        _instructionCounter += 3;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideWinOpenPostMode(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x00054064UL)
+            return false;
+        if (_memory.Read32(pc) != 0x0040a02dU ||
+            _memory.Read32(pc + 4) != 0x56800007U ||
+            _memory.Read32(pc + 12) != 0x56000005U)
+            return false;
+        if (_gpr[2] != 0 || _gpr[16] == 0)
+            return false;
+
+        _gpr[2] = 1;
+        _gpr[20] = 1;
+        Pc = pc + 4;
+        AdvanceCp0Count(_cp0CountStep);
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideWinOpenPostBuffer(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x000541ecUL)
+            return false;
+        if (_memory.Read32(pc) != 0x0040a02dU ||
+            _memory.Read32(pc + 4) != 0x1280019fU ||
+            _memory.Read32(pc + 8) != 0x24020001U)
+            return false;
+        if (_gpr[2] != 0 || _gpr[16] == 0)
+            return false;
+
+        _gpr[2] = 1;
+        _gpr[20] = 1;
+        Pc = pc + 12;
+        AdvanceCp0Count(_cp0CountStep * 3UL);
+        _instructionCounter += 3;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideWinOpenPostAux(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x00054230UL)
+            return false;
+        if (_memory.Read32(pc) != 0x0040a02dU ||
+            _memory.Read32(pc + 4) != 0x1280018eU ||
+            _memory.Read32(pc + 8) != 0x3c020003U)
+            return false;
+        if (_gpr[2] != 0 || _gpr[18] == 0)
+            return false;
+
+        _gpr[2] = 1;
+        _gpr[20] = 1;
+        Pc = pc + 12;
+        AdvanceCp0Count(_cp0CountStep * 3UL);
+        _instructionCounter += 3;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideWinOpenPostLfb(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x000543f0UL)
+            return false;
+        if (_memory.Read32(pc) != 0x0040a02dU ||
+            _memory.Read32(pc + 4) != 0x1280011eU ||
+            _memory.Read32(pc + 8) != 0x24050001U)
+            return false;
+        if (_gpr[2] != 0 || _gpr[18] == 0)
+            return false;
+
+        _gpr[2] = 1;
+        _gpr[5] = 1;
+        _gpr[20] = 1;
+        Pc = pc + 12;
+        AdvanceCp0Count(_cp0CountStep * 3UL);
+        _instructionCounter += 3;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideWinOpenPostSwap(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x00054424UL)
+            return false;
+        if (_memory.Read32(pc) != 0x0040a02dU ||
+            _memory.Read32(pc + 4) != 0x12800111U ||
+            _memory.Read32(pc + 8) != 0x0000302dU)
+            return false;
+        if (_gpr[2] != 0 || _gpr[18] == 0)
+            return false;
+
+        _gpr[2] = 1;
+        _gpr[6] = 0;
+        _gpr[20] = 1;
+        _memory.Write32(0xffffffff800b4e08UL, 0xa8000000u);
+        _memory.Write32(0xffffffff800e4e08UL, 0xa8000000u);
+        _memory.Write32(0xffffffff800b5164UL, 0xa8200000u);
+        _memory.Write32(0xffffffff800b5178UL, 0xa8200000u);
+        _memory.Write32(0xffffffff800b517cUL, 0xa8200000u);
+        _memory.Write32(0xffffffff800e5164UL, 0xa8200000u);
+        _memory.Write32(0xffffffff800e5178UL, 0xa8200000u);
+        _memory.Write32(0xffffffff800e517cUL, 0xa8200000u);
+        Pc = pc + 12;
+        AdvanceCp0Count(_cp0CountStep * 3UL);
+        _instructionCounter += 3;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        return true;
+    }
+
+    private void NormalizeKnownGlideFifoState(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is < 0x00065410UL or > 0x00065504UL)
+            return;
+        if (_gpr[16] != 0xffffffff800b4e04UL && _gpr[6] != 0xffffffff800b4e04UL)
+            return;
+
+        _memory.Write32(0xffffffff800b5164UL, 0xa8200000u);
+        _memory.Write32(0xffffffff800b5178UL, 0xa8200000u);
+        _memory.Write32(0xffffffff800b517cUL, 0xa8200000u);
+    }
+
+    private bool TryFastPathKnownGlideFifoMakeRoom(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x000653d8UL)
+            return false;
+        if (_memory.Read32(pc) != 0x3c02800bU ||
+            _memory.Read32(pc + 4) != 0x8c464d2cU ||
+            _memory.Read32(pc + 8) != 0x0080c82dU ||
+            _memory.Read32(pc + 12) != 0x8cc20384U)
+            return false;
+        if (_gpr[4] > 0x10000UL)
+            return false;
+
+        const ulong state = 0xffffffff800b4e04UL;
+        _memory.Write32(state + 0x370, 0x18);
+        _memory.Write32(state + 0x374, 0xa8200000u);
+        _memory.Write32(state + 0x378, 0xa8200000u);
+        _memory.Write32(state + 0x37c, 0x00010000u);
+        _memory.Write32(state + 0x380, 0x00010000u);
+        _memory.Write32(state + 0x384, 0x00010000u);
+
+        _gpr[2] = 0x00010000UL;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRamCountDelay(ulong pc)
+    {
+        if (pc != 0xffffffff80010fecUL)
+            return false;
+
+        ulong delay = _gpr[4];
+        if (delay == 0 || delay > 0x01000000UL)
+            return false;
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x01000000UL)
+            return false;
+
+        ulong convertedDelay = delay * 125UL;
+        _gpr[2] = _cp0[9];
+        _gpr[3] = convertedDelay;
+        _gpr[4] = convertedDelay;
+        _gpr[0] = 0;
+        AdvanceCp0Count(Math.Max(_cp0CountStep, convertedDelay));
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private static bool IsMainRamRange(ulong address, ulong byteLength)
+    {
+        if (byteLength == 0)
+            return false;
+
+        uint physical;
+        if (address >= 0xffffffff80000000UL && address <= 0xffffffffbfffffffUL)
+            physical = (uint)(address & 0x1fffffffUL);
+        else if (address >= 0x80000000UL && address <= 0xbfffffffUL)
+            physical = (uint)(address & 0x1fffffffUL);
+        else if (address <= 0x1fffffffUL)
+            physical = (uint)address;
+        else
+            return false;
+
+        return physical < 32UL * 1024UL * 1024UL &&
+            byteLength <= 32UL * 1024UL * 1024UL - physical;
     }
 
     private bool FastPathInlineBiosText()
@@ -854,10 +1303,32 @@ internal sealed class MipsR5000Core
         return false;
     }
 
+    private bool TryReadNullTerminatedAscii(ulong address, int maxLength, out string text)
+    {
+        Span<byte> buffer = stackalloc byte[Math.Min(maxLength, 128)];
+        int length = 0;
+        for (; length < buffer.Length; length++)
+        {
+            byte value = _memory.Read8(address + (uint)length);
+            if (value == 0)
+            {
+                text = Encoding.ASCII.GetString(buffer[..length]);
+                return true;
+            }
+            if (value < 0x20 || value >= 0x7f)
+                break;
+
+            buffer[length] = value;
+        }
+
+        text = string.Empty;
+        return false;
+    }
+
     private void CompleteFastPathStep()
     {
         _gpr[0] = 0;
-        _cp0[9] += _cp0CountStep;
+        AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
@@ -934,6 +1405,9 @@ internal sealed class MipsR5000Core
             case 0x11:
                 ExecuteCop1(pc, op, rs, rt, rd);
                 break;
+            case 0x13:
+                ExecuteCop1X(pc, op, rs, rt);
+                break;
             case 0x18:
             case 0x19:
                 _gpr[rt] = unchecked((ulong)((long)_gpr[rs] + simm));
@@ -944,6 +1418,9 @@ internal sealed class MipsR5000Core
             case 0x21:
                 _gpr[rt] = unchecked((ulong)(short)_memory.Read16(_gpr[rs] + (ulong)(long)simm));
                 break;
+            case 0x22:
+                _gpr[rt] = LoadWordLeft(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
+                break;
             case 0x23:
                 _gpr[rt] = unchecked((ulong)(int)_memory.Read32(_gpr[rs] + (ulong)(long)simm));
                 break;
@@ -952,6 +1429,9 @@ internal sealed class MipsR5000Core
                 break;
             case 0x25:
                 _gpr[rt] = _memory.Read16(_gpr[rs] + (ulong)(long)simm);
+                break;
+            case 0x26:
+                _gpr[rt] = LoadWordRight(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
                 break;
             case 0x27:
                 _gpr[rt] = _memory.Read32(_gpr[rs] + (ulong)(long)simm);
@@ -962,13 +1442,31 @@ internal sealed class MipsR5000Core
             case 0x29:
                 _memory.Write16(_gpr[rs] + (ulong)(long)simm, (ushort)_gpr[rt]);
                 break;
+            case 0x2a:
+                StoreWordLeft(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
+                break;
             case 0x2b:
                 _memory.Write32(_gpr[rs] + (ulong)(long)simm, (uint)_gpr[rt]);
                 break;
+            case 0x2e:
+                StoreWordRight(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
+                break;
             case 0x2f:
+                break;
+            case 0x31:
+                _fpr[rt] = _memory.Read32(_gpr[rs] + (ulong)(long)simm);
+                break;
+            case 0x35:
+                _fpr[rt] = _memory.Read64(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x37:
                 _gpr[rt] = _memory.Read64(_gpr[rs] + (ulong)(long)simm);
+                break;
+            case 0x39:
+                _memory.Write32(_gpr[rs] + (ulong)(long)simm, (uint)_fpr[rt]);
+                break;
+            case 0x3d:
+                _memory.Write64(_gpr[rs] + (ulong)(long)simm, _fpr[rt]);
                 break;
             case 0x3f:
                 _memory.Write64(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
@@ -1021,6 +1519,14 @@ internal sealed class MipsR5000Core
             case 0x09:
                 _gpr[rd == 0 ? 31 : rd] = pc + 8;
                 QueueBranch(_gpr[rs]);
+                break;
+            case 0x0a:
+                if (_gpr[rt] == 0)
+                    _gpr[rd] = _gpr[rs];
+                break;
+            case 0x0b:
+                if (_gpr[rt] != 0)
+                    _gpr[rd] = _gpr[rs];
                 break;
             case 0x0f:
                 break;
@@ -1087,9 +1593,15 @@ internal sealed class MipsR5000Core
             case 0x1f:
                 Divide64(rs, rt, signed: false);
                 break;
+            case 0x20:
+                _gpr[rd] = SignExtend32((uint)(_gpr[rs] + _gpr[rt]));
+                break;
             case 0x21:
             case 0x2d:
                 _gpr[rd] = _gpr[rs] + _gpr[rt];
+                break;
+            case 0x22:
+                _gpr[rd] = SignExtend32((uint)(_gpr[rs] - _gpr[rt]));
                 break;
             case 0x23:
             case 0x2f:
@@ -1164,6 +1676,49 @@ internal sealed class MipsR5000Core
         _hi = dividendRaw % divisorRaw;
     }
 
+    private static ulong SignExtend32(uint value)
+        => unchecked((ulong)(long)(int)value);
+
+    private ulong LoadWordLeft(ulong address, ulong oldValue)
+    {
+        ulong aligned = address & ~3UL;
+        uint mem = _memory.Read32(aligned);
+        uint oldWord = (uint)oldValue;
+        int shift = 8 * (int)(~address & 3UL);
+        uint mask = uint.MaxValue << shift;
+        return SignExtend32((oldWord & ~mask) | (mem << shift));
+    }
+
+    private ulong LoadWordRight(ulong address, ulong oldValue)
+    {
+        ulong aligned = address & ~3UL;
+        uint mem = _memory.Read32(aligned);
+        uint oldWord = (uint)oldValue;
+        int shift = 8 * (int)(address & 3UL);
+        uint mask = uint.MaxValue >> shift;
+        return SignExtend32((oldWord & ~mask) | (mem >> shift));
+    }
+
+    private void StoreWordLeft(ulong address, ulong value)
+    {
+        ulong aligned = address & ~3UL;
+        uint oldMem = _memory.Read32(aligned);
+        uint word = (uint)value;
+        int shift = 8 * (int)(~address & 3UL);
+        uint mask = uint.MaxValue >> shift;
+        _memory.Write32(aligned, (oldMem & ~mask) | ((word >> shift) & mask));
+    }
+
+    private void StoreWordRight(ulong address, ulong value)
+    {
+        ulong aligned = address & ~3UL;
+        uint oldMem = _memory.Read32(aligned);
+        uint word = (uint)value;
+        int shift = 8 * (int)(address & 3UL);
+        uint mask = uint.MaxValue << shift;
+        _memory.Write32(aligned, (oldMem & ~mask) | ((word << shift) & mask));
+    }
+
     private void Divide64(int rs, int rt, bool signed)
     {
         ulong divisorRaw = _gpr[rt];
@@ -1197,18 +1752,28 @@ internal sealed class MipsR5000Core
         {
             0x00 => signed < 0,
             0x01 => signed >= 0,
+            0x02 => signed < 0,
+            0x03 => signed >= 0,
             0x10 => signed < 0,
             0x11 => signed >= 0,
+            0x12 => signed < 0,
+            0x13 => signed >= 0,
             _ => false
         };
 
-        if (rt is 0x10 or 0x11)
+        if (rt is 0x10 or 0x11 or 0x12 or 0x13)
             _gpr[31] = pc + 8;
 
         if (take)
+        {
             QueueBranch(pc + 4 + ((ulong)(long)simm << 2));
+        }
+        else if (rt is 0x02 or 0x03 or 0x12 or 0x13)
+        {
+            OverrideNextPc(pc + 8);
+        }
 
-        if (rt is not (0x00 or 0x01 or 0x10 or 0x11))
+        if (rt is not (0x00 or 0x01 or 0x02 or 0x03 or 0x10 or 0x11 or 0x12 or 0x13))
             HaltUnsupported(pc, op, $"regimm {rt:x2}");
     }
 
@@ -1242,13 +1807,30 @@ internal sealed class MipsR5000Core
         return register == 9 ? _cp0[9] : _cp0[register];
     }
 
+    private void AdvanceCp0Count(ulong delta)
+    {
+        if (delta == 0)
+            return;
+
+        uint oldCount = (uint)_cp0[9];
+        uint compare = (uint)_cp0[11];
+        ulong ticksUntilCompare = compare >= oldCount
+            ? compare - (ulong)oldCount
+            : 0x1_0000_0000UL - oldCount + compare;
+
+        _cp0[9] = (uint)(oldCount + delta);
+        if (ticksUntilCompare != 0 && delta >= ticksUntilCompare)
+            _timerInterruptPending = true;
+    }
+
     private void WriteCp0(int register, ulong value)
     {
         switch (register)
         {
             case 11: // Compare
                 _cp0[11] = (uint)value;
-                _cp0[13] &= ~0x00008000UL; // Clear timer interrupt pending.
+                _timerInterruptPending = false;
+                UpdateInterruptPendingBits();
                 break;
             case 12: // Status
                 _cp0[12] = (uint)value & Cp0StatusWriteMask;
@@ -1275,14 +1857,60 @@ internal sealed class MipsR5000Core
             case 0x06: // tlbwr
             case 0x08: // tlbp
                 break;
+            case 0x18: // eret
+                if ((_cp0[12] & Cp0StatusErl) != 0)
+                {
+                    _cp0[12] &= ~Cp0StatusErl;
+                    OverrideNextPc(_cp0[30]);
+                }
+                else
+                {
+                    _cp0[12] &= ~Cp0StatusExl;
+                    OverrideNextPc(_cp0[14]);
+                }
+                break;
             default:
                 HaltUnsupported(Pc, op, $"cop0 op {funct:x2}");
                 break;
         }
     }
 
+    private bool TryEnterPendingInterrupt(ulong pc)
+    {
+        if ((_cp0[12] & Cp0StatusIe) == 0 || (_cp0[12] & (Cp0StatusExl | Cp0StatusErl)) != 0)
+            return false;
+
+        ulong pending = _cp0[13] & _cp0[12] & Cp0CauseInterruptPendingMask;
+        if (pending == 0)
+            return false;
+
+        _cp0[14] = pc;
+        _cp0[13] &= ~Cp0CauseExceptionCodeMask;
+        _cp0[12] |= Cp0StatusExl;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep);
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = (_cp0[12] & Cp0StatusBev) != 0
+            ? 0xffffffffbfc00380UL
+            : 0xffffffff80000180UL;
+        return true;
+    }
+
+    private void UpdateInterruptPendingBits()
+    {
+        ulong software = _cp0[13] & Cp0CauseSoftwareInterruptMask;
+        ulong hardware = _memory.GetCpuInterruptPendingMask() & 0x0000fc00UL;
+        if (_timerInterruptPending)
+            hardware |= Cp0CauseTimerInterrupt;
+        _cp0[13] = (_cp0[13] & ~Cp0CauseInterruptPendingMask) | software | hardware;
+    }
+
     private void ExecuteCop1(ulong pc, uint op, int rs, int rt, int rd)
     {
+        int fd = (int)((op >> 6) & 0x1f);
+        uint funct = op & 0x3f;
         switch (rs)
         {
             case 0x00: // mfc1
@@ -1303,8 +1931,255 @@ internal sealed class MipsR5000Core
             case 0x06: // ctc1
                 _fcr[rd] = (uint)_gpr[rt];
                 break;
+            case 0x08: // bc1
+                ExecuteCop1Branch(pc, rt, unchecked((short)op));
+                break;
+            case 0x10: // S-format operations
+                ExecuteCop1SingleFormat(pc, op, rt, rd, fd, funct);
+                break;
+            case 0x11: // D-format operations
+                ExecuteCop1DoubleFormat(pc, op, rt, rd, fd, funct);
+                break;
+            case 0x14: // W-format operations
+                ExecuteCop1WordFormat(pc, op, rd, fd, funct);
+                break;
             default:
                 HaltUnsupported(pc, op, $"cop1 rs={rs:x2}");
+                break;
+        }
+    }
+
+    private void ExecuteCop1X(ulong pc, uint op, int rs, int rt)
+    {
+        int fr = rs;
+        int ft = rt;
+        int fs = (int)((op >> 11) & 0x1f);
+        int fd = (int)((op >> 6) & 0x1f);
+        uint funct = op & 0x3f;
+        ulong address = _gpr[rs] + _gpr[rt];
+
+        switch (funct)
+        {
+            case 0x00: // lwxc1
+                _fpr[fd] = _memory.Read32(address);
+                break;
+            case 0x01: // ldxc1
+                _fpr[fd] = _memory.Read64(address);
+                break;
+            case 0x08: // swxc1
+                _memory.Write32(address, (uint)_fpr[fd]);
+                break;
+            case 0x09: // sdxc1
+                _memory.Write64(address, _fpr[fd]);
+                break;
+            case 0x0f: // prefx
+                break;
+            case 0x20: // madd.s
+                WriteCop1XSingle(fd, ReadSingle(fs) * ReadSingle(ft) + ReadSingle(fr));
+                break;
+            case 0x21: // madd.d
+                WriteCop1XDouble(fd, ReadDouble(fs) * ReadDouble(ft) + ReadDouble(fr));
+                break;
+            case 0x28: // msub.s
+                WriteCop1XSingle(fd, ReadSingle(fs) * ReadSingle(ft) - ReadSingle(fr));
+                break;
+            case 0x29: // msub.d
+                WriteCop1XDouble(fd, ReadDouble(fs) * ReadDouble(ft) - ReadDouble(fr));
+                break;
+            case 0x30: // nmadd.s
+                WriteCop1XSingle(fd, -(ReadSingle(fs) * ReadSingle(ft) + ReadSingle(fr)));
+                break;
+            case 0x31: // nmadd.d
+                WriteCop1XDouble(fd, -(ReadDouble(fs) * ReadDouble(ft) + ReadDouble(fr)));
+                break;
+            case 0x38: // nmsub.s
+                WriteCop1XSingle(fd, -(ReadSingle(fs) * ReadSingle(ft) - ReadSingle(fr)));
+                break;
+            case 0x39: // nmsub.d
+                WriteCop1XDouble(fd, -(ReadDouble(fs) * ReadDouble(ft) - ReadDouble(fr)));
+                break;
+            default:
+                HaltUnsupported(pc, op, $"cop1x {funct:x2}");
+                break;
+        }
+    }
+
+    private float ReadSingle(int register)
+        => BitConverter.UInt32BitsToSingle((uint)_fpr[register]);
+
+    private double ReadDouble(int register)
+        => BitConverter.Int64BitsToDouble(unchecked((long)_fpr[register]));
+
+    private void WriteCop1XSingle(int register, float value)
+        => _fpr[register] = BitConverter.SingleToUInt32Bits(value);
+
+    private void WriteCop1XDouble(int register, double value)
+        => _fpr[register] = BitConverter.DoubleToUInt64Bits(value);
+
+    private void ExecuteCop1Branch(ulong pc, int rt, short simm)
+    {
+        bool condition = (_fcr[31] & (1u << 23)) != 0;
+        bool take = rt switch
+        {
+            0x00 or 0x02 => !condition,
+            0x01 or 0x03 => condition,
+            _ => false
+        };
+
+        if (take)
+            QueueBranch(pc + 4 + ((ulong)(long)simm << 2));
+        else if (rt is 0x02 or 0x03)
+            OverrideNextPc(pc + 8);
+
+        if (rt is not (0x00 or 0x01 or 0x02 or 0x03))
+            HaltUnsupported(pc, (uint)(0x11 << 26), $"bc1 {rt:x2}");
+    }
+
+    private void ExecuteCop1SingleFormat(ulong pc, uint op, int ft, int fs, int fd, uint funct)
+    {
+        float value = BitConverter.UInt32BitsToSingle((uint)_fpr[fs]);
+        float other = BitConverter.UInt32BitsToSingle((uint)_fpr[ft]);
+        switch (funct)
+        {
+            case 0x00: // add.s
+                _fpr[fd] = BitConverter.SingleToUInt32Bits(value + other);
+                break;
+            case 0x01: // sub.s
+                _fpr[fd] = BitConverter.SingleToUInt32Bits(value - other);
+                break;
+            case 0x02: // mul.s
+                _fpr[fd] = BitConverter.SingleToUInt32Bits(value * other);
+                break;
+            case 0x03: // div.s
+                _fpr[fd] = BitConverter.SingleToUInt32Bits(value / other);
+                break;
+            case 0x05: // abs.s
+                _fpr[fd] = (uint)_fpr[fs] & 0x7fffffffu;
+                break;
+            case 0x06: // mov.s
+                _fpr[fd] = (uint)_fpr[fs];
+                break;
+            case 0x07: // neg.s
+                _fpr[fd] = (uint)_fpr[fs] ^ 0x80000000u;
+                break;
+            case 0x0c: // round.w.s
+                _fpr[fd] = unchecked((uint)(int)MathF.Round(value));
+                break;
+            case 0x0d: // trunc.w.s
+                _fpr[fd] = unchecked((uint)(int)MathF.Truncate(value));
+                break;
+            case 0x0e: // ceil.w.s
+                _fpr[fd] = unchecked((uint)(int)MathF.Ceiling(value));
+                break;
+            case 0x0f: // floor.w.s
+                _fpr[fd] = unchecked((uint)(int)MathF.Floor(value));
+                break;
+            case 0x20: // cvt.s.s
+                _fpr[fd] = (uint)_fpr[fs];
+                break;
+            case 0x21: // cvt.d.s
+                _fpr[fd] = BitConverter.DoubleToUInt64Bits(value);
+                break;
+            case 0x24: // cvt.w.s
+                _fpr[fd] = unchecked((uint)(int)value);
+                break;
+            case 0x32: // c.eq.s
+                SetCop1Condition(value == other);
+                break;
+            case 0x3c: // c.lt.s
+                SetCop1Condition(value < other);
+                break;
+            case 0x3e: // c.le.s
+                SetCop1Condition(value <= other);
+                break;
+            default:
+                HaltUnsupported(pc, op, $"cop1 s-fmt {funct:x2}");
+                break;
+        }
+    }
+
+    private void ExecuteCop1DoubleFormat(ulong pc, uint op, int ft, int fs, int fd, uint funct)
+    {
+        double value = BitConverter.Int64BitsToDouble(unchecked((long)_fpr[fs]));
+        double other = BitConverter.Int64BitsToDouble(unchecked((long)_fpr[ft]));
+        switch (funct)
+        {
+            case 0x00: // add.d
+                _fpr[fd] = BitConverter.DoubleToUInt64Bits(value + other);
+                break;
+            case 0x01: // sub.d
+                _fpr[fd] = BitConverter.DoubleToUInt64Bits(value - other);
+                break;
+            case 0x02: // mul.d
+                _fpr[fd] = BitConverter.DoubleToUInt64Bits(value * other);
+                break;
+            case 0x03: // div.d
+                _fpr[fd] = BitConverter.DoubleToUInt64Bits(value / other);
+                break;
+            case 0x05: // abs.d
+                _fpr[fd] = _fpr[fs] & 0x7fffffffffffffffUL;
+                break;
+            case 0x06: // mov.d
+                _fpr[fd] = _fpr[fs];
+                break;
+            case 0x07: // neg.d
+                _fpr[fd] = _fpr[fs] ^ 0x8000000000000000UL;
+                break;
+            case 0x0c: // round.w.d
+                _fpr[fd] = unchecked((uint)(int)Math.Round(value));
+                break;
+            case 0x0d: // trunc.w.d
+                _fpr[fd] = unchecked((uint)(int)Math.Truncate(value));
+                break;
+            case 0x0e: // ceil.w.d
+                _fpr[fd] = unchecked((uint)(int)Math.Ceiling(value));
+                break;
+            case 0x0f: // floor.w.d
+                _fpr[fd] = unchecked((uint)(int)Math.Floor(value));
+                break;
+            case 0x20: // cvt.s.d
+                _fpr[fd] = BitConverter.SingleToUInt32Bits((float)value);
+                break;
+            case 0x21: // cvt.d.d
+                _fpr[fd] = _fpr[fs];
+                break;
+            case 0x24: // cvt.w.d
+                _fpr[fd] = unchecked((uint)(int)value);
+                break;
+            case 0x32: // c.eq.d
+                SetCop1Condition(value == other);
+                break;
+            case 0x3c: // c.lt.d
+                SetCop1Condition(value < other);
+                break;
+            case 0x3e: // c.le.d
+                SetCop1Condition(value <= other);
+                break;
+            default:
+                HaltUnsupported(pc, op, $"cop1 d-fmt {funct:x2}");
+                break;
+        }
+    }
+
+    private void SetCop1Condition(bool condition)
+    {
+        const uint fcc0 = 1u << 23;
+        _fcr[31] = condition ? _fcr[31] | fcc0 : _fcr[31] & ~fcc0;
+    }
+
+    private void ExecuteCop1WordFormat(ulong pc, uint op, int fs, int fd, uint funct)
+    {
+        int value = unchecked((int)(uint)_fpr[fs]);
+        switch (funct)
+        {
+            case 0x20: // cvt.s.w
+                _fpr[fd] = BitConverter.SingleToUInt32Bits(value);
+                break;
+            case 0x21: // cvt.d.w
+                _fpr[fd] = BitConverter.DoubleToUInt64Bits(value);
+                break;
+            default:
+                HaltUnsupported(pc, op, $"cop1 w-fmt {funct:x2}");
                 break;
         }
     }
@@ -1373,7 +2248,18 @@ internal sealed class MipsR5000Core
         return opcode switch
         {
             0x00 => $"special.{op & 0x3f:x2}",
-            0x01 => $"regimm.{(op >> 16) & 0x1f:x2}",
+            0x01 => ((op >> 16) & 0x1f) switch
+            {
+                0x00 => "bltz",
+                0x01 => "bgez",
+                0x02 => "bltzl",
+                0x03 => "bgezl",
+                0x10 => "bltzal",
+                0x11 => "bgezal",
+                0x12 => "bltzall",
+                0x13 => "bgezall",
+                uint rt => $"regimm.{rt:x2}"
+            },
             0x02 => "j",
             0x03 => "jal",
             0x04 => "beq",
@@ -1394,15 +2280,23 @@ internal sealed class MipsR5000Core
             0x19 => "daddiu",
             0x20 => "lb",
             0x21 => "lh",
+            0x22 => "lwl",
             0x23 => "lw",
             0x24 => "lbu",
             0x25 => "lhu",
+            0x26 => "lwr",
             0x27 => "lwu",
             0x28 => "sb",
             0x29 => "sh",
+            0x2a => "swl",
             0x2b => "sw",
+            0x2e => "swr",
             0x2f => "cache",
+            0x31 => "lwc1",
+            0x35 => "ldc1",
             0x37 => "ld",
+            0x39 => "swc1",
+            0x3d => "sdc1",
             0x3f => "sd",
             0x14 => "beql",
             0x15 => "bnel",
@@ -1416,6 +2310,14 @@ internal sealed class MipsR5000Core
     {
         string? raw = Environment.GetEnvironmentVariable(name);
         return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    private static ulong ParseGlideConfigInt(string? raw, ulong fallback)
+    {
+        if (!uint.TryParse(raw, out uint parsed))
+            return fallback;
+
+        return parsed;
     }
 
     private static ulong? ParseOptionalHexUlong(string name)
@@ -1443,8 +2345,14 @@ internal sealed class VegasMemoryMap
     private const uint NileUartLineStatusOffset = 0x328;
     private const byte NileUartTransmitReady = 0x60;
     private const uint NilePciConfigAliasOffset = 0x200;
+    private const uint NileChipSelect2ConfigOffset = 0x010;
     private const uint NilePciWindow0Offset = 0x060;
     private const uint NilePciInit0Offset = 0x0f0;
+    private const uint NileInterruptControlOffset = 0x088;
+    private const uint NileInterruptStatus0Offset = 0x090;
+    private const uint NileInterruptStatus1Offset = 0x098;
+    private const uint NileInterruptClearOffset = 0x0a0;
+    private const ushort NilePciInterruptC = 1 << 10;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
     private const int MainRamSize = 32 * 1024 * 1024;
     private const uint UnmappedReadValue = 0xffffffffu;
@@ -1456,13 +2364,19 @@ internal sealed class VegasMemoryMap
     private readonly byte[] _mainRam = new byte[MainRamSize];
     private readonly byte[] _nileRegisters = new byte[NileRegisterSize];
     private readonly byte[] _fpgaConfigRegisters = new byte[4];
+    private readonly byte[] _cpuIoRegisters = new byte[4];
+    private readonly ushort[] _ioasicRegisters = new ushort[16];
     private readonly VegasIdePciDevice _idePci = new();
+    private readonly VegasVoodooPciDevice _voodooPci = new();
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM") == "1";
+    private readonly string? _traceTargetFilter = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET");
     private byte[] _mainBootRom = Array.Empty<byte>();
     private VegasSioDevice? _sio;
     private IdeDiskDevice? _disk;
     private DcsAudioDevice? _audio;
     private VoodooFacade? _voodoo;
+    private ushort _nileIrqState;
+    private byte _nileIrqPins;
     private bool _fpgaConfigSeenLow;
     private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
@@ -1495,6 +2409,7 @@ internal sealed class VegasMemoryMap
         _audio = audio;
         _voodoo = voodoo;
         _idePci.AttachDisk(disk);
+        _voodooPci.AttachVoodoo(voodoo);
     }
 
     public void LoadMainBootRom(byte[] mainBootRom) => _mainBootRom = mainBootRom.ToArray();
@@ -1503,10 +2418,23 @@ internal sealed class VegasMemoryMap
     {
         Array.Clear(_nileRegisters);
         Array.Clear(_fpgaConfigRegisters);
+        Array.Clear(_cpuIoRegisters);
+        Array.Clear(_ioasicRegisters);
+        _ioasicRegisters[8] = 0x0001;
         _fpgaConfigSeenLow = false;
         _fpgaConfigStatusHigh = false;
         _fpgaConfigDone = false;
+        _nileIrqState = 0;
+        _nileIrqPins = 0;
         _idePci.Reset();
+        _voodooPci.Reset();
+        UpdateIoasicIrq();
+    }
+
+    public ulong GetCpuInterruptPendingMask()
+    {
+        UpdateNileInterrupts();
+        return (ulong)_nileIrqPins << 10;
     }
 
     public byte Read8(ulong address)
@@ -1534,6 +2462,9 @@ internal sealed class VegasMemoryMap
             Trace("read8", address, pciValue, "PCI");
             return pciValue;
         }
+
+        if (TryReadChipSelect8(address, out byte chipSelectValue))
+            return chipSelectValue;
 
         if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
         {
@@ -1578,6 +2509,9 @@ internal sealed class VegasMemoryMap
             return value;
         }
 
+        if (TryReadChipSelect32(address, out value))
+            return value;
+
         if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
         {
             value = BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4));
@@ -1596,6 +2530,9 @@ internal sealed class VegasMemoryMap
             Trace("read64", address, unchecked((uint)nileValue), "NILE");
             return nileValue;
         }
+
+        if (TryReadChipSelect64(address, out ulong chipSelectValue))
+            return chipSelectValue;
 
         if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
         {
@@ -1628,6 +2565,9 @@ internal sealed class VegasMemoryMap
             Trace("write8", address, value, "PCI");
             return;
         }
+
+        if (TryWriteChipSelect8(address, value))
+            return;
 
         if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
         {
@@ -1665,6 +2605,9 @@ internal sealed class VegasMemoryMap
             return;
         }
 
+        if (TryWriteChipSelect32(address, value))
+            return;
+
         if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
         {
             BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4), value);
@@ -1682,6 +2625,9 @@ internal sealed class VegasMemoryMap
             Trace("write64", address, unchecked((uint)value), "NILE");
             return;
         }
+
+        if (TryWriteChipSelect64(address, value))
+            return;
 
         if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
         {
@@ -1710,9 +2656,12 @@ internal sealed class VegasMemoryMap
 
         if (offset is >= NilePciConfigAliasOffset and < NilePciConfigAliasOffset + 0x100)
         {
-            value = (byte)(_idePci.ReadConfig32(DecodePciConfigAlias(offset) & ~3u) >> (int)((offset & 3) * 8));
+            value = (byte)(ReadPciConfig32(DecodePciConfigAlias(offset) & ~3u) >> (int)((offset & 3) * 8));
             return true;
         }
+
+        if (offset is >= NileInterruptStatus0Offset and < NileInterruptStatus1Offset + 8)
+            UpdateNileInterrupts();
 
         value = _nileRegisters[offset];
         return true;
@@ -1728,9 +2677,12 @@ internal sealed class VegasMemoryMap
 
         if (offset is >= NilePciConfigAliasOffset and < NilePciConfigAliasOffset + 0x100)
         {
-            value = _idePci.ReadConfig32(DecodePciConfigAlias(offset));
+            value = ReadPciConfig32(DecodePciConfigAlias(offset));
             return true;
         }
+
+        if (offset is >= NileInterruptStatus0Offset and < NileInterruptStatus1Offset + 8)
+            UpdateNileInterrupts();
 
         value = BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
         return true;
@@ -1764,11 +2716,16 @@ internal sealed class VegasMemoryMap
 
         if (offset is >= NilePciConfigAliasOffset and < NilePciConfigAliasOffset + 0x100)
         {
-            _idePci.WriteConfig32(DecodePciConfigAlias(offset), value);
+            WritePciConfig32(DecodePciConfigAlias(offset), value);
             return true;
         }
 
         BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4), value);
+        if (offset == NileInterruptClearOffset)
+            _nileIrqState &= (ushort)~(value & ~0x0f00u);
+        if (offset is >= NileInterruptControlOffset and < NileInterruptControlOffset + 8 ||
+            offset == NileInterruptClearOffset)
+            UpdateNileInterrupts();
         return true;
     }
 
@@ -1784,7 +2741,7 @@ internal sealed class VegasMemoryMap
         {
             PciTypeIo => _idePci.ReadIo8(pciAddress),
             PciTypeMemory => ReadPciMemory8(pciAddress),
-            PciTypeConfig => (byte)(_idePci.ReadConfig32(DecodePciType0ConfigAddress(pciAddress) & ~3u) >> (int)((pciAddress & 3) * 8)),
+            PciTypeConfig => (byte)(ReadPciConfig32(DecodePciType0ConfigAddress(pciAddress) & ~3u) >> (int)((pciAddress & 3) * 8)),
             _ => 0xff
         };
         return true;
@@ -1802,7 +2759,7 @@ internal sealed class VegasMemoryMap
         {
             PciTypeIo => _idePci.ReadIo16(pciAddress),
             PciTypeMemory => (ushort)(ReadPciMemory8(pciAddress) | (ReadPciMemory8(pciAddress + 1) << 8)),
-            PciTypeConfig => (ushort)(_idePci.ReadConfig32(DecodePciType0ConfigAddress(pciAddress) & ~3u) >> (int)((pciAddress & 2) * 8)),
+            PciTypeConfig => (ushort)(ReadPciConfig32(DecodePciType0ConfigAddress(pciAddress) & ~3u) >> (int)((pciAddress & 2) * 8)),
             _ => 0xffff
         };
         return true;
@@ -1820,7 +2777,7 @@ internal sealed class VegasMemoryMap
         {
             PciTypeIo => _idePci.ReadIo32(pciAddress),
             PciTypeMemory => ReadPciMemory32(pciAddress),
-            PciTypeConfig => _idePci.ReadConfig32(DecodePciType0ConfigAddress(pciAddress)),
+            PciTypeConfig => ReadPciConfig32(DecodePciType0ConfigAddress(pciAddress)),
             _ => UnmappedReadValue
         };
         return true;
@@ -1883,7 +2840,7 @@ internal sealed class VegasMemoryMap
                 WritePciMemory32(pciAddress, value);
                 break;
             case PciTypeConfig:
-                _idePci.WriteConfig32(DecodePciType0ConfigAddress(pciAddress), value);
+                WritePciConfig32(DecodePciType0ConfigAddress(pciAddress), value);
                 break;
         }
 
@@ -1922,22 +2879,32 @@ internal sealed class VegasMemoryMap
 
     private uint ReadPciMemory32(uint pciAddress)
     {
+        if (_voodooPci.TryReadMemory32(pciAddress, out uint voodooValue))
+            return voodooValue;
         if (pciAddress + 3 < _mainRam.Length)
             return BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)pciAddress, 4));
         return UnmappedReadValue;
     }
 
     private byte ReadPciMemory8(uint pciAddress)
-        => pciAddress < _mainRam.Length ? _mainRam[pciAddress] : (byte)0xff;
+    {
+        if (_voodooPci.TryReadMemory32(pciAddress & ~3u, out uint voodooValue))
+            return (byte)(voodooValue >> (int)((pciAddress & 3) * 8));
+        return pciAddress < _mainRam.Length ? _mainRam[pciAddress] : (byte)0xff;
+    }
 
     private void WritePciMemory32(uint pciAddress, uint value)
     {
+        if (_voodooPci.TryWriteMemory32(pciAddress, value))
+            return;
         if (pciAddress + 3 < _mainRam.Length)
             BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)pciAddress, 4), value);
     }
 
     private void WritePciMemory8(uint pciAddress, byte value)
     {
+        if (_voodooPci.TryWriteMemory8(pciAddress, value))
+            return;
         if (pciAddress < _mainRam.Length)
             _mainRam[pciAddress] = value;
     }
@@ -1957,6 +2924,83 @@ internal sealed class VegasMemoryMap
     private uint ReadNileRegister32(uint offset)
         => BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
 
+    private void UpdateNileInterrupts()
+    {
+        if (_sio?.InterruptLine == true)
+            _nileIrqState |= NilePciInterruptC;
+        else
+            _nileIrqState &= unchecked((ushort)~NilePciInterruptC);
+
+        uint lowControl = ReadNileRegister32(NileInterruptControlOffset);
+        uint highControl = ReadNileRegister32(NileInterruptControlOffset + 4);
+        uint status0 = 0;
+        uint status1 = 0;
+        byte pins = 0;
+
+        for (int i = 0; i < 8; i++)
+        {
+            if ((_nileIrqState & (1 << i)) == 0 || ((lowControl >> (4 * i + 3)) & 1) == 0)
+                continue;
+
+            int vector = (int)((lowControl >> (4 * i)) & 7);
+            if (vector >= 6)
+                continue;
+
+            pins |= (byte)(1 << vector);
+            if ((vector & 1) == 0)
+                status0 |= 1u << i;
+            else
+                status0 |= 1u << (i + 16);
+        }
+
+        for (int i = 0; i < 8; i++)
+        {
+            if ((_nileIrqState & (1 << (i + 8))) == 0 || ((highControl >> (4 * i + 3)) & 1) == 0)
+                continue;
+
+            int vector = (int)((highControl >> (4 * i)) & 7);
+            if (vector >= 6)
+                continue;
+
+            pins |= (byte)(1 << vector);
+            if ((vector & 1) == 0)
+                status0 |= 1u << (i + 8);
+            else
+                status0 |= 1u << (i + 24);
+        }
+
+        BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)NileInterruptStatus0Offset, 4), status0);
+        BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)(NileInterruptStatus0Offset + 4), 4), status1);
+        BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)NileInterruptStatus1Offset, 4), 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)(NileInterruptStatus1Offset + 4), 4), 0);
+        _nileIrqPins = pins;
+    }
+
+    private uint ReadPciConfig32(uint address)
+    {
+        int device = (int)((address >> 11) & 0x1f);
+        return device switch
+        {
+            3 => _voodooPci.ReadConfig32(address),
+            5 => _idePci.ReadConfig32(address),
+            _ => 0xffffffffu
+        };
+    }
+
+    private void WritePciConfig32(uint address, uint value)
+    {
+        int device = (int)((address >> 11) & 0x1f);
+        switch (device)
+        {
+            case 3:
+                _voodooPci.WriteConfig32(address, value);
+                break;
+            case 5:
+                _idePci.WriteConfig32(address, value);
+                break;
+        }
+    }
+
     private static uint DecodePciConfigAlias(uint nileOffset)
         => nileOffset & 0xfc;
 
@@ -1974,19 +3018,19 @@ internal sealed class VegasMemoryMap
     private void WritePciConfigByte(uint pciAddress, byte value)
     {
         uint offset = DecodePciType0ConfigAddress(pciAddress) & ~3u;
-        uint current = _idePci.ReadConfig32(offset);
+        uint current = ReadPciConfig32(offset);
         int shift = (int)((pciAddress & 3) * 8);
         uint merged = (current & ~(0xffu << shift)) | ((uint)value << shift);
-        _idePci.WriteConfig32(offset, merged);
+        WritePciConfig32(offset, merged);
     }
 
     private void WritePciConfigHalf(uint pciAddress, ushort value)
     {
         uint offset = DecodePciType0ConfigAddress(pciAddress) & ~3u;
-        uint current = _idePci.ReadConfig32(offset);
+        uint current = ReadPciConfig32(offset);
         int shift = (int)((pciAddress & 2) * 8);
         uint merged = (current & ~(0xffffu << shift)) | ((uint)value << shift);
-        _idePci.WriteConfig32(offset, merged);
+        WritePciConfig32(offset, merged);
     }
 
     private bool TryWriteNile64(ulong address, ulong value)
@@ -2020,19 +3064,7 @@ internal sealed class VegasMemoryMap
             return false;
         }
 
-        if (offset == 2)
-        {
-            value = (byte)(_fpgaConfigRegisters[offset] & 0xf0);
-            if (_fpgaConfigStatusHigh)
-                value |= 0x02;
-            if (_fpgaConfigDone)
-                value |= 0x01;
-        }
-        else
-        {
-            value = _fpgaConfigRegisters[offset];
-        }
-
+        value = ReadCpuIo(offset);
         return true;
     }
 
@@ -2041,21 +3073,8 @@ internal sealed class VegasMemoryMap
         if (!TryGetFpgaConfigOffset(address, out uint offset))
             return false;
 
-        _fpgaConfigRegisters[offset] = value;
-        if (offset == 1)
-        {
-            if ((value & 0x01) == 0)
-            {
-                _fpgaConfigSeenLow = true;
-                _fpgaConfigStatusHigh = false;
-                _fpgaConfigDone = false;
-            }
-            else if (_fpgaConfigSeenLow)
-            {
-                _fpgaConfigStatusHigh = true;
-            }
-        }
-
+        _fpgaConfigRegisters[(int)offset] = value;
+        WriteCpuIo(offset, value);
         return true;
     }
 
@@ -2063,6 +3082,8 @@ internal sealed class VegasMemoryMap
     {
         _fpgaConfigStatusHigh = true;
         _fpgaConfigDone = true;
+        _cpuIoRegisters[2] |= 0x03;
+        _cpuIoRegisters[3] |= 0x01;
     }
 
     private static bool TryGetFpgaConfigOffset(ulong address, out uint offset)
@@ -2082,9 +3103,7 @@ internal sealed class VegasMemoryMap
     {
         if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
         {
-            uint value = chipSelect == 2
-                ? _sio?.Read(offset) ?? UnmappedReadValue
-                : UnmappedReadValue;
+            uint value = ReadChipSelectByte(chipSelect, offset);
             Trace("read32", FormatChipSelectAddress(chipSelect, offset), value, range.Name);
             return value;
         }
@@ -2098,12 +3117,227 @@ internal sealed class VegasMemoryMap
         if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
         {
             Trace("write32", FormatChipSelectAddress(chipSelect, offset), value, range.Name);
-            if (chipSelect == 2)
-                _sio?.Write(offset, (byte)(value & 0xff));
+            WriteChipSelectByte(chipSelect, offset, (byte)(value & 0xff));
             return;
         }
 
         Trace("write32", FormatChipSelectAddress(chipSelect, offset), value, $"CS{chipSelect} unmapped");
+    }
+
+    private bool TryReadChipSelect8(ulong address, out byte value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out int chipSelect, out uint offset))
+        {
+            value = 0;
+            return false;
+        }
+
+        bool mapped = TryFindRange(chipSelect, offset, out VegasMemoryRange range);
+        value = mapped ? ReadChipSelectByte(chipSelect, offset) : (byte)0xff;
+        Trace("read8", address, value, mapped ? range.Name : $"CS{chipSelect} unmapped");
+        return true;
+    }
+
+    private bool TryReadChipSelect32(ulong address, out uint value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out int chipSelect, out uint offset))
+        {
+            value = UnmappedReadValue;
+            return false;
+        }
+
+        if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
+        {
+            value = ReadChipSelectByte(chipSelect, offset);
+            Trace("read32", address, value, range.Name);
+        }
+        else
+        {
+            value = UnmappedReadValue;
+            Trace("read32", address, value, $"CS{chipSelect} unmapped");
+        }
+
+        return true;
+    }
+
+    private bool TryReadChipSelect64(ulong address, out ulong value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out _, out _))
+        {
+            value = 0;
+            return false;
+        }
+
+        uint low = Read32(address);
+        uint high = Read32(address + 4);
+        value = low | ((ulong)high << 32);
+        return true;
+    }
+
+    private bool TryWriteChipSelect8(ulong address, byte value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out int chipSelect, out uint offset))
+            return false;
+
+        if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
+        {
+            WriteChipSelectByte(chipSelect, offset, value);
+            Trace("write8", address, value, range.Name);
+        }
+        else
+        {
+            Trace("write8", address, value, $"CS{chipSelect} unmapped");
+        }
+
+        return true;
+    }
+
+    private bool TryWriteChipSelect32(ulong address, uint value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out int chipSelect, out uint offset))
+            return false;
+
+        if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
+        {
+            WriteChipSelectByte(chipSelect, offset, (byte)value);
+            Trace("write32", address, value, range.Name);
+        }
+        else
+        {
+            Trace("write32", address, value, $"CS{chipSelect} unmapped");
+        }
+
+        return true;
+    }
+
+    private bool TryWriteChipSelect64(ulong address, ulong value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out _, out _))
+            return false;
+
+        Write32(address, (uint)value);
+        Write32(address + 4, (uint)(value >> 32));
+        return true;
+    }
+
+    private byte ReadChipSelectByte(int chipSelect, uint offset)
+    {
+        if (chipSelect == 2)
+        {
+            if ((offset >> 12) == 0)
+                _cpuIoRegisters[3] |= 0x01;
+            return _sio?.Read(offset) ?? 0xff;
+        }
+
+        if (chipSelect == 5)
+            return ReadCpuIo(offset);
+
+        if (chipSelect == 6 && offset < 0x40)
+            return ReadIoasicPackedByte(offset);
+
+        return 0xff;
+    }
+
+    private void WriteChipSelectByte(int chipSelect, uint offset, byte value)
+    {
+        if (chipSelect == 2)
+        {
+            _sio?.Write(offset, value);
+            return;
+        }
+
+        if (chipSelect == 5)
+            WriteCpuIo(offset, value);
+        else if (chipSelect == 6 && offset < 0x40)
+            WriteIoasicPackedByte(offset, value);
+    }
+
+    private byte ReadIoasicPackedByte(uint offset)
+    {
+        ushort value = ReadIoasicRegister(GetIoasicPackedRegister(offset));
+        return (byte)(value >> (int)((offset & 1) * 8));
+    }
+
+    private void WriteIoasicPackedByte(uint offset, byte value)
+    {
+        int register = GetIoasicPackedRegister(offset);
+        int shift = (int)((offset & 1) * 8);
+        ushort current = _ioasicRegisters[register];
+        _ioasicRegisters[register] = (ushort)((current & ~(0xff << shift)) | (value << shift));
+        UpdateIoasicIrq();
+    }
+
+    private ushort ReadIoasicRegister(int register)
+    {
+        if (register == 14)
+            UpdateIoasicIrq();
+
+        return register switch
+        {
+            0 => 0x2001,
+            10 => 0x0048,
+            11 => 0x000a,
+            13 => 0x0100,
+            _ => _ioasicRegisters[register]
+        };
+    }
+
+    private void UpdateIoasicIrq()
+    {
+        ushort intCtl = _ioasicRegisters[15];
+        ushort irqBits = (ushort)(_ioasicRegisters[6] & 0x3f00);
+        const ushort fifoState = 0x0008;
+        if ((fifoState & 0x08) != 0)
+            irqBits |= 0x0002;
+        if ((fifoState & 0x10) != 0)
+            irqBits |= 0x0004;
+        if ((fifoState & 0x20) != 0)
+            irqBits |= 0x0008;
+
+        _ioasicRegisters[14] = irqBits;
+        bool asserted = (intCtl & 0x0001) != 0 && (irqBits & intCtl & 0x3ffe) != 0;
+        _sio?.SetIoasicIrq(asserted);
+    }
+
+    private static int GetIoasicPackedRegister(uint offset)
+        => (int)(((offset >> 2) * 2 + ((offset >> 1) & 1)) & 0x0f);
+
+    private byte ReadCpuIo(uint offset)
+    {
+        offset &= 3;
+        if (offset == 2)
+        {
+            byte value = (byte)(_cpuIoRegisters[2] & 0xfc);
+            if (_fpgaConfigStatusHigh)
+                value |= 0x02;
+            if (_fpgaConfigDone)
+                value |= 0x01;
+            return value;
+        }
+
+        return _cpuIoRegisters[(int)offset];
+    }
+
+    private void WriteCpuIo(uint offset, byte value)
+    {
+        offset &= 3;
+        _cpuIoRegisters[(int)offset] = value;
+        if (offset == 1)
+        {
+            _cpuIoRegisters[2] = (byte)((_cpuIoRegisters[2] & ~0x03) | ((value & 0x01) << 1) | (value & 0x01));
+            if ((value & 0x01) == 0)
+            {
+                _cpuIoRegisters[3] &= unchecked((byte)~0x01);
+                _sio?.Reset();
+                _fpgaConfigSeenLow = true;
+                _fpgaConfigStatusHigh = false;
+                _fpgaConfigDone = false;
+            }
+            else if (_fpgaConfigSeenLow)
+            {
+                _fpgaConfigStatusHigh = true;
+            }
+        }
     }
 
     private bool TryReadBootRom32(ulong address, out uint value)
@@ -2185,14 +3419,242 @@ internal sealed class VegasMemoryMap
     private static ulong FormatChipSelectAddress(int chipSelect, uint offset)
         => ((ulong)(uint)chipSelect << 32) | offset;
 
+    private bool TryTranslateChipSelectWindow(ulong address, out int chipSelect, out uint offset)
+    {
+        chipSelect = 0;
+        offset = 0;
+        if (!TryTranslatePhysical(address, out uint physical))
+            return false;
+
+        for (int candidate = 2; candidate <= 8; candidate++)
+        {
+            uint config = ReadNileRegister32(NileChipSelect2ConfigOffset + (uint)((candidate - 2) * 8));
+            int mask = (int)(config & 0x0f);
+            if (mask <= 0)
+                continue;
+
+            ulong size = mask >= 5 ? 1UL << (36 - mask) : 0x1_0000_0000UL;
+            uint windowStart = config & 0xffe00000u;
+            ulong windowOffset = physical - (ulong)windowStart;
+            if (windowOffset >= size)
+                continue;
+
+            chipSelect = candidate;
+            offset = (uint)windowOffset;
+            return true;
+        }
+
+        return false;
+    }
+
     private void Trace(string op, ulong address, uint value, string target)
     {
-        if (_traceEnabled)
-            Console.WriteLine($"[GAUNTDL:MEM] {op} {address:x16} {value:x8} {target}");
+        if (!_traceEnabled)
+            return;
+        if (!TraceTargetMatches(target))
+            return;
+
+        Console.WriteLine($"[GAUNTDL:MEM] {op} {address:x16} {value:x8} {target}");
+    }
+
+    private bool TraceTargetMatches(string target)
+    {
+        if (string.IsNullOrWhiteSpace(_traceTargetFilter))
+            return true;
+
+        string filter = _traceTargetFilter.Trim();
+        return target.Equals(filter, StringComparison.OrdinalIgnoreCase) ||
+            target.StartsWith(filter + " ", StringComparison.OrdinalIgnoreCase) ||
+            target.StartsWith(filter + ":", StringComparison.OrdinalIgnoreCase);
     }
 }
 
 internal readonly record struct VegasMemoryRange(string Name, int ChipSelect, ulong Start, ulong End);
+
+internal sealed class VegasVoodooPciDevice
+{
+    private const uint VendorDeviceId = 0x0002121au;
+    private const uint ClassCode = 0x03800002u;
+    private const uint MemoryBarSize = 16 * 1024 * 1024;
+    private const uint MemoryBarMask = 0xff000000u;
+    private const uint MemoryBarFlags = 0x00000008u;
+    private const uint VoodooStatusReady = 0x0fffff7fu;
+
+    private readonly byte[] _config = new byte[0x100];
+    private readonly uint[] _pciControl = new uint[8];
+    private readonly uint[] _registers = new uint[0x400];
+    private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1";
+    private IVoodooBackend? _voodoo;
+    private uint _bar0 = 0xff000000u;
+    private bool _bar0Probe;
+    private uint _swapStatusCounter;
+
+    public void AttachVoodoo(IVoodooBackend voodoo) => _voodoo = voodoo;
+
+    public void Reset()
+    {
+        Array.Clear(_config);
+        Array.Clear(_pciControl);
+        Array.Clear(_registers);
+        _bar0 = 0xff000000u;
+        _bar0Probe = false;
+        _swapStatusCounter = 0;
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x00, 4), VendorDeviceId);
+        BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), 0x0002);
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x08, 4), ClassCode);
+        _config[0x0e] = 0x00;
+        _config[0x3c] = 0x00;
+        _config[0x3d] = 0x01;
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x40, 4), 0x00000003);
+        WriteConfigBarBytes();
+    }
+
+    public uint ReadConfig32(uint address)
+    {
+        uint offset = address & 0xfc;
+        if (offset == 0x10)
+            return _bar0Probe ? (MemoryBarMask | MemoryBarFlags) : ((_bar0 & MemoryBarMask) | MemoryBarFlags);
+        if (offset + 3 >= _config.Length)
+            return 0xffffffffu;
+
+        uint value = BinaryPrimitives.ReadUInt32LittleEndian(_config.AsSpan((int)offset, 4));
+        Trace($"pci cfg read off={offset:x2} value={value:x8}");
+        return value;
+    }
+
+    public void WriteConfig32(uint address, uint value)
+    {
+        uint offset = address & 0xfc;
+        if (offset + 3 >= _config.Length)
+            return;
+
+        Trace($"pci cfg write off={offset:x2} value={value:x8}");
+        switch (offset)
+        {
+            case 0x04:
+                BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), (ushort)(value & 0x0007));
+                break;
+            case 0x10:
+                if (value == 0xffffffffu)
+                {
+                    _bar0Probe = true;
+                }
+                else
+                {
+                    _bar0 = value & MemoryBarMask;
+                    _bar0Probe = false;
+                }
+                WriteConfigBarBytes();
+                break;
+            case 0x3c:
+                _config[0x3c] = (byte)value;
+                break;
+            case >= 0x40 and < 0x60:
+                int index = (int)((offset - 0x40) / 4);
+                _pciControl[index] = value;
+                BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan((int)offset, 4), value);
+                break;
+        }
+    }
+
+    public bool TryReadMemory32(uint pciAddress, out uint value)
+    {
+        if (!TryGetMemoryOffset(pciAddress, out uint offset))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = offset switch
+        {
+            < 0x00400000u => ReadRegister(offset),
+            < 0x00800000u => _voodoo?.ReadLfb32(offset - 0x00400000u) ?? 0,
+            _ => 0
+        };
+        Trace($"mem read off={offset:x6} value={value:x8}");
+        return true;
+    }
+
+    public bool TryWriteMemory32(uint pciAddress, uint value)
+    {
+        if (!TryGetMemoryOffset(pciAddress, out uint offset))
+            return false;
+
+        if (offset < 0x00400000u)
+        {
+            if (offset >= 0x00200000u)
+            {
+                Span<uint> word = stackalloc uint[1];
+                word[0] = value;
+                _voodoo?.WriteFifo(word);
+                Trace($"fifo write off={offset:x6} value={value:x8}");
+            }
+            else
+            {
+                WriteRegister(offset, value);
+                _voodoo?.WriteRegister(offset, value);
+                Trace($"reg write off={offset:x6} value={value:x8}");
+            }
+        }
+        else if (offset < 0x00800000u)
+        {
+            _voodoo?.WriteLfb32(offset - 0x00400000u, value);
+            Trace($"lfb write off={offset:x6} value={value:x8}");
+        }
+        else
+        {
+            _voodoo?.WriteTexture32(offset - 0x00800000u, value);
+            Trace($"tex write off={offset:x6} value={value:x8}");
+        }
+
+        return true;
+    }
+
+    private uint ReadRegister(uint offset)
+    {
+        if ((offset & 0x3ffu) == 0)
+            return VoodooStatusReady;
+        if ((offset & 0x3ffu) == 0x1e8u)
+            return ++_swapStatusCounter;
+
+        return _registers[(offset >> 2) & 0x3ffu];
+    }
+
+    private void WriteRegister(uint offset, uint value)
+    {
+        _registers[(offset >> 2) & 0x3ffu] = value;
+    }
+
+    public bool TryWriteMemory8(uint pciAddress, byte value)
+    {
+        if (!TryGetMemoryOffset(pciAddress, out uint offset))
+            return false;
+
+        uint aligned = pciAddress & ~3u;
+        TryReadMemory32(aligned, out uint current);
+        int shift = (int)((pciAddress & 3) * 8);
+        uint merged = (current & ~(0xffu << shift)) | ((uint)value << shift);
+        return TryWriteMemory32(aligned, merged);
+    }
+
+    private bool TryGetMemoryOffset(uint pciAddress, out uint offset)
+    {
+        uint start = _bar0 & MemoryBarMask;
+        offset = pciAddress - start;
+        return offset < MemoryBarSize;
+    }
+
+    private void WriteConfigBarBytes()
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x10, 4), (_bar0 & MemoryBarMask) | MemoryBarFlags);
+    }
+
+    private void Trace(string message)
+    {
+        if (_traceEnabled)
+            Console.WriteLine($"[GAUNTDL:VOODOO-PCI] {message}");
+    }
+}
 
 internal sealed class VegasIdePciDevice
 {
@@ -2464,6 +3926,7 @@ internal sealed class IdeDiskDevice
 {
     private const byte StatusErr = 0x01;
     private const byte StatusDrq = 0x08;
+    private const byte StatusDsc = 0x10;
     private const byte StatusDrdy = 0x40;
     private const byte StatusBsy = 0x80;
 
@@ -2471,6 +3934,7 @@ internal sealed class IdeDiskDevice
     private IDiskImage? _image;
     private byte[] _transferBuffer = Array.Empty<byte>();
     private int _transferOffset;
+    private byte _features;
     private byte _error;
     private byte _sectorCount = 1;
     private byte _sectorNumber;
@@ -2493,13 +3957,14 @@ internal sealed class IdeDiskDevice
     {
         _transferBuffer = Array.Empty<byte>();
         _transferOffset = 0;
+        _features = 0;
         _error = 0;
         _sectorCount = 1;
         _sectorNumber = 0;
         _cylinderLow = 0;
         _cylinderHigh = 0;
         _driveHead = 0xe0;
-        _status = Attached ? StatusDrdy : (byte)0;
+        _status = Attached ? (byte)(StatusDrdy | StatusDsc) : (byte)0;
     }
 
     public byte ReadRegister8(byte register)
@@ -2526,7 +3991,8 @@ internal sealed class IdeDiskDevice
         switch (register)
         {
             case 1:
-                break; // features
+                _features = value;
+                break;
             case 2:
                 _sectorCount = value;
                 break;
@@ -2559,7 +4025,7 @@ internal sealed class IdeDiskDevice
         {
             _transferBuffer = Array.Empty<byte>();
             _transferOffset = 0;
-            _status = StatusDrdy;
+            _status = (byte)(StatusDrdy | StatusDsc);
         }
 
         return value;
@@ -2578,7 +4044,7 @@ internal sealed class IdeDiskDevice
         {
             _transferBuffer = Array.Empty<byte>();
             _transferOffset = 0;
-            _status = StatusDrdy;
+            _status = (byte)(StatusDrdy | StatusDsc);
         }
 
         Trace($"dma transfer bytes={count}");
@@ -2607,9 +4073,13 @@ internal sealed class IdeDiskDevice
                 case 0x24:
                     StartReadSectors(command == 0x24);
                     break;
+                case 0xef:
+                    _status = (byte)(StatusDrdy | StatusDsc);
+                    Trace($"set features feature={_features:x2} value={_sectorCount:x2}");
+                    break;
                 default:
                     _error = 0x04; // ABRT
-                    _status = (byte)(StatusDrdy | StatusErr);
+                    _status = (byte)(StatusDrdy | StatusDsc | StatusErr);
                     Trace($"unsupported command {command:x2}");
                     break;
             }
@@ -2619,7 +4089,7 @@ internal sealed class IdeDiskDevice
             _transferBuffer = Array.Empty<byte>();
             _transferOffset = 0;
             _error = 0x04;
-            _status = (byte)(StatusDrdy | StatusErr);
+            _status = (byte)(StatusDrdy | StatusDsc | StatusErr);
             Trace($"command {command:x2} failed: {ex.Message}");
         }
     }
@@ -2649,7 +4119,7 @@ internal sealed class IdeDiskDevice
     {
         _transferBuffer = buffer;
         _transferOffset = 0;
-        _status = (byte)(StatusDrdy | StatusDrq);
+        _status = (byte)(StatusDrdy | StatusDsc | StatusDrq);
     }
 
     private byte[] BuildIdentifySector()
@@ -2937,6 +4407,8 @@ internal sealed class VegasSioDevice
     private byte _irqState;
     private byte _ledState;
 
+    public bool InterruptLine => (_irqState & _irqEnable) != 0;
+
     public void LoadBootRom(byte[] bootRom) => _bootRom = bootRom.ToArray();
     public void Reset()
     {
@@ -2964,6 +4436,8 @@ internal sealed class VegasSioDevice
         switch (offset >> 12)
         {
             case 0:
+                if ((value & 0x08) == 0)
+                    _irqState &= unchecked((byte)~0x20);
                 _resetControl = value;
                 break;
             case 1:
@@ -2973,6 +4447,21 @@ internal sealed class VegasSioDevice
                 _ledState = value;
                 break;
         }
+    }
+
+    public void PulseVblank(bool state)
+    {
+        bool invertedPolarity = (_resetControl & 0x10) != 0;
+        if ((_irqEnable & 0x20) != 0 && ((state && !invertedPolarity) || (!state && invertedPolarity)))
+            _irqState |= 0x20;
+    }
+
+    public void SetIoasicIrq(bool asserted)
+    {
+        if (asserted)
+            _irqState |= 0x04;
+        else
+            _irqState &= unchecked((byte)~0x04);
     }
 }
 
@@ -3005,43 +4494,264 @@ public interface IVoodooBackend
 {
     void WriteRegister(uint address, uint value);
     void WriteFifo(ReadOnlySpan<uint> words);
+    uint ReadLfb32(uint offset);
+    void WriteLfb32(uint offset, uint value);
+    void WriteTexture32(uint offset, uint value);
     void RenderFrame(EutherFrameTarget target);
 }
 
-public readonly record struct EutherFrameTarget;
+public readonly record struct EutherFrameTarget(byte[] Buffer, int Width, int Height, int Stride);
 
 internal sealed class VoodooFacade : IVoodooBackend
 {
-    private IVoodooBackend _backend = new VoodooNullBackend();
+    private IVoodooBackend _backend = new VoodooBringupBackend();
 
     public bool TraceEnabled => _backend is VoodooTraceBackend;
+    public bool HasVideoActivity => _backend is VoodooBringupBackend { HasVideoActivity: true };
 
     public void Reset()
     {
-        _backend = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1"
+        _backend = VoodooTraceBackend.IsEnabled()
             ? new VoodooTraceBackend()
-            : new VoodooNullBackend();
+            : new VoodooBringupBackend();
     }
 
     public void WriteRegister(uint address, uint value) => _backend.WriteRegister(address, value);
     public void WriteFifo(ReadOnlySpan<uint> words) => _backend.WriteFifo(words);
+    public uint ReadLfb32(uint offset) => _backend.ReadLfb32(offset);
+    public void WriteLfb32(uint offset, uint value) => _backend.WriteLfb32(offset, value);
+    public void WriteTexture32(uint offset, uint value) => _backend.WriteTexture32(offset, value);
     public void RenderFrame(EutherFrameTarget target) => _backend.RenderFrame(target);
 }
 
-internal sealed class VoodooNullBackend : IVoodooBackend
+internal class VoodooBringupBackend : IVoodooBackend
 {
-    public void WriteRegister(uint address, uint value) { }
-    public void WriteFifo(ReadOnlySpan<uint> words) { }
-    public void RenderFrame(EutherFrameTarget target) { }
+    private const int LfbBytes = 4 * 1024 * 1024;
+    private const int LfbPixels = LfbBytes / 2;
+
+    private readonly uint[] _registers = new uint[0x400];
+    private readonly ushort[] _lfb = new ushort[LfbPixels];
+    private int _registerWriteCount;
+    private int _fifoWriteCount;
+    private int _lfbWriteCount;
+    private int _textureWriteCount;
+    private int _renderFrame;
+
+    public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
+
+    public virtual void WriteRegister(uint address, uint value)
+    {
+        _registers[(address >> 2) & 0x3ffu] = value;
+        _registerWriteCount++;
+    }
+
+    public virtual void WriteFifo(ReadOnlySpan<uint> words)
+    {
+        _fifoWriteCount += words.Length;
+    }
+
+    public uint ReadLfb32(uint offset)
+    {
+        int pixel = (int)((offset & (LfbBytes - 1u)) >> 1);
+        ushort low = _lfb[pixel & (LfbPixels - 1)];
+        ushort high = _lfb[(pixel + 1) & (LfbPixels - 1)];
+        return (uint)(low | (high << 16));
+    }
+
+    public virtual void WriteLfb32(uint offset, uint value)
+    {
+        int pixel = (int)((offset & (LfbBytes - 1u)) >> 1);
+        _lfb[pixel & (LfbPixels - 1)] = (ushort)value;
+        _lfb[(pixel + 1) & (LfbPixels - 1)] = (ushort)(value >> 16);
+        _lfbWriteCount++;
+    }
+
+    public virtual void WriteTexture32(uint offset, uint value)
+    {
+        _textureWriteCount++;
+    }
+
+    public void RenderFrame(EutherFrameTarget target)
+    {
+        if (!HasVideoActivity || target.Buffer is null || target.Width <= 0 || target.Height <= 0 || target.Stride < target.Width * 4)
+            return;
+
+        _renderFrame++;
+        if (!TryRenderLfb(target))
+        {
+            Clear(target, 0xff080b0fu);
+            DrawRegisterBands(target);
+        }
+        DrawViewportOverlay(target);
+    }
+
+    private bool TryRenderLfb(EutherFrameTarget target)
+    {
+        if (_lfbWriteCount == 0)
+            return false;
+
+        int copyWidth = Math.Min(target.Width, 640);
+        int copyHeight = Math.Min(target.Height, 480);
+        int visiblePixels = 0;
+        for (int y = 0; y < copyHeight; y++)
+        {
+            int src = y * 1024;
+            int dst = y * target.Stride;
+            for (int x = 0; x < copyWidth; x++)
+            {
+                ushort rgb = _lfb[(src + x) & (LfbPixels - 1)];
+                if (rgb != 0)
+                    visiblePixels++;
+                uint bgra = Rgb565ToBgra(rgb);
+                target.Buffer[dst + 0] = (byte)(bgra & 0xff);
+                target.Buffer[dst + 1] = (byte)((bgra >> 8) & 0xff);
+                target.Buffer[dst + 2] = (byte)((bgra >> 16) & 0xff);
+                target.Buffer[dst + 3] = 0xff;
+                dst += 4;
+            }
+        }
+
+        return visiblePixels > 0;
+    }
+
+    private void DrawRegisterBands(EutherFrameTarget target)
+    {
+        int bandHeight = Math.Max(6, target.Height / 64);
+        for (int i = 0; i < 32; i++)
+        {
+            uint value = _registers[(0x200u >> 2) + i];
+            uint color = 0xff000000u |
+                ((value << 3) & 0x00ff0000u) |
+                ((value >> 5) & 0x0000ff00u) |
+                ((value >> 13) & 0x000000ffu);
+            FillRect(target, 0, i * bandHeight, target.Width, bandHeight, color);
+        }
+    }
+
+    private void DrawViewportOverlay(EutherFrameTarget target)
+    {
+        uint clipX = _registers[(0x208u >> 2) & 0x3ffu];
+        uint clipY = _registers[(0x20cu >> 2) & 0x3ffu];
+        int x0 = (int)((clipX >> 16) & 0x7ff);
+        int x1 = (int)(clipX & 0x7ff);
+        int y0 = (int)((clipY >> 16) & 0x7ff);
+        int y1 = (int)(clipY & 0x7ff);
+        if (x1 <= x0 || x1 > target.Width)
+        {
+            x0 = 0;
+            x1 = target.Width;
+        }
+        if (y1 <= y0 || y1 > target.Height)
+        {
+            y0 = 0;
+            y1 = target.Height;
+        }
+
+        DrawRect(target, x0, y0, x1 - x0, y1 - y0, 0xffffffffu);
+
+        int sweep = _renderFrame % Math.Max(1, target.Width);
+        FillRect(target, sweep, y0, 4, y1 - y0, 0xff00d7ffu);
+        FillRect(target, 16, target.Height - 28, Math.Min(target.Width - 32, _registerWriteCount / 32), 8, 0xff39d353u);
+        FillRect(target, 16, target.Height - 18, Math.Min(target.Width - 32, _lfbWriteCount / 64), 8, 0xfff7b955u);
+        FillRect(target, 16, target.Height - 8, Math.Min(target.Width - 32, (_fifoWriteCount + _textureWriteCount) / 256), 6, 0xffc678ddU);
+    }
+
+    private static uint Rgb565ToBgra(ushort value)
+    {
+        uint r = (uint)((value >> 11) & 0x1f);
+        uint g = (uint)((value >> 5) & 0x3f);
+        uint b = (uint)(value & 0x1f);
+        r = (r << 3) | (r >> 2);
+        g = (g << 2) | (g >> 4);
+        b = (b << 3) | (b >> 2);
+        return 0xff000000u | (r << 16) | (g << 8) | b;
+    }
+
+    private static void Clear(EutherFrameTarget target, uint bgra)
+        => FillRect(target, 0, 0, target.Width, target.Height, bgra);
+
+    private static void DrawRect(EutherFrameTarget target, int x, int y, int width, int height, uint bgra)
+    {
+        FillRect(target, x, y, width, 2, bgra);
+        FillRect(target, x, y + height - 2, width, 2, bgra);
+        FillRect(target, x, y, 2, height, bgra);
+        FillRect(target, x + width - 2, y, 2, height, bgra);
+    }
+
+    private static void FillRect(EutherFrameTarget target, int x, int y, int width, int height, uint bgra)
+    {
+        int x0 = Math.Clamp(x, 0, target.Width);
+        int y0 = Math.Clamp(y, 0, target.Height);
+        int x1 = Math.Clamp(x + width, 0, target.Width);
+        int y1 = Math.Clamp(y + height, 0, target.Height);
+
+        for (int py = y0; py < y1; py++)
+        {
+            int offset = py * target.Stride + x0 * 4;
+            for (int px = x0; px < x1; px++)
+            {
+                target.Buffer[offset + 0] = (byte)(bgra & 0xff);
+                target.Buffer[offset + 1] = (byte)((bgra >> 8) & 0xff);
+                target.Buffer[offset + 2] = (byte)((bgra >> 16) & 0xff);
+                target.Buffer[offset + 3] = (byte)((bgra >> 24) & 0xff);
+                offset += 4;
+            }
+        }
+    }
 }
 
-internal sealed class VoodooTraceBackend : IVoodooBackend
+internal sealed class VoodooTraceBackend : VoodooBringupBackend
 {
-    public void WriteRegister(uint address, uint value)
-        => Console.WriteLine($"[GAUNTDL:VOODOO] reg[{address:x8}]={value:x8}");
+    private readonly bool _traceRegisters = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1";
+    private readonly bool _traceFifo = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO") == "1";
+    private readonly bool _traceLfb = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB") == "1";
+    private readonly bool _traceTexture = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX") == "1";
+    private readonly int _fifoTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT", 64);
+    private readonly int _lfbTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB_LIMIT", 64);
+    private readonly int _textureTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX_LIMIT", 64);
+    private int _fifoTraceCount;
+    private int _lfbTraceCount;
+    private int _textureTraceCount;
 
-    public void WriteFifo(ReadOnlySpan<uint> words)
-        => Console.WriteLine($"[GAUNTDL:VOODOO] fifo words={words.Length}");
+    public static bool IsEnabled()
+        => Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1" ||
+           Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO") == "1" ||
+           Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB") == "1" ||
+           Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX") == "1";
 
-    public void RenderFrame(EutherFrameTarget target) { }
+    public override void WriteRegister(uint address, uint value)
+    {
+        base.WriteRegister(address, value);
+        if (_traceRegisters)
+            Console.WriteLine($"[GAUNTDL:VOODOO] reg[{address:x8}]={value:x8}");
+    }
+
+    public override void WriteFifo(ReadOnlySpan<uint> words)
+    {
+        base.WriteFifo(words);
+        if (_traceRegisters)
+            Console.WriteLine($"[GAUNTDL:VOODOO] fifo words={words.Length}");
+        else if (_traceFifo)
+        {
+            for (int i = 0; i < words.Length && _fifoTraceCount < _fifoTraceLimit; i++, _fifoTraceCount++)
+                Console.WriteLine($"[GAUNTDL:VOODOO] fifo[{_fifoTraceCount:x6}]={words[i]:x8}");
+        }
+    }
+
+    public override void WriteLfb32(uint offset, uint value)
+    {
+        base.WriteLfb32(offset, value);
+        if ((_traceRegisters || _traceLfb) && _lfbTraceCount++ < _lfbTraceLimit)
+            Console.WriteLine($"[GAUNTDL:VOODOO] lfb[{offset:x6}]={value:x8}");
+    }
+
+    public override void WriteTexture32(uint offset, uint value)
+    {
+        base.WriteTexture32(offset, value);
+        if ((_traceRegisters || _traceTexture) && _textureTraceCount++ < _textureTraceLimit)
+            Console.WriteLine($"[GAUNTDL:VOODOO] tex[{offset:x6}]={value:x8}");
+    }
+
+    private static int ParseTraceLimit(string name, int fallback)
+        => int.TryParse(Environment.GetEnvironmentVariable(name), out int value) && value >= 0 ? value : fallback;
 }
