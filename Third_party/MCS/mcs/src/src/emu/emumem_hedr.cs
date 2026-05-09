@@ -166,7 +166,11 @@ namespace mame
 
         public override object get_ptr(offs_t offset)
         {
-            throw new emu_unimplemented();
+            offs_t start = 0;
+            offs_t end = 0;
+            handler_entry_read<int_Width, int_AddrShift> handler = null;
+            lookup(offset, ref start, ref end, ref handler);
+            return handler != null ? handler.get_ptr(offset) : null;
         }
 
 

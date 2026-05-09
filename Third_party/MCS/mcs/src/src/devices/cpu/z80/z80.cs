@@ -2,6 +2,7 @@
 // copyright-holders:Edward Fast
 
 using System;
+using System.Collections.Generic;
 
 using devcb_write8 = mame.devcb_write<mame.Type_constant_u8>;  //using devcb_write8 = devcb_write<u8>;
 using devcb_write_line = mame.devcb_write<mame.Type_constant_s32, mame.devcb_value_const_unsigned_1<mame.Type_constant_s32>>;  //using devcb_write_line = devcb_write<int, 1U>;
@@ -23,6 +24,7 @@ using static mame.diexec_global;
 using static mame.distate_global;
 using static mame.emucore_global;
 using static mame.emumem_global;
+using static mame.machine_global;
 using static mame.osdcore_global;
 using static mame.util;
 using static mame.z80_global;
@@ -321,9 +323,15 @@ namespace mame
         intref m_icount = new intref();  //int m_icount;
         int m_icount_executing;
         readonly bool m_profile_cpu = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_CPU_PROFILE") == "1";
+        readonly bool m_profile_opcodes = Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_OPCODE_PROFILE") == "1";
         long m_profile_last_ticks = Stopwatch.GetTimestamp();
         long m_profile_execute_ticks;
         long m_profile_instructions;
+        readonly long [] m_profile_opcode_counts = new long[256];
+        readonly long [] m_profile_pc_counts = new long[65536];
+        readonly uint8_t [] m_profile_pc_opcode = new uint8_t[65536];
+        long m_profile_opcode_total;
+        long m_profile_opcode_last_ticks = Stopwatch.GetTimestamp();
         long m_debug_instruction_count;
         uint8_t m_rtemp;
         uint8_t [] m_cc_op;  //const uint8_t *   m_cc_op;
@@ -694,11 +702,14 @@ namespace mame
         //virtual uint32_t execute_default_irq_vector(int inputnum) const noexcept override { return 0xff; }
         bool device_execute_interface_execute_input_edge_triggered(int inputnum) { return inputnum == INPUT_LINE_NMI; }
 
+        static readonly bool s_trace_instruction_debug =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_Z80_TRACE_INSTRUCTIONS") == "1";
         static int opcount = 0;  // for debugging purposes
 
         void device_execute_interface_execute_run()
         {
             bool profileCpu = m_profile_cpu;
+            bool callDebuggerHook = (machine().debug_flags & machine_global.DEBUG_FLAG_CALL_HOOK) != 0;
             long profileStart = profileCpu ? Stopwatch.GetTimestamp() : 0;
             long profileInstructions = 0;
             do
@@ -720,7 +731,8 @@ namespace mame
                 m_after_ldair = false;
 
                 PRVPC = PCD;
-                debugger_instruction_hook(PCD);
+                if (callDebuggerHook)
+                    debugger_instruction_hook(PCD);
 
 
                 uint8_t opcode = rop();
@@ -734,7 +746,7 @@ namespace mame
                 }
 
 
-                if (opcount % 200000 == 0)
+                if (s_trace_instruction_debug && opcount % 200000 == 0)
                     osd_printf_debug("z80.execute_run() - {0} {1}: op_{2:x2}() - A: {3,3} B: {4,3} C: {5,3} F: {6,3} HL: {7,3}\n", tag(), opcount, opcode, A, B, C, F, HL);
 
                 //if (opcount >= 0 && opcount < 500)
@@ -745,6 +757,8 @@ namespace mame
                 m_debug_instruction_count++;
                 if (profileCpu)
                     profileInstructions++;
+                if (m_profile_opcodes)
+                    add_opcode_profile(PRVPC, opcode);
 
 
                 EXEC_op(opcode);
@@ -773,6 +787,63 @@ namespace mame
             m_profile_last_ticks = now;
             m_profile_execute_ticks = 0;
             m_profile_instructions = 0;
+        }
+
+        void add_opcode_profile(uint32_t pc, uint8_t opcode)
+        {
+            m_profile_opcode_counts[opcode]++;
+            m_profile_pc_counts[pc & 0xffff]++;
+            m_profile_pc_opcode[pc & 0xffff] = opcode;
+            m_profile_opcode_total++;
+
+            long now = Stopwatch.GetTimestamp();
+            long elapsedTicks = now - m_profile_opcode_last_ticks;
+            if (elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double elapsedSeconds = elapsedTicks / (double)Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[Z80-OP] tag={tag()} ips={m_profile_opcode_total / elapsedSeconds:0} " +
+                $"opcodes={format_top(m_profile_opcode_counts, 12, key => $"0x{key:X2}:{m_profile_opcode_counts[key]}")} " +
+                $"pcs={format_top(m_profile_pc_counts, 12, key => $"0x{key:X4}:0x{m_profile_pc_opcode[key]:X2}:{m_profile_pc_counts[key]}")}");
+
+            Array.Clear(m_profile_opcode_counts, 0, m_profile_opcode_counts.Length);
+            Array.Clear(m_profile_pc_counts, 0, m_profile_pc_counts.Length);
+            Array.Clear(m_profile_pc_opcode, 0, m_profile_pc_opcode.Length);
+            m_profile_opcode_total = 0;
+            m_profile_opcode_last_ticks = now;
+        }
+
+        static string format_top(long [] counts, int max, Func<int, string> formatter)
+        {
+            int [] top = new int[max];
+            int topCount = 0;
+            for (int key = 0; key < counts.Length; key++)
+            {
+                long count = counts[key];
+                if (count == 0)
+                    continue;
+
+                int insert = 0;
+                while (insert < topCount && counts[top[insert]] >= count)
+                    insert++;
+                if (insert >= max)
+                    continue;
+
+                if (topCount < max)
+                    topCount++;
+                for (int move = topCount - 1; move > insert; move--)
+                    top[move] = top[move - 1];
+                top[insert] = key;
+            }
+
+            if (topCount == 0)
+                return "-";
+
+            List<string> parts = new(topCount);
+            for (int i = 0; i < topCount; i++)
+                parts.Add(formatter(top[i]));
+            return string.Join(",", parts);
         }
 
         void device_execute_interface_execute_set_input(int inputnum, int state)

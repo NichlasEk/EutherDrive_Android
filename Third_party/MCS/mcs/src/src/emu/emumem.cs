@@ -2686,6 +2686,8 @@ namespace mame
         protected abstract void accessors(data_accessors accessors);
         protected abstract object get_read_ptr(offs_t address);  //virtual void *get_read_ptr(offs_t address) const = 0;
         protected abstract object get_write_ptr(offs_t address);  //virtual void *get_write_ptr(offs_t address) const = 0;
+        public object direct_read_ptr(offs_t address) { return get_read_ptr(address); }
+        public object direct_write_ptr(offs_t address) { return get_write_ptr(address); }
 
         // read accessors
         public abstract u8 read_byte(offs_t address);

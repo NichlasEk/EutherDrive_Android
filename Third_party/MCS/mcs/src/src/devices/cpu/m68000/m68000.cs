@@ -53,12 +53,38 @@ namespace mame
                 m_owner = owner;
             }
 
-            public u8 ReadByte(u32 address) => m_owner.read_byte(address);
-            public u16 ReadWord(u32 address) => m_owner.read_word(address);
+            public u8 ReadByte(u32 address)
+            {
+                address &= 0x00ff_ffff;
+                if (m_owner.m_fast_read_byte != null && m_owner.m_fast_read_byte(address, out u8 value))
+                    return value;
+                return m_owner.read_byte(address);
+            }
+
+            public u16 ReadWord(u32 address)
+            {
+                address &= 0x00ff_ffff;
+                if (m_owner.m_fast_read_word != null && m_owner.m_fast_read_word(address, out u16 value))
+                    return value;
+                return m_owner.read_word(address);
+            }
             public u32 ReadLong(u32 address) => ((u32)ReadWord(address) << 16) | ReadWord(address + 2);
 
-            public void WriteByte(u32 address, u8 value) => m_owner.write_byte(address, value);
-            public void WriteWord(u32 address, u16 value) => m_owner.write_word(address, value);
+            public void WriteByte(u32 address, u8 value)
+            {
+                address &= 0x00ff_ffff;
+                if (m_owner.m_fast_write_byte != null && m_owner.m_fast_write_byte(address, value))
+                    return;
+                m_owner.write_byte(address, value);
+            }
+
+            public void WriteWord(u32 address, u16 value)
+            {
+                address &= 0x00ff_ffff;
+                if (m_owner.m_fast_write_word != null && m_owner.m_fast_write_word(address, value))
+                    return;
+                m_owner.write_word(address, value);
+            }
             public void WriteLong(u32 address, u32 value)
             {
                 WriteWord(address, (u16)(value >> 16));
@@ -66,7 +92,7 @@ namespace mame
             }
 
             public u8 InterruptLevel() => m_owner.highest_interrupt_level();
-            public void AcknowledgeInterrupt(u8 level) { }
+            public void AcknowledgeInterrupt(u8 level) => m_owner.standard_irq_callback(level == 1 ? INPUT_LINE_IRQ0 : level);
 
             public bool Reset() => false;
             public bool Halt() => false;
@@ -79,6 +105,14 @@ namespace mame
         readonly address_space_config m_program_config;
         readonly eutherdrive_m68000.M68000 m_core;
         readonly mcs_bus m_bus;
+        public delegate bool fast_read_byte_delegate(u32 address, out u8 value);
+        public delegate bool fast_read_word_delegate(u32 address, out u16 value);
+        public delegate bool fast_write_byte_delegate(u32 address, u8 value);
+        public delegate bool fast_write_word_delegate(u32 address, u16 value);
+        fast_read_byte_delegate m_fast_read_byte;
+        fast_read_word_delegate m_fast_read_word;
+        fast_write_byte_delegate m_fast_write_byte;
+        fast_write_word_delegate m_fast_write_word;
         readonly bool[] m_irq_lines = new bool[8];
         readonly intref m_icount = new intref();
 
@@ -115,6 +149,19 @@ namespace mame
         public u8 InterruptPriorityMask => m_core.InterruptPriorityMask;
         public bool IsStopped => m_core.IsStopped;
         public u16 CurrentOpcode => m_core.NextOpcode;
+
+
+        public void set_fast_memory_handlers(
+            fast_read_byte_delegate read_byte,
+            fast_read_word_delegate read_word,
+            fast_write_byte_delegate write_byte,
+            fast_write_word_delegate write_word)
+        {
+            m_fast_read_byte = read_byte;
+            m_fast_read_word = read_word;
+            m_fast_write_byte = write_byte;
+            m_fast_write_word = write_word;
+        }
 
 
         public void reset_from_bus()

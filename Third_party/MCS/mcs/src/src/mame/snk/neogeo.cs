@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 
 using device_type = mame.emu.detail.device_type_impl_base;
 using MemoryU8 = mame.MemoryContainer<System.Byte>;
@@ -103,6 +104,8 @@ namespace mame
         u32 m_display_counter;
         u32 m_sprite_gfx_address_mask;
         MemoryU8 m_sprite_gfx8;
+        readonly u16 [] m_sprite_line_sprites = new u16[NEOGEO_VTOTAL * MAX_SPRITES_PER_LINE];
+        readonly int [] m_sprite_line_counts = new int[NEOGEO_VTOTAL];
         u32 m_bank_base;
         u32 m_palette_bank;
         u8 m_system_latch;
@@ -137,6 +140,7 @@ namespace mame
         bool m_trace_neogeo_video;
         bool m_trace_neogeo_input;
         bool m_trace_neogeo_audio;
+        bool m_trace_neogeo_render_profile;
         bool m_direct_cart_boot;
         bool m_use_sprite_line_timer;
         emu_timer m_sprite_line_timer;
@@ -147,6 +151,11 @@ namespace mame
         u32 m_sprite_plot_count;
         u32 m_sprite_visible_skip_count;
         u32 m_sprite_zoomy_missing_count;
+        long m_render_profile_last_ticks;
+        long m_render_profile_frames;
+        long m_render_profile_fill_ticks;
+        long m_render_profile_sprite_ticks;
+        long m_render_profile_fixed_ticks;
         u32 m_vram_write_count;
         u32 m_vram_fixed_write_count;
         u32 m_vram_sprite_write_count;
@@ -154,6 +163,16 @@ namespace mame
         u32 m_maincpu_rom_read_count;
         u32 m_banked_rom_read_count;
         u32 m_banked_vector_read_count;
+        byte [] m_maincpu_rom_data;
+        int m_maincpu_rom_bytes;
+        byte [] m_mainbios_rom_data;
+        int m_mainbios_rom_bytes;
+        byte [] m_mainram_data;
+        int m_mainram_offset;
+        int m_mainram_bytes;
+        byte [] m_backupram_data;
+        int m_backupram_offset;
+        int m_backupram_bytes;
         u32 m_io_control_write_count;
         u32 m_audio_command_write_count;
         u32 m_audio_result_read_count;
@@ -888,12 +907,15 @@ namespace mame
             m_trace_neogeo_video = m_trace_neogeo || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_VIDEO_TRACE"));
             m_trace_neogeo_input = m_trace_neogeo || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_INPUT_TRACE"));
             m_trace_neogeo_audio = m_trace_neogeo || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_AUDIO_TRACE"));
+            m_trace_neogeo_render_profile = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_RENDER_PROFILE"));
+            m_render_profile_last_ticks = System.Diagnostics.Stopwatch.GetTimestamp();
             m_direct_cart_boot = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_DIRECT_CART_BOOT"));
             m_use_sprite_line_timer = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_LINE_TIMER"));
             configure_audio_banks();
             configure_sprite_region();
             normalize_maincpu_p_rom_layout();
             configure_maincpu_bank();
+            install_maincpu_fast_paths();
             initialize_default_palette();
             m_irq3_pending = 1;
             m_rtc_tp_state = 1;
@@ -1144,9 +1166,33 @@ namespace mame
 
         u32 screen_update(screen_device screen, bitmap_ind16 bitmap, rectangle cliprect)
         {
-            bitmap.fill((u16)(active_palette_base() + 0x0fff), cliprect);
-            draw_sprites(bitmap, cliprect);
-            draw_fixed_layer(bitmap, cliprect);
+            int paletteBase = (int)active_palette_base();
+            long fillStart = m_trace_neogeo_render_profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            fill_bitmap16(bitmap, cliprect, (u16)(paletteBase + 0x0fff));
+            long spriteStart = m_trace_neogeo_render_profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            draw_sprites(bitmap, cliprect, paletteBase);
+            long fixedStart = m_trace_neogeo_render_profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            draw_fixed_layer(bitmap, cliprect, paletteBase);
+            if (m_trace_neogeo_render_profile)
+            {
+                long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                m_render_profile_frames++;
+                m_render_profile_fill_ticks += spriteStart - fillStart;
+                m_render_profile_sprite_ticks += fixedStart - spriteStart;
+                m_render_profile_fixed_ticks += now - fixedStart;
+                if (now - m_render_profile_last_ticks >= System.Diagnostics.Stopwatch.Frequency)
+                {
+                    double scale = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    Console.WriteLine(
+                        $"[NEOGEO-RENDER] frames={m_render_profile_frames} fill_ms={m_render_profile_fill_ticks * scale:0.0} " +
+                        $"sprite_ms={m_render_profile_sprite_ticks * scale:0.0} fixed_ms={m_render_profile_fixed_ticks * scale:0.0}");
+                    m_render_profile_last_ticks = now;
+                    m_render_profile_frames = 0;
+                    m_render_profile_fill_ticks = 0;
+                    m_render_profile_sprite_ticks = 0;
+                    m_render_profile_fixed_ticks = 0;
+                }
+            }
             if (m_trace_neogeo_video &&
                 m_last_video_trace_frame != m_frame_counter &&
                 (m_frame_counter == 1 || (m_frame_counter % 60) == 0))
@@ -1157,6 +1203,370 @@ namespace mame
                     $"[NEOGEO] frame={m_frame_counter} pc=0x{m_maincpu.op0.Pc:x6} z80pc=0x{m_audiocpu.op0.DebugPc:x4} z80ins={m_audiocpu.op0.DebugInstructionCount} sr=0x{m_maincpu.op0.StatusRegister:x4} imask={m_maincpu.op0.InterruptPriorityMask} stop={(m_maincpu.op0.IsStopped ? 1 : 0)} latch=0x{m_system_latch:x2} cartvec={m_use_cart_vectors} fixsrc={m_fixed_layer_source} palbank=0x{m_palette_bank:x} bank=0x{m_bank_base:x} bg=0x{active_palette_base() + 0x0fff:x4} cartreads={m_maincpu_rom_read_count} bankreads={m_banked_rom_read_count} vecreads={m_banked_vector_read_count} iow={m_io_control_write_count} audcmd={m_audio_command_write_count} audrd={m_audio_result_read_count} audlatch={m_audio_latch_read_count} audreply={m_audio_reply_write_count} audbank={m_audio_bank_select_count} vram={m_vram_write_count} fixedw={m_vram_fixed_write_count} spritew={m_vram_sprite_write_count} palw={m_palette_write_count} fixed_tiles={fixedTiles} active_sprites={activeSprites} sprlines={m_sprite_line_count} sprpens={m_sprite_pen_count} sprplots={m_sprite_plot_count} sprskip={m_sprite_visible_skip_count} zoomymiss={m_sprite_zoomy_missing_count} irq=({m_irq3_pending},{m_display_position_interrupt_pending},{m_vblank_interrupt_pending})");
             }
             return 0;
+        }
+
+
+        static void fill_bitmap16(bitmap_ind16 bitmap, rectangle cliprect, u16 color)
+        {
+            rectangle bounds = cliprect;
+            bounds &= bitmap.cliprect();
+            if (bounds.empty())
+                return;
+
+            PointerU16 pixels = bitmap.pix(0);
+            int rowPixels = bitmap.rowpixels();
+            byte [] data = pixels.Buffer.data_raw;
+            int offset = pixels.Offset;
+            Span<u16> bitmapWords = MemoryMarshal.Cast<byte, u16>(data.AsSpan(offset));
+
+            for (int y = bounds.top(); y <= bounds.bottom(); y++)
+            {
+                int rowOffset = (y * rowPixels) + bounds.left();
+                bitmapWords.Slice(rowOffset, bounds.width()).Fill(color);
+            }
+        }
+
+
+        void install_maincpu_fast_paths()
+        {
+            memory_region maincpu = memregion("maincpu");
+            if (maincpu != null && maincpu.base_() != null)
+            {
+                m_maincpu_rom_data = maincpu.base_().data_raw;
+                m_maincpu_rom_bytes = unchecked((int)(uint)maincpu.bytes());
+            }
+
+            memory_region mainbios = memregion("mainbios");
+            if (mainbios != null && mainbios.base_() != null)
+            {
+                m_mainbios_rom_data = mainbios.base_().data_raw;
+                m_mainbios_rom_bytes = unchecked((int)(uint)mainbios.bytes());
+            }
+
+            cache_maincpu_ram_pointer(0x00100000, 0x10000, out m_mainram_data, out m_mainram_offset, out m_mainram_bytes);
+            cache_maincpu_ram_pointer(0x00d00000, 0x10000, out m_backupram_data, out m_backupram_offset, out m_backupram_bytes);
+
+            m_maincpu.op0.set_fast_memory_handlers(
+                maincpu_fast_read_byte,
+                maincpu_fast_read_word,
+                maincpu_fast_write_byte,
+                maincpu_fast_write_word);
+        }
+
+
+        void cache_maincpu_ram_pointer(u32 address, int bytes, out byte [] data, out int offset, out int length)
+        {
+            data = null;
+            offset = 0;
+            length = 0;
+
+            PointerU8 ptr = m_maincpu.op0.memory().space(AS_PROGRAM).direct_read_ptr(address) as PointerU8;
+            if (ptr == null || ptr.Buffer == null)
+                return;
+
+            data = ptr.Buffer.data_raw;
+            offset = ptr.Offset;
+            length = Math.Min(bytes, ptr.Buffer.Count - ptr.Offset);
+        }
+
+
+        bool maincpu_fast_read_byte(u32 address, out u8 value)
+        {
+            address &= 0x00ff_ffff;
+            if (try_maincpu_rom_byte(address, out value))
+                return true;
+
+            if (try_maincpu_ram_byte(address, out value))
+                return true;
+
+            if (address >= 0x003c0000 && address <= 0x003dffff)
+            {
+                u16 word = video_register_r(null, (address & 0x06) >> 1, 0xffff);
+                value = (u8)(((address & 1) == 0) ? (word >> 8) : word);
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+
+        bool maincpu_fast_read_word(u32 address, out u16 value)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) != 0)
+            {
+                value = 0;
+                return false;
+            }
+
+            if (try_maincpu_rom_word(address, out value))
+                return true;
+
+            if (try_maincpu_ram_word(address, out value))
+                return true;
+
+            if (address >= 0x003c0000 && address <= 0x003dffff)
+            {
+                value = video_register_r(null, (address & 0x06) >> 1, 0xffff);
+                return true;
+            }
+
+            if (address >= 0x00400000 && address <= 0x007fffff)
+            {
+                value = paletteram_r(null, (address & 0x001fff) >> 1, 0xffff);
+                return true;
+            }
+
+            return false;
+        }
+
+
+        bool maincpu_fast_write_byte(u32 address, u8 value)
+        {
+            address &= 0x00ff_ffff;
+
+            // NeoGeo software regularly pokes the watchdog at $300001.  This
+            // skeleton map has no write side effect there, so bypass the generic
+            // unmapped write path.
+            if (address >= 0x00300000 && address <= 0x0031ffff)
+                return true;
+
+            if (try_maincpu_ram_write_byte(address, value))
+                return true;
+
+            return false;
+        }
+
+
+        bool maincpu_fast_write_word(u32 address, u16 value)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) != 0)
+                return false;
+
+            if (address >= 0x003c0000 && address <= 0x003dffff)
+            {
+                video_register_w(null, (address & 0x0e) >> 1, value, 0xffff);
+                return true;
+            }
+
+            if (address >= 0x00400000 && address <= 0x007fffff)
+            {
+                paletteram_w(null, (address & 0x001fff) >> 1, value, 0xffff);
+                return true;
+            }
+
+            if (address >= 0x002ffff0 && address <= 0x002fffff)
+            {
+                write_banksel(null, (address - 0x002ffff0) >> 1, value, 0xffff);
+                return true;
+            }
+
+            if (address >= 0x003a0000 && address <= 0x003bffff)
+            {
+                system_latch_w(null, (address & 0x001f) >> 1, value, 0xffff);
+                return true;
+            }
+
+            if (try_maincpu_ram_write_word(address, value))
+                return true;
+
+            return false;
+        }
+
+
+        bool try_maincpu_ram_byte(u32 address, out u8 value)
+        {
+            if (address >= 0x00100000 && address <= 0x001fffff)
+                return read_ram_byte(m_mainram_data, m_mainram_offset, m_mainram_bytes, (int)(address & 0xffff), out value);
+
+            if (address >= 0x00d00000 && address <= 0x00dfffff)
+                return read_ram_byte(m_backupram_data, m_backupram_offset, m_backupram_bytes, (int)(address & 0xffff), out value);
+
+            value = 0;
+            return false;
+        }
+
+
+        bool try_maincpu_ram_word(u32 address, out u16 value)
+        {
+            if (address >= 0x00100000 && address <= 0x001fffff)
+                return read_ram_word(m_mainram_data, m_mainram_offset, m_mainram_bytes, (int)(address & 0xffff), out value);
+
+            if (address >= 0x00d00000 && address <= 0x00dfffff)
+                return read_ram_word(m_backupram_data, m_backupram_offset, m_backupram_bytes, (int)(address & 0xffff), out value);
+
+            value = 0;
+            return false;
+        }
+
+
+        bool try_maincpu_ram_write_byte(u32 address, u8 value)
+        {
+            if (address >= 0x00100000 && address <= 0x001fffff)
+                return write_ram_byte(m_mainram_data, m_mainram_offset, m_mainram_bytes, (int)(address & 0xffff), value);
+
+            if (address >= 0x00d00000 && address <= 0x00dfffff)
+                return write_ram_byte(m_backupram_data, m_backupram_offset, m_backupram_bytes, (int)(address & 0xffff), value);
+
+            return false;
+        }
+
+
+        bool try_maincpu_ram_write_word(u32 address, u16 value)
+        {
+            if (address >= 0x00100000 && address <= 0x001fffff)
+                return write_ram_word(m_mainram_data, m_mainram_offset, m_mainram_bytes, (int)(address & 0xffff), value);
+
+            if (address >= 0x00d00000 && address <= 0x00dfffff)
+                return write_ram_word(m_backupram_data, m_backupram_offset, m_backupram_bytes, (int)(address & 0xffff), value);
+
+            return false;
+        }
+
+
+        static bool read_ram_byte(byte [] data, int baseOffset, int length, int offset, out u8 value)
+        {
+            int wordOffset = offset & ~1;
+            int physicalOffset = baseOffset + wordOffset + ((offset & 1) == 0 ? 1 : 0);
+            if (data == null || wordOffset < 0 || wordOffset + 1 >= length || physicalOffset < 0 || physicalOffset >= data.Length)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = data[physicalOffset];
+            return true;
+        }
+
+
+        static bool read_ram_word(byte [] data, int baseOffset, int length, int offset, out u16 value)
+        {
+            if (data == null || (offset & 1) != 0 || offset < 0 || offset + 1 >= length)
+            {
+                value = 0;
+                return false;
+            }
+
+            int physicalOffset = baseOffset + offset;
+            if (physicalOffset < 0 || physicalOffset + 1 >= data.Length)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = (u16)(data[physicalOffset] | (data[physicalOffset + 1] << 8));
+            return true;
+        }
+
+
+        static bool write_ram_byte(byte [] data, int baseOffset, int length, int offset, u8 value)
+        {
+            int wordOffset = offset & ~1;
+            int physicalOffset = baseOffset + wordOffset + ((offset & 1) == 0 ? 1 : 0);
+            if (data == null || wordOffset < 0 || wordOffset + 1 >= length || physicalOffset < 0 || physicalOffset >= data.Length)
+                return false;
+
+            data[physicalOffset] = value;
+            return true;
+        }
+
+
+        static bool write_ram_word(byte [] data, int baseOffset, int length, int offset, u16 value)
+        {
+            if (data == null || (offset & 1) != 0 || offset < 0 || offset + 1 >= length)
+                return false;
+
+            int physicalOffset = baseOffset + offset;
+            if (physicalOffset < 0 || physicalOffset + 1 >= data.Length)
+                return false;
+
+            data[physicalOffset] = (u8)value;
+            data[physicalOffset + 1] = (u8)(value >> 8);
+            return true;
+        }
+
+
+        bool try_maincpu_rom_byte(u32 address, out u8 value)
+        {
+            if (address < 0x000080)
+            {
+                value = read_rom_byte(m_use_cart_vectors != 0 ? m_maincpu_rom_data : m_mainbios_rom_data,
+                    m_use_cart_vectors != 0 ? m_maincpu_rom_bytes : m_mainbios_rom_bytes,
+                    (int)address);
+                return true;
+            }
+
+            if (address < 0x100000)
+            {
+                value = read_rom_byte(m_maincpu_rom_data, m_maincpu_rom_bytes, (int)address);
+                return true;
+            }
+
+            if (address >= 0x00200000 && address <= 0x002fffff)
+            {
+                value = read_rom_byte(m_maincpu_rom_data, m_maincpu_rom_bytes, (int)(m_bank_base + (address - 0x00200000)));
+                return true;
+            }
+
+            if (address >= 0x00c00000 && address <= 0x00cfffff)
+            {
+                value = read_rom_byte(m_mainbios_rom_data, m_mainbios_rom_bytes, (int)(address & 0x001ffff));
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+
+        bool try_maincpu_rom_word(u32 address, out u16 value)
+        {
+            if (address < 0x000080)
+            {
+                value = read_rom_word(m_use_cart_vectors != 0 ? m_maincpu_rom_data : m_mainbios_rom_data,
+                    m_use_cart_vectors != 0 ? m_maincpu_rom_bytes : m_mainbios_rom_bytes,
+                    (int)address);
+                return true;
+            }
+
+            if (address < 0x100000)
+            {
+                value = read_rom_word(m_maincpu_rom_data, m_maincpu_rom_bytes, (int)address);
+                return true;
+            }
+
+            if (address >= 0x00200000 && address <= 0x002fffff)
+            {
+                value = read_rom_word(m_maincpu_rom_data, m_maincpu_rom_bytes, (int)(m_bank_base + (address - 0x00200000)));
+                return true;
+            }
+
+            if (address >= 0x00c00000 && address <= 0x00cfffff)
+            {
+                value = read_rom_word(m_mainbios_rom_data, m_mainbios_rom_bytes, (int)(address & 0x001ffff));
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+
+        static u8 read_rom_byte(byte [] data, int length, int byteOffset)
+        {
+            if (data == null || byteOffset < 0 || byteOffset >= length)
+                return 0xff;
+            return data[byteOffset];
+        }
+
+
+        static u16 read_rom_word(byte [] data, int length, int byteOffset)
+        {
+            if (data == null || byteOffset < 0 || byteOffset + 1 >= length)
+                return 0xffff;
+            return (u16)((data[byteOffset] << 8) | data[byteOffset + 1]);
         }
 
 
@@ -1263,7 +1673,7 @@ namespace mame
         }
 
 
-        void draw_sprites(bitmap_ind16 bitmap, rectangle cliprect)
+        void draw_sprites(bitmap_ind16 bitmap, rectangle cliprect, int paletteBase)
         {
             memory_region sprites = memregion("sprites");
             if (sprites == null || sprites.base_() == null || sprites.bytes() == 0 || m_sprite_gfx_address_mask == 0)
@@ -1277,12 +1687,82 @@ namespace mame
 
             int minY = Math.Max(NEOGEO_VISIBLE_TOP, cliprect.min_y);
             int maxY = Math.Min(NEOGEO_VISIBLE_BOTTOM, cliprect.max_y);
+            bool useFrameSpriteLists = !m_use_sprite_line_timer;
+            if (useFrameSpriteLists)
+                build_sprite_line_lists(minY, maxY);
+
+            PointerU16 pixels = bitmap.pix(0);
+            int rowPixels = bitmap.rowpixels();
+            byte [] bitmapData = pixels.Buffer.data_raw;
+            int bitmapOffset = pixels.Offset;
+            Span<u16> bitmapWords = MemoryMarshal.Cast<byte, u16>(bitmapData.AsSpan(bitmapOffset));
+            byte [] spriteData = spriteBase.data_raw;
+            byte [] zoomyData = zoomyBase != null ? zoomyBase.data_raw : null;
+
             for (int scanline = minY; scanline <= maxY; scanline++)
-                draw_sprite_scanline(bitmap, scanline, spriteBase, spriteBytes, zoomyBase, zoomyBytes);
+            {
+                draw_sprite_scanline(
+                    bitmapWords,
+                    rowPixels,
+                    scanline,
+                    spriteData,
+                    spriteBytes,
+                    zoomyData,
+                    zoomyBytes,
+                    paletteBase,
+                    useFrameSpriteLists);
+            }
         }
 
 
-        void draw_sprite_scanline(bitmap_ind16 bitmap, int scanline, MemoryU8 spriteBase, int spriteBytes, MemoryU8 zoomyBase, int zoomyBytes)
+        void build_sprite_line_lists(int minY, int maxY)
+        {
+            Array.Clear(m_sprite_line_counts, minY, maxY - minY + 1);
+
+            int y = 0;
+            int rows = 0;
+            for (int spriteNumber = 0; spriteNumber < MAX_SPRITES_PER_SCREEN; spriteNumber++)
+            {
+                u16 yControl = m_videoram[0x8200 | spriteNumber];
+                if ((yControl & 0x40) == 0)
+                {
+                    y = 0x200 - (yControl >> 7);
+                    rows = yControl & 0x3f;
+                }
+
+                if (rows == 0)
+                    continue;
+
+                if (rows >= 0x20)
+                {
+                    for (int scanline = minY; scanline <= maxY; scanline++)
+                        add_sprite_to_line(scanline, spriteNumber);
+                    continue;
+                }
+
+                int height = rows * 0x10;
+                for (int offset = 0; offset < height; offset++)
+                {
+                    int scanline = (y + offset) & 0x1ff;
+                    if (scanline >= minY && scanline <= maxY)
+                        add_sprite_to_line(scanline, spriteNumber);
+                }
+            }
+        }
+
+
+        void add_sprite_to_line(int scanline, int spriteNumber)
+        {
+            int count = m_sprite_line_counts[scanline];
+            if (count >= MAX_SPRITES_PER_LINE)
+                return;
+
+            m_sprite_line_sprites[(scanline * MAX_SPRITES_PER_LINE) + count] = (u16)spriteNumber;
+            m_sprite_line_counts[scanline] = count + 1;
+        }
+
+
+        void draw_sprite_scanline(Span<u16> bitmapWords, int rowPixels, int scanline, byte [] spriteBase, int spriteBytes, byte [] zoomyBase, int zoomyBytes, int screenPaletteBase, bool useFrameSpriteLists)
         {
             int y = 0;
             int x = 0;
@@ -1290,23 +1770,27 @@ namespace mame
             int zoomY = 0;
             int zoomX = 0;
 
-            if (!m_use_sprite_line_timer)
-                parse_sprites(scanline);
-
             int spriteListBase = (scanline & 1) != 0 ? 0x8680 : 0x8600;
-            int maxSpriteIndex;
-            for (maxSpriteIndex = MAX_SPRITES_PER_LINE - 1; maxSpriteIndex >= 0; maxSpriteIndex--)
+            int spriteCount;
+            int frameListBase = scanline * MAX_SPRITES_PER_LINE;
+
+            if (useFrameSpriteLists)
             {
-                if (m_videoram[spriteListBase + maxSpriteIndex] != 0)
-                    break;
+                spriteCount = m_sprite_line_counts[scanline];
+            }
+            else
+            {
+                parse_sprites(scanline);
+                spriteCount = 0;
+                while (spriteCount < MAX_SPRITES_PER_LINE && m_videoram[spriteListBase + spriteCount] != 0)
+                    spriteCount++;
             }
 
-            if (maxSpriteIndex != MAX_SPRITES_PER_LINE - 1)
-                maxSpriteIndex++;
-
-            for (int spriteIndex = 0; spriteIndex <= maxSpriteIndex; spriteIndex++)
+            for (int spriteIndex = 0; spriteIndex < spriteCount; spriteIndex++)
             {
-                int spriteNumber = m_videoram[spriteListBase + spriteIndex] & 0x01ff;
+                int spriteNumber = useFrameSpriteLists
+                    ? m_sprite_line_sprites[frameListBase + spriteIndex] & 0x01ff
+                    : m_videoram[spriteListBase + spriteIndex] & 0x01ff;
                 u16 yControl = m_videoram[0x8200 | spriteNumber];
                 u16 zoomControl = m_videoram[0x8000 | spriteNumber];
 
@@ -1327,7 +1811,7 @@ namespace mame
                 if (rows == 0 || !sprite_on_scanline(scanline, y, rows))
                     continue;
 
-                draw_sprite_line(bitmap, scanline, spriteNumber, x, y, rows, zoomY, zoomX, spriteBase, spriteBytes, zoomyBase, zoomyBytes);
+                draw_sprite_line(bitmapWords, rowPixels, scanline, spriteNumber, x, y, rows, zoomY, zoomX, spriteBase, spriteBytes, zoomyBase, zoomyBytes, screenPaletteBase);
             }
         }
 
@@ -1371,7 +1855,7 @@ namespace mame
         }
 
 
-        void draw_sprite_line(bitmap_ind16 bitmap, int scanline, int spriteNumber, int x, int y, int rows, int zoomY, int zoomX, MemoryU8 spriteBase, int spriteBytes, MemoryU8 zoomyBase, int zoomyBytes)
+        void draw_sprite_line(Span<u16> bitmapWords, int rowPixels, int scanline, int spriteNumber, int x, int y, int rows, int zoomY, int zoomX, byte [] spriteBase, int spriteBytes, byte [] zoomyBase, int zoomyBytes, int screenPaletteBase)
         {
             if (x >= 0x140 && x <= 0x1f0)
             {
@@ -1443,15 +1927,16 @@ namespace mame
                 xInc = -1;
             }
 
-            int paletteBase = (int)(active_palette_base() + ((attr >> 8) << 4));
+            int paletteBase = screenPaletteBase + ((attr >> 8) << 4);
             int drawX = x <= 0x01f0 ? x : 0;
+            int rowOffset = scanline * rowPixels;
             for (int pixel = 0; pixel < 0x10; pixel++)
             {
                 if ((zoomXTable & 0x8000) != 0)
                 {
                     if (x <= 0x01f0 || x >= 0x0200)
                     {
-                        if (drawX >= 0 && drawX < NEOGEO_VISIBLE_WIDTH && scanline >= 0 && scanline < NEOGEO_VTOTAL)
+                        if (drawX >= 0 && drawX < NEOGEO_VISIBLE_WIDTH)
                         {
                             int pen = m_sprite_gfx8 != null
                                 ? spriteBase[gfxBase & (int)m_sprite_gfx_address_mask]
@@ -1459,7 +1944,7 @@ namespace mame
                             if (pen != 0)
                             {
                                 m_sprite_pen_count++;
-                                bitmap.pix(scanline, drawX)[0] = (u16)(paletteBase | pen);
+                                bitmapWords[rowOffset + drawX] = (u16)(paletteBase | pen);
                                 m_sprite_plot_count++;
                             }
                         }
@@ -1480,7 +1965,7 @@ namespace mame
         }
 
 
-        static int read_sprite_pen(MemoryU8 spriteBase, int spriteBytes, int romAddress)
+        static int read_sprite_pen(byte [] spriteBase, int spriteBytes, int romAddress)
         {
             if (spriteBytes <= 0)
                 return 0;
@@ -1496,7 +1981,7 @@ namespace mame
         }
 
 
-        void draw_fixed_layer(bitmap_ind16 bitmap, rectangle cliprect)
+        void draw_fixed_layer(bitmap_ind16 bitmap, rectangle cliprect, int paletteBase)
         {
             memory_region fixedRegion = m_fixed_layer_source != 0 ? memregion("fixed") : memregion("fixedbios");
             if (fixedRegion == null || fixedRegion.base_() == null || fixedRegion.bytes() == 0)
@@ -1507,40 +1992,45 @@ namespace mame
 
             int minY = Math.Max(NEOGEO_VISIBLE_TOP, cliprect.min_y);
             int maxY = Math.Min(NEOGEO_VISIBLE_BOTTOM, cliprect.max_y);
+
+            PointerU16 pixels = bitmap.pix(0);
+            int rowPixels = bitmap.rowpixels();
+            byte [] bitmapData = pixels.Buffer.data_raw;
+            int bitmapOffset = pixels.Offset;
+            Span<u16> bitmapWords = MemoryMarshal.Cast<byte, u16>(bitmapData.AsSpan(bitmapOffset));
+            byte [] fixedData = fixedBase.data_raw;
+
             for (int y = minY; y <= maxY; y++)
             {
                 int row = (y >> 3) & 0x1f;
                 int rowPixel = y & 0x07;
+                int destOffset = y * rowPixels;
                 for (int xTile = 0; xTile < 40; xTile++)
                 {
                     u16 codeAndPalette = m_videoram[(0x7000 | row) + (xTile * 0x20)];
                     int code = codeAndPalette & 0x0fff;
-                    int palette = (codeAndPalette >> 12) & 0x0f;
+                    int palette = paletteBase + ((codeAndPalette >> 12) << 4);
                     int gfxOffset = ((code << 5) | rowPixel) & addrMask;
                     int x = xTile * 8;
 
-                    draw_fixed_pair(bitmap, fixedBase, addrMask, gfxOffset + 0x10, x + 0, y, palette);
-                    draw_fixed_pair(bitmap, fixedBase, addrMask, gfxOffset + 0x18, x + 2, y, palette);
-                    draw_fixed_pair(bitmap, fixedBase, addrMask, gfxOffset + 0x00, x + 4, y, palette);
-                    draw_fixed_pair(bitmap, fixedBase, addrMask, gfxOffset + 0x08, x + 6, y, palette);
+                    draw_fixed_pair(bitmapWords, fixedData, destOffset, addrMask, gfxOffset + 0x10, x + 0, palette);
+                    draw_fixed_pair(bitmapWords, fixedData, destOffset, addrMask, gfxOffset + 0x18, x + 2, palette);
+                    draw_fixed_pair(bitmapWords, fixedData, destOffset, addrMask, gfxOffset + 0x00, x + 4, palette);
+                    draw_fixed_pair(bitmapWords, fixedData, destOffset, addrMask, gfxOffset + 0x08, x + 6, palette);
                 }
             }
         }
 
 
-        void draw_fixed_pair(bitmap_ind16 bitmap, MemoryU8 gfx, int addrMask, int offset, int x, int y, int palette)
+        static void draw_fixed_pair(Span<u16> bitmapWords, byte [] gfx, int destOffset, int addrMask, int offset, int x, int palette)
         {
             u8 data = gfx[offset & addrMask];
-            plot_fixed_pixel(bitmap, x, y, palette, data & 0x0f);
-            plot_fixed_pixel(bitmap, x + 1, y, palette, (data >> 4) & 0x0f);
-        }
-
-
-        void plot_fixed_pixel(bitmap_ind16 bitmap, int x, int y, int palette, int pen)
-        {
-            if (pen == 0 || x < 0 || x >= NEOGEO_VISIBLE_WIDTH || y < 0 || y >= NEOGEO_VTOTAL)
-                return;
-            bitmap.pix(y, x)[0] = (u16)(active_palette_base() + (u32)((palette << 4) | pen));
+            int pen = data & 0x0f;
+            if (pen != 0)
+                bitmapWords[destOffset + x] = (u16)(palette | pen);
+            pen = (data >> 4) & 0x0f;
+            if (pen != 0)
+                bitmapWords[destOffset + x + 1] = (u16)(palette | pen);
         }
     }
 

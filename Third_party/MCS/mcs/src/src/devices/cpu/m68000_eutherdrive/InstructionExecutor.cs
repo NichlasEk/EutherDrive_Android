@@ -111,7 +111,7 @@ internal sealed partial class InstructionExecutor
     public bool TryConsumeIdleLoop(int cycleBudget, out uint cycles)
     {
         cycles = 0;
-        if (cycleBudget < 64 || _registers.Frozen || _registers.Stopped || _registers.PendingInterruptLevel.HasValue)
+        if (cycleBudget < 4 || _registers.Frozen || _registers.Stopped || _registers.PendingInterruptLevel.HasValue)
             return false;
 
         byte interruptLevel = (byte)(_bus.InterruptLevel() & 0x07);
@@ -124,10 +124,69 @@ internal sealed partial class InstructionExecutor
         if (TryConsumeNeoGeoInputPollLoop(cycleBudget, out cycles))
             return true;
 
+        if (TryConsumeMetalSlugFrameWaitLoop(cycleBudget, out cycles))
+            return true;
+
         if (TryConsumeNeoGeoBiosChecksumLoop(cycleBudget, out cycles))
             return true;
 
+        if (TryConsumeNeoGeoVramPortFillLoop(cycleBudget, out cycles))
+            return true;
+
+        if (TryConsumeNeoGeoWatchdogVramPortFillLoop(cycleBudget, out cycles))
+            return true;
+
+        if (TryConsumeNeoGeoVramPortCopyLoop(cycleBudget, out cycles))
+            return true;
+
         return TryConsumeNeoGeoRamFillLoop(cycleBudget, out cycles);
+    }
+
+    private bool TryConsumeMetalSlugFrameWaitLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+
+        // Metal Slug frame wait:
+        // addq.w #1,$106ee0; clr.b $106edd; cmpi.b #imm,$106ede;
+        // beq $2004; tst.b $106ed8; beq loop.
+        if (_registers.Prefetch != 0x5279
+            || _bus.ReadWord(pc + 2) != 0x0010
+            || _bus.ReadWord(pc + 4) != 0x6EE0
+            || _bus.ReadWord(pc + 6) != 0x4239
+            || _bus.ReadWord(pc + 8) != 0x0010
+            || _bus.ReadWord(pc + 10) != 0x6EDD
+            || _bus.ReadWord(pc + 12) != 0x0C39
+            || _bus.ReadWord(pc + 16) != 0x0010
+            || _bus.ReadWord(pc + 18) != 0x6EDE
+            || _bus.ReadWord(pc + 20) != 0x6700
+            || _bus.ReadWord(pc + 22) != 0x000C
+            || _bus.ReadWord(pc + 34) != 0x4A39
+            || _bus.ReadWord(pc + 36) != 0x0010
+            || _bus.ReadWord(pc + 38) != 0x6ED8
+            || _bus.ReadWord(pc + 40) != 0x67D6)
+        {
+            return false;
+        }
+
+        byte compareValue = (byte)_bus.ReadWord(pc + 14);
+        if (_bus.ReadByte(0x00106EDE) != compareValue || _bus.ReadByte(0x00106ED8) != 0)
+            return false;
+
+        const uint cyclesPerIteration = 92;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / cyclesPerIteration);
+        ushort counter = _bus.ReadWord(0x00106EE0);
+        counter = (ushort)(counter + maxIterations);
+        _bus.WriteWord(0x00106EE0, counter);
+        _bus.WriteByte(0x00106EDD, 0);
+
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = true;
+        _registers.Ccr.Negative = false;
+
+        cycles = maxIterations * cyclesPerIteration;
+        return true;
     }
 
     private bool TryConsumeTstBneIdleLoop(int cycleBudget, out uint cycles)
@@ -323,6 +382,170 @@ internal sealed partial class InstructionExecutor
 
         cycles = Math.Max(26u, cycles);
         return true;
+    }
+
+    private bool TryConsumeNeoGeoVramPortCopyLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+
+        // Metal Slug streams sprite/VRAM command words through the NeoGeo VRAM data port:
+        // move.w (A2)+,(A4); subq.w #1,D7; bne loop.
+        // Keep every bus read/write so the port side effects remain intact; this only
+        // removes the repeated interpreter/decode overhead around the tight loop.
+        if (_registers.Prefetch != 0x389A
+            || _bus.ReadWord(pc + 2) != 0x5347
+            || _bus.ReadWord(pc + 4) != 0x66FA
+            || _registers.Address[4] != 0x003C0002)
+        {
+            return false;
+        }
+
+        uint a2 = _registers.Address[2];
+        if ((a2 & 1) != 0 || a2 < 0x00100000 || a2 >= 0x00110000)
+            return false;
+
+        ushort d7 = (ushort)_registers.Data[7];
+        uint remainingIterations = d7 == 0 ? 0x1_0000u : d7;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 26u);
+        uint wordsUntilRamEnd = (0x00110000 - a2) / 2;
+        uint iterations = Math.Min(Math.Min(remainingIterations, maxIterations), wordsUntilRamEnd);
+        if (iterations == 0)
+            return false;
+
+        const uint destination = 0x003C0002;
+        for (uint i = 0; i < iterations; i++)
+        {
+            ushort value = _bus.ReadWord(a2);
+            _bus.WriteWord(destination, value);
+            a2 += 2;
+        }
+
+        ushort d7BeforeLastSub = (ushort)(d7 - iterations + 1u);
+        ushort newD7 = (ushort)(d7 - iterations);
+        var (_, carry, overflow) = SubWords(d7BeforeLastSub, 1, false);
+
+        _registers.Address[2] = a2;
+        _registers.Data[7] = (_registers.Data[7] & 0xffff_0000) | newD7;
+
+        _registers.Ccr.Carry = carry;
+        _registers.Ccr.Overflow = overflow;
+        _registers.Ccr.Zero = newD7 == 0;
+        _registers.Ccr.Negative = newD7.SignBit();
+        _registers.Ccr.Extend = carry;
+
+        cycles = iterations * 26u;
+        if (iterations == remainingIterations)
+        {
+            cycles -= 2;
+            _registers.Pc = (pc + 6) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            return true;
+        }
+
+        cycles = Math.Max(26u, cycles);
+        return true;
+    }
+
+    private bool TryConsumeNeoGeoVramPortFillLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+
+        // BIOS/game helper delay-fills the NeoGeo VRAM data port:
+        // move.w D0,(A0); dbf D1,loop.
+        if (_registers.Prefetch != 0x3080
+            || _bus.ReadWord(pc + 2) != 0x51C9
+            || _bus.ReadWord(pc + 4) != 0xFFFC
+            || _registers.Address[0] != 0x003C0002)
+        {
+            return false;
+        }
+
+        ushort d1 = (ushort)_registers.Data[1];
+        uint remainingIterations = (uint)d1 + 1u;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 18u);
+        uint iterations = Math.Min(remainingIterations, maxIterations);
+        if (iterations == 0)
+            return false;
+
+        ushort value = (ushort)_registers.Data[0];
+        for (uint i = 0; i < iterations; i++)
+            _bus.WriteWord(0x003C0002, value);
+
+        ushort newD1 = (ushort)(d1 - iterations);
+        _registers.Data[1] = (_registers.Data[1] & 0xffff_0000) | newD1;
+        SetMoveWordFlags(value);
+
+        cycles = iterations * 18u;
+        if (iterations == remainingIterations)
+        {
+            cycles += 4;
+            _registers.Pc = (pc + 6) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            return true;
+        }
+
+        cycles = Math.Max(18u, cycles);
+        return true;
+    }
+
+    private bool TryConsumeNeoGeoWatchdogVramPortFillLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+
+        // Same VRAM port fill, with the BIOS watchdog poke in the loop body:
+        // move.b D0,$300001; move.w D0,(A1); dbf D7,loop.
+        if (_registers.Prefetch != 0x13C0
+            || _bus.ReadWord(pc + 2) != 0x0030
+            || _bus.ReadWord(pc + 4) != 0x0001
+            || _bus.ReadWord(pc + 6) != 0x3280
+            || _bus.ReadWord(pc + 8) != 0x51CF
+            || _bus.ReadWord(pc + 10) != 0xFFF6
+            || _registers.Address[1] != 0x003C0002)
+        {
+            return false;
+        }
+
+        ushort d7 = (ushort)_registers.Data[7];
+        uint remainingIterations = (uint)d7 + 1u;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 38u);
+        uint iterations = Math.Min(remainingIterations, maxIterations);
+        if (iterations == 0)
+            return false;
+
+        byte watchdogValue = (byte)_registers.Data[0];
+        ushort value = (ushort)_registers.Data[0];
+        for (uint i = 0; i < iterations; i++)
+        {
+            _bus.WriteByte(0x00300001, watchdogValue);
+            _bus.WriteWord(0x003C0002, value);
+        }
+
+        ushort newD7 = (ushort)(d7 - iterations);
+        _registers.Data[7] = (_registers.Data[7] & 0xffff_0000) | newD7;
+        SetMoveWordFlags(value);
+
+        cycles = iterations * 38u;
+        if (iterations == remainingIterations)
+        {
+            cycles += 4;
+            _registers.Pc = (pc + 12) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            return true;
+        }
+
+        cycles = Math.Max(38u, cycles);
+        return true;
+    }
+
+    private void SetMoveWordFlags(ushort value)
+    {
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
     }
 
     private ExecuteResult<uint> DoExecute()

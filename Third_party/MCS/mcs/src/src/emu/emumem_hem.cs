@@ -9,6 +9,8 @@ using u8 = System.Byte;
 using u16 = System.UInt16;
 using uX = mame.FlexPrim;
 
+using static mame.emumem_global;
+
 
 namespace mame
 {
@@ -55,7 +57,9 @@ namespace mame
 
         public override object get_ptr(offs_t offset)
         {
-            throw new emu_unimplemented();
+            int addrShift = new int_AddrShift().value;
+            offs_t byteOffset = memory_offset_to_byte((offset - m_address_base) & m_address_mask, addrShift);
+            return new PointerU8(m_base.m_pointer, (int)byteOffset);
         }
 
 

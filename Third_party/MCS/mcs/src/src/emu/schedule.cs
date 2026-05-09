@@ -270,6 +270,7 @@ namespace mame
         const bool VERBOSE = false;
         void LOG(string format, params object [] args) { if (VERBOSE) machine().logerror(format, args); }
         static readonly bool s_trace_profile = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SCHED_PROFILE") == "1";
+        static readonly bool s_trace_timer_profile = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_TIMER_PROFILE") == "1";
 
         sealed class scheduler_profile_bucket
         {
@@ -297,6 +298,7 @@ namespace mame
         attotime m_callback_timer_expire_time; // the original expiration time
         bool m_suspend_changes_pending;  // suspend/resume changes are pending
         readonly Dictionary<string, scheduler_profile_bucket> m_profile_devices = new Dictionary<string, scheduler_profile_bucket>();
+        readonly Dictionary<string, scheduler_profile_bucket> m_profile_timers = new Dictionary<string, scheduler_profile_bucket>();
         long m_profile_last_ticks = Stopwatch.GetTimestamp();
         long m_profile_timeslice_ticks;
         long m_profile_timer_ticks;
@@ -645,6 +647,14 @@ namespace mame
                 scheduler_profile_bucket bucket = entry.Value;
                 details += $" {entry.Key}:ms={bucket.ticks * msScale:0.0},calls={bucket.calls},cycles={bucket.cycles}";
             }
+            if (s_trace_timer_profile)
+            {
+                foreach (KeyValuePair<string, scheduler_profile_bucket> entry in m_profile_timers)
+                {
+                    scheduler_profile_bucket bucket = entry.Value;
+                    details += $" timer:{entry.Key}:ms={bucket.ticks * msScale:0.0},calls={bucket.calls}";
+                }
+            }
 
             Console.WriteLine(
                 $"[MCS-SCHED] elapsed_ms={elapsedTicks * msScale:0.0} timeslice_ms={m_profile_timeslice_ticks * msScale:0.0} " +
@@ -654,6 +664,7 @@ namespace mame
             m_profile_timeslice_ticks = 0;
             m_profile_timer_ticks = 0;
             m_profile_devices.Clear();
+            m_profile_timers.Clear();
         }
 
 
@@ -1131,7 +1142,10 @@ namespace mame
                     {
                         LOG("execute_timers: expired: {0} timer callback {1}\n", timer.expire().attoseconds(), timer.m_callback.ToString());
 
+                        long profileCallbackStart = s_trace_timer_profile ? Stopwatch.GetTimestamp() : 0;
                         timer.m_callback(timer.m_param);
+                        if (s_trace_timer_profile)
+                            add_profile_timer(timer.m_callback, Stopwatch.GetTimestamp() - profileCallbackStart);
                     }
 
                     g_profiler.stop();
@@ -1155,6 +1169,22 @@ namespace mame
 
             // clear the callback timer global
             m_callback_timer = null;
+        }
+
+
+        void add_profile_timer(Delegate callback, long ticks)
+        {
+            string name = callback.Method.DeclaringType != null
+                ? callback.Method.DeclaringType.Name + "." + callback.Method.Name
+                : callback.Method.Name;
+            if (!m_profile_timers.TryGetValue(name, out scheduler_profile_bucket bucket))
+            {
+                bucket = new scheduler_profile_bucket();
+                m_profile_timers[name] = bucket;
+            }
+
+            bucket.ticks += ticks;
+            bucket.calls++;
         }
     }
 }
