@@ -68,6 +68,12 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ParseEnvHex("EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS", UiProofMode ? 0x2000u : 0x0800u);
     private static readonly bool TraceLowPatternRamProbe =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_LOW_PATTERN_RAM_PROBE");
+    private static readonly int ForcePlaneABase =
+        ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_FORCE_PLANE_A_BASE", -1);
+    private static readonly int ForcePlaneBBase =
+        ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_FORCE_PLANE_B_BASE", -1);
+    private static readonly bool TraceForcedPlaneBases =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_FORCE_PLANE_BASES");
     private static readonly bool LatchVBlankGate =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_LATCH_VBLANK_GATE");
     private static readonly bool TraceVBlankGate =
@@ -239,8 +245,12 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     public void RunFrame()
     {
         LatchVBlankGateIfRequested();
+        ForceVdpDisplayIfRequested();
+        ForceVdpPlaneBasesIfRequested();
+        SeedTestPaletteIfRequested();
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
+        ForceVdpPlaneBasesIfRequested();
         TraceVdpCommandBlocksIfRequested();
         FlushVdpCommandBlocksIfRequested();
         FlushLowPatternRamProbeIfRequested();
@@ -319,9 +329,42 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         vdp.write16(0x00C00004, 0x8174);
     }
 
+    private static void ForceVdpPlaneBasesIfRequested()
+    {
+        if (ForcePlaneABase < 0 && ForcePlaneBBase < 0)
+            return;
+
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        if (ForcePlaneABase >= 0)
+        {
+            int baseAddress = ForcePlaneABase & 0xE000;
+            vdp.read16(0x00C00004);
+            vdp.write16(0x00C00004, (ushort)(0x8200 | ((baseAddress >> 10) & 0x38)));
+        }
+
+        if (ForcePlaneBBase >= 0)
+        {
+            int baseAddress = ForcePlaneBBase & 0xE000;
+            vdp.read16(0x00C00004);
+            vdp.write16(0x00C00004, (ushort)(0x8400 | ((baseAddress >> 13) & 0x07)));
+        }
+
+        if (TraceForcedPlaneBases)
+        {
+            Console.WriteLine(
+                $"[HSHAVOC-FORCE-PLANE-BASES] frame={vdp.FrameCounter} " +
+                $"A={(ForcePlaneABase >= 0 ? $"0x{(ForcePlaneABase & 0xE000):X4}" : "keep")} " +
+                $"B={(ForcePlaneBBase >= 0 ? $"0x{(ForcePlaneBBase & 0xE000):X4}" : "keep")} " +
+                $"vdpA=0x{vdp.g_vdp_reg_2_scrolla:X4} vdpB=0x{vdp.g_vdp_reg_4_scrollb:X4}");
+        }
+    }
+
     private void SeedTestPaletteIfRequested()
     {
-        if (!ForceTestPalette || _testPaletteSeeded || md_main.g_md_vdp == null)
+        if (!ForceTestPalette || (!UiProofMode && _testPaletteSeeded) || md_main.g_md_vdp == null)
             return;
 
         md_vdp vdp = md_main.g_md_vdp;
@@ -807,6 +850,17 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             return fallback;
         raw = raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? raw[2..] : raw;
         return uint.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out uint parsed)
+            ? parsed
+            : fallback;
+    }
+
+    private static int ParseEnvHexInt(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        raw = raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? raw[2..] : raw;
+        return int.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out int parsed)
             ? parsed
             : fallback;
     }

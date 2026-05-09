@@ -380,6 +380,41 @@ Verified headless results:
   protected VDP queue or reconstruct the exact per-page DMA schedule while
   `$ff0000` is still valid, not permanently mirror the same buffer.
 
-Next step: trace the producer around PCs `$1fe2-$2094` and the real home-ROM
-VDP queue around `$0efc/$0f00`, then model separate low-pattern command blocks
-per tile page instead of a single synthetic mirror.
+## 2026-05-09 Palette Repeat / Active VDP Checkpoint
+
+The latest black-frame regression was not random video data and not a new ROM
+decode failure. A final 120-frame snapshot showed CRAM had been cleared back to
+64 zero words while VRAM still held decoded pattern/table data. That made the
+framebuffer black even though the proof bridge had already found the low-pattern
+DMA edge.
+
+UI-proof mode now seeds the synthetic CRAM ramp before frame execution and
+refreshes it every frame. Headless verification with default startup profile and
+`EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=1` reaches:
+
+- frame 5: `51712` nonzero pixels
+- frame 59: `54615` nonzero pixels
+- frame 119/final: `54683` nonzero pixels, first nonzero at `(0,0)`
+
+That restores the intended UI proof: the renderer is visibly receiving coherent
+VDP state while the real palette/board handshake remains under investigation.
+This is still not claimed as correct emulation; it is a controlled bring-up
+mode that prevents CRAM zeroing from hiding the VRAM/VDP progress.
+
+New opt-in register probes:
+
+- `EUTHERDRIVE_HSHAVOC_FORCE_PLANE_A_BASE=0xNNNN`
+- `EUTHERDRIVE_HSHAVOC_FORCE_PLANE_B_BASE=0xNNNN`
+- `EUTHERDRIVE_HSHAVOC_TRACE_FORCE_PLANE_BASES=1`
+
+These force MD Plane A/B nametable base registers before and after each frame.
+Testing likely high-table candidates (`$c000/$e000`, `$e000/$c000`,
+`$c000/$c000`, `$e000/$e000`, `$6000/$7000`, and mixed low/high pairs) did not
+change the black result before palette repeat. Therefore the immediate UI black
+failure was CRAM/palette visibility, not simply the active Plane A/B base.
+
+Next step: keep the UI proof palette repeat in place for visibility, but return
+the real investigation to the natural CRAM producer and VDP command queue:
+trace why the arcade path clears CRAM after the nonzero `$fff700` palette data
+appears, and model the protected queue timing closely enough that synthetic
+palette refresh can be removed.
