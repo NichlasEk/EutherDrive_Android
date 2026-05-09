@@ -1074,12 +1074,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             bool drawSprites = renderMask == "all" || renderMask.Contains('s', StringComparison.OrdinalIgnoreCase);
 
             _k056832.LayerColorBase[0] = 0x70;
-            _k056832.LayerColorBase[1] = _k053251PaletteIndex[2] << 4;
-            _k056832.LayerColorBase[2] = _k053251PaletteIndex[3] << 4;
-            _k056832.LayerColorBase[3] = _k053251PaletteIndex[4] << 4;
+            _k056832.LayerColorBase[1] = _k053251PaletteIndex[2];
+            _k056832.LayerColorBase[2] = _k053251PaletteIndex[3];
+            _k056832.LayerColorBase[3] = _k053251PaletteIndex[4];
             _k056832.MoomesaTileCallback = true;
             _k056832.MetamrphTileCallback = false;
-            _k053245.SpriteColorBase = _k053251PaletteIndex[0] << 4;
+            _k053245.SpriteColorBase = _k053251PaletteIndex[0];
 
             _k054338.FillSolidBackground(frameBuffer);
 
