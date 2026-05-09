@@ -2357,6 +2357,19 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             writer.WriteLine($"rom={md_main.g_md_cartridge?.g_file_path ?? string.Empty}");
             writer.WriteLine($"screen={Path.GetFileName(ppmPath)}");
             writer.WriteLine($"raw_state={Path.GetFileName(rawStatePath)}");
+            if (md_main.g_md_vdp is { } vdp)
+            {
+                writer.WriteLine($"vdp_display={vdp.g_vdp_reg_1_6_display}");
+                writer.WriteLine($"vdp_plane_a=0x{vdp.g_vdp_reg_2_scrolla:X4}");
+                writer.WriteLine($"vdp_plane_b=0x{vdp.g_vdp_reg_4_scrollb:X4}");
+                writer.WriteLine($"vdp_window=0x{vdp.g_vdp_reg_3_windows:X4}");
+                writer.WriteLine($"vdp_sprite=0x{vdp.g_vdp_reg_5_sprite:X4}");
+                writer.WriteLine($"vdp_hscroll=0x{vdp.g_vdp_reg_13_hscroll:X4}");
+                writer.WriteLine($"vdp_hscroll_mode={vdp.g_vdp_reg_11_1_hscroll}");
+                writer.WriteLine($"vdp_vscroll_mode={vdp.g_vdp_reg_11_2_vscroll}");
+                writer.WriteLine($"vdp_scroll_h={vdp.g_vdp_reg_16_1_scrollH}");
+                writer.WriteLine($"vdp_scroll_v={vdp.g_vdp_reg_16_5_scrollV}");
+            }
         }
 
         return Path.Combine(dir, prefix);
