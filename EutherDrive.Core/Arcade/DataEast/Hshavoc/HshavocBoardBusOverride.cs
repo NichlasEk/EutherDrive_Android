@@ -1,5 +1,6 @@
 using EutherDrive.Core.MdTracerCore;
 using System.Collections.Generic;
+using System.IO;
 
 namespace EutherDrive.Core.Arcade.DataEast.Hshavoc;
 
@@ -8,6 +9,8 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     private const uint AckWordAddress = 0x00FFF906;
     private const uint BoardRamStartAddress = 0x00200000;
     private const uint BoardRamEndAddress = 0x002023FF;
+    public const int BoardRamLength = (int)(BoardRamEndAddress - BoardRamStartAddress + 1);
+    private const int BoardRamStateVersion = 1;
     private const uint LatchedVdpQueueBlock = 0x00FFE91A;
     private const uint VdpStartAddress = 0x00C00000;
     private const uint VdpEndAddress = 0x00C0001F;
@@ -32,6 +35,8 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
     private static readonly bool TraceVdpCommandBlocks =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
+    private static readonly bool SkipRomVdpDma =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_SKIP_ROM_VDP_DMA");
     private static readonly bool RepairVdpRegisterPending =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING") || UiProofMode;
     private static readonly bool ForceVBlankGateRead =
@@ -48,7 +53,7 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     private static readonly uint VdpCommandBlockEnd = ParseHex("EUTHERDRIVE_HSHAVOC_VDP_COMMAND_BLOCK_END", 0x00FFEA80);
 
     private readonly IM68kBusOverride? _inner;
-    private readonly byte[] _boardRam = new byte[BoardRamEndAddress - BoardRamStartAddress + 1];
+    private readonly byte[] _boardRam = new byte[BoardRamLength];
     private readonly HashSet<ulong> _flushedAckCommandBlocks = new();
     private readonly HashSet<ulong> _flushedLatchedQueueEntries = new();
     private uint _latchedSlot0Source;
@@ -66,6 +71,35 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     public HshavocBoardBusOverride(IM68kBusOverride? inner)
     {
         _inner = inner;
+    }
+
+    public void SaveBoardRamState(BinaryWriter writer)
+    {
+        writer.Write(BoardRamStateVersion);
+        writer.Write(_boardRam.Length);
+        writer.Write(_boardRam);
+    }
+
+    public void LoadBoardRamState(BinaryReader reader)
+    {
+        int version = reader.ReadInt32();
+        if (version != BoardRamStateVersion)
+            throw new InvalidDataException($"Unsupported HSHavoc board RAM state version: {version}.");
+
+        int length = reader.ReadInt32();
+        if (length != _boardRam.Length)
+            throw new InvalidDataException($"Unexpected HSHavoc board RAM length: {length}.");
+
+        byte[] data = reader.ReadBytes(length);
+        if (data.Length != length)
+            throw new EndOfStreamException("HSHavoc board RAM state truncated.");
+
+        data.CopyTo(_boardRam, 0);
+    }
+
+    public byte[] GetBoardRamCopy()
+    {
+        return (byte[])_boardRam.Clone();
     }
 
     public bool TryRead8(uint address, out byte value)
@@ -568,7 +602,7 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
 
         uint sourceByte = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
         uint byteLength = (uint)length * 2;
-        bool romSource = sourceByte < 0x00100000 && sourceByte + byteLength <= 0x00100000;
+        bool romSource = !SkipRomVdpDma && sourceByte < 0x00100000 && sourceByte + byteLength <= 0x00100000;
         bool ramSource = sourceByte >= 0x00FF0000 && sourceByte + byteLength - 1 < memory.Length;
         return romSource || ramSource;
     }

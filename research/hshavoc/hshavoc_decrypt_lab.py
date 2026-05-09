@@ -4464,6 +4464,13 @@ def tile_byte_sum(vram: bytes, tile_index: int) -> int:
     return sum(vram[start : start + 32])
 
 
+def tile_bytes(vram: bytes, tile_index: int) -> bytes:
+    start = tile_index * 32
+    if start < 0 or start > len(vram) - 32:
+        return b""
+    return vram[start : start + 32]
+
+
 def plane_dimensions(scroll_h: int | None, scroll_v: int | None) -> tuple[int, int]:
     width_by_code = {0: 32, 1: 64, 3: 128}
     height_by_code = {0: 32, 1: 64, 3: 128}
@@ -4548,7 +4555,32 @@ def print_vram_plane_report(label: str, vram: bytes, base: int, width: int, cell
     )
     print("    top_words " + " ".join(f"${word:04x}x{count}" for word, count in repeated_top))
     print("    top_tiles " + " ".join(f"${tile:03x}x{count}" for tile, count in tile_top))
+    active_tiles = collections.Counter(word & 0x07FF for word in words if word != 0 and (word & 0x07FF) != 0)
+    print_vram_plane_pattern_offset_report(label, vram, active_tiles)
     print_vram_plane_rows(words, width=width)
+
+
+def print_vram_plane_pattern_offset_report(label: str, vram: bytes, tile_counter: collections.Counter[int]) -> None:
+    scores: list[tuple[int, int, int]] = []
+    for delta in range(-0x400, 0x401):
+        nonblank_weight = 0
+        checked_weight = 0
+        for tile, weight in tile_counter.items():
+            candidate = tile + delta
+            if candidate < 0 or candidate >= len(vram) // 32:
+                continue
+            checked_weight += weight
+            if tile_has_pixels(vram, candidate):
+                nonblank_weight += weight
+        if checked_weight:
+            scores.append((nonblank_weight, checked_weight, delta))
+
+    best = sorted(scores, key=lambda item: (item[0], item[1]), reverse=True)[:8]
+    if best:
+        print(
+            f"    {label} tile+delta nonblank "
+            + " ".join(f"{delta:+d}:{nonblank}/{checked}" for nonblank, checked, delta in best)
+        )
 
 
 def print_vram_plane_rows(words: list[int], width: int) -> None:
@@ -4580,6 +4612,276 @@ def print_vram_pattern_report(vram: bytes) -> None:
     print("    ranges " + " ".join(f"${a:03x}-${b:03x}" if a != b else f"${a:03x}" for a, b in ranges[:16]))
 
 
+def vram_snapshot_context(vram_path: Path, meta_path: Path | None) -> dict[str, object] | None:
+    vram = vram_path.read_bytes()
+    if len(vram) != 0x10000:
+        print(f"== VRAM compare skipped: {vram_path} size=${len(vram):x} (expected $10000)")
+        return None
+
+    meta = parse_meta_hex(meta_path)
+    width, height = plane_dimensions(meta.get("vdp_scroll_h"), meta.get("vdp_scroll_v"))
+    cell_count = width * height
+    return {
+        "path": vram_path,
+        "meta_path": meta_path,
+        "vram": vram,
+        "meta": meta,
+        "width": width,
+        "height": height,
+        "cell_count": cell_count,
+        "plane_a": meta.get("vdp_plane_a", 0xC000),
+        "plane_b": meta.get("vdp_plane_b", 0xE000),
+    }
+
+
+def print_vram_compare_report(
+    a_vram_path: Path,
+    a_meta_path: Path | None,
+    b_vram_path: Path,
+    b_meta_path: Path | None,
+) -> None:
+    a = vram_snapshot_context(a_vram_path, a_meta_path)
+    b = vram_snapshot_context(b_vram_path, b_meta_path)
+    if a is None or b is None:
+        return
+
+    a_vram = a["vram"]
+    b_vram = b["vram"]
+    assert isinstance(a_vram, bytes)
+    assert isinstance(b_vram, bytes)
+
+    print("== VRAM compare")
+    print(f"  A={a_vram_path}")
+    if a_meta_path:
+        print(f"  A_meta={a_meta_path}")
+    print(f"  B={b_vram_path}")
+    if b_meta_path:
+        print(f"  B_meta={b_meta_path}")
+
+    a_nonblank = {idx for idx in range(len(a_vram) // 32) if tile_has_pixels(a_vram, idx)}
+    b_nonblank = {idx for idx in range(len(b_vram) // 32) if tile_has_pixels(b_vram, idx)}
+    exact_same = [
+        idx
+        for idx in range(min(len(a_vram), len(b_vram)) // 32)
+        if tile_bytes(a_vram, idx) == tile_bytes(b_vram, idx)
+    ]
+    exact_nonblank = [idx for idx in exact_same if idx in a_nonblank or idx in b_nonblank]
+    print(
+        f"  patterns: A_nonblank={len(a_nonblank)} B_nonblank={len(b_nonblank)} "
+        f"same_index_exact={len(exact_same)} same_index_nonblank={len(exact_nonblank)} "
+        f"A_only_nonblank={len(a_nonblank - b_nonblank)} B_only_nonblank={len(b_nonblank - a_nonblank)}"
+    )
+    if exact_nonblank:
+        print("    same_nonblank_indices " + " ".join(f"${idx:03x}" for idx in exact_nonblank[:32]))
+
+    for label, a_base_key, b_base_key in (
+        ("Plane A", "plane_a", "plane_a"),
+        ("Plane B", "plane_b", "plane_b"),
+    ):
+        print_vram_plane_compare_report(label, a, b, str(a_base_key), str(b_base_key))
+
+
+def print_vram_plane_compare_report(label: str, a: dict[str, object], b: dict[str, object], a_base_key: str, b_base_key: str) -> None:
+    a_vram = a["vram"]
+    b_vram = b["vram"]
+    assert isinstance(a_vram, bytes)
+    assert isinstance(b_vram, bytes)
+    a_width = int(a["width"])
+    b_width = int(b["width"])
+    a_words = read_be_words(a_vram, int(a[a_base_key]) & 0xFFFF, int(a["cell_count"]))
+    b_words = read_be_words(b_vram, int(b[b_base_key]) & 0xFFFF, int(b["cell_count"]))
+    if not a_words or not b_words:
+        print(f"  {label}: unavailable")
+        return
+
+    a_tiles = [word & 0x07FF for word in a_words]
+    b_tiles = [word & 0x07FF for word in b_words]
+    a_counter = collections.Counter(a_tiles)
+    b_counter = collections.Counter(b_tiles)
+    common_tiles = set(a_counter) & set(b_counter)
+    a_only = set(a_counter) - set(b_counter)
+    b_only = set(b_counter) - set(a_counter)
+    print(
+        f"  {label}: A_cells={len(a_words)} B_cells={len(b_words)} "
+        f"A_width={a_width} B_width={b_width} common_tile_ids={len(common_tiles)} "
+        f"A_only_tile_ids={len(a_only)} B_only_tile_ids={len(b_only)}"
+    )
+    print("    A_top_tiles " + " ".join(f"${tile:03x}x{count}" for tile, count in a_counter.most_common(10)))
+    print("    B_top_tiles " + " ".join(f"${tile:03x}x{count}" for tile, count in b_counter.most_common(10)))
+
+    cell_delta = collections.Counter()
+    palette_pairs = collections.Counter()
+    for aword, bword in zip(a_words, b_words):
+        atile = aword & 0x07FF
+        btile = bword & 0x07FF
+        if aword != 0 or bword != 0:
+            cell_delta[btile - atile] += 1
+            palette_pairs[((aword >> 13) & 0x03, (bword >> 13) & 0x03)] += 1
+    if cell_delta:
+        print("    same_cell_tile_delta " + " ".join(f"{delta:+d}x{count}" for delta, count in cell_delta.most_common(12)))
+    if palette_pairs:
+        print(
+            "    same_cell_palette_pairs "
+            + " ".join(f"{ap}->{bp}x{count}" for (ap, bp), count in palette_pairs.most_common(8))
+        )
+
+    print_tile_offset_scores(label, a_vram, b_vram, a_counter)
+
+
+def print_tile_offset_scores(label: str, a_vram: bytes, b_vram: bytes, a_counter: collections.Counter[int]) -> None:
+    scores: list[tuple[int, int, int, int, int]] = []
+    for delta in range(-0x400, 0x401):
+        exact_weight = 0
+        exact_tiles = 0
+        nonblank_checked = 0
+        byte_distance = 0
+        for atile, weight in a_counter.items():
+            btile = atile + delta
+            if btile < 0 or btile >= len(b_vram) // 32:
+                continue
+            a_tile = tile_bytes(a_vram, atile)
+            b_tile = tile_bytes(b_vram, btile)
+            if not a_tile or not b_tile or (not any(a_tile) and not any(b_tile)):
+                continue
+            nonblank_checked += weight
+            if a_tile == b_tile:
+                exact_weight += weight
+                exact_tiles += 1
+            else:
+                byte_distance += sum(abs(x - y) for x, y in zip(a_tile, b_tile))
+        if nonblank_checked:
+            scores.append((exact_weight, exact_tiles, -byte_distance, nonblank_checked, delta))
+
+    best = sorted(scores, reverse=True)[:10]
+    if best:
+        print(
+            f"    {label} A_tile+delta -> B_pattern "
+            + " ".join(
+                f"{delta:+d}:exactRefs={exact_weight}/{checked},tiles={exact_tiles},dist={-neg_dist}"
+                for exact_weight, exact_tiles, neg_dist, checked, delta in best
+            )
+        )
+
+
+def decode_vdp_command_source(reg21: int, reg22: int, reg23: int) -> int:
+    source_word = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16)
+    return source_word << 1
+
+
+def decode_vdp_command_code(control1: int, control2: int) -> int:
+    return ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C)
+
+
+def decode_vdp_command_destination(control1: int, control2: int) -> int:
+    return (control1 & 0x3FFF) | ((control2 & 0x0007) << 14)
+
+
+def scan_ram_vdp_command_blocks(ram: bytes, start: int = 0xE800, end: int = 0xEAC0) -> list[dict[str, object]]:
+    blocks: list[dict[str, object]] = []
+    if not ram:
+        return blocks
+    start = max(0, start & ~1)
+    end = min(len(ram) - 14, end & ~1)
+    for offset in range(start, end + 1, 2):
+        regs = read_be_words(ram, offset, 7)
+        if len(regs) != 7:
+            continue
+        reg19, reg20, reg21, reg22, reg23, control1, control2 = regs
+        if (
+            (reg19 & 0xFF00) != 0x9300
+            or (reg20 & 0xFF00) != 0x9400
+            or (reg21 & 0xFF00) != 0x9500
+            or (reg22 & 0xFF00) != 0x9600
+            or (reg23 & 0xFF00) != 0x9700
+        ):
+            continue
+        code = decode_vdp_command_code(control1, control2)
+        if code not in (0x01, 0x03, 0x05) or (control2 & 0x0080) == 0:
+            continue
+        length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8)
+        if length == 0 or length > 0x4000:
+            continue
+        source = decode_vdp_command_source(reg21, reg22, reg23)
+        region = "rom" if source < 0x100000 else "ram" if 0xFF0000 <= source <= 0xFFFFFF else "other"
+        blocks.append(
+            {
+                "offset": offset,
+                "length": length,
+                "source": source,
+                "destination": decode_vdp_command_destination(control1, control2),
+                "code": code,
+                "region": region,
+                "regs": tuple(regs),
+            }
+        )
+    return blocks
+
+
+def print_ram_vdp_queue_report(ram_path: Path, meta_path: Path | None) -> None:
+    ram = ram_path.read_bytes()
+    if len(ram) != 0x10000:
+        print(f"== RAM snapshot: {ram_path} size=${len(ram):x} (expected $10000)")
+        return
+
+    meta = parse_meta_hex(meta_path)
+    print("== RAM VDP queue")
+    print(f"  ram={ram_path}")
+    if meta_path:
+        print(f"  meta={meta_path}")
+    if meta:
+        print(f"  frame={meta.get('frame', -1)} pc=${meta.get('pc', -1):06x}")
+
+    blocks = scan_ram_vdp_command_blocks(ram)
+    by_region = collections.Counter(str(block["region"]) for block in blocks)
+    by_destination_band = collections.Counter((int(block["destination"]) & 0xF000) for block in blocks)
+    print(
+        f"  blocks={len(blocks)} regions={dict(sorted(by_region.items()))} "
+        f"dest_bands={{{', '.join(f'${band:04x}: {count}' for band, count in sorted(by_destination_band.items()))}}}"
+    )
+    for block in blocks[:40]:
+        regs = block["regs"]
+        assert isinstance(regs, tuple)
+        print(
+            f"    FF{int(block['offset']):04x}: len=${int(block['length']):04x} "
+            f"src=${int(block['source']):06x}({block['region']}) "
+            f"dest=${int(block['destination']):04x} code=${int(block['code']):02x} "
+            + ",".join(f"{int(reg):04x}" for reg in regs)
+        )
+
+
+def print_ram_vdp_queue_compare_report(
+    a_ram_path: Path,
+    a_meta_path: Path | None,
+    b_ram_path: Path,
+    b_meta_path: Path | None,
+) -> None:
+    a_ram = a_ram_path.read_bytes()
+    b_ram = b_ram_path.read_bytes()
+    if len(a_ram) != 0x10000 or len(b_ram) != 0x10000:
+        print("== RAM VDP queue compare skipped: expected $10000-byte RAM snapshots")
+        return
+
+    a_blocks = scan_ram_vdp_command_blocks(a_ram)
+    b_blocks = scan_ram_vdp_command_blocks(b_ram)
+    a_keys = {(int(block["source"]), int(block["destination"]), int(block["length"]), int(block["code"])) for block in a_blocks}
+    b_keys = {(int(block["source"]), int(block["destination"]), int(block["length"]), int(block["code"])) for block in b_blocks}
+
+    print("== RAM VDP queue compare")
+    print(f"  A={a_ram_path}")
+    if a_meta_path:
+        print(f"  A_meta={a_meta_path}")
+    print(f"  B={b_ram_path}")
+    if b_meta_path:
+        print(f"  B_meta={b_meta_path}")
+    print(f"  A_blocks={len(a_blocks)} B_blocks={len(b_blocks)} common={len(a_keys & b_keys)} A_only={len(a_keys - b_keys)} B_only={len(b_keys - a_keys)}")
+
+    for label, keys in (("A_only", sorted(a_keys - b_keys)), ("B_only", sorted(b_keys - a_keys))):
+        print(f"  {label}")
+        for source, destination, length, code in keys[:24]:
+            region = "rom" if source < 0x100000 else "ram" if 0xFF0000 <= source <= 0xFFFFFF else "other"
+            print(f"    src=${source:06x}({region}) dest=${destination:04x} len=${length:04x} code=${code:02x}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", type=Path, default=DEFAULT_DIR)
@@ -4594,7 +4896,14 @@ def main() -> None:
     parser.add_argument("--only-vdp-log", action="store_true")
     parser.add_argument("--vram-snapshot", type=Path)
     parser.add_argument("--vram-meta", type=Path)
+    parser.add_argument("--compare-vram-snapshot", type=Path)
+    parser.add_argument("--compare-vram-meta", type=Path)
+    parser.add_argument("--ram-snapshot", type=Path)
+    parser.add_argument("--ram-meta", type=Path)
+    parser.add_argument("--compare-ram-snapshot", type=Path)
+    parser.add_argument("--compare-ram-meta", type=Path)
     parser.add_argument("--only-vram-snapshot", action="store_true")
+    parser.add_argument("--only-ram-snapshot", action="store_true")
     parser.add_argument("--write-best-startup", type=Path)
     parser.add_argument("--write-adjusted-startup", type=Path)
     args = parser.parse_args()
@@ -4667,7 +4976,26 @@ def main() -> None:
 
     if args.vram_snapshot:
         print_vram_snapshot_report(args.vram_snapshot, args.vram_meta)
+        if args.compare_vram_snapshot:
+            print_vram_compare_report(
+                args.vram_snapshot,
+                args.vram_meta,
+                args.compare_vram_snapshot,
+                args.compare_vram_meta,
+            )
         if args.only_vram_snapshot:
+            return
+
+    if args.ram_snapshot:
+        print_ram_vdp_queue_report(args.ram_snapshot, args.ram_meta)
+        if args.compare_ram_snapshot:
+            print_ram_vdp_queue_compare_report(
+                args.ram_snapshot,
+                args.ram_meta,
+                args.compare_ram_snapshot,
+                args.compare_ram_meta,
+            )
+        if args.only_ram_snapshot:
             return
 
     print_startup_words("base/no extra", base_words)

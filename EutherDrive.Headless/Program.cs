@@ -2129,6 +2129,11 @@ class Program
         ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
         int unchangedFrames = 0;
         bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+        HashSet<int> dumpFrames = ParseFrameSetEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+        int? dumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+        if (dumpFrameSingle.HasValue)
+            dumpFrames.Add(dumpFrameSingle.Value);
+        bool snapshotOnDumpFrame = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_HSHAVOC_SNAPSHOT_ON_DUMP") == "1";
         var hshavocInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_HEADLESS_INPUT_SCRIPT"));
 
         WriteHshavocTraceLine(trace, -1, hshavoc, statsIn, lastFingerprint);
@@ -2176,6 +2181,18 @@ class Program
 
             if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10)
                 DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+
+            if (dumpFrames.Contains(frame))
+            {
+                string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                DumpBgraToPpm(fb, w, h, s, ppmPath);
+                Console.WriteLine($"[HEADLESS] HSHavoc dumped frame {frame} to {ppmPath}");
+                if (snapshotOnDumpFrame)
+                {
+                    string snapPrefix = hshavoc.CaptureDebugSnapshot(dumpDir);
+                    Console.WriteLine($"[HEADLESS] HSHavoc snapshot frame {frame}: {snapPrefix}");
+                }
+            }
         }
 
         ReadOnlySpan<byte> fbOut = hshavoc.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
@@ -2228,6 +2245,12 @@ class Program
         DumpHshavocWords(writer, hshavoc, 0x001000, 0x140);
         DumpHshavocWords(writer, hshavoc, 0x000A00, 0x140);
         DumpHshavocWords(writer, hshavoc, 0x001E00, 0x360);
+        DumpHshavocWords(writer, hshavoc, 0x003800, 0x500);
+        DumpHshavocWords(writer, hshavoc, 0x008800, 0x400);
+        DumpHshavocWords(writer, hshavoc, 0x018500, 0x180);
+        DumpHshavocWords(writer, hshavoc, 0x02C000, 0x100);
+        DumpHshavocWords(writer, hshavoc, 0x03D000, 0x380);
+        DumpHshavocWords(writer, hshavoc, 0x042000, 0x280);
         DumpHshavocWords(writer, hshavoc, 0x0D0000, 0x180);
         DumpHshavocWords(writer, hshavoc, 0x0D0580, 0x500);
         DumpHshavocWords(writer, hshavoc, 0x000E00, 0x80);

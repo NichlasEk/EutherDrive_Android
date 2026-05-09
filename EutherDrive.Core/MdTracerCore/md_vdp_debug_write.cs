@@ -8,5 +8,8 @@ namespace EutherDrive.Core.MdTracerCore
             pattern_chk(address, (byte)(value >> 8));
             pattern_chk(address ^ 1, (byte)value);
         }
+
+        public ushort DebugReadVramWord(int address)
+            => vram_read_w(address & 0xFFFE);
     }
 }

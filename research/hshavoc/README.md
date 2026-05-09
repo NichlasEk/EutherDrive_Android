@@ -25,6 +25,8 @@ python research/hshavoc/hshavoc_decrypt_lab.py --only-token-graph
 python research/hshavoc/hshavoc_decrypt_lab.py --vdp-log /tmp/hsh_slot3_scan.log --only-vdp-log
 python research/hshavoc/hshavoc_decrypt_lab.py --vdp-log /tmp/hsh_arcade_240_dmalog.log --only-vdp-log
 python research/hshavoc/hshavoc_decrypt_lab.py --vram-snapshot /tmp/hsh_slot3_regmeta/mdsnap_20260509_141617_564_vram.bin --vram-meta /tmp/hsh_slot3_regmeta/mdsnap_20260509_141617_564_meta.txt --only-vram-snapshot
+python research/hshavoc/hshavoc_decrypt_lab.py --vram-snapshot /tmp/hsh_arcade_240_snapshot/mdsnap_20260509_150256_118_vram.bin --vram-meta /tmp/hsh_arcade_240_snapshot/mdsnap_20260509_150256_118_meta.txt --compare-vram-snapshot /tmp/hsh_home_md_1500/mdsnap_20260509_150742_853_vram.bin --compare-vram-meta /tmp/hsh_home_md_1500/mdsnap_20260509_150742_853_meta.txt --only-vram-snapshot
+python research/hshavoc/hshavoc_decrypt_lab.py --ram-snapshot /tmp/hsh_cold_bram_frames_input/mdsnap_20260509_161609_732_ram_ff0000.bin --ram-meta /tmp/hsh_cold_bram_frames_input/mdsnap_20260509_161609_732_meta.txt --compare-ram-snapshot /tmp/hsh_slot_compare_bram_3/mdsnap_20260509_161415_702_ram_ff0000.bin --compare-ram-meta /tmp/hsh_slot_compare_bram_3/mdsnap_20260509_161415_702_meta.txt --only-ram-snapshot
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
 ```
@@ -55,3 +57,14 @@ Current strongest model:
   VRAM. `EUTHERDRIVE_HSHAVOC_CLEAR_TILE0_PROBE=1` and
   `EUTHERDRIVE_HSHAVOC_CLEAR_TILE_PROBE_LIST=...` are narrow runtime probes for
   this blank-tile hypothesis, not a final fix.
+- `--compare-vram-snapshot` compares two VRAM captures and reports same-cell
+  tile deltas plus tile-pattern offset scores. Use it for arcade-vs-reference
+  checks before changing renderer or DMA timing.
+- `--ram-snapshot` decodes the `$ffe800-$ffeac0` VDP command queue from an
+  `*_ram_ff0000.bin` debug snapshot. `--compare-ram-snapshot` is the current
+  best check for the post-start corruption: a bad cold frame 300 has only
+  ROM-sourced queue blocks, while the good slot-3 attract/gameplay state has
+  the missing RAM-sourced Plane A transfers:
+  `FFD800 -> C100`, `FFD900 -> C024`, `FFD940 -> C026`, and `FFD980 -> E300`.
+  This makes the likely fault the tilemap producer/state path, not layer
+  ordering or a single global tile-bank offset.

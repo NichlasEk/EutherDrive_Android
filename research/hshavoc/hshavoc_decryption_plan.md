@@ -237,11 +237,18 @@ The instruction-path search now finds a plausible partial startup stream:
   - Plane isolation with `EUTHERDRIVE_ALLOW_RENDER_DEBUG=1` shows Plane B alone fills nearly the full frame, Plane A alone behaves like overlay/foreground, direct VRAM plane reads do not change the framebuffer, and scroll-zero changes position/fingerprint but not the underlying content. This points away from renderer cache corruption and toward RAM-generated tilemap/pattern-bank content or scroll/layer state.
   - A 240-frame DMA-source trace shows visible VRAM updates are overwhelmingly RAM-sourced (`$ff0000`, `$fff000/$fff200/$fff400`, `$fff700`) after the startup bridge. The next solver should model the RAM producers and VDP queue records, not only ROM-sourced VDP DMA blocks.
   - `hshavoc_decrypt_lab.py --vdp-log` now parses generic `[DMA-SRC-TRACE-START]` lines as well as HSHavoc command-block logs, producing a compact unique RAM-sourced VDP operation list.
+- Slot comparison has separated the post-start corruption from a renderer/layer-order bug:
+  - Old user slots 1-3 restore with external board RAM all zero, so the useful state is in normal `$ff0000` RAM and VRAM.
+  - The bad cold-start frame 300 has Plane A mostly filler/zero (`382/2048` nonblank refs), Plane B all zero, and a VDP queue with 23 ROM-sourced blocks only.
+  - Good slot 3 also has Plane B all zero, but Plane A is full (`2024/2048` nonblank refs), proving Plane B emptiness is not itself the bug.
+  - The key slot-3 difference is RAM-sourced queue records missing from cold-start: `$ffd800 -> $c100`, `$ffd900 -> $c024`, `$ffd940 -> $c026`, and `$ffd980 -> $e300`.
+  - A direct RAM-range trace on the cold path shows `$ffd800` being filled/consumed by the `$003a10-$003b44` routines with mostly `$4000` filler. The next decryption target is therefore the tilemap producer/control path around `$003800-$003cff` and the code deciding whether those RAM DMA queue entries are emitted.
 
 ## Next steps
 
 1. Keep the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a target set, but do not treat the first `p5h`/typedat-invert probe as solved; it changes DMA data without improving the corrupt framebuffer.
 1a. Use `--vram-snapshot` on every promising frame. The first low-pattern path is now proven (`$001fe2` decompressor -> `$ff0000` -> `$019340/$019338` DMA), so the next focus is comparing RAM-produced tilemap/pattern-bank records against retail snapshots and finding which producer causes Plane B or later pattern banks to diverge.
+1b. Use `--ram-snapshot --compare-ram-snapshot` against slot 3 before any renderer change. The first pass/fail signal is whether the RAM-sourced Plane A queue records (`$ffd800/$ffd900/$ffd940/$ffd980`) appear; if they do not, continue with tilemap producer/control decryption instead of layer-bank probes.
 2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
 3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
 4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.

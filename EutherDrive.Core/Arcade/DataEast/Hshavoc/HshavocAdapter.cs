@@ -16,7 +16,8 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
     private const int BaseDecodeEnd = 0x0E8000;
     private const uint LatchedVdpQueueBlock = 0x00FFE91A;
     private const string SavestateMagic = "HSHAVOCST";
-    private const int SavestateVersion = 1;
+    private const int SavestateVersion = 2;
+    private const string BoardRamStateMagic = "HSHBRAM";
 
     private static readonly int[] DataBitswap =
     {
@@ -120,6 +121,12 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         ParseTileProbeList(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_CLEAR_TILE_PROBE_LIST"));
     private static readonly bool TraceClearTile0Probe =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_CLEAR_TILE0_PROBE");
+    private static readonly int PlaneBTileOffsetProbe =
+        ParseEnvInt("EUTHERDRIVE_HSHAVOC_PLANE_B_TILE_OFFSET_PROBE", 0);
+    private static readonly int PlaneBTileOffsetProbeMin =
+        ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_PLANE_B_TILE_OFFSET_PROBE_MIN", -1);
+    private static readonly bool TracePlaneBTileOffsetProbe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_PLANE_B_TILE_OFFSET_PROBE");
 
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
@@ -203,7 +210,16 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         (0x03D008, 0x4E75), (0x03D010, 0x4E75), (0x03D01E, 0x4E75),
         (0x03D02E, 0x4E75), (0x03D040, 0x4E75), (0x03D046, 0x4E75),
         (0x03D04A, 0x4E75), (0x03D056, 0x4E75), (0x03D054, 0x4E75),
-        (0x03D094, 0x4E75)
+        (0x03D094, 0x4E75),
+        // The post-start path reaches a second copy of the same still-encrypted
+        // PIC/input island. The misdecoded short branches at $03d314/$03d334
+        // jump to odd addresses and raise 68000 address errors.
+        (0x03D304, 0x6100), (0x03D30C, 0x6100), (0x03D314, 0x6100),
+        (0x03D324, 0x6100), (0x03D334, 0x6100), (0x03D344, 0x6100),
+        (0x03D308, 0x4E75), (0x03D310, 0x4E75), (0x03D320, 0x4E75),
+        (0x03D330, 0x4E75), (0x03D340, 0x4E75), (0x03D346, 0x4E75),
+        (0x03D306, 0x6100), (0x03D30E, 0x6100), (0x03D316, 0x6100),
+        (0x03D326, 0x6100), (0x03D336, 0x6100)
     };
 
     private readonly MdTracerAdapter _md = new();
@@ -220,8 +236,10 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
     private int _lowPatternQueueSourceDest;
     private int _lowPatternQueueWords;
     private long _lastVBlankGateTraceFrame = long.MinValue;
+    private long _lastPlaneBTileOffsetTraceFrame = long.MinValue;
     private byte[]? _decodedRomImage;
     private RomIdentity? _romIdentity;
+    private HshavocBoardBusOverride? _boardOverride;
 
     public RomInfo RomInfo => _md.RomInfo;
 
@@ -287,6 +305,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
     {
         ClearTransientProbeState();
         _md.Reset();
+        InstallBoardAckProbe();
         ApplyRamSeedWordsIfRequested();
     }
 
@@ -299,6 +318,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         ForceVdpHScrollBaseIfRequested();
         RepairHomeHScrollBaseIfRequested();
         ClearTile0ProbeIfRequested();
+        ApplyPlaneBTileOffsetProbeIfRequested();
         SeedTestPaletteIfRequested();
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
@@ -313,6 +333,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         TraceCramCommandBlocksIfRequested();
         FlushVdpDmaQueueIfRequested();
         ClearTile0ProbeIfRequested();
+        ApplyPlaneBTileOffsetProbeIfRequested();
         SeedTestPaletteIfRequested();
     }
 
@@ -332,7 +353,19 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
 
     public int GetVdpDisplayStatus() => _md.GetVdpDisplayStatus();
 
-    public string CaptureDebugSnapshot(string? directory = null) => _md.CaptureDebugSnapshot(directory);
+    public string CaptureDebugSnapshot(string? directory = null)
+    {
+        string prefix = _md.CaptureDebugSnapshot(directory);
+        if (_boardOverride is { } board)
+        {
+            string? dir = Path.GetDirectoryName(prefix);
+            string name = Path.GetFileName(prefix);
+            if (!string.IsNullOrWhiteSpace(dir) && !string.IsNullOrWhiteSpace(name))
+                File.WriteAllBytes(Path.Combine(dir, $"{name}_boardram_200000.bin"), board.GetBoardRamCopy());
+        }
+
+        return prefix;
+    }
 
     public void SaveState(BinaryWriter writer)
     {
@@ -341,6 +374,11 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         writer.Write(SavestateVersion);
         writer.Write(GetDecodeProfile());
         _md.SaveState(writer);
+        if (_boardOverride is { } board)
+        {
+            writer.Write(BoardRamStateMagic);
+            board.SaveBoardRamState(writer);
+        }
     }
 
     public void LoadState(BinaryReader reader)
@@ -358,13 +396,14 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
                 if (string.Equals(magic, SavestateMagic, StringComparison.Ordinal))
                 {
                     int version = reader.ReadInt32();
-                    if (version != SavestateVersion)
+                    if (version < 1 || version > SavestateVersion)
                         throw new InvalidDataException($"Unsupported HSHavoc savestate version: {version}.");
 
                     _ = reader.ReadString(); // decode profile note; ROM identity already guards normal UI slots.
                     _md.LoadState(reader);
                     RestoreDecodedRomImageAfterStateLoad();
                     InstallBoardAckProbe();
+                    LoadOptionalBoardRamState(reader, version);
                     return;
                 }
             }
@@ -424,18 +463,50 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         _lowPatternQueueSourceDest = 0;
         _lowPatternQueueWords = 0;
         _lastVBlankGateTraceFrame = long.MinValue;
+        _lastPlaneBTileOffsetTraceFrame = long.MinValue;
     }
 
-    private static void InstallBoardAckProbe()
+    private void InstallBoardAckProbe()
     {
         if (md_main.g_md_bus == null)
             return;
 
         IM68kBusOverride? existing = md_main.g_md_bus.OverrideBus;
-        if (existing is HshavocBoardBusOverride)
+        if (existing is HshavocBoardBusOverride board)
+        {
+            _boardOverride = board;
+            return;
+        }
+
+        _boardOverride = new HshavocBoardBusOverride(existing);
+        md_main.g_md_bus.OverrideBus = _boardOverride;
+    }
+
+    private void LoadOptionalBoardRamState(BinaryReader reader, int version)
+    {
+        if (version < 2)
             return;
 
-        md_main.g_md_bus.OverrideBus = new HshavocBoardBusOverride(existing);
+        Stream stream = reader.BaseStream;
+        if (!stream.CanSeek || stream.Position >= stream.Length)
+            return;
+
+        long blockStart = stream.Position;
+        try
+        {
+            string blockMagic = reader.ReadString();
+            if (!string.Equals(blockMagic, BoardRamStateMagic, StringComparison.Ordinal))
+            {
+                stream.Position = blockStart;
+                return;
+            }
+
+            _boardOverride?.LoadBoardRamState(reader);
+        }
+        catch (EndOfStreamException)
+        {
+            stream.Position = blockStart;
+        }
     }
 
     private void RestoreDecodedRomImageAfterStateLoad()
@@ -765,6 +836,55 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         int baseAddress = (tile & 0x07FF) << 5;
         for (int offset = 0; offset < 32; offset += 2)
             _md.DebugWriteVramWord(baseAddress + offset, 0);
+    }
+
+    private void ApplyPlaneBTileOffsetProbeIfRequested()
+    {
+        if (PlaneBTileOffsetProbe == 0)
+            return;
+
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        int delta = PlaneBTileOffsetProbe;
+        int minimumTile = PlaneBTileOffsetProbeMin >= 0
+            ? PlaneBTileOffsetProbeMin & 0x07FF
+            : (delta < 0 ? Math.Min(0x07FF, -delta) : 1);
+        int baseAddress = vdp.g_vdp_reg_4_scrollb & 0xE000;
+        int changed = 0;
+
+        for (int cell = 0; cell < 64 * 32; cell++)
+        {
+            int address = baseAddress + (cell * 2);
+            ushort word = vdp.DebugReadVramWord(address);
+            int tile = word & 0x07FF;
+            if (tile < minimumTile)
+                continue;
+
+            int adjusted = tile + delta;
+            if ((uint)adjusted > 0x07FF)
+                continue;
+
+            ushort adjustedWord = (ushort)((word & 0xF800) | adjusted);
+            if (adjustedWord == word)
+                continue;
+
+            _md.DebugWriteVramWord(address, adjustedWord);
+            changed++;
+        }
+
+        if (!TracePlaneBTileOffsetProbe)
+            return;
+
+        long frame = vdp.FrameCounter;
+        if (frame == _lastPlaneBTileOffsetTraceFrame)
+            return;
+
+        _lastPlaneBTileOffsetTraceFrame = frame;
+        Console.WriteLine(
+            $"[HSHAVOC-PLANEB-TILE-OFFSET-PROBE] frame={frame} " +
+            $"base=0x{baseAddress:X4} delta={delta} min=0x{minimumTile:X3} changed={changed}");
     }
 
     private void DeriveLowPatternRamProbeFromQueueIfRequested(
