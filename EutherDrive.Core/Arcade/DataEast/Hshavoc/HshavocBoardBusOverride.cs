@@ -8,6 +8,7 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     private const uint AckWordAddress = 0x00FFF906;
     private const uint BoardRamStartAddress = 0x00200000;
     private const uint BoardRamEndAddress = 0x002023FF;
+    private const uint LatchedVdpQueueBlock = 0x00FFE91A;
     private const uint VdpStartAddress = 0x00C00000;
     private const uint VdpEndAddress = 0x00C0001F;
     private const uint IoStartAddress = 0x00A10000;
@@ -479,6 +480,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
 
         for (uint block = start; block <= end; block += 2)
         {
+            if (block == LatchedVdpQueueBlock)
+                continue;
+
             ushort reg19 = ReadMemoryWord(memory, block);
             ushort reg20 = ReadMemoryWord(memory, block + 2);
             ushort reg21 = ReadMemoryWord(memory, block + 4);

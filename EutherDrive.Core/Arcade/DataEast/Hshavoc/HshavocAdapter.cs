@@ -13,6 +13,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private const string OddRomName = "d-26.9a";
     private const int InterleavedSize = 0x100000;
     private const int BaseDecodeEnd = 0x0E8000;
+    private const uint LatchedVdpQueueBlock = 0x00FFE91A;
 
     private static readonly int[] DataBitswap =
     {
@@ -80,6 +81,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_FORCE_PLANE_A_BASE", -1);
     private static readonly int ForcePlaneBBase =
         ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_FORCE_PLANE_B_BASE", -1);
+    private static readonly int ForceHScrollBase =
+        ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_FORCE_HSCROLL_BASE", -1);
+    private static readonly int ForceHScrollMode =
+        ParseEnvInt("EUTHERDRIVE_HSHAVOC_FORCE_HSCROLL_MODE", -1);
     private static readonly bool TraceForcedPlaneBases =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_FORCE_PLANE_BASES");
     private static readonly bool LatchVBlankGate =
@@ -280,10 +285,14 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         LatchVBlankGateIfRequested();
         ForceVdpDisplayIfRequested();
         ForceVdpPlaneBasesIfRequested();
+        ForceVdpHScrollModeIfRequested();
+        ForceVdpHScrollBaseIfRequested();
         SeedTestPaletteIfRequested();
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
         ForceVdpPlaneBasesIfRequested();
+        ForceVdpHScrollModeIfRequested();
+        ForceVdpHScrollBaseIfRequested();
         TraceVdpCommandBlocksIfRequested();
         FlushVdpCommandBlocksIfRequested();
         FlushLowPatternRamProbeIfRequested();
@@ -395,6 +404,33 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         }
     }
 
+    private static void ForceVdpHScrollBaseIfRequested()
+    {
+        if (ForceHScrollBase < 0)
+            return;
+
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        int baseAddress = ForceHScrollBase & 0xFC00;
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, (ushort)(0x8D00 | ((baseAddress >> 10) & 0x3F)));
+    }
+
+    private static void ForceVdpHScrollModeIfRequested()
+    {
+        if (ForceHScrollMode < 0)
+            return;
+
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, (ushort)(0x8B00 | (ForceHScrollMode & 0x03)));
+    }
+
     private void SeedTestPaletteIfRequested()
     {
         if (!ForceTestPalette || (!UiProofMode && _testPaletteSeeded) || md_main.g_md_vdp == null)
@@ -470,6 +506,9 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
         for (uint block = start; block <= end; block += 2)
         {
+            if (block == LatchedVdpQueueBlock)
+                continue;
+
             ushort reg19 = _md.DebugReadM68kWord(block);
             ushort reg20 = _md.DebugReadM68kWord(block + 2);
             ushort reg21 = _md.DebugReadM68kWord(block + 4);
