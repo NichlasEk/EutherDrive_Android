@@ -23,6 +23,7 @@ python research/hshavoc/hshavoc_decrypt_lab.py --runs 0
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --cross-runs 8 --only-cross-ref
 python research/hshavoc/hshavoc_decrypt_lab.py --only-token-graph
 python research/hshavoc/hshavoc_decrypt_lab.py --vdp-log /tmp/hsh_slot3_scan.log --only-vdp-log
+python research/hshavoc/hshavoc_decrypt_lab.py --vdp-log /tmp/hsh_arcade_240_dmalog.log --only-vdp-log
 python research/hshavoc/hshavoc_decrypt_lab.py --vram-snapshot /tmp/hsh_slot3_regmeta/mdsnap_20260509_141617_564_vram.bin --vram-meta /tmp/hsh_slot3_regmeta/mdsnap_20260509_141617_564_meta.txt --only-vram-snapshot
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
@@ -39,10 +40,11 @@ Current strongest model:
   trailer parameters converge on `$1030`, suggesting a table interpreter or
   state machine rather than a simple code decrypt pass.
 - Current EutherDrive render traces can be fed back into the lab with
-  `--vdp-log`; slot 3 currently shows 21 unique ROM-sourced VDP operations,
-  and none of their source blocks have a same-offset or short exact anchor in
-  either home Genesis ROM. That makes the visible tile corruption a concrete
-  decryption/data-production problem, not just a layer compositor guess.
+  `--vdp-log`. It accepts both HSHavoc command-block traces and generic
+  `EUTHERDRIVE_TRACE_DMA_SRC=1` MD VDP DMA-source logs. The current title/attract
+  path is RAM-sourced, so the most useful report is now the `$ff0000` and
+  `$fff000/$fff200/$fff400` producer/consumer sequence rather than only direct
+  ROM-sourced VDP operations.
 - `EUTHERDRIVE_HSHAVOC_VDP_SOURCE_PROBE=1` can replay the current local
   source-block hypothesis in EutherDrive. It is intentionally disabled by
   default; the first slot-3 test proved that it changes ROM DMA source words

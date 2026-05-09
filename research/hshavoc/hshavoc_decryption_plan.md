@@ -236,6 +236,7 @@ The instruction-path search now finds a plausible partial startup stream:
   - Retail VRAM comparisons are a useful control: by frame 1500 the retail game also uses `$4000` Plane A filler and nonblank pattern banks, while tile 0 remains blank. The earlier "tile 0 must be blank" conclusion is correct for some scenes, but `$4000` itself is not evidence of corruption.
   - Plane isolation with `EUTHERDRIVE_ALLOW_RENDER_DEBUG=1` shows Plane B alone fills nearly the full frame, Plane A alone behaves like overlay/foreground, direct VRAM plane reads do not change the framebuffer, and scroll-zero changes position/fingerprint but not the underlying content. This points away from renderer cache corruption and toward RAM-generated tilemap/pattern-bank content or scroll/layer state.
   - A 240-frame DMA-source trace shows visible VRAM updates are overwhelmingly RAM-sourced (`$ff0000`, `$fff000/$fff200/$fff400`, `$fff700`) after the startup bridge. The next solver should model the RAM producers and VDP queue records, not only ROM-sourced VDP DMA blocks.
+  - `hshavoc_decrypt_lab.py --vdp-log` now parses generic `[DMA-SRC-TRACE-START]` lines as well as HSHavoc command-block logs, producing a compact unique RAM-sourced VDP operation list.
 
 ## Next steps
 

@@ -4097,6 +4097,12 @@ HSHAVOC_VDPBLK_RE = re.compile(
     r"sourceWord=0x(?P<source_word>[0-9a-fA-F]+) sourceByte=0x(?P<source>[0-9a-fA-F]+) "
     r"dest=0x(?P<dest>[0-9a-fA-F]+) code=0x(?P<code>[0-9a-fA-F]+)"
 )
+MD_DMA_SRC_RE = re.compile(
+    r"\[DMA-SRC-TRACE-START\] frame=(?P<frame>-?\d+) pc=0x(?P<pc>[0-9a-fA-F]+) "
+    r"srcWord=0x(?P<source_word>[0-9a-fA-F]+) srcByte=0x(?P<source>[0-9a-fA-F]+) "
+    r"region=(?P<region>[A-Za-z0-9_-]+) len=0x(?P<length>[0-9a-fA-F]+) "
+    r"dest=0x(?P<dest>[0-9a-fA-F]+) code=0x(?P<code>[0-9a-fA-F]+)"
+)
 
 
 def decode_vdp_code(control1: int, control2: int) -> int:
@@ -4132,6 +4138,23 @@ def parse_vdp_log_operations(log_path: Path) -> list[dict[str, int | str]]:
                     "dest": int(hsh.group("dest"), 16),
                     "code": int(hsh.group("code"), 16),
                     "block": int(hsh.group("block"), 16),
+                }
+            )
+            continue
+
+        dma = MD_DMA_SRC_RE.search(line)
+        if dma:
+            operations.append(
+                {
+                    "kind": "md-dma-src",
+                    "frame": int(dma.group("frame")),
+                    "pc": int(dma.group("pc"), 16),
+                    "length": int(dma.group("length"), 16),
+                    "source": int(dma.group("source"), 16),
+                    "source_word": int(dma.group("source_word"), 16),
+                    "dest": int(dma.group("dest"), 16),
+                    "code": int(dma.group("code"), 16),
+                    "region": dma.group("region"),
                 }
             )
             continue
@@ -4418,9 +4441,11 @@ def print_vdp_source_anchor_report(log_path: Path, decoded: bytes, base: Path) -
     for op in ram_ops[:24]:
         pc_text = f"pc=${int(op['pc']):06x}" if int(op["pc"]) >= 0 else "pc=?"
         block_text = f" block=${int(op['block']):06x}" if "block" in op else ""
+        region_text = f" region={op['region']}" if "region" in op else ""
+        source_word_text = f" srcWord=${int(op['source_word']):06x}" if "source_word" in op else ""
         print(
             f"    frame={int(op['frame']):5d} {pc_text}{block_text} "
-            f"src=${int(op['source']):06x} len=${int(op['length']):04x} "
+            f"src=${int(op['source']):06x}{source_word_text}{region_text} len=${int(op['length']):04x} "
             f"dest=${int(op['dest']):04x} {vdp_dest_role(int(op['dest'])):<16} code=${int(op['code']):02x}"
         )
     if len(ram_ops) > 24:
