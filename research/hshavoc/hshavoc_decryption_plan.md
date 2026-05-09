@@ -255,6 +255,14 @@ The instruction-path search now finds a plausible partial startup stream:
   - With command-block flush tracing enabled, the cold run has an ACK flush at frame 5024 for `$ffe96e/$ffe97c/$ffe98a`: `$ffd800 -> $ce00`, `$ffd900 -> $c040`, `$ffd940 -> $c042`.
   - By frame 5140-5149 the visible active block has shifted to `$ffe998`, copying `$ffcc00 -> $c200` (`regs=9380,9400,9500,96e6,977f cmd=4200,0083`). This is why the later image can look like the right scene underneath but with the wrong bank/plane content.
   - A focused RAM trace shows `$ffe998-$ffe9a5` is written on frame 5011 by the generic queue builder at `$001eb8-$001f00`, then consumed on frame 5012 by `$0015d2/$001668`. The writer packet is `D0=$0000000c`, `D2=$6f800080/$6f808000`, `D3=$00ffcc00`, `D4=$0000c200`, `A0=$00ffe998`; `A1/A2/D1` vary by surrounding table context. The actual selector is therefore the caller that feeds `D3/D4` into the builder before frame 5011, not the renderer or the VDP copy executor.
+  - A new `MdTracerCore` PC-range trace (`EUTHERDRIVE_TRACE_M68K_PC_RANGE`, `..._FRAME_MIN/MAX`, `..._FILE`) confirms the caller:
+    - `$001b70`: tests enable word at `$ffe850`.
+    - `$001b7a`: loads `A0=$ffe998`.
+    - `$001b80`: loads length word from `$ffe84e` into `D2`.
+    - `$001b86`: loads source long from `$ffe848` into `D3` (`$00ffcc00`).
+    - `$001b8c`: loads destination word from `$ffe84c` into `D4` (`$c200`).
+    - `$001b92`: `BSR $001ebc`, returning at `$001b96`.
+    This moves the immediate fault target from the queue builder to the producer of selector record `$ffe848-$ffe850`.
   - New trace controls: `EUTHERDRIVE_TRACE_RAM_RANGE_FRAME_MIN/MAX` and `EUTHERDRIVE_TRACE_RAM_RANGE_REGS=1` for focused RAM writes; `EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_FRAME_START/END` and `EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_MAX` for bounded VDP block logs.
 
 ## Next steps
@@ -263,7 +271,7 @@ The instruction-path search now finds a plausible partial startup stream:
 1a. Use `--vram-snapshot` on every promising frame. The first low-pattern path is now proven (`$001fe2` decompressor -> `$ff0000` -> `$019340/$019338` DMA), so the next focus is comparing RAM-produced tilemap/pattern-bank records against retail snapshots and finding which producer causes Plane B or later pattern banks to diverge.
 1b. Use `--ram-snapshot --compare-ram-snapshot` against slot 3 before any renderer change. The first pass/fail signal is whether the RAM-sourced Plane A queue records (`$ffd800/$ffd900/$ffd940/$ffd980`) appear; if they do not, continue with tilemap producer/control decryption instead of layer-bank probes.
 1c. Focus the next runtime/decode pass on the `FFDBEC` producer and consumers: `$003c60`, `$003d58`, and `$003de8` use `FFDBEC` as a table index, `$0032b0-$0032f4` increments/wraps it through the `$00352c` table, `$010872` remaps it through a small table, and `$01a2b8` derives it from `FFDF36 & 3`. The immediate proof target is matching slot 3's `$ffd800 -> $c100` and `$ffd980 -> $e300` queue records without forcing the whole control packet.
-1d. Trace the caller context for the frame-5011 `$001eb8` queue-builder call that writes `$ffe998`. The desired comparison is the register packet that produces `$ffcc00 -> $c200` versus the earlier/good `$ffd800 -> $c100` packet; the likely source is still the `$003800-$003dff` tilemap/control family, but the next pass should prove the exact caller instead of guessing.
+1d. Trace the producer of the selector record `$ffe848-$ffe850`. The bad record is enabled at `$ffe850`, maps output block `$ffe998`, and feeds length `$ffe84e`, source `$ffe848`, and destination `$ffe84c` into the `$001b70-$001b92` caller before the generic `$001ebc` builder. The desired comparison is the bad `$ffcc00 -> $c200` selector versus the earlier/good `$ffd800 -> $c100`/slot-3 selector; use a narrower writer trace or targeted PC trace instead of a broad `$ffe848-$ffe850` RAM trace, which proved too expensive when run over thousands of frames.
 2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
 3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
 4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.

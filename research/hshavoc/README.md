@@ -81,3 +81,7 @@ Current strongest model:
   later flushed as `$ffcc00 -> $c200`. The bad builder packet has
   `D3=$00ffcc00` and `D4=$0000c200`; the next target is the caller that fed
   those selector registers into the generic builder.
+- `EUTHERDRIVE_TRACE_M68K_PC_RANGE=start-end` adds a focused MdTracerCore 68000
+  PC trace with `..._FRAME_MIN/MAX`, `..._LIMIT`, and `..._FILE`. This proved
+  the bad frame-5011 caller is `$001b70-$001b92`, reading selector record
+  `$ffe848-$ffe850` and calling `$001ebc`.

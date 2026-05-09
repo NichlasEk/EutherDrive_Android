@@ -3,6 +3,7 @@ using System.Text;
 using System.Diagnostics;
 using System.Globalization;
 using System.Collections.Generic;
+using System.IO;
 
 namespace EutherDrive.Core.MdTracerCore
 {
@@ -115,6 +116,17 @@ namespace EutherDrive.Core.MdTracerCore
         private static readonly int TraceM68kStreamLimit =
             ParseWatchLimit("EUTHERDRIVE_TRACE_M68K_STREAM_LIMIT");
         private static int _traceM68kStreamRemaining = TraceM68kStreamLimit;
+        private static readonly List<(uint Start, uint End)> TraceM68kPcRanges =
+            ParseWatchRangeList("EUTHERDRIVE_TRACE_M68K_PC_RANGE");
+        private static readonly string? TraceM68kPcFile =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_M68K_PC_FILE");
+        private static readonly int TraceM68kPcFrameMin =
+            ParseFrameLimit("EUTHERDRIVE_TRACE_M68K_PC_FRAME_MIN", int.MinValue);
+        private static readonly int TraceM68kPcFrameMax =
+            ParseFrameLimit("EUTHERDRIVE_TRACE_M68K_PC_FRAME_MAX", int.MaxValue);
+        private static readonly int TraceM68kPcLimit =
+            ParseWatchLimit("EUTHERDRIVE_TRACE_M68K_PC_LIMIT");
+        private static int _traceM68kPcRemaining = TraceM68kPcLimit;
         private static readonly Stopwatch _pcSampleStopwatch = Stopwatch.StartNew();
         private static long _pcSampleLastMs;
         private static bool _pcWatchEnabled =
@@ -265,6 +277,7 @@ namespace EutherDrive.Core.MdTracerCore
             && !TraceLastOpsOnIllegal
             && !TracePcSample
             && !TraceM68kStream
+            && TraceM68kPcRanges.Count == 0
             && !_pcWatchEnabled
             && !_specialStageDebug
             && !TraceDbra
@@ -400,6 +413,7 @@ namespace EutherDrive.Core.MdTracerCore
                         continue;
                     }
                     g_opcode = read16(g_reg_PC);
+                    MaybeLogM68kPcRange(g_reg_PC, g_opcode);
                     if (TraceM68kStream && _traceM68kStreamRemaining > 0)
                     {
                         _traceM68kStreamRemaining--;
@@ -1362,6 +1376,72 @@ namespace EutherDrive.Core.MdTracerCore
             if (value <= 0)
                 return int.MaxValue;
             return value;
+        }
+
+        private static int ParseFrameLimit(string name, int fallback)
+        {
+            string? raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+            raw = raw.Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                return fallback;
+            return value;
+        }
+
+        private static void MaybeLogM68kPcRange(uint pc, ushort opcode)
+        {
+            if (TraceM68kPcRanges.Count == 0 || _traceM68kPcRemaining == 0)
+                return;
+            bool inRange = false;
+            foreach ((uint start, uint end) in TraceM68kPcRanges)
+            {
+                if (pc >= start && pc <= end)
+                {
+                    inRange = true;
+                    break;
+                }
+            }
+            if (!inRange)
+                return;
+
+            long frame = md_main.g_md_vdp?.FrameCounter ?? -1;
+            if (frame < TraceM68kPcFrameMin || frame > TraceM68kPcFrameMax)
+                return;
+
+            if (_traceM68kPcRemaining > 0)
+                _traceM68kPcRemaining--;
+
+            uint sp = g_reg_addr[7].l;
+            uint ret = 0;
+            try
+            {
+                ret = read32(sp);
+            }
+            catch
+            {
+                ret = 0;
+            }
+
+            string line =
+                $"[ED-M68K-PC] frame={frame} pc=0x{pc:X6} op=0x{opcode:X4} sr=0x{g_reg_SR:X4} " +
+                $"n1=0x{PeekOpcode(pc + 2):X4} n2=0x{PeekOpcode(pc + 4):X4} n3=0x{PeekOpcode(pc + 6):X4} " +
+                $"ret=0x{ret:X8} sp=0x{sp:X8} " +
+                $"d0=0x{g_reg_data[0].l:X8} d1=0x{g_reg_data[1].l:X8} d2=0x{g_reg_data[2].l:X8} d3=0x{g_reg_data[3].l:X8} d4=0x{g_reg_data[4].l:X8} " +
+                $"a0=0x{g_reg_addr[0].l:X8} a1=0x{g_reg_addr[1].l:X8} a2=0x{g_reg_addr[2].l:X8} a7=0x{g_reg_addr[7].l:X8}";
+            if (string.IsNullOrWhiteSpace(TraceM68kPcFile))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+            try
+            {
+                File.AppendAllText(TraceM68kPcFile, line + Environment.NewLine);
+            }
+            catch
+            {
+                // Tracing must not affect emulation behavior.
+            }
         }
 
         private static void MaybeLogPcWatch(uint pc, ushort opcode)
