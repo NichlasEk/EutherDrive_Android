@@ -4842,8 +4842,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (band >= 0 && SpritePriorityBand(rawColor, sortedLayerPriorities) != band)
                 return;
             int priorityMask = priorityBuffer != null ? SpritePriorityMask(rawColor, sortedLayerPriorities) : 0;
-            int color = SpriteColorBase + (rawColor & 0x1f);
-            int alpha = (_mystwarrSpriteLayout || _metamrphSpriteLayout) ? SpriteAlpha(rawColorWord, k054338, gxDrawMode) : 255;
+            int color = _normalPlaneSpriteDecode ? (SpriteColorBase | (rawColor & 0x1f)) : SpriteColorBase + (rawColor & 0x1f);
+            int alpha = (_mystwarrSpriteLayout || _metamrphSpriteLayout) && !_normalPlaneSpriteDecode ? SpriteAlpha(rawColorWord, k054338, gxDrawMode) : 255;
             if (!TryComputeSpriteBounds(offs, spriteRam, out var bounds))
                 return;
 
