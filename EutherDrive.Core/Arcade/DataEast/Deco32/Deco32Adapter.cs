@@ -11,8 +11,10 @@ using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Platforms.DataEast.Deco32;
 
-public sealed class Deco32Adapter : IEmulatorCore
+public sealed class Deco32Adapter : IEmulatorCore, ISavestateCapable
 {
+    private const string SavestateMagic = "DECO32ST";
+    private const int SavestateVersion = 1;
     private const int FrameWidth = 320;
     private const int FrameHeight = 240;
     private const int FrameStride = FrameWidth * 4;
@@ -246,6 +248,91 @@ public sealed class Deco32Adapter : IEmulatorCore
         _masterVolumePercent = Math.Clamp(percent, 0, 200);
     }
 
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        if (!_loaded || _memory is null || _palette is null || _tilemaps is null || _sprites is null || _soundCpu is null || _ym2151 is null || _oki1 is null || _oki2 is null)
+            throw new InvalidOperationException("Deco32 core not initialized.");
+
+        writer.Write(SavestateMagic);
+        writer.Write(SavestateVersion);
+        writer.Write(_frameCounter);
+        writer.Write(_masterVolumePercent);
+        writer.Write(_traceLines);
+        writer.Write(_lastStopReason is not null);
+        if (_lastStopReason is not null)
+            writer.Write(_lastStopReason);
+        WriteInputState(writer, _input);
+        writer.Write(_visiblePc);
+        writer.Write(_visibleOp);
+        writer.Write(_visibleCpsr);
+        writer.Write(_vblankPc);
+        writer.Write(_vblankOp);
+        writer.Write(_vblankCpsr);
+        writer.Write(_postFramePc);
+        writer.Write(_postFrameOp);
+        writer.Write(_postFrameCpsr);
+        WriteByteArray(writer, _presentFrameBuffer);
+        WriteByteArray(writer, _renderFrameBuffer);
+        WriteByteArray(writer, _snapshotFrameBuffer);
+        WriteShortArray(writer, _audioBuffer);
+        StateBinarySerializer.WriteInto(writer, _mainCpu);
+        _memory.SaveState(writer);
+        _palette.SaveState(writer);
+        _tilemaps.SaveState(writer);
+        _sprites.SaveState(writer);
+        _soundCpu.SaveState(writer);
+        _ym2151.SaveState(writer);
+        _oki1.SaveState(writer);
+        _oki2.SaveState(writer);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        if (!_loaded || _memory is null || _palette is null || _tilemaps is null || _sprites is null || _soundCpu is null || _ym2151 is null || _oki1 is null || _oki2 is null)
+            throw new InvalidOperationException("Deco32 core not initialized.");
+
+        string magic = reader.ReadString();
+        if (!string.Equals(magic, SavestateMagic, StringComparison.Ordinal))
+            throw new InvalidDataException("Deco32 savestate magic mismatch.");
+
+        int version = reader.ReadInt32();
+        if (version != SavestateVersion)
+            throw new InvalidDataException($"Unsupported Deco32 savestate version: {version}.");
+
+        _frameCounter = reader.ReadInt64();
+        _masterVolumePercent = reader.ReadInt32();
+        _traceLines = reader.ReadInt32();
+        _lastStopReason = reader.ReadBoolean() ? reader.ReadString() : null;
+        _input = ReadInputState(reader);
+        _visiblePc = reader.ReadUInt32();
+        _visibleOp = reader.ReadUInt32();
+        _visibleCpsr = reader.ReadUInt32();
+        _vblankPc = reader.ReadUInt32();
+        _vblankOp = reader.ReadUInt32();
+        _vblankCpsr = reader.ReadUInt32();
+        _postFramePc = reader.ReadUInt32();
+        _postFrameOp = reader.ReadUInt32();
+        _postFrameCpsr = reader.ReadUInt32();
+        ReadByteArray(reader, _presentFrameBuffer);
+        ReadByteArray(reader, _renderFrameBuffer);
+        ReadByteArray(reader, _snapshotFrameBuffer);
+        ReadShortArray(reader, _audioBuffer);
+        StateBinarySerializer.ReadInto(reader, _mainCpu);
+        _mainCpu.AttachBus(_memory);
+        _memory.LoadState(reader);
+        _palette.LoadState(reader);
+        _tilemaps.LoadState(reader);
+        _sprites.LoadState(reader);
+        _soundCpu.LoadState(reader);
+        _ym2151.LoadState(reader);
+        _oki1.LoadState(reader);
+        _oki2.LoadState(reader);
+        if (_scaledAudioBuffer.Length < _audioBuffer.Length)
+            _scaledAudioBuffer = Array.Empty<short>();
+    }
+
     public void SetInputState(
         bool up,
         bool down,
@@ -304,6 +391,77 @@ public sealed class Deco32Adapter : IEmulatorCore
 
     private static int ParseEnvInt(string name, int fallback)
         => int.TryParse(Environment.GetEnvironmentVariable(name), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) ? value : fallback;
+
+    private static void WriteInputState(BinaryWriter writer, ArcadeInputState input)
+    {
+        writer.Write(input.Up);
+        writer.Write(input.Down);
+        writer.Write(input.Left);
+        writer.Write(input.Right);
+        writer.Write(input.A);
+        writer.Write(input.B);
+        writer.Write(input.C);
+        writer.Write(input.Start);
+        writer.Write(input.X);
+        writer.Write(input.Y);
+        writer.Write(input.Z);
+        writer.Write(input.Mode);
+    }
+
+    private static ArcadeInputState ReadInputState(BinaryReader reader)
+        => new(
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean());
+
+    private static void WriteByteArray(BinaryWriter writer, byte[] data)
+    {
+        writer.Write(data.Length);
+        writer.Write(data);
+    }
+
+    private static void ReadByteArray(BinaryReader reader, byte[] target)
+    {
+        int length = reader.ReadInt32();
+        if (length < 0 || length > 16 * 1024 * 1024)
+            throw new InvalidDataException($"Invalid byte array length in Deco32 savestate: {length}.");
+        byte[] data = reader.ReadBytes(length);
+        if (data.Length != length)
+            throw new EndOfStreamException("Deco32 savestate ended while reading byte array.");
+        Array.Clear(target);
+        Buffer.BlockCopy(data, 0, target, 0, Math.Min(data.Length, target.Length));
+    }
+
+    private static void WriteShortArray(BinaryWriter writer, short[] data)
+    {
+        writer.Write(data.Length);
+        for (int i = 0; i < data.Length; i++)
+            writer.Write(data[i]);
+    }
+
+    private static void ReadShortArray(BinaryReader reader, short[] target)
+    {
+        int length = reader.ReadInt32();
+        if (length < 0 || length > 1 * 1024 * 1024)
+            throw new InvalidDataException($"Invalid short array length in Deco32 savestate: {length}.");
+        Array.Clear(target);
+        int copy = Math.Min(length, target.Length);
+        for (int i = 0; i < length; i++)
+        {
+            short value = reader.ReadInt16();
+            if (i < copy)
+                target[i] = value;
+        }
+    }
 
     private void ClearCpuCapture()
     {
@@ -579,15 +737,25 @@ internal static class Deco32GfxDecryptor
 
 public sealed class Deco32MemoryMap : IArm6Bus
 {
+    [NonSerialized]
     private readonly NightSlashersGameProfile _profile;
+    [NonSerialized]
     private readonly PaletteDevice _palette;
+    [NonSerialized]
     private readonly DecoTilemapDevice _tilemaps;
+    [NonSerialized]
     private readonly DecoSpriteDevice _sprites;
+    [NonSerialized]
     private readonly Z80SoundCpu _soundCpu;
+    [NonSerialized]
     private readonly YM2151 _ym2151;
+    [NonSerialized]
     private readonly OKI6295 _oki1;
+    [NonSerialized]
     private readonly OKI6295 _oki2;
+    [NonSerialized]
     private readonly Action<bool> _setMainIrqLine;
+    [NonSerialized]
     private readonly Func<uint> _getMainPc;
     private readonly byte[] _workRam = new byte[0x20000];
     private readonly Deco104Protection _ioprot = new();
@@ -626,6 +794,18 @@ public sealed class Deco32MemoryMap : IArm6Bus
     public void LoadEeprom(ReadOnlySpan<byte> data) => _eeprom.Import(data);
     public byte[] ExportEeprom() => _eeprom.Export();
     public void ClearEepromDirty() => _eeprom.ClearDirty();
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
+    }
 
     public void Reset()
     {
@@ -1507,7 +1687,9 @@ internal sealed class Deco104Protection
 
 public sealed class DecoTilemapDevice
 {
+    [NonSerialized]
     private readonly NightSlashersGameProfile _profile;
+    [NonSerialized]
     private readonly PaletteDevice _palette;
     private readonly ushort[][] _pf = { new ushort[0x800], new ushort[0x800], new ushort[0x800], new ushort[0x800] };
     private readonly ushort[][] _rowscroll = { new ushort[0x800], new ushort[0x800], new ushort[0x800], new ushort[0x800] };
@@ -1572,6 +1754,18 @@ public sealed class DecoTilemapDevice
         Array.Clear(_lastRawDataValue);
         Array.Clear(_lastRawDataMask);
         ColorBank = 0;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
     }
 
     public uint ReadData32(int chip, uint offset) => ReadLow16Dword(_pf[chip * 2 + ((offset >> 13) & 1)], offset);
@@ -1863,11 +2057,15 @@ public sealed class DecoTilemapDevice
 
 public sealed class DecoSpriteDevice
 {
+    [NonSerialized]
     private readonly NightSlashersGameProfile _profile;
+    [NonSerialized]
     private readonly PaletteDevice _palette;
     private readonly ushort[][] _ram = { new ushort[0x800], new ushort[0x800] };
     private readonly ushort[][] _buffered = { new ushort[0x800], new ushort[0x800] };
+    [NonSerialized]
     private ushort[] _raw0 = Array.Empty<ushort>();
+    [NonSerialized]
     private ushort[] _raw1 = Array.Empty<ushort>();
 
     public DecoSpriteDevice(NightSlashersGameProfile profile, PaletteDevice palette)
@@ -1914,6 +2112,20 @@ public sealed class DecoSpriteDevice
         foreach (ushort[] ram in _ram) Array.Clear(ram);
         foreach (ushort[] ram in _buffered) Array.Clear(ram);
         ColorBank0 = ColorBank1 = 0;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
+        _raw0 = Array.Empty<ushort>();
+        _raw1 = Array.Empty<ushort>();
     }
 
     public uint Read32(int list, uint offset) => ReadLow16Dword(_ram[list], offset);
@@ -2150,6 +2362,18 @@ public sealed class PaletteDevice
         _dmaCount = 0;
     }
 
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
+    }
+
     public uint ReadAce32(uint offset)
     {
         int index = (int)(offset >> 2) & (_aceRam.Length - 1);
@@ -2343,11 +2567,15 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
     private static readonly bool MuteOki2 =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_MUTE_OKI2"), "1", StringComparison.Ordinal);
 
+    [NonSerialized]
     private readonly byte[] _rom;
     private readonly byte[] _ram = new byte[0x800];
     private readonly Z80 _cpu = new();
+    [NonSerialized]
     private readonly YM2151 _ym;
+    [NonSerialized]
     private readonly OKI6295 _oki1;
+    [NonSerialized]
     private readonly OKI6295 _oki2;
     private byte _soundLatch = 0xff;
     private bool _latchIrqAsserted;
@@ -2385,6 +2613,18 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
         _lastPeak = 0;
         _lastOki1Status = 0xff;
         _lastOki2Status = 0xff;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
     }
 
     public void WriteSoundLatch(byte value, uint mainPc)
@@ -2559,6 +2799,7 @@ public sealed class Z80SoundCpu : IOpcodeBusInterface
 public sealed class YM2151
 {
     private readonly Cps1Ym2151 _core = new();
+    [NonSerialized]
     private readonly Action<byte>? _portWrite;
     private byte _selectedRegister;
     private int _registerWrites;
@@ -2580,6 +2821,18 @@ public sealed class YM2151
         _registerWrites = 0;
         _dataWrites = 0;
         LastPeak = 0;
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
     }
     public byte ReadStatus() => _core.ReadStatus();
     public byte Read(byte offset) => ReadStatus();
@@ -2618,6 +2871,7 @@ public sealed class YM2151
 public sealed class OKI6295
 {
     private const int BankSize = 0x40000;
+    [NonSerialized]
     private readonly byte[] _rom;
     private readonly Cps1Oki6295 _core = new();
     private readonly float _gain;
@@ -2643,6 +2897,19 @@ public sealed class OKI6295
         _writes = 0;
         LastPeak = 0;
         LoadBank(0, reset: true);
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
+        LoadBank(_bank, reset: false);
     }
     public byte ReadStatus() => _core.ReadStatus();
     public void Write(byte value)
@@ -2743,6 +3010,7 @@ public sealed class Arm6Cpu
     private const uint Arm26IMask = 0x08000000u;
     private const uint Arm26FMask = 0x04000000u;
 
+    [NonSerialized]
     private IArm6Bus? _bus;
     private bool _flagN;
     private bool _flagZ;
@@ -2787,6 +3055,7 @@ public sealed class Arm6Cpu
     }
 
     public void SetIrqLine(bool asserted) => _irqLine = asserted;
+    public void AttachBus(IArm6Bus bus) => _bus = bus ?? throw new ArgumentNullException(nameof(bus));
     public uint PeekOpcode() => _bus?.Read32(Registers[15] & ~3u) ?? 0xffffffff;
 
     public int ExecuteInstruction()

@@ -2614,6 +2614,10 @@ class Program
         bool useCps1 = string.Equals(coreOverride, "cps1", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
+        bool useDeco32 = string.Equals(coreOverride, "deco32", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && Deco32Adapter.IsSupportedArchive(romPath));
         bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
@@ -2659,6 +2663,52 @@ class Program
             }
 
             Console.WriteLine("[HEADLESS] CPS1 savestate roundtrip ok.");
+            return 0;
+        }
+
+        if (useDeco32)
+        {
+            var deco32 = new Deco32Adapter();
+            deco32.LoadRom(romPath);
+
+            int warmupFrames = ReadPositiveIntEnv("EUTHERDRIVE_HEADLESS_SAVESTATE_WARMUP_FRAMES", 10);
+            for (int i = 0; i < warmupFrames; i++)
+                deco32.RunFrame();
+
+            byte[] snapshotDeco32;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                deco32.SaveState(writer);
+                writer.Flush();
+                snapshotDeco32 = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotDeco32))
+            using (var reader = new BinaryReader(ms))
+            {
+                deco32.LoadState(reader);
+            }
+
+            byte[] snapshotAfterDeco32;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                deco32.SaveState(writer);
+                writer.Flush();
+                snapshotAfterDeco32 = ms.ToArray();
+            }
+
+            if (!snapshotDeco32.SequenceEqual(snapshotAfterDeco32))
+            {
+                Console.Error.WriteLine("[HEADLESS] Deco32 savestate roundtrip failed: payload mismatch.");
+                return 1;
+            }
+
+            deco32.RunFrame();
+            ReadOnlySpan<byte> fb = deco32.GetFrameBuffer(out int w, out int h, out int s);
+            ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+            Console.WriteLine($"[HEADLESS] Deco32 savestate roundtrip ok. payload_bytes={snapshotDeco32.Length} next_frame=0x{fingerprint:X16}");
             return 0;
         }
 
@@ -3338,6 +3388,10 @@ class Program
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
+            bool useDeco32 = string.Equals(coreOverride, "deco32", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Deco32Adapter.IsSupportedArchive(romPath));
             bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
@@ -3408,6 +3462,68 @@ class Program
                 Console.WriteLine($"[HEADLESS] TMNT final debug {tmnt.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_tmnt_state_output.ppm"));
                 PrintHeadlessPerf("TMNT", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useDeco32)
+            {
+                var deco32 = new Deco32Adapter();
+                deco32.LoadRom(romPath);
+
+                int? slotOverrideDeco32 = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadDeco32 = TryLoadSavestatePayload(savestatePath, deco32.RomIdentity, slotOverrideDeco32, out var deco32Error);
+                if (payloadDeco32 == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {deco32Error}");
+                    return 1;
+                }
+
+                using (var deco32StateStream = new MemoryStream(payloadDeco32, writable: false))
+                using (var deco32StateReader = new BinaryReader(deco32StateStream))
+                    deco32.LoadState(deco32StateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (Deco32)");
+                ReadOnlySpan<byte> fbBefore = deco32.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine($"[HEADLESS] Deco32 before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) fp=0x{lastFingerprint:X16} frameCounter={deco32.FrameCounter ?? -1}");
+                Console.WriteLine($"[HEADLESS] Deco32 before debug {deco32.DebugSummary}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_deco32_state_before.ppm"));
+
+                var decoInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_DECO32_HEADLESS_INPUT_SCRIPT"));
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                int unchangedFrames = 0;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, decoInputScript);
+                    deco32.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X,
+                        input.Start,
+                        input.Y, input.L, input.R,
+                        input.Select,
+                        PadType.SixButton);
+                    deco32.RunFrame();
+
+                    ReadOnlySpan<byte> fb = deco32.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: deco32_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={deco32.FrameCounter ?? -1}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_deco32_state_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = deco32.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] Deco32 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={deco32.FrameCounter ?? -1}");
+                Console.WriteLine($"[HEADLESS] Deco32 final debug {deco32.DebugSummary}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_deco32_state_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
