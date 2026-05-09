@@ -1,4 +1,5 @@
 using EutherDrive.Core.MdTracerCore;
+using System.Collections.Generic;
 
 namespace EutherDrive.Core.Arcade.DataEast.Hshavoc;
 
@@ -21,7 +22,13 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_TRACE_RAM"), "1", System.StringComparison.Ordinal);
     private static readonly bool TraceRamSkipZero =
         string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_TRACE_RAM_SKIP_ZERO"), "1", System.StringComparison.Ordinal);
+    private static readonly bool TraceRamRegs =
+        string.Equals(System.Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_TRACE_RAM_REGS"), "1", System.StringComparison.Ordinal);
     private static readonly bool UiProofMode = IsUiProofMode();
+    private static readonly bool FlushVdpCommandBlocksOnAck =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
+    private static readonly bool TraceVdpCommandBlocks =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
     private static readonly bool RepairVdpRegisterPending =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING") || UiProofMode;
     private static readonly bool ForceVBlankGateRead =
@@ -34,14 +41,23 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     private static readonly long TraceVdpFrameEnd = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_VDP_FRAME_END", long.MaxValue);
     private static readonly long TraceRamFrameStart = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_RAM_FRAME_START", long.MinValue);
     private static readonly long TraceRamFrameEnd = ParseLong("EUTHERDRIVE_HSHAVOC_TRACE_RAM_FRAME_END", long.MaxValue);
+    private static readonly uint VdpCommandBlockStart = ParseHex("EUTHERDRIVE_HSHAVOC_VDP_COMMAND_BLOCK_START", 0x00FFE900);
+    private static readonly uint VdpCommandBlockEnd = ParseHex("EUTHERDRIVE_HSHAVOC_VDP_COMMAND_BLOCK_END", 0x00FFEA80);
 
     private readonly IM68kBusOverride? _inner;
+    private readonly HashSet<ulong> _flushedAckCommandBlocks = new();
+    private readonly HashSet<ulong> _flushedLatchedQueueEntries = new();
+    private uint _latchedSlot0Source;
+    private ushort _latchedSlot0Destination;
+    private ushort _latchedSlot0Length;
+    private bool _latchedSlot0Active;
     private int _ackLogRemaining = 16;
     private int _vdpLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_VDP_MAX", 128);
     private int _ioLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_IO_MAX", 128);
     private int _ramLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_RAM_MAX", 160);
     private int _vdpRepairLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING_MAX", 32);
     private int _vblankGateReadLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_VBLANK_GATE_READ_MAX", 32);
+    private int _ackCommandBlockLogRemaining = ParseLimit("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_MAX", 128);
 
     public HshavocBoardBusOverride(IM68kBusOverride? inner)
     {
@@ -107,6 +123,7 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
 
         if (!TouchesAck(address, 2))
         {
+            LatchVdpQueueParameter(address, value, 2);
             TraceVdpWrite(address, 2, value);
             TraceRamAccess("RAM-W", address, 2, value);
             return false;
@@ -126,6 +143,7 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
 
         if (!TouchesAck(address, 4))
         {
+            LatchVdpQueueParameter(address, value, 4);
             TraceVdpWrite(address, 4, value);
             TraceRamAccess("RAM-W", address, 4, value);
             return false;
@@ -251,12 +269,18 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
             return;
 
         _ramLogRemaining--;
+        string regs = TraceRamRegs
+            ? $" d2=0x{md_m68k.g_reg_data[2].l:X8} d3=0x{md_m68k.g_reg_data[3].l:X8} d4=0x{md_m68k.g_reg_data[4].l:X8} a0=0x{md_m68k.g_reg_addr[0].l:X8} a1=0x{md_m68k.g_reg_addr[1].l:X8}"
+            : string.Empty;
         System.Console.WriteLine(
-            $"[HSHAVOC-{tag}] pc=0x{md_m68k.g_reg_PC:X6} frame={frame} size={size} addr=0x{masked:X6} value=0x{value:X8}");
+            $"[HSHAVOC-{tag}] pc=0x{md_m68k.g_reg_PC:X6} frame={frame} size={size} addr=0x{masked:X6} value=0x{value:X8}{regs}");
     }
 
     private void ClearAckWord(uint attemptedValue)
     {
+        FlushLatchedVdpQueueOnAckIfRequested();
+        FlushVdpCommandBlocksOnAckIfRequested();
+
         md_m68k.InitMemoryIfNeeded();
         byte[] memory = md_m68k.g_memory!;
         memory[AckWordAddress] = 0;
@@ -269,6 +293,272 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         System.Console.WriteLine(
             $"[HSHAVOC-ACK] pc=0x{md_m68k.g_reg_PC:X6} addr=0x{AckWordAddress:X6} attempted=0x{attemptedValue:X8} forced=0");
     }
+
+    private void LatchVdpQueueParameter(uint address, uint value, int size)
+    {
+        uint masked = address & 0x00FFFFFF;
+
+        if (size == 4 && masked == 0x00FFE802)
+        {
+            _latchedSlot0Source = value & 0x00FFFFFF;
+            return;
+        }
+
+        if (size != 2)
+            return;
+
+        ushort word = (ushort)value;
+        switch (masked)
+        {
+            case 0x00FFE806:
+                _latchedSlot0Destination = word;
+                break;
+            case 0x00FFE808:
+                _latchedSlot0Length = word;
+                break;
+            case 0x00FFE80A:
+                if (word != 0)
+                    _latchedSlot0Active = true;
+                break;
+        }
+    }
+
+    private void FlushLatchedVdpQueueOnAckIfRequested()
+    {
+        if (!FlushVdpCommandBlocksOnAck || !_latchedSlot0Active || !IsQueueAckWritePc(md_m68k.g_reg_PC))
+            return;
+
+        md_m68k.InitMemoryIfNeeded();
+        byte[]? memory = md_m68k.g_memory;
+        if (memory == null)
+            return;
+
+        int length = _latchedSlot0Length;
+        if (length == 0 || length > 0x4000)
+            return;
+
+        uint byteLength = (uint)length * 2;
+        bool romSource = _latchedSlot0Source < 0x00100000 && _latchedSlot0Source + byteLength <= 0x00100000;
+        bool ramSource = _latchedSlot0Source >= 0x00FF0000 && _latchedSlot0Source + byteLength - 1 < memory.Length;
+        if (!romSource && !ramSource)
+            return;
+
+        uint sourceWord = _latchedSlot0Source >> 1;
+        ushort reg19 = (ushort)(0x9300 | (length & 0x00FF));
+        ushort reg20 = (ushort)(0x9400 | ((length >> 8) & 0x00FF));
+        ushort reg21 = (ushort)(0x9500 | (sourceWord & 0x00FF));
+        ushort reg22 = (ushort)(0x9600 | ((sourceWord >> 8) & 0x00FF));
+        ushort reg23 = (ushort)(0x9700 | ((sourceWord >> 16) & 0x007F));
+        ushort control1 = (ushort)(0x4000 | (_latchedSlot0Destination & 0x3FFF));
+        ushort control2 = (ushort)(0x0080 | ((_latchedSlot0Destination >> 14) & 0x0007));
+
+        ulong signature =
+            ((ulong)_latchedSlot0Source << 32) ^
+            ((ulong)_latchedSlot0Destination << 16) ^
+            _latchedSlot0Length;
+        if (ramSource)
+            signature ^= HashMemoryWords(memory, _latchedSlot0Source, length);
+        if (!_flushedLatchedQueueEntries.Add(signature))
+            return;
+
+        ExecuteVdpCommandBlock(0x00FFE91A, reg19, reg20, reg21, reg22, reg23, control1, control2, "HSHAVOC-VDPQ-LATCH-FLUSH");
+        _latchedSlot0Active = false;
+    }
+
+    private void FlushVdpCommandBlocksOnAckIfRequested()
+    {
+        if (!FlushVdpCommandBlocksOnAck || md_main.g_md_vdp == null || !IsQueueAckWritePc(md_m68k.g_reg_PC))
+            return;
+
+        md_m68k.InitMemoryIfNeeded();
+        byte[]? memory = md_m68k.g_memory;
+        if (memory == null)
+            return;
+
+        uint start = ClampRamScanStart(VdpCommandBlockStart);
+        uint end = ClampRamScanEnd(VdpCommandBlockEnd);
+        if (end < start)
+            return;
+
+        for (uint block = start; block <= end; block += 2)
+        {
+            ushort reg19 = ReadMemoryWord(memory, block);
+            ushort reg20 = ReadMemoryWord(memory, block + 2);
+            ushort reg21 = ReadMemoryWord(memory, block + 4);
+            ushort reg22 = ReadMemoryWord(memory, block + 6);
+            ushort reg23 = ReadMemoryWord(memory, block + 8);
+            ushort control1 = ReadMemoryWord(memory, block + 10);
+            ushort control2 = ReadMemoryWord(memory, block + 12);
+
+            if (!LooksLikeVdpCommandBlock(memory, reg19, reg20, reg21, reg22, reg23, control1, control2))
+                continue;
+
+            ulong signature = BuildVdpCommandBlockSignature(memory, block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+            if (!_flushedAckCommandBlocks.Add(signature))
+                continue;
+
+            ExecuteVdpCommandBlock(block, reg19, reg20, reg21, reg22, reg23, control1, control2, "HSHAVOC-VDPBLK-ACK-FLUSH");
+        }
+    }
+
+    private void ExecuteVdpCommandBlock(
+        uint block,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2,
+        string traceTag)
+    {
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
+            return;
+
+        foreach (ushort word in new[] { reg19, reg20, reg21, reg22, reg23 })
+        {
+            vdp.read16(0x00C00004);
+            vdp.write16(0x00C00004, word);
+        }
+
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, control1);
+        vdp.write16(0x00C00004, control2);
+
+        if (TraceVdpCommandBlocks && _ackCommandBlockLogRemaining > 0)
+        {
+            _ackCommandBlockLogRemaining--;
+            LogVdpCommandBlock(traceTag, block, reg19, reg20, reg21, reg22, reg23, control1, control2);
+        }
+    }
+
+    private static bool IsQueueAckWritePc(uint pc)
+        => pc is 0x002A0E or 0x019338 or 0x019386 or 0x0193D4 or 0x019436 or 0x01948C;
+
+    private static bool LooksLikeVdpCommandBlock(
+        byte[] memory,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        if ((reg19 & 0xFF00) != 0x9300 || (reg20 & 0xFF00) != 0x9400 ||
+            (reg21 & 0xFF00) != 0x9500 || (reg22 & 0xFF00) != 0x9600 ||
+            (reg23 & 0xFF00) != 0x9700)
+            return false;
+
+        if ((control1 & 0xC000) == 0x8000)
+            return false;
+
+        int codeLow = DecodeVdpCodeLow(control1, control2);
+        if (codeLow != 0x01 && codeLow != 0x03 && codeLow != 0x05)
+            return false;
+
+        if ((control2 & 0x0080) == 0)
+            return false;
+
+        int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
+        if (length == 0 || length > 0x4000)
+            return false;
+
+        uint sourceByte = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
+        uint byteLength = (uint)length * 2;
+        bool romSource = sourceByte < 0x00100000 && sourceByte + byteLength <= 0x00100000;
+        bool ramSource = sourceByte >= 0x00FF0000 && sourceByte + byteLength - 1 < memory.Length;
+        return romSource || ramSource;
+    }
+
+    private static ulong BuildVdpCommandBlockSignature(
+        byte[] memory,
+        uint block,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        ulong signature =
+            ((ulong)block << 40) ^
+            ((ulong)reg19 << 48) ^
+            ((ulong)reg20 << 32) ^
+            ((ulong)reg21 << 16) ^
+            reg22 ^
+            ((ulong)reg23 << 8) ^
+            ((ulong)control1 << 24) ^
+            ((ulong)control2 << 4);
+
+        uint sourceByte = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
+        if (sourceByte < 0x00FF0000 || sourceByte >= memory.Length)
+            return signature;
+
+        int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
+        return signature ^ HashMemoryWords(memory, sourceByte, length);
+    }
+
+    private static ulong HashMemoryWords(byte[] memory, uint source, int words)
+    {
+        ulong hash = 1469598103934665603UL;
+        for (int i = 0; i < words; i++)
+        {
+            uint address = source + (uint)(i * 2);
+            ushort value = address + 1 < memory.Length ? ReadMemoryWord(memory, address) : (ushort)0;
+            hash ^= value;
+            hash *= 1099511628211UL;
+        }
+
+        return hash;
+    }
+
+    private static uint DecodeVdpDmaSourceByte(ushort reg21, ushort reg22, ushort reg23)
+    {
+        uint sourceWord = (uint)((reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16));
+        return sourceWord << 1;
+    }
+
+    private static int DecodeVdpCodeLow(ushort control1, ushort control2)
+        => ((control1 >> 14) & 0x03) | ((control2 >> 2) & 0x0C);
+
+    private static int DecodeVdpDestination(ushort control1, ushort control2)
+        => (control1 & 0x3FFF) | ((control2 & 0x0007) << 14);
+
+    private static void LogVdpCommandBlock(
+        string tag,
+        uint block,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        int codeLow = DecodeVdpCodeLow(control1, control2);
+        int dest = DecodeVdpDestination(control1, control2);
+        int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
+        int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
+        System.Console.WriteLine(
+            $"[{tag}] pc=0x{md_m68k.g_reg_PC:X6} frame={FrameCounter()} " +
+            $"block=0x{block:X6} len=0x{length:X4} sourceWord=0x{sourceWord:X6} " +
+            $"sourceByte=0x{(sourceWord << 1):X6} dest=0x{dest:X4} code=0x{codeLow:X2} " +
+            $"regs={reg19:X4},{reg20:X4},{reg21:X4},{reg22:X4},{reg23:X4} cmd={control1:X4},{control2:X4}");
+    }
+
+    private static ushort ReadMemoryWord(byte[] memory, uint address)
+        => address + 1 < memory.Length
+            ? (ushort)((memory[address] << 8) | memory[address + 1])
+            : (ushort)0;
+
+    private static uint ClampRamScanStart(uint value)
+        => System.Math.Max(0x00FF0000, value & 0x00FFFFFE);
+
+    private static uint ClampRamScanEnd(uint value)
+        => System.Math.Min(0x00FFFFF2, value & 0x00FFFFFE);
 
     private static long FrameCounter()
         => md_main.g_md_vdp?.FrameCounter ?? -1;

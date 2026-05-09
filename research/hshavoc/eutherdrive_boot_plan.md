@@ -238,7 +238,7 @@ fallbacks.
 As of the UI visibility pass, normal UI launches automatically enable a
 probe-only proof mode unless `EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0` is set. That
 mode combines VDP register-pending repair, generated VDP command-block flushing,
-forced display, low-pattern RAM replay, and a palette fallback. It is
+forced display, ack-latched VDP queue flushing, and a palette fallback. It is
 intentionally not claimed as correct emulation: it makes the UI render the
 decoded/queued VRAM path while the protected VDP queue timing is still being
 mapped. Headless runs with `EUTHERDRIVE_HEADLESS_CORE` keep the older opt-in
@@ -363,10 +363,10 @@ New probe flags:
   tries `$2000/$4000/$6000` as opt-in evidence gathering for tile-index paging.
 - `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME=1` bypasses the
   hash gate for this runtime-only proof.
-- UI-proof mode now enables the low-pattern replay automatically, repeats it
-  each frame, derives it from the observed queue, and defaults the length to
-  `0x2000` words. Headless experiments should keep using
-  `EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0` when measuring the natural boot path.
+- UI-proof mode used to enable this replay automatically, but the current UI
+  proof uses the ack-latched VDP queue model instead. Headless experiments
+  should keep using `EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0` when measuring the
+  natural boot path.
 
 Important result: the replay must open a deterministic VDP register-1 DMA
 window (`$8174`) because the frame-level adapter runs outside the game's own
@@ -538,3 +538,64 @@ palette fallback and the `$fff700` palette bridge so the UI does not overwrite
 or hide runtime color progress, but its low-pattern proof is now tied to the
 observed generated VDP queue. A 120-frame UI-proof run after this change ends
 with `20876` nonzero pixels and fingerprint `0x479ED41C9943AFB6`.
+
+## 2026-05-09 Ack-Latched VDP Queue Checkpoint
+
+The low-pattern replay has been replaced by a stronger board-timing model. The
+decoded arcade code really does schedule the missing low-pattern copy:
+
+- `$19300-$19338` decompresses ROM `$08ec72` into `$ff0000`, programs slot0 as
+  source `$ff0000`, destination `$0000`, length `$1280`, then calls the shared
+  queue builder.
+- Later startup records similarly schedule `$ff0000 -> $4400`, `$7e00`,
+  `$f000`, and `$b000`.
+- `$19b2/$1ebc` build the 14-byte VDP DMA command block from slot0 into
+  `$ffe91a`.
+
+The reason frame-level scanning missed the `$0000` command was a timing
+collision in the harness, not absence of the command. VBlank dispatcher code
+also uses `$ffe800` as temporary VDP command scratch and writes longwords over
+`$ffe802` while the long `$1fd2` decompression is spread across emulated
+frames. By the time frame-end scanning looks at `$ffe91a`, the transient slot0
+intent has been clobbered back to stale `$d800`/high-VRAM data.
+
+`HshavocBoardBusOverride` now latches the slot0 queue parameters when the game
+writes `$ffe802/$ffe806/$ffe808/$ffe80a`, ignores dispatcher clear-writes, and
+flushes the latched VDP DMA only when one of the real queue acknowledgement PCs
+writes `$fff906` (`$2a0e`, `$19338`, `$19386`, `$193d4`, `$19436`, `$1948c`).
+This is still a bridge, but it is now tied to the game's own queue records and
+acknowledgement points instead of a guessed low-VRAM replay.
+
+Trace proof with `EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS=1`:
+
+- frame 11: `HSHAVOC-VDPQ-LATCH-FLUSH` at PC `$019338`, source byte `$ff0000`,
+  destination `$0000`, length `$1280`
+- frame 15: destination `$4400`, length `$1c30`
+- frame 19: destination `$7e00`, length `$10f0`
+- frame 23: destination `$b000`, length `$0800`
+
+Controlled 120-frame result with UI-proof disabled, no standalone low-pattern
+probe, no queue-derived low-pattern replay, forced display, VDP register repair,
+and generated command-block flushing:
+
+```sh
+EUTHERDRIVE_HEADLESS_CORE=hshavoc \
+EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0 \
+EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY=1 \
+EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING=1 \
+EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS=1 \
+dotnet run --project EutherDrive.Headless/EutherDrive.Headless.csproj --no-build -- \
+  /home/nichlas/roms/MAME/DataEast/hshavoc/hshavoc.zip 120
+```
+
+Result:
+
+- frame 59: `45800` nonzero pixels
+- frame 119/final: `45792` nonzero pixels, first nonzero at `(0,1)`
+- final fingerprint: `0x55FA668276BBA59D`
+
+UI-proof mode no longer enables the old automatic low-pattern replay. It now
+depends on the ack-latched queue model for pattern VRAM visibility, while still
+keeping display/palette proof aids so the UI remains useful during bring-up. A
+120-frame UI-proof headless run after removing the replay ends at `45800`
+nonzero pixels with fingerprint `0x9B17537F32200C1D`.

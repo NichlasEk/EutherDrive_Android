@@ -65,13 +65,13 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static readonly bool FlushLowPatternRamProbe =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE");
     private static readonly bool DeriveLowPatternRamProbeFromQueue =
-        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_FROM_QUEUE") || UiProofMode;
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_FROM_QUEUE");
     private static readonly int DeriveLowPatternRamProbeMinSourceDest =
         ParseEnvHexInt("EUTHERDRIVE_HSHAVOC_DERIVE_LOW_PATTERN_RAM_PROBE_MIN_SOURCE_DEST", 0xB000);
     private static readonly bool MirrorLowPatternRamProbePages =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_MIRROR_PAGES");
     private static readonly bool RepeatLowPatternRamProbe =
-        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME") || UiProofMode;
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME");
     private static readonly uint LowPatternRamProbeWords =
         ParseEnvHex("EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS", UiProofMode ? 0x2000u : 0x0800u);
     private static readonly bool TraceLowPatternRamProbe =
