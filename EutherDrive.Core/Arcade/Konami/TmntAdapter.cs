@@ -3303,6 +3303,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private static readonly int[] MystwarrTilePaletteShift2 = { 0, 2, 2, 2 };
         private static readonly int[] MystwarrTilePaletteMask2 = { 0x00, 0x30, 0x3c, 0x3f };
         private static readonly int[] MystwarrTilePlaneOffsets = { 32, 24, 8, 16, 0 };
+        private static readonly int[] Moomesa4BppTileXOffsets = { 8, 12, 0, 4, 24, 28, 16, 20 };
         private int _selectedPage;
         private int _selectedPageBase;
         private int _romBank;
@@ -3313,13 +3314,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private bool _metamrphTileCallback;
         [NonSerialized] private bool _moomesaTileCallback;
         [NonSerialized] private bool _bpp4TileDecode;
+        [NonSerialized] private bool _bpp4TilePensDecoded;
 
         public int[] LayerColorBase { get; } = new int[4];
         public int LastAlphaTileMixCode => _lastAlphaTileMixCode;
         public bool Bpp4TileDecode
         {
             get => _bpp4TileDecode;
-            set => _bpp4TileDecode = value;
+            set
+            {
+                _bpp4TileDecode = value;
+                if (value)
+                    Ensure4BppTilePensDecoded();
+            }
         }
 
         public bool MetamrphTileCallback
@@ -3342,6 +3349,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Copy(rom, _rom, Math.Min(rom.Length, _rom.Length));
             DecodeMystwarrTiles();
             DecodeMystwarrTilePens();
+            _bpp4TilePensDecoded = false;
+            if (_bpp4TileDecode)
+                Ensure4BppTilePensDecoded();
         }
 
         public void Reset()
@@ -3963,14 +3973,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private int Decode5BppPixel(int code, int x, int y)
-            => _bpp4TileDecode
-                ? Decode4BppPixel(code, x, y)
-                : _decodedTilePens[((code & 0x1ffff) << 6) | ((y & 7) << 3) | (x & 7)];
+            => _decodedTilePens[((code & 0x1ffff) << 6) | ((y & 7) << 3) | (x & 7)];
 
         private int Decode4BppPixel(int code, int x, int y)
         {
-            int[] xOffsets = { 8, 12, 0, 4, 24, 28, 16, 20 };
-            int bitIndexBase = (code & 0x1ffff) * 256 + (y & 7) * 32 + xOffsets[x & 7];
+            int bitIndexBase = (code & 0x1ffff) * 256 + (y & 7) * 32 + Moomesa4BppTileXOffsets[x & 7];
             int pen = 0;
             for (int plane = 0; plane < 4; plane++)
             {
@@ -3980,6 +3987,38 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 pen |= ((_rom[byteIndex] >> bit) & 1) << (3 - plane);
             }
             return pen;
+        }
+
+        private void Ensure4BppTilePensDecoded()
+        {
+            if (_bpp4TilePensDecoded)
+                return;
+
+            for (int code = 0; code < 0x20000; code++)
+            {
+                int decodedTileBase = code << 6;
+                int bitTileBase = code << 8;
+                for (int y = 0; y < 8; y++)
+                {
+                    int decodedRowBase = decodedTileBase + (y << 3);
+                    int bitRowBase = bitTileBase + (y << 5);
+                    for (int x = 0; x < 8; x++)
+                    {
+                        int bitIndexBase = bitRowBase + Moomesa4BppTileXOffsets[x];
+                        int pen = 0;
+                        for (int plane = 0; plane < 4; plane++)
+                        {
+                            int bitIndex = bitIndexBase + plane;
+                            int byteIndex = (bitIndex >> 3) % _rom.Length;
+                            int bit = 7 - (bitIndex & 7);
+                            pen |= ((_rom[byteIndex] >> bit) & 1) << (3 - plane);
+                        }
+                        _decodedTilePens[decodedRowBase + x] = (byte)pen;
+                    }
+                }
+            }
+
+            _bpp4TilePensDecoded = true;
         }
 
         private int Decode5BppPixelFromDecodedRom(int code, int x, int y)
