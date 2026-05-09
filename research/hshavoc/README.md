@@ -68,3 +68,8 @@ Current strongest model:
   `FFD800 -> C100`, `FFD900 -> C024`, `FFD940 -> C026`, and `FFD980 -> E300`.
   This makes the likely fault the tilemap producer/state path, not layer
   ordering or a single global tile-bank offset.
+- Runtime RAM seeding is available through
+  `EUTHERDRIVE_HSHAVOC_RAM_SEED_WORDS=addr:value,...`. Use
+  `EUTHERDRIVE_HSHAVOC_RAM_SEED_EVERY_FRAME=1` only as a diagnostic override.
+  The current best proof is `FFDBEC`: forcing `0x000b` moves the cold frame
+  5147 VDP queue much closer to user slot 3, but it is not a final fix.

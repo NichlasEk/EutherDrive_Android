@@ -109,6 +109,10 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         ParseEnvInt("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCK_MAX", 128);
     private static readonly string? RamSeedWords =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_RAM_SEED_WORDS");
+    private static readonly bool RamSeedEveryFrame =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_RAM_SEED_EVERY_FRAME");
+    private static readonly bool TraceRamSeedEveryFrame =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_RAM_SEED_EVERY_FRAME");
     private static readonly bool PatchInputIllegalBridge =
         !IsEnvDisabled("EUTHERDRIVE_HSHAVOC_PATCH_INPUT_ILLEGAL_BRIDGE");
     private static readonly bool ApplyVdpSourceProbe =
@@ -320,7 +324,9 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         ClearTile0ProbeIfRequested();
         ApplyPlaneBTileOffsetProbeIfRequested();
         SeedTestPaletteIfRequested();
+        ApplyRamSeedWordsEveryFrameIfRequested();
         _md.RunFrame();
+        ApplyRamSeedWordsEveryFrameIfRequested();
         ForceVdpDisplayIfRequested();
         ForceVdpPlaneBasesIfRequested();
         ForceVdpHScrollModeIfRequested();
@@ -1273,6 +1279,19 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
 
     private static void ApplyRamSeedWordsIfRequested()
     {
+        ApplyRamSeedWordsIfRequested(log: true);
+    }
+
+    private static void ApplyRamSeedWordsEveryFrameIfRequested()
+    {
+        if (!RamSeedEveryFrame)
+            return;
+
+        ApplyRamSeedWordsIfRequested(log: TraceRamSeedEveryFrame);
+    }
+
+    private static void ApplyRamSeedWordsIfRequested(bool log)
+    {
         if (string.IsNullOrWhiteSpace(RamSeedWords))
             return;
 
@@ -1289,24 +1308,35 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
                 throw new InvalidDataException($"Invalid HSHavoc RAM seed word '{entry}'. Use address:value.");
             uint address = ParseHexLiteral(parts[0]);
             ushort value = checked((ushort)ParseHexLiteral(parts[1]));
-            if ((address & 1) != 0 || address >= memory.Length - 1)
+            if (!TryNormalizeM68kRamAddress(address, memory.Length, out uint offset))
                 throw new InvalidDataException($"Invalid HSHavoc RAM seed address 0x{address:X8}.");
-            WriteM68kRamWord(address, value);
+            WriteM68kRamWord(offset, value);
             applied++;
         }
 
-        Console.WriteLine($"[HSHAVOC-RAM-SEED] words={applied}");
+        if (log)
+            Console.WriteLine($"[HSHAVOC-RAM-SEED] words={applied}");
     }
 
-    private static void WriteM68kRamWord(uint address, ushort value)
+    private static bool TryNormalizeM68kRamAddress(uint address, int memoryLength, out uint offset)
+    {
+        offset = address;
+        if (memoryLength <= 0x10000 && address >= 0x00FF0000 && address <= 0x00FFFFFF)
+            offset = address & 0xFFFF;
+        if ((offset & 1) != 0 || offset >= memoryLength - 1)
+            return false;
+        return true;
+    }
+
+    private static void WriteM68kRamWord(uint offset, ushort value)
     {
         md_m68k.InitMemoryIfNeeded();
         byte[]? memory = md_m68k.g_memory;
-        if (memory == null || (address & 1) != 0 || address >= memory.Length - 1)
+        if (memory == null || (offset & 1) != 0 || offset >= memory.Length - 1)
             return;
 
-        memory[address] = (byte)(value >> 8);
-        memory[address + 1] = (byte)value;
+        memory[offset] = (byte)(value >> 8);
+        memory[offset + 1] = (byte)value;
     }
 
     private static uint ParseHexLiteral(string raw)

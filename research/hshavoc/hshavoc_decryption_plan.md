@@ -243,12 +243,20 @@ The instruction-path search now finds a plausible partial startup stream:
   - Good slot 3 also has Plane B all zero, but Plane A is full (`2024/2048` nonblank refs), proving Plane B emptiness is not itself the bug.
   - The key slot-3 difference is RAM-sourced queue records missing from cold-start: `$ffd800 -> $c100`, `$ffd900 -> $c024`, `$ffd940 -> $c026`, and `$ffd980 -> $e300`.
   - A direct RAM-range trace on the cold path shows `$ffd800` being filled/consumed by the `$003a10-$003b44` routines with mostly `$4000` filler. The next decryption target is therefore the tilemap producer/control path around `$003800-$003cff` and the code deciding whether those RAM DMA queue entries are emitted.
+- The frame-5147 state-index probe has now made the tilemap fault concrete:
+  - Normal cold frame 5147 reaches the RAM queue path, but with `FFDBEC=$0003`; slot 3 has `FFDBEC=$000b`.
+  - Cold frame 5147 queues `$ffd800 -> $ce00`, `$ffd900 -> $c040`, `$ffd940 -> $c042`, and `$ffd980 -> $e200`.
+  - Slot 3 queues `$ffd800 -> $c100`, `$ffd900 -> $c024`, `$ffd940 -> $c026`, and `$ffd980 -> $e300`.
+  - Fixing the RAM seed probe to write the real 24-bit work-RAM address proved that forcing only `FFDBEC=$000b` every frame reduces the slot-3 queue diff from `14/14` unique blocks to `4/6`; `$ffd900/$ffd940` move closer but `$ffd800` and the ROM source remain wrong.
+  - Forcing the wider slot-3 control packet (`FFDB88/8A/8E/92/94/96/98/9A`, `FFDBCC`, `FFDBE0/E4/E8/EC`, `FFDF36/3A`, `FFF6D0/D8`) reduces the queue diff further to `2/4` and matches `$ffd900 -> $c024` and `$ffd940 -> $c026`, but `$ffd800` still lands at `$c200`, `$ffd980 -> $e300` is still absent, and the `$f000` ROM source is `$047cfa` instead of slot-3 `$041a5a`.
+  - Therefore the next target is not a broad renderer or full-state copy. It is the small control/table path that selects `FFDBEC`, computes the `$ffd800` destination, emits the `$ffd980` transfer, and chooses the `$041a5a` ROM source.
 
 ## Next steps
 
 1. Keep the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a target set, but do not treat the first `p5h`/typedat-invert probe as solved; it changes DMA data without improving the corrupt framebuffer.
 1a. Use `--vram-snapshot` on every promising frame. The first low-pattern path is now proven (`$001fe2` decompressor -> `$ff0000` -> `$019340/$019338` DMA), so the next focus is comparing RAM-produced tilemap/pattern-bank records against retail snapshots and finding which producer causes Plane B or later pattern banks to diverge.
 1b. Use `--ram-snapshot --compare-ram-snapshot` against slot 3 before any renderer change. The first pass/fail signal is whether the RAM-sourced Plane A queue records (`$ffd800/$ffd900/$ffd940/$ffd980`) appear; if they do not, continue with tilemap producer/control decryption instead of layer-bank probes.
+1c. Focus the next runtime/decode pass on the `FFDBEC` producer and consumers: `$003c60`, `$003d58`, and `$003de8` use `FFDBEC` as a table index, `$0032b0-$0032f4` increments/wraps it through the `$00352c` table, `$010872` remaps it through a small table, and `$01a2b8` derives it from `FFDF36 & 3`. The immediate proof target is matching slot 3's `$ffd800 -> $c100` and `$ffd980 -> $e300` queue records without forcing the whole control packet.
 2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
 3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
 4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.
