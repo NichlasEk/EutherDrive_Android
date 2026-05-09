@@ -199,6 +199,21 @@ VDP/IO checkpoint:
   natural CRAM write callbacks fire from `$13fe`. The CRAM payload is still all
   zero, so the next blocker is the palette payload/producer or its board/PIC
   gate, not the dispatcher entry or the MD renderer.
+- DMA source tracing shows the natural CRAM upload reads 64 words from
+  `$fff700-$fff77f` via regs `9340,9400,9580,96fb,977f` and command
+  `c000,0080`. The first `$1332` dispatcher call at frame 3 is too early: the
+  buffer is still zero. The home ROM control path uses the matching dispatcher
+  at `$0e0c` and later writes fade palette words from `$008ac2`; the decoded
+  arcade image contains the byte-identical routine at `$009aac`.
+- Arcade runtime reaches `$009aac` and writes nonzero words to `$fff700` after
+  the early dispatcher call. `EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN=1`
+  is an opt-in proof bridge that hashes `$fff700`, skips the all-zero state, and
+  replays the fixed CRAM DMA when the palette buffer changes. With
+  `initdispatcher`, `EUTHERDRIVE_HSHAVOC_RAM_SEED_WORDS=0xfffe00:0x8164`,
+  VDP command-block flushing, display forcing, and the static palette bridge,
+  a 90-frame headless run reaches `fb_has_content=True` with 28,695 nonzero
+  pixels. That means the next real target is the missing main-loop dispatcher
+  call/gate, not palette data generation.
 
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.

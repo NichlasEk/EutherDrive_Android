@@ -42,6 +42,10 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_VDP_COMMAND_BLOCKS") || UiProofMode;
     private static readonly bool TraceVdpCommandBlockFlush =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS");
+    private static readonly bool FlushStaticPalettePlan =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_STATIC_PALETTE_PLAN");
+    private static readonly bool TraceStaticPalettePlan =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_STATIC_PALETTE_PLAN");
     private static readonly bool TraceCramCommandBlockCandidates =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCKS");
     private static readonly uint TraceCramCommandBlockStart =
@@ -123,6 +127,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private readonly MdTracerAdapter _md = new();
     private readonly HashSet<ulong> _flushedQueueEntries = new();
     private readonly HashSet<ulong> _flushedVdpCommandBlocks = new();
+    private readonly HashSet<ulong> _flushedStaticPalettePlans = new();
     private readonly HashSet<ulong> _tracedCramCommandBlocks = new();
     private bool _testPaletteSeeded;
 
@@ -150,6 +155,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     {
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
+        _flushedStaticPalettePlans.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         string profile = GetDecodeProfile();
@@ -184,6 +190,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     {
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
+        _flushedStaticPalettePlans.Clear();
         _tracedCramCommandBlocks.Clear();
         _testPaletteSeeded = false;
         _md.Reset();
@@ -195,6 +202,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
         FlushVdpCommandBlocksIfRequested();
+        FlushStaticPalettePlanIfRequested();
         TraceCramCommandBlocksIfRequested();
         FlushVdpDmaQueueIfRequested();
         SeedTestPaletteIfRequested();
@@ -354,6 +362,49 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
             ExecuteVdpCommandBlock(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
         }
+    }
+
+    private void FlushStaticPalettePlanIfRequested()
+    {
+        if (!FlushStaticPalettePlan || md_main.g_md_vdp == null)
+            return;
+
+        const uint source = 0x00FFF700;
+        const int words = 0x40;
+        if (IsM68kWordRangeAllZero(source, words))
+            return;
+
+        ulong signature = HashM68kWords(source, words);
+        if (!_flushedStaticPalettePlans.Add(signature))
+            return;
+
+        ExecuteVdpCommandBlock(
+            source,
+            0x9340,
+            0x9400,
+            0x9580,
+            0x96FB,
+            0x977F,
+            0xC000,
+            0x0080);
+
+        if (TraceStaticPalettePlan)
+        {
+            Console.WriteLine(
+                $"[HSHAVOC-STATIC-PALETTE-FLUSH] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+                $"source=0x{source:X6} words=0x{words:X2} hash=0x{signature:X16}");
+        }
+    }
+
+    private bool IsM68kWordRangeAllZero(uint source, int words)
+    {
+        for (int i = 0; i < words; i++)
+        {
+            if (_md.DebugReadM68kWord(source + (uint)(i * 2)) != 0)
+                return false;
+        }
+
+        return true;
     }
 
     private void TraceCramCommandBlocksIfRequested()
