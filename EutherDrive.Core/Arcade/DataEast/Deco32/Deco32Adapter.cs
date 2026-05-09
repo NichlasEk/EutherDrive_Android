@@ -2269,7 +2269,7 @@ public sealed class DecoSpriteDevice
                         && ((pix1 & 0xff) == 0 || pri1 >= 2 || sprite1Alpha))
                     {
                         int alpha = _palette.GetAlpha(0x17 + (((alphaPix & 0xf0) >> 4) / 2));
-                        _palette.BlendPixel(fb, stride, x, y, coloffs | alphaPix, alpha);
+                        _palette.BlendPixel(fb, stride, x, y, alphaPix, alpha);
                     }
                 }
             }
@@ -2452,6 +2452,11 @@ public sealed class PaletteDevice
     {
         index &= 0x1f;
         int alpha = _aceRam[index] & 0xff;
+        // Night Slashers leaves the object alpha slots at zero for common shadow
+        // overlays; hardware still blends those sprite-1 pixels instead of making
+        // them solid black.
+        if (alpha == 0 && index <= 0x05)
+            return 0x80;
         if (alpha > 0x20)
             return 0x80;
         alpha = 255 - (alpha << 3);
