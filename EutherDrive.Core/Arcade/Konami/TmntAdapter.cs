@@ -1238,7 +1238,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x1c0000 && address <= 0x1c1fff)
             {
                 _paletteRam[address - 0x1c0000] = value;
-                UpdatePaletteTmnt2((int)((address - 0x1c0000) >> 1));
+                UpdatePaletteMoomesa((int)((address - 0x1c0000) >> 2));
+                _paletteWrites++;
                 return;
             }
             ushort word = ReadWordMoomesa(address & ~1u);
@@ -1317,8 +1318,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             {
                 int offset = (int)(address - 0x1c0000);
                 WriteBigEndianWord(_paletteRam, offset, value);
-                UpdatePaletteTmnt2(offset >> 1);
+                UpdatePaletteMoomesa(offset >> 2);
+                _paletteWrites++;
             }
+        }
+
+        private void UpdatePaletteMoomesa(int index)
+        {
+            index &= 0x7ff;
+            int offset = index * 4;
+            int r = _paletteRam[offset + 1];
+            int g = _paletteRam[offset + 2];
+            int b = _paletteRam[offset + 3];
+            _palette[index] = (ushort)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10));
         }
 
         private void WriteMoomesaControl2(ushort value)
