@@ -369,7 +369,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private TmntSound? _sound;
         [NonSerialized] private byte[]? _tmnt2RawFrameBuffer;
         [NonSerialized] private byte[]? _tmnt2PriorityBuffer;
+        [NonSerialized] private byte[]? _moomesaPriorityBuffer;
         [NonSerialized] private readonly byte[] _moomesaBaseFrameCache = new byte[FrameHeight * FrameStride];
+        [NonSerialized] private readonly byte[] _moomesaBasePriorityCache = new byte[FrameWidth * FrameHeight];
         [NonSerialized] private bool _moomesaBaseFrameCacheValid;
         [NonSerialized] private ulong _moomesaBaseFrameCacheKey;
         [NonSerialized] private readonly byte[] _moomesaTextLayerCache = new byte[FrameHeight * FrameStride];
@@ -1105,27 +1107,33 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int textPriority = K053251Priority(1);
             if (renderMask == "all")
             {
+                byte[] priorityBuffer = EnsureMoomesaPriorityBuffer();
                 ulong cacheKey = MoomesaBaseFrameCacheKey(layer, priority, textPriority);
                 if (_moomesaBaseFrameCacheValid && _moomesaBaseFrameCacheKey == cacheKey)
                 {
                     Buffer.BlockCopy(_moomesaBaseFrameCache, 0, frameBuffer, 0, frameBuffer.Length);
+                    Buffer.BlockCopy(_moomesaBasePriorityCache, 0, priorityBuffer, 0, priorityBuffer.Length);
                 }
                 else
                 {
+                    Array.Clear(priorityBuffer);
                     _k054338.FillSolidBackground(frameBuffer);
-                    RenderMoomesaBaseLayers(frameBuffer, layer, priority, textPriority, drawLayer1, drawLayer2, drawLayer3);
+                    RenderMoomesaBaseLayers(frameBuffer, layer, priority, textPriority, drawLayer1, drawLayer2, drawLayer3, priorityBuffer);
                     Buffer.BlockCopy(frameBuffer, 0, _moomesaBaseFrameCache, 0, frameBuffer.Length);
+                    Buffer.BlockCopy(priorityBuffer, 0, _moomesaBasePriorityCache, 0, priorityBuffer.Length);
                     _moomesaBaseFrameCacheKey = cacheKey;
                     _moomesaBaseFrameCacheValid = true;
                 }
+                if (drawSprites)
+                    _k053245.RenderPriorityMasked(frameBuffer, _palette, priority, priorityBuffer);
             }
             else
             {
                 _k054338.FillSolidBackground(frameBuffer);
                 RenderMoomesaBaseLayers(frameBuffer, layer, priority, textPriority, drawLayer1, drawLayer2, drawLayer3);
+                if (drawSprites)
+                    _k053245.RenderMystwarrPriority(frameBuffer, _palette, -1, _k054338);
             }
-            if (drawSprites)
-                _k053245.RenderMystwarrPriority(frameBuffer, _palette, -1, _k054338);
             if (drawLayer0)
             {
                 if (renderMask == "all")
@@ -1137,14 +1145,22 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private void RenderMoomesaBaseLayers(byte[] frameBuffer, ReadOnlySpan<int> layer, ReadOnlySpan<int> priority, int textPriority,
-            bool drawLayer1, bool drawLayer2, bool drawLayer3)
+            bool drawLayer1, bool drawLayer2, bool drawLayer3, byte[]? priorityBuffer = null)
         {
             if (priority[0] < textPriority && ShouldDrawMoomesaLayer(layer[0], drawLayer1, drawLayer2, drawLayer3))
-                _k056832.RenderLayer(frameBuffer, _palette, layer[0], opaque: false);
+                RenderMoomesaBaseLayer(frameBuffer, layer[0], priorityBuffer, 1);
             if (ShouldDrawMoomesaLayer(layer[1], drawLayer1, drawLayer2, drawLayer3))
-                _k056832.RenderLayer(frameBuffer, _palette, layer[1], opaque: false);
+                RenderMoomesaBaseLayer(frameBuffer, layer[1], priorityBuffer, 2);
             if (ShouldDrawMoomesaLayer(layer[2], drawLayer1, drawLayer2, drawLayer3))
-                _k056832.RenderLayer(frameBuffer, _palette, layer[2], opaque: false);
+                RenderMoomesaBaseLayer(frameBuffer, layer[2], priorityBuffer, 4);
+        }
+
+        private void RenderMoomesaBaseLayer(byte[] frameBuffer, int layer, byte[]? priorityBuffer, int priorityCode)
+        {
+            if (priorityBuffer != null)
+                _k056832.RenderLayerWithPriority(frameBuffer, _palette, layer, false, priorityBuffer, priorityCode);
+            else
+                _k056832.RenderLayer(frameBuffer, _palette, layer, opaque: false);
         }
 
         private ulong MoomesaBaseFrameCacheKey(ReadOnlySpan<int> layer, ReadOnlySpan<int> priority, int textPriority)
@@ -1281,6 +1297,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (_tmnt2PriorityBuffer == null || _tmnt2PriorityBuffer.Length != length)
                 _tmnt2PriorityBuffer = new byte[length];
             return _tmnt2PriorityBuffer;
+        }
+
+        private byte[] EnsureMoomesaPriorityBuffer()
+        {
+            int length = FrameHeight * FrameWidth;
+            if (_moomesaPriorityBuffer == null || _moomesaPriorityBuffer.Length != length)
+                _moomesaPriorityBuffer = new byte[length];
+            return _moomesaPriorityBuffer;
         }
 
         private static void CopyTmnt2VisibleArea(byte[] rawFrameBuffer, byte[] frameBuffer)
@@ -3647,13 +3671,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory)
             => RenderLayer(frameBuffer, palette, layer, opaque, mixAlphas, tileCategory, 255);
 
+        public void RenderLayerWithPriority(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, byte[] priorityBuffer, int priorityCode)
+            => RenderLayerCore(frameBuffer, palette, layer, opaque, default, TileCategoryAll, 255, priorityBuffer, priorityCode);
+
         public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
         {
             brightness = Math.Clamp(brightness, 0, 255);
-            RenderLayerMameSource(frameBuffer, palette, layer, opaque, mixAlphas, tileCategory, brightness);
+            RenderLayerCore(frameBuffer, palette, layer, opaque, mixAlphas, tileCategory, brightness, null, 0);
         }
 
-        private void RenderLayerMameSource(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
+        private void RenderLayerCore(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, ReadOnlySpan<int> mixAlphas,
+            int tileCategory, int brightness, byte[]? priorityBuffer, int priorityCode)
         {
             layer &= 3;
             if ((_regs[4] & (1 << layer)) == 0)
@@ -3708,9 +3736,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
                     int pageBase = page * PageWords;
                     if (PageUsesTileMode(page))
-                        DrawTileSourceRun(frameBuffer, palette, pageBase, layer, pageColorBase, px, py, run, localX, tileY, pixelX, pixelY, flipX, opaque, mixAlphas, tileCategory, brightness);
+                        DrawTileSourceRun(frameBuffer, palette, pageBase, layer, pageColorBase, px, py, run, localX, tileY, pixelX, pixelY, flipX, opaque, mixAlphas, tileCategory, brightness, priorityBuffer, priorityCode);
                     else
-                        DrawLineSourceRun(frameBuffer, palette, pageBase, layer, pageColorBase, px, py, run, localX, localY, flipX, opaque, mixAlphas, tileCategory, brightness);
+                        DrawLineSourceRun(frameBuffer, palette, pageBase, layer, pageColorBase, px, py, run, localX, localY, flipX, opaque, mixAlphas, tileCategory, brightness, priorityBuffer, priorityCode);
 
                     AdvanceSourceRun(ref px, ref sourceX, run, mapWidth, flipX);
                 }
@@ -3730,7 +3758,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private void DrawTileSourceRun(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int pageBase, int layer, int colorBase, int px, int py, int run,
-            int localX, int tileY, int pixelX, int pixelY, bool screenFlipX, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
+            int localX, int tileY, int pixelX, int pixelY, bool screenFlipX, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness,
+            byte[]? priorityBuffer, int priorityCode)
         {
             int tileX = localX >> 3;
             int tileIndex = (tileY * 64 + tileX) & 0x7ff;
@@ -3754,11 +3783,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     continue;
 
                 WriteTilePixel(frameBuffer, px + i, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
+                if (priorityBuffer != null)
+                    priorityBuffer[py * FrameWidth + px + i] = (byte)(priorityBuffer[py * FrameWidth + px + i] | priorityCode);
             }
         }
 
         private void DrawLineSourceRun(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int pageBase, int layer, int colorBase, int px, int py, int run,
-            int localX, int localY, bool screenFlipX, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness)
+            int localX, int localY, bool screenFlipX, bool opaque, ReadOnlySpan<int> mixAlphas, int tileCategory, int brightness,
+            byte[]? priorityBuffer, int priorityCode)
         {
             int attr = _vram[pageBase + localY * 2];
             int code = _vram[pageBase + localY * 2 + 1] & ~7;
@@ -3777,6 +3809,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (pen == 0 && !opaque)
                     continue;
                 WriteTilePixel(frameBuffer, px + i, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
+                if (priorityBuffer != null)
+                    priorityBuffer[py * FrameWidth + px + i] = (byte)(priorityBuffer[py * FrameWidth + px + i] | priorityCode);
             }
         }
 
@@ -5157,12 +5191,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
         }
 
-        private static int SpritePriorityBand(int rawColor, ReadOnlySpan<int> sortedLayerPriorities)
+        private int SpritePriorityBand(int rawColor, ReadOnlySpan<int> sortedLayerPriorities)
         {
             if (sortedLayerPriorities.Length < 3)
                 return 3;
 
-            int priority = 0x20 | ((rawColor & 0x60) >> 2);
+            int priority = SpritePriorityValue(rawColor);
             if (priority <= sortedLayerPriorities[2])
                 return 3;
             if (priority <= sortedLayerPriorities[1])
@@ -5172,12 +5206,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return 0;
         }
 
-        private static int SpritePriorityMask(int rawColor, ReadOnlySpan<int> sortedLayerPriorities)
+        private int SpritePriorityMask(int rawColor, ReadOnlySpan<int> sortedLayerPriorities)
         {
             if (sortedLayerPriorities.Length < 3)
                 return 0;
 
-            int priority = 0x20 | ((rawColor & 0x60) >> 2);
+            int priority = SpritePriorityValue(rawColor);
             if (priority <= sortedLayerPriorities[2])
                 return 0;
             if (priority <= sortedLayerPriorities[1])
@@ -5186,6 +5220,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return 0xf0 | 0xcc;
             return 0xf0 | 0xcc | 0xaa;
         }
+
+        private int SpritePriorityValue(int rawColor)
+            => _normalPlaneSpriteDecode ? ((rawColor & 0x03e0) >> 4) : 0x20 | ((rawColor & 0x60) >> 2);
 
         private readonly record struct SpriteBounds(int RawY, int X, int Y, int Right, int Bottom, int Width, int Height, int ZoomX, int ZoomY);
 
