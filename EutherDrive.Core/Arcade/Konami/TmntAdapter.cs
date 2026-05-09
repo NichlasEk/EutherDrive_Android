@@ -369,6 +369,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private TmntSound? _sound;
         [NonSerialized] private byte[]? _tmnt2RawFrameBuffer;
         [NonSerialized] private byte[]? _tmnt2PriorityBuffer;
+        [NonSerialized] private readonly byte[] _moomesaBaseFrameCache = new byte[FrameHeight * FrameStride];
+        [NonSerialized] private bool _moomesaBaseFrameCacheValid;
+        [NonSerialized] private ulong _moomesaBaseFrameCacheKey;
+        [NonSerialized] private readonly byte[] _moomesaTextLayerCache = new byte[FrameHeight * FrameStride];
+        [NonSerialized] private readonly int[] _moomesaTextLayerPixelOffsets = new int[FrameWidth * FrameHeight];
+        [NonSerialized] private int _moomesaTextLayerPixelCount;
+        [NonSerialized] private bool _moomesaTextLayerCacheValid;
+        [NonSerialized] private ulong _moomesaTextLayerCacheKey;
 
         private ArcadeInputState _input;
         private TmntHardwareVariant _variant;
@@ -431,6 +439,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
             _k053250.MoomesaClipWindow = UsesMoomesaHardware;
+            InvalidateMoomesaBaseFrameCache();
         }
 
         public void Load(TmntRomSet roms)
@@ -442,6 +451,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_moomesaSpriteRam);
             Array.Clear(_paletteRam);
             Array.Clear(_palette);
+            InvalidateMoomesaBaseFrameCache();
             Array.Clear(_tmnt2UnknownRam);
             Array.Clear(_tmnt2ProtRam);
             Array.Clear(_moomesaProtRam);
@@ -495,6 +505,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
             _k053250.MoomesaClipWindow = UsesMoomesaHardware;
+            InvalidateMoomesaBaseFrameCache();
             _interruptLevel = 0;
             _irq5Enabled = false;
             _moomesaSpriteIrqEnabled = false;
@@ -1081,8 +1092,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k056832.MetamrphTileCallback = false;
             _k053245.SpriteColorBase = _k053251PaletteIndex[0];
 
-            _k054338.FillSolidBackground(frameBuffer);
-
             Span<int> layer = stackalloc int[] { 1, 2, 3 };
             Span<int> priority = stackalloc int[]
             {
@@ -1094,17 +1103,136 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
             _k053245.BeginMystwarrObjectFrame();
             int textPriority = K053251Priority(1);
+            if (renderMask == "all")
+            {
+                ulong cacheKey = MoomesaBaseFrameCacheKey(layer, priority, textPriority);
+                if (_moomesaBaseFrameCacheValid && _moomesaBaseFrameCacheKey == cacheKey)
+                {
+                    Buffer.BlockCopy(_moomesaBaseFrameCache, 0, frameBuffer, 0, frameBuffer.Length);
+                }
+                else
+                {
+                    _k054338.FillSolidBackground(frameBuffer);
+                    RenderMoomesaBaseLayers(frameBuffer, layer, priority, textPriority, drawLayer1, drawLayer2, drawLayer3);
+                    Buffer.BlockCopy(frameBuffer, 0, _moomesaBaseFrameCache, 0, frameBuffer.Length);
+                    _moomesaBaseFrameCacheKey = cacheKey;
+                    _moomesaBaseFrameCacheValid = true;
+                }
+            }
+            else
+            {
+                _k054338.FillSolidBackground(frameBuffer);
+                RenderMoomesaBaseLayers(frameBuffer, layer, priority, textPriority, drawLayer1, drawLayer2, drawLayer3);
+            }
+            if (drawSprites)
+                _k053245.RenderMystwarrPriority(frameBuffer, _palette, -1, _k054338);
+            if (drawLayer0)
+            {
+                if (renderMask == "all")
+                    RenderMoomesaTextLayerCached(frameBuffer);
+                else
+                    _k056832.RenderLayer(frameBuffer, _palette, 0, opaque: false);
+            }
+            _k053245.FinishMystwarrRenderFrameStats();
+        }
+
+        private void RenderMoomesaBaseLayers(byte[] frameBuffer, ReadOnlySpan<int> layer, ReadOnlySpan<int> priority, int textPriority,
+            bool drawLayer1, bool drawLayer2, bool drawLayer3)
+        {
             if (priority[0] < textPriority && ShouldDrawMoomesaLayer(layer[0], drawLayer1, drawLayer2, drawLayer3))
                 _k056832.RenderLayer(frameBuffer, _palette, layer[0], opaque: false);
             if (ShouldDrawMoomesaLayer(layer[1], drawLayer1, drawLayer2, drawLayer3))
                 _k056832.RenderLayer(frameBuffer, _palette, layer[1], opaque: false);
             if (ShouldDrawMoomesaLayer(layer[2], drawLayer1, drawLayer2, drawLayer3))
                 _k056832.RenderLayer(frameBuffer, _palette, layer[2], opaque: false);
-            if (drawSprites)
-                _k053245.RenderMystwarrPriority(frameBuffer, _palette, -1, _k054338);
-            if (drawLayer0)
-                _k056832.RenderLayer(frameBuffer, _palette, 0, opaque: false);
-            _k053245.FinishMystwarrRenderFrameStats();
+        }
+
+        private ulong MoomesaBaseFrameCacheKey(ReadOnlySpan<int> layer, ReadOnlySpan<int> priority, int textPriority)
+        {
+            ulong key = MoomesaBasePaletteHash(layer, priority, textPriority);
+            key = HashCombine(key, _k056832.RenderStateVersion);
+            key = HashCombine(key, _k054338.BackgroundKey);
+            key = HashCombine(key, PackMoomesaLayerState(layer, priority, textPriority));
+            key = HashCombine(key, (ulong)_k056832.LayerColorBase[1]);
+            key = HashCombine(key, (ulong)_k056832.LayerColorBase[2]);
+            key = HashCombine(key, (ulong)_k056832.LayerColorBase[3]);
+            return key;
+        }
+
+        private ulong MoomesaBasePaletteHash(ReadOnlySpan<int> layer, ReadOnlySpan<int> priority, int textPriority)
+        {
+            ulong hash = 0xcbf29ce484222325UL;
+            if (priority[0] < textPriority)
+                hash = HashCombine(hash, MoomesaLayerPaletteHash(layer[0]));
+            hash = HashCombine(hash, MoomesaLayerPaletteHash(layer[1]));
+            hash = HashCombine(hash, MoomesaLayerPaletteHash(layer[2]));
+            return hash;
+        }
+
+        private ulong MoomesaLayerPaletteHash(int layer)
+        {
+            int colorBase = _k056832.LayerColorBase[layer & 3] & 0x7f;
+            ulong hash = (uint)layer;
+            for (int colorOffset = 0; colorOffset < 16; colorOffset++)
+            {
+                int color = (colorBase | colorOffset) & 0x7f;
+                int paletteBase = color << 4;
+                for (int pen = 0; pen < 16; pen++)
+                    hash = (hash * 1099511628211UL) ^ _palette[(paletteBase + pen) & 0x7ff];
+            }
+            return hash;
+        }
+
+        private void RenderMoomesaTextLayerCached(byte[] frameBuffer)
+        {
+            ulong cacheKey = HashCombine(_k056832.RenderStateVersion, MoomesaLayerPaletteHash(0));
+            cacheKey = HashCombine(cacheKey, (ulong)_k056832.LayerColorBase[0]);
+            if (!_moomesaTextLayerCacheValid || _moomesaTextLayerCacheKey != cacheKey)
+            {
+                Array.Clear(_moomesaTextLayerCache);
+                _k056832.RenderLayer(_moomesaTextLayerCache, _palette, 0, opaque: false);
+                _moomesaTextLayerPixelCount = 0;
+                for (int offset = 0; offset < _moomesaTextLayerCache.Length; offset += 4)
+                {
+                    if (_moomesaTextLayerCache[offset + 3] == 0)
+                        continue;
+                    _moomesaTextLayerPixelOffsets[_moomesaTextLayerPixelCount++] = offset;
+                }
+                _moomesaTextLayerCacheKey = cacheKey;
+                _moomesaTextLayerCacheValid = true;
+            }
+
+            for (int i = 0; i < _moomesaTextLayerPixelCount; i++)
+            {
+                int offset = _moomesaTextLayerPixelOffsets[i];
+                frameBuffer[offset] = _moomesaTextLayerCache[offset];
+                frameBuffer[offset + 1] = _moomesaTextLayerCache[offset + 1];
+                frameBuffer[offset + 2] = _moomesaTextLayerCache[offset + 2];
+                frameBuffer[offset + 3] = 0xff;
+            }
+        }
+
+        private static ulong PackMoomesaLayerState(ReadOnlySpan<int> layer, ReadOnlySpan<int> priority, int textPriority)
+        {
+            ulong key = (uint)textPriority;
+            for (int i = 0; i < 3; i++)
+            {
+                key = (key << 8) | (uint)(layer[i] & 0xff);
+                key = (key << 8) | (uint)(priority[i] & 0xff);
+            }
+            return key;
+        }
+
+        private static ulong HashCombine(ulong hash, ulong value)
+            => (hash ^ (value + 0x9e3779b97f4a7c15UL + (hash << 6) + (hash >> 2)));
+
+        private void InvalidateMoomesaBaseFrameCache()
+        {
+            _moomesaBaseFrameCacheValid = false;
+            _moomesaBaseFrameCacheKey = 0;
+            _moomesaTextLayerCacheValid = false;
+            _moomesaTextLayerCacheKey = 0;
+            _moomesaTextLayerPixelCount = 0;
         }
 
         private static bool ShouldDrawMoomesaLayer(int layer, bool drawLayer1, bool drawLayer2, bool drawLayer3)
@@ -1399,7 +1527,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int r = _paletteRam[offset + 1];
             int g = _paletteRam[offset + 2];
             int b = _paletteRam[offset + 3];
-            _palette[index] = (ushort)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10));
+            SetPaletteEntry(index, (ushort)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10)));
         }
 
         private void WriteMoomesaControl2(ushort value)
@@ -2338,7 +2466,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private void UpdatePaletteTmnt2(int index)
         {
             index &= 0x7ff;
-            _palette[index] = ReadBigEndianWord(_paletteRam, index * 2);
+            SetPaletteEntry(index, ReadBigEndianWord(_paletteRam, index * 2));
         }
 
         private void UpdatePaletteMystwarr(int index)
@@ -2349,7 +2477,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int r = (raw >> 16) & 0xff;
             int g = (raw >> 8) & 0xff;
             int b = raw & 0xff;
-            _palette[index] = (ushort)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10));
+            SetPaletteEntry(index, (ushort)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10)));
         }
 
         private void WriteK053251(int offset, byte value)
@@ -2472,7 +2600,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private void UpdatePalette(int offset)
         {
             int index = (offset >> 1) & 0x3ff;
-            _palette[index] = ReadBigEndianWord(_paletteRam, index * 2);
+            SetPaletteEntry(index, ReadBigEndianWord(_paletteRam, index * 2));
+        }
+
+        private void SetPaletteEntry(int index, ushort value)
+        {
+            index &= 0x7ff;
+            if (_palette[index] == value)
+                return;
+
+            _palette[index] = value;
         }
 
         private byte Coins()
@@ -3076,6 +3213,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public ushort ReadRegister(int offset) => _regs[offset & 0x0f];
 
+        public ulong BackgroundKey => ((ulong)_regs[0] << 16) | _regs[1];
+
         public void FillSolidBackground(byte[] frameBuffer)
         {
             byte r = (byte)(_regs[0] & 0xff);
@@ -3315,9 +3454,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private bool _moomesaTileCallback;
         [NonSerialized] private bool _bpp4TileDecode;
         [NonSerialized] private bool _bpp4TilePensDecoded;
+        [NonSerialized] private ulong _vramVersion;
+        [NonSerialized] private ulong _regVersion;
 
         public int[] LayerColorBase { get; } = new int[4];
         public int LastAlphaTileMixCode => _lastAlphaTileMixCode;
+        public ulong RenderStateVersion => (_vramVersion * 397UL) ^ _regVersion;
         public bool Bpp4TileDecode
         {
             get => _bpp4TileDecode;
@@ -3370,6 +3512,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _metamrphTileCallback = false;
             _moomesaTileCallback = false;
             _bpp4TileDecode = false;
+            _vramVersion = 0;
+            _regVersion = 0;
         }
 
         public ushort ReadRamWord(int offset)
@@ -3381,7 +3525,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteRamWord(int offset, ushort value)
         {
             offset &= PageWords - 1;
-            _vram[(_selectedPageBase + offset) & (_vram.Length - 1)] = value;
+            int index = (_selectedPageBase + offset) & (_vram.Length - 1);
+            if (_vram[index] == value)
+                return;
+
+            _vram[index] = value;
+            _vramVersion++;
         }
 
         public ushort ReadRomWord(int offset)
@@ -3450,7 +3599,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteRegWord(int offset, ushort value)
         {
             offset &= 0x1f;
+            ushort old = _regs[offset];
             _regs[offset] = value;
+            if (old != value)
+                _regVersion++;
             if (offset == 0x19)
                 ChangeRamBank();
             else if (offset == 0x1a || offset == 0x1b)
@@ -3469,7 +3621,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void WriteBoardRegWord(int offset, ushort value)
         {
-            _boardRegs[offset & 3] = value;
+            offset &= 3;
+            if (_boardRegs[offset] == value)
+                return;
+
+            _boardRegs[offset] = value;
+            _regVersion++;
         }
 
         public void WriteBoardRegByte(int byteOffset, byte value)
