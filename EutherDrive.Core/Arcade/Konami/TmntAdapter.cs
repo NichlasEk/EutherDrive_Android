@@ -5351,10 +5351,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             ReadOnlySpan<int> xoffset = stackalloc[] { 8, 12, 0, 4, 24, 28, 16, 20, 40, 44, 32, 36, 56, 60, 48, 52 };
             int bitIndex = ((code & 0xffff) << 10) + ((y & 15) << 6) + xoffset[x & 15];
-            return ReadRomBit(bitIndex)
-                   | (ReadRomBit(bitIndex + 1) << 1)
-                   | (ReadRomBit(bitIndex + 2) << 2)
-                   | (ReadRomBit(bitIndex + 3) << 3);
+            return (ReadRomBit(bitIndex) << 3)
+                   | (ReadRomBit(bitIndex + 1) << 2)
+                   | (ReadRomBit(bitIndex + 2) << 1)
+                   | ReadRomBit(bitIndex + 3);
         }
 
         private void DecodeMystwarrSprites()
