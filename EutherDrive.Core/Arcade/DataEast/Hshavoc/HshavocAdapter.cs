@@ -96,6 +96,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ParseEnvInt("EUTHERDRIVE_HSHAVOC_TRACE_CRAM_COMMAND_BLOCK_MAX", 128);
     private static readonly string? RamSeedWords =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_RAM_SEED_WORDS");
+    private static readonly bool PatchInputIllegalBridge =
+        !IsEnvDisabled("EUTHERDRIVE_HSHAVOC_PATCH_INPUT_ILLEGAL_BRIDGE");
 
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
@@ -166,6 +168,20 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         // movem restore at $19ac and corrupt the caller stack if entered alone.
         (0x0C70, 0x4EB9), (0x0C72, 0x0000), (0x0C74, 0x1332),
         (0x0C76, 0x4E71), (0x0C78, 0x4E71), (0x0C7A, 0x4E71)
+    };
+
+    private static readonly (int Address, ushort Value)[] InputIllegalBridgePatch =
+    {
+        // Probe only: B/C input reaches this still-encrypted coin-op/PIC island
+        // through $03d014 -> $03d054, currently decoding as illegal 0x4b76.
+        // Return to the caller so render/input bring-up can continue while the
+        // real decryption model for this island is investigated.
+        (0x03D004, 0x6100), (0x03D00C, 0x6100), (0x03D024, 0x6100),
+        (0x03D044, 0x6100),
+        (0x03D008, 0x4E75), (0x03D010, 0x4E75), (0x03D01E, 0x4E75),
+        (0x03D02E, 0x4E75), (0x03D040, 0x4E75), (0x03D046, 0x4E75),
+        (0x03D04A, 0x4E75), (0x03D056, 0x4E75), (0x03D054, 0x4E75),
+        (0x03D094, 0x4E75)
     };
 
     private readonly MdTracerAdapter _md = new();
@@ -1003,6 +1019,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         DecodeBaseInPlace(rom);
         if (profile != "base")
             ApplyPatch(rom, BestStartupPatch);
+        if (PatchInputIllegalBridge)
+            ApplyPatch(rom, InputIllegalBridgePatch);
         if (profile == "phase2" || profile == "island10a0")
             ApplyPatch(rom, OptionalPhase2OperandPatch);
         if (profile == "initmirror")

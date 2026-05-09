@@ -2129,6 +2129,7 @@ class Program
         ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
         int unchangedFrames = 0;
         bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+        var hshavocInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_HEADLESS_INPUT_SCRIPT"));
 
         WriteHshavocTraceLine(trace, -1, hshavoc, statsIn, lastFingerprint);
         Console.WriteLine(
@@ -2140,19 +2141,20 @@ class Program
 
         for (int frame = 0; frame < framesToRun; frame++)
         {
+            var input = ResolveSnesInputForFrame(frame, hshavocInputScript);
             hshavoc.SetInputState(
-                up: false,
-                down: false,
-                left: false,
-                right: false,
-                a: false,
-                b: false,
-                c: false,
-                start: false,
-                x: false,
-                y: false,
-                z: false,
-                mode: false,
+                up: input.Up,
+                down: input.Down,
+                left: input.Left,
+                right: input.Right,
+                a: input.A,
+                b: input.B,
+                c: input.X,
+                start: input.Start,
+                x: input.Y,
+                y: input.L,
+                z: input.R,
+                mode: input.Select,
                 padType: PadType.SixButton);
             hshavoc.RunFrame();
 

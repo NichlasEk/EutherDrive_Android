@@ -6,6 +6,8 @@ namespace EutherDrive.Core.Arcade.DataEast.Hshavoc;
 internal sealed class HshavocBoardBusOverride : IM68kBusOverride
 {
     private const uint AckWordAddress = 0x00FFF906;
+    private const uint BoardRamStartAddress = 0x00200000;
+    private const uint BoardRamEndAddress = 0x002023FF;
     private const uint VdpStartAddress = 0x00C00000;
     private const uint VdpEndAddress = 0x00C0001F;
     private const uint IoStartAddress = 0x00A10000;
@@ -45,6 +47,7 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     private static readonly uint VdpCommandBlockEnd = ParseHex("EUTHERDRIVE_HSHAVOC_VDP_COMMAND_BLOCK_END", 0x00FFEA80);
 
     private readonly IM68kBusOverride? _inner;
+    private readonly byte[] _boardRam = new byte[BoardRamEndAddress - BoardRamStartAddress + 1];
     private readonly HashSet<ulong> _flushedAckCommandBlocks = new();
     private readonly HashSet<ulong> _flushedLatchedQueueEntries = new();
     private uint _latchedSlot0Source;
@@ -69,6 +72,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         if (_inner?.TryRead8(address, out value) == true)
             return true;
 
+        if (TryReadBoardRam8(address, out value))
+            return true;
+
         TraceIoRead(address, 1);
         TraceRamAccess("RAM-R", address, 1, 0);
         return NoByte(out value);
@@ -82,6 +88,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         if (TryReadVBlankGate(address, out value))
             return true;
 
+        if (TryReadBoardRam16(address, out value))
+            return true;
+
         TraceIoRead(address, 2);
         TraceRamAccess("RAM-R", address, 2, 0);
         return NoWord(out value);
@@ -92,6 +101,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         if (_inner?.TryRead32(address, out value) == true)
             return true;
 
+        if (TryReadBoardRam32(address, out value))
+            return true;
+
         TraceIoRead(address, 4);
         TraceRamAccess("RAM-R", address, 4, 0);
         return NoLong(out value);
@@ -100,6 +112,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     public bool TryWrite8(uint address, byte value)
     {
         if (_inner?.TryWrite8(address, value) == true)
+            return true;
+
+        if (TryWriteBoardRam8(address, value))
             return true;
 
         if (!TouchesAck(address, 1))
@@ -116,6 +131,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
     public bool TryWrite16(uint address, ushort value)
     {
         if (_inner?.TryWrite16(address, value) == true)
+            return true;
+
+        if (TryWriteBoardRam16(address, value))
             return true;
 
         if (TryRepairVdpRegisterPending(address, value))
@@ -138,6 +156,9 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         if (_inner?.TryWrite32(address, value) == true)
             return true;
 
+        if (TryWriteBoardRam32(address, value))
+            return true;
+
         if (TryRepairVdpRegisterPending(address, value))
             return true;
 
@@ -152,6 +173,82 @@ internal sealed class HshavocBoardBusOverride : IM68kBusOverride
         ClearAckWord(value);
         return true;
     }
+
+    private bool TryReadBoardRam8(uint address, out byte value)
+    {
+        uint masked = address & 0x00FFFFFF;
+        if (!IsBoardRamAddress(masked))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _boardRam[masked - BoardRamStartAddress];
+        return true;
+    }
+
+    private bool TryReadBoardRam16(uint address, out ushort value)
+    {
+        if (!TryReadBoardRam8(address, out byte hi) ||
+            !TryReadBoardRam8(address + 1, out byte lo))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = (ushort)((hi << 8) | lo);
+        return true;
+    }
+
+    private bool TryReadBoardRam32(uint address, out uint value)
+    {
+        if (!TryReadBoardRam16(address, out ushort hi) ||
+            !TryReadBoardRam16(address + 2, out ushort lo))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = ((uint)hi << 16) | lo;
+        return true;
+    }
+
+    private bool TryWriteBoardRam8(uint address, byte value)
+    {
+        uint masked = address & 0x00FFFFFF;
+        if (!IsBoardRamAddress(masked))
+            return false;
+
+        _boardRam[masked - BoardRamStartAddress] = value;
+        return true;
+    }
+
+    private bool TryWriteBoardRam16(uint address, ushort value)
+    {
+        uint masked = address & 0x00FFFFFF;
+        if (!IsBoardRamAddress(masked) || !IsBoardRamAddress((masked + 1) & 0x00FFFFFF))
+            return false;
+
+        _boardRam[masked - BoardRamStartAddress] = (byte)(value >> 8);
+        _boardRam[masked + 1 - BoardRamStartAddress] = (byte)value;
+        return true;
+    }
+
+    private bool TryWriteBoardRam32(uint address, uint value)
+    {
+        uint masked = address & 0x00FFFFFF;
+        if (!IsBoardRamAddress(masked) || !IsBoardRamAddress((masked + 3) & 0x00FFFFFF))
+            return false;
+
+        _boardRam[masked - BoardRamStartAddress] = (byte)(value >> 24);
+        _boardRam[masked + 1 - BoardRamStartAddress] = (byte)(value >> 16);
+        _boardRam[masked + 2 - BoardRamStartAddress] = (byte)(value >> 8);
+        _boardRam[masked + 3 - BoardRamStartAddress] = (byte)value;
+        return true;
+    }
+
+    private static bool IsBoardRamAddress(uint maskedAddress)
+        => maskedAddress >= BoardRamStartAddress && maskedAddress <= BoardRamEndAddress;
 
     private static bool TouchesAck(uint address, uint size)
     {
