@@ -4531,8 +4531,11 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private readonly uint[] _registers = new uint[0x400];
     private readonly ushort[] _lfb = new ushort[LfbPixels];
+    private readonly List<uint> _fifoBuffer = new();
     private int _registerWriteCount;
     private int _fifoWriteCount;
+    private int _fifoPacketCount;
+    private int _fifoDrawPacketCount;
     private int _lfbWriteCount;
     private int _textureWriteCount;
     private int _renderFrame;
@@ -4548,6 +4551,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     public virtual void WriteFifo(ReadOnlySpan<uint> words)
     {
         _fifoWriteCount += words.Length;
+        for (int i = 0; i < words.Length; i++)
+            _fifoBuffer.Add(words[i]);
+        DecodeFifoPackets();
     }
 
     public uint ReadLfb32(uint offset)
@@ -4619,7 +4625,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         int bandHeight = Math.Max(6, target.Height / 64);
         for (int i = 0; i < 32; i++)
         {
-            uint value = _registers[(0x200u >> 2) + i];
+            uint register = i < 16
+                ? (0x100u >> 2) + (uint)i
+                : (0x200u >> 2) + (uint)(i - 16);
+            uint value = _registers[register];
             uint color = 0xff000000u |
                 ((value << 3) & 0x00ff0000u) |
                 ((value >> 5) & 0x0000ff00u) |
@@ -4630,21 +4639,27 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void DrawViewportOverlay(EutherFrameTarget target)
     {
-        uint clipX = _registers[(0x208u >> 2) & 0x3ffu];
-        uint clipY = _registers[(0x20cu >> 2) & 0x3ffu];
+        uint clipX = _registers[(0x118u >> 2) & 0x3ffu];
+        uint clipY = _registers[(0x11cu >> 2) & 0x3ffu];
         int x0 = (int)((clipX >> 16) & 0x7ff);
         int x1 = (int)(clipX & 0x7ff);
         int y0 = (int)((clipY >> 16) & 0x7ff);
         int y1 = (int)(clipY & 0x7ff);
         if (x1 <= x0 || x1 > target.Width)
         {
+            uint dimensions = _registers[(0x20cu >> 2) & 0x3ffu];
             x0 = 0;
-            x1 = target.Width;
+            x1 = dimensions != 0
+                ? Math.Clamp((int)(dimensions & 0x7ff) + 1, 1, target.Width)
+                : target.Width;
         }
         if (y1 <= y0 || y1 > target.Height)
         {
+            uint dimensions = _registers[(0x20cu >> 2) & 0x3ffu];
             y0 = 0;
-            y1 = target.Height;
+            y1 = dimensions != 0
+                ? Math.Clamp((int)((dimensions >> 16) & 0x7ff), 1, target.Height)
+                : target.Height;
         }
 
         DrawRect(target, x0, y0, x1 - x0, y1 - y0, 0xffffffffu);
@@ -4653,7 +4668,145 @@ internal class VoodooBringupBackend : IVoodooBackend
         FillRect(target, sweep, y0, 4, y1 - y0, 0xff00d7ffu);
         FillRect(target, 16, target.Height - 28, Math.Min(target.Width - 32, _registerWriteCount / 32), 8, 0xff39d353u);
         FillRect(target, 16, target.Height - 18, Math.Min(target.Width - 32, _lfbWriteCount / 64), 8, 0xfff7b955u);
-        FillRect(target, 16, target.Height - 8, Math.Min(target.Width - 32, (_fifoWriteCount + _textureWriteCount) / 256), 6, 0xffc678ddU);
+        FillRect(target, 16, target.Height - 8, Math.Min(target.Width - 32, (_fifoWriteCount + _fifoPacketCount * 8 + _textureWriteCount) / 256), 6, 0xffc678ddU);
+        FillRect(target, target.Width - 24, 16, 8, Math.Min(target.Height - 32, _fifoDrawPacketCount * 4), 0xffff6b6bu);
+    }
+
+    private void DecodeFifoPackets()
+    {
+        while (_fifoBuffer.Count > 0)
+        {
+            uint command = _fifoBuffer[0];
+            int wordsNeeded = GetFifoPacketWordsNeeded(command);
+            if (wordsNeeded <= 0)
+                wordsNeeded = 1;
+            if (_fifoBuffer.Count < wordsNeeded)
+                return;
+
+            DecodeFifoPacket(command, wordsNeeded);
+            _fifoPacketCount++;
+            _fifoBuffer.RemoveRange(0, wordsNeeded);
+            if (_fifoBuffer.Count > 4096)
+                _fifoBuffer.RemoveRange(0, _fifoBuffer.Count - 4096);
+        }
+    }
+
+    private void DecodeFifoPacket(uint command, int wordsNeeded)
+    {
+        switch (command & 7u)
+        {
+            case 1:
+                DecodeFifoType1(command);
+                break;
+            case 3:
+                _fifoDrawPacketCount++;
+                break;
+            case 4:
+                DecodeFifoType4(command);
+                break;
+            case 5:
+                DecodeFifoType5(command, wordsNeeded);
+                break;
+        }
+    }
+
+    private void DecodeFifoType1(uint command)
+    {
+        int count = (int)(command >> 16);
+        int increment = ((command >> 15) & 1u) != 0 ? 1 : 0;
+        uint target = (command >> 3) & 0xfffu;
+        for (int i = 0; i < count; i++, target += (uint)increment)
+            WriteRegister(target << 2, _fifoBuffer[1 + i]);
+    }
+
+    private void DecodeFifoType4(uint command)
+    {
+        uint target = (command >> 3) & 0xfffu;
+        int source = 1;
+        for (int bit = 15; bit <= 28; bit++, target++)
+        {
+            if (((command >> bit) & 1u) == 0)
+                continue;
+
+            WriteRegister(target << 2, _fifoBuffer[source++]);
+        }
+    }
+
+    private void DecodeFifoType5(uint command, int wordsNeeded)
+    {
+        int count = (int)((command >> 3) & 0x7ffffu);
+        if (count <= 0 || wordsNeeded < 2 + count)
+            return;
+
+        uint target = _fifoBuffer[1] / 4u;
+        uint space = command >> 30;
+        for (int i = 0; i < count; i++, target++)
+        {
+            uint value = _fifoBuffer[2 + i];
+            if (space == 3)
+                WriteTexture32(target << 2, value);
+            else if (space is 0 or 2)
+                WriteLfb32(target << 2, value);
+        }
+    }
+
+    private static int GetFifoPacketWordsNeeded(uint command)
+    {
+        return (command & 7u) switch
+        {
+            0 => ((command >> 3) & 7u) == 4u ? 2 : 1,
+            1 => 1 + (int)(command >> 16),
+            2 => 1 + PopCount(command >> 3),
+            3 => GetFifoType3WordsNeeded(command),
+            4 => 1 + PopCount((command >> 15) & 0x3fffu) + (int)(command >> 29),
+            5 => 2 + (int)((command >> 3) & 0x7ffffu),
+            _ => 1
+        };
+    }
+
+    private static int GetFifoType3WordsNeeded(uint command)
+    {
+        int wordsPerVertex = 2;
+        if (((command >> 28) & 1u) != 0)
+        {
+            if (((command >> 10) & 3u) != 0)
+                wordsPerVertex++;
+        }
+        else
+        {
+            if (((command >> 10) & 1u) != 0)
+                wordsPerVertex += 3;
+            if (((command >> 11) & 1u) != 0)
+                wordsPerVertex++;
+        }
+
+        if (((command >> 12) & 1u) != 0)
+            wordsPerVertex++;
+        if (((command >> 13) & 1u) != 0)
+            wordsPerVertex++;
+        if (((command >> 14) & 1u) != 0)
+            wordsPerVertex++;
+        if (((command >> 15) & 1u) != 0)
+            wordsPerVertex += 2;
+        if (((command >> 16) & 1u) != 0)
+            wordsPerVertex++;
+        if (((command >> 17) & 1u) != 0)
+            wordsPerVertex += 2;
+
+        int vertices = (int)((command >> 6) & 0xfu);
+        int dummyWords = (int)(command >> 29);
+        return 1 + wordsPerVertex * vertices + dummyWords;
+    }
+
+    private static int PopCount(uint value)
+    {
+        int count = 0;
+        while (value != 0)
+        {
+            count += (int)(value & 1u);
+            value >>= 1;
+        }
+        return count;
     }
 
     private static uint Rgb565ToBgra(ushort value)

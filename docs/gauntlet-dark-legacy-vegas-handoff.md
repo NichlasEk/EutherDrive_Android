@@ -1133,3 +1133,38 @@ Next-phase plan:
 3. Keep tracing LFB/texture apertures, but do not expect first pixels there yet. The guest is currently using FIFO command streams for setup.
 4. Once packet decode is stable, add minimal triangle/rect handling only for packets proven by trace. The immediate goal is a first recognizable clear/viewport/frame transition, not full Voodoo emulation.
 5. Keep each fastpath signature-gated. The current stack has enough narrow hooks to reach graphics; the next quality step is replacing hooks with small hardware models where the trace proves the contract.
+
+## 2026-05-09 FIFO Packet Decode
+
+Implemented a small streaming Voodoo2 command FIFO decoder in the bringup backend:
+
+- Packet type 1: `count/inc/register` register writes.
+- Packet type 4: masked general register writes.
+- Packet type 5: upload packets routed to LFB or texture storage based on space bits.
+- Packet type 3 is consumed and counted as draw/setup traffic, but not rasterized yet.
+
+The decoder uses MAME's `voodoo_2.cpp` packet word-count fields so the probe no longer needs long raw FIFO logs to prove state movement.
+
+The bringup visualization now reads FIFO-updated Voodoo registers:
+
+- Primary clip rectangle: `clipLeftRight` / `clipLowYHighY` at register numbers `0x46` / `0x47`.
+- Fallback dimensions: `videoDimensions` at register number `0x83`.
+- Register color bands include both the `0x100` drawing-state area and the `0x200` video-init area.
+
+Short fast verifier:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO=1 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 350
+
+frame=350
+pc=0xffffffff80054b74
+voodoo regs=3884 fifoWords=63 fifoPackets=27 drawPackets=0 lfbWrites=0 texWrites=0
+voodoo reg[046]=0x00000280
+voodoo reg[047]=0x000001e0
+voodoo reg[083]=0x01e0027f
+```
+
+This confirms the first FIFO packet batch now updates the live Voodoo register bank by frame 350. Still no draw packets or LFB/texture uploads in this early window, so the next target is finding the first packet type 3/type 5 activity or the guest state transition that enables it.
