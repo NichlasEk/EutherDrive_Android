@@ -22,12 +22,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     private const string SavestateExtendedMagic = "KONAMITMNTE";
     private const int SavestateVersion = 1;
     private const int SavestateExtendedVersion = 7;
-    private const int FrameWidth = 320;
+    private const int TmntVisibleWidth = 320;
+    private const int FrameWidth = 384;
     private const int FrameHeight = 224;
     private const int FrameStride = FrameWidth * 4;
     private const int MysticVisibleOriginX = 24;
     private const int MysticVisibleOriginY = 16;
     private const int MysticVisibleWidth = 288;
+    private const int MoomesaVisibleOriginX = 40;
+    private const int MoomesaVisibleOriginY = 16;
+    private const int MoomesaVisibleWidth = 384;
     private const int Tmnt2RawFrameHeight = 240;
     private const int Tmnt2VisibleStartY = 16;
     private const double TargetFps = 24_000_000.0 / 4.0 / 384.0 / 264.0;
@@ -245,7 +249,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         lock (_frameSync)
         {
             Buffer.BlockCopy(_presentFrameBuffer, 0, _snapshotFrameBuffer, 0, _presentFrameBuffer.Length);
-            width = IsMystwarrFamily(_loadedVariant) ? MysticVisibleWidth : FrameWidth;
+            width = _loadedVariant == TmntHardwareVariant.Moomesa
+                ? MoomesaVisibleWidth
+                : IsMystwarrFamily(_loadedVariant) ? MysticVisibleWidth : TmntVisibleWidth;
             height = FrameHeight;
             stride = FrameStride;
             return _snapshotFrameBuffer;
@@ -334,6 +340,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
     private sealed class TmntBus : EutherDrive.Core.Cpu.M68000Emu.IBusInterface, EutherDrive.Core.Cpu.M68000Emu.IOpcodeBusInterface
     {
+        private static readonly bool TraceMoomesaQueue =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MOOMESA_TRACE_QUEUE"), "1", StringComparison.Ordinal);
         [NonSerialized] private readonly byte[] _program = new byte[0x200000];
         private readonly byte[] _ram = new byte[0x10000];
         private readonly byte[] _metamrphExtraRam = new byte[0xf000];
@@ -372,6 +380,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private byte _lastSoundIrqBit;
         private int _priority;
         private byte _mystwarrIrqControl;
+        private int _moomesaQueueTraceWrites;
 
         public BusSignals Signals => new(false);
         public ushort CurrentOpcode => 0;
@@ -409,6 +418,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
+            _k053250.MoomesaClipWindow = UsesMoomesaHardware;
         }
 
         public void Load(TmntRomSet roms)
@@ -438,6 +448,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
             _k053250.Load(roms.K053250);
+            _k053250.MoomesaClipWindow = UsesMoomesaHardware;
             _tmnt2Eeprom.ResetContents();
             if (UsesK053245Hardware || UsesMystwarrHardware || UsesMoomesaHardware)
                 _tmnt2Eeprom.Import(roms.Eeprom);
@@ -469,6 +480,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
             _k056832.MoomesaTileCallback = UsesMoomesaHardware;
             _k056832.Bpp4TileDecode = UsesMoomesaHardware;
+            _k053250.MoomesaClipWindow = UsesMoomesaHardware;
             _interruptLevel = 0;
             _irq5Enabled = false;
             _moomesaSpriteIrqEnabled = false;
@@ -864,6 +876,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + $"k052Byte={_k052EvenByteWrites}/{_k052OddByteWrites} "
                + $"prot={_tmnt2ProtectionRuns}:{_lastTmnt2Protection} "
                + $"ssprot={_ssridersProtectionReads}/{_ssridersUnknownProtectionReads}:{_lastSsridersProtectionRead} "
+               + MoomesaDebugSummary()
                + PaletteDebugSummary()
                + _k052109.DebugSummary()
                + $" k055555={_k055555.DebugSummary()} k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053252={_k053252.DebugSummary()} {_k053250.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
@@ -899,6 +912,21 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             return $"palnz={nonZero}:{first:X3}-{last:X3} ";
         }
+
+        private string MoomesaDebugSummary()
+        {
+            if (!UsesMoomesaHardware)
+                return string.Empty;
+
+            uint queue = ReadBigEndianLong(_ram, 0x154);
+            ushort queueWord = queue >= 0x180000 && queue <= 0x18fffe
+                ? ReadBigEndianWord(_ram, (int)(queue - 0x180000))
+                : (ushort)0xffff;
+            return $"mooctl=0x{_moomesaControl2:X4}/{(_moomesaVblankIrqEnabled ? 1 : 0)}/{(_moomesaSpriteIrqEnabled ? 1 : 0)} mooq=0x{queue:X6}:0x{queueWord:X4} ";
+        }
+
+        private static uint ReadBigEndianLong(byte[] data, int offset)
+            => (uint)((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]);
 
         private void RenderTmnt2(byte[] frameBuffer)
         {
@@ -1169,6 +1197,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             if (address >= 0x180000 && address <= 0x18ffff)
             {
+                TraceMoomesaQueueWrite("b", address, value);
                 _ram[address - 0x180000] = value;
                 return;
             }
@@ -1251,6 +1280,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             if (address >= 0x180000 && address <= 0x18fffe)
             {
+                TraceMoomesaQueueWrite("w", address, value);
                 WriteBigEndianWord(_ram, (int)(address - 0x180000), value);
                 return;
             }
@@ -1321,6 +1351,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 UpdatePaletteMoomesa(offset >> 2);
                 _paletteWrites++;
             }
+        }
+
+        private void TraceMoomesaQueueWrite(string size, uint address, uint value)
+        {
+            if (!TraceMoomesaQueue || _moomesaQueueTraceWrites >= 160)
+                return;
+            if (address < 0x180090 || address > 0x180110)
+                return;
+
+            _moomesaQueueTraceWrites++;
+            Console.WriteLine($"[MOO-QUEUE] {size} addr=0x{address:X6} value=0x{value:X4}");
         }
 
         private void UpdatePaletteMoomesa(int index)
@@ -3452,7 +3493,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int tileY = localY >> 3;
                 int pixelY = localY & 7;
                 int scrollX = ScrollXForSourceLine(layer, scrollMode, rawDx, rawDy + screenY) - LayerOffsetX(layer);
-                int sourceX = PositiveMod((flipX ? FrameWidth - 1 + 24 : 24) + scrollX, mapWidth);
+                int visibleOriginX = VisibleOriginX;
+                int sourceX = PositiveMod((flipX ? FrameWidth - 1 + visibleOriginX : visibleOriginX) + scrollX, mapWidth);
 
                 for (int px = 0; px < FrameWidth;)
                 {
@@ -3573,7 +3615,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int tileY = localY >> 3;
                 int pixelY = localY & 7;
 
-                int sourceX = PositiveMod(24 + dx, mapWidth);
+                int sourceX = PositiveMod(VisibleOriginX + dx, mapWidth);
                 for (int px = 0; px < FrameWidth;)
                 {
                     int pageCol = sourceX >> 9;
@@ -3757,7 +3799,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private int LayerOffsetY(int layer) => 0;
 
-        private int VisibleOriginY => _metamrphTileCallback ? 15 : 16;
+        private int VisibleOriginX => _moomesaTileCallback ? MoomesaVisibleOriginX : MysticVisibleOriginX;
+
+        private int VisibleOriginY => _metamrphTileCallback ? 15 : MoomesaVisibleOriginY;
 
         private bool PageUsesTileMode(int page)
         {
@@ -3994,6 +4038,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private int _frame;
         [NonSerialized] private readonly byte[] _rom = new byte[0x40000];
 
+        public bool MoomesaClipWindow { get; set; }
+
         public void Load(byte[] rom)
         {
             Array.Clear(_rom);
@@ -4006,6 +4052,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_regs);
             _page = 0;
             _frame = -1;
+            MoomesaClipWindow = false;
         }
 
         public ushort ReadRamWord(int offset) => _ram[offset & 0x1fff];
@@ -4077,9 +4124,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int lineDataOffset;
             int dstWrapMask;
             int passes;
-            int clipMinX = MysticVisibleOriginX;
-            int clipMaxX = MysticVisibleOriginX + MysticVisibleWidth - 1;
-            int clipMinY = 15;
+            int clipMinX = MoomesaClipWindow ? MoomesaVisibleOriginX : MysticVisibleOriginX;
+            int clipMaxX = clipMinX + (MoomesaClipWindow ? MoomesaVisibleWidth : MysticVisibleWidth) - 1;
+            int clipMinY = MoomesaClipWindow ? MoomesaVisibleOriginY : 15;
             int clipMaxY = clipMinY + FrameHeight - 1;
             if ((orientation & OrientationSwapXy) == 0)
             {

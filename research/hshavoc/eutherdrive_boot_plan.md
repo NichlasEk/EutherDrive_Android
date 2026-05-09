@@ -60,6 +60,49 @@ Latest checkpoint:
   `$a10005`/I/O reads used by the new runtime loop against expected board
   inputs.
 
+VDP/IO checkpoint:
+
+- `EUTHERDRIVE_HSHAVOC_TRACE_VDP=1` and `EUTHERDRIVE_HSHAVOC_TRACE_IO=1`
+  trace HSHavoc-specific MD VDP port writes and `$a10000-$a10fff` reads from
+  the board override without taking ownership of those accesses.
+- The program does perform VDP work. Observed writes include early setup at
+  `$10cc-$10f8`, `$0a1c`, `$0a7c-$0a94`, and runtime data/control writes
+  around `$3988e-$398e0`.
+- No natural `$81xx` VDP register-1 write has been observed yet, so the game
+  never enables display through the normal MD register path.
+- `EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY=1` is a probe-only flag that writes
+  `$8174` after load/frame execution. It proves display-enable alone is not the
+  final blocker: `vdp_display` becomes `1`, but the framebuffer remains blank.
+- A forced-display snapshot after 30 frames shows VRAM is not empty
+  (`2208` nonzero bytes in the 64 KiB dump), while CRAM is entirely zero. The
+  next concrete target is palette/CRAM initialization: either the protected
+  startup has not reached the palette upload path, a board/PIC response gates
+  that path, or an address/decode assumption is still wrong for the palette
+  setup sequence.
+- `EUTHERDRIVE_HSHAVOC_REPAIR_VDP_REG_PENDING=1` is a probe-only repair for the
+  MD VDP command-port state. HSHavoc writes register words immediately after
+  command words, and the current VDP core can otherwise consume `$8fxx/$90xx`
+  style register writes as the second word of a pending control command. The
+  repair clears pending command state before register writes; with it enabled,
+  autoincrement becomes correct and VRAM nonzero growth increases from about
+  `2208` bytes to `4-6 KiB` depending on frame count.
+- `EUTHERDRIVE_HSHAVOC_FORCE_TEST_PALETTE=1` writes a synthetic 64-entry CRAM
+  ramp after load/frame execution. With forced display + VDP register repair,
+  this immediately produces visible nonblack framebuffer content
+  (`57344` nonzero pixels at 80 frames). Therefore the MD renderer/name-table
+  path is alive; the real missing piece is natural CRAM/palette upload.
+- The new `$001e00-$002020` code dump shows a coherent runtime transfer block,
+  not random data. It prepares VDP/DMA command words at `$ffeab0-$ffeabc`
+  (`$9380/$9400`, `$95c0/$96ec`, `$977f`) and contains byte-copy/pack loops at
+  `$1f00-$2010`. Current 45-frame probes reach `$1fdc/$1fe2`, but
+  `$ffeab0-$ffeabc` remains zero and no natural CRAM writes occur. Snapshot RAM
+  does show packed-looking data at `$ff0800`, while CRAM is all zero and VRAM is
+  nonzero (`4122` bytes at 45 frames).
+- Next target: classify why the `$1e70` command-buffer setup branch is not
+  reached and where `$ff0800` data should be flushed. Trace focused RAM windows
+  around `$ff0800-$ff0900`, `$ffe800-$ffe920`, and `$ffeab0-$ffeabc`, then map
+  the callers into `$1e00-$2020` against the per-island decode models.
+
 The UI routes `hshavoc.zip` to this adapter before generic arcade archive
 fallbacks.
 

@@ -28,6 +28,11 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1
     };
 
+    private static readonly bool ForceDisplayEnable =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_FORCE_DISPLAY"), "1", StringComparison.Ordinal);
+    private static readonly bool ForceTestPalette =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_FORCE_TEST_PALETTE"), "1", StringComparison.Ordinal);
+
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
         (0x0C42, 0x007C), (0x0C44, 0x0700), (0x0C46, 0x4EB9), (0x0C48, 0x0000),
@@ -92,6 +97,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         {
             _md.PowerCycleAndLoadRom(tempPath);
             InstallBoardAckProbe();
+            ForceVdpDisplayIfRequested();
+            ForceTestPaletteIfRequested();
             RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile} | {BoardModel}";
             RomInfo.ExtraInfo =
                 "Data East hshavoc.zip via HshavocAdapter. This is not a Sega System 16 target; it runs the " +
@@ -107,7 +114,12 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
 
     public void Reset() => _md.Reset();
 
-    public void RunFrame() => _md.RunFrame();
+    public void RunFrame()
+    {
+        _md.RunFrame();
+        ForceVdpDisplayIfRequested();
+        ForceTestPaletteIfRequested();
+    }
 
     public uint GetM68kPc() => _md.GetM68kPc();
 
@@ -163,6 +175,31 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             return;
 
         md_main.g_md_bus.OverrideBus = new HshavocBoardBusOverride(existing);
+    }
+
+    private static void ForceVdpDisplayIfRequested()
+    {
+        if (!ForceDisplayEnable)
+            return;
+
+        md_main.g_md_vdp?.write16(0x00C00004, 0x8174);
+    }
+
+    private static void ForceTestPaletteIfRequested()
+    {
+        if (!ForceTestPalette || md_main.g_md_vdp == null)
+            return;
+
+        for (int index = 0; index < 64; index++)
+        {
+            ushort color = (ushort)((((index >> 4) & 0x07) * 0x200) | (((index >> 2) & 0x07) * 0x020) | ((index & 0x03) * 0x002));
+            if (color == 0)
+                color = 0x0222;
+            ushort address = (ushort)(index * 2);
+            md_main.g_md_vdp.write16(0x00C00004, (ushort)(0xC000 | (address & 0x3FFF)));
+            md_main.g_md_vdp.write16(0x00C00004, (ushort)((address >> 14) & 0x0003));
+            md_main.g_md_vdp.write16(0x00C00000, color);
+        }
     }
 
     private static byte[] DecodeArchive(string path, string profile)
