@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 
 namespace mame.eutherdrive_m68000;
@@ -46,6 +48,13 @@ internal sealed partial class InstructionExecutor
         Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ_CPU");
     private static readonly int TraceInterruptLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_IRQ_LIMIT", 256);
     private static int _traceInterruptRemaining = TraceInterrupts ? TraceInterruptLimit : 0;
+    private static readonly bool ProfileOpcodes =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_OPCODE_PROFILE"), "1", StringComparison.Ordinal);
+    private static readonly long[] ProfileOpcodeCounts = new long[ushort.MaxValue + 1];
+    private static readonly long[] ProfileKindCounts = new long[Enum.GetValues(typeof(InstructionKind)).Length];
+    private static readonly Dictionary<ulong, long> ProfilePcOpcodeCounts = new();
+    private static long _profileTotalInstructions;
+    private static long _profileWindowStartTicks = Stopwatch.GetTimestamp();
 
     private const uint AddressErrorVector = 3;
     private const uint IllegalOpcodeVector = 4;
@@ -99,6 +108,223 @@ internal sealed partial class InstructionExecutor
         return result.IsOk ? result.Value : HandleException(result.Error!.Value);
     }
 
+    public bool TryConsumeIdleLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        if (cycleBudget < 64 || _registers.Frozen || _registers.Stopped || _registers.PendingInterruptLevel.HasValue)
+            return false;
+
+        byte interruptLevel = (byte)(_bus.InterruptLevel() & 0x07);
+        if (interruptLevel > (_registers.InterruptPriorityMask & 0x07))
+            return false;
+
+        if (TryConsumeTstBneIdleLoop(cycleBudget, out cycles))
+            return true;
+
+        if (TryConsumeNeoGeoInputPollLoop(cycleBudget, out cycles))
+            return true;
+
+        if (TryConsumeNeoGeoBiosChecksumLoop(cycleBudget, out cycles))
+            return true;
+
+        return TryConsumeNeoGeoRamFillLoop(cycleBudget, out cycles);
+    }
+
+    private bool TryConsumeTstBneIdleLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if (_registers.Prefetch != 0x4A39 || _bus.ReadWord(pc + 6) != 0x66F8)
+            return false;
+
+        uint address = ((uint)_bus.ReadWord(pc + 2) << 16) | _bus.ReadWord(pc + 4);
+        byte value = _bus.ReadByte(address);
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+
+        if (value == 0)
+            return false;
+
+        cycles = (uint)Math.Max(22, cycleBudget);
+        return true;
+    }
+
+    private bool TryConsumeNeoGeoInputPollLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+
+        // NeoGeo BIOS busy-waits on the coin/audio input edge:
+        // move.b D0,$300001; move.b D0,D2; move.b $320001,D0; move.b D0,D1;
+        // eor.b D1,D2; and.b D1,D2; andi.b #mask,D2; beq loop.
+        if (_registers.Prefetch != 0x13C0
+            || _bus.ReadWord(pc + 2) != 0x0030
+            || _bus.ReadWord(pc + 4) != 0x0001
+            || _bus.ReadWord(pc + 6) != 0x1400
+            || _bus.ReadWord(pc + 8) != 0x1039
+            || _bus.ReadWord(pc + 10) != 0x0032
+            || _bus.ReadWord(pc + 12) != 0x0001
+            || _bus.ReadWord(pc + 14) != 0x1200
+            || _bus.ReadWord(pc + 16) != 0xB302
+            || _bus.ReadWord(pc + 18) != 0xC401
+            || _bus.ReadWord(pc + 20) != 0x0202
+            || _bus.ReadWord(pc + 24) != 0x67E6)
+        {
+            return false;
+        }
+
+        byte previous = (byte)_registers.Data[0];
+        _bus.WriteByte(0x00300001, previous);
+
+        byte current = _bus.ReadByte(0x00320001);
+        byte mask = (byte)_bus.ReadWord(pc + 22);
+        byte edge = (byte)(((previous ^ current) & current) & mask);
+
+        _registers.Data[0] = (_registers.Data[0] & 0xffff_ff00) | current;
+        _registers.Data[1] = (_registers.Data[1] & 0xffff_ff00) | current;
+        _registers.Data[2] = (_registers.Data[2] & 0xffff_ff00) | edge;
+
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = edge == 0;
+        _registers.Ccr.Negative = edge.SignBit();
+
+        if (edge != 0)
+        {
+            _registers.Pc = (pc + 26) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            cycles = 64;
+            return true;
+        }
+
+        cycles = (uint)Math.Max(66, cycleBudget);
+        return true;
+    }
+
+    private bool TryConsumeNeoGeoBiosChecksumLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+
+        // NeoGeo BIOS checksum loop:
+        // move.b D0,$300001; add.b (A0)+,D0; subq.l #1,D7; bne loop.
+        if (_registers.Prefetch != 0x13C0
+            || _bus.ReadWord(pc + 2) != 0x0030
+            || _bus.ReadWord(pc + 4) != 0x0001
+            || _bus.ReadWord(pc + 6) != 0xD018
+            || _bus.ReadWord(pc + 8) != 0x5387
+            || _bus.ReadWord(pc + 10) != 0x66F4)
+        {
+            return false;
+        }
+
+        uint remaining = _registers.Data[7];
+        if (remaining == 0)
+            return false;
+
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 42u);
+        uint iterations = Math.Min(remaining, maxIterations);
+        byte d0 = (byte)_registers.Data[0];
+        uint a0 = _registers.Address[0];
+
+        _bus.WriteByte(0x00300001, d0);
+
+        for (uint i = 0; i < iterations; i++)
+        {
+            d0 = unchecked((byte)(d0 + _bus.ReadByte(a0)));
+            a0++;
+        }
+
+        uint d7BeforeSub = remaining - iterations + 1;
+        uint d7 = remaining - iterations;
+        var (_, carry, overflow) = SubLongWords(d7BeforeSub, 1, false);
+
+        _registers.Data[0] = (_registers.Data[0] & 0xffff_ff00) | d0;
+        _registers.Address[0] = a0;
+        _registers.Data[7] = d7;
+
+        _registers.Ccr.Carry = carry;
+        _registers.Ccr.Overflow = overflow;
+        _registers.Ccr.Zero = d7 == 0;
+        _registers.Ccr.Negative = d7.SignBit();
+        _registers.Ccr.Extend = carry;
+
+        cycles = iterations * 42u;
+        if (d7 == 0)
+        {
+            _registers.Pc = (pc + 12) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            return true;
+        }
+
+        cycles = Math.Max(42u, cycles);
+        return true;
+    }
+
+    private bool TryConsumeNeoGeoRamFillLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+
+        // NeoGeo BIOS main-RAM fill:
+        // move.b D0,(A2); move.w D0,(A0)+; dbf D7,loop.
+        if (_registers.Prefetch != 0x1480
+            || _bus.ReadWord(pc + 2) != 0x30C0
+            || _bus.ReadWord(pc + 4) != 0x51CF
+            || _bus.ReadWord(pc + 6) != 0xFFFA
+            || _registers.Address[2] != 0x00300001)
+        {
+            return false;
+        }
+
+        uint a0 = _registers.Address[0];
+        if ((a0 & 1) != 0 || a0 < 0x00100000 || a0 >= 0x00110000)
+            return false;
+
+        uint wordsUntilRamEnd = (0x00110000 - a0) / 2;
+        if (wordsUntilRamEnd == 0)
+            return false;
+
+        ushort d7 = (ushort)_registers.Data[7];
+        uint remainingIterations = (uint)d7 + 1u;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 26u);
+        uint iterations = Math.Min(Math.Min(remainingIterations, maxIterations), wordsUntilRamEnd);
+        if (iterations == 0)
+            return false;
+
+        byte watchdogValue = (byte)_registers.Data[0];
+        ushort value = (ushort)_registers.Data[0];
+        _bus.WriteByte(0x00300001, watchdogValue);
+
+        for (uint i = 0; i < iterations; i++)
+        {
+            _bus.WriteWord(a0, value);
+            a0 += 2;
+        }
+
+        _registers.Address[0] = a0;
+        ushort newD7 = (ushort)(d7 - iterations);
+        _registers.Data[7] = (_registers.Data[7] & 0xffff_0000) | newD7;
+
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+
+        cycles = iterations * 26u;
+        if (iterations == remainingIterations)
+        {
+            _registers.Pc = (pc + 8) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            return true;
+        }
+
+        cycles = Math.Max(26u, cycles);
+        return true;
+    }
+
     private ExecuteResult<uint> DoExecute()
     {
         uint pcBefore = _registers.Pc;
@@ -109,6 +335,9 @@ internal sealed partial class InstructionExecutor
 
         if (_instruction.Value.Kind == InstructionKind.Illegal)
             return ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode));
+
+        if (ProfileOpcodes)
+            AddOpcodeProfile(pcBefore, _opcode, _instruction.Value);
 
         if (_traceThisInstruction)
         {
@@ -254,6 +483,125 @@ internal sealed partial class InstructionExecutor
             InstructionKind.Unlink => Unlk(inst.AddrReg),
             _ => ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode)),
         };
+    }
+
+    private static void AddOpcodeProfile(uint pc, ushort opcode, Instruction instruction)
+    {
+        ProfileOpcodeCounts[opcode]++;
+        ProfileKindCounts[(int)instruction.Kind]++;
+        ulong pcOpcode = ((ulong)(pc & 0x00ff_ffff) << 16) | opcode;
+        ProfilePcOpcodeCounts.TryGetValue(pcOpcode, out long pcOpcodeCount);
+        ProfilePcOpcodeCounts[pcOpcode] = pcOpcodeCount + 1;
+        long total = ++_profileTotalInstructions;
+        if ((total & 0xffff) != 0)
+            return;
+
+        long now = Stopwatch.GetTimestamp();
+        long elapsed = now - _profileWindowStartTicks;
+        if (elapsed < Stopwatch.Frequency)
+            return;
+
+        double seconds = elapsed / (double)Stopwatch.Frequency;
+        Console.WriteLine($"[M68K-OP] ips={total / seconds:0} kinds={FormatTopKinds()} opcodes={FormatTopOpcodes()} pcs={FormatTopPcOpcodes()}");
+        Array.Clear(ProfileOpcodeCounts, 0, ProfileOpcodeCounts.Length);
+        Array.Clear(ProfileKindCounts, 0, ProfileKindCounts.Length);
+        ProfilePcOpcodeCounts.Clear();
+        _profileTotalInstructions = 0;
+        _profileWindowStartTicks = now;
+    }
+
+    private static string FormatTopKinds()
+    {
+        Span<int> top = stackalloc int[8];
+        Span<long> counts = stackalloc long[8];
+        for (int kind = 0; kind < ProfileKindCounts.Length; kind++)
+            InsertTop(top, counts, kind, ProfileKindCounts[kind]);
+
+        return FormatTop(top, counts, kind => ((InstructionKind)kind).ToString());
+    }
+
+    private static string FormatTopOpcodes()
+    {
+        Span<int> top = stackalloc int[12];
+        Span<long> counts = stackalloc long[12];
+        for (int opcode = 0; opcode < ProfileOpcodeCounts.Length; opcode++)
+            InsertTop(top, counts, opcode, ProfileOpcodeCounts[opcode]);
+
+        return FormatTop(top, counts, opcode =>
+        {
+            Instruction instruction = InstructionTable.Decode((ushort)opcode);
+            return $"0x{opcode:X4}/{instruction.Kind}";
+        });
+    }
+
+    private static string FormatTopPcOpcodes()
+    {
+        Span<long> counts = stackalloc long[12];
+        ulong[] keys = new ulong[12];
+
+        foreach (var pair in ProfilePcOpcodeCounts)
+        {
+            long count = pair.Value;
+            if (count <= 0 || count <= counts[^1])
+                continue;
+
+            int index = counts.Length - 1;
+            while (index > 0 && count > counts[index - 1])
+            {
+                counts[index] = counts[index - 1];
+                keys[index] = keys[index - 1];
+                index--;
+            }
+
+            counts[index] = count;
+            keys[index] = pair.Key;
+        }
+
+        string[] parts = new string[counts.Length];
+        int partCount = 0;
+        for (int i = 0; i < counts.Length; i++)
+        {
+            if (counts[i] <= 0)
+                break;
+
+            uint pc = (uint)(keys[i] >> 16);
+            ushort opcode = (ushort)keys[i];
+            Instruction instruction = InstructionTable.Decode(opcode);
+            parts[partCount++] = $"0x{pc:X6}:0x{opcode:X4}/{instruction.Kind}:{counts[i]}";
+        }
+
+        return partCount == 0 ? "-" : string.Join(",", parts, 0, partCount);
+    }
+
+    private static void InsertTop(Span<int> top, Span<long> counts, int key, long count)
+    {
+        if (count <= 0 || count <= counts[^1])
+            return;
+
+        int index = counts.Length - 1;
+        while (index > 0 && count > counts[index - 1])
+        {
+            counts[index] = counts[index - 1];
+            top[index] = top[index - 1];
+            index--;
+        }
+
+        counts[index] = count;
+        top[index] = key;
+    }
+
+    private static string FormatTop(Span<int> top, Span<long> counts, Func<int, string> nameForKey)
+    {
+        string[] parts = new string[counts.Length];
+        int partCount = 0;
+        for (int i = 0; i < counts.Length; i++)
+        {
+            if (counts[i] <= 0)
+                break;
+            parts[partCount++] = $"{nameForKey(top[i])}:{counts[i]}";
+        }
+
+        return partCount == 0 ? "-" : string.Join(",", parts, 0, partCount);
     }
 
     private ExecuteResult<ushort> ReadBusWord(uint address)

@@ -9,6 +9,8 @@ public sealed class M68000
     private readonly Registers _regs = new();
     private readonly bool _allowTasWrites;
     private readonly string _name;
+    private IBusInterface? _executorBus;
+    private InstructionExecutor? _executor;
 
     private M68000(bool allowTasWrites, string name)
     {
@@ -120,6 +122,31 @@ public sealed class M68000
         _regs.Prefetch = bus.ReadWord(_regs.Pc);
     }
 
+    public void BindBus(IBusInterface bus)
+    {
+        _executorBus = bus;
+        _executor = new InstructionExecutor(_regs, bus, _allowTasWrites, _name);
+    }
+
+    public uint ExecuteBoundInstruction()
+    {
+        if (_regs.Frozen)
+            return 1;
+
+        return _executor!.Execute();
+    }
+
+    public bool TryConsumeBoundIdleLoop(int cycleBudget, out uint cycles)
+    {
+        if (_regs.Frozen || _executor == null)
+        {
+            cycles = 0;
+            return false;
+        }
+
+        return _executor.TryConsumeIdleLoop(cycleBudget, out cycles);
+    }
+
     public uint ExecuteInstruction(IBusInterface bus)
     {
         if (bus.Reset())
@@ -130,6 +157,12 @@ public sealed class M68000
         if (bus.Halt() || _regs.Frozen)
             return 1;
 
-        return new InstructionExecutor(_regs, bus, _allowTasWrites, _name).Execute();
+        if (!ReferenceEquals(bus, _executorBus) || _executor == null)
+        {
+            _executorBus = bus;
+            _executor = new InstructionExecutor(_regs, bus, _allowTasWrites, _name);
+        }
+
+        return _executor.Execute();
     }
 }

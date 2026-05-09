@@ -14,6 +14,7 @@ using static mame.device_global;
 using static mame.diexec_global;
 using static mame.emucore_global;
 using static mame.emumem_global;
+using static mame.machine_global;
 
 
 namespace mame
@@ -105,6 +106,7 @@ namespace mame
                 .Name(tag)
                 .Build();
             m_bus = new mcs_bus(this);
+            m_core.BindBus(m_bus);
         }
 
 
@@ -141,16 +143,33 @@ namespace mame
 
         void device_execute_interface_execute_run()
         {
+            bool callDebuggerHook = (machine().debug_flags & DEBUG_FLAG_CALL_HOOK) != 0;
+            if (callDebuggerHook)
+            {
+                do
+                {
+                    m_ppc = m_core.Pc;
+                    debugger_instruction_hook(m_ppc);
+
+                    u32 cycles = m_core.ExecuteBoundInstruction();
+                    int elapsed = cycles > int.MaxValue ? int.MaxValue : (int)cycles;
+                    m_icount.i -= Math.Max(1, elapsed);
+                }
+                while (m_icount.i > 0);
+                return;
+            }
+
             do
             {
-                m_ppc = m_core.Pc;
-                debugger_instruction_hook(m_ppc);
-
-                u32 cycles = m_core.ExecuteInstruction(m_bus);
+                u32 cycles = m_core.TryConsumeBoundIdleLoop(m_icount.i, out u32 idleCycles)
+                    ? idleCycles
+                    : m_core.ExecuteBoundInstruction();
                 int elapsed = cycles > int.MaxValue ? int.MaxValue : (int)cycles;
                 m_icount.i -= Math.Max(1, elapsed);
             }
             while (m_icount.i > 0);
+
+            m_ppc = m_core.Pc;
         }
 
 

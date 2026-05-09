@@ -23,8 +23,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     private static readonly int MaxQueuedAudioSamples = OutputSampleRate * OutputChannels * 2;
     private static readonly bool TraceMcsProfile =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_PROFILE") == "1";
+    private static readonly bool TraceMcsProfilerText =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_PROFILER_TEXT") == "1";
     private static readonly bool TraceMcsInput =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_INPUT_TRACE") == "1";
+    private static readonly bool TraceMcsRender =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_RENDER_TRACE") == "1";
     private static readonly object McsInitLock = new();
     private static readonly McsHostCore HostCore = new();
     private static readonly McsHostFileSystem HostFileSystem = new();
@@ -876,6 +880,13 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 $"draw_ms={_profileDrawTicks * scale:0.0} publish_ms={_profilePublishTicks * scale:0.0} " +
                 $"audio_ms={_profileAudioTicks * scale:0.0}/{_profileAudioCallbacks} input_ms={_profileInputTicks * scale:0.0}");
 
+            if (TraceMcsProfilerText)
+            {
+                string profilerText = mame.profiler_global.g_profiler.text(CurrentMachine());
+                foreach (string line in profilerText.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    Console.WriteLine($"[MCS-PROFILER] {line}");
+            }
+
             _profileLastTicks = now;
             _profileFrames = 0;
             _profileWaitTicks = 0;
@@ -1267,6 +1278,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private mame.running_machine? _machine;
         private mame.render_target? _target;
         private int _captureFailuresRemaining = 3;
+        private bool _renderTraceLogged;
         private long _lastInputTraceTicks;
 
         public McsOsd(McsRuntime runtime, McsArcadeAdapter owner)
@@ -1278,6 +1290,9 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         public void init(mame.running_machine machine)
         {
             _machine = machine;
+            if (TraceMcsProfilerText)
+                mame.profiler_global.g_profiler.enable(true);
+
             _target = machine.render().target_alloc(null, mame.render_global.RENDER_CREATE_NO_ART);
             _target.set_view(_target.configured_view("auto", 0, 1));
             _target.set_screen_overlay_enabled(false);
@@ -1362,8 +1377,20 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             mame.render_primitive? screenQuad = null;
             for (mame.render_primitive? prim = primitives.first(); prim != null; prim = prim.next())
             {
-                if (prim.type != mame.render_primitive.primitive_type.QUAD || prim.texture.base_ == null)
+                if (prim.type != mame.render_primitive.primitive_type.QUAD)
+                    return false;
+
+                if (prim.texture.base_ == null)
+                {
+                    uint blendMode = mame.render_global.PRIMFLAG_GET_BLENDMODE(prim.flags);
+                    if (blendMode != mame.rendertypes_global.BLENDMODE_NONE &&
+                        blendMode != mame.rendertypes_global.BLENDMODE_ALPHA)
+                    {
+                        return false;
+                    }
+
                     continue;
+                }
 
                 if (screenQuad != null)
                     return false;
@@ -1376,7 +1403,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 screenQuad.texture.width != width ||
                 screenQuad.texture.height != height ||
                 screenQuad.texture.rowpixels < screenQuad.texture.width)
+            {
+                TraceDirectPalette16Miss(primitives, width, height, "shape");
                 return false;
+            }
 
             uint expectedFlags =
                 mame.render_global.PRIMFLAG_TEXFORMAT((uint)mame.texture_format.TEXFORMAT_PALETTE16) |
@@ -1384,28 +1414,92 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             uint relevantFlags = screenQuad.flags & (mame.render_global.PRIMFLAG_TEXFORMAT_MASK | mame.render_global.PRIMFLAG_BLENDMODE_MASK);
             if (relevantFlags != expectedFlags ||
                 mame.render_global.PRIMFLAG_GET_TEXWRAP(screenQuad.flags) ||
-                Math.Abs(screenQuad.bounds.x0) > 0.001f ||
-                Math.Abs(screenQuad.bounds.y0) > 0.001f ||
-                Math.Abs(screenQuad.bounds.x1 - width) > 0.001f ||
-                Math.Abs(screenQuad.bounds.y1 - height) > 0.001f ||
                 Math.Abs(screenQuad.texcoords.tl.u) > 0.001f ||
                 Math.Abs(screenQuad.texcoords.tl.v) > 0.001f ||
                 Math.Abs(screenQuad.texcoords.tr.u - 1.0f) > 0.001f ||
                 Math.Abs(screenQuad.texcoords.tr.v) > 0.001f ||
                 Math.Abs(screenQuad.texcoords.bl.u) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.bl.v - 1.0f) > 0.001f)
+                Math.Abs(screenQuad.texcoords.bl.v - 1.0f) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.br.u - 1.0f) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.br.v - 1.0f) > 0.001f)
+            {
+                TraceDirectPalette16Miss(primitives, width, height, "flags/bounds");
                 return false;
+            }
 
-            CopyPalette16ToBgra(
-                screenQuad.texture.base_,
-                screenQuad.texture.palette,
-                _bitmap.pix(0),
-                width,
-                height,
-                (int)screenQuad.texture.rowpixels,
-                _bitmap.rowpixels());
+            int destX0 = Math.Clamp((int)MathF.Round(screenQuad.bounds.x0), 0, width);
+            int destY0 = Math.Clamp((int)MathF.Round(screenQuad.bounds.y0), 0, height);
+            int destX1 = Math.Clamp((int)MathF.Round(screenQuad.bounds.x1), 0, width);
+            int destY1 = Math.Clamp((int)MathF.Round(screenQuad.bounds.y1), 0, height);
+            int destWidth = destX1 - destX0;
+            int destHeight = destY1 - destY0;
+            if (destWidth <= 0 || destHeight <= 0)
+            {
+                TraceDirectPalette16Miss(primitives, width, height, "bounds");
+                return false;
+            }
+
+            if (destX0 != 0 || destY0 != 0 || destWidth != width || destHeight != height)
+                FillBgra(_bitmap.pix(0), width, height, _bitmap.rowpixels(), 0xff000000);
+
+            if (destWidth == screenQuad.texture.width && destHeight == screenQuad.texture.height)
+            {
+                CopyPalette16ToBgra(
+                    screenQuad.texture.base_,
+                    screenQuad.texture.palette,
+                    _bitmap.pix(destY0, destX0),
+                    destWidth,
+                    destHeight,
+                    (int)screenQuad.texture.rowpixels,
+                    _bitmap.rowpixels());
+            }
+            else
+            {
+                CopyPalette16ToBgraScaled(
+                    screenQuad.texture.base_,
+                    screenQuad.texture.palette,
+                    _bitmap.pix(destY0, destX0),
+                    (int)screenQuad.texture.width,
+                    (int)screenQuad.texture.height,
+                    destWidth,
+                    destHeight,
+                    (int)screenQuad.texture.rowpixels,
+                    _bitmap.rowpixels());
+            }
 
             return true;
+        }
+
+        private void TraceDirectPalette16Miss(mame.render_primitive_list primitives, int width, int height, string reason)
+        {
+            if (!TraceMcsRender || _renderTraceLogged)
+                return;
+
+            bool hasTexture = false;
+            for (mame.render_primitive? prim = primitives.first(); prim != null; prim = prim.next())
+            {
+                if (prim.type == mame.render_primitive.primitive_type.QUAD && prim.texture.base_ != null)
+                {
+                    hasTexture = true;
+                    break;
+                }
+            }
+
+            if (!hasTexture)
+                return;
+
+            _renderTraceLogged = true;
+            Console.Error.WriteLine($"[MCS-RENDER] direct palette16 miss reason={reason} target={width}x{height}");
+            int index = 0;
+            for (mame.render_primitive? prim = primitives.first(); prim != null; prim = prim.next())
+            {
+                Console.Error.WriteLine(
+                    $"[MCS-RENDER] prim#{index++} type={prim.type} flags=0x{prim.flags:x8} " +
+                    $"bounds={prim.bounds.x0:0.###},{prim.bounds.y0:0.###},{prim.bounds.x1:0.###},{prim.bounds.y1:0.###} " +
+                    $"tex={prim.texture.width}x{prim.texture.height}/{prim.texture.rowpixels} base={(prim.texture.base_ != null)} pal={(prim.texture.palette != null)} " +
+                    $"uv={prim.texcoords.tl.u:0.###},{prim.texcoords.tl.v:0.###} {prim.texcoords.tr.u:0.###},{prim.texcoords.tr.v:0.###} " +
+                    $"{prim.texcoords.bl.u:0.###},{prim.texcoords.bl.v:0.###} {prim.texcoords.br.u:0.###},{prim.texcoords.br.v:0.###}");
+            }
         }
 
         private static unsafe void CopyPalette16ToBgra(
@@ -1439,6 +1533,62 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                         ushort pen = source16[sourceRow + x];
                         destination32[destinationRow + x] = paletteData[paletteOffset + pen];
                     }
+                }
+            }
+        }
+
+        private static unsafe void CopyPalette16ToBgraScaled(
+            mame.Pointer<byte> source,
+            mame.Pointer<mame.rgb_t> palette,
+            mame.PointerU32 destination,
+            int sourceWidth,
+            int sourceHeight,
+            int destinationWidth,
+            int destinationHeight,
+            int sourceRowPixels,
+            int destinationRowPixels)
+        {
+            byte[] sourceData = source.Buffer.data_raw;
+            byte[] destinationData = destination.Buffer.data_raw;
+            mame.rgb_t[] paletteData = palette.Buffer.data_raw;
+            int sourceOffset = source.Offset;
+            int destinationOffset = destination.Offset;
+            int paletteOffset = palette.Offset;
+
+            fixed (byte* sourceBase = sourceData)
+            fixed (byte* destinationBase = destinationData)
+            {
+                ushort* source16 = (ushort*)(sourceBase + sourceOffset);
+                uint* destination32 = (uint*)(destinationBase + destinationOffset);
+
+                for (int y = 0; y < destinationHeight; y++)
+                {
+                    int sourceY = y * sourceHeight / destinationHeight;
+                    int sourceRow = sourceY * sourceRowPixels;
+                    int destinationRow = y * destinationRowPixels;
+                    for (int x = 0; x < destinationWidth; x++)
+                    {
+                        int sourceX = x * sourceWidth / destinationWidth;
+                        ushort pen = source16[sourceRow + sourceX];
+                        destination32[destinationRow + x] = paletteData[paletteOffset + pen];
+                    }
+                }
+            }
+        }
+
+        private static unsafe void FillBgra(mame.PointerU32 destination, int width, int height, int destinationRowPixels, uint color)
+        {
+            byte[] destinationData = destination.Buffer.data_raw;
+            int destinationOffset = destination.Offset;
+
+            fixed (byte* destinationBase = destinationData)
+            {
+                uint* destination32 = (uint*)(destinationBase + destinationOffset);
+                for (int y = 0; y < height; y++)
+                {
+                    int destinationRow = y * destinationRowPixels;
+                    for (int x = 0; x < width; x++)
+                        destination32[destinationRow + x] = color;
                 }
             }
         }

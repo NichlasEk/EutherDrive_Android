@@ -26,6 +26,7 @@ using static mame.emupal_global;
 using static mame.gamedrv_global;
 using static mame.gen_latch_global;
 using static mame.hash_global;
+using static mame.input_merger_global;
 using static mame.ioport_global;
 using static mame.ioport_ioport_type_helper;
 using static mame.m68000_global;
@@ -54,6 +55,8 @@ namespace mame
         const int NEOGEO_VBSTART = 0x0f0;
         const int NEOGEO_VISIBLE_WIDTH = 320;
         const int NEOGEO_VISIBLE_HEIGHT = 224;
+        const int NEOGEO_VISIBLE_TOP = NEOGEO_VBEND;
+        const int NEOGEO_VISIBLE_BOTTOM = NEOGEO_VISIBLE_TOP + NEOGEO_VISIBLE_HEIGHT - 1;
         const int MAX_SPRITES_PER_SCREEN = 381;
         const int MAX_SPRITES_PER_LINE = 96;
         const u8 IRQ2CTRL_ENABLE = 0x10;
@@ -71,6 +74,7 @@ namespace mame
         readonly required_device<palette_device> m_palette;
         readonly required_device<generic_latch_8_device> m_soundlatch;
         readonly required_device<generic_latch_8_device> m_soundlatch2;
+        readonly required_device<input_merger_device> m_audionmi;
         readonly required_memory_bank m_audio8000;
         readonly required_memory_bank m_audioc000;
         readonly required_memory_bank m_audioe000;
@@ -132,6 +136,7 @@ namespace mame
         bool m_trace_neogeo;
         bool m_trace_neogeo_video;
         bool m_trace_neogeo_input;
+        bool m_trace_neogeo_audio;
         bool m_direct_cart_boot;
         bool m_use_sprite_line_timer;
         emu_timer m_sprite_line_timer;
@@ -167,6 +172,7 @@ namespace mame
             m_palette = new required_device<palette_device>(this, "palette");
             m_soundlatch = new required_device<generic_latch_8_device>(this, "soundlatch");
             m_soundlatch2 = new required_device<generic_latch_8_device>(this, "soundlatch2");
+            m_audionmi = new required_device<input_merger_device>(this, "audionmi");
             m_audio8000 = new required_memory_bank(this, "audio_8000");
             m_audioc000 = new required_memory_bank(this, "audio_c000");
             m_audioe000 = new required_memory_bank(this, "audio_e000");
@@ -217,7 +223,7 @@ namespace mame
         void audio_command_word_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
         {
             u8 command = (u8)(((mem_mask & 0xff00) != 0) ? (data >> 8) : (data & 0xff));
-            if (m_trace_neogeo && m_audio_command_write_count < 32)
+            if (m_trace_neogeo_audio && m_audio_command_write_count < 256)
                 Console.Error.WriteLine($"[NEOGEO] audio_command_word offset=0x{offset:x} data=0x{data:x4} mask=0x{mem_mask:x4} command=0x{command:x2}");
             audio_command_w(command);
         }
@@ -225,18 +231,10 @@ namespace mame
         void audio_command_w(u8 data)
         {
             m_audio_command_write_count++;
-            if (m_trace_neogeo)
+            if (m_trace_neogeo_audio)
                 Console.Error.WriteLine($"[NEOGEO] audio_command data=0x{data:x2}");
             m_soundlatch.op0.write(data);
-            machine().scheduler().synchronize(audio_command_sync);
             machine().scheduler().perfect_quantum(attotime.from_usec(50));
-        }
-
-
-        void audio_command_sync(s32 param)
-        {
-            if (m_audio_nmi_enabled != 0)
-                m_audiocpu.op0.pulse_input_line(INPUT_LINE_NMI, attotime.zero);
         }
 
 
@@ -248,7 +246,7 @@ namespace mame
             {
                 m_audio_latch_read_count++;
                 u8 data = m_soundlatch.op0.read();
-                if (m_trace_neogeo && m_audio_latch_read_count <= 16)
+                if (m_trace_neogeo_audio && m_audio_latch_read_count <= 256)
                     Console.Error.WriteLine($"[NEOGEO] audio_latch_r port=0x{offset:x4} data=0x{data:x2}");
                 return data;
             }
@@ -286,15 +284,16 @@ namespace mame
             if ((port & 0xef) == 0x08)
             {
                 m_audio_nmi_enabled = (u8)(((port & 0x10) == 0) ? 1 : 0);
-                if (m_trace_neogeo && m_audio_latch_read_count <= 16)
+                if (m_trace_neogeo_audio && m_audio_latch_read_count <= 256)
                     Console.Error.WriteLine($"[NEOGEO] audio_nmi {(m_audio_nmi_enabled != 0 ? "enable" : "disable")} port=0x{offset:x4}");
+                m_audionmi.op0.in_w<u32_const_1>(m_audio_nmi_enabled);
                 return;
             }
 
             if (port == 0x0c)
             {
                 m_audio_reply_write_count++;
-                if (m_trace_neogeo && m_audio_reply_write_count <= 16)
+                if (m_trace_neogeo_audio && m_audio_reply_write_count <= 256)
                     Console.Error.WriteLine($"[NEOGEO] audio_reply data=0x{data:x2}");
                 m_soundlatch2.op0.write(data);
                 return;
@@ -582,7 +581,7 @@ namespace mame
             int entry = data % entries;
             m_audio_bank_select_count++;
 
-            if (m_trace_neogeo && m_audio_bank_select_count <= 24)
+            if (m_trace_neogeo_audio && m_audio_bank_select_count <= 256)
                 Console.Error.WriteLine($"[NEOGEO] audio_bank port={bank} entry={entry} raw=0x{data:x2}");
 
             switch (bank)
@@ -855,7 +854,11 @@ namespace mame
             m_audiocpu.op0.memory().set_addrmap(AS_PROGRAM, audio_map);
             m_audiocpu.op0.memory().set_addrmap(AS_IO, audio_io_map);
 
+            INPUT_MERGER_ALL_HIGH(config, m_audionmi);
+            m_audionmi.op0.output_handler().set_inputline(m_audiocpu, INPUT_LINE_NMI).reg();
+
             GENERIC_LATCH_8(config, m_soundlatch);
+            m_soundlatch.op0.data_pending_callback().set(m_audionmi, (int state) => { m_audionmi.op0.in_w<u32_const_0>(state); }).reg();
             GENERIC_LATCH_8(config, m_soundlatch2);
 
             YM2610(config, m_ym, NEOGEO_YM2610_CLOCK);
@@ -872,8 +875,8 @@ namespace mame
             screen.set_screen_update(screen_update);
             screen.set_palette(m_palette);
             screen.set_refresh_hz(59.185606);
-            screen.set_size(NEOGEO_VISIBLE_WIDTH, NEOGEO_VISIBLE_HEIGHT);
-            screen.set_visarea(0, NEOGEO_VISIBLE_WIDTH - 1, 0, NEOGEO_VISIBLE_HEIGHT - 1);
+            screen.set_size(NEOGEO_VISIBLE_WIDTH, NEOGEO_VTOTAL);
+            screen.set_visarea(0, NEOGEO_VISIBLE_WIDTH - 1, NEOGEO_VISIBLE_TOP, NEOGEO_VISIBLE_BOTTOM);
 
             PALETTE(config, m_palette).set_entries(0x4000);
         }
@@ -884,6 +887,7 @@ namespace mame
             m_trace_neogeo = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_TRACE"));
             m_trace_neogeo_video = m_trace_neogeo || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_VIDEO_TRACE"));
             m_trace_neogeo_input = m_trace_neogeo || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_INPUT_TRACE"));
+            m_trace_neogeo_audio = m_trace_neogeo || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_AUDIO_TRACE"));
             m_direct_cart_boot = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_DIRECT_CART_BOOT"));
             m_use_sprite_line_timer = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_LINE_TIMER"));
             configure_audio_banks();
@@ -998,6 +1002,7 @@ namespace mame
         {
             m_audio_nmi_enabled = 0;
             m_soundlatch.op0.read();
+            m_audionmi.op0.in_w<u32_const_1>(0);
 
             if (m_direct_cart_boot)
             {
@@ -1270,8 +1275,8 @@ namespace mame
             MemoryU8 zoomyBase = zoomy != null ? zoomy.base_() : null;
             int zoomyBytes = zoomy != null ? (int)zoomy.bytes() : 0;
 
-            int minY = Math.Max(0, cliprect.min_y);
-            int maxY = Math.Min(NEOGEO_VISIBLE_HEIGHT - 1, cliprect.max_y);
+            int minY = Math.Max(NEOGEO_VISIBLE_TOP, cliprect.min_y);
+            int maxY = Math.Min(NEOGEO_VISIBLE_BOTTOM, cliprect.max_y);
             for (int scanline = minY; scanline <= maxY; scanline++)
                 draw_sprite_scanline(bitmap, scanline, spriteBase, spriteBytes, zoomyBase, zoomyBytes);
         }
@@ -1446,7 +1451,7 @@ namespace mame
                 {
                     if (x <= 0x01f0 || x >= 0x0200)
                     {
-                        if (drawX >= 0 && drawX < NEOGEO_VISIBLE_WIDTH && scanline >= 0 && scanline < NEOGEO_VISIBLE_HEIGHT)
+                        if (drawX >= 0 && drawX < NEOGEO_VISIBLE_WIDTH && scanline >= 0 && scanline < NEOGEO_VTOTAL)
                         {
                             int pen = m_sprite_gfx8 != null
                                 ? spriteBase[gfxBase & (int)m_sprite_gfx_address_mask]
@@ -1500,8 +1505,8 @@ namespace mame
             MemoryU8 fixedBase = fixedRegion.base_();
             int addrMask = (int)fixedRegion.bytes() - 1;
 
-            int minY = Math.Max(0, cliprect.min_y);
-            int maxY = Math.Min(NEOGEO_VISIBLE_HEIGHT - 1, cliprect.max_y);
+            int minY = Math.Max(NEOGEO_VISIBLE_TOP, cliprect.min_y);
+            int maxY = Math.Min(NEOGEO_VISIBLE_BOTTOM, cliprect.max_y);
             for (int y = minY; y <= maxY; y++)
             {
                 int row = (y >> 3) & 0x1f;
@@ -1533,7 +1538,7 @@ namespace mame
 
         void plot_fixed_pixel(bitmap_ind16 bitmap, int x, int y, int palette, int pen)
         {
-            if (pen == 0 || x < 0 || x >= NEOGEO_VISIBLE_WIDTH || y < 0 || y >= NEOGEO_VISIBLE_HEIGHT)
+            if (pen == 0 || x < 0 || x >= NEOGEO_VISIBLE_WIDTH || y < 0 || y >= NEOGEO_VTOTAL)
                 return;
             bitmap.pix(y, x)[0] = (u16)(active_palette_base() + (u32)((palette << 4) | pen));
         }
@@ -1638,8 +1643,9 @@ namespace mame
             ROM_REGION( 0x040000, "fixed", 0 ),
             ROM_LOAD( "001-s1.s1", 0x000000, 0x020000, CRC("7988ba51") + SHA1("bc2f661f381b06b34ac2fa215dd5689d3bf84832") ),
 
-            ROM_REGION( 0x040000, "audiocpu", 0 ),
+            ROM_REGION( 0x050000, "audiocpu", 0 ),
             ROM_LOAD( "001-m1.m1", 0x000000, 0x040000, CRC("ba874463") + SHA1("a83514f4b20301f84a98699900e2593f1c1b8846") ),
+            ROM_RELOAD(             0x010000, 0x040000 ),
 
             ROM_REGION( 0x080000, "ymsnd:adpcma", 0 ),
             ROM_LOAD( "001-v11.v11", 0x000000, 0x080000, CRC("a7c3d5e5") + SHA1("e3efc86940f91c53b7724c4566cfc21ea1a7a465") ),
@@ -1680,8 +1686,9 @@ namespace mame
             ROM_REGION( 0x040000, "fixed", 0 ),
             ROM_LOAD( "201-s1.s1", 0x000000, 0x020000, CRC("2f55958d") + SHA1("550b53628daec9f1e1e11a398854092d90f9505a") ),
 
-            ROM_REGION( 0x020000, "audiocpu", 0 ),
+            ROM_REGION( 0x030000, "audiocpu", 0 ),
             ROM_LOAD( "201-m1.m1", 0x000000, 0x020000, CRC("c28b3253") + SHA1("fd75bd15aed30266a8b3775f276f997af57d1c06") ),
+            ROM_RELOAD(             0x010000, 0x020000 ),
 
             ROM_REGION( 0x800000, "ymsnd:adpcma", 0 ),
             ROM_LOAD( "201-v1.v1", 0x000000, 0x400000, CRC("23d22ed1") + SHA1("cd076928468ad6bcc5f19f88cb843ecb5e660681") ),

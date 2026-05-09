@@ -4,6 +4,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 using attoseconds_t = System.Int64;  //typedef s64 attoseconds_t;
 using device_timer_id = System.UInt32;  //typedef u32 device_timer_id;
@@ -268,6 +269,14 @@ namespace mame
     {
         const bool VERBOSE = false;
         void LOG(string format, params object [] args) { if (VERBOSE) machine().logerror(format, args); }
+        static readonly bool s_trace_profile = Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_SCHED_PROFILE") == "1";
+
+        sealed class scheduler_profile_bucket
+        {
+            public long ticks;
+            public long calls;
+            public long cycles;
+        }
 
 
         // internal state
@@ -287,6 +296,10 @@ namespace mame
         public bool m_callback_timer_modified;  // true if the current callback timer was modified
         attotime m_callback_timer_expire_time; // the original expiration time
         bool m_suspend_changes_pending;  // suspend/resume changes are pending
+        readonly Dictionary<string, scheduler_profile_bucket> m_profile_devices = new Dictionary<string, scheduler_profile_bucket>();
+        long m_profile_last_ticks = Stopwatch.GetTimestamp();
+        long m_profile_timeslice_ticks;
+        long m_profile_timer_ticks;
 
 
         // scheduling quanta
@@ -441,6 +454,7 @@ namespace mame
         //-------------------------------------------------
         public void timeslice()
         {
+            long profileTimesliceStart = s_trace_profile ? Stopwatch.GetTimestamp() : 0;
             bool call_debugger = (machine().debug_flags & DEBUG_FLAG_ENABLED) != 0;
 
             // build the execution list if we don't have one yet
@@ -514,6 +528,7 @@ namespace mame
 
                                 exec.m_icountptr.i = exec.m_cycles_running;  // *exec->m_icountptr = exec->m_cycles_running;
 
+                                long profileDeviceStart = s_trace_profile ? Stopwatch.GetTimestamp() : 0;
                                 if (!call_debugger)
                                 {
                                     exec.run();
@@ -524,6 +539,8 @@ namespace mame
                                     exec.run();
                                     exec.debugger_stop_cpu_hook();
                                 }
+                                if (s_trace_profile)
+                                    add_profile_device(exec.device().tag(), Stopwatch.GetTimestamp() - profileDeviceStart, exec.m_cycles_running - exec.m_icountptr.i);
 
                                 // adjust for any cycles we took back
 
@@ -589,7 +606,54 @@ namespace mame
             }
 
             // execute timers
+            long profileTimerStart = s_trace_profile ? Stopwatch.GetTimestamp() : 0;
             execute_timers();
+            if (s_trace_profile)
+            {
+                m_profile_timer_ticks += Stopwatch.GetTimestamp() - profileTimerStart;
+                m_profile_timeslice_ticks += Stopwatch.GetTimestamp() - profileTimesliceStart;
+                maybe_report_profile();
+            }
+        }
+
+
+        void add_profile_device(string tag, long ticks, long cycles)
+        {
+            if (!m_profile_devices.TryGetValue(tag, out scheduler_profile_bucket bucket))
+            {
+                bucket = new scheduler_profile_bucket();
+                m_profile_devices[tag] = bucket;
+            }
+
+            bucket.ticks += ticks;
+            bucket.calls++;
+            bucket.cycles += cycles;
+        }
+
+
+        void maybe_report_profile()
+        {
+            long now = Stopwatch.GetTimestamp();
+            long elapsedTicks = now - m_profile_last_ticks;
+            if (elapsedTicks < Stopwatch.Frequency)
+                return;
+
+            double msScale = 1000.0 / Stopwatch.Frequency;
+            string details = "";
+            foreach (KeyValuePair<string, scheduler_profile_bucket> entry in m_profile_devices)
+            {
+                scheduler_profile_bucket bucket = entry.Value;
+                details += $" {entry.Key}:ms={bucket.ticks * msScale:0.0},calls={bucket.calls},cycles={bucket.cycles}";
+            }
+
+            Console.WriteLine(
+                $"[MCS-SCHED] elapsed_ms={elapsedTicks * msScale:0.0} timeslice_ms={m_profile_timeslice_ticks * msScale:0.0} " +
+                $"timers_ms={m_profile_timer_ticks * msScale:0.0}{details}");
+
+            m_profile_last_ticks = now;
+            m_profile_timeslice_ticks = 0;
+            m_profile_timer_ticks = 0;
+            m_profile_devices.Clear();
         }
 
 
