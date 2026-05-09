@@ -215,6 +215,7 @@ public partial class MainWindow : Window
     private string? _gbaBiosPath;
     private string? _psxBiosPath;
     private string? _neoGeoBiosPath;
+    private string? _pgmBiosPath;
     private string? _psxSbiPath;
     private readonly List<string> _recentRomPaths = new();
     private bool _recentRomUpdating;
@@ -522,6 +523,7 @@ public partial class MainWindow : Window
     private int _emuLoopGeneration;
     private double _emuTargetFps = 60.0;
     private int _padTypeRaw = (int)PadType.ThreeButton;
+    private int _coinPulseFrames;
     private WindowState _prevWindowState = WindowState.Normal;
     private DispatcherTimer? _cursorHideTimer;
     private bool _cursorHidden;
@@ -2574,6 +2576,55 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private async void OnSelectPgmBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        IStorageFolder? startFolder = null;
+        if (!string.IsNullOrWhiteSpace(_pgmBiosPath))
+        {
+            string? folderPath = Path.GetDirectoryName(_pgmBiosPath);
+            if (!string.IsNullOrWhiteSpace(folderPath))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(folderPath);
+        }
+
+        if (startFolder == null)
+        {
+            const string defaultBiosDirectory = "/home/nichlas/roms/bios";
+            if (Directory.Exists(defaultBiosDirectory))
+                startFolder = await StorageProvider.TryGetFolderFromPathAsync(defaultBiosDirectory);
+        }
+
+        var options = new FilePickerOpenOptions
+        {
+            Title = "Select PGM BIOS (pgm.zip)",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("PGM BIOS")
+                {
+                    Patterns = new[] { "pgm.zip", "*.zip", "*.7z", "*.*" }
+                }
+            }
+        };
+
+        if (startFolder != null)
+            options.SuggestedStartLocation = startFolder;
+
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        if (files.Count == 0)
+            return;
+
+        string? selectedPath = files[0].TryGetLocalPath();
+        if (!string.IsNullOrWhiteSpace(selectedPath))
+            McsArcadeAdapter.ValidatePgmBiosArchive(selectedPath);
+
+        _pgmBiosPath = selectedPath;
+        McsArcadeAdapter.PgmBiosPath = _pgmBiosPath;
+        if (PgmBiosPathText != null)
+            PgmBiosPathText.Text = _pgmBiosPath ?? files[0].Name;
+        StatusText.Text = "PGM BIOS selected";
+        SaveSettings();
+    }
+
     private void OnClearPceBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         _pceBiosPath = null;
@@ -2591,6 +2642,16 @@ public partial class MainWindow : Window
         if (NeoGeoBiosPathText != null)
             NeoGeoBiosPathText.Text = "(auto: ~/mame/roms/neogeo.zip)";
         StatusText.Text = "Neo Geo BIOS cleared";
+        SaveSettings();
+    }
+
+    private void OnClearPgmBios(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        _pgmBiosPath = null;
+        McsArcadeAdapter.PgmBiosPath = null;
+        if (PgmBiosPathText != null)
+            PgmBiosPathText.Text = "(auto: ~/roms/bios/pgm.zip)";
+        StatusText.Text = "PGM BIOS cleared";
         SaveSettings();
     }
 
@@ -2882,11 +2943,42 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private void OnInsertCoin(object? sender, RoutedEventArgs e)
+    {
+        if (_core == null)
+        {
+            StatusText.Text = "Coin: no core running";
+            return;
+        }
+
+        if (!IsArcadeInputCore(_core))
+        {
+            StatusText.Text = "Coin: current core is not arcade";
+            return;
+        }
+
+        Interlocked.Exchange(ref _coinPulseFrames, 8);
+        StatusText.Text = "Coin inserted";
+    }
+
+    private bool ConsumeCoinPulseFrame()
+    {
+        while (true)
+        {
+            int frames = Volatile.Read(ref _coinPulseFrames);
+            if (frames <= 0)
+                return false;
+            if (Interlocked.CompareExchange(ref _coinPulseFrames, frames - 1, frames) == frames)
+                return true;
+        }
+    }
+
     private async void OnStart(object? sender, Avalonia.Interactivity.RoutedEventArgs? e)
     {
         try
         {
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
+            Interlocked.Exchange(ref _coinPulseFrames, 0);
             if (await ShouldBlockSportTitleLaunchAsync())
                 return;
             await _ambientMusicController.SetRomActiveAsync(true);
@@ -5832,6 +5924,7 @@ public partial class MainWindow : Window
         public string? GbaBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public string? NeoGeoBiosPath { get; set; }
+        public string? PgmBiosPath { get; set; }
         public RenderBackendMode RenderBackendMode { get; set; } = RenderBackendMode.Bitmap;
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
@@ -5886,6 +5979,7 @@ public partial class MainWindow : Window
         public string? GbaBiosPath { get; set; }
         public string? PsxBiosPath { get; set; }
         public string? NeoGeoBiosPath { get; set; }
+        public string? PgmBiosPath { get; set; }
         public string? RenderBackendMode { get; set; }
         public Dictionary<string, string>? SnesSpecialRomPaths { get; set; }
         public Dictionary<string, string>? RomPsxSbiPaths { get; set; }
@@ -6057,6 +6151,13 @@ public partial class MainWindow : Window
             NeoGeoAdapter.BiosPath = _neoGeoBiosPath;
             if (NeoGeoBiosPathText != null)
                 NeoGeoBiosPathText.Text = _neoGeoBiosPath;
+        }
+        if (!string.IsNullOrWhiteSpace(settings.PgmBiosPath))
+        {
+            _pgmBiosPath = settings.PgmBiosPath;
+            McsArcadeAdapter.PgmBiosPath = _pgmBiosPath;
+            if (PgmBiosPathText != null)
+                PgmBiosPathText.Text = _pgmBiosPath;
         }
         if (!string.IsNullOrWhiteSpace(settings.GbaBiosPath))
         {
@@ -6355,6 +6456,7 @@ public partial class MainWindow : Window
             GbaBiosPath = _gbaBiosPath,
             PsxBiosPath = _psxBiosPath,
             NeoGeoBiosPath = _neoGeoBiosPath,
+            PgmBiosPath = _pgmBiosPath,
             RenderBackendMode = _renderBackendMode,
             SnesSpecialRomPaths = _snesSpecialRomPaths.Count > 0
                 ? new Dictionary<string, string>(_snesSpecialRomPaths, StringComparer.OrdinalIgnoreCase)
@@ -6521,6 +6623,7 @@ public partial class MainWindow : Window
             GbaBiosPath = settings.GbaBiosPath,
             PsxBiosPath = settings.PsxBiosPath,
             NeoGeoBiosPath = settings.NeoGeoBiosPath,
+            PgmBiosPath = settings.PgmBiosPath,
             RenderBackendMode = settings.RenderBackendMode.ToString(),
             SnesSpecialRomPaths = settings.SnesSpecialRomPaths,
             RomPsxSbiPaths = settings.RomPsxSbiPaths,
@@ -6641,6 +6744,7 @@ public partial class MainWindow : Window
             GbaBiosPath = raw.GbaBiosPath,
             PsxBiosPath = raw.PsxBiosPath,
             NeoGeoBiosPath = raw.NeoGeoBiosPath,
+            PgmBiosPath = raw.PgmBiosPath,
             RenderBackendMode = ParseRenderBackendMode(raw.RenderBackendMode),
             PsxAnalogControllerEnabled = raw.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = raw.PsxFastLoadEnabled,
@@ -6905,6 +7009,7 @@ public partial class MainWindow : Window
 
     private async void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        Interlocked.Exchange(ref _coinPulseFrames, 0);
         DeactivateMouseCapture(updateStatus: false);
         _timer.Stop();
         EndTrackedPlaySession();
@@ -8367,6 +8472,20 @@ public partial class MainWindow : Window
         _audioOutput.Submit(audio);
     }
 
+    private static bool IsArcadeInputCore(IEmulatorCore core)
+    {
+        return core is McsArcadeAdapter
+            or NeoGeoAdapter
+            or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
+            or Cps1DinoAdapter
+            or EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
+            or EutherDrive.Core.Arcade.System32.System32Adapter
+            or Deco32Adapter
+            or EutherDrive.Core.Arcade.Konami.TmntAdapter
+            or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
+            or HshavocAdapter;
+    }
+
     private void ApplyInputToCore(IEmulatorCore core)
     {
         UpdateGamepadState();
@@ -8377,9 +8496,7 @@ public partial class MainWindow : Window
         bool isGb = core is GbAdapter;
         bool isGba = core is GbaAdapter;
         bool isPsx = core is PsxAdapter;
-        bool isNeoGeo = core is NeoGeoAdapter;
-        bool isMcsArcade = core is McsArcadeAdapter;
-        bool isMcsArcadeLike = isNeoGeo || isMcsArcade;
+        bool isMcsArcadeLike = IsArcadeInputCore(core);
         bool isSnesLike = isSnes || isNes || isGb || isGba;
         var mappingSet = isMcsArcadeLike ? _inputMappings.Arcade : (isPsx ? _inputMappings.Psx : (isSnesLike ? _inputMappings.Snes : (isPce ? _inputMappings.Pce : _inputMappings.MdSms)));
         bool up;
@@ -8576,6 +8693,9 @@ public partial class MainWindow : Window
             if (mappingSet.GamepadMappings.TryGetValue("Select", out GamepadButton gpSel) && gpSel != GamepadButton.None)
                 mode |= IsGamepadButtonPressed(gpSel);
         }
+
+        if (isMcsArcadeLike && ConsumeCoinPulseFrame())
+            mode = true;
 
         autoMask = Volatile.Read(ref _autoFireMask);
         autoRate = Volatile.Read(ref _autoFireRateHz);

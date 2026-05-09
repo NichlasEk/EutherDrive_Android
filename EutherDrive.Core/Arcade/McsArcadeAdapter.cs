@@ -14,6 +14,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 {
     private const string SavestateMagic = "MCSARC";
     private const int SavestateVersion = 2;
+    private const string PgmBiosArchiveName = "pgm.zip";
+    private static readonly string? DefaultPgmBiosArchivePath = ResolveHomePath(Path.Combine("roms", "bios", PgmBiosArchiveName));
     private const int PlaceholderWidth = 256;
     private const int PlaceholderHeight = 224;
     private const int PlaceholderStride = PlaceholderWidth * 4;
@@ -65,6 +67,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     private McsRuntime? _runtime;
     private ArcadeInputState _inputState;
     private int _masterVolumePercent = 50;
+
+    public static string? PgmBiosPath { get; set; }
 
     internal static void EnsureMcsInitialized()
     {
@@ -179,7 +183,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         McsDriverInfo presentDriver = driver!;
         string romDirectory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? Environment.CurrentDirectory;
         _romDirectory = romDirectory;
-        _runtime = new McsRuntime(this, presentDriver.Name, romDirectory);
+        _runtime = new McsRuntime(this, presentDriver.Name, BuildRomPath(romDirectory));
         _runtime.Start();
     }
 
@@ -192,8 +196,101 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         StopRuntime();
         DrawPlaceholderFrame();
-        _runtime = new McsRuntime(this, driverName, romDirectory);
+        _runtime = new McsRuntime(this, driverName, BuildRomPath(romDirectory));
         _runtime.Start();
+    }
+
+    public static string? ResolvePgmBiosPath()
+    {
+        foreach (string? candidate in EnumeratePgmBiosCandidates())
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            string path = ExpandHome(candidate);
+            if (Directory.Exists(path))
+                path = Path.Combine(path, PgmBiosArchiveName);
+
+            if (File.Exists(path))
+                return Path.GetFullPath(path);
+        }
+
+        return null;
+    }
+
+    public static void ValidatePgmBiosArchive(string path)
+    {
+        try
+        {
+            using IArchive archive = ArchiveFactory.Open(path);
+            var names = new HashSet<string>(
+                archive.Entries
+                    .Where(static entry => !entry.IsDirectory)
+                    .Select(static entry => Path.GetFileName(entry.Key).ToLowerInvariant()),
+                StringComparer.OrdinalIgnoreCase);
+
+            if ((names.Contains("pgm_p01s.u20") || names.Contains("pgm_p01s.rom")) &&
+                names.Contains("pgm_t01s.rom") &&
+                names.Contains("pgm_m01s.rom"))
+            {
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidDataException($"PGM BIOS archive could not be opened: {ex.Message}", ex);
+        }
+
+        throw new InvalidDataException($"'{Path.GetFileName(path)}' does not look like a PGM BIOS archive.");
+    }
+
+    private static IEnumerable<string?> EnumeratePgmBiosCandidates()
+    {
+        yield return PgmBiosPath;
+        yield return DefaultPgmBiosArchivePath;
+        yield return Path.Combine(Directory.GetCurrentDirectory(), "bios", PgmBiosArchiveName);
+        yield return Path.Combine(Directory.GetCurrentDirectory(), PgmBiosArchiveName);
+    }
+
+    private static string BuildRomPath(string romDirectory)
+    {
+        string fullRomDirectory = Path.GetFullPath(romDirectory);
+        string? biosPath = ResolvePgmBiosPath();
+        if (string.IsNullOrWhiteSpace(biosPath))
+            return fullRomDirectory;
+
+        string? biosDirectory = Path.GetDirectoryName(biosPath);
+        if (string.IsNullOrWhiteSpace(biosDirectory) ||
+            string.Equals(fullRomDirectory, Path.GetFullPath(biosDirectory), StringComparison.OrdinalIgnoreCase))
+        {
+            return fullRomDirectory;
+        }
+
+        return fullRomDirectory + ";" + Path.GetFullPath(biosDirectory);
+    }
+
+    private static string ExpandHome(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path[0] != '~')
+            return path;
+
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrWhiteSpace(home))
+            return path;
+
+        if (path.Length == 1)
+            return home;
+
+        if (path[1] == Path.DirectorySeparatorChar || path[1] == Path.AltDirectorySeparatorChar)
+            return Path.Combine(home, path[2..]);
+
+        return path;
+    }
+
+    private static string? ResolveHomePath(string relativePath)
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return string.IsNullOrWhiteSpace(home) ? null : Path.Combine(home, relativePath);
     }
 
     public RomIdentity? RomIdentity

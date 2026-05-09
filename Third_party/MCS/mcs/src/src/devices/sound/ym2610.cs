@@ -39,7 +39,14 @@ namespace mame
         const int SSG_CHANNELS = 3;
         const double SSG_SIMPLE_GAIN = 900.0;
         const int FM_CHANNELS = 6;
-        const double FM_SIMPLE_GAIN = 2400.0;
+        const int FM_OPERATORS_PER_CHANNEL = 4;
+        const int FM_PHASE_MASK = 0x3ff;
+        const int FM_OPERATOR_MIN = -0x2000;
+        const int FM_OPERATOR_MAX = 0x1fff;
+        const int FM_ENVELOPE_QUIET = 0x380;
+        const int FM_PHASE_COUNTER_SCALE = 1 << 20;
+        const double FM_MIX_GAIN = 8.0;
+        const u8 YM2610_FM_CHANNEL_MASK = 0x36;
         static readonly ushort [] s_adpcma_steps =
         {
              16,  17,   19,   21,   23,   25,   28,
@@ -58,6 +65,47 @@ namespace mame
             { 1, 9, 5, 13 },
             { 2, 10, 6, 14 }
         };
+        static readonly int [] s_opn_algorithm_ops =
+        {
+            Algorithm(1, 2, 3, false, false, false),
+            Algorithm(0, 5, 3, false, false, false),
+            Algorithm(0, 2, 6, false, false, false),
+            Algorithm(1, 0, 7, false, false, false),
+            Algorithm(1, 0, 3, false, true,  false),
+            Algorithm(1, 1, 1, false, true,  true),
+            Algorithm(1, 0, 0, false, true,  true),
+            Algorithm(0, 0, 0, true,  true,  true)
+        };
+        static readonly u8 [,] s_opn_detune_adjustment =
+        {
+            {  0,  0,  1,  2 }, {  0,  0,  1,  2 }, {  0,  0,  1,  2 }, {  0,  0,  1,  2 },
+            {  0,  1,  2,  2 }, {  0,  1,  2,  3 }, {  0,  1,  2,  3 }, {  0,  1,  2,  3 },
+            {  0,  1,  2,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  4 }, {  0,  1,  3,  5 },
+            {  0,  2,  4,  5 }, {  0,  2,  4,  6 }, {  0,  2,  4,  6 }, {  0,  2,  5,  7 },
+            {  0,  2,  5,  8 }, {  0,  3,  6,  8 }, {  0,  3,  6,  9 }, {  0,  3,  7, 10 },
+            {  0,  4,  8, 11 }, {  0,  4,  8, 12 }, {  0,  4,  9, 13 }, {  0,  5, 10, 14 },
+            {  0,  5, 11, 16 }, {  0,  6, 12, 17 }, {  0,  6, 13, 19 }, {  0,  7, 14, 20 },
+            {  0,  8, 16, 22 }, {  0,  8, 16, 22 }, {  0,  8, 16, 22 }, {  0,  8, 16, 22 }
+        };
+
+        static int Algorithm(int op2in, int op3in, int op4in, bool op1out, bool op2out, bool op3out)
+        {
+            return op2in
+                | (op3in << 1)
+                | (op4in << 4)
+                | (op1out ? 1 << 7 : 0)
+                | (op2out ? 1 << 8 : 0)
+                | (op3out ? 1 << 9 : 0);
+        }
+
+        enum fm_envelope_stage
+        {
+            Attack,
+            Decay,
+            Sustain,
+            Release,
+            Off
+        }
 
         public class device_sound_interface_ym2610 : device_sound_interface
         {
@@ -81,8 +129,17 @@ namespace mame
         readonly s32 [] m_adpcma_accumulator = new s32[ADPCMA_CHANNELS];
         readonly s32 [] m_adpcma_step_index = new s32[ADPCMA_CHANNELS];
         readonly u8 [] m_adpcmb_regs = new u8[0x10];
-        readonly double [] m_fm_phase = new double[FM_CHANNELS];
+        readonly double [,] m_fm_phase = new double[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly int [,] m_fm_env_attenuation = new int[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly int [,] m_fm_feedback = new int[FM_CHANNELS, 2];
+        readonly int [] m_fm_feedback_in = new int[FM_CHANNELS];
+        readonly fm_envelope_stage [,] m_fm_stage = new fm_envelope_stage[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly bool [,] m_fm_key_state = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly bool [,] m_fm_ssg_inverted = new bool[FM_CHANNELS, FM_OPERATORS_PER_CHANNEL];
+        readonly int [] m_fm_opout = new int[8];
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
+        readonly u8 [] m_fm_csm_key_mask = new u8[FM_CHANNELS];
+        readonly u8 [] m_block_freq_latch = new u8[4];
         u32 m_adpcma_clock_counter;
         u32 m_adpcmb_status = ADPCMB_STATUS_BRDY;
         u32 m_adpcmb_buffer;
@@ -97,6 +154,9 @@ namespace mame
         double m_ssg_noise_phase;
         u32 m_ssg_noise_lfsr = 1;
         int m_ssg_noise_output = 1;
+        double m_fm_clock_accumulator;
+        int m_fm_held_sample;
+        u32 m_env_counter;
         sound_stream m_stream;
         emu_timer m_timer_a;
         emu_timer m_timer_b;
@@ -207,7 +267,18 @@ namespace mame
             save_item(NAME(new { m_adpcmb_prev_output }));
             save_item(NAME(new { m_adpcmb_step }));
             save_item(NAME(new { m_fm_phase }));
+            save_item(NAME(new { m_fm_env_attenuation }));
+            save_item(NAME(new { m_fm_feedback }));
+            save_item(NAME(new { m_fm_feedback_in }));
+            save_item(NAME(new { m_fm_stage }));
+            save_item(NAME(new { m_fm_key_state }));
+            save_item(NAME(new { m_fm_ssg_inverted }));
             save_item(NAME(new { m_fm_key_mask }));
+            save_item(NAME(new { m_fm_csm_key_mask }));
+            save_item(NAME(new { m_block_freq_latch }));
+            save_item(NAME(new { m_fm_clock_accumulator }));
+            save_item(NAME(new { m_fm_held_sample }));
+            save_item(NAME(new { m_env_counter }));
             save_item(NAME(new { m_adpcma_clock_counter }));
             save_item(NAME(new { m_ssg_phase }));
             save_item(NAME(new { m_ssg_noise_phase }));
@@ -224,13 +295,32 @@ namespace mame
             ResetAdpcmA();
             ResetAdpcmB();
             Array.Clear(m_fm_phase, 0, m_fm_phase.Length);
+            Array.Clear(m_fm_env_attenuation, 0, m_fm_env_attenuation.Length);
+            Array.Clear(m_fm_feedback, 0, m_fm_feedback.Length);
+            Array.Clear(m_fm_feedback_in, 0, m_fm_feedback_in.Length);
+            Array.Clear(m_fm_stage, 0, m_fm_stage.Length);
+            Array.Clear(m_fm_key_state, 0, m_fm_key_state.Length);
+            Array.Clear(m_fm_ssg_inverted, 0, m_fm_ssg_inverted.Length);
             Array.Clear(m_fm_key_mask, 0, m_fm_key_mask.Length);
+            Array.Clear(m_fm_csm_key_mask, 0, m_fm_csm_key_mask.Length);
+            Array.Clear(m_block_freq_latch, 0, m_block_freq_latch.Length);
+            for (int channel = 0; channel < FM_CHANNELS; channel++)
+            {
+                for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
+                {
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Off;
+                    m_fm_env_attenuation[channel, slot] = 0x3ff;
+                }
+            }
             Array.Clear(m_ssg_phase, 0, m_ssg_phase.Length);
             m_adpcma_clock_counter = 0;
             m_ssg_noise_phase = 0;
             m_ssg_noise_lfsr = 1;
             m_ssg_noise_output = 1;
             m_test_tone_phase = 0;
+            m_fm_clock_accumulator = 0;
+            m_fm_held_sample = 0;
+            m_env_counter = 0;
             m_status = 0;
             m_eos_status = 0;
             m_flag_mask = EOS_FLAGS_MASK;
@@ -266,7 +356,7 @@ namespace mame
                 sampleRate = Math.Max(1, clock() / 144);
             for (int sample = 0; sample < samples; sample++)
             {
-                int fm = ClockSimpleFm(sampleRate) + ClockSimpleSsg(sampleRate);
+                int fm = ClockOpnFm(sampleRate) + ClockSimpleSsg(sampleRate);
                 if (m_test_tone)
                     fm += ClockTestTone(sampleRate);
                 outputs[0].put_int(sample, fm, 32768);
@@ -348,8 +438,6 @@ namespace mame
         void write_data(int port, u8 data)
         {
             u32 index = reg_index(port);
-            if (index < m_regs.Length)
-                m_regs[index] = data;
 
             if (m_trace && m_trace_count < 2000 && (port == 1 || m_address[0] == 0x1c || m_address[0] == 0x28 || (m_address[0] >= 0x10 && m_address[0] <= 0x1c) || (m_address[0] >= 0x24 && m_address[0] <= 0x27)))
             {
@@ -362,30 +450,58 @@ namespace mame
                 switch (m_address[0])
                 {
                 case 0x1c:
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
                     m_flag_mask = (u8)(~data & EOS_FLAGS_MASK);
                     m_eos_status = (u8)(m_eos_status & ~(data & EOS_FLAGS_MASK));
                     if ((data & 0x80) != 0)
                         m_adpcmb_status &= ~(u32)ADPCMB_STATUS_EOS;
                     break;
                 case >= 0x10 and < 0x1c:
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
                     WriteAdpcmB((u8)(m_address[0] & 0x0f), data);
                     break;
                 case 0x24:
                 case 0x25:
                 case 0x26:
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
                     reload_timer_register(m_address[0]);
                     break;
                 case 0x27:
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
                     mode_w(data);
                     break;
                 case 0x28:
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
                     keyon_w(data);
+                    break;
+                default:
+                    if (write_latched_block_freq(port, m_address[0], data))
+                        break;
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
                     break;
                 }
             }
-            else if (port == 1 && m_address[1] < 0x30)
+            else if (port == 1)
             {
-                WriteAdpcmA(m_address[1], data);
+                if (m_address[1] < 0x30)
+                {
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
+                    WriteAdpcmA(m_address[1], data);
+                }
+                else
+                {
+                    if (write_latched_block_freq(port, m_address[1], data))
+                        return;
+                    if (index < m_regs.Length)
+                        m_regs[index] = data;
+                }
             }
         }
 
@@ -398,7 +514,7 @@ namespace mame
 
         void mark_busy()
         {
-            m_busy_end = machine().time() + attotime.from_ticks(32, Math.Max(1U, clock()));
+            m_busy_end = machine().time() + attotime.from_ticks(32 * 6, Math.Max(1U, clock()));
         }
 
 
@@ -444,7 +560,7 @@ namespace mame
             if (period == 0)
                 period = 1;
 
-            timer.adjust(attotime.from_ticks(period * 12, Math.Max(1U, clock())));
+            timer.adjust(attotime.from_ticks(period * 12 * 6, Math.Max(1U, clock())));
             m_timer_running[index] = true;
         }
 
@@ -453,6 +569,8 @@ namespace mame
         {
             if ((m_regs[0x27] & 0x04) != 0)
                 m_status = (u8)(m_status | STATUS_TIMER_A);
+            if ((m_regs[0x27] & 0xc0) == 0x80)
+                m_fm_csm_key_mask[2] = 0x0f;
             m_timer_running[0] = false;
             update_irq();
             update_timer(0, (m_regs[0x27] & 0x01) != 0);
@@ -544,68 +662,509 @@ namespace mame
                 channel += 3;
 
             m_fm_key_mask[channel] = (u8)(data >> 4);
-            if (m_fm_key_mask[channel] != 0)
-                m_fm_phase[channel] = 0;
         }
 
 
-        int ClockSimpleFm(double sampleRate)
+        bool write_latched_block_freq(int port, u8 address, u8 data)
         {
-            double mixed = 0;
+            if ((address & 0xf0) != 0xa0)
+                return false;
+
+            int channel = address & 0x03;
+            if (channel == 3)
+                return true;
+
+            int latch = (port * 2) + ((address >> 3) & 0x01);
+            if ((address & 0x04) != 0)
+            {
+                m_block_freq_latch[latch] = (u8)(data & 0x3f);
+                return true;
+            }
+
+            u32 index = (u32)((port << 8) | address);
+            if (index < m_regs.Length)
+                m_regs[index] = data;
+            u32 highIndex = index | 0x04;
+            if (highIndex < m_regs.Length)
+                m_regs[highIndex] = m_block_freq_latch[latch];
+            return true;
+        }
+
+
+        int ClockOpnFm(double sampleRate)
+        {
+            if (sampleRate <= 0)
+                sampleRate = Math.Max(1, clock() / 144.0);
+
+            double opnSampleRate = Math.Max(1.0, clock() / 72.0);
+            m_fm_clock_accumulator += opnSampleRate;
+            while (m_fm_clock_accumulator >= sampleRate)
+            {
+                m_fm_clock_accumulator -= sampleRate;
+                m_fm_held_sample = clock_fm_once();
+            }
+
+            return Math.Clamp((int)(m_fm_held_sample * FM_MIX_GAIN), -32768, 32767);
+        }
+
+
+        int clock_fm_once()
+        {
+            for (int channel = 0; channel < FM_CHANNELS; channel++)
+                prepare_fm_channel(channel);
+
+            if ((++m_env_counter & 0x03) == 3)
+                m_env_counter++;
+
+            for (int channel = 0; channel < FM_CHANNELS; channel++)
+                clock_fm_channel(channel);
+
+            int fm = 0;
             for (int channel = 0; channel < FM_CHANNELS; channel++)
             {
-                if (m_fm_key_mask[channel] == 0)
-                    continue;
-
-                double frequency = SimpleFmFrequency(channel);
-                double amplitude = SimpleFmAmplitude(channel);
-                if (frequency <= 0 || amplitude <= 0)
-                    continue;
-
-                m_fm_phase[channel] += frequency / sampleRate;
-                m_fm_phase[channel] -= Math.Floor(m_fm_phase[channel]);
-                mixed += Math.Sin(m_fm_phase[channel] * Math.PI * 2.0) * amplitude;
+                if ((YM2610_FM_CHANNEL_MASK & (1 << channel)) != 0)
+                    fm += output_fm_channel(channel);
             }
 
-            return Math.Clamp((int)mixed, -32768, 32767);
+            return roundtrip_fp(Math.Clamp(fm, -32768, 32767));
         }
 
 
-        double SimpleFmFrequency(int channel)
+        void prepare_fm_channel(int channel)
         {
-            int bank = channel >= 3 ? 0x100 : 0x000;
-            int ch = channel % 3;
-            int fnum = m_regs[bank + 0xa0 + ch] | ((m_regs[bank + 0xa4 + ch] & 0x07) << 8);
-            int block = (m_regs[bank + 0xa4 + ch] >> 3) & 0x07;
-            if (fnum == 0)
-                return 0;
-
-            double baseRate = Math.Max(1, clock() / 144.0);
-            return baseRate * fnum / 2048.0 * Math.Pow(2.0, block - 4);
-        }
-
-
-        double SimpleFmAmplitude(int channel)
-        {
-            int bank = channel >= 3 ? 0x100 : 0x000;
-            int ch = channel % 3;
-            int activeOperators = 0;
-            int levelSum = 0;
-            for (int slot = 0; slot < 4; slot++)
+            for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
             {
-                if ((m_fm_key_mask[channel] & (1 << slot)) == 0)
+                bool wasOn = m_fm_key_state[channel, slot];
+                bool isOn = ((m_fm_key_mask[channel] | m_fm_csm_key_mask[channel]) & (1 << slot)) != 0;
+                if (wasOn == isOn)
                     continue;
 
-                int tl = m_regs[bank + 0x40 + s_opn_operator_offset[ch, slot]] & 0x7f;
-                levelSum += 127 - tl;
-                activeOperators++;
-            }
+                m_fm_key_state[channel, slot] = isOn;
+                if (isOn)
+                {
+                    int blockFreq = operator_block_freq(channel, slot, channel_block_freq(channel));
+                    int slotOffset = s_opn_operator_offset[channel % 3, slot];
+                    int bank = register_bank(channel);
+                    u8 attack = m_regs[bank + 0x50 + slotOffset];
+                    int keycode = keycode_from_block_freq(blockFreq);
+                    int keyScale = (attack >> 6) & 0x03;
+                    int attackRate = effective_rate((attack & 0x1f) * 2, keycode >> (keyScale ^ 3));
 
-            if (activeOperators == 0)
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Attack;
+                    m_fm_ssg_inverted[channel, slot] = ssg_eg_enabled(channel, slotOffset) && ((ssg_eg_mode(channel, slotOffset) & 0x04) != 0);
+                    m_fm_env_attenuation[channel, slot] = attackRate >= 62 ? 0 : 0x3ff;
+                    m_fm_phase[channel, slot] = 0.0;
+                }
+                else
+                {
+                    if (m_fm_stage[channel, slot] < fm_envelope_stage.Release && m_fm_ssg_inverted[channel, slot])
+                    {
+                        m_fm_env_attenuation[channel, slot] = (0x200 - m_fm_env_attenuation[channel, slot]) & 0x3ff;
+                        m_fm_ssg_inverted[channel, slot] = false;
+                    }
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Release;
+                }
+            }
+            m_fm_csm_key_mask[channel] = 0;
+        }
+
+
+        void clock_fm_channel(int channel)
+        {
+            int blockFreq = channel_block_freq(channel);
+            if (blockFreq == 0)
+                return;
+
+            m_fm_feedback[channel, 0] = m_fm_feedback[channel, 1];
+            m_fm_feedback[channel, 1] = m_fm_feedback_in[channel];
+            for (int slot = 0; slot < FM_OPERATORS_PER_CHANNEL; slot++)
+                clock_fm_operator_state(channel, slot, operator_block_freq(channel, slot, blockFreq));
+        }
+
+
+        int output_fm_channel(int channel)
+        {
+            int blockFreq = channel_block_freq(channel);
+            if (blockFreq == 0)
                 return 0;
 
-            double normalized = levelSum / (127.0 * activeOperators);
-            return normalized * FM_SIMPLE_GAIN;
+            int bank = register_bank(channel);
+            int ch = channel % 3;
+            int feedback = (m_regs[bank + 0xb0 + ch] >> 3) & 0x07;
+            int algorithm = m_regs[bank + 0xb0 + ch] & 0x07;
+            int feedbackInput = feedback == 0 ? 0 : (m_fm_feedback[channel, 0] + m_fm_feedback[channel, 1]) >> (10 - feedback);
+
+            int op0 = compute_fm_operator_volume(channel, 0, feedbackInput);
+            m_fm_feedback_in[channel] = op0;
+            int [] opout = m_fm_opout;
+            Array.Clear(opout, 0, opout.Length);
+            opout[0] = 0;
+            opout[1] = op0;
+
+            int algorithmOps = s_opn_algorithm_ops[algorithm & 0x07];
+            opout[2] = compute_fm_operator_volume(channel, 1, opout[algorithmOps & 0x01] >> 1);
+            opout[5] = opout[1] + opout[2];
+            opout[3] = compute_fm_operator_volume(channel, 2, opout[(algorithmOps >> 1) & 0x07] >> 1);
+            opout[6] = opout[1] + opout[3];
+            opout[7] = opout[2] + opout[3];
+            int op3 = compute_fm_operator_volume(channel, 3, opout[(algorithmOps >> 4) & 0x07] >> 1);
+
+            int result = op3;
+            if ((algorithmOps & (1 << 7)) != 0)
+                result += opout[1];
+            if ((algorithmOps & (1 << 8)) != 0)
+                result += opout[2];
+            if ((algorithmOps & (1 << 9)) != 0)
+                result += opout[3];
+
+            return Math.Clamp(result, -32768, 32767);
+        }
+
+
+        int channel_block_freq(int channel)
+        {
+            int bank = register_bank(channel);
+            int ch = channel % 3;
+            return ((m_regs[bank + 0xa4 + ch] & 0x3f) << 8) | m_regs[bank + 0xa0 + ch];
+        }
+
+
+        int operator_block_freq(int channel, int slot, int normalBlockFreq)
+        {
+            int ch = channel % 3;
+            if (ch != 2 || (m_regs[0x27] & 0xc0) == 0)
+                return normalBlockFreq;
+
+            int bank = register_bank(channel);
+            int slotOffset = s_opn_operator_offset[ch, slot];
+            switch (slotOffset)
+            {
+            case 2:
+                return ((m_regs[bank + 0xac + 1] & 0x3f) << 8) | m_regs[bank + 0xa8 + 1];
+            case 10:
+                return ((m_regs[bank + 0xac + 2] & 0x3f) << 8) | m_regs[bank + 0xa8 + 2];
+            case 6:
+                return ((m_regs[bank + 0xac + 0] & 0x3f) << 8) | m_regs[bank + 0xa8 + 0];
+            default:
+                return normalBlockFreq;
+            }
+        }
+
+
+        void clock_fm_operator_state(int channel, int slot, int blockFreq)
+        {
+            int bank = register_bank(channel);
+            int slotOffset = s_opn_operator_offset[channel % 3, slot];
+            u8 dtMul = m_regs[bank + 0x30 + slotOffset];
+            u8 attack = m_regs[bank + 0x50 + slotOffset];
+            u8 decay = m_regs[bank + 0x60 + slotOffset];
+            u8 sustainRate = m_regs[bank + 0x70 + slotOffset];
+            u8 sustainLevel = m_regs[bank + 0x80 + slotOffset];
+            u8 release = m_regs[bank + 0x80 + slotOffset];
+
+            int detune = (dtMul >> 4) & 0x07;
+            int keycode = keycode_from_block_freq(blockFreq);
+            if (ssg_eg_enabled(channel, slotOffset))
+                clock_ssg_eg_state(channel, slot, slotOffset);
+            else
+                m_fm_ssg_inverted[channel, slot] = false;
+            clock_envelope(channel, slot, attack, decay, sustainRate, sustainLevel, release, keycode);
+            int phaseStep = block_freq_to_phase_step(blockFreq, dtMul & 0x0f, detune_adjustment(detune, keycode));
+            m_fm_phase[channel, slot] += phaseStep;
+            m_fm_phase[channel, slot] %= FM_PHASE_COUNTER_SCALE;
+        }
+
+
+        int compute_fm_operator_volume(int channel, int slot, int modulation)
+        {
+            int bank = register_bank(channel);
+            int slotOffset = s_opn_operator_offset[channel % 3, slot];
+            u8 totalLevel = m_regs[bank + 0x40 + slotOffset];
+            int phase = (((int)m_fm_phase[channel, slot] >> 10) + modulation) & FM_PHASE_MASK;
+            int envelopeAttenuation = m_fm_env_attenuation[channel, slot];
+            if (m_fm_ssg_inverted[channel, slot])
+                envelopeAttenuation = (0x200 - envelopeAttenuation) & 0x3ff;
+            if (m_fm_env_attenuation[channel, slot] > FM_ENVELOPE_QUIET)
+                return 0;
+
+            int attenuation = Math.Min(envelopeAttenuation + ((totalLevel & 0x7f) << 3), 0x3ff);
+            int sineAttenuation = phase_to_attenuation(phase);
+            int amplitude = attenuation_to_amplitude(sineAttenuation + (attenuation << 2));
+            int output = (phase & 0x200) != 0 ? -amplitude : amplitude;
+            return Math.Clamp(output, FM_OPERATOR_MIN, FM_OPERATOR_MAX);
+        }
+
+
+        int block_freq_to_phase_step(int blockFreq, int multiple, int detunePhaseStep)
+        {
+            int fnum = (blockFreq & 0x7ff) << 1;
+            int block = (blockFreq >> 11) & 0x07;
+            int phaseStep = (fnum << block) >> 2;
+            phaseStep = (phaseStep + detunePhaseStep) & 0x1ffff;
+            int x1Multiple = multiple * 2;
+            if (x1Multiple == 0)
+                x1Multiple = 1;
+
+            return (phaseStep * x1Multiple) >> 1;
+        }
+
+
+        static int keycode_from_block_freq(int blockFreq)
+        {
+            int keycode = ((blockFreq >> 10) & 0x0f) << 1;
+            int fnumBits = (blockFreq >> 7) & 0x0f;
+            keycode |= (0xfe80 >> fnumBits) & 1;
+            return keycode & 0x1f;
+        }
+
+
+        static int detune_adjustment(int detune, int keycode)
+        {
+            int result = s_opn_detune_adjustment[keycode & 0x1f, detune & 0x03];
+            return (detune & 0x04) != 0 ? -result : result;
+        }
+
+
+        void clock_envelope(int channel, int slot, u8 attack, u8 decay, u8 sustainRateReg, u8 sustainLevel, u8 release, int keycode)
+        {
+            if ((m_env_counter & 0x03) != 0)
+                return;
+
+            int keyScale = (attack >> 6) & 0x03;
+            int ksr = keycode >> (keyScale ^ 3);
+            int attackRate = effective_rate((attack & 0x1f) * 2, ksr);
+            int decayRate = effective_rate((decay & 0x1f) * 2, ksr);
+            int sustainRate = effective_rate((sustainRateReg & 0x1f) * 2, ksr);
+            int releaseRate = effective_rate(((release & 0x0f) * 4) + 2, ksr);
+            int sustain = (sustainLevel >> 4) & 0x0f;
+            sustain |= (sustain + 1) & 0x10;
+            sustain <<= 5;
+            int attenuation = m_fm_env_attenuation[channel, slot];
+
+            if (m_fm_stage[channel, slot] == fm_envelope_stage.Attack && attenuation == 0)
+                m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
+            if (m_fm_stage[channel, slot] == fm_envelope_stage.Decay && attenuation >= sustain)
+                m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
+
+            switch (m_fm_stage[channel, slot])
+            {
+            case fm_envelope_stage.Attack:
+                if (attackRate == 0)
+                    break;
+                if (attackRate >= 62)
+                {
+                    attenuation = 0;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
+                    break;
+                }
+
+                int attackIncrement = envelope_increment(attackRate, (int)(m_env_counter >> 2));
+                attenuation += ((~attenuation) * attackIncrement) >> 4;
+                if (attenuation <= 0)
+                {
+                    attenuation = 0;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Decay;
+                }
+                break;
+
+            case fm_envelope_stage.Decay:
+                if (decayRate == 0)
+                {
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
+                    break;
+                }
+                attenuation += envelope_increment(decayRate, (int)(m_env_counter >> 2));
+                if (attenuation >= sustain)
+                {
+                    attenuation = sustain;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Sustain;
+                }
+                break;
+
+            case fm_envelope_stage.Sustain:
+                if (!m_fm_key_state[channel, slot])
+                {
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Release;
+                    break;
+                }
+                attenuation += envelope_increment(sustainRate, (int)(m_env_counter >> 2));
+                break;
+
+            case fm_envelope_stage.Release:
+                attenuation += envelope_increment(releaseRate, (int)(m_env_counter >> 2));
+                if (attenuation >= 0x3ff)
+                {
+                    attenuation = 0x3ff;
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Off;
+                }
+                break;
+
+            case fm_envelope_stage.Off:
+                attenuation = 0x3ff;
+                break;
+            }
+
+            m_fm_env_attenuation[channel, slot] = Math.Clamp(attenuation, 0, 0x3ff);
+        }
+
+
+        void clock_ssg_eg_state(int channel, int slot, int slotOffset)
+        {
+            if ((m_fm_env_attenuation[channel, slot] & 0x200) == 0)
+                return;
+
+            int mode = ssg_eg_mode(channel, slotOffset);
+            if ((mode & 0x01) != 0)
+            {
+                m_fm_ssg_inverted[channel, slot] = (((mode >> 2) & 1) ^ ((mode >> 1) & 1)) != 0;
+                if (m_fm_stage[channel, slot] != fm_envelope_stage.Attack)
+                    m_fm_env_attenuation[channel, slot] = m_fm_ssg_inverted[channel, slot] ? 0x200 : 0x3ff;
+            }
+            else
+            {
+                if ((mode & 0x02) != 0)
+                    m_fm_ssg_inverted[channel, slot] = !m_fm_ssg_inverted[channel, slot];
+
+                if (m_fm_stage[channel, slot] == fm_envelope_stage.Decay || m_fm_stage[channel, slot] == fm_envelope_stage.Sustain)
+                    m_fm_stage[channel, slot] = fm_envelope_stage.Attack;
+
+                if ((mode & 0x02) == 0)
+                    m_fm_phase[channel, slot] = 0.0;
+            }
+
+            if (m_fm_stage[channel, slot] == fm_envelope_stage.Release)
+                m_fm_env_attenuation[channel, slot] = 0x3ff;
+        }
+
+
+        bool ssg_eg_enabled(int channel, int slotOffset)
+        {
+            return (m_regs[register_bank(channel) + 0x90 + slotOffset] & 0x08) != 0;
+        }
+
+
+        int ssg_eg_mode(int channel, int slotOffset)
+        {
+            return m_regs[register_bank(channel) + 0x90 + slotOffset] & 0x07;
+        }
+
+
+        static int effective_rate(int rawRate, int ksr)
+        {
+            return rawRate == 0 ? 0 : Math.Min(rawRate + ksr, 63);
+        }
+
+
+        static int envelope_increment(int rate, int envCounter)
+        {
+            rate = Math.Clamp(rate, 0, 63);
+            if (rate == 0)
+                return 0;
+
+            int shift = 11 - (rate >> 2);
+            if (shift < 0)
+                shift = 0;
+            if ((envCounter & ((1 << shift) - 1)) != 0)
+                return 0;
+
+            int index = (envCounter >> shift) & 0x07;
+            return (int)((s_opn_attenuation_increment[rate] >> (index * 4)) & 0x0f);
+        }
+
+
+        static int phase_to_attenuation(int phase)
+        {
+            int index = phase & 0x1ff;
+            if ((index & 0x100) != 0)
+                index = (~index) & 0xff;
+            return s_opn_log_sine_table[index];
+        }
+
+
+        static int attenuation_to_amplitude(int attenuation)
+        {
+            int intPart = (attenuation >> 8) & 0x1f;
+            if (intPart >= 13)
+                return 0;
+
+            int fractPart = attenuation & 0xff;
+            return ((s_opn_pow2_table[fractPart] << 2) & 0xffff) >> intPart;
+        }
+
+
+        static int register_bank(int channel)
+        {
+            return channel >= 3 ? 0x100 : 0x000;
+        }
+
+
+        static int roundtrip_fp(int value)
+        {
+            if (value < -32768)
+                return -32768;
+            if (value > 32767)
+                return 32767;
+
+            int scan = value ^ (value >> 31);
+            int leading = 0;
+            uint bits = (uint)(scan << 17);
+            while (leading < 32 && (bits & 0x80000000U) == 0)
+            {
+                leading++;
+                bits <<= 1;
+            }
+
+            int exponent = Math.Max(7 - leading, 1) - 1;
+            int mask = (1 << exponent) - 1;
+            return value & ~mask;
+        }
+
+
+        static readonly ushort [] s_opn_log_sine_table = build_log_sine_table();
+        static readonly ushort [] s_opn_pow2_table = build_pow2_table();
+        static readonly u32 [] s_opn_attenuation_increment =
+        {
+            0x00000000, 0x00000000, 0x10101010, 0x10101010,
+            0x10101010, 0x10101010, 0x11101110, 0x11101110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x10101010, 0x10111010, 0x11101110, 0x11111110,
+            0x11111111, 0x21112111, 0x21212121, 0x22212221,
+            0x22222222, 0x42224222, 0x42424242, 0x44424442,
+            0x44444444, 0x84448444, 0x84848484, 0x88848884,
+            0x88888888, 0x88888888, 0x88888888, 0x88888888
+        };
+
+
+        static ushort [] build_log_sine_table()
+        {
+            ushort [] table = new ushort[256];
+            for (int i = 0; i < table.Length; i++)
+            {
+                double n = ((i << 1) | 1) / 512.0;
+                double sine = Math.Sin(n * Math.PI / 2.0);
+                table[i] = (ushort)Math.Round(-Math.Log(sine, 2.0) * 256.0);
+            }
+            return table;
+        }
+
+
+        static ushort [] build_pow2_table()
+        {
+            ushort [] table = new ushort[256];
+            for (int i = 0; i < table.Length; i++)
+            {
+                double n = (i + 1) / 256.0;
+                table[i] = (ushort)Math.Round(Math.Pow(2.0, -n) * 2048.0);
+            }
+            return table;
         }
 
 

@@ -120,6 +120,7 @@
             <StackPanel Spacing="6" VerticalAlignment="Top">
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Button Classes="action compact" Content="Start" Click="OnStart"/>
+              <Button Classes="compact" Content="Coin" Click="OnInsertCoin"/>
               <Button Classes="compact" Content="Stop" Click="OnStop"/>
               <Button Classes="ghost compact" Content="About" Click="OnAbout"/>
               <Button Classes="compact" Content="Input Settings" Click="OnInputSettings"/>
@@ -608,6 +609,13 @@
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Button Content="Select BIOS…" Click="OnSelectNeoGeoBios"/>
               <Button Classes="ghost" Content="Clear" Click="OnClearNeoGeoBios"/>
+            </StackPanel>
+            <Separator/>
+            <TextBlock Text="PGM BIOS" FontWeight="Bold"/>
+            <TextBlock Name="PgmBiosPathText" Text="(auto: ~/roms/bios/pgm.zip)" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Select BIOS…" Click="OnSelectPgmBios"/>
+              <Button Classes="ghost" Content="Clear" Click="OnClearPgmBios"/>
             </StackPanel>
             <Separator/>
             <TextBlock Text="GBA BIOS" FontWeight="Bold"/>

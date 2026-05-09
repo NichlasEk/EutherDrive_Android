@@ -267,38 +267,31 @@ namespace EutherDrive.Core.MdTracerCore
             int rawV = g_vdp_reg_16_5_scrollV & 0x03;
             int rawH = g_vdp_reg_16_1_scrollH & 0x03;
 
-            // jgenesis/hardware-compatible handling of prohibited scroll sizes:
-            // - H invalid (2): behaves as 32x1 scroll planes.
-            // - V invalid (2) with valid H: behaves as 32 tiles high.
-            bool hInvalid = rawH == 2;
-            bool vInvalid = rawV == 2;
-
-            int decodedH = rawH switch
+            // Match MAME's 315-5313 handling for the VDP's prohibited plane
+            // size combinations. Several games intentionally touch these
+            // values, and treating them as simple decoded H/V fields makes
+            // nametable rows wrap at the wrong width.
+            int size = rawH | (rawV << 4);
+            (g_scroll_xcell, g_scroll_ycell) = size switch
             {
-                0 => 32,
-                1 => 64,
-                3 => 128,
-                _ => 32
+                0x00 => (32, 32),
+                0x01 => (64, 32),
+                0x02 => (64, 1),
+                0x03 => (128, 32),
+                0x10 => (32, 64),
+                0x11 => (64, 64),
+                0x12 => (64, 1),
+                0x13 => (128, 32),
+                0x20 => (32, 64),
+                0x21 => (64, 64),
+                0x22 => (64, 1),
+                0x23 => (128, 64),
+                0x30 => (32, 128),
+                0x31 => (64, 64),
+                0x32 => (64, 1),
+                0x33 => (128, 128),
+                _ => (32, 32)
             };
-
-            int decodedV = rawV switch
-            {
-                0 => 32,
-                1 => 64,
-                3 => 128,
-                _ => 32
-            };
-
-            if (hInvalid)
-            {
-                g_scroll_xcell = 32;
-                g_scroll_ycell = 1;
-            }
-            else
-            {
-                g_scroll_xcell = decodedH;
-                g_scroll_ycell = vInvalid ? 32 : decodedV;
-            }
 
             g_scroll_xsize = g_scroll_xcell << 3;
             g_scroll_xsize_mask = g_scroll_xsize - 1;

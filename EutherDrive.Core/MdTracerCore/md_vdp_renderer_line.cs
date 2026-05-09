@@ -480,7 +480,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_view_dy = 0;
                 int scrollB_byte_addr = g_line_snap[g_scanline].scrollb_base & (IsH40Mode() ? 0xFE00 : 0xFC00);
                 int w_screen_adrdr = scrollB_byte_addr >> 1;
-                int nameTableWidthCells = (g_vdp_reg_16_1_scrollH & 0x03) == 2 ? 1 : g_scroll_xcell;
+                int nameTableWidthCells = g_scroll_xcell;
                 int w_pic_addr = 0;
 
                 if (TracePlaneBHud && g_scanline == TracePlaneBHudScanline)
@@ -657,7 +657,7 @@ namespace EutherDrive.Core.MdTracerCore
                 int w_view_dy = 0;
                      int scrollA_byte_addr = g_line_snap[g_scanline].scrolla_base & (IsH40Mode() ? 0xFE00 : 0xFC00);
                      int w_screen_adrdr = scrollA_byte_addr >> 1;
-                    int nameTableWidthCells = (g_vdp_reg_16_1_scrollH & 0x03) == 2 ? 1 : g_scroll_xcell;
+                    int nameTableWidthCells = g_scroll_xcell;
                      
                  // DEBUG: Log first few tiles of Plane A
                  if (g_scanline == 100 && _frameCounter >= 100 && _frameCounter <= 110)

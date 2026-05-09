@@ -264,14 +264,127 @@ The instruction-path search now finds a plausible partial startup stream:
     - `$001b92`: `BSR $001ebc`, returning at `$001b96`.
     This moves the immediate fault target from the queue builder to the producer of selector record `$ffe848-$ffe850`.
   - New trace controls: `EUTHERDRIVE_TRACE_RAM_RANGE_FRAME_MIN/MAX` and `EUTHERDRIVE_TRACE_RAM_RANGE_REGS=1` for focused RAM writes; `EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_FRAME_START/END` and `EUTHERDRIVE_HSHAVOC_TRACE_VDP_COMMAND_BLOCKS_MAX` for bounded VDP block logs.
+- 2026-05-09 resume check after the machine freeze:
+  - Added `EUTHERDRIVE_TRACE_RAM_RANGE_PC_ALL=1` to the MD bus tracer so
+    focused RAM-range write traces are no longer limited to the old
+    decompressor-copy PC windows.
+  - A cold 5020-frame run with current default/proof flags does not reproduce
+    the earlier `$ffe848-$ffe850` bad-selector write. `$ffe840-$ffe860` is
+    cleared at frame 2 by the startup zero loop at `$0010a8-$0010b6`, then the
+    later selector path reads zero from `$ffe850` through `$001b76`/`$0015ba`.
+  - Treat the prior frame-5011 `$ffcc00 -> $c200` selector as
+    state/flag-dependent until it is reproduced from a saved slot or an input
+    path. Do not spend more cold-path time on `$ffe848-$ffe850` without first
+    restoring the state that makes that record nonzero.
+  - The current cold/default path also does not reproduce the older
+    `FFDBEC=$000b` target. A 5200-frame writer trace only sees startup clears
+    for `$ffdbe8-$ffdbf0`; the frame-5200 RAM snapshot has `FFDBEC=$0000`.
+  - The live cold-path control target is instead the effect/list scheduler at
+    `$00955c-$00a05e`. `$0192c6` clears `$ffdc12-$ffdc18`, sets `D0=$000f`,
+    `D1=$0004`, `A0=$0001cc1e`, then calls `$00955c`; `$00955c` seeds
+    `$ffdbf2/$ffdbf6/$ffdbf8`, copies four 32-byte records into
+    `$fff700-$fff7ff`, and initializes `$ffdc22-$ffdc28` to `$000e`.
+    `$0096d4` dispatches through `$0096f0` while `$0098d8/$009902` select
+    effect handlers from the pointer table at `$00a05e`. The first handler
+    `$009a74` decrements RGB nibbles and counts down `$ffdc22-$ffdc28`; these
+    countdown writes are not primary bad-selector producers.
+  - MCS/MAME bring-up blocker: the local MCS tree currently has no `hshavoc`
+    driver or Sega/Mega Drive arcade base driver, so a headless MCS launch
+    fails at driver lookup before ROM load. Porting this into MCS is therefore
+    a real driver/device port, not a small catalog entry.
+- 2026-05-09 MCS skeleton bring-up:
+  - Added a local `hshavoc` MCS driver at
+    `Third_party/MCS/mcs/src/src/mame/dataeast/hshavoc.cs` and registered it in
+    the generated drivlist. The driver loads `d-25.11a`/`d-26.9a`, applies the
+    current EutherDrive base decode plus startup/input bridge patches in
+    `init_hshavoc`, maps 68k ROM/RAM plus placeholder Genesis IO/VDP ranges,
+    and exposes a blank 320x224 raster screen.
+  - MCS ROM byte order needs two normalization passes: normalize the
+    `ROM_LOAD16_BYTE` result before `DecodeBaseInPlace`, then normalize again
+    after decode/patch so the MCS 68k bus sees the expected big-endian words.
+    Without the post-patch normalization reset vectors decode as `$00420c`
+    instead of `$000c42`.
+  - The first startup call must enter at `$00109c`, not `$0010a2`, because the
+    local MCS run needs the `lea $00ff0000,a0` before the RAM clear at
+    `$0010a6`. The full old lab call chain then stalls in the long startup
+    loop, so MCS now mirrors the current hand adapter startup patch that NOPs
+    weak calls and preserves the `$0cb2-$0cba` interrupt-mask/main-loop tail.
+  - Added initial Genesis-style input ports and a MCS `IPT_COIN1` system port.
+    EutherDrive UI now also has an explicit `Coin` button/pulse path for arcade
+    cores. The raw coin route is verified: with a headless `select` pulse the
+    MCS input port `$06` reads active-low `$7e` at the startup input poll PCs,
+    while the idle value is `$7f`.
+  - Added a frame-gated MCS IO trace
+    (`EUTHERDRIVE_HSHAVOC_MCS_TRACE_IO[_START_FRAME/_END_FRAME]`) so input can
+    be debugged without the full VDP queue log.
+  - Fixed MCS P1 start sampling for this skeleton by mirroring the arcade
+    routine's data-latch write on port `$04` into the P1 latch. The startup poll
+    now sees Start on port `$02`: active `$53` during the headless `start`
+    pulse, idle `$73` after release. Coin+Start at frames `70-78`/`95-103`
+    still does not change the 140-frame logo framebuffer, so the electrical
+    input path is now working but credit/game-state acceptance needs a later
+    title/credit-loop trace.
+  - Added a minimal Z80 bus request/reset latch for `$a11100/$a11200`. Before
+    this, the port spun forever at `$0d0014/$0d001c` waiting for bus grant;
+    after it, execution reaches main/vblank-side addresses such as `$000abc`,
+    `$000b20/$000b34`, `$0d05xx`, `$0d10xx`, and `$0d3bxx`.
+  - Fixed an MCS 68000 interrupt-ack mapping bug that left `HOLD_LINE` IRQ6
+    stuck after vblank. `AcknowledgeInterrupt(6)` must acknowledge
+    `INPUT_LINE_IRQ6`, while level 1 remains the IRQ0 compatibility case.
+  - The MCS startup patch now uses the same stack-correct dispatcher bridge as
+    the hand adapter: `$0c70` calls `$001332`. Direct probes to `$13fe/$161e`
+    were useful diagnostics but are not the correct bring-up path.
+  - The MCS-local VDP bring-up is no longer blank. The remaining required side
+    effect was the RAM-to-VDP queue path: MCS observes the first high-pattern
+    transfer ACK at `$002a16` (`$ff0000 -> $d800`, length `$0400`) and the
+    low-pattern/title transfer ACK at `$009538` (`$ff0000 -> $0000`, length
+    `$0bc0`). A small latched queue model now replays those transfers on ACK.
+  - The latch must ignore dispatcher scratch writes in `$001300-$001450`;
+    otherwise the `$00137c-$0013f8` scratch stores corrupt the slot-0 source
+    before the real `$002a16` ACK.
+  - A read at `$fffe00` returns the baseline VDP/status word `$8164` when the
+    RAM seed is still zero. This matches the hand-adapter startup condition
+    after the early clear and lets the `$1332` dispatcher choose the useful
+    mainline path.
+  - The current 65-frame proof with `EUTHERDRIVE_HSHAVOC_MCS_TRACE_VDP=1`
+    reaches the Data East logo:
+    `fb_has_content=True`, `nonzero_pixels=50089`,
+    `first_nonzero=(48,0)`, `fp=0x762E7E6BB153D788`. A 120-frame non-trace run
+    stays animated with final fingerprint `0x2A4E4888DBDFB6B5`. Audio is still
+    silent.
+  - 256-wide visarea probes (`48..303`, `32..287`, and `0..255`) all clipped
+    the logo, so the MCS driver currently keeps a safe 320x224 viewport. The
+    proper fix is an H32 coordinate/left-border mapping pass, not a simple
+    `screen.set_visarea()` crop.
+  - `dotnet build EutherDrive.Headless/EutherDrive.Headless.csproj -c Release
+    --no-restore -p:AllowUnsafeBlocks=true` succeeds. The unsafe flag is needed
+    by unrelated dirty MCS source in this tree, not by the `hshavoc` port itself.
 
 ## Next steps
 
 1. Keep the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a target set, but do not treat the first `p5h`/typedat-invert probe as solved; it changes DMA data without improving the corrupt framebuffer.
 1a. Use `--vram-snapshot` on every promising frame. The first low-pattern path is now proven (`$001fe2` decompressor -> `$ff0000` -> `$019340/$019338` DMA), so the next focus is comparing RAM-produced tilemap/pattern-bank records against retail snapshots and finding which producer causes Plane B or later pattern banks to diverge.
 1b. Use `--ram-snapshot --compare-ram-snapshot` against slot 3 before any renderer change. The first pass/fail signal is whether the RAM-sourced Plane A queue records (`$ffd800/$ffd900/$ffd940/$ffd980`) appear; if they do not, continue with tilemap producer/control decryption instead of layer-bank probes.
-1c. Focus the next runtime/decode pass on the `FFDBEC` producer and consumers: `$003c60`, `$003d58`, and `$003de8` use `FFDBEC` as a table index, `$0032b0-$0032f4` increments/wraps it through the `$00352c` table, `$010872` remaps it through a small table, and `$01a2b8` derives it from `FFDF36 & 3`. The immediate proof target is matching slot 3's `$ffd800 -> $c100` and `$ffd980 -> $e300` queue records without forcing the whole control packet.
+1c. Suspend the old cold-path `FFDBEC` producer pass until a saved-slot/input run
+    reproduces nonzero `FFDBEC`. It remains a useful slot-3 comparison target,
+    but current cold/default traces keep it zero through frame 5200.
 1d. Trace the producer of the selector record `$ffe848-$ffe850`. The bad record is enabled at `$ffe850`, maps output block `$ffe998`, and feeds length `$ffe84e`, source `$ffe848`, and destination `$ffe84c` into the `$001b70-$001b92` caller before the generic `$001ebc` builder. The desired comparison is the bad `$ffcc00 -> $c200` selector versus the earlier/good `$ffd800 -> $c100`/slot-3 selector; use a narrower writer trace or targeted PC trace instead of a broad `$ffe848-$ffe850` RAM trace, which proved too expensive when run over thousands of frames.
+1e. Before continuing 1d, reproduce the nonzero `$ffe848-$ffe850` selector from
+    the saved-slot or input sequence that originally generated it. With current
+    cold/default flags, `EUTHERDRIVE_TRACE_RAM_RANGE_PC_ALL=1` proves the record
+    stays zero after the startup clear, so the next useful run should be
+    savestate-based or should include the input/proof flags from the original
+    late-scene trace.
+1f. On the cold/default path, switch the next decode pass to the effect/list
+    scheduler: validate the `$0001cc1e` record stream and the mode words
+    consumed through `$ffdc12-$ffdc20` against the home/retail equivalent. The
+    useful trace windows are `$0192c6-$0192f4`, `$00955c-$0096d4`,
+    `$0098d8-$009a72`, and the handler table `$00a05e`.
+1g. Continue MCS port bring-up from the now-visible Data East logo. Next MCS
+    targets are: prove the now-visible coin/start polls change credit/game
+    state after the title/credit loop is reached, repair the H32/left-border
+    viewport mapping, and bring up the silent audio path. Keep the VDP queue
+    latch until a fuller Genesis VDP device/adapter replaces the local model.
 2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
 3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
 4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.
@@ -298,6 +411,7 @@ The instruction-path search now finds a plausible partial startup stream:
 14f. Before attempting rendering, keep refining the minimal side-effect checklist: `$0a1c`, `$10a2/$10a8`, and `$0af8` are the first VDP/MMIO candidates; token classes and `$1030` still need a consumer/return model before they can be treated as render-init code.
 14g. Build the first MAME-side instrumentation target around VDP control-port writes and MMIO polls rather than full gameplay: log execution of `$0a1c`, `$10ba-$10c0`, `$0af8-$0b14`, and the weak blockers `$00f8/$0d34`. The lab now prints the exact patch words, breakpoints, and expected effects for this probe.
 14h. After the first instrumented run, classify the result by gate: VDP register writes seen, MMIO poll stable/looping, token-entry execution seen, or weak blocker reached before any video setup.
+14i. The immediate MCS blocker after Z80 grant is VDP command/DMA behavior: frame 3 sets DMA source/length registers but the placeholder VDP records no real memory DMA and VRAM/CRAM stay zero. Trace the `$c00004` command words around `$0d0774`/`$0d10xx` and compare against the hand adapter before touching the remaining decode hypotheses.
 15. Use `$00000ad6` as the first concrete `$0d34` pointer anchor; `$00010bcc` is secondary, while bank-D variants should stay rejected until new evidence appears.
 16. Build a table-aware scorer for repeated words, longword pointers, MMIO/VDP constants, and target quality. The current linear 68000 scorer is too harsh for likely setup tables.
 17. Identify encrypted islands after startup by scanning for low-confidence 68000 code between known-good blocks.

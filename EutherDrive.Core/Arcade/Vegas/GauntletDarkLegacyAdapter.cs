@@ -488,6 +488,20 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGlideFifoMakeRoom(pc))
             return;
+        if (TryFastPathKnownGlideUiDispatchFromFrameLoop(pc))
+            return;
+        if (TryFastPathKnownRuntimeCopyLoop(pc))
+            return;
+        if (TryFastPathKnownGlideVertexCopyLoop(pc))
+            return;
+        if (TryFastPathKnownGlideSetupPacketHelper(pc))
+            return;
+        if (TryFastPathKnownGlideStateFlush(pc))
+            return;
+        if (TryFastPathKnownGlideTwoWordStatePacketTail(pc))
+            return;
+        if (TryFastPathKnownGlideBufferSwapPacketTail(pc))
+            return;
 
         uint op = _memory.Read32(pc);
         LastFetchedInstruction = op;
@@ -1223,6 +1237,612 @@ internal sealed class MipsR5000Core
         CompleteFastPathStep();
         return true;
     }
+
+    private bool TryFastPathKnownGlideUiDispatchFromFrameLoop(ulong pc)
+    {
+        if (pc != 0xffffffff80019224UL)
+            return false;
+        if (_gpr[31] != 0xffffffff800195d4UL || _gpr[4] != 0 || (_gpr[5] & ~0x4UL) != 0)
+            return false;
+        if (_memory.Read32(pc) != 0x27bdffb0U ||
+            _memory.Read32(pc + 4) != 0xafa40050U ||
+            _memory.Read32(pc + 8) != 0x0000202dU ||
+            _memory.Read32(pc + 52) != 0x0c006138U ||
+            _memory.Read32(pc + 56) != 0xafa50054U ||
+            _memory.Read32(pc + 60) != 0x0040582dU ||
+            _memory.Read32(pc + 64) != 0x116000b0U ||
+            _memory.Read32(pc + 72) != 0x8d730000U ||
+            _memory.Read32(0xffffffff800195d4UL) != 0x24040001U)
+        {
+            return false;
+        }
+
+        _gpr[2] = 0;
+        _gpr[4] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 512UL);
+        _instructionCounter += 512UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeCopyLoop(ulong pc)
+    {
+        const ulong byteSetup = 0xffffffff8003ce94UL;
+        const ulong halfSetup = 0xffffffff8003cebcUL;
+        const ulong halfBody = 0xffffffff8003ceccUL;
+        const ulong halfDelay = 0xffffffff8003cee0UL;
+        const ulong wordSetup = 0xffffffff8003ceecUL;
+        const ulong wordBody = 0xffffffff8003cefcUL;
+        const ulong wordDelay = 0xffffffff8003cf10UL;
+        const ulong dwordSetup = 0xffffffff8003cf1cUL;
+        const ulong dwordBody = 0xffffffff8003cf2cUL;
+        const ulong dwordDelay = 0xffffffff8003cf40UL;
+
+        if (pc is not (byteSetup or halfSetup or halfBody or halfDelay or wordSetup or wordBody or wordDelay or dwordSetup or dwordBody or dwordDelay))
+            return false;
+        if (!MatchesKnownRuntimeCopySignature())
+            return false;
+
+        return pc switch
+        {
+            byteSetup => TryFastPathKnownRuntimeByteCopy(),
+            halfSetup => TryFastPathKnownRuntimeCopySetup(unitShift: 1),
+            halfBody => TryFastPathKnownRuntimeCopyBody(unitSize: 2),
+            halfDelay => TryFastPathKnownRuntimeCopyDelaySlot(unitSize: 2, halfBody),
+            wordSetup => TryFastPathKnownRuntimeCopySetup(unitShift: 2),
+            wordBody => TryFastPathKnownRuntimeCopyBody(unitSize: 4),
+            wordDelay => TryFastPathKnownRuntimeCopyDelaySlot(unitSize: 4, wordBody),
+            dwordSetup => TryFastPathKnownRuntimeCopySetup(unitShift: 3),
+            dwordBody => TryFastPathKnownRuntimeCopyBody(unitSize: 8),
+            dwordDelay => TryFastPathKnownRuntimeCopyDelaySlot(unitSize: 8, dwordBody),
+            _ => false
+        };
+    }
+
+    private bool MatchesKnownRuntimeCopySignature()
+    {
+        const ulong baseAddress = 0xffffffff8003ce94UL;
+        return _memory.Read32(baseAddress + 0x00) == 0x00c0402dU &&
+            _memory.Read32(baseAddress + 0x04) == 0x19000006U &&
+            _memory.Read32(baseAddress + 0x08) == 0x2508ffffU &&
+            _memory.Read32(baseAddress + 0x0c) == 0x90a90000U &&
+            _memory.Read32(baseAddress + 0x14) == 0xa0890000U &&
+            _memory.Read32(baseAddress + 0x20) == 0x03e00008U &&
+            _memory.Read32(baseAddress + 0x28) == 0x00064042U &&
+            _memory.Read32(baseAddress + 0x34) == 0x1900fff2U &&
+            _memory.Read32(baseAddress + 0x38) == 0x2508ffffU &&
+            _memory.Read32(baseAddress + 0x3c) == 0x94a90000U &&
+            _memory.Read32(baseAddress + 0x44) == 0xa4890000U &&
+            _memory.Read32(baseAddress + 0x50) == 0x1000ffebU &&
+            _memory.Read32(baseAddress + 0x58) == 0x00064082U &&
+            _memory.Read32(baseAddress + 0x64) == 0x1900ffe6U &&
+            _memory.Read32(baseAddress + 0x68) == 0x2508ffffU &&
+            _memory.Read32(baseAddress + 0x6c) == 0x8ca90000U &&
+            _memory.Read32(baseAddress + 0x74) == 0xac890000U &&
+            _memory.Read32(baseAddress + 0x80) == 0x1000ffdfU &&
+            _memory.Read32(baseAddress + 0x88) == 0x000640c2U &&
+            _memory.Read32(baseAddress + 0x94) == 0x1900ffdaU &&
+            _memory.Read32(baseAddress + 0x98) == 0x2508ffffU &&
+            _memory.Read32(baseAddress + 0x9c) == 0xdca90000U &&
+            _memory.Read32(baseAddress + 0xa4) == 0xfc890000U;
+    }
+
+    private bool TryFastPathKnownRuntimeByteCopy()
+    {
+        ulong returnAddress = _gpr[31];
+        if (!IsRuntimeCopyReturnAddress(returnAddress))
+            return false;
+
+        long signedCount = unchecked((long)_gpr[6]);
+        if (signedCount <= 0)
+        {
+            _gpr[8] = unchecked((ulong)(signedCount - 1));
+            _gpr[2] = _gpr[7];
+            FinishRuntimeCopyFastPath(returnAddress, 5UL);
+            return true;
+        }
+
+        ulong count = (ulong)signedCount;
+        if (!TryCopyRuntimeUnits(unitSize: 1, count, out ulong lastValue))
+            return false;
+
+        _gpr[4] += count;
+        _gpr[5] += count;
+        _gpr[8] = 0;
+        _gpr[9] = lastValue;
+        _gpr[2] = _gpr[7];
+        FinishRuntimeCopyFastPath(returnAddress, count * 5UL + 5UL);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeCopySetup(int unitShift)
+    {
+        uint byteCount = (uint)_gpr[6];
+        ulong count = byteCount >> unitShift;
+        if (count == 0)
+            return false;
+
+        int unitSize = 1 << unitShift;
+        ulong copiedBytes = count * (ulong)unitSize;
+        if (!TryCopyRuntimeUnits(unitSize, count, out ulong lastValue))
+            return false;
+
+        _gpr[4] += copiedBytes;
+        _gpr[5] += copiedBytes;
+        _gpr[6] = SignExtend32(byteCount - (uint)copiedBytes);
+        _gpr[8] = 0;
+        _gpr[9] = lastValue;
+        FinishRuntimeCopyFastPath(0xffffffff8003ce94UL, count * 5UL + 6UL);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeCopyBody(int unitSize)
+    {
+        if (_hasPendingBranch)
+            return false;
+
+        long signedCount = unchecked((long)_gpr[8]);
+        if (signedCount <= 0)
+            return false;
+
+        ulong count = (ulong)signedCount;
+        if (!TryCopyRuntimeUnits(unitSize, count, out ulong lastValue))
+            return false;
+
+        ulong copiedBytes = count * (ulong)unitSize;
+        _gpr[4] += copiedBytes;
+        _gpr[5] += copiedBytes;
+        _gpr[8] = 0;
+        _gpr[9] = lastValue;
+        FinishRuntimeCopyFastPath(0xffffffff8003ce94UL, count * 5UL + 2UL);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeCopyDelaySlot(int unitSize, ulong loopBody)
+    {
+        long signedCount = unchecked((long)_gpr[8]);
+        if (_hasPendingBranch)
+        {
+            if (_pendingBranchTarget != loopBody || signedCount <= 0)
+                return false;
+        }
+        else if (signedCount != 0)
+        {
+            return false;
+        }
+
+        _gpr[4] += (uint)unitSize;
+        if (signedCount > 0)
+        {
+            ulong count = (ulong)signedCount;
+            if (!TryCopyRuntimeUnits(unitSize, count, out ulong lastValue))
+                return false;
+
+            ulong copiedBytes = count * (ulong)unitSize;
+            _gpr[4] += copiedBytes;
+            _gpr[5] += copiedBytes;
+            _gpr[9] = lastValue;
+        }
+
+        _gpr[8] = 0;
+        FinishRuntimeCopyFastPath(0xffffffff8003ce94UL, (ulong)Math.Max(0L, signedCount) * 5UL + 3UL);
+        return true;
+    }
+
+    private bool TryCopyRuntimeUnits(int unitSize, ulong count, out ulong lastValue)
+    {
+        lastValue = 0;
+        if (count == 0 || count > 0x00100000UL)
+            return false;
+
+        ulong source = _gpr[5];
+        ulong destination = _gpr[4];
+        ulong byteLength = count * (ulong)unitSize;
+        if (((source | destination) & (uint)(unitSize - 1)) != 0 ||
+            !IsMainRamRange(source, byteLength) ||
+            !IsMainRamRange(destination, byteLength))
+        {
+            return false;
+        }
+
+        for (ulong offset = 0; offset < byteLength; offset += (uint)unitSize)
+        {
+            lastValue = unitSize switch
+            {
+                1 => _memory.Read8(source + offset),
+                2 => _memory.Read16(source + offset),
+                4 => SignExtend32(_memory.Read32(source + offset)),
+                8 => _memory.Read64(source + offset),
+                _ => 0
+            };
+
+            switch (unitSize)
+            {
+                case 1:
+                    _memory.Write8(destination + offset, (byte)lastValue);
+                    break;
+                case 2:
+                    _memory.Write16(destination + offset, (ushort)lastValue);
+                    break;
+                case 4:
+                    _memory.Write32(destination + offset, (uint)lastValue);
+                    break;
+                case 8:
+                    _memory.Write64(destination + offset, lastValue);
+                    break;
+            }
+        }
+
+        return true;
+    }
+
+    private bool IsRuntimeCopyReturnAddress(ulong returnAddress)
+    {
+        ulong offset = returnAddress & 0x1fffffffUL;
+        return (returnAddress & 0xffffffffe0000000UL) == 0xffffffff80000000UL &&
+            offset is >= 0x00010000UL and <= 0x01000000UL;
+    }
+
+    private void FinishRuntimeCopyFastPath(ulong targetPc, ulong skippedInstructions)
+    {
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * Math.Max(1UL, skippedInstructions));
+        _instructionCounter += Math.Max(1UL, skippedInstructions);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = targetPc;
+    }
+
+    private bool TryFastPathKnownGlideVertexCopyLoop(ulong pc)
+    {
+        if (pc != 0xffffffff80052880UL)
+            return false;
+        if (_memory.Read32(pc) != 0x8c8b0000U ||
+            _memory.Read32(pc + 4) != 0x8c8c0004U ||
+            _memory.Read32(pc + 8) != 0x8c8d0008U ||
+            _memory.Read32(pc + 12) != 0x8c8e000cU ||
+            _memory.Read32(pc + 16) != 0xac4b0000U ||
+            _memory.Read32(pc + 20) != 0xac4c0004U ||
+            _memory.Read32(pc + 24) != 0xac4d0008U ||
+            _memory.Read32(pc + 28) != 0xac4e000cU ||
+            _memory.Read32(pc + 32) != 0x24840010U ||
+            _memory.Read32(pc + 36) != 0x1483fff6U ||
+            _memory.Read32(pc + 40) != 0x24420010U)
+        {
+            return false;
+        }
+
+        ulong source = _gpr[4];
+        ulong destination = _gpr[2];
+        ulong end = _gpr[3];
+        if (end < source || end - source > 0x1000UL || ((end - source) & 0xfUL) != 0)
+            return false;
+
+        ulong length = end - source;
+        if (!IsMainRamRange(source, length == 0 ? 1UL : length) ||
+            !IsMainRamRange(destination, length == 0 ? 1UL : length))
+        {
+            return false;
+        }
+
+        for (ulong offset = 0; offset < length; offset += 16)
+        {
+            _memory.Write32(destination + offset, _memory.Read32(source + offset));
+            _memory.Write32(destination + offset + 4, _memory.Read32(source + offset + 4));
+            _memory.Write32(destination + offset + 8, _memory.Read32(source + offset + 8));
+            _memory.Write32(destination + offset + 12, _memory.Read32(source + offset + 12));
+        }
+
+        ulong chunks = length / 16UL;
+        _gpr[2] = destination + length;
+        _gpr[4] = end;
+        _gpr[0] = 0;
+        AdvanceCp0Count(Math.Max(_cp0CountStep, chunks * 11UL * _cp0CountStep));
+        _instructionCounter += Math.Max(1UL, chunks * 11UL);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = 0xffffffff800528acUL;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideSetupPacketHelper(ulong pc)
+    {
+        if (pc != 0xffffffff80052bc0UL)
+            return false;
+        if (_memory.Read32(pc) != 0x24030008U ||
+            _memory.Read32(pc + 4) != 0x24070002U ||
+            _memory.Read32(pc + 8) != 0x00e5180bU ||
+            _memory.Read32(pc + 12) != 0x3c02800bU ||
+            _memory.Read32(pc + 16) != 0x8c464d2cU ||
+            _memory.Read32(pc + 20) != 0x14600004U ||
+            _memory.Read32(pc + 24) != 0x00031580U ||
+            _memory.Read32(pc + 40) != 0x00441025U ||
+            _memory.Read32(pc + 44) != 0x34430003U ||
+            _memory.Read32(pc + 48) != 0xacc30358U ||
+            _memory.Read32(pc + 52) != 0x344300c3U ||
+            _memory.Read32(pc + 56) != 0xacc4035cU ||
+            _memory.Read32(pc + 60) != 0x10a00005U ||
+            _memory.Read32(pc + 64) != 0xacc30354U ||
+            _memory.Read32(pc + 80) != 0xacc20354U ||
+            _memory.Read32(pc + 84) != 0x03e00008U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x01000000UL)
+            return false;
+
+        ulong state = unchecked((ulong)(long)(int)_memory.Read32(0x800b4d2cUL));
+        if (!IsMainRamRange(state + 0x354UL, 12))
+            return false;
+
+        uint command = (uint)_gpr[4];
+        bool packed = _gpr[5] != 0;
+        uint selector = packed ? 2u : 8u;
+        uint prefix = (selector << 22) | command;
+        uint setup = prefix | 0xc3u;
+        uint storedSetup = packed ? setup & 0xff7fffffu : setup;
+
+        _memory.Write32(state + 0x358UL, prefix | 3u);
+        _memory.Write32(state + 0x35cUL, command);
+        _memory.Write32(state + 0x354UL, storedSetup);
+        _gpr[2] = packed ? storedSetup : prefix;
+        _gpr[3] = setup;
+        _gpr[6] = state;
+        _gpr[7] = 2;
+        _gpr[0] = 0;
+
+        ulong skippedInstructions = packed ? 22UL : 18UL;
+        AdvanceCp0Count(_cp0CountStep * skippedInstructions);
+        _instructionCounter += skippedInstructions;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideStateFlush(ulong pc)
+    {
+        if (pc != 0xffffffff800526acUL)
+            return false;
+        if (_memory.Read32(pc) != 0x27bdffe8U ||
+            _memory.Read32(pc + 4) != 0x3c02800bU ||
+            _memory.Read32(pc + 8) != 0xafb00010U ||
+            _memory.Read32(pc + 12) != 0x24504d20U ||
+            _memory.Read32(pc + 16) != 0xafbf0014U ||
+            _memory.Read32(pc + 20) != 0x8e02000cU ||
+            _memory.Read32(pc + 24) != 0x8c42037cU ||
+            _memory.Read32(pc + 28) != 0x2842003cU ||
+            _memory.Read32(pc + 56) != 0x8e04000cU ||
+            _memory.Read32(pc + 60) != 0x3c030e3fU ||
+            _memory.Read32(pc + 64) != 0x8c820374U ||
+            _memory.Read32(pc + 68) != 0x3463820cU ||
+            _memory.Read32(pc + 72) != 0xac430000U ||
+            _memory.Read32(pc + 228) != 0x3c020003U ||
+            _memory.Read32(pc + 232) != 0x8c830374U ||
+            _memory.Read32(pc + 236) != 0x34428284U ||
+            _memory.Read32(pc + 240) != 0xac620000U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x01000000UL)
+            return false;
+
+        ulong state = unchecked((ulong)(long)(int)_memory.Read32(0x800b4d2cUL));
+        if (!IsMainRamRange(state + 0x260UL, 0x138))
+            return false;
+
+        uint room = _memory.Read32(state + 0x37cUL);
+        if (room < 0x3c)
+            return false;
+
+        uint fifo = _memory.Read32(state + 0x374UL);
+        if ((fifo & 3u) != 0)
+            return false;
+
+        uint firstStart = fifo;
+        WriteSignedAddress32(fifo, 0x0e3f820cu);
+        fifo += 4;
+        for (uint offset = 0x260; offset <= 0x284; offset += 4, fifo += 4)
+            WriteSignedAddress32(fifo, _memory.Read32(state + offset));
+
+        room -= fifo - firstStart;
+        _memory.Write32(state + 0x374UL, fifo);
+        _memory.Write32(state + 0x37cUL, room);
+
+        uint secondStart = fifo;
+        WriteSignedAddress32(fifo, 0x00038284u);
+        fifo += 4;
+        for (uint offset = 0x28c; offset <= 0x294; offset += 4, fifo += 4)
+            WriteSignedAddress32(fifo, _memory.Read32(state + offset));
+
+        room -= fifo - secondStart;
+        _memory.Write32(state + 0x374UL, fifo);
+        _memory.Write32(state + 0x37cUL, room);
+
+        _gpr[2] = room;
+        _gpr[3] = fifo - secondStart;
+        _gpr[4] = state;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 76UL);
+        _instructionCounter += 76UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideTwoWordStatePacketTail(ulong pc)
+    {
+        if (pc != 0xffffffff800511c8UL)
+            return false;
+        if (_memory.Read32(pc) != 0x3c030001U ||
+            _memory.Read32(pc + 4) != 0x8e020374U ||
+            _memory.Read32(pc + 8) != 0x34630219U ||
+            _memory.Read32(pc + 12) != 0xac430000U ||
+            _memory.Read32(pc + 16) != 0xac510004U ||
+            _memory.Read32(pc + 24) != 0x8e03037cU ||
+            _memory.Read32(pc + 36) != 0xae020374U ||
+            _memory.Read32(pc + 40) != 0xae03037cU ||
+            _memory.Read32(pc + 48) != 0x8fb10014U ||
+            _memory.Read32(pc + 52) != 0x8fb00010U ||
+            _memory.Read32(pc + 56) != 0x03e00008U ||
+            _memory.Read32(pc + 60) != 0x27bd0020U)
+        {
+            return false;
+        }
+
+        ulong state = _gpr[16];
+        if (!IsMainRamRange(state + 0x268UL, 4) ||
+            !IsMainRamRange(state + 0x374UL, 12) ||
+            !IsMainRamRange(_gpr[29] + 0x10UL, 12))
+        {
+            return false;
+        }
+
+        uint room = _memory.Read32(state + 0x37cUL);
+        if (room < 8)
+            return false;
+
+        uint fifo = _memory.Read32(state + 0x374UL);
+        if ((fifo & 3u) != 0 || fifo is < 0xa8200000u or >= 0xa8300000u)
+            return false;
+
+        uint nextFifo = fifo + 8u;
+        uint nextRoom = room - 8u;
+        WriteSignedAddress32(fifo, 0x00010219u);
+        WriteSignedAddress32(fifo + 4u, (uint)_gpr[17]);
+        _memory.Write32(state + 0x374UL, nextFifo);
+        _memory.Write32(state + 0x37cUL, nextRoom);
+
+        ulong sp = _gpr[29];
+        _gpr[2] = SignExtend32(nextFifo);
+        _gpr[3] = SignExtend32(nextRoom);
+        _gpr[31] = SignExtend32(_memory.Read32(sp + 0x18UL));
+        _gpr[17] = SignExtend32(_memory.Read32(sp + 0x14UL));
+        _gpr[16] = SignExtend32(_memory.Read32(sp + 0x10UL));
+        _gpr[29] = sp + 0x20UL;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 16UL);
+        _instructionCounter += 16UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideBufferSwapPacketTail(ulong pc)
+    {
+        if (pc != 0xffffffff80053340UL)
+            return false;
+        if (_memory.Read32(pc) != 0x2442ffffU ||
+            _memory.Read32(pc + 4) != 0x14400035U ||
+            _memory.Read32(pc + 8) != 0xae02038cU ||
+            _memory.Read32(pc + 12) != 0x0c017e74U ||
+            _memory.Read32(pc + 16) != 0x00000000U ||
+            _memory.Read32(pc + 20) != 0x8e0203f4U ||
+            _memory.Read32(pc + 24) != 0x8e03037cU ||
+            _memory.Read32(pc + 76) != 0x34420261U ||
+            _memory.Read32(pc + 80) != 0xac620000U ||
+            _memory.Read32(pc + 84) != 0x8e020280U ||
+            _memory.Read32(pc + 124) != 0x34420221U ||
+            _memory.Read32(pc + 128) != 0xac620000U ||
+            _memory.Read32(pc + 132) != 0x8e02026cU ||
+            _memory.Read32(pc + 176) != 0x34630241U ||
+            _memory.Read32(pc + 180) != 0xac430000U ||
+            _memory.Read32(pc + 184) != 0xac400004U ||
+            _memory.Read32(pc + 216) != 0x8fbf0018U ||
+            _memory.Read32(pc + 220) != 0x8fb10014U ||
+            _memory.Read32(pc + 224) != 0x8fb00010U ||
+            _memory.Read32(pc + 228) != 0x03e00008U ||
+            _memory.Read32(pc + 232) != 0x27bd0020U)
+        {
+            return false;
+        }
+
+        ulong state = _gpr[16];
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(state + 0x26cUL, 4) ||
+            !IsMainRamRange(state + 0x280UL, 4) ||
+            !IsMainRamRange(state + 0x374UL, 0x84) ||
+            !IsMainRamRange(sp + 0x10UL, 12))
+        {
+            return false;
+        }
+
+        ulong decremented = unchecked(_gpr[2] - 1UL);
+        uint counter = (uint)decremented;
+        _memory.Write32(state + 0x38cUL, counter);
+
+        ulong returnValue = decremented;
+        ulong skippedInstructions = 6UL;
+        if (counter == 0)
+        {
+            uint extra = _memory.Read32(state + 0x3f4UL);
+            uint room = _memory.Read32(state + 0x37cUL);
+            uint requiredRoom = unchecked(((0u - extra) & 4u) + (extra << 2) + 0x10u);
+            if (room < requiredRoom)
+                return false;
+
+            uint fifo = _memory.Read32(state + 0x374UL);
+            if ((fifo & 3u) != 0 || fifo is < 0xa8200000u or >= 0xa8300000u)
+                return false;
+
+            WriteSignedAddress32(fifo, 0x00010261u);
+            WriteSignedAddress32(fifo + 4u, _memory.Read32(state + 0x280UL));
+            fifo += 8u;
+            room -= 8u;
+            _memory.Write32(state + 0x374UL, fifo);
+            _memory.Write32(state + 0x37cUL, room);
+
+            WriteSignedAddress32(fifo, 0x00010221u);
+            WriteSignedAddress32(fifo + 4u, _memory.Read32(state + 0x26cUL));
+            fifo += 8u;
+            room -= 8u;
+            _memory.Write32(state + 0x374UL, fifo);
+            _memory.Write32(state + 0x37cUL, room);
+
+            if (extra != 0)
+            {
+                if (room < 8)
+                    return false;
+
+                WriteSignedAddress32(fifo, 0x00010241u);
+                WriteSignedAddress32(fifo + 4u, 0);
+                fifo += 8u;
+                room -= 8u;
+                _memory.Write32(state + 0x374UL, fifo);
+                _memory.Write32(state + 0x37cUL, room);
+            }
+
+            returnValue = _gpr[17];
+            skippedInstructions = extra == 0 ? 55UL : 67UL;
+        }
+
+        _gpr[2] = returnValue;
+        _gpr[31] = SignExtend32(_memory.Read32(sp + 0x18UL));
+        _gpr[17] = SignExtend32(_memory.Read32(sp + 0x14UL));
+        _gpr[16] = SignExtend32(_memory.Read32(sp + 0x10UL));
+        _gpr[29] = sp + 0x20UL;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * skippedInstructions);
+        _instructionCounter += skippedInstructions;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private void WriteSignedAddress32(uint address, uint value)
+        => _memory.Write32(unchecked((ulong)(long)(int)address), value);
 
     private bool TryFastPathKnownRamCountDelay(ulong pc)
     {
@@ -4614,15 +5234,20 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly uint[] _registers = new uint[0x400];
     private readonly ushort[] _lfb = new ushort[LfbPixels];
     private readonly List<uint> _fifoBuffer = new();
+    private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
+    private readonly int[] _fifoPacketTypeCounts = new int[8];
     private int _registerWriteCount;
     private int _fifoWriteCount;
     private int _fifoPacketCount;
     private int _fifoDrawPacketCount;
+    private int _directTriangleCommandCount;
+    private int _setupTriangleCommandCount;
     private int _lfbWriteCount;
     private int _textureWriteCount;
     private int _fastFillCount;
     private int _swapBufferCount;
     private int _renderFrame;
+    private int _setupVertexCount;
 
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
 
@@ -4631,10 +5256,27 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint register = (address >> 2) & 0x3ffu;
         _registers[register] = value;
         _registerWriteCount++;
-        if (register == 0x49u)
-            FastFill();
-        else if (register == 0x4au)
-            _swapBufferCount++;
+        switch (register)
+        {
+            case 0x20u:
+                DrawIntegerTriangle();
+                break;
+            case 0x40u:
+                DrawFloatTriangle();
+                break;
+            case 0x49u:
+                FastFill();
+                break;
+            case 0x4au:
+                _swapBufferCount++;
+                break;
+            case 0xa8u:
+                DrawSetupTriangle();
+                break;
+            case 0xa9u:
+                BeginSetupTriangle();
+                break;
+        }
     }
 
     public virtual void WriteFifo(ReadOnlySpan<uint> words)
@@ -4822,6 +5464,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void DecodeFifoPacket(uint command, int wordsNeeded)
     {
+        _fifoPacketTypeCounts[command & 7u]++;
         switch (command & 7u)
         {
             case 1:
@@ -4829,6 +5472,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 break;
             case 3:
                 _fifoDrawPacketCount++;
+                DecodeFifoType3(command, wordsNeeded);
                 break;
             case 4:
                 DecodeFifoType4(command);
@@ -4861,6 +5505,66 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
     }
 
+    private void DecodeFifoType3(uint command, int wordsNeeded)
+    {
+        int count = (int)((command >> 6) & 0xfu);
+        int code = (int)((command >> 3) & 7u);
+        ushort fallbackColor = GetDrawColor();
+        int source = 1;
+
+        _registers[0x98] = ((command >> 10) & 0xffu) | (((command >> 22) & 0xfu) << 16);
+        for (int vertex = 0; vertex < count && source < wordsNeeded; vertex++)
+        {
+            if (!TryReadFloat(wordsNeeded, ref source, out float x) ||
+                !TryReadFloat(wordsNeeded, ref source, out float y))
+            {
+                return;
+            }
+
+            ushort color = fallbackColor;
+            if (((command >> 28) & 1u) != 0)
+            {
+                if (((command >> 10) & 3u) != 0)
+                {
+                    if (!TryReadWord(wordsNeeded, ref source, out uint argb))
+                        return;
+                    if (((command >> 10) & 1u) != 0)
+                        color = PackedColorToRgb565(argb);
+                }
+            }
+            else
+            {
+                if (((command >> 10) & 1u) != 0)
+                {
+                    if (!TryReadFloat(wordsNeeded, ref source, out float r) ||
+                        !TryReadFloat(wordsNeeded, ref source, out float g) ||
+                        !TryReadFloat(wordsNeeded, ref source, out float b))
+                    {
+                        return;
+                    }
+                    color = FloatColorToRgb565(r, g, b);
+                }
+                if (((command >> 11) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+                    return;
+            }
+
+            if (((command >> 12) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+                return;
+            if (((command >> 13) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+                return;
+            if (((command >> 14) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+                return;
+            if (((command >> 15) & 1u) != 0 && (!SkipWord(wordsNeeded, ref source) || !SkipWord(wordsNeeded, ref source)))
+                return;
+            if (((command >> 16) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+                return;
+            if (((command >> 17) & 1u) != 0 && (!SkipWord(wordsNeeded, ref source) || !SkipWord(wordsNeeded, ref source)))
+                return;
+
+            PushSetupVertex(new SetupVertex(x, y, color), code, vertex, ((command >> 22) & 1u) != 0);
+        }
+    }
+
     private void DecodeFifoType5(uint command, int wordsNeeded)
     {
         int count = (int)((command >> 3) & 0x7ffffu);
@@ -4877,6 +5581,226 @@ internal class VoodooBringupBackend : IVoodooBackend
             else if (space is 0 or 2)
                 WriteLfb32(target << 2, value);
         }
+    }
+
+    private void BeginSetupTriangle()
+    {
+        SetupVertex vertex = ReadCurrentSetupVertex();
+        _setupVertices[0] = vertex;
+        _setupVertices[1] = vertex;
+        _setupVertices[2] = vertex;
+        _setupVertexCount = 1;
+    }
+
+    private void DrawSetupTriangle()
+    {
+        _setupTriangleCommandCount++;
+        PushSetupVertex(ReadCurrentSetupVertex(), code: 1, vertexIndex: _setupVertexCount == 0 ? 0 : 1, fanMode: IsSetupFanMode());
+    }
+
+    private void DrawIntegerTriangle()
+    {
+        _directTriangleCommandCount++;
+        ushort color = GetDrawColor();
+        DrawTriangleWire(
+            FixedVertexCoordinate(_registers[0x00]),
+            FixedVertexCoordinate(_registers[0x01]),
+            FixedVertexCoordinate(_registers[0x02]),
+            FixedVertexCoordinate(_registers[0x03]),
+            FixedVertexCoordinate(_registers[0x04]),
+            FixedVertexCoordinate(_registers[0x05]),
+            color);
+    }
+
+    private void DrawFloatTriangle()
+    {
+        _directTriangleCommandCount++;
+        ushort color = GetDrawColor();
+        DrawTriangleWire(
+            FloatFromRegister(_registers[0x22]),
+            FloatFromRegister(_registers[0x23]),
+            FloatFromRegister(_registers[0x24]),
+            FloatFromRegister(_registers[0x25]),
+            FloatFromRegister(_registers[0x26]),
+            FloatFromRegister(_registers[0x27]),
+            color);
+    }
+
+    private SetupVertex ReadCurrentSetupVertex()
+    {
+        ushort color = PackedColorToRgb565(_registers[0x9b]);
+        if (color == 0)
+            color = FloatColorToRgb565(
+                FloatFromRegister(_registers[0x9c]),
+                FloatFromRegister(_registers[0x9d]),
+                FloatFromRegister(_registers[0x9e]));
+        if (color == 0)
+            color = GetDrawColor();
+
+        return new SetupVertex(
+            FloatFromRegister(_registers[0x99]),
+            FloatFromRegister(_registers[0x9a]),
+            color);
+    }
+
+    private void PushSetupVertex(SetupVertex vertex, int code, int vertexIndex, bool fanMode)
+    {
+        if ((code == 1 && vertexIndex == 0) || (code == 0 && vertexIndex % 3 == 0) || _setupVertexCount == 0)
+        {
+            _setupVertices[0] = vertex;
+            _setupVertices[1] = vertex;
+            _setupVertices[2] = vertex;
+            _setupVertexCount = 1;
+            return;
+        }
+
+        if (!fanMode)
+            _setupVertices[0] = _setupVertices[1];
+        _setupVertices[1] = _setupVertices[2];
+        _setupVertices[2] = vertex;
+        if (++_setupVertexCount >= 3)
+            DrawSetupTriangleVertices();
+    }
+
+    private void DrawSetupTriangleVertices()
+        => DrawTriangleWire(
+            _setupVertices[0].X,
+            _setupVertices[0].Y,
+            _setupVertices[1].X,
+            _setupVertices[1].Y,
+            _setupVertices[2].X,
+            _setupVertices[2].Y,
+            _setupVertices[2].Color != 0 ? _setupVertices[2].Color : GetDrawColor());
+
+    private void DrawTriangleWire(float ax, float ay, float bx, float by, float cx, float cy, ushort color)
+    {
+        if (color == 0)
+            color = 0xffff;
+
+        DrawLfbLine(ax, ay, bx, by, color);
+        DrawLfbLine(bx, by, cx, cy, color);
+        DrawLfbLine(cx, cy, ax, ay, color);
+    }
+
+    private void DrawLfbLine(float ax, float ay, float bx, float by, ushort color)
+    {
+        if (!float.IsFinite(ax) || !float.IsFinite(ay) || !float.IsFinite(bx) || !float.IsFinite(by))
+            return;
+
+        int x0 = (int)MathF.Round(ax);
+        int y0 = (int)MathF.Round(ay);
+        int x1 = (int)MathF.Round(bx);
+        int y1 = (int)MathF.Round(by);
+        int dx = Math.Abs(x1 - x0);
+        int sx = x0 < x1 ? 1 : -1;
+        int dy = -Math.Abs(y1 - y0);
+        int sy = y0 < y1 ? 1 : -1;
+        int error = dx + dy;
+        int guard = 0;
+
+        while (guard++ < 4096)
+        {
+            PlotLfbPixel(x0, y0, color);
+            if (x0 == x1 && y0 == y1)
+                break;
+
+            int e2 = error * 2;
+            if (e2 >= dy)
+            {
+                error += dy;
+                x0 += sx;
+            }
+            if (e2 <= dx)
+            {
+                error += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    private void PlotLfbPixel(int x, int y, ushort color)
+    {
+        GetClip(out int x0, out int x1, out int y0, out int y1);
+        if (x < x0 || x >= x1 || y < y0 || y >= y1 || x < 0 || x >= 1024 || y < 0 || y >= LfbPixels / 1024)
+            return;
+
+        _lfb[(y * 1024 + x) & (LfbPixels - 1)] = color;
+        _lfbWriteCount++;
+    }
+
+    private void GetClip(out int x0, out int x1, out int y0, out int y1)
+    {
+        uint clipX = _registers[0x46];
+        uint clipY = _registers[0x47];
+        x0 = Math.Clamp((int)((clipX >> 16) & 0x7ff), 0, 1024);
+        x1 = Math.Clamp((int)(clipX & 0x7ff), 0, 1024);
+        y0 = Math.Clamp((int)((clipY >> 16) & 0x7ff), 0, LfbPixels / 1024);
+        y1 = Math.Clamp((int)(clipY & 0x7ff), 0, LfbPixels / 1024);
+        if (x1 <= x0)
+        {
+            x0 = 0;
+            x1 = 640;
+        }
+        if (y1 <= y0)
+        {
+            y0 = 0;
+            y1 = 480;
+        }
+    }
+
+    private ushort GetDrawColor()
+    {
+        ushort color = FloatColorToRgb565(
+            FloatFromRegister(_registers[0x28]),
+            FloatFromRegister(_registers[0x29]),
+            FloatFromRegister(_registers[0x2a]));
+        if (color != 0)
+            return color;
+
+        color = ArgbToRgb565(_registers[0x52]);
+        if (color == 0)
+            color = ArgbToRgb565(_registers[0x51]);
+        if (color == 0)
+            color = (ushort)_registers[0x4c];
+        return color == 0 ? (ushort)0xffff : color;
+    }
+
+    private bool IsSetupFanMode()
+        => ((_registers[0x98] >> 16) & 1u) != 0;
+
+    private static float FixedVertexCoordinate(uint value)
+        => unchecked((short)value) / 16.0f;
+
+    private bool TryReadWord(int wordsNeeded, ref int source, out uint value)
+    {
+        if (source >= wordsNeeded || source >= _fifoBuffer.Count)
+        {
+            value = 0;
+            return false;
+        }
+
+        value = _fifoBuffer[source++];
+        return true;
+    }
+
+    private bool TryReadFloat(int wordsNeeded, ref int source, out float value)
+    {
+        if (!TryReadWord(wordsNeeded, ref source, out uint word))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = FloatFromRegister(word);
+        return true;
+    }
+
+    private bool SkipWord(int wordsNeeded, ref int source)
+    {
+        if (source >= wordsNeeded || source >= _fifoBuffer.Count)
+            return false;
+        source++;
+        return true;
     }
 
     private static int GetFifoPacketWordsNeeded(uint command)
@@ -4956,6 +5880,32 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint b = value & 0xff;
         return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
     }
+
+    private static ushort PackedColorToRgb565(uint value)
+        => ArgbToRgb565(value);
+
+    private static ushort FloatColorToRgb565(float r, float g, float b)
+    {
+        if (!float.IsFinite(r) || !float.IsFinite(g) || !float.IsFinite(b))
+            return 0;
+
+        byte rb = FloatColorByte(r);
+        byte gb = FloatColorByte(g);
+        byte bb = FloatColorByte(b);
+        return (ushort)(((rb >> 3) << 11) | ((gb >> 2) << 5) | (bb >> 3));
+    }
+
+    private static byte FloatColorByte(float value)
+    {
+        if (value <= 1.0f)
+            value *= 255.0f;
+        return (byte)Math.Clamp((int)MathF.Round(value), 0, 255);
+    }
+
+    private static float FloatFromRegister(uint value)
+        => BitConverter.Int32BitsToSingle(unchecked((int)value));
+
+    private readonly record struct SetupVertex(float X, float Y, ushort Color);
 
     private static void Clear(EutherFrameTarget target, uint bgra)
         => FillRect(target, 0, 0, target.Width, target.Height, bgra);

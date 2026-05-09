@@ -18,6 +18,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_CRAM_PC"), "1", StringComparison.Ordinal);
         private static readonly int TraceCramWritesPcLimit =
             ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_LIMIT", 256);
+        private static readonly int TraceCramWritesPcFrameStart =
+            ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_FRAME_START", 0);
         private static readonly int TraceCramWritesPcFrames =
             ParseTraceLimit("EUTHERDRIVE_TRACE_CRAM_PC_FRAMES", 0);
         private static readonly List<(uint Start, uint End)> TraceCramWritesPcRanges =
@@ -1475,6 +1477,8 @@ namespace EutherDrive.Core.MdTracerCore
 
             if (TraceConsoleEnabledMemory && TraceCramWritesPc && _cramPcRemaining > 0)
             {
+                if (TraceCramWritesPcFrameStart > 0 && _frameCounter < TraceCramWritesPcFrameStart)
+                    return;
                 if (TraceCramWritesPcFrames > 0 && _frameCounter > TraceCramWritesPcFrames)
                     return;
                 if (TraceCramWritesPcRanges.Count > 0)

@@ -342,6 +342,8 @@ namespace EutherDrive.Core.MdTracerCore
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_REGS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRamRangePc =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_PC"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceRamRangePcAll =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_PC_ALL"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRamRangePcFocus6fb =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_RAM_RANGE_PC_FOCUS_6FB"), "1", StringComparison.Ordinal);
         private static readonly int TraceRamRangePcLimit =
@@ -582,7 +584,7 @@ namespace EutherDrive.Core.MdTracerCore
                         (pc >= 0x06F91E && pc <= 0x06F926) || // literal output path
                         (pc >= 0x06FB44 && pc <= 0x06FB56);   // 6FA74 path: copy/literal output
                 }
-                if (inCopyLoop)
+                if (TraceRamRangePcAll || inCopyLoop)
                 {
                     if (_ramRangePcRemaining != int.MaxValue)
                         _ramRangePcRemaining--;

@@ -1276,3 +1276,180 @@ voodoo reg[083]=0x01e0027f
 ```
 
 This confirms the first FIFO packet batch now updates the live Voodoo register bank by frame 350. Still no draw packets or LFB/texture uploads in this early window, so the next target is finding the first packet type 3/type 5 activity or the guest state transition that enables it.
+
+## 2026-05-09 Reboot Recovery / Voodoo Triangle Prep
+
+After the machine reboot, `/tmp/eutherdrive-gauntlet-probe` and `/tmp/gauntd24.raw` were gone. Recreated the temp probe and re-extracted the raw disk:
+
+```text
+chdman extractraw -i /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.chd -o /tmp/gauntd24.raw
+```
+
+Current local Voodoo work in `GauntletDarkLegacyAdapter.cs`:
+
+- Type-3 FIFO packets now copy their setup bits into register `0x98` (`sSetupMode`) before consuming vertices.
+- The bringup raster path now handles both `triangleCMD` (`0x20`) and `ftriangleCMD` (`0x40`) as wireframe triangles.
+- The Voodoo2 setup path still handles `sDrawTriCMD` / `sBeginTriCMD` at `0xa8` / `0xa9`.
+- Type-4 packet formatting was cleaned up against MAME `voodoo_2.cpp`.
+
+Build verification:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+328 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+377 Warning(s)
+0 Error(s)
+```
+
+Short smoke after the patch:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl_frame_after_patch.ppm \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 350
+
+frame=350
+pc=0xffffffff800194b8
+voodoo regs=4967 fifoWords=1543 fifoPackets=523 drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:361,2:0,3:0,4:162,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=307200 colored=11332
+```
+
+Long 2600-frame check with the raw disk still shows visible Voodoo framebuffer activity but no guest draw packets yet:
+
+```text
+frame=2600
+pc=0xffffffff80052f30
+voodoo regs=12161969 fifoWords=14030154 fifoPackets=1873357 drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:3053,2:0,3:0,4:1870304,5:0,6:0,7:0
+lfbWrites=43315200 fastFills=282 swaps=564
+```
+
+Focused CPU trace around `0x80052c80..0x80053020` shows the current hotspot is a command/list builder, not a Voodoo status poll. It builds register addresses such as `0xa80000a0`, `0xa80000a4`, `0xa80000a8`, and `0xa8000100` and returns a byte/word count around `0x28`. The next useful step is either to let a longer run reach the point where those lists are flushed as `ftriangleCMD`/setup commands, or to model/fast-path that command-list builder carefully enough to get to the actual flush sooner.
+
+## 2026-05-09 Continued Boot Push / Glide Hotpaths
+
+Added three narrowly signature-gated MIPS fastpaths in `GauntletDarkLegacyAdapter.cs`:
+
+- `0x80052880`: unrolled Glide vertex/state copy loop, copies the remaining 16-byte blocks and resumes at `0x800528ac`.
+- `0x80052bc0`: setup packet helper, writes `state+0x354/0x358/0x35c` directly and returns.
+- `0x800526ac`: Glide state flush helper, writes the same two type-4 Voodoo FIFO register packets and updates `state+0x374/0x37c`.
+
+Verification still builds clean:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+328 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+377 Warning(s)
+0 Error(s)
+```
+
+Current 450-frame smoke:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl_after_flush_fastpath2.ppm \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 450
+
+frame=450
+pc=0xffffffff80052f08
+voodoo regs=314939 fifoWords=360504 fifoPackets=50737 drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:3053,2:0,3:0,4:47684,5:0,6:0,7:0
+lfbWrites=43315200 texWrites=1 fastFills=282 swaps=564
+```
+
+High-budget comparison:
+
+```text
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=2000000 \
+dotnet run --project /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 120
+
+frame=120
+pc=0xffffffff80052f00
+voodoo regs=10110283 fifoWords=11662824 fifoPackets=1557713 drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:3053,2:0,3:0,4:1554660,5:0,6:0,7:0
+```
+
+The fastpaths move more FIFO/state work per run, but the game still only sends Voodoo type-4 state packets (`0x0e3f820c` etc.) in this phase. The type-3-like command words (`state+0x354 = 0x020014c3`, `state+0x358 = 0x02001403`) are present in RAM, but the copied state at `state+0x24c` currently looks like Glide/video state rather than model vertices. Do not synthesize draw packets from that block yet.
+
+Focused caller trace around `0x800195c0..0x80019610` shows a repeating update path:
+
+- `0x80019224` is called first and costs roughly 5.8k interpreted instructions in the sampled path.
+- `0x800532f0` follows and returns a small status/value.
+- `0x800527f0` / `0x800526ac` then pushes the Voodoo state packets.
+
+Next best target is `0x80019224` or the broader update loop if it can be proven to be a wait/message helper. Otherwise keep tracing until the first FIFO type 3/type 5 or direct `0xa8000100` write appears.
+
+## 2026-05-09 Continued Boot Push / Post-Reboot Hotspots
+
+Added more narrowly signature-gated fastpaths in `GauntletDarkLegacyAdapter.cs`:
+
+- `0x80019224`: caller-gated UI/message dispatch from the frame loop. Only fires for caller `0x800195d4` with the observed zero/small flags and returns `v0=0`.
+- `0x8003ce94..0x8003cf40`: runtime copy helper covering byte/halfword/word/dword forward-copy loops, including branch-delay-slot resume. Restricted to main RAM ranges.
+- `0x800511c8`: Glide two-word FIFO state packet tail. Writes `0x00010219` plus the computed state word to the signed Voodoo FIFO address, updates `state+0x374/0x37c`, restores `ra/s1/s0/sp`, and returns.
+
+Build notes:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded.
+328 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+```
+
+A normal probe build that rebuilds all project references currently fails in unrelated `Third_party/MCS/mcs` code (`neogeo.cs` unsafe/overload errors). Use `BuildProjectReferences=false` for Gauntlet probe work until that side tree is fixed.
+
+Key smoke results with `EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000`:
+
+```text
+frame=450
+pc=0xffffffff8003cee0 -> before runtime copy fastpath
+voodoo fifoWords=194331 fifoPackets=64784 fastFills=4054 swaps=8108
+
+frame=450
+pc=0xffffffff80016d9c -> after runtime copy fastpath
+voodoo fifoWords=200237 fifoPackets=66753 fastFills=4177 swaps=8354
+
+frame=1800
+pc=0xffffffff800511c8 -> before two-word state packet tail fastpath
+voodoo regs=2035218 fifoWords=2635385 fifoPackets=878471 fastFills=54909 swaps=109818
+
+frame=1800
+pc=0xffffffff80053340 -> after two-word state packet tail fastpath
+voodoo regs=2046731 fifoWords=2650319 fifoPackets=883449 fastFills=55220 swaps=110440
+```
+
+The current 1800-frame endpoint is now in the `0x800532f0..0x800533a0` Glide/state path. A focused trace shows it:
+
+- validates the mapped Voodoo base (`state+0x004 == 0xa8000000`);
+- updates state flags at `state+0x398`, `state+0x388`, and `state+0x38c`;
+- calls `0x8005f9d0`;
+- writes another two-word FIFO packet header `0x00010261` plus `state+0x280`;
+- then updates FIFO room/pointer.
+
+Still no guest triangle packets yet:
+
+```text
+drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:607369,2:0,3:0,4:276080,5:0,6:0,7:0
+```
+
+Frame dumps at `/tmp/gauntdl_after_memcpy_fastpath_900.png` and `/tmp/gauntdl_after_statepacket_fastpath_1800.ppm` are still fill/debugbar-only. Next useful target is the `0x800533xx` path, but it needs a fuller code dump before fast-pathing because it has state conditionals and a call to `0x8005f9d0`.
