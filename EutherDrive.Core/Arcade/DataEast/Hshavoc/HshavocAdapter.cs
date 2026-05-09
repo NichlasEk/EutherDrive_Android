@@ -78,6 +78,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private readonly MdTracerAdapter _md = new();
     private readonly HashSet<ulong> _flushedQueueEntries = new();
     private readonly HashSet<ulong> _flushedVdpCommandBlocks = new();
+    private bool _testPaletteSeeded;
 
     public RomInfo RomInfo => _md.RomInfo;
 
@@ -103,6 +104,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     {
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
+        _testPaletteSeeded = false;
         string profile = GetDecodeProfile();
         byte[] decoded = DecodeArchive(path, profile);
         string tempPath = Path.Combine(Path.GetTempPath(), $"eutherdrive_hshavoc_{Guid.NewGuid():N}.gen");
@@ -112,7 +114,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             _md.PowerCycleAndLoadRom(tempPath);
             InstallBoardAckProbe();
             ForceVdpDisplayIfRequested();
-            ForceTestPaletteIfRequested();
+            SeedTestPaletteIfRequested();
             string proofSuffix = UiProofMode ? " | ui-proof=display+vram-dma+synthetic-palette" : string.Empty;
             RomInfo.Summary = $"High Seas Havoc arcade probe | decode={profile}{proofSuffix} | {BoardModel}";
             RomInfo.ExtraInfo =
@@ -134,6 +136,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     {
         _flushedQueueEntries.Clear();
         _flushedVdpCommandBlocks.Clear();
+        _testPaletteSeeded = false;
         _md.Reset();
     }
 
@@ -143,7 +146,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         ForceVdpDisplayIfRequested();
         FlushVdpCommandBlocksIfRequested();
         FlushVdpDmaQueueIfRequested();
-        ForceTestPaletteIfRequested();
+        SeedTestPaletteIfRequested();
     }
 
     public uint GetM68kPc() => _md.GetM68kPc();
@@ -207,24 +210,34 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         if (!ForceDisplayEnable)
             return;
 
-        md_main.g_md_vdp?.write16(0x00C00004, 0x8174);
-    }
-
-    private static void ForceTestPaletteIfRequested()
-    {
-        if (!ForceTestPalette || md_main.g_md_vdp == null)
+        md_vdp? vdp = md_main.g_md_vdp;
+        if (vdp == null)
             return;
 
+        vdp.read16(0x00C00004);
+        vdp.write16(0x00C00004, 0x8174);
+    }
+
+    private void SeedTestPaletteIfRequested()
+    {
+        if (!ForceTestPalette || _testPaletteSeeded || md_main.g_md_vdp == null)
+            return;
+
+        md_vdp vdp = md_main.g_md_vdp;
         for (int index = 0; index < 64; index++)
         {
             ushort color = (ushort)((((index >> 4) & 0x07) * 0x200) | (((index >> 2) & 0x07) * 0x020) | ((index & 0x03) * 0x002));
             if (color == 0)
                 color = 0x0222;
             ushort address = (ushort)(index * 2);
-            md_main.g_md_vdp.write16(0x00C00004, (ushort)(0xC000 | (address & 0x3FFF)));
-            md_main.g_md_vdp.write16(0x00C00004, (ushort)((address >> 14) & 0x0003));
-            md_main.g_md_vdp.write16(0x00C00000, color);
+            vdp.read16(0x00C00004);
+            vdp.write16(0x00C00004, (ushort)(0xC000 | (address & 0x3FFF)));
+            vdp.write16(0x00C00004, (ushort)((address >> 14) & 0x0003));
+            vdp.write16(0x00C00000, color);
         }
+
+        vdp.read16(0x00C00004);
+        _testPaletteSeeded = true;
     }
 
     private void FlushVdpDmaQueueIfRequested()
@@ -284,15 +297,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             if (!LooksLikeVdpCommandBlock(reg19, reg20, reg21, reg22, reg23, control1, control2))
                 continue;
 
-            ulong signature =
-                ((ulong)block << 40) ^
-                ((ulong)reg19 << 48) ^
-                ((ulong)reg20 << 32) ^
-                ((ulong)reg21 << 16) ^
-                reg22 ^
-                ((ulong)reg23 << 8) ^
-                ((ulong)control1 << 24) ^
-                ((ulong)control2 << 4);
+            ulong signature = BuildVdpCommandBlockSignature(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
             if (!_flushedVdpCommandBlocks.Add(signature))
                 continue;
 
@@ -328,11 +333,58 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         if (length == 0 || length > 0x4000)
             return false;
 
-        int sourceWord = (reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16);
-        int sourceByte = sourceWord << 1;
-        bool romSource = sourceByte >= 0 && sourceByte < InterleavedSize;
-        bool ramSource = sourceByte >= 0x00FF0000 && sourceByte <= 0x00FFFFFF;
+        uint sourceByte = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
+        uint byteLength = (uint)length * 2;
+        bool romSource = sourceByte < InterleavedSize && sourceByte + byteLength <= InterleavedSize;
+        bool ramSource = sourceByte >= 0x00FF0000 && sourceByte + byteLength - 1 <= 0x00FFFFFF;
         return romSource || ramSource;
+    }
+
+    private ulong BuildVdpCommandBlockSignature(
+        uint block,
+        ushort reg19,
+        ushort reg20,
+        ushort reg21,
+        ushort reg22,
+        ushort reg23,
+        ushort control1,
+        ushort control2)
+    {
+        ulong signature =
+            ((ulong)block << 40) ^
+            ((ulong)reg19 << 48) ^
+            ((ulong)reg20 << 32) ^
+            ((ulong)reg21 << 16) ^
+            reg22 ^
+            ((ulong)reg23 << 8) ^
+            ((ulong)control1 << 24) ^
+            ((ulong)control2 << 4);
+
+        uint sourceByte = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
+        if (sourceByte < 0x00FF0000 || sourceByte > 0x00FFFFFF)
+            return signature;
+
+        int length = (reg19 & 0x00FF) | ((reg20 & 0x00FF) << 8);
+        return signature ^ HashM68kWords(sourceByte, length);
+    }
+
+    private ulong HashM68kWords(uint source, int words)
+    {
+        ulong hash = 1469598103934665603UL;
+        for (int i = 0; i < words; i++)
+        {
+            ushort value = _md.DebugReadM68kWord(source + (uint)(i * 2));
+            hash ^= value;
+            hash *= 1099511628211UL;
+        }
+
+        return hash;
+    }
+
+    private static uint DecodeVdpDmaSourceByte(ushort reg21, ushort reg22, ushort reg23)
+    {
+        uint sourceWord = (uint)((reg21 & 0x00FF) | ((reg22 & 0x00FF) << 8) | ((reg23 & 0x007F) << 16));
+        return sourceWord << 1;
     }
 
     private static void ExecuteVdpCommandBlock(

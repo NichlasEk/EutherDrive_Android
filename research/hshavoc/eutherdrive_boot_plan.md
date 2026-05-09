@@ -142,6 +142,17 @@ VDP/IO checkpoint:
   proves the renderer, display, VRAM DMA, and queue scheduler are alive; the
   remaining blocker is the real palette/CRAM source or the board-gated palette
   flush path.
+- The first UI screenshots are therefore not random noise. They show coherent
+  decoded art/tile data moving through the generated VDP DMA blocks and the MD
+  renderer. The horizontal corruption/banding is still expected in proof mode:
+  CRAM is seeded synthetically, display is forced, and the adapter is bridging
+  queued DMA commands before the real arcade palette/board handshake is fully
+  modeled.
+- The latest proof bridge reflushes `$ffxxxx` RAM-sourced VDP command blocks
+  when their payload changes, instead of deduping only by command/register
+  words. That changed the 180-frame headless proof fingerprint to
+  `0x2FFF8448C941C38C` with `57344` nonzero pixels, which confirms those reused
+  command slots contain live frame data rather than stale setup records.
 - Next target: trace the producer of palette RAM separately from the VRAM DMA
   queue. Search for CRAM-style generated command blocks (`codeLow=3`) beyond
   `$ffe900-$ffea80`, trace RAM writes around candidate palette buffers, and
@@ -159,6 +170,11 @@ correct emulation: it makes the UI render the decoded/queued VRAM path while the
 real palette/CRAM producer is still being mapped. Headless runs with
 `EUTHERDRIVE_HEADLESS_CORE` keep the older opt-in behavior for controlled
 experiments.
+
+The synthetic palette is now seeded once per load/reset instead of being
+rewritten every frame, and each CRAM/register probe clears pending VDP command
+state first. That keeps the proof mode from masking later natural palette writes
+while still making UI bring-up visible.
 
 ## Phase 1: Startup Probe
 
