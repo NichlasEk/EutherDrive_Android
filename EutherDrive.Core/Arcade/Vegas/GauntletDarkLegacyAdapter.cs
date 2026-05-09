@@ -1812,6 +1812,8 @@ internal sealed class MipsR5000Core
         if (delta == 0)
             return;
 
+        _memory.AdvanceNileClock(delta);
+
         uint oldCount = (uint)_cp0[9];
         uint compare = (uint)_cp0[11];
         ulong ticksUntilCompare = compare >= oldCount
@@ -2352,6 +2354,10 @@ internal sealed class VegasMemoryMap
     private const uint NileInterruptStatus0Offset = 0x090;
     private const uint NileInterruptStatus1Offset = 0x098;
     private const uint NileInterruptClearOffset = 0x0a0;
+    private const uint NileTimer0ControlOffset = 0x1c0;
+    private const uint NileTimerStride = 0x10;
+    private const uint NileTimerControlBitsOffset = 0x04;
+    private const uint NileTimerCounterOffset = 0x08;
     private const ushort NilePciInterruptC = 1 << 10;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
     private const int MainRamSize = 32 * 1024 * 1024;
@@ -2435,6 +2441,28 @@ internal sealed class VegasMemoryMap
     {
         UpdateNileInterrupts();
         return (ulong)_nileIrqPins << 10;
+    }
+
+    public void AdvanceNileClock(ulong ticks)
+    {
+        for (int timer = 0; timer < 4; timer++)
+        {
+            uint baseOffset = NileTimer0ControlOffset + (uint)(timer * NileTimerStride);
+            uint control = ReadNileRegister32(baseOffset + NileTimerControlBitsOffset);
+            if ((control & 1u) == 0)
+                continue;
+
+            uint reload = ReadNileRegister32(baseOffset);
+            uint counter = ReadNileRegister32(baseOffset + NileTimerCounterOffset);
+            ulong period = (ulong)reload + 1UL;
+            ulong decrement = period == 0 ? ticks : ticks % period;
+            ulong next = counter >= decrement
+                ? counter - decrement
+                : period - ((decrement - counter) % period);
+            if (next == period)
+                next = 0;
+            WriteNileRegister32(baseOffset + NileTimerCounterOffset, (uint)next);
+        }
     }
 
     public byte Read8(ulong address)
@@ -2923,6 +2951,9 @@ internal sealed class VegasMemoryMap
 
     private uint ReadNileRegister32(uint offset)
         => BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
+
+    private void WriteNileRegister32(uint offset, uint value)
+        => BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4), value);
 
     private void UpdateNileInterrupts()
     {
@@ -3478,7 +3509,7 @@ internal sealed class VegasVoodooPciDevice
     private const uint MemoryBarSize = 16 * 1024 * 1024;
     private const uint MemoryBarMask = 0xff000000u;
     private const uint MemoryBarFlags = 0x00000008u;
-    private const uint VoodooStatusReady = 0x0fffff7fu;
+    private const uint VoodooStatusReady = 0x0ffff03fu;
 
     private readonly byte[] _config = new byte[0x100];
     private readonly uint[] _pciControl = new uint[8];
@@ -3487,7 +3518,9 @@ internal sealed class VegasVoodooPciDevice
     private IVoodooBackend? _voodoo;
     private uint _bar0 = 0xff000000u;
     private bool _bar0Probe;
+    private uint _statusReadCounter;
     private uint _swapStatusCounter;
+    private uint _vRetraceCounter;
 
     public void AttachVoodoo(IVoodooBackend voodoo) => _voodoo = voodoo;
 
@@ -3498,7 +3531,9 @@ internal sealed class VegasVoodooPciDevice
         Array.Clear(_registers);
         _bar0 = 0xff000000u;
         _bar0Probe = false;
+        _statusReadCounter = 0;
         _swapStatusCounter = 0;
+        _vRetraceCounter = 0;
         BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x00, 4), VendorDeviceId);
         BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), 0x0002);
         BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x08, 4), ClassCode);
@@ -3613,11 +3648,21 @@ internal sealed class VegasVoodooPciDevice
     private uint ReadRegister(uint offset)
     {
         if ((offset & 0x3ffu) == 0)
-            return VoodooStatusReady;
+            return ReadStatus();
+        if ((offset & 0x3ffu) == 0x204u)
+            return ++_vRetraceCounter & 0x7ffu;
         if ((offset & 0x3ffu) == 0x1e8u)
             return ++_swapStatusCounter;
 
         return _registers[(offset >> 2) & 0x3ffu];
+    }
+
+    private uint ReadStatus()
+    {
+        uint status = VoodooStatusReady;
+        if ((_statusReadCounter++ & 1u) != 0)
+            status |= 0x40u;
+        return status;
     }
 
     private void WriteRegister(uint offset, uint value)

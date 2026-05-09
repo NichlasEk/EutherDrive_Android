@@ -169,6 +169,58 @@ attached=True
 
 The guest reads the Voodoo ID but has not yet issued BAR/config writes or Voodoo register writes in the 1800-frame probe. The active code path is a scheduler/callback loop around `0xffffffff80040bb4..0xffffffff80040c30`; callback `0xffffffff800043d4` is a small wrapper around a queue/allocation routine at `0xffffffff80042db0` and returns list nodes around `0xffffffff800f08xx`. This does not look like an unsupported-op halt.
 
+Later 2026-05-09 pass result:
+
+- Main build succeeds again:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+377 Warning(s)
+0 Error(s)
+```
+
+- Probe build succeeds:
+
+```text
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj /clp:ErrorsOnly
+Build succeeded.
+377 Warning(s)
+0 Error(s)
+```
+
+- Fixed the first real Voodoo wait blockers:
+  - Voodoo status bit 9 is now clear when idle (`0x0ffff03f` base status), matching MAME's "overall busy" meaning.
+  - Voodoo status bit 6 now toggles on status reads so the guest can observe a vblank edge.
+  - Voodoo register `0x204` now returns a changing low-11-bit vRetrace counter.
+- Added lightweight VRC5074/NILE timer countdown for the timer block at `0x1c0..0x1f8`.
+  - This is driven from the R5000 CP0 count advance.
+  - It gets past the `0x80017040` divide-by-zero guard caused by timer counter `0xbfa001e8` staying at `0xffffffff`.
+- Verified forward progress with the current probe:
+
+```text
+frame=1000
+pc=0xffffffff80016e74
+lastOp=0xafb10014
+voodoo regs=3829 fifoWords=63 fifoPackets=27 drawPackets=0 lfbWrites=0 texWrites=1
+```
+
+- A higher-budget run no longer halts, and reaches the callback/state code around `0x80016e88`:
+
+```text
+frame=1500
+pc=0xffffffff80016e88
+lastOp=0x00000000
+voodoo regs=3829 fifoWords=63 fifoPackets=27 drawPackets=0 lfbWrites=0 texWrites=1
+```
+
+- Focused trace of `0x80016e64..0x80016e94` shows this is not a hard wait. It is a small callback loop that loads a function pointer from `0x800b2e2c`, calls `0x8003b614`, decrements `s0` from 10, then returns through `0x80016e90`.
+
+Next best step:
+
+- Follow the next state transition after the `0x8003b614` callback loop and find why no additional FIFO/draw packets are emitted after the first texture write.
+- Keep short CPU windows plus `EUTHERDRIVE_GAUNTDL_DUMP_VOODOO=1`; full memory trace is too noisy unless filtered by target and address.
+
 ## Probe Setup
 
 The temporary probe sets:
