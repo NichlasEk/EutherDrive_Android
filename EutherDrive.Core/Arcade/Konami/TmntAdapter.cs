@@ -342,6 +342,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     {
         private static readonly bool TraceMoomesaQueue =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MOOMESA_TRACE_QUEUE"), "1", StringComparison.Ordinal);
+        private static readonly int TraceMoomesaQueueLimit =
+            ParseTmntBusEnvInt("EUTHERDRIVE_MOOMESA_TRACE_QUEUE_LIMIT", defaultValue: 160, minValue: 1, maxValue: 8192);
         [NonSerialized] private readonly byte[] _program = new byte[0x200000];
         private readonly byte[] _ram = new byte[0x10000];
         private readonly byte[] _metamrphExtraRam = new byte[0xf000];
@@ -406,6 +408,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private bool UsesMoomesaHardware => _variant == TmntHardwareVariant.Moomesa;
 
         private int ProgramRomLength => UsesMoomesaHardware ? 0x180000 : UsesMystwarrHardware ? 0x200000 : UsesK053245Hardware ? 0x100000 : 0x60000;
+
+        private static int ParseTmntBusEnvInt(string name, int defaultValue, int minValue, int maxValue)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            if (!int.TryParse(value, out int parsed))
+                return defaultValue;
+            return Math.Clamp(parsed, minValue, maxValue);
+        }
 
         public void AttachSound(TmntSound sound) => _sound = sound;
 
@@ -1355,7 +1365,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void TraceMoomesaQueueWrite(string size, uint address, uint value)
         {
-            if (!TraceMoomesaQueue || _moomesaQueueTraceWrites >= 160)
+            if (!TraceMoomesaQueue || _moomesaQueueTraceWrites >= TraceMoomesaQueueLimit)
                 return;
             if (address < 0x180090 || address > 0x180110)
                 return;
@@ -1384,7 +1394,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private byte MoomesaEepromPort()
         {
-            int value = 0xac;
+            int value = 0xa8;
             if (_tmnt2Eeprom.DataOut)
                 value |= 0x01;
             if (_tmnt2Eeprom.Ready)
