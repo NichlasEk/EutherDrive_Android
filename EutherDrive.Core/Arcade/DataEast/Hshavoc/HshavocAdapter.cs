@@ -114,6 +114,12 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_VDP_SOURCE_PROBE");
     private static readonly bool TraceVdpSourceProbe =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_VDP_SOURCE_PROBE");
+    private static readonly bool ClearTile0Probe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_CLEAR_TILE0_PROBE");
+    private static readonly int[] ClearTileProbeList =
+        ParseTileProbeList(Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_CLEAR_TILE_PROBE_LIST"));
+    private static readonly bool TraceClearTile0Probe =
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_CLEAR_TILE0_PROBE");
 
     private static readonly (int Address, ushort Value)[] BestStartupPatch =
     {
@@ -292,6 +298,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         ForceVdpHScrollModeIfRequested();
         ForceVdpHScrollBaseIfRequested();
         RepairHomeHScrollBaseIfRequested();
+        ClearTile0ProbeIfRequested();
         SeedTestPaletteIfRequested();
         _md.RunFrame();
         ForceVdpDisplayIfRequested();
@@ -305,6 +312,7 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         FlushStaticPalettePlanIfRequested();
         TraceCramCommandBlocksIfRequested();
         FlushVdpDmaQueueIfRequested();
+        ClearTile0ProbeIfRequested();
         SeedTestPaletteIfRequested();
     }
 
@@ -733,6 +741,32 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
             ReplayLowPatternRamProbe(source, destination, words, hash, "HSHAVOC-LOWPAT-FLUSH");
     }
 
+    private void ClearTile0ProbeIfRequested()
+    {
+        if (!ClearTile0Probe && ClearTileProbeList.Length == 0)
+            return;
+
+        if (ClearTile0Probe)
+            ClearTileProbe(0);
+
+        foreach (int tile in ClearTileProbeList)
+            ClearTileProbe(tile);
+
+        if (TraceClearTile0Probe)
+        {
+            Console.WriteLine(
+                $"[HSHAVOC-CLEAR-TILE-PROBE] frame={md_main.g_md_vdp?.FrameCounter ?? -1} " +
+                $"tile0={(ClearTile0Probe ? 1 : 0)} list={string.Join(",", ClearTileProbeList)}");
+        }
+    }
+
+    private void ClearTileProbe(int tile)
+    {
+        int baseAddress = (tile & 0x07FF) << 5;
+        for (int offset = 0; offset < 32; offset += 2)
+            _md.DebugWriteVramWord(baseAddress + offset, 0);
+    }
+
     private void DeriveLowPatternRamProbeFromQueueIfRequested(
         uint block,
         ushort reg19,
@@ -1099,6 +1133,22 @@ public sealed class HshavocAdapter : IEmulatorCore, ISavestateCapable, IDisposab
         return int.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out int parsed)
             ? parsed
             : fallback;
+    }
+
+    private static int[] ParseTileProbeList(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return Array.Empty<int>();
+
+        List<int> tiles = new();
+        foreach (string part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string value = part.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? part[2..] : part;
+            if (int.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out int tile))
+                tiles.Add(tile & 0x07FF);
+        }
+
+        return tiles.ToArray();
     }
 
     private static void ApplyRamSeedWordsIfRequested()

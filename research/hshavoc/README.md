@@ -23,6 +23,7 @@ python research/hshavoc/hshavoc_decrypt_lab.py --runs 0
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --cross-runs 8 --only-cross-ref
 python research/hshavoc/hshavoc_decrypt_lab.py --only-token-graph
 python research/hshavoc/hshavoc_decrypt_lab.py --vdp-log /tmp/hsh_slot3_scan.log --only-vdp-log
+python research/hshavoc/hshavoc_decrypt_lab.py --vram-snapshot /tmp/hsh_slot3_regmeta/mdsnap_20260509_141617_564_vram.bin --vram-meta /tmp/hsh_slot3_regmeta/mdsnap_20260509_141617_564_meta.txt --only-vram-snapshot
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
 ```
@@ -46,3 +47,9 @@ Current strongest model:
   source-block hypothesis in EutherDrive. It is intentionally disabled by
   default; the first slot-3 test proved that it changes ROM DMA source words
   but does not improve the visible corrupt framebuffer.
+- `--vram-snapshot` scores Plane A/B name tables against actually loaded
+  pattern tiles. Slot-3 analysis shows the noise is not only layer ordering:
+  many filler cells reference tile 0, and tile 0 is nonblank in the captured
+  VRAM. `EUTHERDRIVE_HSHAVOC_CLEAR_TILE0_PROBE=1` and
+  `EUTHERDRIVE_HSHAVOC_CLEAR_TILE_PROBE_LIST=...` are narrow runtime probes for
+  this blank-tile hypothesis, not a final fix.

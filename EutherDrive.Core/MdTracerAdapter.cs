@@ -1098,6 +1098,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
 
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => md_main.g_md_vdp?.FrameCounter;
+    public void DebugWriteVramWord(int address, ushort value) => md_main.g_md_vdp?.DebugWriteVramWord(address, value);
     public uint? Debug32XMasterProgramCounter => _sega32XCore?.MasterSh2.Registers.ProgramCounter;
     public uint? Debug32XSlaveProgramCounter => _sega32XCore?.SlaveSh2.Registers.ProgramCounter;
     public string? Debug32XMasterWords => _sega32XCore == null ? null : Get32XWordsNearPc(_sega32XCore.MasterSh2.Registers.ProgramCounter, true);

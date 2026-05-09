@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import collections
 import hashlib
 import math
 import re
@@ -179,6 +180,14 @@ def words_from(data: bytes) -> list[int]:
 
 def bytes_from(words: list[int]) -> bytes:
     return struct.pack(">" + "H" * len(words), *words)
+
+
+def read_be_words(data: bytes, offset: int, count: int) -> list[int]:
+    end = min(len(data), offset + count * 2)
+    if offset < 0 or offset >= len(data) or end <= offset:
+        return []
+    size = (end - offset) & ~1
+    return list(struct.unpack(">" + "H" * (size // 2), data[offset : offset + size]))
 
 
 def decode_base(raw: bytes) -> list[int]:
@@ -4418,6 +4427,134 @@ def print_vdp_source_anchor_report(log_path: Path, decoded: bytes, base: Path) -
         print(f"    ... {len(ram_ops) - 24} more RAM operations")
 
 
+def tile_has_pixels(vram: bytes, tile_index: int) -> bool:
+    start = tile_index * 32
+    return 0 <= start <= len(vram) - 32 and any(vram[start : start + 32])
+
+
+def tile_byte_sum(vram: bytes, tile_index: int) -> int:
+    start = tile_index * 32
+    if start < 0 or start > len(vram) - 32:
+        return 0
+    return sum(vram[start : start + 32])
+
+
+def plane_dimensions(scroll_h: int | None, scroll_v: int | None) -> tuple[int, int]:
+    width_by_code = {0: 32, 1: 64, 3: 128}
+    height_by_code = {0: 32, 1: 64, 3: 128}
+    return width_by_code.get(scroll_h if scroll_h is not None else 1, 64), height_by_code.get(
+        scroll_v if scroll_v is not None else 0, 32
+    )
+
+
+def parse_meta_hex(path: Path | None) -> dict[str, int]:
+    if path is None:
+        return {}
+    out: dict[str, int] = {}
+    for line in path.read_text(errors="replace").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        try:
+            out[key] = int(value, 0)
+        except ValueError:
+            continue
+    return out
+
+
+def print_vram_snapshot_report(vram_path: Path, meta_path: Path | None) -> None:
+    vram = vram_path.read_bytes()
+    if len(vram) != 0x10000:
+        print(f"== VRAM snapshot: {vram_path} size=${len(vram):x} (expected $10000)")
+        return
+
+    meta = parse_meta_hex(meta_path)
+    plane_a = meta.get("vdp_plane_a", 0xC000)
+    plane_b = meta.get("vdp_plane_b", 0xE000)
+    hscroll = meta.get("vdp_hscroll", 0xD000)
+    width, height = plane_dimensions(meta.get("vdp_scroll_h"), meta.get("vdp_scroll_v"))
+    cell_count = width * height
+
+    print("== VRAM snapshot")
+    print(f"  vram={vram_path}")
+    if meta_path:
+        print(f"  meta={meta_path}")
+    print(
+        f"  display={meta.get('vdp_display', -1)} plane_a=${plane_a:04x} "
+        f"plane_b=${plane_b:04x} hscroll=${hscroll:04x} cells={width}x{height}"
+    )
+
+    for label, base in (("Plane A", plane_a), ("Plane B", plane_b)):
+        print_vram_plane_report(label, vram, base, width, cell_count)
+
+    print_vram_pattern_report(vram)
+
+
+def print_vram_plane_report(label: str, vram: bytes, base: int, width: int, cell_count: int) -> None:
+    words = read_be_words(vram, base & 0xFFFF, cell_count)
+    if not words:
+        print(f"  {label}: base=${base:04x} unavailable")
+        return
+
+    tiles = [word & 0x07FF for word in words]
+    palettes = [(word >> 13) & 0x03 for word in words]
+    priorities = [(word >> 15) & 0x01 for word in words]
+    flips = [((word >> 11) & 0x03) for word in words]
+    nonblank_refs = sum(1 for tile in tiles if tile_has_pixels(vram, tile))
+    invalid_refs = sum(1 for tile in tiles if tile * 32 > len(vram) - 32)
+    zero_words = sum(1 for word in words if word == 0)
+    repeated_top = collections.Counter(words).most_common(10)
+    tile_top = collections.Counter(tiles).most_common(10)
+    palette_hist = collections.Counter(palettes)
+    priority_hist = collections.Counter(priorities)
+    flip_hist = collections.Counter(flips)
+    texture_score = sum(1 for tile in tiles if tile_byte_sum(vram, tile) > 0x80)
+
+    print(
+        f"  {label}: base=${base:04x} words={len(words)} unique={len(set(words))} "
+        f"zero={zero_words} nonblank_tile_refs={nonblank_refs}/{len(words)} "
+        f"texture_refs={texture_score}/{len(words)} invalid_refs={invalid_refs}"
+    )
+    print(
+        f"    palettes={dict(sorted(palette_hist.items()))} "
+        f"priority={dict(sorted(priority_hist.items()))} flips={dict(sorted(flip_hist.items()))}"
+    )
+    print("    top_words " + " ".join(f"${word:04x}x{count}" for word, count in repeated_top))
+    print("    top_tiles " + " ".join(f"${tile:03x}x{count}" for tile, count in tile_top))
+    print_vram_plane_rows(words, width=width)
+
+
+def print_vram_plane_rows(words: list[int], width: int) -> None:
+    rows = min(4, max(1, len(words) // width))
+    for row in range(rows):
+        cells = words[row * width : row * width + min(width, 16)]
+        print(f"    row{row:02d} " + " ".join(f"{word:04x}" for word in cells))
+
+
+def print_vram_pattern_report(vram: bytes) -> None:
+    tiles = len(vram) // 32
+    nonblank = [idx for idx in range(tiles) if tile_has_pixels(vram, idx)]
+    top = sorted(((tile_byte_sum(vram, idx), idx) for idx in nonblank), reverse=True)[:12]
+    if nonblank:
+        ranges: list[tuple[int, int]] = []
+        start = prev = nonblank[0]
+        for idx in nonblank[1:]:
+            if idx == prev + 1:
+                prev = idx
+                continue
+            ranges.append((start, prev))
+            start = prev = idx
+        ranges.append((start, prev))
+    else:
+        ranges = []
+
+    print(f"  patterns: nonblank_tiles={len(nonblank)}/{tiles}")
+    print("    strongest " + " ".join(f"${idx:03x}:{score}" for score, idx in top))
+    print("    ranges " + " ".join(f"${a:03x}-${b:03x}" if a != b else f"${a:03x}" for a, b in ranges[:16]))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", type=Path, default=DEFAULT_DIR)
@@ -4430,6 +4567,9 @@ def main() -> None:
     parser.add_argument("--only-token-graph", action="store_true")
     parser.add_argument("--vdp-log", type=Path)
     parser.add_argument("--only-vdp-log", action="store_true")
+    parser.add_argument("--vram-snapshot", type=Path)
+    parser.add_argument("--vram-meta", type=Path)
+    parser.add_argument("--only-vram-snapshot", action="store_true")
     parser.add_argument("--write-best-startup", type=Path)
     parser.add_argument("--write-adjusted-startup", type=Path)
     args = parser.parse_args()
@@ -4498,6 +4638,11 @@ def main() -> None:
         print_vdp_source_anchor_report(args.vdp_log, base_decoded, args.base)
         print_vdp_source_transform_score_report(args.vdp_log, words_from(raw), base_words)
         if args.only_vdp_log:
+            return
+
+    if args.vram_snapshot:
+        print_vram_snapshot_report(args.vram_snapshot, args.vram_meta)
+        if args.only_vram_snapshot:
             return
 
     print_startup_words("base/no extra", base_words)

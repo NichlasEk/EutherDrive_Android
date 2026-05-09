@@ -223,10 +223,17 @@ The instruction-path search now finds a plausible partial startup stream:
   - Savestate testing needed `EUTHERDRIVE_HEADLESS_IGNORE_SAVESTATE_ROM_HASH=1`, plus runtime restoration of the selected decoded ROM image into both the 68000 ROM window and cartridge buffer after state load. Without that, the state payload masks ROM-probe changes.
   - With command-block flushing enabled, DMA source traces confirm the probe changes the ROM words read by the VDP, e.g. `$053f94` changes from `0606/0701/...` to `069d/0603/...`.
   - The framebuffer remains visually unchanged except for tiny transient differences. Treat this as a negative visual result: the current `p5h`/typedat-invert source hypothesis is real enough to alter bytes, but it is not the missing visible tilemap/layer fix.
+- VRAM snapshot scoring is now part of the lab via `--vram-snapshot`:
+  - The slot-3 snapshot has display on, Plane A at `$c000`, Plane B at `$e000`, hscroll at `$d000`, and 64x32 planes.
+  - Plane A is dominated by filler word `$4000` (`1110/2048` cells), so tile 0 must be transparent/blank for large parts of the scene to look sane.
+  - In the same snapshot, tile 0 is not blank and `2024/2048` pattern tiles are nonblank. This explains a full-screen noise layer without requiring a pure renderer-order bug.
+  - Plane B row data contains opcode-looking words (`4e75`, `33fc`, `4eb9`, etc.), but those bit patterns are also syntactically valid VDP name words. The stronger signal is whether their referenced pattern tiles are plausible, not whether the halfword resembles 68000 code.
+  - A runtime probe can now clear selected pattern tiles with `EUTHERDRIVE_HSHAVOC_CLEAR_TILE0_PROBE=1` or `EUTHERDRIVE_HSHAVOC_CLEAR_TILE_PROBE_LIST=0,ff,...`. Clearing tile 0 reduces nonzero pixels but does not solve the scene; therefore the next pass should find why low pattern VRAM is overpopulated or why filler tile indices are wrong, not hardcode blanking as a fix.
 
 ## Next steps
 
 1. Keep the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a target set, but do not treat the first `p5h`/typedat-invert probe as solved; it changes DMA data without improving the corrupt framebuffer.
+1a. Use `--vram-snapshot` on every promising frame. Prioritize the low-pattern/tile-0 problem: identify which DMA or RAM buffer first writes nonblank data to tile 0 and whether the correct blank tile moved, was decoded wrong, or was overwritten by a probe/queue flush.
 2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
 3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
 4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.
