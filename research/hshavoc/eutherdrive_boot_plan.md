@@ -344,10 +344,17 @@ New probe flags:
 
 - `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE=1` replays the observed
   `$ff0000` RAM buffer to VRAM `$0000`.
+- `EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS=0xNNNN` controls that replay
+  length in VDP words. The original probe used `0x0800`; the stronger proven
+  UI-proof length is `0x2000`.
 - `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_MIRROR_PAGES=1` additionally
   tries `$2000/$4000/$6000` as opt-in evidence gathering for tile-index paging.
 - `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME=1` bypasses the
   hash gate for this runtime-only proof.
+- UI-proof mode now enables the low-pattern replay automatically, repeats it
+  each frame, and defaults the length to `0x2000` words. Headless experiments
+  should keep using `EUTHERDRIVE_HSHAVOC_UI_PROOF_MODE=0` when measuring the
+  natural boot path.
 
 Important result: the replay must open a deterministic VDP register-1 DMA
 window (`$8174`) because the frame-level adapter runs outside the game's own
@@ -362,11 +369,16 @@ Verified headless results:
 - With `EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE=1`: final 90-frame
   snapshot rises to `13811` nonzero pixels, and `$0000-$0fff` contains `2104`
   nonzero bytes. This proves the missing low-pattern DMA edge is real.
-- Mirroring the same buffer into `$2000/$4000/$6000` does not improve the final
-  screen because the source buffer is transient and later startup work clears or
-  outlives those pages. A real fix should capture the protected VDP queue or
-  reconstruct the exact per-page DMA schedule while `$ff0000` is still valid,
-  not permanently mirror the same buffer.
+- After rebuilding the core with the configurable VDP length wired into
+  registers 19/20, `EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS=0x2000`
+  and repeat-every-frame raises the final 90-frame snapshot to `20977` nonzero
+  pixels. The final VRAM pages now mirror the decompressed RAM buffer:
+  `$0000:2104`, `$1000:2972`, `$2000:4029`, `$3000:2144`.
+- Mirroring the same `0x2000`-word buffer into `$2000/$4000/$6000` does not
+  improve the final screen (`20932` nonzero pixels), so higher pattern-bank
+  mirroring is not the main missing edge. A real fix should capture the
+  protected VDP queue or reconstruct the exact per-page DMA schedule while
+  `$ff0000` is still valid, not permanently mirror the same buffer.
 
 Next step: trace the producer around PCs `$1fe2-$2094` and the real home-ROM
 VDP queue around `$0efc/$0f00`, then model separate low-pattern command blocks

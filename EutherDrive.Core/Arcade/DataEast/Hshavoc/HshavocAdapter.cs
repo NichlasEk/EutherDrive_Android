@@ -59,11 +59,13 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
     private static readonly bool TraceStaticPalettePlan =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_STATIC_PALETTE_PLAN");
     private static readonly bool FlushLowPatternRamProbe =
-        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE");
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE") || UiProofMode;
     private static readonly bool MirrorLowPatternRamProbePages =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_MIRROR_PAGES");
     private static readonly bool RepeatLowPatternRamProbe =
-        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME");
+        IsEnvEnabled("EUTHERDRIVE_HSHAVOC_FLUSH_LOW_PATTERN_RAM_PROBE_EVERY_FRAME") || UiProofMode;
+    private static readonly uint LowPatternRamProbeWords =
+        ParseEnvHex("EUTHERDRIVE_HSHAVOC_LOW_PATTERN_RAM_PROBE_WORDS", UiProofMode ? 0x2000u : 0x0800u);
     private static readonly bool TraceLowPatternRamProbe =
         IsEnvEnabled("EUTHERDRIVE_HSHAVOC_TRACE_LOW_PATTERN_RAM_PROBE");
     private static readonly bool LatchVBlankGate =
@@ -487,7 +489,7 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
         // to high VRAM pages, leaving low tile indices black. This replay tests
         // that single missing edge without storing or emitting decoded ROM data.
         const uint source = 0x00FF0000;
-        const int words = 0x0800;
+        int words = Math.Clamp((int)LowPatternRamProbeWords, 1, 0x8000);
         if (IsM68kWordRangeAllZero(source, words))
             return;
 
@@ -513,8 +515,8 @@ public sealed class HshavocAdapter : IEmulatorCore, IDisposable
             vdp.write16(0x00C00004, 0x8F02);
             ExecuteVdpCommandBlock(
                 source,
-                0x9300,
-                0x9408,
+                (ushort)(0x9300 | (words & 0x00FF)),
+                (ushort)(0x9400 | ((words >> 8) & 0x00FF)),
                 0x9500,
                 0x9680,
                 0x977F,
