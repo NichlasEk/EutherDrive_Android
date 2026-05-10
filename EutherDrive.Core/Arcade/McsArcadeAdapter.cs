@@ -67,6 +67,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     private McsRuntime? _runtime;
     private ArcadeInputState _inputState;
     private int _masterVolumePercent = 50;
+    private int _outputGainPercent = 100;
 
     public static string? PgmBiosPath { get; set; }
 
@@ -450,6 +451,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             _masterVolumePercent = Math.Clamp(percent, 0, 100);
     }
 
+    internal void SetOutputGainPercent(int percent)
+    {
+        lock (_sync)
+            _outputGainPercent = Math.Clamp(percent, 0, 400);
+    }
+
     public void SetInputState(
         bool up,
         bool down,
@@ -588,9 +595,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _audioQueue.Capacity = _audioQueue.Count + sampleCount;
 
             int volume = _masterVolumePercent;
+            int outputGain = _outputGainPercent;
             for (int i = 0; i < sampleCount; i++)
             {
-                int scaled = samples[i] * volume / (AudioOutputDivisor * 100);
+                int scaled = samples[i] * volume * outputGain / (AudioOutputDivisor * 100 * 100);
                 _audioQueue.Add((short)Math.Clamp(scaled, short.MinValue, short.MaxValue));
             }
         }

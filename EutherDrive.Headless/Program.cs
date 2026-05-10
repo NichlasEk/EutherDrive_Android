@@ -30,6 +30,7 @@ using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.Cps2;
 using EutherDrive.Core.Arcade.DataEast.Hshavoc;
 using EutherDrive.Core.Arcade.Konami;
+using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.Arcade.System32;
 using EutherDrive.Platforms.DataEast.Deco32;
 using EutherDrive.Audio;
@@ -374,11 +375,14 @@ class Program
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
+            bool useNeoGeo = string.Equals(coreOverride, "neogeo", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "neo-geo", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && NeoGeoAdapter.IsSupportedArchive(romPath));
             bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -397,6 +401,7 @@ class Program
                 useDeco32 = false;
                 useHshavoc = false;
                 useTmnt = false;
+                useNeoGeo = false;
                 useMcsArcade = false;
             }
 
@@ -616,6 +621,59 @@ class Program
                 ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] Deco32 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 Console.WriteLine($"[HEADLESS] Deco32 debug {deco32.DebugSummary}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useNeoGeo)
+            {
+                Console.WriteLine("[HEADLESS] Using Neo Geo core");
+                using var neoGeo = new NeoGeoAdapter();
+                neoGeo.LoadRom(romPath);
+
+                ReadOnlySpan<byte> fbIn = neoGeo.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                var neoGeoInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_HEADLESS_INPUT_SCRIPT"));
+
+                Console.WriteLine($"[HEADLESS] NeoGeo fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, neoGeoInputScript);
+                    neoGeo.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X,
+                        input.Start,
+                        input.Y, input.L, input.R,
+                        input.Select,
+                        PadType.SixButton);
+                    neoGeo.RunFrame();
+
+                    ReadOnlySpan<byte> fb = neoGeo.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: neogeo_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = neoGeo.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                ReadOnlySpan<short> audioOut = neoGeo.GetAudioBuffer(out int audioRate, out int neoGeoAudioChannels);
+                int audioNonZero = CountNonZeroAudioSamples(audioOut);
+                Console.WriteLine($"[HEADLESS] NeoGeo final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] NeoGeo audio samples={audioOut.Length} rate={audioRate} channels={neoGeoAudioChannels} nonzero_samples={audioNonZero} max_abs={AudioPeak(audioOut)}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
@@ -3463,11 +3521,14 @@ class Program
                 || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Deco32Adapter.IsSupportedArchive(romPath));
+            bool useNeoGeo = string.Equals(coreOverride, "neogeo", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "neo-geo", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && NeoGeoAdapter.IsSupportedArchive(romPath));
             bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
@@ -3681,6 +3742,83 @@ class Program
                 Console.WriteLine($"[HEADLESS] Deco32 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={deco32.FrameCounter ?? -1}");
                 Console.WriteLine($"[HEADLESS] Deco32 final debug {deco32.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_deco32_state_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useNeoGeo)
+            {
+                Console.WriteLine("[HEADLESS] Using Neo Geo core");
+                using var neoGeo = new NeoGeoAdapter();
+                neoGeo.LoadRom(romPath);
+
+                int? slotOverrideNeoGeo = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadNeoGeo = TryLoadSavestatePayload(savestatePath, neoGeo.RomIdentity, slotOverrideNeoGeo, out var neoGeoError);
+                if (payloadNeoGeo == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {neoGeoError}");
+                    return 1;
+                }
+
+                using (var neoGeoStateStream = new MemoryStream(payloadNeoGeo, writable: false))
+                using (var neoGeoStateReader = new BinaryReader(neoGeoStateStream))
+                    neoGeo.LoadState(neoGeoStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (NeoGeo)");
+                ReadOnlySpan<byte> fbBefore = neoGeo.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine($"[HEADLESS] NeoGeo before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) fp=0x{lastFingerprint:X16}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_neogeo_state_before.ppm"));
+
+                using var audioDump = OpenOptionalRawAudioDump(dumpDir, "headless_neogeo_audio_s16le.raw");
+                var neoGeoInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_NEOGEO_HEADLESS_INPUT_SCRIPT"));
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                int unchangedFrames = 0;
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, neoGeoInputScript);
+                    neoGeo.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X,
+                        input.Start,
+                        input.Y, input.L, input.R,
+                        input.Select,
+                        PadType.SixButton);
+
+                    long runStart = Stopwatch.GetTimestamp();
+                    neoGeo.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+
+                    ReadOnlySpan<short> audio = neoGeo.GetAudioBuffer(out int sampleRate, out int channels);
+                    WriteRawAudio(audioDump, audio);
+                    ReadOnlySpan<byte> fb = neoGeo.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: neogeo_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} audio={sampleRate}Hz/{channels}ch peak={AudioPeak(audio)}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_neogeo_state_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = neoGeo.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                ReadOnlySpan<short> audioOut = neoGeo.GetAudioBuffer(out int audioRate, out int neoGeoAudioChannels);
+                Console.WriteLine($"[HEADLESS] NeoGeo final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] NeoGeo audio samples={audioOut.Length} rate={audioRate} channels={neoGeoAudioChannels} nonzero_samples={CountNonZeroAudioSamples(audioOut)} max_abs={AudioPeak(audioOut)}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_neogeo_state_output.ppm"));
+                PrintHeadlessPerf("NeoGeo", framesToRun, runTicksTotal, runTicksMin, runTicksMax, neoGeo.GetTargetFps());
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

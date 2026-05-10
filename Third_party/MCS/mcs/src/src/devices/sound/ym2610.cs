@@ -140,7 +140,6 @@ namespace mame
         readonly u8 [] m_fm_key_mask = new u8[FM_CHANNELS];
         readonly u8 [] m_fm_csm_key_mask = new u8[FM_CHANNELS];
         readonly u8 [] m_block_freq_latch = new u8[4];
-        u32 m_adpcma_clock_counter;
         u32 m_adpcmb_status = ADPCMB_STATUS_BRDY;
         u32 m_adpcmb_buffer;
         u32 m_adpcmb_nibbles;
@@ -155,6 +154,7 @@ namespace mame
         u32 m_ssg_noise_lfsr = 1;
         int m_ssg_noise_output = 1;
         double m_fm_clock_accumulator;
+        double m_adpcma_clock_accumulator;
         int m_fm_held_sample;
         u32 m_env_counter;
         sound_stream m_stream;
@@ -277,9 +277,9 @@ namespace mame
             save_item(NAME(new { m_fm_csm_key_mask }));
             save_item(NAME(new { m_block_freq_latch }));
             save_item(NAME(new { m_fm_clock_accumulator }));
+            save_item(NAME(new { m_adpcma_clock_accumulator }));
             save_item(NAME(new { m_fm_held_sample }));
             save_item(NAME(new { m_env_counter }));
-            save_item(NAME(new { m_adpcma_clock_counter }));
             save_item(NAME(new { m_ssg_phase }));
             save_item(NAME(new { m_ssg_noise_phase }));
             save_item(NAME(new { m_ssg_noise_lfsr }));
@@ -313,12 +313,12 @@ namespace mame
                 }
             }
             Array.Clear(m_ssg_phase, 0, m_ssg_phase.Length);
-            m_adpcma_clock_counter = 0;
             m_ssg_noise_phase = 0;
             m_ssg_noise_lfsr = 1;
             m_ssg_noise_output = 1;
             m_test_tone_phase = 0;
             m_fm_clock_accumulator = 0;
+            m_adpcma_clock_accumulator = 0;
             m_fm_held_sample = 0;
             m_env_counter = 0;
             m_status = 0;
@@ -364,14 +364,20 @@ namespace mame
                 int left = 0;
                 int right = 0;
                 u8 ended = 0;
-                bool clockAdpcmA = (++m_adpcma_clock_counter & 0x03) == 0;
+
+                m_adpcma_clock_accumulator += AdpcmAClockRate();
+                while (m_adpcma_clock_accumulator >= sampleRate)
+                {
+                    m_adpcma_clock_accumulator -= sampleRate;
+                    for (int channel = 0; channel < ADPCMA_CHANNELS; channel++)
+                    {
+                        if (ClockAdpcmA(channel))
+                            ended |= (u8)(1 << channel);
+                    }
+                }
 
                 for (int channel = 0; channel < ADPCMA_CHANNELS; channel++)
-                {
-                    if (clockAdpcmA && ClockAdpcmA(channel))
-                        ended |= (u8)(1 << channel);
                     MixAdpcmA(channel, ref left, ref right);
-                }
 
                 if (ClockAdpcmB())
                     ended |= 0x80;
@@ -553,6 +559,8 @@ namespace mame
                 m_timer_running[index] = false;
                 return;
             }
+            if (m_timer_running[index])
+                return;
 
             u32 period = index == 0
                 ? (u32)(1024 - (((m_regs[0x24] << 2) | (m_regs[0x25] & 0x03)) & 0x3ff))
@@ -560,7 +568,8 @@ namespace mame
             if (period == 0)
                 period = 1;
 
-            timer.adjust(attotime.from_ticks(period * 12 * 6, Math.Max(1U, clock())));
+            u32 clocks = period * (u32)(FM_CHANNELS * FM_OPERATORS_PER_CHANNEL * 6);
+            timer.adjust(attotime.from_ticks(clocks, Math.Max(1U, clock())));
             m_timer_running[index] = true;
         }
 
@@ -694,10 +703,9 @@ namespace mame
         int ClockOpnFm(double sampleRate)
         {
             if (sampleRate <= 0)
-                sampleRate = Math.Max(1, clock() / 144.0);
+                sampleRate = OpnFmClockRate();
 
-            double opnSampleRate = Math.Max(1.0, clock() / 72.0);
-            m_fm_clock_accumulator += opnSampleRate;
+            m_fm_clock_accumulator += OpnFmClockRate();
             while (m_fm_clock_accumulator >= sampleRate)
             {
                 m_fm_clock_accumulator -= sampleRate;
@@ -705,6 +713,18 @@ namespace mame
             }
 
             return Math.Clamp((int)(m_fm_held_sample * FM_MIX_GAIN), -32768, 32767);
+        }
+
+
+        double OpnFmClockRate()
+        {
+            return Math.Max(1.0, clock() / 144.0);
+        }
+
+
+        double AdpcmAClockRate()
+        {
+            return Math.Max(1.0, OpnFmClockRate() / 3.0);
         }
 
 
@@ -1239,9 +1259,9 @@ namespace mame
 
         bool ClockAdpcmB()
         {
-            m_adpcmb_prev_output = m_adpcmb_output;
             if ((m_adpcmb_status & ADPCMB_STATUS_PLAYING) == 0 || (m_adpcmb_regs[0x00] & 0x80) == 0)
             {
+                m_adpcmb_prev_output = m_adpcmb_output;
                 m_adpcmb_position = 0;
                 return false;
             }
@@ -1265,6 +1285,7 @@ namespace mame
 
             m_adpcmb_accumulator = Math.Clamp(m_adpcmb_accumulator + delta, -32768, 32767);
             m_adpcmb_step = Math.Clamp((m_adpcmb_step * s_adpcmb_step_scale[data & 0x07]) / 64, ADPCMB_STEP_MIN, ADPCMB_STEP_MAX);
+            m_adpcmb_prev_output = m_adpcmb_output;
             m_adpcmb_output = m_adpcmb_accumulator;
 
             if (m_adpcmb_nibbles < 3 && RequestAdpcmBData())

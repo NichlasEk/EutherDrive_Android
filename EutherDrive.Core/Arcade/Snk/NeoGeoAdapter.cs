@@ -46,6 +46,11 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
     public static string? DefaultMameNeoGeoHashPath => ResolveHomePath(Path.Combine("mame", "hash", "neogeo.xml"));
     public static string? DefaultMameNeoGeoSourcePath => ResolveHomePath(Path.Combine("mame", "src", "mame", "neogeo", "neogeo.cpp"));
 
+    public NeoGeoAdapter()
+    {
+        _mcs.SetOutputGainPercent(200);
+    }
+
     public static bool IsSupportedArchive(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !RomArchiveExtractor.IsArchivePath(path))
