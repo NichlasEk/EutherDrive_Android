@@ -10085,7 +10085,7 @@ public partial class MainWindow : Window
             }
             ApplyPresentationSize(targetWidth, targetHeight);
         }
-        else if (UsesPgmPhysicalAspectPresentation(core, width, height))
+        else if (UsesFourThreeArcadePhysicalAspectPresentation(core, width, height))
         {
             if (_tateRotation == TateRotation.Off)
                 ApplyPresentationSize(Math.Round(height * (4.0 / 3.0)), height);
@@ -10101,8 +10101,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private static bool UsesPgmPhysicalAspectPresentation(IEmulatorCore core, int width, int height)
+    private static bool UsesFourThreeArcadePhysicalAspectPresentation(IEmulatorCore core, int width, int height)
         => core is KovPgmAdapter ||
+           core is NeoGeoAdapter ||
            (core is McsArcadeAdapter && ((width == 448 && height == 224) || (width == 224 && height == 448)));
 
     private void PresentPendingFrame()
@@ -10614,6 +10615,9 @@ public partial class MainWindow : Window
                 }
                 break;
             }
+
+            if (useSpeedLock && producedFrames > 1)
+                nextTick += ticksPerFrame * (producedFrames - 1);
 
             ProducePsgForFrame();
             SubmitAudio();
