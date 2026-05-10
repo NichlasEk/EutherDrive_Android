@@ -1771,40 +1771,35 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 return false;
             }
 
-            mame.rectangle visible = screen.visible_area();
-            width = visible.width();
-            height = visible.height();
-            if (width <= 0 || height <= 0)
+            mame.render_container.item? nativeItem = null;
+            foreach (mame.render_container.item item in screen.container().items())
             {
-                return false;
+                if (item.type() == 1 && item.texture() != null)
+                {
+                    nativeItem = item;
+                    break;
+                }
             }
 
-            mame.render_texture[]? textures = GetPrivateField<mame.render_texture[]>(screen, typeof(mame.screen_device), "m_texture");
-            if (textures == null || textures.Length == 0)
-            {
-                if (TraceMcsRender)
-                    Console.Error.WriteLine($"[MCS-RENDER] native raster driver={_owner._driverName} no texture array");
-                return false;
-            }
-
-            byte currentTexture = GetPrivateField<byte>(screen, typeof(mame.screen_device), "m_curtexture");
-            if (currentTexture >= textures.Length || textures[currentTexture] == null)
+            if (nativeItem == null)
             {
                 if (TraceMcsRender)
-                    Console.Error.WriteLine($"[MCS-RENDER] native raster driver={_owner._driverName} bad texture index {currentTexture}/{textures.Length}");
+                    Console.Error.WriteLine($"[MCS-RENDER] native raster driver={_owner._driverName} no screen texture item");
                 return false;
             }
 
-            mame.render_texture texture = textures[currentTexture];
+            mame.render_texture texture = nativeItem.texture();
             mame.render_texinfo texinfo = new();
-            texture.get_scaled((uint)width, (uint)height, ref texinfo, primitives);
+            texture.get_scaled(1, 1, ref texinfo, primitives, nativeItem.flags());
+            width = (int)texinfo.width;
+            height = (int)texinfo.height;
             if (TraceMcsRender)
             {
                 Console.Error.WriteLine(
-                    $"[MCS-RENDER] native raster driver={_owner._driverName} vis={width}x{height} " +
+                    $"[MCS-RENDER] native raster driver={_owner._driverName} " +
                     $"tex={texinfo.width}x{texinfo.height}/{texinfo.rowpixels} base={(texinfo.base_ != null)} fmt={texture.format()}");
             }
-            if (texinfo.base_ == null || texinfo.width != width || texinfo.height != height || texinfo.rowpixels < texinfo.width)
+            if (texinfo.base_ == null || width <= 0 || height <= 0 || texinfo.rowpixels < texinfo.width)
                 return false;
 
             if (_bitmap.width() != width || _bitmap.height() != height)
