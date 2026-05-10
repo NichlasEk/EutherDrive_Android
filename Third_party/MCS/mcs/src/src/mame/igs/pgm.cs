@@ -95,6 +95,7 @@ namespace mame
         u16 m_asic3_hold;
         int m_asic3Region;
         bool m_useCaveType1Sim;
+        bool m_useDdp3Type1Sim;
         bool m_useSvgArmType3;
         bool m_useKov2ArmType2;
         int m_svg_ram_sel;
@@ -244,6 +245,7 @@ namespace mame
             SaveStateRef(nameof(m_asic3_hold), () => m_asic3_hold, value => m_asic3_hold = value);
             SaveStateRef(nameof(m_asic3Region), () => m_asic3Region, value => m_asic3Region = value);
             SaveStateRef(nameof(m_useCaveType1Sim), () => m_useCaveType1Sim, value => m_useCaveType1Sim = value);
+            SaveStateRef(nameof(m_useDdp3Type1Sim), () => m_useDdp3Type1Sim, value => m_useDdp3Type1Sim = value);
             SaveStateRef(nameof(m_useSvgArmType3), () => m_useSvgArmType3, value => m_useSvgArmType3 = value);
             SaveStateRef(nameof(m_useKov2ArmType2), () => m_useKov2ArmType2, value => m_useKov2ArmType2 = value);
             SaveStateRef(nameof(m_svg_ram_sel), () => m_svg_ram_sel, value => m_svg_ram_sel = value);
@@ -550,6 +552,11 @@ namespace mame
                 value = cave_type1_sim_r(null, (wordAddress - 0x400000) >> 1, memMask);
                 return true;
             }
+            if (m_useDdp3Type1Sim && wordAddress >= 0x500000 && wordAddress <= 0x500004)
+            {
+                value = pgm_500000_r(null, (wordAddress - 0x500000) >> 1, memMask);
+                return true;
+            }
             if (wordAddress >= 0x900000 && wordAddress <= 0x9ffffe)
             {
                 value = video_ram_r(null, (wordAddress & 0x7fff) >> 1, memMask);
@@ -616,6 +623,11 @@ namespace mame
             if (m_useCaveType1Sim && wordAddress >= 0x400000 && wordAddress <= 0x400004)
             {
                 cave_type1_sim_w(null, (wordAddress - 0x400000) >> 1, data, memMask);
+                return true;
+            }
+            if (m_useDdp3Type1Sim && wordAddress >= 0x500000 && wordAddress <= 0x500004)
+            {
+                pgm_500000_w(null, (wordAddress - 0x500000) >> 1, data, memMask);
                 return true;
             }
             if (wordAddress == 0x700006)
@@ -819,7 +831,7 @@ namespace mame
             if (m_useSvgArmType3)
                 return svg_m68k_ram_r(space, offset, mem_mask);
 
-            if (offset <= 2)
+            if ((m_useDdp3Type1Sim || !m_useCaveType1Sim) && offset <= 2)
                 return kov_sim_r(space, offset, mem_mask);
 
             return 0xffff;
@@ -833,7 +845,7 @@ namespace mame
                 return;
             }
 
-            if (offset <= 2)
+            if ((m_useDdp3Type1Sim || !m_useCaveType1Sim) && offset <= 2)
                 kov_sim_w(space, offset, data, mem_mask);
         }
 
@@ -1702,7 +1714,10 @@ namespace mame
             m_value1 = data;
             m_value0 ^= realkey;
             m_ddp3lastcommand = (u16)(m_value1 & 0xff);
-            CommandHandlerKov();
+            if (m_useCaveType1Sim || m_useDdp3Type1Sim)
+                CommandHandlerDdp3();
+            else
+                CommandHandlerKov();
         }
 
         u16 cave_type1_sim_r(address_space space, offs_t offset, u16 mem_mask)
@@ -1745,6 +1760,46 @@ namespace mame
             m_kov_cb_value = 0;
             m_kov_fe_value = 0;
             m_simregion = 5;
+        }
+
+        void CommandHandlerDdp3()
+        {
+            switch (m_ddp3lastcommand)
+            {
+            case 0x40:
+                m_valueresponse = 0x880000;
+                m_kov_slots[(m_value0 >> 10) & 0x1f] =
+                    (m_kov_slots[(m_value0 >> 5) & 0x1f] + m_kov_slots[m_value0 & 0x1f]) & 0x00ffffff;
+                break;
+
+            case 0x67:
+                m_valueresponse = 0x880000;
+                m_curslots = (m_value0 & 0xff00) >> 8;
+                m_kov_slots[m_curslots] = (u32)((m_value0 & 0x00ff) << 16);
+                break;
+
+            case 0xe5:
+                m_valueresponse = 0x880000;
+                m_kov_slots[m_curslots] |= m_value0;
+                break;
+
+            case 0x8e:
+                m_valueresponse = m_kov_slots[m_value0 & 0xff];
+                break;
+
+            case 0x99:
+            case 0x38:
+                m_simregion = 0;
+                m_valuekey = 0x0100;
+                m_valueresponse = (u32)(0x880000 | (m_simregion << 8));
+                break;
+
+            default:
+                m_valueresponse = 0x880000;
+                if (TracePgmArmEnabled())
+                    Console.Error.WriteLine($"[PGM-TYPE1] unhandled ddp3 command=0x{m_ddp3lastcommand:x2} value=0x{m_value0:x4} pc=0x{m_maincpu.op0.Pc:x6}");
+                break;
+            }
         }
 
         void ResetAsic3Protection()
@@ -2002,7 +2057,7 @@ namespace mame
             if (region != null && region.base_() != null)
                 PgmCrypt.Py2k2Decrypt(region.base_(), 0x100000, 0x400000);
 
-            m_useCaveType1Sim = true;
+            m_useDdp3Type1Sim = true;
             ResetKovProtection();
         }
 
@@ -2013,6 +2068,7 @@ namespace mame
                 PgmCrypt.KetDecrypt(region.base_(), 0, 0x400000);
 
             m_useCaveType1Sim = true;
+            m_useDdp3Type1Sim = false;
             ResetKovProtection();
         }
 
@@ -2023,6 +2079,7 @@ namespace mame
                 PgmCrypt.EspgalDecrypt(region.base_(), 0, 0x400000);
 
             m_useCaveType1Sim = true;
+            m_useDdp3Type1Sim = false;
             ResetKovProtection();
         }
 
