@@ -540,8 +540,9 @@ namespace mame
             case 0x11: ret = (u16)(voice.OscSAddr << 8); break;
             case 0x40:
             case 0x41:
-                ret = m_timer[m_reg_select & 1].Preset;
-                m_irq_pending = (u8)(m_irq_pending & ~(1 << (m_reg_select & 1)));
+                int timer = m_reg_select & 1;
+                ret = m_timer[timer].Preset;
+                m_irq_pending = (u8)(m_irq_pending & ~(1 << timer));
                 recalc_irq();
                 break;
             case 0x43: ret = (u16)(m_irq_pending & 3); break;
