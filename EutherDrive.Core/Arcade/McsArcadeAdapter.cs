@@ -457,6 +457,19 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             _outputGainPercent = Math.Clamp(percent, 0, 400);
     }
 
+    internal void SetNeoGeoYm2610MixPercent(int adpcmaPercent, int musicPercent)
+    {
+        McsRuntime? runtime = _runtime;
+        if (runtime == null)
+            return;
+
+        runtime.RunOnMachine(machine =>
+        {
+            foreach (mame.ym2610_device ym2610 in new mame.device_type_enumerator<mame.ym2610_device>(machine.root_device()))
+                ym2610.set_neogeo_mix_gain_percent(adpcmaPercent, musicPercent);
+        });
+    }
+
     public void SetInputState(
         bool up,
         bool down,
@@ -804,6 +817,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
             if (request.Error != null)
                 throw new InvalidOperationException("MCS savestate operation failed.", request.Error);
+        }
+
+        public void RunOnMachine(Action<mame.running_machine> execute)
+        {
+            ArgumentNullException.ThrowIfNull(execute);
+            EnqueueStateRequest(new StateRequest(execute));
         }
 
         public void ProcessMachineUpdate(mame.running_machine machine)

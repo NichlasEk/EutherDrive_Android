@@ -46,6 +46,8 @@ namespace mame
         const int FM_ENVELOPE_QUIET = 0x380;
         const int FM_PHASE_COUNTER_SCALE = 1 << 20;
         const double FM_MIX_GAIN = 8.0;
+        const int ADPCMA_DEFAULT_MIX_GAIN_PERCENT = 300;
+        const int ADPCMB_DEFAULT_MIX_GAIN_PERCENT = 100;
         const u8 YM2610_FM_CHANNEL_MASK = 0x36;
         static readonly ushort [] s_adpcma_steps =
         {
@@ -166,6 +168,9 @@ namespace mame
         u8 m_flag_mask = EOS_FLAGS_MASK;
         readonly bool m_trace = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM2610_TRACE"), "1", StringComparison.Ordinal);
         readonly bool m_test_tone = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM2610_TEST_TONE"), "1", StringComparison.Ordinal);
+        int m_fm_mix_gain_percent = ParseGainPercent("EUTHERDRIVE_YM2610_FM_GAIN_PERCENT", ADPCMB_DEFAULT_MIX_GAIN_PERCENT);
+        int m_adpcma_mix_gain_percent = ParseGainPercent("EUTHERDRIVE_YM2610_ADPCMA_GAIN_PERCENT", ADPCMA_DEFAULT_MIX_GAIN_PERCENT);
+        int m_adpcmb_mix_gain_percent = ParseGainPercent("EUTHERDRIVE_YM2610_ADPCMB_GAIN_PERCENT", ADPCMB_DEFAULT_MIX_GAIN_PERCENT);
         int m_trace_count;
         double m_test_tone_phase;
 
@@ -359,7 +364,8 @@ namespace mame
                 int fm = ClockOpnFm(sampleRate) + ClockSimpleSsg(sampleRate);
                 if (m_test_tone)
                     fm += ClockTestTone(sampleRate);
-                outputs[0].put_int(sample, fm, 32768);
+                fm = ApplyMixGain(fm, m_fm_mix_gain_percent);
+                outputs[0].put_int_clamp(sample, fm, 32768);
 
                 int left = 0;
                 int right = 0;
@@ -384,9 +390,40 @@ namespace mame
                 MixAdpcmB(ref left, ref right);
 
                 m_eos_status = (u8)(m_eos_status | ended);
-                outputs[1].put_int(sample, left, 32768);
-                outputs[2].put_int(sample, right, 32768);
+                outputs[1].put_int_clamp(sample, left, 32768);
+                outputs[2].put_int_clamp(sample, right, 32768);
             }
+        }
+
+
+        static int ParseGainPercent(string name, int defaultPercent)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out int value))
+                return Math.Clamp(value, 25, 600);
+
+            return defaultPercent;
+        }
+
+
+        public void set_neogeo_mix_gain_percent(int adpcmaPercent, int musicPercent)
+        {
+            m_adpcma_mix_gain_percent = ClampMixGainPercent(adpcmaPercent);
+            m_adpcmb_mix_gain_percent = ClampMixGainPercent(musicPercent);
+            m_fm_mix_gain_percent = ClampMixGainPercent(musicPercent);
+        }
+
+
+        static int ClampMixGainPercent(int value)
+        {
+            return Math.Clamp(value, 0, 600);
+        }
+
+
+        static int ApplyMixGain(int value, int gainPercent)
+        {
+            long scaled = (long)value * gainPercent / 100;
+            return (int)Math.Clamp(scaled, short.MinValue, short.MaxValue);
         }
 
 
@@ -1357,6 +1394,7 @@ namespace mame
             int interp = (int)(((long)m_adpcmb_prev_output * (((m_adpcmb_position ^ 0xffff) + 1) & 0xffff)
                 + (long)m_adpcmb_output * m_adpcmb_position) >> 16);
             int value = (interp * m_adpcmb_regs[0x0b]) >> 9;
+            value = ApplyMixGain(value, m_adpcmb_mix_gain_percent);
 
             if ((m_adpcmb_regs[0x01] & 0x80) != 0)
                 left += value;
@@ -1453,6 +1491,7 @@ namespace mame
             int multiplier = 15 - (attenuationSteps & 0x07);
             int shift = 5 + (attenuationSteps >> 3);
             int value = ((signedAccumulator * multiplier) >> shift) & ~3;
+            value = ApplyMixGain(value, m_adpcma_mix_gain_percent);
 
             if ((m_regs[reg] & 0x80) != 0)
                 left += value;

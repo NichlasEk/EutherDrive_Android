@@ -3014,9 +3014,9 @@ public partial class MainWindow : Window
                 _core = CreateCoreForRom(_romPath);
                 Console.WriteLine($"[UI] Core created ({_core.GetType().Name}).");
                 ApplyMasterVolumeToCore();
+                ApplyAudioMixToCore();
                 if (_core is MdTracerAdapter)
                 {
-                    ApplyAudioMixToCore();
                     ApplyDefaultCpuCyclesPerLine();
                     if (_core is MdTracerAdapter smsAdapter)
                         smsAdapter.SetShowSmsOverscan(_smsOverscanEnabled);
@@ -3931,6 +3931,11 @@ public partial class MainWindow : Window
             sms.SetPsgMixPercent(_psgMixPercent);
             sms.SetYmMixPercent(_ymMixPercent);
             sms.SetPsgNoiseMixPercent(_noiseMixPercent);
+        }
+        else if (_core is NeoGeoAdapter neoGeo)
+        {
+            neoGeo.SetPsgMixPercent(_psgMixPercent);
+            neoGeo.SetYmMixPercent(_ymMixPercent);
         }
     }
 

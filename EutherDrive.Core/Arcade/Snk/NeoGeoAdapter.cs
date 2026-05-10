@@ -17,6 +17,8 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
     private const int PlaceholderWidth = 320;
     private const int PlaceholderHeight = 224;
     private const int PlaceholderStride = PlaceholderWidth * 4;
+    private const int AdpcmAUiBaseGainPercent = 300;
+    private const int AdpcmBUiBaseGainPercent = 100;
     private const uint RomGroupWord = 0x100;
     private static readonly object RomSetDatabaseLock = new();
     private static readonly object DynamicMcsDriverLock = new();
@@ -29,6 +31,8 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
     private string? _loadedRomPath;
     private string? _loadedDriverName;
     private string? _loadedBiosPath;
+    private int _adpcmaUiMixPercent = 100;
+    private int _adpcmbUiMixPercent = 100;
 
     public static string? BiosPath { get; set; }
 
@@ -133,9 +137,14 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
         _loadedDriverName = driverName;
         _loadedBiosPath = biosPath;
         UpdateRomInfo();
+        ApplyAdpcmMixToCore();
     }
 
-    public void Reset() => _mcs.Reset();
+    public void Reset()
+    {
+        _mcs.Reset();
+        ApplyAdpcmMixToCore();
+    }
 
     public void RunFrame() => _mcs.RunFrame();
 
@@ -155,6 +164,18 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
         => _mcs.GetAudioBuffer(out sampleRate, out channels);
 
     public void SetMasterVolumePercent(int percent) => _mcs.SetMasterVolumePercent(percent);
+
+    public void SetPsgMixPercent(int percent)
+    {
+        _adpcmaUiMixPercent = ClampUiMixPercent(percent);
+        ApplyAdpcmMixToCore();
+    }
+
+    public void SetYmMixPercent(int percent)
+    {
+        _adpcmbUiMixPercent = ClampUiMixPercent(percent);
+        ApplyAdpcmMixToCore();
+    }
 
     public double GetTargetFps() => 59.185606;
 
@@ -184,6 +205,23 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
     {
         _mcs.Dispose();
         DisposePreparedDirectory();
+    }
+
+    private void ApplyAdpcmMixToCore()
+    {
+        int adpcmaPercent = ScaleUiMixPercent(_adpcmaUiMixPercent, AdpcmAUiBaseGainPercent);
+        int musicPercent = ScaleUiMixPercent(_adpcmbUiMixPercent, AdpcmBUiBaseGainPercent);
+        _mcs.SetNeoGeoYm2610MixPercent(adpcmaPercent, musicPercent);
+    }
+
+    private static int ClampUiMixPercent(int value)
+    {
+        return Math.Clamp(value, 0, 200);
+    }
+
+    private static int ScaleUiMixPercent(int value, int baseGainPercent)
+    {
+        return Math.Clamp((value * baseGainPercent + 50) / 100, 0, 600);
     }
 
     public static string? ResolveBiosPath(string? romPath = null)
