@@ -6,6 +6,11 @@ public sealed class KovPgmAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
 {
     private readonly McsArcadeAdapter _adapter = new();
 
+    public KovPgmAdapter()
+    {
+        _adapter.SetOutputGainPercent(1000);
+    }
+
     public static bool IsSupportedArchive(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !RomArchiveExtractor.IsArchivePath(path))

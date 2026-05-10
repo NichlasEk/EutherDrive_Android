@@ -503,7 +503,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     internal void SetOutputGainPercent(int percent)
     {
         lock (_sync)
-            _outputGainPercent = Math.Clamp(percent, 0, 400);
+            _outputGainPercent = Math.Clamp(percent, 0, 1000);
     }
 
     internal void SetNeoGeoYm2610MixPercent(int adpcmaPercent, int musicPercent)
