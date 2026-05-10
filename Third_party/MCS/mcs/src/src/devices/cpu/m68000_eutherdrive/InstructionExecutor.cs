@@ -121,6 +121,9 @@ internal sealed partial class InstructionExecutor
         if (TryConsumeTstBneIdleLoop(cycleBudget, out cycles))
             return true;
 
+        if (TryConsumeKovWaitLoop(cycleBudget, out cycles))
+            return true;
+
         if (TryConsumeNeoGeoInputPollLoop(cycleBudget, out cycles))
             return true;
 
@@ -140,6 +143,35 @@ internal sealed partial class InstructionExecutor
             return true;
 
         return TryConsumeNeoGeoRamFillLoop(cycleBudget, out cycles);
+    }
+
+    private bool TryConsumeKovWaitLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if ((pc != 0x00106868 && pc != 0x00106884)
+            || _bus.ReadWord(0x00106868) != 0x4AB9
+            || _bus.ReadWord(0x0010686A) != 0x0080
+            || _bus.ReadWord(0x0010686C) != 0xB78C
+            || _bus.ReadWord(0x0010686E) != 0x6714
+            || _bus.ReadWord(0x00106884) != 0x4A39
+            || _bus.ReadWord(0x00106886) != 0x0080
+            || _bus.ReadWord(0x00106888) != 0xB79C
+            || _bus.ReadWord(0x0010688A) != 0x67DC)
+        {
+            return false;
+        }
+
+        if (_bus.ReadLong(0x0080B78C) != 0 || _bus.ReadByte(0x0080B79C) != 0)
+            return false;
+
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = true;
+        _registers.Ccr.Negative = false;
+
+        cycles = (uint)Math.Max(58, cycleBudget);
+        return true;
     }
 
     private bool TryConsumeMetalSlugFrameWaitLoop(int cycleBudget, out uint cycles)
