@@ -16,6 +16,14 @@ internal sealed partial class InstructionExecutor
     private Instruction? _instruction;
     private uint _tracePc;
     private bool _traceThisInstruction;
+    private bool _pgmDemonFrontZeroTableSignatureChecked;
+    private bool _pgmDemonFrontZeroTableSignatureValid;
+    private bool _pgmDemonFrontByteSlotSignatureChecked;
+    private bool _pgmDemonFrontByteSlotSignatureValid;
+    private bool _pgmDemonFrontByteCounterSignatureChecked;
+    private bool _pgmDemonFrontByteCounterSignatureValid;
+    private bool _pgmObjectMaskSignatureChecked;
+    private bool _pgmObjectMaskSignatureValid;
 
     private static readonly bool TraceExceptions =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
@@ -118,46 +126,760 @@ internal sealed partial class InstructionExecutor
         if (interruptLevel > (_registers.InterruptPriorityMask & 0x07))
             return false;
 
-        if (TryConsumeTstBneIdleLoop(cycleBudget, out cycles))
-            return true;
+        uint pc = _registers.Pc;
+        switch (pc)
+        {
+            case 0x00106868:
+            case 0x00106884:
+                return TryConsumeKovWaitLoop(cycleBudget, out cycles);
 
-        if (TryConsumeKovWaitLoop(cycleBudget, out cycles))
-            return true;
+            case 0x000011A8:
+                return TryConsumePgmArmResultWaitLoop(cycleBudget, out cycles);
 
-        if (TryConsumePgmArmResultWaitLoop(cycleBudget, out cycles))
-            return true;
+            case 0x00101B04:
+                return TryConsumePgmSpriteFlagScanLoop(cycleBudget, out cycles);
 
-        if (TryConsumePgmSvgLatchDelayLoop(cycleBudget, out cycles))
-            return true;
+            case 0x0010E2C6:
+                return TryConsumePgmSvgLatchDelayLoop(cycleBudget, out cycles);
 
-        if (TryConsumePgmSpriteFlagScanLoop(cycleBudget, out cycles))
-            return true;
+            case 0x00125308:
+                return TryConsumePgmObjectMaskScanLoop(cycleBudget, out cycles);
 
-        if (TryConsumePgmObjectMaskScanLoop(cycleBudget, out cycles))
-            return true;
+            case 0x00125AB0:
+            case 0x00125D2C:
+                return TryConsumePgmObjectBitScanLoop(cycleBudget, out cycles);
 
-        if (TryConsumePgmObjectBitScanLoop(cycleBudget, out cycles))
-            return true;
+            case 0x00125B44:
+            case 0x00125C04:
+                return TryConsumePgmDemonFrontObjectAccumulatorLoop(cycleBudget, out cycles);
 
-        if (TryConsumeNeoGeoInputPollLoop(cycleBudget, out cycles))
-            return true;
+            case 0x0010775E:
+                return TryConsumePgmDemonFrontCopy10TailLoop(cycleBudget, out cycles);
 
-        if (TryConsumeMetalSlugFrameWaitLoop(cycleBudget, out cycles))
-            return true;
+            case 0x00101E64:
+            case 0x00101E6E:
+                return TryConsumePgmDemonFrontTileWordGatherLoop(cycleBudget, out cycles);
 
-        if (TryConsumeNeoGeoBiosChecksumLoop(cycleBudget, out cycles))
-            return true;
+            case 0x001028B4:
+                return TryConsumePgmDemonFrontWordFillDbfLoop(cycleBudget, out cycles);
 
-        if (TryConsumeNeoGeoVramPortFillLoop(cycleBudget, out cycles))
-            return true;
+            case 0x00102784:
+                return TryConsumePgmDemonFrontWordCopyDbfLoop(cycleBudget, out cycles);
 
-        if (TryConsumeNeoGeoWatchdogVramPortFillLoop(cycleBudget, out cycles))
-            return true;
+            case 0x00005E1E:
+            case 0x00005E20:
+                return TryConsumePgmDemonFrontReadyPollLoop(cycleBudget, out cycles);
+        }
 
-        if (TryConsumeNeoGeoVramPortCopyLoop(cycleBudget, out cycles))
-            return true;
+        switch (_registers.Prefetch)
+        {
+            case 0x20C0:
+                return TryConsumeMoveLongFillDbfLoop(cycleBudget, out cycles);
 
-        return TryConsumeNeoGeoRamFillLoop(cycleBudget, out cycles);
+            case 0x4A39:
+                return TryConsumeTstBneIdleLoop(cycleBudget, out cycles);
+
+            case 0x5279:
+                return TryConsumeMetalSlugFrameWaitLoop(cycleBudget, out cycles);
+
+            case 0x13C0:
+                if (TryConsumeNeoGeoInputPollLoop(cycleBudget, out cycles))
+                    return true;
+                if (TryConsumeNeoGeoBiosChecksumLoop(cycleBudget, out cycles))
+                    return true;
+                return TryConsumeNeoGeoWatchdogVramPortFillLoop(cycleBudget, out cycles);
+
+            case 0x1480:
+                return TryConsumeNeoGeoRamFillLoop(cycleBudget, out cycles);
+
+            case 0x3080:
+                return TryConsumeNeoGeoVramPortFillLoop(cycleBudget, out cycles);
+
+            case 0x389A:
+                return TryConsumeNeoGeoVramPortCopyLoop(cycleBudget, out cycles);
+        }
+
+        return false;
+    }
+
+    private bool TryConsumePgmDemonFrontZeroTableLookup(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00101D7E)
+            return false;
+
+        if (!_pgmDemonFrontZeroTableSignatureChecked)
+        {
+            _pgmDemonFrontZeroTableSignatureValid =
+                _bus.ReadWord(0x00101D7E) == 0x202F
+                && _bus.ReadWord(0x00101D82) == 0x2200
+                && _bus.ReadWord(0x00101D84) == 0xD080
+                && _bus.ReadWord(0x00101D86) == 0xD081
+                && _bus.ReadWord(0x00101D88) == 0xD080
+                && _bus.ReadWord(0x00101D8A) == 0x207C
+                && _bus.ReadWord(0x00101D90) == 0xD1C0
+                && _bus.ReadWord(0x00101D92) == 0x2248
+                && _bus.ReadWord(0x00101D94) == 0x4A69
+                && _bus.ReadWord(0x00101D98) == 0x671A
+                && _bus.ReadWord(0x00101DB4) == 0x7000
+                && _bus.ReadWord(0x00101DB6) == 0x4E75;
+            _pgmDemonFrontZeroTableSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontZeroTableSignatureValid)
+        {
+            return false;
+        }
+
+        uint stackPointer = _registers.StackPointer();
+        uint index = _bus.ReadLong(stackPointer + unchecked((uint)(short)_bus.ReadWord(0x00101D80)));
+        uint baseAddress = ((uint)_bus.ReadWord(0x00101D8C) << 16) | _bus.ReadWord(0x00101D8E);
+        uint entryAddress = (baseAddress + index * 6u) & 0x00ff_ffff;
+        uint testAddress = (entryAddress + unchecked((uint)(short)_bus.ReadWord(0x00101D96))) & 0x00ff_ffff;
+        if (_bus.ReadWord(testAddress) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer);
+        _registers.SetStackPointer(stackPointer + 4u);
+        _registers.Data[0] = 0;
+        _registers.Data[1] = index;
+        _registers.Address[0] = entryAddress;
+        _registers.Address[1] = entryAddress;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = true;
+        _registers.Ccr.Negative = false;
+        _registers.Pc = returnAddress & 0x00ff_ffff;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = (uint)Math.Max(80, cycleBudget);
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontByteSlotScanLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00105C8E)
+            return false;
+
+        if (!_pgmDemonFrontByteSlotSignatureChecked)
+        {
+            _pgmDemonFrontByteSlotSignatureValid =
+                _bus.ReadWord(0x00105C8E) == 0x0C12
+                && _bus.ReadWord(0x00105C92) == 0x6638
+                && _bus.ReadWord(0x00105CCC) == 0x588A
+                && _bus.ReadWord(0x00105CCE) == 0x2002
+                && _bus.ReadWord(0x00105CD0) == 0x5342
+                && _bus.ReadWord(0x00105CD2) == 0x4A40
+                && _bus.ReadWord(0x00105CD4) == 0x66B8
+                && _bus.ReadWord(0x00105CD6) == 0x4CDF;
+            _pgmDemonFrontByteSlotSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontByteSlotSignatureValid)
+        {
+            return false;
+        }
+
+        byte compareValue = (byte)_bus.ReadWord(0x00105C90);
+        uint a2 = _registers.Address[2];
+        ushort d2 = (ushort)_registers.Data[2];
+        uint maxIterations = Math.Min((uint)d2 + 1u, Math.Max(1u, (uint)cycleBudget / 58u));
+        uint iterations = 0;
+        ushort lastD0 = d2;
+
+        while (iterations < maxIterations)
+        {
+            if (_bus.ReadByte(a2) == compareValue)
+                break;
+
+            a2 = (a2 + 4u) & 0x00ff_ffff;
+            lastD0 = d2;
+            d2--;
+            iterations++;
+
+            if (lastD0 == 0)
+                break;
+        }
+
+        if (iterations == 0)
+            return false;
+
+        _registers.Address[2] = a2;
+        _registers.Data[0] = lastD0;
+        _registers.Data[2] = (_registers.Data[2] & 0xffff_0000u) | d2;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = lastD0 == 0;
+        _registers.Ccr.Negative = lastD0.SignBit();
+        _registers.Pc = lastD0 == 0 ? 0x00105CD6u : 0x00105C8Eu;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = Math.Max(58u, iterations * 58u);
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontByteCounterTail(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00107A0C)
+            return false;
+
+        if (!_pgmDemonFrontByteCounterSignatureChecked)
+        {
+            _pgmDemonFrontByteCounterSignatureValid =
+                _bus.ReadWord(0x00107A0C) == 0x2002
+                && _bus.ReadWord(0x00107A0E) == 0x5302
+                && _bus.ReadWord(0x00107A10) == 0x4A00
+                && _bus.ReadWord(0x00107A12) == 0x6600
+                && _bus.ReadWord(0x00107A16) == 0x4CDF
+                && _bus.ReadWord(0x00107A1A) == 0x4E75;
+            _pgmDemonFrontByteCounterSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontByteCounterSignatureValid)
+        {
+            return false;
+        }
+
+        uint d2 = _registers.Data[2];
+        uint d0 = d2;
+        byte newD2 = unchecked((byte)((byte)d2 - 1));
+        _registers.Data[0] = d0;
+        _registers.Data[2] = (d2 & 0xffff_ff00u) | newD2;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = (byte)d0 == 0;
+        _registers.Ccr.Negative = ((byte)d0).SignBit();
+        _registers.Pc = (byte)d0 == 0 ? 0x00107A16u : 0x0010795Eu;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = (uint)Math.Max(34, cycleBudget);
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontCopy10TailLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x0010775E)
+            return false;
+
+        if (_bus.ReadWord(0x00107758) != 0x26DC
+            || _bus.ReadWord(0x0010775A) != 0x26DC
+            || _bus.ReadWord(0x0010775C) != 0x36DC
+            || _bus.ReadWord(0x0010775E) != 0x2002
+            || _bus.ReadWord(0x00107760) != 0x5342
+            || _bus.ReadWord(0x00107762) != 0x4A40
+            || _bus.ReadWord(0x00107764) != 0x66F2
+            || _bus.ReadWord(0x00107766) != 0x246A)
+        {
+            return false;
+        }
+
+        uint d2Full = _registers.Data[2];
+        ushort remaining = (ushort)d2Full;
+        ushort resultLow;
+        uint d0;
+        uint iterations = 0;
+
+        if (remaining != 0)
+        {
+            uint maxIterations = Math.Min((uint)remaining, Math.Max(1u, (uint)cycleBudget / 62u));
+            uint a3 = _registers.Address[3];
+            uint a4 = _registers.Address[4];
+
+            for (iterations = 0; iterations < maxIterations; iterations++)
+            {
+                _bus.WriteLong(a3, _bus.ReadLong(a4));
+                a3 = (a3 + 4u) & 0x00ff_ffff;
+                a4 = (a4 + 4u) & 0x00ff_ffff;
+
+                _bus.WriteLong(a3, _bus.ReadLong(a4));
+                a3 = (a3 + 4u) & 0x00ff_ffff;
+                a4 = (a4 + 4u) & 0x00ff_ffff;
+
+                _bus.WriteWord(a3, _bus.ReadWord(a4));
+                a3 = (a3 + 2u) & 0x00ff_ffff;
+                a4 = (a4 + 2u) & 0x00ff_ffff;
+            }
+
+            _registers.Address[3] = a3;
+            _registers.Address[4] = a4;
+        }
+
+        if (iterations >= remaining)
+        {
+            d0 = d2Full & 0xffff_0000u;
+            resultLow = 0xffff;
+            _registers.Pc = 0x00107766;
+        }
+        else
+        {
+            ushort d0Low = (ushort)(remaining - iterations);
+            d0 = (d2Full & 0xffff_0000u) | d0Low;
+            resultLow = (ushort)(d0Low - 1);
+            _registers.Pc = 0x00107758;
+        }
+
+        _registers.Data[0] = d0;
+        _registers.Data[2] = (d2Full & 0xffff_0000u) | resultLow;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = (ushort)d0 == 0;
+        _registers.Ccr.Negative = ((ushort)d0).SignBit();
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = Math.Max(34u, 18u + iterations * 62u);
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontWordFillDbfLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if (pc != 0x001028B4
+            || _registers.Prefetch != 0x30C0
+            || _bus.ReadWord(pc + 2) != 0x51C9
+            || _bus.ReadWord(pc + 4) != 0xFFFC)
+        {
+            return false;
+        }
+
+        ushort d1 = (ushort)_registers.Data[1];
+        uint remainingIterations = (uint)d1 + 1u;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 18u);
+        uint iterations = Math.Min(remainingIterations, maxIterations);
+        if (iterations == 0)
+            return false;
+
+        uint a0 = _registers.Address[0];
+        ushort value = (ushort)_registers.Data[0];
+        for (uint i = 0; i < iterations; i++)
+        {
+            _bus.WriteWord(a0, value);
+            a0 = (a0 + 2u) & 0x00ff_ffff;
+        }
+
+        _registers.Address[0] = a0;
+        _registers.Data[1] = (_registers.Data[1] & 0xffff_0000u) | (ushort)(d1 - iterations);
+        SetMoveWordFlags(value);
+
+        cycles = Math.Max(18u, iterations * 18u);
+        if (iterations == remainingIterations)
+        {
+            cycles += 4;
+            _registers.Pc = (pc + 6u) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        }
+
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontWordCopyDbfLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if (pc != 0x00102784
+            || _registers.Prefetch != 0x32D8
+            || _bus.ReadWord(pc + 2) != 0x51C8
+            || _bus.ReadWord(pc + 4) != 0xFFFC)
+        {
+            return false;
+        }
+
+        ushort d0 = (ushort)_registers.Data[0];
+        uint remainingIterations = (uint)d0 + 1u;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 26u);
+        uint iterations = Math.Min(remainingIterations, maxIterations);
+        if (iterations == 0)
+            return false;
+
+        uint a0 = _registers.Address[0];
+        uint a1 = _registers.Address[1];
+        ushort value = 0;
+        for (uint i = 0; i < iterations; i++)
+        {
+            value = _bus.ReadWord(a0);
+            _bus.WriteWord(a1, value);
+            a0 = (a0 + 2u) & 0x00ff_ffff;
+            a1 = (a1 + 2u) & 0x00ff_ffff;
+        }
+
+        _registers.Address[0] = a0;
+        _registers.Address[1] = a1;
+        _registers.Data[0] = (_registers.Data[0] & 0xffff_0000u) | (ushort)(d0 - iterations);
+        SetMoveWordFlags(value);
+
+        cycles = Math.Max(26u, iterations * 26u);
+        if (iterations == remainingIterations)
+        {
+            cycles += 4;
+            _registers.Pc = (pc + 6u) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        }
+
+        return true;
+    }
+
+    private bool TryConsumeMoveLongFillDbfLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if (_registers.Prefetch != 0x20C0
+            || _bus.ReadWord(pc + 2) != 0x51C9
+            || _bus.ReadWord(pc + 4) != 0xFFFC)
+        {
+            return false;
+        }
+
+        ushort d1 = (ushort)_registers.Data[1];
+        uint remainingIterations = (uint)d1 + 1u;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 30u);
+        uint iterations = Math.Min(remainingIterations, maxIterations);
+        if (iterations == 0)
+            return false;
+
+        uint a0 = _registers.Address[0];
+        uint value = _registers.Data[0];
+        for (uint i = 0; i < iterations; i++)
+        {
+            _bus.WriteLong(a0, value);
+            a0 = (a0 + 4u) & 0x00ff_ffff;
+        }
+
+        _registers.Address[0] = a0;
+        _registers.Data[1] = (_registers.Data[1] & 0xffff_0000u) | (ushort)(d1 - iterations);
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+
+        cycles = Math.Max(30u, iterations * 30u);
+        if (iterations == remainingIterations)
+        {
+            cycles += 4;
+            _registers.Pc = (pc + 6u) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        }
+
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontTileWordGatherLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if ((pc != 0x00101E64 && pc != 0x00101E6E)
+            || _bus.ReadWord(0x00101E64) != 0x32A8
+            || _bus.ReadWord(0x00101E68) != 0x5281
+            || _bus.ReadWord(0x00101E6A) != 0x5C88
+            || _bus.ReadWord(0x00101E6C) != 0x5489
+            || _bus.ReadWord(0x00101E6E) != 0x7030
+            || _bus.ReadWord(0x00101E70) != 0xB081
+            || _bus.ReadWord(0x00101E72) != 0x6EF0)
+        {
+            return false;
+        }
+
+        uint d1 = _registers.Data[1];
+        if (pc == 0x00101E6E && d1 >= 0x30)
+        {
+            _registers.Data[0] = 0x30;
+            CompareLongWords(d1, 0x30, ref _registers.Ccr);
+            _registers.Pc = 0x00101E74;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            cycles = 18;
+            return true;
+        }
+
+        if (d1 >= 0x30)
+            return false;
+
+        uint remainingIterations = 0x30u - d1;
+        const uint cyclesPerIteration = 54;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / cyclesPerIteration);
+        uint iterations = Math.Min(remainingIterations, maxIterations);
+        short sourceOffset = (short)_bus.ReadWord(0x00101E66);
+        uint a0 = _registers.Address[0];
+        uint a1 = _registers.Address[1];
+
+        for (uint i = 0; i < iterations; i++)
+        {
+            ushort value = _bus.ReadWord((a0 + unchecked((uint)sourceOffset)) & 0x00ff_ffff);
+            _bus.WriteWord(a1, value);
+            d1 = (d1 + 1u) & 0xffff_ffffu;
+            a0 = (a0 + 6u) & 0x00ff_ffff;
+            a1 = (a1 + 2u) & 0x00ff_ffff;
+        }
+
+        _registers.Address[0] = a0;
+        _registers.Address[1] = a1;
+        _registers.Data[0] = 0x30;
+        _registers.Data[1] = d1;
+        CompareLongWords(d1, 0x30, ref _registers.Ccr);
+        _registers.Pc = d1 < 0x30 ? 0x00101E64u : 0x00101E74u;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = Math.Max(cyclesPerIteration, iterations * cyclesPerIteration);
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontReadyPollLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if ((pc != 0x00005E1E && pc != 0x00005E20)
+            || _bus.ReadWord(0x00005E1E) != 0x5282
+            || _bus.ReadWord(0x00005E20) != 0x4A39
+            || _bus.ReadWord(0x00005E26) != 0x67F6)
+        {
+            return false;
+        }
+
+        uint pollAddress = ((uint)_bus.ReadWord(0x00005E22) << 16) | _bus.ReadWord(0x00005E24);
+        byte value = _bus.ReadByte(pollAddress);
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+
+        if (pc == 0x00005E20)
+        {
+            _registers.Pc = value == 0 ? 0x00005E1Eu : 0x00005E28u;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+            cycles = value == 0 ? 26u : 24u;
+            return true;
+        }
+
+        if (value == 0)
+        {
+            const uint cyclesPerIteration = 34;
+            uint iterations = Math.Max(1u, (uint)cycleBudget / cyclesPerIteration);
+            _registers.Data[2] += iterations;
+            _registers.Pc = 0x00005E1E;
+            _registers.Prefetch = 0x5282;
+            cycles = iterations * cyclesPerIteration;
+            return true;
+        }
+
+        _registers.Data[2]++;
+        _registers.Pc = 0x00005E28;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = 32;
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontObjectAccumulatorLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint start = _registers.Pc;
+        if (start != 0x00125B44 && start != 0x00125C04)
+            return false;
+
+        bool usesThreshold;
+        uint fallthroughOffset;
+        uint cyclesPerIteration;
+        short firstDeltaOffset;
+        short secondCountOffset;
+        short secondDeltaOffset;
+        short thirdCountOffset;
+        short thirdDeltaOffset;
+
+        if (_bus.ReadWord(start + 0x00) != 0x3413
+            || _bus.ReadWord(start + 0x02) != 0x0282
+            || _bus.ReadWord(start + 0x08) != 0x700A
+            || _bus.ReadWord(start + 0x0A) != 0xE0A2
+            || _bus.ReadWord(start + 0x0C) != 0x3813
+            || _bus.ReadWord(start + 0x0E) != 0x0284
+            || _bus.ReadWord(start + 0x14) != 0xEA84
+            || _bus.ReadWord(start + 0x16) != 0x3A13
+            || _bus.ReadWord(start + 0x18) != 0x0245
+            || _bus.ReadWord(start + 0x1C) != 0x4A12)
+        {
+            return false;
+        }
+
+        if (_bus.ReadWord(start + 0x1E) == 0x670E)
+        {
+            if (_bus.ReadWord(start + 0x20) != 0xBC12
+                || _bus.ReadWord(start + 0x22) != 0x620A
+                || _bus.ReadWord(start + 0x24) != 0x102A
+                || _bus.ReadWord(start + 0x28) != 0x4880
+                || _bus.ReadWord(start + 0x2A) != 0xD440
+                || _bus.ReadWord(start + 0x2C) != 0x5312
+                || _bus.ReadWord(start + 0x2E) != 0x4A2A
+                || _bus.ReadWord(start + 0x32) != 0x6712
+                || _bus.ReadWord(start + 0x34) != 0xBC2A
+                || _bus.ReadWord(start + 0x38) != 0x620C
+                || _bus.ReadWord(start + 0x3A) != 0x102A
+                || _bus.ReadWord(start + 0x3E) != 0x4880
+                || _bus.ReadWord(start + 0x40) != 0xD840
+                || _bus.ReadWord(start + 0x42) != 0x532A
+                || _bus.ReadWord(start + 0x46) != 0x4A2A
+                || _bus.ReadWord(start + 0x4A) != 0x6712
+                || _bus.ReadWord(start + 0x4C) != 0xBC2A
+                || _bus.ReadWord(start + 0x50) != 0x620C
+                || _bus.ReadWord(start + 0x52) != 0x102A
+                || _bus.ReadWord(start + 0x56) != 0x4880
+                || _bus.ReadWord(start + 0x58) != 0xDA40
+                || _bus.ReadWord(start + 0x5A) != 0x532A
+                || _bus.ReadWord(start + 0x5E) != 0x3002
+                || _bus.ReadWord(start + 0x60) != 0x720A
+                || _bus.ReadWord(start + 0x62) != 0xE368
+                || _bus.ReadWord(start + 0x64) != 0x3204
+                || _bus.ReadWord(start + 0x66) != 0xEB49
+                || _bus.ReadWord(start + 0x68) != 0xD041
+                || _bus.ReadWord(start + 0x6A) != 0xD045
+                || _bus.ReadWord(start + 0x6C) != 0x36C0
+                || _bus.ReadWord(start + 0x6E) != 0x5C8A
+                || _bus.ReadWord(start + 0x70) != 0x5343
+                || _bus.ReadWord(start + 0x72) != 0x668C)
+            {
+                return false;
+            }
+
+            firstDeltaOffset = (short)_bus.ReadWord(start + 0x26);
+            secondCountOffset = (short)_bus.ReadWord(start + 0x30);
+            short secondCompareOffset = (short)_bus.ReadWord(start + 0x36);
+            secondDeltaOffset = (short)_bus.ReadWord(start + 0x3C);
+            short secondDecrementOffset = (short)_bus.ReadWord(start + 0x44);
+            thirdCountOffset = (short)_bus.ReadWord(start + 0x48);
+            short thirdCompareOffset = (short)_bus.ReadWord(start + 0x4E);
+            thirdDeltaOffset = (short)_bus.ReadWord(start + 0x54);
+            short thirdDecrementOffset = (short)_bus.ReadWord(start + 0x5C);
+            if (secondCountOffset != secondCompareOffset
+                || secondCountOffset != secondDecrementOffset
+                || thirdCountOffset != thirdCompareOffset
+                || thirdCountOffset != thirdDecrementOffset)
+            {
+                return false;
+            }
+
+            usesThreshold = true;
+            fallthroughOffset = 0x74u;
+            cyclesPerIteration = 238u;
+        }
+        else if (_bus.ReadWord(start + 0x1E) == 0x670A)
+        {
+            if (_bus.ReadWord(start + 0x20) != 0x102A
+                || _bus.ReadWord(start + 0x24) != 0x4880
+                || _bus.ReadWord(start + 0x26) != 0xD440
+                || _bus.ReadWord(start + 0x28) != 0x5312
+                || _bus.ReadWord(start + 0x2A) != 0x4A2A
+                || _bus.ReadWord(start + 0x2E) != 0x670C
+                || _bus.ReadWord(start + 0x30) != 0x102A
+                || _bus.ReadWord(start + 0x34) != 0x4880
+                || _bus.ReadWord(start + 0x36) != 0xD840
+                || _bus.ReadWord(start + 0x38) != 0x532A
+                || _bus.ReadWord(start + 0x3C) != 0x4A2A
+                || _bus.ReadWord(start + 0x40) != 0x670C
+                || _bus.ReadWord(start + 0x42) != 0x102A
+                || _bus.ReadWord(start + 0x46) != 0x4880
+                || _bus.ReadWord(start + 0x48) != 0xDA40
+                || _bus.ReadWord(start + 0x4A) != 0x532A
+                || _bus.ReadWord(start + 0x4E) != 0x3002
+                || _bus.ReadWord(start + 0x50) != 0x720A
+                || _bus.ReadWord(start + 0x52) != 0xE368
+                || _bus.ReadWord(start + 0x54) != 0x3204
+                || _bus.ReadWord(start + 0x56) != 0xEB49
+                || _bus.ReadWord(start + 0x58) != 0xD041
+                || _bus.ReadWord(start + 0x5A) != 0xD045
+                || _bus.ReadWord(start + 0x5C) != 0x36C0
+                || _bus.ReadWord(start + 0x5E) != 0x5C8A
+                || _bus.ReadWord(start + 0x60) != 0x5343
+                || _bus.ReadWord(start + 0x62) != 0x669C)
+            {
+                return false;
+            }
+
+            firstDeltaOffset = (short)_bus.ReadWord(start + 0x22);
+            secondCountOffset = (short)_bus.ReadWord(start + 0x2C);
+            secondDeltaOffset = (short)_bus.ReadWord(start + 0x32);
+            short secondDecrementOffset = (short)_bus.ReadWord(start + 0x3A);
+            thirdCountOffset = (short)_bus.ReadWord(start + 0x3E);
+            thirdDeltaOffset = (short)_bus.ReadWord(start + 0x44);
+            short thirdDecrementOffset = (short)_bus.ReadWord(start + 0x4C);
+            if (secondCountOffset != secondDecrementOffset || thirdCountOffset != thirdDecrementOffset)
+            {
+                return false;
+            }
+
+            usesThreshold = false;
+            fallthroughOffset = 0x64u;
+            cyclesPerIteration = 186u;
+        }
+        else
+        {
+            return false;
+        }
+
+        ushort d3 = (ushort)_registers.Data[3];
+        if (d3 == 0)
+            return false;
+
+        uint maxIterations = Math.Min((uint)d3, Math.Max(1u, (uint)cycleBudget / cyclesPerIteration));
+        uint a2 = _registers.Address[2];
+        uint a3 = _registers.Address[3];
+        uint d0 = _registers.Data[0];
+        uint d1 = _registers.Data[1];
+        uint d2 = _registers.Data[2];
+        uint d4 = _registers.Data[4];
+        uint d5High = _registers.Data[5] & 0xffff_0000u;
+        uint d5 = _registers.Data[5];
+        byte threshold = (byte)_registers.Data[6];
+        uint firstMask = _bus.ReadLong(start + 0x04);
+        uint secondMask = _bus.ReadLong(start + 0x10);
+        ushort thirdMask = _bus.ReadWord(start + 0x1A);
+        uint iterations = 0;
+
+        while (iterations < maxIterations)
+        {
+            ushort packed = _bus.ReadWord(a3);
+            d2 = (packed & firstMask) >> 10;
+            d4 = (packed & secondMask) >> 5;
+            d5 = d5High | (uint)(packed & thirdMask);
+
+            ApplyDemonFrontObjectChannel(a2, 0, firstDeltaOffset, threshold, usesThreshold, ref d0, ref d2);
+            ApplyDemonFrontObjectChannel(a2, secondCountOffset, secondDeltaOffset, threshold, usesThreshold, ref d0, ref d4);
+            ApplyDemonFrontObjectChannel(a2, thirdCountOffset, thirdDeltaOffset, threshold, usesThreshold, ref d0, ref d5);
+
+            d0 = (d0 & 0xffff_0000u) | (((d2 & 0x3fu) << 10) & 0xffffu);
+            d1 = (d1 & 0xffff_0000u) | (((d4 & 0x1fu) << 5) & 0xffffu);
+            d0 = (d0 & 0xffff_0000u) | ((d0 + d1 + (d5 & 0x1fu)) & 0xffffu);
+            _bus.WriteWord(a3, (ushort)d0);
+
+            a2 = (a2 + 6u) & 0x00ff_ffff;
+            a3 = (a3 + 2u) & 0x00ff_ffff;
+            d3--;
+            iterations++;
+        }
+
+        _registers.Address[2] = a2;
+        _registers.Address[3] = a3;
+        _registers.Data[0] = d0;
+        _registers.Data[1] = d1;
+        _registers.Data[2] = d2;
+        _registers.Data[3] = (_registers.Data[3] & 0xffff_0000u) | d3;
+        _registers.Data[4] = d4;
+        _registers.Data[5] = d5;
+        _registers.Pc = d3 == 0 ? start + fallthroughOffset : start;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = d3 == 0;
+        _registers.Ccr.Negative = d3.SignBit();
+        _registers.Ccr.Extend = false;
+        cycles = Math.Max(cyclesPerIteration, iterations * cyclesPerIteration);
+        return true;
+    }
+
+    private void ApplyDemonFrontObjectChannel(uint baseAddress, short countOffset, short deltaOffset, byte threshold, bool usesThreshold, ref uint d0, ref uint accumulator)
+    {
+        uint countAddress = (baseAddress + unchecked((uint)countOffset)) & 0x00ff_ffff;
+        byte count = _bus.ReadByte(countAddress);
+        if (count == 0 || (usesThreshold && count < threshold))
+            return;
+
+        uint deltaAddress = (baseAddress + unchecked((uint)deltaOffset)) & 0x00ff_ffff;
+        byte deltaByte = _bus.ReadByte(deltaAddress);
+        d0 = (d0 & 0xffff_0000u) | (ushort)(short)(sbyte)deltaByte;
+        accumulator = (accumulator & 0xffff_0000u) | (ushort)((ushort)accumulator + (short)(sbyte)deltaByte);
+        _bus.WriteByte(countAddress, (byte)(count - 1));
     }
 
     private bool TryConsumePgmArmResultWaitLoop(int cycleBudget, out uint cycles)
@@ -202,49 +924,92 @@ internal sealed partial class InstructionExecutor
     private bool TryConsumePgmSvgLatchDelayLoop(int cycleBudget, out uint cycles)
     {
         cycles = 0;
-        if (_registers.Pc != 0x0010E2C6)
-            return false;
+        uint pc = _registers.Pc;
+        if (pc == 0x0010E2C6)
+        {
+            return TryConsumePgmSvgLatchDelayLoopVariant(
+                cycleBudget,
+                out cycles,
+                start: 0x0010E2C6,
+                firstBsrDisplacement: 0xFF70,
+                secondBsrDisplacement: 0xFF66,
+                mismatchBranch: 0x6614,
+                equalBranch: 0x6768,
+                addOffset: 0x2C,
+                compareOffset: 0x2E,
+                limitOffset: 0x30,
+                loopBranchOffset: 0x34,
+                loopBranch: 0x65CA,
+                fallthroughOffset: 0x36,
+                cyclesPerIteration: 188,
+                iterationBudgetCycles: 188,
+                consumeToLimit: false);
+        }
 
-        if (_bus.ReadWord(0x0010E2C6) != 0x6100
-            || _bus.ReadWord(0x0010E2C8) != 0xFF70
-            || _bus.ReadWord(0x0010E2CA) != 0x0240
-            || _bus.ReadWord(0x0010E2CE) != 0x3600
-            || _bus.ReadWord(0x0010E2D0) != 0x6100
-            || _bus.ReadWord(0x0010E2D2) != 0xFF66
-            || _bus.ReadWord(0x0010E2D4) != 0x0240
-            || _bus.ReadWord(0x0010E2D8) != 0x3800
-            || _bus.ReadWord(0x0010E2DA) != 0xB644
-            || _bus.ReadWord(0x0010E2DC) != 0x6614
-            || _bus.ReadWord(0x0010E2DE) != 0x3003
-            || _bus.ReadWord(0x0010E2E0) != 0x0280
-            || _bus.ReadWord(0x0010E2E6) != 0x7200
-            || _bus.ReadWord(0x0010E2E8) != 0x1239
-            || _bus.ReadWord(0x0010E2EA) != 0x0081
-            || _bus.ReadWord(0x0010E2EC) != 0xDCC4
-            || _bus.ReadWord(0x0010E2EE) != 0xB081
-            || _bus.ReadWord(0x0010E2F0) != 0x6768
-            || _bus.ReadWord(0x0010E2F2) != 0x5282
-            || _bus.ReadWord(0x0010E2F4) != 0x0C82
-            || _bus.ReadWord(0x0010E2FA) != 0x65CA)
+        return false;
+    }
+
+    private bool TryConsumePgmSvgLatchDelayLoopVariant(
+        int cycleBudget,
+        out uint cycles,
+        uint start,
+        ushort firstBsrDisplacement,
+        ushort secondBsrDisplacement,
+        ushort mismatchBranch,
+        ushort equalBranch,
+        uint addOffset,
+        uint compareOffset,
+        uint limitOffset,
+        uint loopBranchOffset,
+        ushort loopBranch,
+        uint fallthroughOffset,
+        uint cyclesPerIteration,
+        uint iterationBudgetCycles,
+        bool consumeToLimit)
+    {
+        cycles = 0;
+        ushort firstBsr = _bus.ReadWord(start + 0x02);
+        ushort secondBsr = _bus.ReadWord(start + 0x0C);
+        if (_bus.ReadWord(start) != 0x6100
+            || (firstBsr != firstBsrDisplacement && firstBsr != unchecked((ushort)(firstBsrDisplacement + 2)))
+            || _bus.ReadWord(start + 0x04) != 0x0240
+            || _bus.ReadWord(start + 0x08) != 0x3600
+            || _bus.ReadWord(start + 0x0A) != 0x6100
+            || (secondBsr != secondBsrDisplacement && secondBsr != unchecked((ushort)(secondBsrDisplacement + 2)))
+            || _bus.ReadWord(start + 0x0E) != 0x0240
+            || _bus.ReadWord(start + 0x12) != 0x3800
+            || _bus.ReadWord(start + 0x14) != 0xB644
+            || _bus.ReadWord(start + 0x16) != mismatchBranch
+            || _bus.ReadWord(start + 0x18) != 0x3003
+            || _bus.ReadWord(start + 0x1A) != 0x0280
+            || _bus.ReadWord(start + 0x20) != 0x7200
+            || _bus.ReadWord(start + 0x22) != 0x1239
+            || _bus.ReadWord(start + 0x28) != 0xB081
+            || _bus.ReadWord(start + 0x2A) != equalBranch
+            || _bus.ReadWord(start + addOffset) != 0x5282
+            || _bus.ReadWord(start + compareOffset) != 0x0C82
+            || _bus.ReadWord(start + loopBranchOffset) != loopBranch)
         {
             return false;
         }
 
         uint d2 = _registers.Data[2];
-        uint limit = _bus.ReadLong(0x0010E2F6);
+        uint limit = _bus.ReadLong(start + limitOffset);
         if (d2 >= limit)
             return false;
 
-        uint mask = _bus.ReadWord(0x0010E2CC);
+        uint mask = _bus.ReadWord(start + 0x06);
         ushort latch = _bus.ReadWord(0x005C0300);
         uint masked = latch & mask;
-        uint narrowed = masked & _bus.ReadLong(0x0010E2E2);
-        uint target = _bus.ReadByte(0x0081DCC4);
+        uint narrowed = masked & _bus.ReadLong(start + 0x1C);
+        uint targetAddress = ((uint)_bus.ReadWord(start + 0x24) << 16) | _bus.ReadWord(start + 0x26);
+        uint target = _bus.ReadByte(targetAddress);
         if (narrowed == target)
             return false;
 
-        const uint cyclesPerIteration = 188;
-        uint maxIterations = Math.Max(1u, (uint)cycleBudget / cyclesPerIteration);
+        uint maxIterations = consumeToLimit
+            ? limit - d2
+            : Math.Max(1u, (uint)cycleBudget / iterationBudgetCycles);
         uint iterations = Math.Min(limit - d2, maxIterations);
         if (iterations == 0)
             return false;
@@ -255,7 +1020,7 @@ internal sealed partial class InstructionExecutor
         _registers.Data[2] = d2;
         _registers.Data[3] = (_registers.Data[3] & 0xffff_0000u) | masked;
         _registers.Data[4] = (_registers.Data[4] & 0xffff_0000u) | masked;
-        _registers.Pc = d2 >= limit ? 0x0010E2FCu : 0x0010E2C6u;
+        _registers.Pc = d2 >= limit ? start + fallthroughOffset : start;
         _registers.Prefetch = _bus.ReadWord(_registers.Pc);
         cycles = Math.Max(cyclesPerIteration, iterations * cyclesPerIteration);
         return true;
@@ -336,19 +1101,34 @@ internal sealed partial class InstructionExecutor
         if (_registers.Pc != 0x00125308)
             return false;
 
-        if (_bus.ReadWord(0x00125308) != 0x1A14
-            || _bus.ReadWord(0x0012530A) != 0x0205
-            || _bus.ReadWord(0x0012530E) != 0x4A05
-            || _bus.ReadWord(0x00125310) != 0x6700
-            || _bus.ReadWord(0x00125312) != 0x009C
-            || _bus.ReadWord(0x001253AE) != 0x7054
-            || _bus.ReadWord(0x001253B0) != 0x99C0
-            || _bus.ReadWord(0x001253B2) != 0x51CC)
+        if (!_pgmObjectMaskSignatureChecked)
+        {
+            _pgmObjectMaskSignatureValid =
+                _bus.ReadWord(0x00125308) == 0x1A14
+                && _bus.ReadWord(0x0012530A) == 0x0205
+                && _bus.ReadWord(0x0012530E) == 0x4A05
+                && _bus.ReadWord(0x00125310) == 0x6700
+                && _bus.ReadWord(0x00125312) == 0x009C
+                && _bus.ReadWord(0x00125314) == 0x7A00
+                && _bus.ReadWord(0x00125316) == 0x1A14
+                && _bus.ReadWord(0x00125318) == 0xE88D
+                && _bus.ReadWord(0x0012531A) == 0x0205
+                && _bus.ReadWord(0x0012531E) == 0x4A05
+                && _bus.ReadWord(0x00125320) == 0x6700
+                && _bus.ReadWord(0x00125322) == 0x008C
+                && _bus.ReadWord(0x001253AE) == 0x7054
+                && _bus.ReadWord(0x001253B0) == 0x99C0
+                && _bus.ReadWord(0x001253B2) == 0x51CC;
+            _pgmObjectMaskSignatureChecked = true;
+        }
+
+        if (!_pgmObjectMaskSignatureValid)
         {
             return false;
         }
 
         byte mask = (byte)_bus.ReadWord(0x0012530C);
+        byte shiftedMask = (byte)_bus.ReadWord(0x0012531C);
         uint a4 = _registers.Address[4];
         ushort d4 = (ushort)_registers.Data[4];
         uint maxIterations = Math.Min((uint)d4 + 1u, Math.Max(1u, (uint)cycleBudget / 52u));
@@ -356,8 +1136,9 @@ internal sealed partial class InstructionExecutor
 
         while (iterations < maxIterations)
         {
-            byte masked = (byte)(_bus.ReadByte(a4) & mask);
-            if (masked != 0)
+            byte value = _bus.ReadByte(a4);
+            byte masked = (byte)(value & mask);
+            if (masked != 0 && (((uint)value >> 4) & shiftedMask) != 0)
                 break;
 
             iterations++;

@@ -120,12 +120,14 @@ namespace mame
         public delegate bool fast_write_byte_delegate(u32 address, u8 value);
         public delegate bool fast_write_word_delegate(u32 address, u16 value);
         public delegate bool fast_write_long_delegate(u32 address, u32 value);
+        public delegate void idle_loop_consumed_delegate(u32 startPc, u32 cycles);
         fast_read_byte_delegate m_fast_read_byte;
         fast_read_word_delegate m_fast_read_word;
         fast_read_long_delegate m_fast_read_long;
         fast_write_byte_delegate m_fast_write_byte;
         fast_write_word_delegate m_fast_write_word;
         fast_write_long_delegate m_fast_write_long;
+        idle_loop_consumed_delegate m_idle_loop_consumed;
         readonly bool[] m_irq_lines = new bool[8];
         readonly u32[] m_state_d = new u32[8];
         readonly u32[] m_state_a = new u32[7];
@@ -186,6 +188,11 @@ namespace mame
             m_fast_write_byte = write_byte;
             m_fast_write_word = write_word;
             m_fast_write_long = write_long;
+        }
+
+        public void set_idle_loop_consumed_handler(idle_loop_consumed_delegate handler)
+        {
+            m_idle_loop_consumed = handler;
         }
 
 
@@ -274,11 +281,13 @@ namespace mame
 
             do
             {
-                u32 cycles = m_core.TryConsumeBoundIdleLoop(m_icount.i, out u32 idleCycles)
-                    ? idleCycles
-                    : m_core.ExecuteBoundInstruction();
+                u32 idleStartPc = m_core.Pc;
+                bool consumedIdle = m_core.TryConsumeBoundIdleLoop(m_icount.i, out u32 idleCycles);
+                u32 cycles = consumedIdle ? idleCycles : m_core.ExecuteBoundInstruction();
                 int elapsed = cycles > int.MaxValue ? int.MaxValue : (int)cycles;
                 m_icount.i -= Math.Max(1, elapsed);
+                if (consumedIdle)
+                    m_idle_loop_consumed?.Invoke(idleStartPc, cycles);
             }
             while (m_icount.i > 0);
 

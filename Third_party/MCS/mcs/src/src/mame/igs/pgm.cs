@@ -3,6 +3,7 @@
 // Ported from MAME pgm.cpp
 
 using System;
+using System.Diagnostics;
 
 using device_type = mame.emu.detail.device_type_impl_base;
 using MemoryU8 = mame.MemoryContainer<System.Byte>;
@@ -45,6 +46,7 @@ namespace mame
         const int Kov2Arm7CyclesPerFrame = 337_920;
         const int Arm7SavestateCookie = 0x41524d37;
         static readonly bool TracePgmSound = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM_SOUND_TRACE") == "1";
+        static readonly bool TracePgmProfile = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM_PROFILE") == "1";
         static readonly int[] ArmWait0 = new int[16];
         static readonly u8 [] KovBATable =
         {
@@ -117,6 +119,12 @@ namespace mame
         int m_simregion;
         int m_trace_z80_ram_writes;
         int m_trace_sound_writes;
+        long m_profileLastTicks = Stopwatch.GetTimestamp();
+        long m_profileFrames;
+        long m_profileArmTicks;
+        long m_profileTraceTicks;
+        long m_profileSpriteDmaTicks;
+        long m_profileIrqTicks;
 
         public pgm_state(machine_config mconfig, device_type type, string tag)
             : base(mconfig, type, tag)
@@ -214,6 +222,7 @@ namespace mame
                 Fast68kWriteWord,
                 Fast68kReadLong,
                 Fast68kWriteLong);
+            m_maincpu.op0.set_idle_loop_consumed_handler(MainCpuIdleLoopConsumed);
             m_soundcpu.op0.set_fast_memory_handlers(
                 FastZ80ReadByte,
                 FastZ80WriteByte);
@@ -697,15 +706,59 @@ namespace mame
             {
                 m_rtc.TickFrame();
                 m_pgmFrameCounter++;
+                long profileStart = TracePgmProfile ? Stopwatch.GetTimestamp() : 0;
                 RunArmFrame();
+                if (TracePgmProfile)
+                    m_profileArmTicks += Stopwatch.GetTimestamp() - profileStart;
+                profileStart = TracePgmProfile ? Stopwatch.GetTimestamp() : 0;
                 TraceArmFrame();
+                if (TracePgmProfile)
+                    m_profileTraceTicks += Stopwatch.GetTimestamp() - profileStart;
+                profileStart = TracePgmProfile ? Stopwatch.GetTimestamp() : 0;
                 m_video.op0.get_sprites(sprite_ram_word);
+                if (TracePgmProfile)
+                    m_profileSpriteDmaTicks += Stopwatch.GetTimestamp() - profileStart;
+                profileStart = TracePgmProfile ? Stopwatch.GetTimestamp() : 0;
                 m_maincpu.op0.set_input_line(6, HOLD_LINE);
+                if (TracePgmProfile)
+                {
+                    m_profileIrqTicks += Stopwatch.GetTimestamp() - profileStart;
+                    MaybeReportPgmProfile();
+                }
             }
             else
             {
                 m_maincpu.op0.set_input_line(4, HOLD_LINE);
             }
+        }
+
+        void MaybeReportPgmProfile()
+        {
+            m_profileFrames++;
+            long now = Stopwatch.GetTimestamp();
+            long elapsed = now - m_profileLastTicks;
+            if (elapsed < Stopwatch.Frequency)
+                return;
+
+            double scale = 1000.0 / Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[PGM-PROFILE] frames={m_profileFrames} arm_ms={m_profileArmTicks * scale:0.0} " +
+                $"trace_ms={m_profileTraceTicks * scale:0.0} sprite_dma_ms={m_profileSpriteDmaTicks * scale:0.0} " +
+                $"irq_ms={m_profileIrqTicks * scale:0.0} arm_cycles={m_arm7.Cycles} arm_pc=0x{m_arm7.Registers[15]:x8}");
+            m_profileLastTicks = now;
+            m_profileFrames = 0;
+            m_profileArmTicks = 0;
+            m_profileTraceTicks = 0;
+            m_profileSpriteDmaTicks = 0;
+            m_profileIrqTicks = 0;
+        }
+
+        void MainCpuIdleLoopConsumed(u32 startPc, u32 cycles)
+        {
+            if (m_useSvgArmType3 && (startPc == 0x0011a8 || startPc == 0x0010e2c6))
+                SyncArmToMainTime();
+            else if (m_useKov2ArmType2 && (startPc == 0x00106868 || startPc == 0x00106884))
+                SyncArmToMainTime();
         }
 
         u16 mainram_r(address_space space, offs_t offset, u16 mem_mask)
@@ -1093,11 +1146,6 @@ namespace mame
         uint IPgmArm7Bus.Load32(uint address)
         {
             address &= ~3u;
-            uint pc = m_arm7.Registers[15] - 8;
-            if (address == 0x18000444)
-                TraceArmEvent(ref m_traceArmSpeedupReads, $"[PGM-ARM] arm read speedup 0x18000444 pc=0x{pc:x8} val=0x{ArmRead32(address):x8} cyc={m_arm7.Cycles}", 128);
-            if (address == 0x18000444 && (pc == 0x08000fea || pc == 0x08000fe6))
-                m_arm7.Cycles += 500;
             return ArmRead32(address);
         }
         ushort IPgmArm7Bus.Fetch16(uint address) => ArmRead16(address & ~1u);
@@ -1148,7 +1196,7 @@ namespace mame
                 uint pc = m_arm7.Registers[15] - 8;
                 if (m_useSvgArmType3 && m_svg_latchdata_68k_w == 0 && (pc == 0x08000fb4 || pc == 0x08000fb8))
                     m_arm7.Cycles += 512;
-                TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] arm latch r8 off={(address - 0x48000000) & 3} val=0x{((m_svg_latchdata_68k_w >> (int)shift) & 0xff):x2} latch68=0x{m_svg_latchdata_68k_w:x8} pc=0x{m_arm7.Registers[15] - 8:x8}", 64);
+                TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] arm latch r8 off={(address - 0x48000000) & 3} val=0x{((m_svg_latchdata_68k_w >> (int)shift) & 0xff):x2} latch68=0x{m_svg_latchdata_68k_w:x8} pc=0x{pc:x8}", 64);
                 return (byte)(m_svg_latchdata_68k_w >> (int)(((address - 0x48000000) & 3) * 8));
             }
             if (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)

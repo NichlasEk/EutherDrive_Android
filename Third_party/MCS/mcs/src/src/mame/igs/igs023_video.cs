@@ -3,6 +3,7 @@
 // Ported from MAME src/mame/igs/igs023_video.cpp
 
 using System;
+using System.Diagnostics;
 
 using device_type = mame.emu.detail.device_type_impl_base;
 using MemoryU8 = mame.MemoryContainer<System.Byte>;
@@ -30,6 +31,7 @@ namespace mame
         const int BgRows = 16;
         const int TxColumns = 64;
         const int TxRows = 32;
+        static readonly bool TraceProfile = Environment.GetEnvironmentVariable("EUTHERDRIVE_IGS023_PROFILE") == "1";
 
         readonly u16 [] m_bg_videoram = new u16[0x1000];
         readonly u16 [] m_tx_videoram = new u16[0x2000];
@@ -54,6 +56,13 @@ namespace mame
         int m_bdataWords;
         Func<int, uint> m_paletteReader;
         int m_spriteCount;
+        long m_profileLastTicks = Stopwatch.GetTimestamp();
+        long m_profileFrames;
+        long m_profilePaletteTicks;
+        long m_profileClearTicks;
+        long m_profileBgTicks;
+        long m_profileSpriteTicks;
+        long m_profileTextTicks;
         u32 m_aoffset;
         u8 m_abit;
         u32 m_boffset;
@@ -287,11 +296,16 @@ namespace mame
 
         public uint32_t screen_update(screen_device screen, bitmap_rgb32 bitmap, rectangle cliprect)
         {
+            long profileStart = TraceProfile ? Stopwatch.GetTimestamp() : 0;
             int minY = Math.Max(cliprect.min_y, 0);
             int maxY = Math.Min(cliprect.max_y, ScreenHeight - 1);
             int minX = Math.Max(cliprect.min_x, 0);
             int maxX = Math.Min(cliprect.max_x, ScreenWidth - 1);
             UpdatePaletteCaches();
+            if (TraceProfile)
+                m_profilePaletteTicks += Stopwatch.GetTimestamp() - profileStart;
+
+            profileStart = TraceProfile ? Stopwatch.GetTimestamp() : 0;
             uint backdrop = PalettePen(0x3ff);
 
             Array.Clear(m_priority, 0, m_priority.Length);
@@ -301,16 +315,56 @@ namespace mame
                 for (int x = minX; x <= maxX; x++)
                     row[x] = backdrop;
             }
+            if (TraceProfile)
+                m_profileClearTicks += Stopwatch.GetTimestamp() - profileStart;
 
             if ((m_ctrl & 0x1000) == 0)
+            {
+                profileStart = TraceProfile ? Stopwatch.GetTimestamp() : 0;
                 DrawBackground(bitmap, minX, maxX, minY, maxY);
+                if (TraceProfile)
+                    m_profileBgTicks += Stopwatch.GetTimestamp() - profileStart;
+            }
 
+            profileStart = TraceProfile ? Stopwatch.GetTimestamp() : 0;
             DrawSprites(bitmap, minX, maxX, minY, maxY);
+            if (TraceProfile)
+                m_profileSpriteTicks += Stopwatch.GetTimestamp() - profileStart;
 
             if ((m_ctrl & 0x0800) == 0)
+            {
+                profileStart = TraceProfile ? Stopwatch.GetTimestamp() : 0;
                 DrawText(bitmap, minX, maxX, minY, maxY);
+                if (TraceProfile)
+                    m_profileTextTicks += Stopwatch.GetTimestamp() - profileStart;
+            }
+
+            if (TraceProfile)
+                MaybeReportProfile();
 
             return 0;
+        }
+
+        void MaybeReportProfile()
+        {
+            m_profileFrames++;
+            long now = Stopwatch.GetTimestamp();
+            long elapsed = now - m_profileLastTicks;
+            if (elapsed < Stopwatch.Frequency)
+                return;
+
+            double scale = 1000.0 / Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[IGS023-PROFILE] frames={m_profileFrames} palette_ms={m_profilePaletteTicks * scale:0.0} " +
+                $"clear_ms={m_profileClearTicks * scale:0.0} bg_ms={m_profileBgTicks * scale:0.0} " +
+                $"sprite_ms={m_profileSpriteTicks * scale:0.0} text_ms={m_profileTextTicks * scale:0.0} sprites={m_spriteCount}");
+            m_profileLastTicks = now;
+            m_profileFrames = 0;
+            m_profilePaletteTicks = 0;
+            m_profileClearTicks = 0;
+            m_profileBgTicks = 0;
+            m_profileSpriteTicks = 0;
+            m_profileTextTicks = 0;
         }
 
         bool sprite_dma(Func<offs_t, u16> readSpriteRam)
@@ -482,18 +536,22 @@ namespace mame
             if (m_adataRaw == null || m_bdataRaw == null || m_adataWords == 0 || m_bdataWords == 0 || sprite.Width == 0 || sprite.Height == 0)
                 return;
 
+            int realYSize = (int)sprite.Height - 1;
+            int realXSize = (int)(sprite.Width * 16) - 1;
+            if (sprite.X > maxX || sprite.X + realXSize < minX || sprite.Y > maxY || sprite.Y + realYSize < minY)
+                return;
+
             m_aoffset = (((u32)ReadMaskWord(m_boffset + 1) << 16) | ReadMaskWord(m_boffset)) >> 2;
             m_abit = 0;
             m_boffset += 2;
-            int realYSize = (int)sprite.Height - 1;
-            int realXSize = (int)(sprite.Width * 16) - 1;
+            bool flipY = GetFlipY(sprite.Flip);
 
             for (int ycnt = 0; ycnt < sprite.Height; ycnt++)
             {
-                int ydrawpos = !GetFlipY(sprite.Flip) ? sprite.Y + ycnt : sprite.Y + realYSize - ycnt;
+                int ydrawpos = !flipY ? sprite.Y + ycnt : sprite.Y + realYSize - ycnt;
                 bool draw = ydrawpos >= minY && ydrawpos <= maxY;
                 DrawSpriteLineBasic((int)sprite.Width, bitmap, minX, maxX, ydrawpos, sprite.Flip, sprite.X, (int)sprite.Pri, realXSize, (int)sprite.Color, draw);
-                if (!draw && ((!GetFlipY(sprite.Flip) && ydrawpos >= maxY) || (GetFlipY(sprite.Flip) && ydrawpos < minY)))
+                if (!draw && ((!flipY && ydrawpos >= maxY) || (flipY && ydrawpos < minY)))
                     return;
             }
         }
@@ -525,6 +583,10 @@ namespace mame
             }
             realXSize--;
 
+            if (sprite.X > maxX || sprite.X + realXSize < minX || sprite.Y > maxY || sprite.Y + realYSize < minY)
+                return;
+
+            bool flipY = GetFlipY(sprite.Flip);
             int ycntdraw = 0;
             for (int ycnt = 0; ycnt < sprite.Height; ycnt++)
             {
@@ -548,10 +610,10 @@ namespace mame
                         m_boffset = saveBOffset;
                     }
 
-                    int ydrawpos = !GetFlipY(sprite.Flip) ? sprite.Y + ycntdraw : sprite.Y + realYSize - ycntdraw;
+                    int ydrawpos = !flipY ? sprite.Y + ycntdraw : sprite.Y + realYSize - ycntdraw;
                     bool draw = ydrawpos >= minY && ydrawpos <= maxY;
                     DrawSpriteLine((int)sprite.Width, bitmap, minX, maxX, ydrawpos, sprite.XZoom, sprite.XGrow, sprite.Flip, sprite.X, (int)sprite.Pri, realXSize, (int)sprite.Color, draw);
-                    if (!draw && ((!GetFlipY(sprite.Flip) && ydrawpos >= maxY) || (GetFlipY(sprite.Flip) && ydrawpos < minY)))
+                    if (!draw && ((!flipY && ydrawpos >= maxY) || (flipY && ydrawpos < minY)))
                         return;
                     ycntdraw++;
                 }
@@ -562,6 +624,8 @@ namespace mame
         {
             int xcntdraw = 0;
             PointerU32 row = draw && ydrawpos >= 0 && ydrawpos < ScreenHeight ? bitmap.pix(ydrawpos) : null;
+            int priorityBase = ydrawpos * ScreenWidth;
+            int paletteBase = palette * 32;
             for (int xcnt = 0; xcnt < wide; xcnt++)
             {
                 u16 mask = ReadMaskWord(m_boffset);
@@ -569,9 +633,9 @@ namespace mame
                 {
                     if ((mask & 1) == 0)
                     {
-                        uint color = m_spritePaletteCache[palette * 32 + GetSpritePix()];
+                        uint color = m_spritePaletteCache[paletteBase + GetSpritePix()];
                         if (draw)
-                            DrawSpritePixel(row, minX, maxX, ydrawpos, xpos, flip, pri, realXSize, color, ref xcntdraw);
+                            DrawSpritePixel(row, minX, maxX, priorityBase, xpos, flip, pri, realXSize, color, ref xcntdraw);
                         else
                             xcntdraw++;
                     }
@@ -589,6 +653,8 @@ namespace mame
             int xoffset = 0;
             int xcntdraw = 0;
             PointerU32 row = draw && ydrawpos >= 0 && ydrawpos < ScreenHeight ? bitmap.pix(ydrawpos) : null;
+            int priorityBase = ydrawpos * ScreenWidth;
+            int paletteBase = palette * 32;
             for (int xcnt = 0; xcnt < wide; xcnt++)
             {
                 u16 mask = ReadMaskWord(m_boffset);
@@ -599,12 +665,12 @@ namespace mame
 
                     if ((mask & 1) == 0)
                     {
-                        uint color = m_spritePaletteCache[palette * 32 + GetSpritePix()];
+                        uint color = m_spritePaletteCache[paletteBase + GetSpritePix()];
                         if (draw && (xgrow || !xzoomBit))
                         {
                             int count = xzoomBit ? 2 : 1;
                             for (int i = 0; i < count; i++)
-                                DrawSpritePixel(row, minX, maxX, ydrawpos, xpos, flip, pri, realXSize, color, ref xcntdraw);
+                                DrawSpritePixel(row, minX, maxX, priorityBase, xpos, flip, pri, realXSize, color, ref xcntdraw);
                         }
                     }
                     else if (xgrow || !xzoomBit)
@@ -618,12 +684,12 @@ namespace mame
             }
         }
 
-        void DrawSpritePixel(PointerU32 row, int minX, int maxX, int ydrawpos, int xpos, int flip, int pri, int realXSize, uint color, ref int xcntdraw)
+        void DrawSpritePixel(PointerU32 row, int minX, int maxX, int priorityBase, int xpos, int flip, int pri, int realXSize, uint color, ref int xcntdraw)
         {
             int xdrawpos = !GetFlipX(flip) ? xpos + xcntdraw : xpos + realXSize - xcntdraw;
             if (row != null && xdrawpos >= minX && xdrawpos <= maxX)
             {
-                int priorityIndex = ydrawpos * ScreenWidth + xdrawpos;
+                int priorityIndex = priorityBase + xdrawpos;
                 if ((m_priority[priorityIndex] & 1) == 0)
                 {
                     if (pri == 0 || (m_priority[priorityIndex] & 2) == 0)

@@ -2,6 +2,7 @@
 // copyright-holders:Edward Fast
 
 using System;
+using System.Diagnostics;
 
 using attoseconds_t = System.Int64;  //typedef s64 attoseconds_t;
 using osd_ticks_t = System.UInt64;  //typedef uint64_t osd_ticks_t;
@@ -34,6 +35,7 @@ namespace mame
 
         // number of levels of frameskipping supported
         const int FRAMESKIP_LEVELS = 12;
+        static readonly bool s_trace_frame_profile = Environment.GetEnvironmentVariable("EUTHERDRIVE_MAME_FRAME_PROFILE") == "1";
         public const int MAX_FRAMESKIP = FRAMESKIP_LEVELS - 2;
 
         // frameskipping tables
@@ -82,6 +84,15 @@ namespace mame
         u32 m_overall_valid_counter;    // number of consecutive valid time periods
 
         u32 m_frame_update_counter;     // how many times frame_update() has been called
+        long m_frame_profile_last_ticks = Stopwatch.GetTimestamp();
+        long m_frame_profile_frames;
+        long m_frame_profile_finish_ticks;
+        long m_frame_profile_ui_ticks;
+        long m_frame_profile_throttle_ticks;
+        long m_frame_profile_osd_ticks;
+        long m_frame_profile_input_ticks;
+        long m_frame_profile_notify_ticks;
+        long m_frame_profile_misc_ticks;
 
         // configuration
         bool m_throttled;                // flag: TRUE if we're currently throttled
@@ -269,6 +280,8 @@ namespace mame
         //-------------------------------------------------
         public void frame_update(bool from_debugger = false)
         {
+            long profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
+            long profileMiscStart = profileStart;
             m_frame_update_counter++;
 
             // only render sound and video if we're in the running phase
@@ -276,7 +289,15 @@ namespace mame
             bool skipped_it = m_skipping_this_frame;
             if (phase == machine_phase.RUNNING && (!machine().paused() || machine().options().update_in_pause()))
             {
+                if (s_trace_frame_profile)
+                    m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+                profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
                 bool anything_changed = finish_screen_updates();
+                if (s_trace_frame_profile)
+                {
+                    m_frame_profile_finish_ticks += Stopwatch.GetTimestamp() - profileStart;
+                    profileMiscStart = Stopwatch.GetTimestamp();
+                }
 
                 // if none of the screens changed and we haven't skipped too many frames in a row,
                 // mark this frame as skipped to prevent throttling; this helps for games that
@@ -288,34 +309,86 @@ namespace mame
             }
 
             // draw the user interface
+            if (s_trace_frame_profile)
+                m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+            profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
             emulator_info.draw_user_interface(machine());
+            if (s_trace_frame_profile)
+            {
+                m_frame_profile_ui_ticks += Stopwatch.GetTimestamp() - profileStart;
+                profileMiscStart = Stopwatch.GetTimestamp();
+            }
 
             // if we're throttling, synchronize before rendering
             attotime current_time = machine().time();
             if (!from_debugger && !skipped_it && phase > machine_phase.INIT && !m_low_latency && effective_throttle())
+            {
+                if (s_trace_frame_profile)
+                    m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+                profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
                 update_throttle(current_time);
+                if (s_trace_frame_profile)
+                {
+                    m_frame_profile_throttle_ticks += Stopwatch.GetTimestamp() - profileStart;
+                    profileMiscStart = Stopwatch.GetTimestamp();
+                }
+            }
 
             // ask the OSD to update
 
             g_profiler.start(profile_type.PROFILER_BLIT);
 
+            if (s_trace_frame_profile)
+                m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+            profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
             machine().osd().update(!from_debugger && skipped_it);
+            if (s_trace_frame_profile)
+            {
+                m_frame_profile_osd_ticks += Stopwatch.GetTimestamp() - profileStart;
+                profileMiscStart = Stopwatch.GetTimestamp();
+            }
 
             g_profiler.stop();
 
             // we synchronize after rendering instead of before, if low latency mode is enabled
             if (!from_debugger && !skipped_it && phase > machine_phase.INIT && m_low_latency && effective_throttle())
+            {
+                if (s_trace_frame_profile)
+                    m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+                profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
                 update_throttle(current_time);
+                if (s_trace_frame_profile)
+                {
+                    m_frame_profile_throttle_ticks += Stopwatch.GetTimestamp() - profileStart;
+                    profileMiscStart = Stopwatch.GetTimestamp();
+                }
+            }
 
             // get most recent input now
+            if (s_trace_frame_profile)
+                m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+            profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
             machine().osd().input_update();
+            if (s_trace_frame_profile)
+            {
+                m_frame_profile_input_ticks += Stopwatch.GetTimestamp() - profileStart;
+                profileMiscStart = Stopwatch.GetTimestamp();
+            }
 
             emulator_info.periodic_check();
 
             if (!from_debugger)
             {
                 // perform tasks for this frame
+                if (s_trace_frame_profile)
+                    m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+                profileStart = s_trace_frame_profile ? Stopwatch.GetTimestamp() : 0;
                 machine().call_notifiers(machine_notification.MACHINE_NOTIFY_FRAME);
+                if (s_trace_frame_profile)
+                {
+                    m_frame_profile_notify_ticks += Stopwatch.GetTimestamp() - profileStart;
+                    profileMiscStart = Stopwatch.GetTimestamp();
+                }
 
                 // update frameskipping
                 if (phase > machine_phase.INIT)
@@ -337,6 +410,37 @@ namespace mame
                 if (screen != null && ((machine().paused() && machine().options().update_in_pause()) || from_debugger || within_instruction_hook))
                     screen.reset_partial_updates();
             }
+
+            if (s_trace_frame_profile)
+            {
+                m_frame_profile_misc_ticks += Stopwatch.GetTimestamp() - profileMiscStart;
+                maybe_report_frame_profile();
+            }
+        }
+
+        void maybe_report_frame_profile()
+        {
+            m_frame_profile_frames++;
+            long now = Stopwatch.GetTimestamp();
+            long elapsed = now - m_frame_profile_last_ticks;
+            if (elapsed < Stopwatch.Frequency)
+                return;
+
+            double scale = 1000.0 / Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[MAME-FRAME] frames={m_frame_profile_frames} finish_ms={m_frame_profile_finish_ticks * scale:0.0} " +
+                $"ui_ms={m_frame_profile_ui_ticks * scale:0.0} throttle_ms={m_frame_profile_throttle_ticks * scale:0.0} " +
+                $"osd_ms={m_frame_profile_osd_ticks * scale:0.0} input_ms={m_frame_profile_input_ticks * scale:0.0} " +
+                $"notify_ms={m_frame_profile_notify_ticks * scale:0.0} misc_ms={m_frame_profile_misc_ticks * scale:0.0}");
+            m_frame_profile_last_ticks = now;
+            m_frame_profile_frames = 0;
+            m_frame_profile_finish_ticks = 0;
+            m_frame_profile_ui_ticks = 0;
+            m_frame_profile_throttle_ticks = 0;
+            m_frame_profile_osd_ticks = 0;
+            m_frame_profile_input_ticks = 0;
+            m_frame_profile_notify_ticks = 0;
+            m_frame_profile_misc_ticks = 0;
         }
 
 
