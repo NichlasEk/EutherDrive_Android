@@ -352,6 +352,28 @@ The instruction-path search now finds a plausible partial startup stream:
     `first_nonzero=(48,0)`, `fp=0x762E7E6BB153D788`. A 120-frame non-trace run
     stays animated with final fingerprint `0x2A4E4888DBDFB6B5`. Audio is still
     silent.
+  - Longer MCS proofs show the port is no longer stuck on the logo. Around
+    frame 346 the logo fades to black, and from frame 365 onward the next
+    attract/title sequence starts drawing sparse plane-B content. Current
+    fingerprints: 420 frames `fp=0xB07BC982B7DC35A6`, 900 frames
+    `fp=0x7950D865C48DB07A`, and 1800 frames `fp=0xE121BAD90BA8A73E`.
+    This is progress past boot, but not yet a correct title/game screen.
+  - Late input tracing with `430-450:select;470-490:start` proves the same
+    electrical route is still active in the post-logo loop: coin reads `$7e`
+    on system port `$06`, and start reads `$53` on P1 port `$02`. The frame
+    sequence is unchanged, so the game is either not yet in a credit/startable
+    state or another protection/game-state path rejects the credit.
+  - VDP traces after the fade show the visible loop using plane B with plane A
+    mostly non-rendering: around frame 420, `regs=02:30 03:00 04:07 05:00`,
+    `opaque=(pa:0,pb:2784)`, and sprite table nonzero count is zero. Window
+    registers `17/18` remain zero in this loop, so missing window-plane support
+    is not the current visual blocker.
+  - The local MCS VDP renderer now includes two cleanup improvements for future
+    scenes: command-block dedupe is per active block instead of lifetime-global,
+    and the renderer has a minimal MD window-plane path plus reg `03/17/18`
+    trace fields. These do not solve the current sparse title loop; the next
+    visual target is the plane-B/VRAM producer and DMA source/queue data feeding
+    the post-logo sequence.
   - 256-wide visarea probes (`48..303`, `32..287`, and `0..255`) all clipped
     the logo, so the MCS driver currently keeps a safe 320x224 viewport. The
     proper fix is an H32 coordinate/left-border mapping pass, not a simple
@@ -359,9 +381,100 @@ The instruction-path search now finds a plausible partial startup stream:
   - `dotnet build EutherDrive.Headless/EutherDrive.Headless.csproj -c Release
     --no-restore -p:AllowUnsafeBlocks=true` succeeds. The unsafe flag is needed
     by unrelated dirty MCS source in this tree, not by the `hshavoc` port itself.
+  - MCS queue ACK at `$000b1a` is now accepted. That flushes the slot-0
+    latched queue and brings the post-logo scene up from sparse fragments to a
+    mostly populated but still corrupt framebuffer.
+  - New env-gated MCS RAM trace (`EUTHERDRIVE_HSHAVOC_MCS_TRACE_RAM*`) proves
+    the first large post-logo pattern upload is:
+    `$0585ba` compressed ROM source -> `$001fd2` decompressor -> `$ff0000`
+    -> VDP `$0000`, length `$1ec0` words, frame 350. The decompressor at
+    `$001fd2-$00209c` disassembles cleanly; the suspicious boundary is the ROM
+    source itself. A cross-reference run against the European Genesis ROM has a
+    strong exact run ending at arcade `$0585ba`, just before this compressed
+    source, while the source bytes do not continue under the same offset.
+  - `research/hshavoc/hshavoc_decrypt_lab.py --vdp-log ... --only-vdp-log`
+    now parses `[HSH-MCS-VDPBLK]` and `[HSH-MCS-VDP-DMA]` logs. Current MCS
+    VDP traces show 37 unique operations, all active render uploads sourced
+    from RAM rather than ROM; the ROM-decode target is therefore the producer
+    feeding RAM, not the VDP queue records themselves.
+  - The main late compressed asset streams now split cleanly:
+    `$08d134`, `$08ec72`, `$08db24`, `$090568`, `$09217c`, and `$002a26`
+    decompress under the current base decode and mostly have exact shifted
+    compressed-source anchors in the retail Genesis ROM. `$0585ba` is the
+    unusual stream: it decompresses cleanly but has no equivalent local retail
+    anchor and starts with mostly zero output. It remains the best current
+    decryption/boundary suspect.
+  - Simple source variants do not explain `$0585ba`. The current `base`
+    stream is the only full valid decompression; typedat-phase and inverted
+    typedat-phase candidates fail early or produce invalid lengths. This makes
+    a flat phase/bitswap flip unlikely and pushes the next pass toward a
+    localized PEEL/fetch-context rule constrained by compressed-stream sanity.
+  - The lab now has `--compressed-source` and `--compressed-scan-*` reports.
+    A `$058000-$05a100` scan finds only three valid stream starts:
+    `$0582c6` (retail-anchored control stream), `$0585ba` (no anchor,
+    `$3d80` output), and `$05a088` (no anchor, `$0700` output). This rules out
+    the simple "wrong source alignment near `$0585ba`" theory and suggests the
+    no-anchor area is a local asset cluster or fetch-context decode region.
+  - A decompressed-output search also finds no home-ROM equivalent for
+    `$0585ba`: no exact same-length output match and no `$0100`-byte prefix
+    match in either the US or EU Genesis ROM. The bad-looking output is not
+    simply the correct retail asset under different compression.
+  - The frame-744 `$0194ca` producer path disassembles as the font/text blitter
+    for the "INSERT COIN PRESS PLAYERS OR BUTTON" message. It is useful for
+    coin UI bring-up, but it is not the malformed encrypted-code island causing
+    the post-logo tile corruption.
+  - `EUTHERDRIVE_HSHAVOC_MCS_VRAM_SWAP_BYTES=1` is a negative renderer proof:
+    the 900-frame framebuffer drops from about 45k nonzero pixels to about 24k.
+    VRAM byte order is therefore not the missing visual fix.
+  - Coin and start are wired through MCS input correctly. A headless input
+    script makes select/coin read as active-low system port `$06 = $7e`, and
+    start read as P1 port `$02 = $53`; the game still does not transition or
+    show credits. The next coin-up problem is game/protection state, not the
+    button mapping or UI electrical path.
+  - The new headless MCS snapshot path can dump VRAM/CRAM/VSRAM/work RAM plus
+    per-VRAM-word last-writer source, PC, and frame via
+    `EUTHERDRIVE_HSHAVOC_MCS_SNAPSHOT_FRAME/DIR`.
+  - Frame-899 writer maps prove the post-logo Plane B nametable is produced by
+    the direct CPU metatile blitter at `$0398be/$0398c6/$0398d8/$0398e0`, not by
+    the VDP command queue. The final Plane B rows are 1280 direct-written cells
+    plus 768 cells left from the earlier fill.
+  - The `$039890-$0398ea` blitter record format is now modeled:
+    `A1 stream`, `A2 word table`, `VDP dest`, `tile base`, `columns-1`,
+    `rows-1`. Cold boot executes six records:
+    `$0ba1f4`, `$0ba204`, `$01b59c`, `$ff0000`, `$ff0010`, `$ff0020`.
+  - The visible post-logo Plane B overwrite is RAM record `$ff0010`:
+    stream `$ff0180`, table `$ff0640`, dest `$e000`, tile base `$0220`,
+    size `20x16` metatiles. Those RAM buffers are generated by the standard
+    decompressor at `$001fd2-$00208e` from ROM source around `$08d134`, which
+    already has strong home-ROM anchors. This is a negative result for the
+    current "Plane B is bad because `$0585ba` is bad" hypothesis.
+  - `EUTHERDRIVE_HSHAVOC_MCS_FORCE_H40=1` is also a negative renderer probe for
+    the current corruption: the 900-frame framebuffer fingerprint is unchanged.
+  - MCS input bridge finding: `McsArcadeAdapter` does set the root MAME ports
+    for coin/start (`:SYSTEM read=0x00fe` for coin and `:P1 read=0x007f` for
+    start), and the UI already maps arcade `Coin` to the `mode` input plus the
+    Insert Coin pulse. However, the HsHavoc driver IO poll still reads
+    unpressed values (`port 0x06 -> 0x7f`, `port 0x02 -> 0x73`) in headless
+    traces, even with long holds. Absolute `:P1/:SYSTEM` tags inside the driver
+    were a negative probe. A driver-local `SetExternalInputState()` pulse latch
+    has been added, but the current headless trace still shows
+    `ext_start=0/ext_coin=0` at `io_r`, so the adapter-to-root reflection call
+    or runtime ordering still needs one more fix before coin can affect game
+    state.
+  - `$fff906` is not a simple one-shot stuck wait flag. In current traces it is
+    cleared every frame by `$000b1a` and immediately set again from scheduler
+    code such as `$018e00`; the dense reads at `$018e06` are part of the
+    current per-frame loop. Treat it as scheduler/state-loop evidence, not the
+    direct Plane B corruption root.
 
 ## Next steps
 
+0. Stop treating `$0585ba` as the primary post-logo Plane B suspect unless a new
+   writer trace points back to it. The current visible Plane B path is
+   `$08d134` decompression -> `$ff0010/$ff0180/$ff0640` -> `$039890` blitter.
+   Continue by tracing the game/protection state that chooses those records and
+   by validating whether the resulting scene is semantically correct or merely
+   a valid intermediate/loading tilemap.
 1. Keep the VDP-source anchors (`$04043a`, `$04139a`, `$04fefa`, `$053f94`, `$054254`, `$054494`) as a target set, but do not treat the first `p5h`/typedat-invert probe as solved; it changes DMA data without improving the corrupt framebuffer.
 1a. Use `--vram-snapshot` on every promising frame. The first low-pattern path is now proven (`$001fe2` decompressor -> `$ff0000` -> `$019340/$019338` DMA), so the next focus is comparing RAM-produced tilemap/pattern-bank records against retail snapshots and finding which producer causes Plane B or later pattern banks to diverge.
 1b. Use `--ram-snapshot --compare-ram-snapshot` against slot 3 before any renderer change. The first pass/fail signal is whether the RAM-sourced Plane A queue records (`$ffd800/$ffd900/$ffd940/$ffd980`) appear; if they do not, continue with tilemap producer/control decryption instead of layer-bank probes.
@@ -381,10 +494,17 @@ The instruction-path search now finds a plausible partial startup stream:
     useful trace windows are `$0192c6-$0192f4`, `$00955c-$0096d4`,
     `$0098d8-$009a72`, and the handler table `$00a05e`.
 1g. Continue MCS port bring-up from the now-visible Data East logo. Next MCS
-    targets are: prove the now-visible coin/start polls change credit/game
-    state after the title/credit loop is reached, repair the H32/left-border
-    viewport mapping, and bring up the silent audio path. Keep the VDP queue
-    latch until a fuller Genesis VDP device/adapter replaces the local model.
+    targets are: trace the post-logo plane-B VRAM producer/queue records,
+    identify why the title loop only renders sparse fragments, prove where the
+    active coin/start polls should update credit/game state, repair the
+    H32/left-border viewport mapping, and bring up the silent audio path. Keep
+    the VDP queue latch until a fuller Genesis VDP device/adapter replaces the
+    local model.
+1h. For coin/start, do not spend more time on UI button discovery until the
+    driver-side port read mismatch is solved. The next concrete probe is to log
+    why `McsArcadeAdapter.ApplyDriverLocalInput()` is not reaching
+    `hshavoc_state.SetExternalInputState()` despite active adapter input, then
+    re-run the IO trace for `ext_coin/ext_start` before tracing credit state.
 2. Build a fetch-context solver for `0x0c42-0x0c9a` that scores valid 68000 instruction streams instead of comparing only against the home ROM.
 3. Extend the candidate set beyond `raw`, `x0`, and `x1` by applying PEEL5B modes before and after the extra bitswap.
 4. Keep `$000ab8` and `$000af8` as strong adjusted startup targets unless a stricter hardware-derived rule disproves them.
@@ -423,4 +543,6 @@ The instruction-path search now finds a plausible partial startup stream:
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 5
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 0 --strict-peel-search
 python research/hshavoc/hshavoc_decrypt_lab.py --runs 1 --deep-peel-search
+python research/hshavoc/hshavoc_decrypt_lab.py --vram-snapshot /tmp/hsh_mcs_snap_899_src/hshavoc_mcs_frame_000899_vram.bin --vram-meta /tmp/hsh_mcs_snap_899_src/hshavoc_mcs_frame_000899_meta.txt --vram-source-map /tmp/hsh_mcs_snap_899_src/hshavoc_mcs_frame_000899_vram_source.bin --vram-pc-map /tmp/hsh_mcs_snap_899_src/hshavoc_mcs_frame_000899_vram_pc.bin --vram-frame-map /tmp/hsh_mcs_snap_899_src/hshavoc_mcs_frame_000899_vram_frame.bin --only-vram-snapshot
+python research/hshavoc/hshavoc_decrypt_lab.py --tilemap-blitter-record 0x01b59c --only-compressed-source
 ```

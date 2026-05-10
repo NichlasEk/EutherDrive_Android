@@ -190,6 +190,14 @@ def read_be_words(data: bytes, offset: int, count: int) -> list[int]:
     return list(struct.unpack(">" + "H" * (size // 2), data[offset : offset + size]))
 
 
+def read_be_u32_words(data: bytes, offset: int, count: int) -> list[int]:
+    end = min(len(data), offset + count * 4)
+    if offset < 0 or offset >= len(data) or end <= offset:
+        return []
+    size = (end - offset) & ~3
+    return list(struct.unpack(">" + "I" * (size // 4), data[offset : offset + size]))
+
+
 def decode_base(raw: bytes) -> list[int]:
     words = words_from(raw)
 
@@ -4097,6 +4105,16 @@ HSHAVOC_VDPBLK_RE = re.compile(
     r"sourceWord=0x(?P<source_word>[0-9a-fA-F]+) sourceByte=0x(?P<source>[0-9a-fA-F]+) "
     r"dest=0x(?P<dest>[0-9a-fA-F]+) code=0x(?P<code>[0-9a-fA-F]+)"
 )
+HSHAVOC_MCS_VDPBLK_RE = re.compile(
+    r"\[HSH-MCS-VDPBLK\] frame=(?P<frame>-?\d+) block=0x(?P<block>[0-9a-fA-F]+) "
+    r"len=0x(?P<length>[0-9a-fA-F]+) source=0x(?P<source>[0-9a-fA-F]+) "
+    r"dest=0x(?P<dest>[0-9a-fA-F]+) code=0x(?P<code>[0-9a-fA-F]+)"
+)
+HSHAVOC_MCS_VDPDMA_RE = re.compile(
+    r"\[HSH-MCS-VDP-DMA\] frame=(?P<frame>-?\d+) mode=(?P<mode>[A-Za-z0-9_-]+) "
+    r"(?:src=0x(?P<source>[0-9a-fA-F]+) )?.*?dest=0x(?P<dest>[0-9a-fA-F]+) "
+    r"len=0x(?P<length>[0-9a-fA-F]+) code=0x(?P<code>[0-9a-fA-F]+)"
+)
 MD_DMA_SRC_RE = re.compile(
     r"\[DMA-SRC-TRACE-START\] frame=(?P<frame>-?\d+) pc=0x(?P<pc>[0-9a-fA-F]+) "
     r"srcWord=0x(?P<source_word>[0-9a-fA-F]+) srcByte=0x(?P<source>[0-9a-fA-F]+) "
@@ -4138,6 +4156,43 @@ def parse_vdp_log_operations(log_path: Path) -> list[dict[str, int | str]]:
                     "dest": int(hsh.group("dest"), 16),
                     "code": int(hsh.group("code"), 16),
                     "block": int(hsh.group("block"), 16),
+                }
+            )
+            continue
+
+        mcs_block = HSHAVOC_MCS_VDPBLK_RE.search(line)
+        if mcs_block:
+            source = int(mcs_block.group("source"), 16)
+            operations.append(
+                {
+                    "kind": "mcs-vdp-block",
+                    "frame": int(mcs_block.group("frame")),
+                    "pc": -1,
+                    "length": int(mcs_block.group("length"), 16),
+                    "source": source,
+                    "source_word": source >> 1,
+                    "dest": int(mcs_block.group("dest"), 16),
+                    "code": int(mcs_block.group("code"), 16),
+                    "block": int(mcs_block.group("block"), 16),
+                }
+            )
+            continue
+
+        mcs_dma = HSHAVOC_MCS_VDPDMA_RE.search(line)
+        if mcs_dma:
+            source_text = mcs_dma.group("source")
+            source = int(source_text, 16) if source_text else -1
+            operations.append(
+                {
+                    "kind": "mcs-vdp-dma",
+                    "frame": int(mcs_dma.group("frame")),
+                    "pc": -1,
+                    "length": int(mcs_dma.group("length"), 16),
+                    "source": source,
+                    "source_word": source >> 1 if source >= 0 else -1,
+                    "dest": int(mcs_dma.group("dest"), 16),
+                    "code": int(mcs_dma.group("code"), 16),
+                    "mode": mcs_dma.group("mode"),
                 }
             )
             continue
@@ -4211,6 +4266,235 @@ def vdp_dest_role(dest: int) -> str:
     if dest < 0xE000:
         return "name/sat/hscroll"
     return "name/window/high"
+
+
+def hshavoc_decompress_stream(data: bytes, source: int) -> tuple[bytes, int, list[str]]:
+    """Decompress the byte stream used by the late HSHavoc asset loader."""
+    notes: list[str] = []
+    if source < 0 or source + 2 > len(data):
+        return b"", source, ["source outside data"]
+
+    target_len = struct.unpack_from(">H", data, source)[0]
+    pos = source + 2
+    out = bytearray()
+    control = 0
+    control_bits = 0
+
+    while len(out) < target_len:
+        if control_bits == 0:
+            if pos >= len(data):
+                notes.append("truncated control")
+                break
+            control = data[pos]
+            pos += 1
+            control_bits = 8
+
+        is_copy = (control & 0x80) != 0
+        control = (control << 1) & 0xFF
+        control_bits -= 1
+
+        if not is_copy:
+            if pos >= len(data):
+                notes.append("truncated literal")
+                break
+            out.append(data[pos])
+            pos += 1
+            continue
+
+        if pos + 2 > len(data):
+            notes.append("truncated copy token")
+            break
+        token0 = data[pos]
+        token1 = data[pos + 1]
+        pos += 2
+        count = (token0 & 0x3F) + 2
+        offset = (((token0 & 0xC0) << 2) | token1) | 0xFC00
+        if offset & 0x8000:
+            offset -= 0x10000
+
+        copy_from = len(out) + offset
+        if copy_from < 0:
+            notes.append(f"negative copy src={copy_from}")
+            break
+        for _ in range(count):
+            if len(out) >= target_len:
+                notes.append("copy overshot target")
+                break
+            if copy_from >= len(out):
+                notes.append(f"copy beyond output src={copy_from} out={len(out)}")
+                break
+            out.append(out[copy_from])
+            copy_from += 1
+        if notes and notes[-1].startswith("copy "):
+            break
+
+    if len(out) != target_len:
+        notes.append(f"short output {len(out):04x}/{target_len:04x}")
+    return bytes(out), pos, notes
+
+
+def pattern_tile_metrics(data: bytes) -> dict[str, int | float]:
+    tile_count = len(data) // 32
+    if tile_count == 0:
+        return {"tiles": 0}
+
+    nonblank = 0
+    zero_tiles = 0
+    repeated_tiles = 0
+    unique_tiles: set[bytes] = set()
+    nibble_counts: collections.Counter[int] = collections.Counter()
+    prev_tile: bytes | None = None
+    for idx in range(tile_count):
+        tile = data[idx * 32 : idx * 32 + 32]
+        unique_tiles.add(tile)
+        if any(tile):
+            nonblank += 1
+        else:
+            zero_tiles += 1
+        if prev_tile == tile:
+            repeated_tiles += 1
+        prev_tile = tile
+        for byte in tile:
+            nibble_counts[byte >> 4] += 1
+            nibble_counts[byte & 0x0F] += 1
+
+    total_nibbles = sum(nibble_counts.values())
+    entropy = 0.0
+    if total_nibbles:
+        entropy = -sum(
+            (count / total_nibbles) * math.log2(count / total_nibbles)
+            for count in nibble_counts.values()
+            if count
+        )
+
+    return {
+        "tiles": tile_count,
+        "nonblank": nonblank,
+        "zero_tiles": zero_tiles,
+        "unique_tiles": len(unique_tiles),
+        "repeated_tiles": repeated_tiles,
+        "colors": len(nibble_counts),
+        "zero_nibbles": nibble_counts.get(0, 0),
+        "total_nibbles": total_nibbles,
+        "entropy": entropy,
+    }
+
+
+def stream_anchor_summary(block: bytes, refs: list[tuple[str, bytes]]) -> str:
+    parts: list[str] = []
+    probe = block[: min(len(block), 0x100)]
+    for ref_name, ref in refs:
+        if not probe:
+            parts.append(f"{ref_name}:empty")
+            continue
+        pos = ref.find(probe)
+        parts.append(f"{ref_name}:@${pos:06x}" if pos >= 0 else f"{ref_name}:no-anchor")
+    return "; ".join(parts)
+
+
+def print_compressed_stream_report(
+    source: int,
+    raw_words: list[int],
+    base_words: list[int],
+    base: Path,
+    max_variants: int,
+) -> None:
+    print("\n== compressed stream report")
+    print(f"  source=${source:06x}")
+    raw_len = len(raw_words) * 2
+    if source < 0 or source + 2 > raw_len:
+        print("  source outside ROM")
+        return
+
+    decoded = bytes_from(base_words)
+    refs = [
+        (USA_REF, (base / USA_REF).read_bytes()[:0x100000]),
+        (EU_REF, (base / EU_REF).read_bytes()[:0x100000]),
+    ]
+
+    base_output, end, notes = hshavoc_decompress_stream(decoded, source)
+    target_len = struct.unpack_from(">H", decoded, source)[0]
+    crc = f"{binascii.crc32(base_output) & 0xffffffff:08x}"
+    metrics = pattern_tile_metrics(base_output)
+    note_text = "ok" if not notes else "; ".join(notes)
+    print(
+        f"  base len=${target_len:04x} end=${end:06x} out=${len(base_output):04x} "
+        f"crc={crc} {note_text}"
+    )
+    print(
+        "  base metrics "
+        f"tiles={metrics.get('tiles', 0)} nonblank={metrics.get('nonblank', 0)} "
+        f"zero={metrics.get('zero_tiles', 0)} unique={metrics.get('unique_tiles', 0)} "
+        f"colors={metrics.get('colors', 0)} entropy={float(metrics.get('entropy', 0.0)):.2f} "
+        f"compressed={stream_anchor_summary(decoded[source:end], refs)} "
+        f"output={stream_anchor_summary(base_output, refs)}"
+    )
+
+    variants: list[tuple[int, str, str, int, str]] = []
+    max_words = min(0x4000, max(1, (raw_len - source) // 2))
+    for name, words in vdp_source_word_variants(raw_words, base_words, source, max_words):
+        block = bytes_from(words)
+        output, var_end, var_notes = hshavoc_decompress_stream(block, 0)
+        length = struct.unpack_from(">H", block, 0)[0] if len(block) >= 2 else 0
+        valid_score = 100 if not var_notes and len(output) == length and 0 < length <= 0x8000 else 0
+        metric = pattern_tile_metrics(output)
+        entropy = float(metric.get("entropy", 0.0))
+        valid_score += int(entropy * 10)
+        valid_score += min(int(metric.get("unique_tiles", 0)), 64)
+        valid_score -= int(metric.get("zero_tiles", 0)) // 8
+        note = "ok" if not var_notes else "; ".join(var_notes[:2])
+        variants.append((valid_score, name, note, var_end, f"len=${length:04x} out=${len(output):04x} ent={entropy:.2f} uniq={metric.get('unique_tiles', 0)}"))
+
+    variants.sort(key=lambda item: (-item[0], item[1]))
+    print("  candidate variants:")
+    for score, name, note, var_end, summary in variants[:max_variants]:
+        print(f"    {name:<16} score={score:4d} end=${source + var_end:06x} {summary} {note}")
+
+
+def print_compressed_stream_scan_report(
+    start: int,
+    end: int,
+    base_words: list[int],
+    base: Path,
+    limit: int,
+) -> None:
+    print("\n== compressed stream window scan")
+    print(f"  window=${start:06x}-${end:06x}")
+    decoded = bytes_from(base_words)
+    refs = [
+        (USA_REF, (base / USA_REF).read_bytes()[:0x100000]),
+        (EU_REF, (base / EU_REF).read_bytes()[:0x100000]),
+    ]
+    candidates: list[tuple[int, int, int, bytes, int, dict[str, int | float]]] = []
+    scan_start = max(0, start & ~1)
+    scan_end = min(len(decoded) - 2, end)
+    for source in range(scan_start, scan_end + 1, 2):
+        target_len = struct.unpack_from(">H", decoded, source)[0]
+        if target_len < 0x80 or target_len > 0x8000 or (target_len & 0x1F) != 0:
+            continue
+        output, stream_end, notes = hshavoc_decompress_stream(decoded, source)
+        if notes or len(output) != target_len:
+            continue
+        metrics = pattern_tile_metrics(output)
+        score = 100
+        score += min(int(metrics.get("unique_tiles", 0)), 128)
+        score += int(float(metrics.get("entropy", 0.0)) * 20)
+        score += int(metrics.get("nonblank", 0)) // 8
+        score -= int(metrics.get("zero_tiles", 0)) // 4
+        candidates.append((score, source, stream_end, output, target_len, metrics))
+
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    print(f"  valid_candidates={len(candidates)}")
+    for score, source, stream_end, output, target_len, metrics in candidates[:limit]:
+        compressed = decoded[source:stream_end]
+        crc = f"{binascii.crc32(output) & 0xffffffff:08x}"
+        print(
+            f"    score={score:4d} src=${source:06x} len=${target_len:04x} "
+            f"end=${stream_end:06x} outcrc={crc} tiles={metrics.get('tiles', 0)} "
+            f"nonblank={metrics.get('nonblank', 0)} zero={metrics.get('zero_tiles', 0)} "
+            f"unique={metrics.get('unique_tiles', 0)} ent={float(metrics.get('entropy', 0.0)):.2f} "
+            f"{stream_anchor_summary(compressed, refs)}"
+        )
 
 
 def vdp_source_word_variants(
@@ -4612,6 +4896,174 @@ def print_vram_pattern_report(vram: bytes) -> None:
     print("    ranges " + " ".join(f"${a:03x}-${b:03x}" if a != b else f"${a:03x}" for a, b in ranges[:16]))
 
 
+def print_vram_writer_report(
+    vram_path: Path,
+    meta_path: Path | None,
+    source_path: Path | None,
+    pc_path: Path | None,
+    frame_path: Path | None,
+) -> None:
+    vram = vram_path.read_bytes()
+    if len(vram) != 0x10000:
+        print(f"== VRAM writer report skipped: {vram_path} size=${len(vram):x}")
+        return
+
+    meta = parse_meta_hex(meta_path)
+    width, height = plane_dimensions(meta.get("vdp_scroll_h"), meta.get("vdp_scroll_v"))
+    cell_count = width * height
+    word_count = len(vram) // 2
+    sources = read_optional_u32_map(source_path, word_count)
+    pcs = read_optional_u32_map(pc_path, word_count)
+    frames = read_optional_u32_map(frame_path, word_count)
+
+    print("== VRAM writer report")
+    for label, base in (("Plane A", meta.get("vdp_plane_a", 0xC000)), ("Plane B", meta.get("vdp_plane_b", 0xE000))):
+        print_vram_plane_writer_report(label, base, width, cell_count, sources, pcs, frames)
+
+
+def read_optional_u32_map(path: Path | None, expected_words: int) -> list[int] | None:
+    if path is None:
+        return None
+    data = path.read_bytes()
+    values = read_be_u32_words(data, 0, len(data) // 4)
+    if len(values) != expected_words:
+        print(f"  warning: {path} has {len(values)} words, expected {expected_words}")
+    return values
+
+
+def print_vram_plane_writer_report(
+    label: str,
+    base: int,
+    width: int,
+    cell_count: int,
+    sources: list[int] | None,
+    pcs: list[int] | None,
+    frames: list[int] | None,
+) -> None:
+    available_maps = [values for values in (sources, pcs, frames) if values is not None]
+    if not available_maps:
+        print(f"  {label}: no writer maps")
+        return
+
+    start = (base & 0xFFFF) // 2
+    end = min(start + cell_count, min(len(values) for values in available_maps))
+    if end <= start:
+        print(f"  {label}: no writer maps")
+        return
+
+    source_counter = collections.Counter(sources[start:end]) if sources is not None else collections.Counter()
+    pc_counter = collections.Counter(pcs[start:end]) if pcs is not None else collections.Counter()
+    frame_counter = collections.Counter(frames[start:end]) if frames is not None else collections.Counter()
+    print(f"  {label}: base=${base:04x} cells={end - start}")
+    if source_counter:
+        print("    sources " + " ".join(f"{format_writer_value(value)}x{count}" for value, count in source_counter.most_common(10)))
+    if pc_counter:
+        print("    pcs " + " ".join(f"${value:06x}x{count}" for value, count in pc_counter.most_common(10)))
+    if frame_counter:
+        print("    frames " + " ".join(f"{value}x{count}" for value, count in sorted(frame_counter.items(), key=lambda item: (-item[1], item[0]))[:10]))
+
+    if pcs is not None and frames is not None:
+        rows = min(4, max(1, (end - start) // width))
+        for row in range(rows):
+            row_start = start + row * width
+            cells = []
+            for col in range(min(width, 12)):
+                idx = row_start + col
+                pc = pcs[idx]
+                frame = frames[idx]
+                cells.append(f"{pc & 0xffffff:06x}@{frame}")
+            print(f"    row{row:02d} writers " + " ".join(cells))
+
+
+def format_writer_value(value: int) -> str:
+    if value == 0xFFFFFFFF:
+        return "direct"
+    if value == 0xFFFFFFF0:
+        return "fill"
+    return f"${value:08x}"
+
+
+def print_tilemap_blitter_record_report(
+    record: int,
+    count: int,
+    decoded_rom: bytes,
+    ram_path: Path | None,
+) -> None:
+    ram = ram_path.read_bytes() if ram_path else None
+    print("\n== tilemap blitter record report")
+    print(f"  start=${record:06x} count={count}")
+    for idx in range(count):
+        addr = record + idx * 0x10
+        block = read_address_block(decoded_rom, ram, addr, 0x10)
+        if block is None:
+            print(f"  record {idx}: ${addr:06x} unavailable")
+            continue
+        stream = struct.unpack_from(">I", block, 0)[0]
+        table = struct.unpack_from(">I", block, 4)[0]
+        dest = struct.unpack_from(">H", block, 8)[0]
+        tile_base = struct.unpack_from(">H", block, 10)[0]
+        columns = struct.unpack_from(">H", block, 12)[0] + 1
+        rows = struct.unpack_from(">H", block, 14)[0] + 1
+        stream_bytes = read_address_block(decoded_rom, ram, stream, min(columns * rows, 0x80)) or b""
+        table_count = 0x20
+        if stream_bytes:
+            table_count = max(table_count, max(stream_bytes) * 4 + 4)
+        table_words = read_address_words(decoded_rom, ram, table, min(table_count, 0x400))
+        print(
+            f"  record {idx}: rec=${addr:06x} stream=${stream:06x} table=${table:06x} "
+            f"dest=${dest:04x} tile_base=${tile_base:04x} size={columns}x{rows}"
+        )
+        if stream_bytes:
+            print("    stream " + " ".join(f"{value:02x}" for value in stream_bytes[: min(len(stream_bytes), 32)]))
+        if table_words:
+            print("    table  " + " ".join(f"{value:04x}" for value in table_words[:16]))
+        if stream_bytes and table_words:
+            print_tilemap_blitter_preview(stream_bytes, table_words, tile_base, columns, rows)
+
+
+def print_tilemap_blitter_preview(
+    stream: bytes,
+    table_words: list[int],
+    tile_base: int,
+    columns: int,
+    rows: int,
+) -> None:
+    preview_rows = min(rows, 4)
+    for row in range(preview_rows):
+        cells: list[str] = []
+        for col in range(min(columns, 8)):
+            stream_index = row * columns + col
+            if stream_index >= len(stream):
+                break
+            index = stream[stream_index] * 4
+            words = []
+            for delta in range(4):
+                table_index = index + delta
+                if table_index >= len(table_words):
+                    words.append("----")
+                else:
+                    words.append(f"{(table_words[table_index] + tile_base) & 0xffff:04x}")
+            cells.append("[" + ",".join(words) + "]")
+        print(f"    row{row:02d} " + " ".join(cells))
+
+
+def read_address_words(decoded_rom: bytes, ram: bytes | None, address: int, count: int) -> list[int]:
+    block = read_address_block(decoded_rom, ram, address, count * 2)
+    if block is None:
+        return []
+    return read_be_words(block, 0, len(block) // 2)
+
+
+def read_address_block(decoded_rom: bytes, ram: bytes | None, address: int, length: int) -> bytes | None:
+    if 0 <= address < len(decoded_rom):
+        return decoded_rom[address : min(len(decoded_rom), address + length)]
+    if ram is not None and 0xFF0000 <= address < 0x1000000:
+        offset = address - 0xFF0000
+        if 0 <= offset < len(ram):
+            return ram[offset : min(len(ram), offset + length)]
+    return None
+
+
 def vram_snapshot_context(vram_path: Path, meta_path: Path | None) -> dict[str, object] | None:
     vram = vram_path.read_bytes()
     if len(vram) != 0x10000:
@@ -4896,6 +5348,9 @@ def main() -> None:
     parser.add_argument("--only-vdp-log", action="store_true")
     parser.add_argument("--vram-snapshot", type=Path)
     parser.add_argument("--vram-meta", type=Path)
+    parser.add_argument("--vram-source-map", type=Path)
+    parser.add_argument("--vram-pc-map", type=Path)
+    parser.add_argument("--vram-frame-map", type=Path)
     parser.add_argument("--compare-vram-snapshot", type=Path)
     parser.add_argument("--compare-vram-meta", type=Path)
     parser.add_argument("--ram-snapshot", type=Path)
@@ -4904,6 +5359,15 @@ def main() -> None:
     parser.add_argument("--compare-ram-meta", type=Path)
     parser.add_argument("--only-vram-snapshot", action="store_true")
     parser.add_argument("--only-ram-snapshot", action="store_true")
+    parser.add_argument("--compressed-source", type=lambda value: int(value, 0))
+    parser.add_argument("--only-compressed-source", action="store_true")
+    parser.add_argument("--compressed-source-max-variants", type=int, default=12)
+    parser.add_argument("--compressed-scan-start", type=lambda value: int(value, 0))
+    parser.add_argument("--compressed-scan-end", type=lambda value: int(value, 0))
+    parser.add_argument("--compressed-scan-limit", type=int, default=16)
+    parser.add_argument("--tilemap-blitter-record", type=lambda value: int(value, 0))
+    parser.add_argument("--tilemap-blitter-record-count", type=int, default=1)
+    parser.add_argument("--tilemap-blitter-ram-snapshot", type=Path)
     parser.add_argument("--write-best-startup", type=Path)
     parser.add_argument("--write-adjusted-startup", type=Path)
     args = parser.parse_args()
@@ -4976,6 +5440,14 @@ def main() -> None:
 
     if args.vram_snapshot:
         print_vram_snapshot_report(args.vram_snapshot, args.vram_meta)
+        if args.vram_source_map or args.vram_pc_map or args.vram_frame_map:
+            print_vram_writer_report(
+                args.vram_snapshot,
+                args.vram_meta,
+                args.vram_source_map,
+                args.vram_pc_map,
+                args.vram_frame_map,
+            )
         if args.compare_vram_snapshot:
             print_vram_compare_report(
                 args.vram_snapshot,
@@ -4996,6 +5468,38 @@ def main() -> None:
                 args.compare_ram_meta,
             )
         if args.only_ram_snapshot:
+            return
+
+    if args.compressed_source is not None:
+        print_compressed_stream_report(
+            args.compressed_source,
+            words_from(raw),
+            base_words,
+            args.base,
+            args.compressed_source_max_variants,
+        )
+        if args.only_compressed_source:
+            return
+
+    if args.compressed_scan_start is not None and args.compressed_scan_end is not None:
+        print_compressed_stream_scan_report(
+            args.compressed_scan_start,
+            args.compressed_scan_end,
+            base_words,
+            args.base,
+            args.compressed_scan_limit,
+        )
+        if args.only_compressed_source:
+            return
+
+    if args.tilemap_blitter_record is not None:
+        print_tilemap_blitter_record_report(
+            args.tilemap_blitter_record,
+            args.tilemap_blitter_record_count,
+            bytes_from(base_words),
+            args.tilemap_blitter_ram_snapshot,
+        )
+        if args.only_compressed_source:
             return
 
     print_startup_words("base/no extra", base_words)

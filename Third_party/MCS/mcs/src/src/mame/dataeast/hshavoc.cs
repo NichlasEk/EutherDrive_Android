@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 using device_type = mame.emu.detail.device_type_impl_base;
 using MemoryU8 = mame.MemoryContainer<System.Byte>;
@@ -41,20 +42,51 @@ namespace mame
         const uint LatchedVdpQueueBlock = 0x00ffe91a;
         const uint VdpCommandBlockStart = 0x00ffe900;
         const uint VdpCommandBlockEnd = 0x00ffea80;
+        const uint MdPixelOpaque = 0x80000000U;
+        const uint MdPixelPriority = 0x40000000U;
+        const uint MdPixelColorMask = 0x00ffffffU;
         static readonly bool TraceMcsVdp =
             IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_TRACE_VDP");
         static readonly bool TraceMcsVdpQueue =
             IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_TRACE_VDP_QUEUE");
+        static readonly int TraceMcsVdpStartFrame =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_VDP_START_FRAME", -1);
+        static readonly int TraceMcsVdpEndFrame =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_VDP_END_FRAME", int.MaxValue);
+        static readonly int TraceMcsVdpQueueStartFrame =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_VDP_QUEUE_START_FRAME", TraceMcsVdpStartFrame);
+        static readonly int TraceMcsVdpQueueEndFrame =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_VDP_QUEUE_END_FRAME", TraceMcsVdpEndFrame);
         static readonly bool TraceMcsIo =
             IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_TRACE_IO");
         static readonly int TraceMcsIoStartFrame =
             ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_IO_START_FRAME", -1);
         static readonly int TraceMcsIoEndFrame =
             ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_IO_END_FRAME", int.MaxValue);
+        static readonly bool TraceMcsRam =
+            IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_TRACE_RAM");
+        static readonly int TraceMcsRamStart =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_RAM_START", (int)WorkRamStart);
+        static readonly int TraceMcsRamEnd =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_RAM_END", (int)WorkRamEnd);
+        static readonly int TraceMcsRamStartFrame =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_RAM_START_FRAME", -1);
+        static readonly int TraceMcsRamEndFrame =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_TRACE_RAM_END_FRAME", int.MaxValue);
         static readonly bool LowPatternRamProbe =
             IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_LOW_PATTERN_PROBE");
         static readonly int LowPatternRamProbeWords =
             ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_LOW_PATTERN_PROBE_WORDS", 0x400);
+        static readonly bool AdditiveHscroll =
+            IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_SCROLL_ADD");
+        static readonly bool SwapVramBytes =
+            IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_VRAM_SWAP_BYTES");
+        static readonly bool ForceH40 =
+            IsEnvEnabled("EUTHERDRIVE_HSHAVOC_MCS_FORCE_H40");
+        static readonly int SnapshotFrame =
+            ParseEnvInt("EUTHERDRIVE_HSHAVOC_MCS_SNAPSHOT_FRAME", -1);
+        static readonly string SnapshotDir =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_MCS_SNAPSHOT_DIR") ?? "/tmp";
 
         static readonly int [] DataBitswap =
         {
@@ -108,6 +140,9 @@ namespace mame
 
         readonly required_device<m68000_device> m_maincpu;
         readonly u8 [] m_vram = new u8[VramSize];
+        readonly u32 [] m_vram_last_source = new u32[VramSize / 2];
+        readonly u32 [] m_vram_last_pc = new u32[VramSize / 2];
+        readonly int [] m_vram_last_frame = new int[VramSize / 2];
         readonly u16 [] m_cram = new u16[0x40];
         readonly u16 [] m_vsram = new u16[0x40];
         readonly u8 [] m_vdp_reg = new u8[0x20];
@@ -115,8 +150,7 @@ namespace mame
         readonly u8 [] m_work_ram = new u8[WorkRamEnd - WorkRamStart + 1];
         readonly u8 [] m_io_data = { 0x7f, 0x7f, 0x7f };
         readonly u8 [] m_io_ctrl = { 0x00, 0x00, 0x00 };
-        readonly HashSet<ulong> m_flushed_vdp_command_blocks = new HashSet<ulong>();
-        readonly HashSet<ulong> m_flushed_latched_vdp_queue_entries = new HashSet<ulong>();
+        readonly Dictionary<uint, ulong> m_flushed_vdp_command_blocks = new Dictionary<uint, ulong>();
         bool m_z80_bus_requested;
         bool m_z80_reset_asserted = true;
         uint m_latched_slot0_source;
@@ -138,12 +172,25 @@ namespace mame
         int m_dma_fill_this_frame;
         int m_dma_copy_this_frame;
         ulong m_low_pattern_probe_signature;
+        bool m_snapshot_dumped;
+        int m_external_start_frames;
+        int m_external_coin_frames;
+        u32 m_current_vram_write_source = 0xffffffff;
 
 
         public hshavoc_state(machine_config mconfig, device_type type, string tag)
             : base(mconfig, type, tag)
         {
             m_maincpu = new required_device<m68000_device>(this, "maincpu");
+        }
+
+
+        public void SetExternalInputState(bool start, bool coin)
+        {
+            if (start)
+                m_external_start_frames = Math.Max(m_external_start_frames, 12);
+            if (coin)
+                m_external_coin_frames = Math.Max(m_external_coin_frames, 12);
         }
 
 
@@ -185,7 +232,9 @@ namespace mame
             ReplayLowPatternRamProbeIfRequested();
             RenderMegadrivePlanes(bitmap, cliprect);
             TraceVdpFrame();
+            DumpSnapshotIfRequested();
             ResetVdpFrameCounters();
+            DecayExternalInputLatch();
             m_frame_counter++;
             return 0;
         }
@@ -203,7 +252,6 @@ namespace mame
             Array.Fill(m_io_data, (u8)0x7f);
             Array.Clear(m_io_ctrl, 0, m_io_ctrl.Length);
             m_flushed_vdp_command_blocks.Clear();
-            m_flushed_latched_vdp_queue_entries.Clear();
             m_z80_bus_requested = false;
             m_z80_reset_asserted = true;
             m_latched_slot0_source = 0;
@@ -237,6 +285,16 @@ namespace mame
             if (address == VdpStatusWordAddress && value == 0)
                 return 0x8164;
 
+            if (ShouldTraceMcsRam(address))
+            {
+                var state = m_maincpu.op0.GetState();
+                Console.Error.WriteLine(
+                    $"[HSH-MCS-RAM-R] frame={m_frame_counter} pc=0x{m_maincpu.op0.Pc:X6} " +
+                    $"addr=0x{address:X6} value=0x{value:X4} mask=0x{mem_mask:X4} " +
+                    $"a0=0x{state.Address[0]:X6} a1=0x{state.Address[1]:X6} a2=0x{state.Address[2]:X6} " +
+                    $"d0=0x{state.Data[0]:X8} d7=0x{state.Data[7]:X8}");
+            }
+
             return value;
         }
 
@@ -253,10 +311,21 @@ namespace mame
                 m_work_ram[(byteOffset + 1) & 0xffff] = (u8)data;
 
             uint address = WorkRamStart + byteOffset;
+            if (ShouldTraceMcsRam(address))
+            {
+                u16 value = (u16)((m_work_ram[byteOffset] << 8) | m_work_ram[(byteOffset + 1) & 0xffff]);
+                var state = m_maincpu.op0.GetState();
+                Console.Error.WriteLine(
+                    $"[HSH-MCS-RAM-W] frame={m_frame_counter} pc=0x{m_maincpu.op0.Pc:X6} " +
+                    $"addr=0x{address:X6} data=0x{data:X4} value=0x{value:X4} mask=0x{mem_mask:X4} " +
+                    $"a0=0x{state.Address[0]:X6} a1=0x{state.Address[1]:X6} a2=0x{state.Address[2]:X6} " +
+                    $"d0=0x{state.Data[0]:X8} d7=0x{state.Data[7]:X8}");
+            }
+
             if (address != AckWordAddress)
             {
                 LatchVdpQueueParameter(address, data, m_maincpu.op0.Pc & 0x00ffffff);
-                if (TraceMcsVdpQueue && address >= 0x00ffe800 && address <= 0x00ffe820 && data != 0)
+                if (ShouldTraceMcsVdpQueue() && address >= 0x00ffe800 && address <= 0x00ffe820 && data != 0)
                     Console.Error.WriteLine($"[HSH-MCS-RAM-W] pc=0x{m_maincpu.op0.Pc:X6} addr=0x{address:X6} data=0x{data:X4} mask=0x{mem_mask:X4}");
             }
             else if (IsQueueAckWritePc(m_maincpu.op0.Pc & 0x00ffffff))
@@ -264,7 +333,7 @@ namespace mame
                 FlushLatchedVdpQueueOnAckIfRequested();
                 FlushVdpCommandBlocks();
             }
-            else if (TraceMcsVdpQueue)
+            else if (ShouldTraceMcsVdpQueue())
             {
                 Console.Error.WriteLine(
                     $"[HSH-MCS-ACK-W] frame={m_frame_counter} pc=0x{m_maincpu.op0.Pc:X6} " +
@@ -311,7 +380,9 @@ namespace mame
             };
 
             if (ShouldTraceMcsIo(port))
-                Console.Error.WriteLine($"[HSH-MCS-IO-R] pc=0x{m_maincpu.op0.Pc:X6} port=0x{port:X2} value=0x{value:X2}");
+                Console.Error.WriteLine(
+                    $"[HSH-MCS-IO-R] frame={m_frame_counter} pc=0x{m_maincpu.op0.Pc:X6} port=0x{port:X2} value=0x{value:X2} " +
+                    $"ext_start={m_external_start_frames} ext_coin={m_external_coin_frames}");
 
             return (u16)(0xff00 | value);
         }
@@ -347,7 +418,7 @@ namespace mame
             }
 
             if (ShouldTraceMcsIo(port))
-                Console.Error.WriteLine($"[HSH-MCS-IO-W] pc=0x{m_maincpu.op0.Pc:X6} port=0x{port:X2} data=0x{value:X2}");
+                Console.Error.WriteLine($"[HSH-MCS-IO-W] frame={m_frame_counter} pc=0x{m_maincpu.op0.Pc:X6} port=0x{port:X2} data=0x{value:X2}");
         }
 
 
@@ -355,7 +426,7 @@ namespace mame
         {
             if (port > 0x0e)
                 return false;
-            if (TraceMcsVdpQueue)
+            if (ShouldTraceMcsVdpQueue())
                 return true;
             if (!TraceMcsIo)
                 return false;
@@ -366,9 +437,38 @@ namespace mame
         }
 
 
+        bool ShouldTraceMcsVdp()
+            => TraceMcsVdp && IsFrameInTraceRange(TraceMcsVdpStartFrame, TraceMcsVdpEndFrame);
+
+
+        bool ShouldTraceMcsVdpQueue()
+            => TraceMcsVdpQueue && IsFrameInTraceRange(TraceMcsVdpQueueStartFrame, TraceMcsVdpQueueEndFrame);
+
+
+        bool ShouldTraceMcsRam(uint address)
+        {
+            if (!TraceMcsRam)
+                return false;
+            if (!IsFrameInTraceRange(TraceMcsRamStartFrame, TraceMcsRamEndFrame))
+                return false;
+            return address >= (uint)TraceMcsRamStart && address <= (uint)TraceMcsRamEnd;
+        }
+
+
+        bool IsFrameInTraceRange(int startFrame, int endFrame)
+        {
+            int frame = m_frame_counter;
+            if (startFrame >= 0 && frame < startFrame)
+                return false;
+            return frame <= endFrame;
+        }
+
+
         u8 MegadrivePadByte(int player)
         {
             u8 p = (u8)(ioport(player == 0 ? "P1" : "P2").read() & 0xff);
+            if (player == 0 && m_external_start_frames > 0)
+                p &= 0x7f;
             u8 value = 0x7f;
             bool thHigh = (m_io_data[player] & 0x40) != 0;
 
@@ -396,9 +496,18 @@ namespace mame
         u8 SystemPortByte()
         {
             u8 value = 0x7f;
-            if ((ioport("SYSTEM").read() & 0x01) == 0)
+            if (m_external_coin_frames > 0 || (ioport("SYSTEM").read() & 0x01) == 0)
                 value &= 0xfe;
             return value;
+        }
+
+
+        void DecayExternalInputLatch()
+        {
+            if (m_external_start_frames > 0)
+                m_external_start_frames--;
+            if (m_external_coin_frames > 0)
+                m_external_coin_frames--;
         }
 
 
@@ -533,8 +642,9 @@ namespace mame
 
 
         static bool IsQueueAckWritePc(uint pc)
-            => pc == 0x002a0e || pc == 0x002a16 || pc == 0x009538 || pc == 0x019338 || pc == 0x019386 ||
-               pc == 0x0193d4 || pc == 0x019436 || pc == 0x01948c;
+            => pc == 0x000b1a || pc == 0x002a0e || pc == 0x002a16 || pc == 0x009538 ||
+               pc == 0x019338 || pc == 0x019386 || pc == 0x0193d4 || pc == 0x019436 ||
+               pc == 0x01948c;
 
 
         static bool HshavocAllowsDmaWithoutReg1Enable()
@@ -589,7 +699,7 @@ namespace mame
                 return;
 
             m_vdp_reg[index] = data;
-            if (TraceMcsVdpQueue && (index == 1 || index == 2 || index == 4 || index == 12 || index == 13 || index == 15 || index == 16 || index >= 19))
+            if (ShouldTraceMcsVdpQueue() && (index == 1 || index == 2 || index == 4 || index == 12 || index == 13 || index == 15 || index == 16 || index >= 19))
                 Console.Error.WriteLine($"[HSH-MCS-VDP-REG] frame={m_frame_counter} reg={index} data=0x{data:X2}");
         }
 
@@ -630,7 +740,7 @@ namespace mame
             int length = VdpDmaLength();
             uint source = VdpDmaSourceAddress();
             address_space program = m_maincpu.op0.memory().space(AS_PROGRAM);
-            if (TraceMcsVdpQueue)
+            if (ShouldTraceMcsVdpQueue())
             {
                 int sourceNonZero = CountNonZeroMemoryWords(program, source, Math.Min(length, 0x400));
                 Console.Error.WriteLine(
@@ -640,8 +750,10 @@ namespace mame
             for (int i = 0; i < length; i++)
             {
                 u16 value = program.read_word((source + (uint)(i * 2)) & 0x00fffffe);
+                m_current_vram_write_source = source + (uint)(i * 2);
                 VdpWriteDataToSelectedTarget(value);
             }
+            m_current_vram_write_source = 0xffffffff;
         }
 
 
@@ -649,13 +761,17 @@ namespace mame
         {
             m_dma_fill_this_frame++;
             int length = VdpDmaLength();
-            if (TraceMcsVdpQueue)
+            if (ShouldTraceMcsVdpQueue())
             {
                 Console.Error.WriteLine(
                     $"[HSH-MCS-VDP-DMA] frame={m_frame_counter} mode=fill value=0x{data:X4} dest=0x{m_vdp_address:X4} len=0x{length:X} code=0x{m_vdp_code:X2} inc=0x{VdpAutoIncrement():X2}");
             }
             for (int i = 0; i < length; i++)
+            {
+                m_current_vram_write_source = 0xfffffff0;
                 VdpWriteDataToSelectedTarget(data);
+            }
+            m_current_vram_write_source = 0xffffffff;
         }
 
 
@@ -664,7 +780,7 @@ namespace mame
             m_dma_copy_this_frame++;
             int length = VdpDmaLength();
             int source = (int)(((m_vdp_reg[22] << 8) | m_vdp_reg[21]) & 0xffff);
-            if (TraceMcsVdpQueue)
+            if (ShouldTraceMcsVdpQueue())
             {
                 Console.Error.WriteLine(
                     $"[HSH-MCS-VDP-DMA] frame={m_frame_counter} mode=copy src=0x{source:X4} dest=0x{m_vdp_address:X4} len=0x{length:X} code=0x{m_vdp_code:X2} inc=0x{VdpAutoIncrement():X2}");
@@ -694,12 +810,19 @@ namespace mame
                 u16 control1 = program.read_word(block + 10);
                 u16 control2 = program.read_word(block + 12);
                 if (!LooksLikeVdpCommandBlock(program, reg19, reg20, reg21, reg22, reg23, control1, control2))
+                {
+                    m_flushed_vdp_command_blocks.Remove(block);
                     continue;
+                }
 
                 ulong signature = BuildVdpCommandBlockSignature(program, block, reg19, reg20, reg21, reg22, reg23, control1, control2);
-                if (!m_flushed_vdp_command_blocks.Add(signature))
+                if (m_flushed_vdp_command_blocks.TryGetValue(block, out ulong previousSignature) &&
+                    previousSignature == signature)
+                {
                     continue;
+                }
 
+                m_flushed_vdp_command_blocks[block] = signature;
                 ExecuteVdpCommandBlock(block, reg19, reg20, reg21, reg22, reg23, control1, control2);
             }
         }
@@ -743,7 +866,7 @@ namespace mame
 
         void TraceLatchedVdpQueueParameter(uint address, u16 data)
         {
-            if (!TraceMcsVdpQueue)
+            if (!ShouldTraceMcsVdpQueue())
                 return;
 
             Console.Error.WriteLine(
@@ -768,16 +891,6 @@ namespace mame
             if (!romSource && !ramSource)
                 return;
 
-            address_space program = m_maincpu.op0.memory().space(AS_PROGRAM);
-            ulong signature =
-                ((ulong)m_latched_slot0_source << 32) ^
-                ((ulong)m_latched_slot0_destination << 16) ^
-                m_latched_slot0_length;
-            if (ramSource)
-                signature ^= HashMemoryWords(program, m_latched_slot0_source, length);
-            if (!m_flushed_latched_vdp_queue_entries.Add(signature))
-                return;
-
             uint sourceWord = m_latched_slot0_source >> 1;
             u16 reg19 = (u16)(0x9300 | (length & 0x00ff));
             u16 reg20 = (u16)(0x9400 | ((length >> 8) & 0x00ff));
@@ -788,7 +901,7 @@ namespace mame
             u16 control2 = (u16)(0x0080 | ((m_latched_slot0_destination >> 14) & 0x0007));
 
             ExecuteVdpCommandBlock(LatchedVdpQueueBlock, reg19, reg20, reg21, reg22, reg23, control1, control2);
-            if (TraceMcsVdp)
+            if (ShouldTraceMcsVdp())
                 Console.Error.WriteLine(
                     $"[HSH-MCS-VDPQ-LATCH-FLUSH] frame={m_frame_counter} pc=0x{m_maincpu.op0.Pc:X6} " +
                     $"source=0x{m_latched_slot0_source:X6} dest=0x{m_latched_slot0_destination:X4} len=0x{m_latched_slot0_length:X4}");
@@ -812,10 +925,14 @@ namespace mame
                 return;
 
             for (int i = 0; i < words; i++)
+            {
+                m_current_vram_write_source = source + (uint)(i * 2);
                 VramWriteWord(i * 2, program.read_word((source + (uint)(i * 2)) & 0x00fffffe));
+            }
+            m_current_vram_write_source = 0xffffffff;
             m_low_pattern_probe_signature = signature;
 
-            if (TraceMcsVdp)
+            if (ShouldTraceMcsVdp())
                 Console.Error.WriteLine($"[HSH-MCS-LOWPAT] frame={m_frame_counter} source=0x{source:X6} words=0x{words:X} hash=0x{signature:X16}");
         }
 
@@ -838,7 +955,7 @@ namespace mame
             VdpWriteControl(control1);
             VdpWriteControl(control2);
 
-            if (TraceMcsVdpQueue)
+            if (ShouldTraceMcsVdpQueue())
             {
                 int length = VdpCommandLength(reg19, reg20);
                 uint sourceByte = DecodeVdpDmaSourceByte(reg21, reg22, reg23);
@@ -958,8 +1075,21 @@ namespace mame
         void VramWriteWord(int address, u16 data)
         {
             int addr = address & 0xffff;
-            m_vram[addr] = (u8)(data >> 8);
-            m_vram[(addr + 1) & 0xffff] = (u8)data;
+            if (SwapVramBytes)
+            {
+                m_vram[addr] = (u8)data;
+                m_vram[(addr + 1) & 0xffff] = (u8)(data >> 8);
+            }
+            else
+            {
+                m_vram[addr] = (u8)(data >> 8);
+                m_vram[(addr + 1) & 0xffff] = (u8)data;
+            }
+
+            int wordIndex = addr >> 1;
+            m_vram_last_source[wordIndex] = m_current_vram_write_source;
+            m_vram_last_pc[wordIndex] = m_maincpu.op0.Pc;
+            m_vram_last_frame[wordIndex] = m_frame_counter;
         }
 
 
@@ -977,11 +1107,17 @@ namespace mame
                 {
                     uint color = backdrop;
                     uint b = PlanePixel(false, x, y);
-                    if ((b & 0xff000000U) != 0)
-                        color = b & 0x00ffffffU;
-                    uint a = PlanePixel(true, x, y);
-                    if ((a & 0xff000000U) != 0)
-                        color = a & 0x00ffffffU;
+                    uint a = WindowEnabledAt(x, y) ? WindowPixel(x, y) : PlanePixel(true, x, y);
+                    bool bOpaque = (b & MdPixelOpaque) != 0;
+                    bool aOpaque = (a & MdPixelOpaque) != 0;
+                    if (bOpaque && (b & MdPixelPriority) == 0)
+                        color = b & MdPixelColorMask;
+                    if (aOpaque && (a & MdPixelPriority) == 0)
+                        color = a & MdPixelColorMask;
+                    if (bOpaque && (b & MdPixelPriority) != 0)
+                        color = b & MdPixelColorMask;
+                    if (aOpaque && (a & MdPixelPriority) != 0)
+                        color = a & MdPixelColorMask;
                     bitmap.pix(y, x)[0] = color;
                 }
             }
@@ -1094,7 +1230,7 @@ namespace mame
             int heightTiles = ScrollPlaneTiles((m_vdp_reg[16] >> 4) & 0x03);
             int hscroll = ReadPlaneHScroll(planeA, y);
             int vscroll = m_vsram[planeA ? 0 : 1] & 0x03ff;
-            int sx = (x + hscroll) & ((widthTiles * 8) - 1);
+            int sx = (AdditiveHscroll ? x + hscroll : x - hscroll) & ((widthTiles * 8) - 1);
             int sy = (y + vscroll) & ((heightTiles * 8) - 1);
             int tileX = sx >> 3;
             int tileY = sy >> 3;
@@ -1102,6 +1238,7 @@ namespace mame
             u16 entry = VramReadWord(entryAddr);
             int tile = entry & 0x07ff;
             int palette = (entry >> 13) & 0x03;
+            bool priority = (entry & 0x8000) != 0;
             bool hflip = (entry & 0x0800) != 0;
             bool vflip = (entry & 0x1000) != 0;
             int px = sx & 7;
@@ -1113,8 +1250,52 @@ namespace mame
                 return 0;
 
             int colorIndex = (palette << 4) | pen;
-            return 0xff000000U | MdColor(colorIndex);
+            return MdPixelOpaque | (priority ? MdPixelPriority : 0) | MdColor(colorIndex);
         }
+
+
+        bool WindowEnabledAt(int x, int y)
+        {
+            int windowCellY = m_vdp_reg[18] & 0x1f;
+            bool bottom = (m_vdp_reg[18] & 0x80) != 0;
+            bool inVerticalWindow = bottom ? (y >> 3) >= windowCellY : (y >> 3) < windowCellY;
+            if (inVerticalWindow)
+                return true;
+
+            int splitPixel = (m_vdp_reg[17] & 0x1f) << 4;
+            bool right = (m_vdp_reg[17] & 0x80) != 0;
+            return right ? x >= splitPixel : x < splitPixel;
+        }
+
+
+        uint WindowPixel(int x, int y)
+        {
+            int tableBase = ((m_vdp_reg[3] & 0x3e) << 10) & (IsH40Mode() ? 0xf000 : 0xf800);
+            int widthTiles = IsH40Mode() ? 64 : 32;
+            int tileX = x >> 3;
+            int tileY = y >> 3;
+            int entryAddr = (tableBase + ((tileY * widthTiles + tileX) << 1)) & 0xffff;
+            u16 entry = VramReadWord(entryAddr);
+            int tile = entry & 0x07ff;
+            int palette = (entry >> 13) & 0x03;
+            bool priority = (entry & 0x8000) != 0;
+            bool hflip = (entry & 0x0800) != 0;
+            bool vflip = (entry & 0x1000) != 0;
+            int px = x & 7;
+            int py = y & 7;
+            if (hflip) px ^= 7;
+            if (vflip) py ^= 7;
+            int pen = PatternPixel(tile, px, py);
+            if (pen == 0)
+                return 0;
+
+            int colorIndex = (palette << 4) | pen;
+            return MdPixelOpaque | (priority ? MdPixelPriority : 0) | MdColor(colorIndex);
+        }
+
+
+        bool IsH40Mode()
+            => ForceH40 || (m_vdp_reg[12] & 0x81) != 0;
 
 
         int ReadPlaneHScroll(bool planeA, int y)
@@ -1183,7 +1364,7 @@ namespace mame
 
         void TraceVdpFrame()
         {
-            if (!TraceMcsVdp)
+            if (!ShouldTraceMcsVdp())
                 return;
             if (m_frame_counter > 10 && (m_frame_counter % 30) != 0)
                 return;
@@ -1203,11 +1384,74 @@ namespace mame
                 $"dma=({m_dma_memory_this_frame},{m_dma_fill_this_frame},{m_dma_copy_this_frame}) " +
                 $"nz=(vram:{vramNonZero},cram:{cramNonZero},pa:{planeANonZero},pb:{planeBNonZero},sat:{spriteNonZero}) " +
                 $"opaque=(pa:{planeAOpaque},pb:{planeBOpaque}) first=(pa:{firstA:X4},pb:{firstB:X4}) " +
-                $"regs=01:{m_vdp_reg[1]:X2} 02:{m_vdp_reg[2]:X2} 04:{m_vdp_reg[4]:X2} 05:{m_vdp_reg[5]:X2} " +
-                $"07:{m_vdp_reg[7]:X2} 0b:{m_vdp_reg[11]:X2} 0c:{m_vdp_reg[12]:X2} 0d:{m_vdp_reg[13]:X2} 10:{m_vdp_reg[16]:X2} " +
+                $"regs=01:{m_vdp_reg[1]:X2} 02:{m_vdp_reg[2]:X2} 03:{m_vdp_reg[3]:X2} 04:{m_vdp_reg[4]:X2} 05:{m_vdp_reg[5]:X2} " +
+                $"07:{m_vdp_reg[7]:X2} 0b:{m_vdp_reg[11]:X2} 0c:{m_vdp_reg[12]:X2} 0d:{m_vdp_reg[13]:X2} 10:{m_vdp_reg[16]:X2} 11:{m_vdp_reg[17]:X2} 12:{m_vdp_reg[18]:X2} " +
                 $"cram0={m_cram[0]:X3},{m_cram[1]:X3},{m_cram[2]:X3},{m_cram[3]:X3} " +
                 $"pc=0x{m_maincpu.op0.Pc:X6} sr=0x{m_maincpu.op0.StatusRegister:X4} " +
                 $"imask={m_maincpu.op0.InterruptPriorityMask} stop={(m_maincpu.op0.IsStopped ? 1 : 0)}");
+        }
+
+
+        void DumpSnapshotIfRequested()
+        {
+            if (m_snapshot_dumped || SnapshotFrame < 0 || m_frame_counter != SnapshotFrame)
+                return;
+
+            try
+            {
+                Directory.CreateDirectory(SnapshotDir);
+                string prefix = Path.Combine(SnapshotDir, $"hshavoc_mcs_frame_{m_frame_counter:D6}");
+                File.WriteAllBytes(prefix + "_vram.bin", m_vram);
+                File.WriteAllBytes(prefix + "_cram.bin", WordsToBytes(m_cram));
+                File.WriteAllBytes(prefix + "_vsram.bin", WordsToBytes(m_vsram));
+                File.WriteAllBytes(prefix + "_workram.bin", m_work_ram);
+                File.WriteAllText(prefix + "_meta.txt", SnapshotMetaText());
+                Console.Error.WriteLine($"[HSH-MCS-SNAPSHOT] frame={m_frame_counter} prefix={prefix}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[HSH-MCS-SNAPSHOT] frame={m_frame_counter} failed={ex.Message}");
+            }
+
+            m_snapshot_dumped = true;
+        }
+
+
+        string SnapshotMetaText()
+        {
+            return
+                $"frame={m_frame_counter}\n" +
+                $"vdp_display={(((m_vdp_reg[1] & 0x40) != 0) ? 1 : 0)}\n" +
+                $"vdp_plane_a=0x{((m_vdp_reg[2] & 0x38) << 10):X4}\n" +
+                $"vdp_plane_b=0x{((m_vdp_reg[4] & 0x07) << 13):X4}\n" +
+                $"vdp_sprite=0x{((m_vdp_reg[5] & 0x7f) << 9):X4}\n" +
+                $"vdp_hscroll=0x{((m_vdp_reg[13] & 0x3f) << 10):X4}\n" +
+                $"vdp_scroll_h=0x{(m_vdp_reg[16] & 0x03):X2}\n" +
+                $"vdp_scroll_v=0x{((m_vdp_reg[16] >> 4) & 0x03):X2}\n" +
+                $"vdp_reg_01=0x{m_vdp_reg[1]:X2}\n" +
+                $"vdp_reg_02=0x{m_vdp_reg[2]:X2}\n" +
+                $"vdp_reg_03=0x{m_vdp_reg[3]:X2}\n" +
+                $"vdp_reg_04=0x{m_vdp_reg[4]:X2}\n" +
+                $"vdp_reg_05=0x{m_vdp_reg[5]:X2}\n" +
+                $"vdp_reg_07=0x{m_vdp_reg[7]:X2}\n" +
+                $"vdp_reg_0b=0x{m_vdp_reg[11]:X2}\n" +
+                $"vdp_reg_0c=0x{m_vdp_reg[12]:X2}\n" +
+                $"vdp_reg_0d=0x{m_vdp_reg[13]:X2}\n" +
+                $"vdp_reg_10=0x{m_vdp_reg[16]:X2}\n" +
+                $"vdp_reg_11=0x{m_vdp_reg[17]:X2}\n" +
+                $"vdp_reg_12=0x{m_vdp_reg[18]:X2}\n";
+        }
+
+
+        static byte [] WordsToBytes(u16 [] words)
+        {
+            byte [] bytes = new byte[words.Length * 2];
+            for (int i = 0; i < words.Length; i++)
+            {
+                bytes[i * 2] = (byte)(words[i] >> 8);
+                bytes[i * 2 + 1] = (byte)words[i];
+            }
+            return bytes;
         }
 
 

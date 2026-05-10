@@ -786,6 +786,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private long _profileAudioTicks;
         private long _profileInputTicks;
         private long _profileAudioCallbacks;
+        private long _profileMachineLoops;
+        private long _profileMachineUpdateTicks;
+        private long _profileSchedulerTicks;
+        private long _profileSaveLoadTicks;
 
         public McsRuntime(McsArcadeAdapter owner, string driverName, string romDirectory)
         {
@@ -1161,7 +1165,6 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             _profileUpdateTicks += updateTicks;
             _profileDrawTicks += drawTicks;
             _profilePublishTicks += publishTicks;
-            MaybeReportProfile();
         }
 
         public void AddProfileAudio(long ticks)
@@ -1179,6 +1182,18 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _profileInputTicks += ticks;
         }
 
+        public void AddProfileMachineLoop(long machineUpdateTicks, long schedulerTicks, long saveLoadTicks)
+        {
+            if (!TraceMcsProfile)
+                return;
+
+            _profileMachineLoops++;
+            _profileMachineUpdateTicks += machineUpdateTicks;
+            _profileSchedulerTicks += schedulerTicks;
+            _profileSaveLoadTicks += saveLoadTicks;
+            MaybeReportProfile();
+        }
+
         private void MaybeReportProfile()
         {
             long now = Stopwatch.GetTimestamp();
@@ -1191,6 +1206,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             long frames = _profileFrames;
             Console.WriteLine(
                 $"[MCS-PROFILE] driver={_driverName} fps={frames / elapsedSeconds:0.0} " +
+                $"loops={_profileMachineLoops} sched_ms={_profileSchedulerTicks * scale:0.0} machine_ms={_profileMachineUpdateTicks * scale:0.0} saveload_ms={_profileSaveLoadTicks * scale:0.0} " +
                 $"wait_ms={_profileWaitTicks * scale:0.0} update_ms={_profileUpdateTicks * scale:0.0} " +
                 $"draw_ms={_profileDrawTicks * scale:0.0} publish_ms={_profilePublishTicks * scale:0.0} " +
                 $"audio_ms={_profileAudioTicks * scale:0.0}/{_profileAudioCallbacks} input_ms={_profileInputTicks * scale:0.0}");
@@ -1211,6 +1227,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             _profileAudioTicks = 0;
             _profileAudioCallbacks = 0;
             _profileInputTicks = 0;
+            _profileMachineLoops = 0;
+            _profileMachineUpdateTicks = 0;
+            _profileSchedulerTicks = 0;
+            _profileSaveLoadTicks = 0;
         }
 
         private void Run()
@@ -1601,7 +1621,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         }
     }
 
-    private sealed class McsOsd : mame.osd_interface
+    private sealed class McsOsd : mame.osd_interface, mame.osd_profile_sink
     {
         private readonly McsRuntime _runtime;
         private readonly McsArcadeAdapter _owner;
@@ -1611,6 +1631,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private int _captureFailuresRemaining = 3;
         private bool _renderTraceLogged;
         private long _lastInputTraceTicks;
+        private Action<bool, bool>? _driverLocalInputSetter;
+        private bool _driverLocalInputResolved;
 
         public McsOsd(McsRuntime runtime, McsArcadeAdapter owner)
         {
@@ -1633,6 +1655,11 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         {
             ApplyInput(machine);
             _runtime.ProcessMachineUpdate(machine);
+        }
+
+        public void machine_loop_profile(long machineUpdateTicks, long schedulerTicks, long saveLoadTicks)
+        {
+            _runtime.AddProfileMachineLoop(machineUpdateTicks, schedulerTicks, saveLoadTicks);
         }
 
         public void update(bool skipRedraw)
@@ -2115,6 +2142,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 input.Up || input.Down || input.Left || input.Right ||
                 input.Button1 || input.Button2 || input.Button3 || input.Button4 ||
                 input.Button5 || input.Button6 || input.Start || input.Coin;
+            ApplyDriverLocalInput(machine, input);
             foreach (KeyValuePair<string, mame.ioport_port> port in machine.ioport().ports())
             {
                 uint digital = port.Value.live().digital;
@@ -2175,6 +2203,28 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                     }
                 }
             }
+        }
+
+        private void ApplyDriverLocalInput(mame.running_machine machine, ArcadeInputState input)
+        {
+            if (!_driverLocalInputResolved)
+            {
+                _driverLocalInputResolved = true;
+                _driverLocalInputSetter = ResolveDriverLocalInputSetter(machine);
+            }
+
+            _driverLocalInputSetter?.Invoke(input.Start, input.Coin);
+        }
+
+        private static Action<bool, bool>? ResolveDriverLocalInputSetter(mame.running_machine machine)
+        {
+            object root = machine.root_device();
+            MethodInfo? setInput = root.GetType().GetMethod(
+                "SetExternalInputState",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return setInput == null
+                ? null
+                : (start, coin) => setInput.Invoke(root, new object[] { start, coin });
         }
 
         public void update_audio_stream(mame.Pointer<short> buffer, int samplesThisFrame)

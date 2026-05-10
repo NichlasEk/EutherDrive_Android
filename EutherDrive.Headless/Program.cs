@@ -691,6 +691,8 @@ class Program
                 int unchangedFrames = 0;
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 var mcsInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_MCS_HEADLESS_INPUT_SCRIPT"));
+                int? hshavocMcsSnapshotFrame = ParseOptionalIntEnv("EUTHERDRIVE_HSHAVOC_MCS_SNAPSHOT_FRAME");
+                string hshavocMcsSnapshotDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_HSHAVOC_MCS_SNAPSHOT_DIR") ?? dumpDir;
 
                 Console.WriteLine($"[HEADLESS] MCS fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
                 DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
@@ -713,6 +715,12 @@ class Program
                         mode: input.Select,
                         padType: PadType.SixButton);
                     arcade.RunFrame();
+                    if (hshavocMcsSnapshotFrame == frame)
+                    {
+                        string prefix = Path.Combine(hshavocMcsSnapshotDir, $"hshavoc_mcs_frame_{frame:D6}");
+                        bool dumped = arcade.TryDumpHshavocDebugSnapshot(prefix);
+                        Console.WriteLine($"[HEADLESS] MCS hshavoc snapshot frame={frame} dumped={dumped} prefix={prefix}");
+                    }
 
                     ReadOnlySpan<byte> fb = arcade.GetFrameBuffer(out int w, out int h, out int s);
                     var stats = GetFrameStats(fb, w, h, s);
