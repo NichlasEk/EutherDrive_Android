@@ -114,11 +114,18 @@ namespace mame
         fast_write_byte_delegate m_fast_write_byte;
         fast_write_word_delegate m_fast_write_word;
         readonly bool[] m_irq_lines = new bool[8];
+        readonly u32[] m_state_d = new u32[8];
+        readonly u32[] m_state_a = new u32[7];
         readonly intref m_icount = new intref();
 
         device_memory_interface_m68000 m_dimemory;
         address_space m_program;
         u32 m_ppc;
+        u32 m_state_usp;
+        u32 m_state_ssp;
+        u16 m_state_sr;
+        u32 m_state_pc;
+        u16 m_state_prefetch;
 
 
         public m68000_device(machine_config mconfig, string tag, device_t owner, uint32_t clock)
@@ -149,6 +156,7 @@ namespace mame
         public u8 InterruptPriorityMask => m_core.InterruptPriorityMask;
         public bool IsStopped => m_core.IsStopped;
         public u16 CurrentOpcode => m_core.NextOpcode;
+        public eutherdrive_m68000.M68000.M68000State GetState() => m_core.GetState();
 
 
         public void set_fast_memory_handlers(
@@ -176,7 +184,48 @@ namespace mame
         {
             m_program = m_dimemory.space(AS_PROGRAM);
             set_icountptr(m_icount);
-            save_item(NAME(new { m_ppc }));
+            save_item(NAME(new { m_irq_lines }));
+            save_item(NAME(new { m_state_d }));
+            save_item(NAME(new { m_state_a }));
+            SaveStateRef(nameof(m_ppc), () => m_ppc, value => m_ppc = value);
+            SaveStateRef(nameof(m_state_usp), () => m_state_usp, value => m_state_usp = value);
+            SaveStateRef(nameof(m_state_ssp), () => m_state_ssp, value => m_state_ssp = value);
+            SaveStateRef(nameof(m_state_sr), () => m_state_sr, value => m_state_sr = value);
+            SaveStateRef(nameof(m_state_pc), () => m_state_pc, value => m_state_pc = value);
+            SaveStateRef(nameof(m_state_prefetch), () => m_state_prefetch, value => m_state_prefetch = value);
+            machine().save().register_presave(PresaveState);
+            machine().save().register_postload(PostloadState);
+        }
+
+        void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
+        {
+            machine().save().save_item_ref(this, name(), tag(), 0, itemName, getter, setter);
+        }
+
+        void PresaveState()
+        {
+            var state = m_core.GetState();
+            Array.Copy(state.Data, m_state_d, m_state_d.Length);
+            Array.Copy(state.Address, m_state_a, m_state_a.Length);
+            m_state_usp = state.Usp;
+            m_state_ssp = state.Ssp;
+            m_state_sr = state.Sr;
+            m_state_pc = state.Pc;
+            m_state_prefetch = state.Prefetch;
+            m_ppc = state.Pc;
+        }
+
+        void PostloadState()
+        {
+            m_core.SetState(new eutherdrive_m68000.M68000.M68000State(
+                m_state_d,
+                m_state_a,
+                m_state_usp,
+                m_state_ssp,
+                m_state_sr,
+                m_state_pc,
+                m_state_prefetch));
+            m_ppc = m_state_pc;
         }
 
 

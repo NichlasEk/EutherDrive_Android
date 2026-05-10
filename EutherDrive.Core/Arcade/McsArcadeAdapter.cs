@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using EutherDrive.Core.Savestates;
 using SharpCompress.Archives;
@@ -20,6 +21,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     private const int PlaceholderHeight = 224;
     private const int PlaceholderStride = PlaceholderWidth * 4;
     private const int AudioOutputDivisor = 8;
+    private const int MaxBufferedMcsFrames = 3;
     private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int OutputChannels = 2;
     private static readonly int MaxQueuedAudioSamples = OutputSampleRate * OutputChannels * 2;
@@ -451,6 +453,53 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             _masterVolumePercent = Math.Clamp(percent, 0, 100);
     }
 
+    public bool TryDumpHshavocDebugSnapshot(string prefix)
+    {
+        McsRuntime? runtime = _runtime;
+        if (runtime == null || !string.Equals(_driverName, "hshavoc", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        bool dumped = false;
+        runtime.RunOnMachine(machine =>
+        {
+            object root = machine.root_device();
+            Type type = root.GetType();
+            if (!string.Equals(type.Name, "hshavoc_state", StringComparison.Ordinal))
+                return;
+
+            byte[]? vram = GetPrivateField<byte[]>(root, type, "m_vram");
+            ushort[]? cram = GetPrivateField<ushort[]>(root, type, "m_cram");
+            ushort[]? vsram = GetPrivateField<ushort[]>(root, type, "m_vsram");
+            byte[]? workRam = GetPrivateField<byte[]>(root, type, "m_work_ram");
+            byte[]? regs = GetPrivateField<byte[]>(root, type, "m_vdp_reg");
+            uint[]? vramSource = GetPrivateField<uint[]>(root, type, "m_vram_last_source");
+            uint[]? vramPc = GetPrivateField<uint[]>(root, type, "m_vram_last_pc");
+            int[]? vramFrame = GetPrivateField<int[]>(root, type, "m_vram_last_frame");
+            int frame = GetPrivateField<int>(root, type, "m_frame_counter");
+            if (vram == null || cram == null || vsram == null || workRam == null || regs == null)
+                return;
+
+            string? directory = Path.GetDirectoryName(prefix);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            File.WriteAllBytes(prefix + "_vram.bin", vram);
+            File.WriteAllBytes(prefix + "_cram.bin", WordsToBigEndianBytes(cram));
+            File.WriteAllBytes(prefix + "_vsram.bin", WordsToBigEndianBytes(vsram));
+            File.WriteAllBytes(prefix + "_workram.bin", workRam);
+            if (vramSource != null)
+                File.WriteAllBytes(prefix + "_vram_source.bin", UIntsToBigEndianBytes(vramSource));
+            if (vramPc != null)
+                File.WriteAllBytes(prefix + "_vram_pc.bin", UIntsToBigEndianBytes(vramPc));
+            if (vramFrame != null)
+                File.WriteAllBytes(prefix + "_vram_frame.bin", IntsToBigEndianBytes(vramFrame));
+            File.WriteAllText(prefix + "_meta.txt", BuildHshavocSnapshotMeta(frame, regs));
+            dumped = true;
+        });
+
+        return dumped;
+    }
+
     internal void SetOutputGainPercent(int percent)
     {
         lock (_sync)
@@ -468,6 +517,80 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             foreach (mame.ym2610_device ym2610 in new mame.device_type_enumerator<mame.ym2610_device>(machine.root_device()))
                 ym2610.set_neogeo_mix_gain_percent(adpcmaPercent, musicPercent);
         });
+    }
+
+    private static T? GetPrivateField<T>(object instance, Type type, string name)
+    {
+        FieldInfo? field = type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        return field?.GetValue(instance) is T value ? value : default;
+    }
+
+    private static byte[] WordsToBigEndianBytes(ushort[] words)
+    {
+        byte[] bytes = new byte[words.Length * 2];
+        for (int i = 0; i < words.Length; i++)
+        {
+            bytes[i * 2] = (byte)(words[i] >> 8);
+            bytes[i * 2 + 1] = (byte)words[i];
+        }
+
+        return bytes;
+    }
+
+    private static byte[] UIntsToBigEndianBytes(uint[] words)
+    {
+        byte[] bytes = new byte[words.Length * 4];
+        for (int i = 0; i < words.Length; i++)
+        {
+            uint value = words[i];
+            bytes[i * 4] = (byte)(value >> 24);
+            bytes[i * 4 + 1] = (byte)(value >> 16);
+            bytes[i * 4 + 2] = (byte)(value >> 8);
+            bytes[i * 4 + 3] = (byte)value;
+        }
+
+        return bytes;
+    }
+
+    private static byte[] IntsToBigEndianBytes(int[] words)
+    {
+        byte[] bytes = new byte[words.Length * 4];
+        for (int i = 0; i < words.Length; i++)
+        {
+            uint value = unchecked((uint)words[i]);
+            bytes[i * 4] = (byte)(value >> 24);
+            bytes[i * 4 + 1] = (byte)(value >> 16);
+            bytes[i * 4 + 2] = (byte)(value >> 8);
+            bytes[i * 4 + 3] = (byte)value;
+        }
+
+        return bytes;
+    }
+
+    private static string BuildHshavocSnapshotMeta(int frame, byte[] regs)
+    {
+        int Reg(int index) => index >= 0 && index < regs.Length ? regs[index] : 0;
+        return
+            $"frame={frame}\n" +
+            $"vdp_display={(((Reg(1) & 0x40) != 0) ? 1 : 0)}\n" +
+            $"vdp_plane_a=0x{((Reg(2) & 0x38) << 10):X4}\n" +
+            $"vdp_plane_b=0x{((Reg(4) & 0x07) << 13):X4}\n" +
+            $"vdp_sprite=0x{((Reg(5) & 0x7f) << 9):X4}\n" +
+            $"vdp_hscroll=0x{((Reg(13) & 0x3f) << 10):X4}\n" +
+            $"vdp_scroll_h=0x{(Reg(16) & 0x03):X2}\n" +
+            $"vdp_scroll_v=0x{((Reg(16) >> 4) & 0x03):X2}\n" +
+            $"vdp_reg_01=0x{Reg(1):X2}\n" +
+            $"vdp_reg_02=0x{Reg(2):X2}\n" +
+            $"vdp_reg_03=0x{Reg(3):X2}\n" +
+            $"vdp_reg_04=0x{Reg(4):X2}\n" +
+            $"vdp_reg_05=0x{Reg(5):X2}\n" +
+            $"vdp_reg_07=0x{Reg(7):X2}\n" +
+            $"vdp_reg_0b=0x{Reg(11):X2}\n" +
+            $"vdp_reg_0c=0x{Reg(12):X2}\n" +
+            $"vdp_reg_0d=0x{Reg(13):X2}\n" +
+            $"vdp_reg_10=0x{Reg(16):X2}\n" +
+            $"vdp_reg_11=0x{Reg(17):X2}\n" +
+            $"vdp_reg_12=0x{Reg(18):X2}\n";
     }
 
     public void SetInputState(
@@ -588,6 +711,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 int src = sourceBase + y * sourceRowBytes;
                 int dst = y * stride;
                 Buffer.BlockCopy(source, src, _frameBuffer, dst, copyBytes);
+                for (int x = 3; x < copyBytes; x += 4)
+                    _frameBuffer[dst + x] = 0xFF;
             }
         }
     }
@@ -646,9 +771,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private readonly McsOsd _osd;
         private readonly Thread _thread;
         private StateRequest? _pendingStateRequest;
+        private long _consumerFrameCursor;
         private int _frameAdvancePermits;
         private bool _shutdownFrameGate;
         private volatile Exception? _fault;
+        private volatile bool _exitRequested;
+        private volatile string _lifecycleStage = "created";
         private long _profileLastTicks = Stopwatch.GetTimestamp();
         private long _profileFrames;
         private long _profileWaitTicks;
@@ -691,13 +819,20 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         public void Dispose()
         {
-            _osd.ScheduleExit();
-            ReleaseFrameGateForShutdown();
+            RequestExit();
             TimeSpan timeout = TimeSpan.FromSeconds(10);
-            bool stopped = _stopped.Wait(timeout);
+            Stopwatch sw = Stopwatch.StartNew();
+            bool stopped = _stopped.IsSet;
+            while (!stopped && sw.Elapsed < timeout)
+            {
+                ReleaseFrameGateForShutdown();
+                _frameReady.Set();
+                stopped = _stopped.Wait(TimeSpan.FromMilliseconds(50));
+            }
+
             if (!stopped)
             {
-                var timeoutException = new TimeoutException($"MCS driver '{_driverName}' did not stop within {timeout.TotalSeconds:0} seconds.");
+                var timeoutException = new TimeoutException($"MCS driver '{_driverName}' did not stop within {timeout.TotalSeconds:0} seconds. Last stage: {_lifecycleStage}.");
                 _fault ??= timeoutException;
                 Console.Error.WriteLine($"[MCS] {timeoutException.Message}");
                 return;
@@ -722,7 +857,17 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             long waitStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
             long start;
             lock (_frameSync)
+            {
+                if (PublishedFrames > _consumerFrameCursor)
+                {
+                    _consumerFrameCursor = PublishedFrames;
+                    _frameGateChanged.Set();
+                    AddProfileWait(waitStart);
+                    return;
+                }
+
                 start = PublishedFrames;
+            }
 
             RequestFrameAdvance();
 
@@ -739,6 +884,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 {
                     if (PublishedFrames != start)
                     {
+                        _consumerFrameCursor = PublishedFrames;
+                        _frameGateChanged.Set();
                         AddProfileWait(waitStart);
                         return;
                     }
@@ -827,6 +974,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         public void ProcessMachineUpdate(mame.running_machine machine)
         {
+            _lifecycleStage = "machine_update";
+            ApplyExitRequest(machine);
             StateRequest? request = ProcessOneStateRequest(machine);
             if (request != null)
             {
@@ -838,7 +987,31 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         public void ProcessFrameBoundaryStateRequest(mame.running_machine machine)
         {
+            _lifecycleStage = "frame_boundary";
+            ApplyExitRequest(machine);
             WaitForFrameAdvance(machine, processStateRequests: false);
+        }
+
+        private void RequestExit()
+        {
+            _lifecycleStage = "exit_requested";
+            _exitRequested = true;
+            _osd.ScheduleExit();
+            ReleaseFrameGateForShutdown();
+        }
+
+        private void ApplyExitRequest(mame.running_machine machine)
+        {
+            if (!_exitRequested)
+                return;
+
+            try
+            {
+                machine.schedule_exit();
+            }
+            catch
+            {
+            }
         }
 
         private StateRequest? ProcessOneStateRequest(mame.running_machine machine)
@@ -900,6 +1073,15 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _frameAdvancePermits = 0;
                 _frameGateChanged.Reset();
             }
+
+            lock (_frameSync)
+                _consumerFrameCursor = PublishedFrames;
+        }
+
+        private bool HasBufferedFrameCapacity()
+        {
+            lock (_frameSync)
+                return PublishedFrames - _consumerFrameCursor < MaxBufferedMcsFrames;
         }
 
         private void WaitForFrameAdvance(mame.running_machine machine, bool processStateRequests)
@@ -918,13 +1100,21 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 }
 
                 bool hasPendingStateRequest = HasPendingStateRequest();
+                bool hasBufferedFrameCapacity = !hasPendingStateRequest && HasBufferedFrameCapacity();
 
                 lock (_frameGateSync)
                 {
                     if (_shutdownFrameGate)
-                        return;
+                    {
+                        _lifecycleStage = "frame_gate_shutdown";
+                        ApplyExitRequest(machine);
+                        throw new McsRuntimeExitException();
+                    }
 
                     if (!processStateRequests && hasPendingStateRequest)
+                        return;
+
+                    if (hasBufferedFrameCapacity)
                         return;
 
                     if (_frameAdvancePermits > 0)
@@ -943,6 +1133,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         private void SignalFrameParked()
         {
+            _lifecycleStage = "frame_parked";
             _firstFrame.Set();
             _frameReady.Set();
         }
@@ -1026,6 +1217,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         {
             try
             {
+                _lifecycleStage = "run_start";
                 EnsureMcsInitialized();
                 mame.mame_machine_manager.close_instance();
 
@@ -1064,6 +1256,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                     shareDirectory,
                     "-noreadconfig",
                     "-nowriteconfig",
+                    "-nothrottle",
+                    "-nosleep",
                     "-samplerate",
                     OutputSampleRate.ToString(CultureInfo.InvariantCulture),
                     "-skip_gameinfo",
@@ -1071,19 +1265,28 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                     "simple"
                 });
 
+                _lifecycleStage = "frontend_start";
                 int result = mame.emulator_info.start_frontend(options, _osd, args);
+                _lifecycleStage = $"frontend_returned_{result}";
                 if (result != mame.main_global.EMU_ERR_NONE)
                     _fault = new InvalidOperationException($"MCS exited with code {result} ({DescribeMcsExitCode(result)}) while running '{_driverName}'.");
             }
+            catch (McsRuntimeExitException) when (_exitRequested)
+            {
+                _lifecycleStage = "frontend_exit_requested";
+            }
             catch (Exception ex)
             {
+                _lifecycleStage = "faulted";
                 _fault = ex;
             }
             finally
             {
+                _lifecycleStage = "stopping";
                 _firstFrame.Set();
                 _stopped.Set();
                 mame.mame_machine_manager.close_instance();
+                _lifecycleStage = "stopped";
             }
         }
 
@@ -1119,6 +1322,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _ => "unknown error"
             };
         }
+    }
+
+    private sealed class McsRuntimeExitException : Exception
+    {
     }
 
     private sealed class McsHostCore : mame.osdcore_interface
@@ -1458,7 +1665,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 mame.render_primitive_list primitives = _target.get_primitives();
                 primitives.acquire_lock();
                 long drawStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
-                if (!TryDrawDirectPalette16(primitives, width, height))
+                if (!TryDrawDirectRgb32(primitives, width, height) &&
+                    !TryDrawDirectPalette16(primitives, width, height))
                 {
                     mame.software_renderer<uint, mame.int_const_0, mame.int_const_0, mame.int_const_0, mame.int_const_16, mame.int_const_8, mame.int_const_0, mame.bool_const_false, mame.bool_const_false>.draw_primitives(
                         primitives,
@@ -1480,6 +1688,9 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             }
             catch (Exception ex)
             {
+                if (ex is McsRuntimeExitException)
+                    throw;
+
                 if (_captureFailuresRemaining-- > 0)
                     Console.Error.WriteLine($"[MCS] Frame capture failed: {ex.Message}");
             }
@@ -1494,6 +1705,105 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         {
             _runtime.MarkFrameReady();
             _runtime.ProcessFrameBoundaryStateRequest(machine);
+        }
+
+        private bool TryDrawDirectRgb32(mame.render_primitive_list primitives, int width, int height)
+        {
+            mame.render_primitive? screenQuad = null;
+            for (mame.render_primitive? prim = primitives.first(); prim != null; prim = prim.next())
+            {
+                if (prim.type != mame.render_primitive.primitive_type.QUAD)
+                    return false;
+
+                if (prim.texture.base_ == null)
+                {
+                    uint blendMode = mame.render_global.PRIMFLAG_GET_BLENDMODE(prim.flags);
+                    if (blendMode != mame.rendertypes_global.BLENDMODE_NONE &&
+                        blendMode != mame.rendertypes_global.BLENDMODE_ALPHA)
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                if (screenQuad != null)
+                    return false;
+
+                screenQuad = prim;
+            }
+
+            if (screenQuad == null ||
+                screenQuad.texture.palette != null ||
+                screenQuad.texture.width != width ||
+                screenQuad.texture.height != height ||
+                screenQuad.texture.rowpixels < screenQuad.texture.width)
+            {
+                return false;
+            }
+
+            uint formatMask = mame.render_global.PRIMFLAG_TEXFORMAT_MASK | mame.render_global.PRIMFLAG_BLENDMODE_MASK;
+            uint noneFlags =
+                mame.render_global.PRIMFLAG_TEXFORMAT((uint)mame.texture_format.TEXFORMAT_RGB32) |
+                mame.render_global.PRIMFLAG_BLENDMODE(mame.rendertypes_global.BLENDMODE_NONE);
+            uint alphaFlags =
+                mame.render_global.PRIMFLAG_TEXFORMAT((uint)mame.texture_format.TEXFORMAT_RGB32) |
+                mame.render_global.PRIMFLAG_BLENDMODE(mame.rendertypes_global.BLENDMODE_ALPHA);
+            uint relevantFlags = screenQuad.flags & formatMask;
+            if ((relevantFlags != noneFlags && relevantFlags != alphaFlags) ||
+                mame.render_global.PRIMFLAG_GET_TEXWRAP(screenQuad.flags) ||
+                screenQuad.color.r < 1.0f ||
+                screenQuad.color.g < 1.0f ||
+                screenQuad.color.b < 1.0f ||
+                screenQuad.color.a < 1.0f ||
+                Math.Abs(screenQuad.texcoords.tl.u) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.tl.v) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.tr.u - 1.0f) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.tr.v) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.bl.u) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.bl.v - 1.0f) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.br.u - 1.0f) > 0.001f ||
+                Math.Abs(screenQuad.texcoords.br.v - 1.0f) > 0.001f)
+            {
+                return false;
+            }
+
+            int destX0 = Math.Clamp((int)MathF.Round(screenQuad.bounds.x0), 0, width);
+            int destY0 = Math.Clamp((int)MathF.Round(screenQuad.bounds.y0), 0, height);
+            int destX1 = Math.Clamp((int)MathF.Round(screenQuad.bounds.x1), 0, width);
+            int destY1 = Math.Clamp((int)MathF.Round(screenQuad.bounds.y1), 0, height);
+            int destWidth = destX1 - destX0;
+            int destHeight = destY1 - destY0;
+            if (destWidth <= 0 || destHeight <= 0)
+                return false;
+
+            if (destX0 != 0 || destY0 != 0 || destWidth != width || destHeight != height)
+                FillBgra(_bitmap.pix(0), width, height, _bitmap.rowpixels(), 0xff000000);
+
+            if (destWidth == screenQuad.texture.width && destHeight == screenQuad.texture.height)
+            {
+                CopyRgb32ToBgra(
+                    screenQuad.texture.base_,
+                    _bitmap.pix(destY0, destX0),
+                    destWidth,
+                    destHeight,
+                    (int)screenQuad.texture.rowpixels,
+                    _bitmap.rowpixels());
+            }
+            else
+            {
+                CopyRgb32ToBgraScaled(
+                    screenQuad.texture.base_,
+                    _bitmap.pix(destY0, destX0),
+                    (int)screenQuad.texture.width,
+                    (int)screenQuad.texture.height,
+                    destWidth,
+                    destHeight,
+                    (int)screenQuad.texture.rowpixels,
+                    _bitmap.rowpixels());
+            }
+
+            return true;
         }
 
         private bool TryDrawDirectPalette16(mame.render_primitive_list primitives, int width, int height)
@@ -1656,6 +1966,69 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                     {
                         ushort pen = source16[sourceRow + x];
                         destination32[destinationRow + x] = paletteData[paletteOffset + pen];
+                    }
+                }
+            }
+        }
+
+        private static unsafe void CopyRgb32ToBgra(
+            mame.Pointer<byte> source,
+            mame.PointerU32 destination,
+            int width,
+            int height,
+            int sourceRowPixels,
+            int destinationRowPixels)
+        {
+            byte[] sourceData = source.Buffer.data_raw;
+            byte[] destinationData = destination.Buffer.data_raw;
+            int sourceOffset = source.Offset;
+            int destinationOffset = destination.Offset;
+
+            fixed (byte* sourceBase = sourceData)
+            fixed (byte* destinationBase = destinationData)
+            {
+                uint* source32 = (uint*)(sourceBase + sourceOffset);
+                uint* destination32 = (uint*)(destinationBase + destinationOffset);
+
+                for (int y = 0; y < height; y++)
+                {
+                    uint* sourceRow = source32 + y * sourceRowPixels;
+                    uint* destinationRow = destination32 + y * destinationRowPixels;
+                    Buffer.MemoryCopy(sourceRow, destinationRow, width * sizeof(uint), width * sizeof(uint));
+                }
+            }
+        }
+
+        private static unsafe void CopyRgb32ToBgraScaled(
+            mame.Pointer<byte> source,
+            mame.PointerU32 destination,
+            int sourceWidth,
+            int sourceHeight,
+            int destinationWidth,
+            int destinationHeight,
+            int sourceRowPixels,
+            int destinationRowPixels)
+        {
+            byte[] sourceData = source.Buffer.data_raw;
+            byte[] destinationData = destination.Buffer.data_raw;
+            int sourceOffset = source.Offset;
+            int destinationOffset = destination.Offset;
+
+            fixed (byte* sourceBase = sourceData)
+            fixed (byte* destinationBase = destinationData)
+            {
+                uint* source32 = (uint*)(sourceBase + sourceOffset);
+                uint* destination32 = (uint*)(destinationBase + destinationOffset);
+
+                for (int y = 0; y < destinationHeight; y++)
+                {
+                    int sourceY = y * sourceHeight / destinationHeight;
+                    uint* sourceRow = source32 + sourceY * sourceRowPixels;
+                    uint* destinationRow = destination32 + y * destinationRowPixels;
+                    for (int x = 0; x < destinationWidth; x++)
+                    {
+                        int sourceX = x * sourceWidth / destinationWidth;
+                        destinationRow[x] = sourceRow[sourceX];
                     }
                 }
             }

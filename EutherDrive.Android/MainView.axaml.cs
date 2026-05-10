@@ -1463,6 +1463,7 @@ public partial class MainView : UserControl
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
             || _core is EutherDrive.Core.Arcade.System32.System32Adapter
             || _core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
+            || _core is EutherDrive.Core.Arcade.Igs.KovPgmAdapter
             || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
 
@@ -1669,7 +1670,11 @@ public partial class MainView : UserControl
         {
             if (isLoad)
             {
+                ClearOverlayInputState();
+                ClearCoreInput(core);
                 _savestateService.Load(savestateCore, slotIndex);
+                ClearOverlayInputState();
+                ClearCoreInput(core);
                 InitializeAudio(core);
                 CaptureLatestFrame(core);
                 PresentLatestFrame();
@@ -1696,6 +1701,24 @@ public partial class MainView : UserControl
                 StartEmulationLoop(core);
             }
         }
+    }
+
+    private static void ClearCoreInput(IEmulatorCore core)
+    {
+        core.SetInputState(
+            up: false,
+            down: false,
+            left: false,
+            right: false,
+            a: false,
+            b: false,
+            c: false,
+            start: false,
+            x: false,
+            y: false,
+            z: false,
+            mode: false,
+            padType: PadType.SixButton);
     }
 
     private void RefreshSavestateUi(IEmulatorCore? core)
@@ -2603,6 +2626,7 @@ public partial class MainView : UserControl
             || EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(pseudoPath);
     }
 
@@ -4040,6 +4064,11 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter();
         }
 
+        if (EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.Igs.KovPgmAdapter();
+        }
+
         if (EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
         {
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
@@ -4151,6 +4180,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter => "Arcade CPS2",
             EutherDrive.Core.Arcade.System32.System32Adapter => "Sega System 32",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
+            EutherDrive.Core.Arcade.Igs.KovPgmAdapter => "IGS PGM",
             EutherDrive.Core.Arcade.McsArcadeAdapter => "MAME",
             GbAdapter => GetEffectiveRomExtension(romPath) == ".gbc" ? "Game Boy Color" : "Game Boy",
             GbaAdapter => "Game Boy Advance",

@@ -26,6 +26,7 @@ using EutherDrive.Core;
 using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.DataEast.Hshavoc;
+using EutherDrive.Core.Arcade.Igs;
 using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
@@ -821,6 +822,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Technos.XainSleenaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && NeoGeoAdapter.IsSupportedArchive(path))
             return new NeoGeoAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && KovPgmAdapter.IsSupportedArchive(path))
+            return new KovPgmAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
@@ -1809,6 +1812,7 @@ public partial class MainWindow : Window
         {
             PsxAdapter => new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons),
             NeoGeoAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
+            KovPgmAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             McsArcadeAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
             GbaAdapter => new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons),
@@ -3621,6 +3625,11 @@ public partial class MainWindow : Window
             StatusText.Text = "ROM selected (recent)";
             AddRecentRom(_romPath);
             RefreshAutoFireUi();
+            if (KovPgmAdapter.IsSupportedArchive(_romPath))
+            {
+                StatusText.Text = "Starting recent arcade ROM";
+                OnStart(null, null);
+            }
         }
     }
 
@@ -3908,6 +3917,8 @@ public partial class MainWindow : Window
             n64.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is McsArcadeAdapter mcs)
             mcs.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is KovPgmAdapter kov)
+            kov.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is NeoGeoAdapter neoGeo)
             neoGeo.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter xain)
@@ -4344,6 +4355,7 @@ public partial class MainWindow : Window
             Deco32Adapter => "Data East Deco32",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             NeoGeoAdapter => "Neo Geo",
+            KovPgmAdapter => "IGS PGM / Knights of Valour",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
         };
@@ -8480,6 +8492,7 @@ public partial class MainWindow : Window
     private static bool IsArcadeInputCore(IEmulatorCore core)
     {
         return core is McsArcadeAdapter
+            or KovPgmAdapter
             or NeoGeoAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
             or Cps1DinoAdapter
@@ -9195,6 +9208,10 @@ public partial class MainWindow : Window
         }
 
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
+        forceOpaque |= core is McsArcadeAdapter
+            or KovPgmAdapter
+            or NeoGeoAdapter
+            or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(core, forceOpaque);
 
         if (_renderSurface is IAcceleratedRenderSurface glSurface
@@ -10382,7 +10399,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is NeoGeoAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10391,6 +10408,7 @@ public partial class MainWindow : Window
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
                                     || core is McsArcadeAdapter
+                                    || core is KovPgmAdapter
                                     || core is NeoGeoAdapter
                                     || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
                                     || core is Deco32Adapter)
@@ -10740,6 +10758,7 @@ public partial class MainWindow : Window
             || _core is N64Adapter
             || _core is SegaCdAdapter
             || _core is McsArcadeAdapter
+            || _core is KovPgmAdapter
             || _core is NeoGeoAdapter
             || _core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
             || _core is Cps1DinoAdapter

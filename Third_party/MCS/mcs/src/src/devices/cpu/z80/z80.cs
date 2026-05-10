@@ -550,34 +550,34 @@ namespace mame
                 tables_initialised = true;
             }
 
-            save_item(NAME(new { m_prvpc.w.l }));
-            save_item(NAME(new { PC }));
-            save_item(NAME(new { SP }));
-            save_item(NAME(new { AF }));
-            save_item(NAME(new { BC }));
-            save_item(NAME(new { DE }));
-            save_item(NAME(new { HL }));
-            save_item(NAME(new { IX }));
-            save_item(NAME(new { IY }));
-            save_item(NAME(new { WZ }));
-            save_item(NAME(new { m_af2.w.l }));
-            save_item(NAME(new { m_bc2.w.l }));
-            save_item(NAME(new { m_de2.w.l }));
-            save_item(NAME(new { m_hl2.w.l }));
-            save_item(NAME(new { m_r }));
-            save_item(NAME(new { m_r2 }));
-            save_item(NAME(new { m_iff1 }));
-            save_item(NAME(new { m_iff2 }));
-            save_item(NAME(new { m_halt }));
-            save_item(NAME(new { m_im }));
-            save_item(NAME(new { m_i }));
-            save_item(NAME(new { m_nmi_state }));
-            save_item(NAME(new { m_nmi_pending }));
-            save_item(NAME(new { m_irq_state }));
-            save_item(NAME(new { m_wait_state }));
-            save_item(NAME(new { m_busrq_state }));
-            save_item(NAME(new { m_after_ei }));
-            save_item(NAME(new { m_after_ldair }));
+            SaveStateRef("m_prvpc", () => m_prvpc.w.l, value => m_prvpc.w.l = value);
+            SaveStateRef("PC", () => PC, value => PC = value);
+            SaveStateRef("SP", () => SP, value => SP = value);
+            SaveStateRef("AF", () => AF, value => AF = value);
+            SaveStateRef("BC", () => BC, value => BC = value);
+            SaveStateRef("DE", () => DE, value => DE = value);
+            SaveStateRef("HL", () => HL, value => HL = value);
+            SaveStateRef("IX", () => IX, value => IX = value);
+            SaveStateRef("IY", () => IY, value => IY = value);
+            SaveStateRef("WZ", () => WZ, value => WZ = value);
+            SaveStateRef("m_af2", () => m_af2.w.l, value => m_af2.w.l = value);
+            SaveStateRef("m_bc2", () => m_bc2.w.l, value => m_bc2.w.l = value);
+            SaveStateRef("m_de2", () => m_de2.w.l, value => m_de2.w.l = value);
+            SaveStateRef("m_hl2", () => m_hl2.w.l, value => m_hl2.w.l = value);
+            SaveStateRef(nameof(m_r), () => m_r, value => m_r = value);
+            SaveStateRef(nameof(m_r2), () => m_r2, value => m_r2 = value);
+            SaveStateRef(nameof(m_iff1), () => m_iff1, value => m_iff1 = value);
+            SaveStateRef(nameof(m_iff2), () => m_iff2, value => m_iff2 = value);
+            SaveStateRef(nameof(m_halt), () => m_halt, value => m_halt = value);
+            SaveStateRef(nameof(m_im), () => m_im, value => m_im = value);
+            SaveStateRef(nameof(m_i), () => m_i, value => m_i = value);
+            SaveStateRef(nameof(m_nmi_state), () => m_nmi_state, value => m_nmi_state = value);
+            SaveStateRef(nameof(m_nmi_pending), () => m_nmi_pending, value => m_nmi_pending = value);
+            SaveStateRef(nameof(m_irq_state), () => m_irq_state, value => m_irq_state = value);
+            SaveStateRef(nameof(m_wait_state), () => m_wait_state, value => m_wait_state = value);
+            SaveStateRef(nameof(m_busrq_state), () => m_busrq_state, value => m_busrq_state = value);
+            SaveStateRef(nameof(m_after_ei), () => m_after_ei, value => m_after_ei = value);
+            SaveStateRef(nameof(m_after_ldair), () => m_after_ldair, value => m_after_ldair = value);
 
             /* Reset registers to their initial values */
             PRVPC = 0;
@@ -666,6 +666,11 @@ namespace mame
             m_refresh_cb.resolve_safe();
             m_nomreq_cb.resolve_safe();
             m_halt_cb.resolve_safe();
+        }
+
+        void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
+        {
+            machine().save().save_item_ref(this, name(), tag(), 0, itemName, getter, setter);
         }
 
 

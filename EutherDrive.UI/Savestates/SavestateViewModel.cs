@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
+using EutherDrive.Core;
 using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.UI.Savestates;
@@ -166,7 +167,9 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         bool wasRunning = _pauseEmu();
         try
         {
+            ClearCoreInput(core);
             _service.Load(core, slotIndex);
+            ClearCoreInput(core);
             _statusReporter($"Savestate: loaded S{slotIndex}.");
         }
         catch (Exception ex)
@@ -179,6 +182,27 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         }
 
         Refresh();
+    }
+
+    private static void ClearCoreInput(ISavestateCapable core)
+    {
+        if (core is IEmulatorCore emulatorCore)
+        {
+            emulatorCore.SetInputState(
+                up: false,
+                down: false,
+                left: false,
+                right: false,
+                a: false,
+                b: false,
+                c: false,
+                start: false,
+                x: false,
+                y: false,
+                z: false,
+                mode: false,
+                padType: PadType.SixButton);
+        }
     }
 
     private void ExecuteClear(int slotIndex)

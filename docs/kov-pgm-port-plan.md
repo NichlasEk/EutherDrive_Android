@@ -151,6 +151,8 @@ Done when:
 - No crash occurs from unmapped basic RAM/input/IRQ paths.
 - A headless trace can show first few thousand 68000 PCs.
 
+Status: partially done 2026-05-09. `pgm.cs` now installs an M68000 at 20 MHz with a first-pass PGM memory map: BIOS/game ROM, main RAM, palette RAM, Z80 RAM window, and stable stub handlers for video, sound/RTC, and input ranges. The current smoke test produces a 448x224 frame through `McsArcadeAdapter`, but KOV still needs real IGS023/protection behavior before it can boot visibly.
+
 ### 4. Port KOV Program Decryption
 
 Port only the KOV decryption path from `pgm_kov_decrypt`.
@@ -163,8 +165,10 @@ Required work:
 
 Done when:
 
-- The post-decrypt 68000 stream disassembles as plausible code.
-- Execution reaches KOV init code rather than illegal instruction loops caused by encrypted opcodes.
+- [x] KOV decrypt routine is ported from `pgm_kov_decrypt`.
+- [x] `driver_kov` calls the decrypt routine from its MCS init hook.
+- [ ] The post-decrypt 68000 stream is verified against a known native MAME reference.
+- [ ] Execution reaches KOV init code rather than illegal instruction loops caused by encrypted opcodes.
 
 ### 5. Add Minimal IGS027A Type 1 Simulation For KOV
 
@@ -295,6 +299,7 @@ If headless support is available for MCS arcade in the local tree, add a KOV smo
 | IGS023 renderer large | slow or wrong video | implement in visible layers: palette, tiles, sprites, priority |
 | ROM filename mismatch | false missing-ROM errors | add alias/hash-based matching for the known local set |
 | Existing dirty tree | accidental regression | keep PGM changes isolated and do not modify unrelated arcade ports |
+| MCS runtime shutdown timeout on `kov` smoke | Stop/ROM switch can block for 10 seconds | inspect MCS thread state around `schedule_exit`; current frame output works but Dispose still times out |
 
 ## Recommended First Commit Boundary
 
@@ -314,8 +319,8 @@ It should not include half-ported video or sound. That keeps the first diff revi
 - [x] Identify missing MCS devices.
 - [x] Add PGM skeleton driver.
 - [ ] Add ROM/BIOS loading. Partial: UI selection, auto-detect, and `kov` catalog recognition are done.
-- [ ] Bring up 68000 execution.
-- [ ] Add KOV decryption.
+- [ ] Bring up 68000 execution. Partial: first-pass CPU/map stubs are installed.
+- [x] Add KOV decryption.
 - [ ] Add Type 1 protection simulation.
 - [ ] Add IGS023 video.
 - [ ] Wire inputs.
