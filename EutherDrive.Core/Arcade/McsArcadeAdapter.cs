@@ -1658,9 +1658,17 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 mame.profiler_global.g_profiler.enable(true);
 
             _target = machine.render().target_alloc(null, mame.render_global.RENDER_CREATE_NO_ART);
-            _target.set_view(_target.configured_view("auto", 0, 1));
+            if (ShouldUseNativePixelAspectView())
+                _target.set_view(1);
+            else
+                _target.set_view(_target.configured_view("auto", 0, 1));
+            if (TraceMcsRender)
+                Console.Error.WriteLine($"[MCS-RENDER] target view='{_target.current_view().name()}' aspect={_target.current_view().effective_aspect():0.###}");
             _target.set_screen_overlay_enabled(false);
         }
+
+        private bool ShouldUseNativePixelAspectView()
+            => string.Equals(_owner._driverName, "kov", StringComparison.OrdinalIgnoreCase);
 
         public void machine_update(mame.running_machine machine)
         {
@@ -1815,6 +1823,14 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             if (destWidth <= 0 || destHeight <= 0)
                 return false;
 
+            if (ShouldFillTargetFromNativeScreenTexture(screenQuad, width, height))
+            {
+                destX0 = 0;
+                destY0 = 0;
+                destWidth = width;
+                destHeight = height;
+            }
+
             if (destX0 != 0 || destY0 != 0 || destWidth != width || destHeight != height)
                 FillBgra(_bitmap.pix(0), width, height, _bitmap.rowpixels(), 0xff000000);
 
@@ -1911,6 +1927,14 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 return false;
             }
 
+            if (ShouldFillTargetFromNativeScreenTexture(screenQuad, width, height))
+            {
+                destX0 = 0;
+                destY0 = 0;
+                destWidth = width;
+                destHeight = height;
+            }
+
             if (destX0 != 0 || destY0 != 0 || destWidth != width || destHeight != height)
                 FillBgra(_bitmap.pix(0), width, height, _bitmap.rowpixels(), 0xff000000);
 
@@ -1941,6 +1965,11 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
             return true;
         }
+
+        private bool ShouldFillTargetFromNativeScreenTexture(mame.render_primitive screenQuad, int width, int height)
+            => ShouldUseNativePixelAspectView() &&
+               screenQuad.texture.width == width &&
+               screenQuad.texture.height == height;
 
         private void TraceDirectPalette16Miss(mame.render_primitive_list primitives, int width, int height, string reason)
         {

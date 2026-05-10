@@ -97,9 +97,7 @@ namespace mame
 
             screen_device screen = SCREEN(config, "screen", SCREEN_TYPE_RASTER);
             screen.set_screen_update(screen_update);
-            screen.set_refresh_hz(60);
-            screen.set_size(ScreenWidth, ScreenHeight);
-            screen.set_visarea(0, ScreenWidth - 1, 0, ScreenHeight - 1);
+            screen.set_raw(new XTAL(50_000_000) / 5, 640, 0, ScreenWidth, 264, 0, ScreenHeight);
             screen.screen_vblank().set((write_line_delegate)vblank_irq).reg();
 
             SPEAKER(config, "mono").front_center();
