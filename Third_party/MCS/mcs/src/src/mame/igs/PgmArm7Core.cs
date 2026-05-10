@@ -49,6 +49,7 @@ public partial class PgmArm7Core
 	public bool Halted;
 	public bool IrqPending;
 	public bool FiqPending;
+	public bool FiqLineAsserted;
 	public uint OpenBusPrefetch;
 
 	public uint[] PcTrace = new uint[128];
@@ -87,6 +88,8 @@ public partial class PgmArm7Core
 		Halted = false;
 		IrqPending = false;
 		FiqPending = false;
+		FiqLineAsserted = false;
+		CrashDetected = false;
 		_prefetchFlushed = true;
 		Cycles = 0;
 
@@ -159,12 +162,19 @@ public partial class PgmArm7Core
 
 	public void PulseFiq()
 	{
-		FiqPending = true;
+		SetFiqLine( true );
+	}
+
+	public void SetFiqLine( bool asserted )
+	{
+		FiqLineAsserted = asserted;
+		FiqPending = asserted;
 		CheckPendingInterrupts();
 	}
 
 	public void ClearFiq()
 	{
+		FiqLineAsserted = false;
 		FiqPending = false;
 	}
 
@@ -173,7 +183,7 @@ public partial class PgmArm7Core
 		if ( FiqPending && !FiqDisable )
 		{
 			RaiseFiq();
-			FiqPending = false;
+			FiqPending = FiqLineAsserted;
 			FlushPipeline();
 			_prefetchFlushed = false;
 			return true;
@@ -280,6 +290,7 @@ public partial class PgmArm7Core
 		save.save_item_ref( owner, module, tag, 0, $"{prefix}.halted", () => Halted, value => Halted = value );
 		save.save_item_ref( owner, module, tag, 0, $"{prefix}.irq_pending", () => IrqPending, value => IrqPending = value );
 		save.save_item_ref( owner, module, tag, 0, $"{prefix}.fiq_pending", () => FiqPending, value => FiqPending = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.fiq_line_asserted", () => FiqLineAsserted, value => FiqLineAsserted = value );
 		save.save_item_ref( owner, module, tag, 0, $"{prefix}.open_bus_prefetch", () => OpenBusPrefetch, value => OpenBusPrefetch = value );
 		save.save_item_ref( owner, module, tag, 0, $"{prefix}.pc_trace_index", () => PcTraceIndex, value => PcTraceIndex = value );
 		save.save_item_ref( owner, module, tag, 0, $"{prefix}.crash_detected", () => CrashDetected, value => CrashDetected = value );

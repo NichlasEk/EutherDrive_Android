@@ -38,9 +38,11 @@ namespace mame
         const uint MainRamStart = 0x800000;
         const uint MainRamEnd = 0x81ffff;
         const int MainCpuClockHz = 20_000_000;
-        const int Arm7ClockHz = 22_000_000;
-        // PGM screen timing is 10 MHz / (640 * 264), so the ARM7 gets 371,712 cycles per video frame.
-        const int Arm7CyclesPerFrame = 371_712;
+        const int SvgArm7ClockHz = 22_000_000;
+        const int Kov2Arm7ClockHz = 20_000_000;
+        // PGM screen timing is 10 MHz / (640 * 264).
+        const int SvgArm7CyclesPerFrame = 371_712;
+        const int Kov2Arm7CyclesPerFrame = 337_920;
         const int Arm7SavestateCookie = 0x41524d37;
         static readonly bool TracePgmSound = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM_SOUND_TRACE") == "1";
         static readonly int[] ArmWait0 = new int[16];
@@ -70,6 +72,8 @@ namespace mame
         readonly byte [] m_armRam = new byte[0x40000];
         readonly byte [] m_armRam2 = new byte[0x400];
         readonly byte [] m_armAuxRam = new byte[0x400];
+        readonly byte [] m_kov2ArmSharedRam = new byte[0x10000];
+        readonly u32 [] m_kov2XorTable = new u32[0x100];
         readonly byte [][] m_svg_shareram = { new byte[0x20000], new byte[0x20000] };
         MemoryU8 m_mainrom;
         MemoryU8 m_armExternalRom;
@@ -92,9 +96,12 @@ namespace mame
         int m_asic3Region;
         bool m_useCaveType1Sim;
         bool m_useSvgArmType3;
+        bool m_useKov2ArmType2;
         int m_svg_ram_sel;
         u32 m_svg_latchdata_68k_w;
         u32 m_svg_latchdata_arm_w;
+        u32 m_kov2_latchdata_68k_w;
+        u32 m_kov2_latchdata_arm_w;
         uint m_armLastPrefetchedPc;
         int m_arm7SavestateCookie;
         int m_pgmFrameCounter;
@@ -167,6 +174,8 @@ namespace mame
             map.op(0xc04000, 0xc0400f).rw((read16_delegate)asic3_r, (write16_delegate)asic3_w);
             map.op(0xc08000, 0xc08007).rw((read16_delegate)input_stub_r, (write16_delegate)input_stub_w);
             map.op(0xc10000, 0xc1ffff).rw((read16_delegate)z80_ram_68k_r, (write16_delegate)z80_ram_68k_w);
+            map.op(0xd00000, 0xd0ffff).rw((read16_delegate)kov2_arm7_ram_r, (write16_delegate)kov2_arm7_ram_w);
+            map.op(0xd10000, 0xd10001).rw((read16_delegate)kov2_arm7_latch_68k_r, (write16_delegate)kov2_arm7_latch_68k_w);
         }
 
         void pgm_z80_mem(address_map map, device_t device)
@@ -216,6 +225,8 @@ namespace mame
             save_item(NAME(new { m_armRam }));
             save_item(NAME(new { m_armRam2 }));
             save_item(NAME(new { m_armAuxRam }));
+            save_item(NAME(new { m_kov2ArmSharedRam }));
+            save_item(NAME(new { m_kov2XorTable }));
             save_item(NAME(new { m_svg_shareram }));
             SaveStateRef(nameof(m_value0), () => m_value0, value => m_value0 = value);
             SaveStateRef(nameof(m_value1), () => m_value1, value => m_value1 = value);
@@ -234,9 +245,12 @@ namespace mame
             SaveStateRef(nameof(m_asic3Region), () => m_asic3Region, value => m_asic3Region = value);
             SaveStateRef(nameof(m_useCaveType1Sim), () => m_useCaveType1Sim, value => m_useCaveType1Sim = value);
             SaveStateRef(nameof(m_useSvgArmType3), () => m_useSvgArmType3, value => m_useSvgArmType3 = value);
+            SaveStateRef(nameof(m_useKov2ArmType2), () => m_useKov2ArmType2, value => m_useKov2ArmType2 = value);
             SaveStateRef(nameof(m_svg_ram_sel), () => m_svg_ram_sel, value => m_svg_ram_sel = value);
             SaveStateRef(nameof(m_svg_latchdata_68k_w), () => m_svg_latchdata_68k_w, value => m_svg_latchdata_68k_w = value);
             SaveStateRef(nameof(m_svg_latchdata_arm_w), () => m_svg_latchdata_arm_w, value => m_svg_latchdata_arm_w = value);
+            SaveStateRef(nameof(m_kov2_latchdata_68k_w), () => m_kov2_latchdata_68k_w, value => m_kov2_latchdata_68k_w = value);
+            SaveStateRef(nameof(m_kov2_latchdata_arm_w), () => m_kov2_latchdata_arm_w, value => m_kov2_latchdata_arm_w = value);
             SaveStateRef(nameof(m_armLastPrefetchedPc), () => m_armLastPrefetchedPc, value => m_armLastPrefetchedPc = value);
             SaveStateRef(nameof(m_arm7SavestateCookie), () => m_arm7SavestateCookie, value => m_arm7SavestateCookie = value);
             SaveStateRef(nameof(m_pgmFrameCounter), () => m_pgmFrameCounter, value => m_pgmFrameCounter = value);
@@ -255,6 +269,7 @@ namespace mame
             Array.Clear(m_armRam, 0, m_armRam.Length);
             Array.Clear(m_armRam2, 0, m_armRam2.Length);
             Array.Clear(m_armAuxRam, 0, m_armAuxRam.Length);
+            Array.Clear(m_kov2ArmSharedRam, 0, m_kov2ArmSharedRam.Length);
             Array.Clear(m_svg_shareram[0], 0, m_svg_shareram[0].Length);
             Array.Clear(m_svg_shareram[1], 0, m_svg_shareram[1].Length);
             m_trace_z80_ram_writes = 0;
@@ -266,6 +281,7 @@ namespace mame
             ResetKovProtection();
             ResetAsic3Protection();
             ResetSvgArmType3Runtime();
+            ResetKov2ArmType2Runtime();
             m_maincpu.op0.reset_from_bus();
             m_soundcpu.op0.set_input_line(INPUT_LINE_HALT, ASSERT_LINE);
         }
@@ -493,6 +509,8 @@ namespace mame
 
             if (m_useSvgArmType3 && ((address >= 0x500000 && address <= 0x50ffff) || address == 0x5c0000 || address == 0x5c0001 || address == 0x5c0300 || address == 0x5c0301))
                 return false;
+            if (m_useKov2ArmType2 && ((address >= 0xd00000 && address <= 0xd0ffff) || address == 0xd10000 || address == 0xd10001))
+                return false;
 
             return (address < 0x4f0000 || address > 0x4f003f)
                 && (!m_useCaveType1Sim || address < 0x400000 || address > 0x400005)
@@ -505,6 +523,8 @@ namespace mame
                 return false;
 
             if (m_useSvgArmType3 && ((address >= 0x500000 && address <= 0x50fffe) || address == 0x5c0000 || address == 0x5c0300))
+                return false;
+            if (m_useKov2ArmType2 && ((address >= 0xd00000 && address <= 0xd0fffe) || address == 0xd10000))
                 return false;
 
             return (address < 0x4f0000 || address > 0x4f003e)
@@ -575,6 +595,16 @@ namespace mame
                 value = input_stub_r(null, (wordAddress - 0xc08000) >> 1, memMask);
                 return true;
             }
+            if (m_useKov2ArmType2 && wordAddress >= 0xd00000 && wordAddress <= 0xd0fffe)
+            {
+                value = kov2_arm7_ram_r(null, (wordAddress - 0xd00000) >> 1, memMask);
+                return true;
+            }
+            if (m_useKov2ArmType2 && wordAddress == 0xd10000)
+            {
+                value = kov2_arm7_latch_68k_r(null, 0, memMask);
+                return true;
+            }
 
             value = 0xffff;
             return false;
@@ -633,6 +663,16 @@ namespace mame
             if (wordAddress >= 0xc08000 && wordAddress <= 0xc08006)
             {
                 input_stub_w(null, (wordAddress - 0xc08000) >> 1, data, memMask);
+                return true;
+            }
+            if (m_useKov2ArmType2 && wordAddress >= 0xd00000 && wordAddress <= 0xd0fffe)
+            {
+                kov2_arm7_ram_w(null, (wordAddress - 0xd00000) >> 1, data, memMask);
+                return true;
+            }
+            if (m_useKov2ArmType2 && wordAddress == 0xd10000)
+            {
+                kov2_arm7_latch_68k_w(null, 0, data, memMask);
                 return true;
             }
 
@@ -840,6 +880,54 @@ namespace mame
             SyncArmToMainTime();
         }
 
+        u16 kov2_arm7_ram_r(address_space space, offs_t offset, u16 mem_mask)
+        {
+            if (!m_useKov2ArmType2)
+                return 0xffff;
+
+            SyncArmToMainTime();
+            uint byteOffset = (offset << 1) & 0xffff;
+            u16 value = ReadLe16(m_kov2ArmSharedRam, byteOffset);
+            if (TracePgmArmEnabled() && m_maincpu.op0.Pc >= 0x13a200 && m_maincpu.op0.Pc <= 0x13a500)
+                TraceArmEvent(ref m_traceArmSharedReads, $"[PGM-ARM] kov2 68k shared r off=0x{byteOffset:x4} val=0x{value:x4} mask=0x{mem_mask:x4} m68k=0x{m_maincpu.op0.Pc:x6}", 160);
+            return value;
+        }
+
+        void kov2_arm7_ram_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
+        {
+            if (!m_useKov2ArmType2)
+                return;
+
+            uint byteOffset = (offset << 1) & 0xffff;
+            CombineLe16(m_kov2ArmSharedRam, byteOffset, data, mem_mask);
+            if (TracePgmArmEnabled() && m_maincpu.op0.Pc >= 0x13a200 && m_maincpu.op0.Pc <= 0x13a500)
+                TraceArmEvent(ref m_traceArmSharedWrites, $"[PGM-ARM] kov2 68k shared w off=0x{byteOffset:x4} data=0x{data:x4} mask=0x{mem_mask:x4} val=0x{ReadLe16(m_kov2ArmSharedRam, byteOffset):x4} m68k=0x{m_maincpu.op0.Pc:x6}", 160);
+        }
+
+        u16 kov2_arm7_latch_68k_r(address_space space, offs_t offset, u16 mem_mask)
+        {
+            if (!m_useKov2ArmType2)
+                return 0xffff;
+
+            SyncArmToMainTime();
+            u16 value = (u16)m_kov2_latchdata_arm_w;
+            if (TracePgmArmEnabled())
+                TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] kov2 68k latch r val=0x{value:x4} mask=0x{mem_mask:x4} m68k=0x{m_maincpu.op0.Pc:x6}", 128);
+            return value;
+        }
+
+        void kov2_arm7_latch_68k_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
+        {
+            if (!m_useKov2ArmType2)
+                return;
+
+            COMBINE_DATA(ref m_kov2_latchdata_68k_w, data, mem_mask);
+            if (TracePgmArmEnabled())
+                Console.Error.WriteLine($"[PGM-ARM] kov2 68k latch w data=0x{data:x4} mask=0x{mem_mask:x4} latch=0x{m_kov2_latchdata_68k_w:x8} m68k=0x{m_maincpu.op0.Pc:x6}");
+            m_arm7.PulseFiq();
+            SyncArmToMainTime();
+        }
+
         u8 read_sound_byte(int address)
         {
             u8 value = address switch
@@ -979,11 +1067,12 @@ namespace mame
         bool IPgmArm7Bus.IsExecutableAddress(uint address)
         {
             return address < 0x4000
-                || (address >= 0x08000000 && address <= 0x087fffff)
+                || (address >= 0x08000000 && address <= (m_useKov2ArmType2 ? 0x083fffff : 0x087fffff))
                 || (address >= 0x10000000 && address <= 0x100003ff)
-                || (address >= 0x18000000 && address <= 0x1803ffff)
-                || (address >= 0x38000000 && address <= 0x3800ffff)
-                || (address >= 0x48000000 && address <= 0x48000003)
+                || (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
+                || (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000003 : 0x3800ffff))
+                || (!m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x48000003)
+                || (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)
                 || (address >= 0x50000000 && address <= 0x500003ff);
         }
 
@@ -1009,17 +1098,30 @@ namespace mame
         {
             if (address < 0x4000)
                 return m_armInternalRom[address & 0x3fff];
-            if (address >= 0x08000000 && address <= 0x087fffff)
+            if (address >= 0x08000000 && address <= (m_useKov2ArmType2 ? 0x083fffff : 0x087fffff))
             {
                 uint offset = address - 0x08000000;
+                if (m_useKov2ArmType2)
+                    return (byte)(ReadKov2ExternalArmWord(offset & ~3u) >> (int)((offset & 3) * 8));
                 return offset < m_armExternalRomBytes ? m_armExternalRom[(int)offset] : (byte)0xff;
             }
             if (address >= 0x10000000 && address <= 0x100003ff)
                 return m_armRam2[(address - 0x10000000) & 0x3ff];
-            if (address >= 0x18000000 && address <= 0x1803ffff)
-                return m_armRam[(address - 0x18000000) & 0x3ffff];
-            if (address >= 0x38000000 && address <= 0x3800ffff)
+            if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
+                return m_armRam[(address - 0x18000000) & (m_useKov2ArmType2 ? 0xffffu : 0x3ffffu)];
+            if (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000003 : 0x3800ffff))
             {
+                if (m_useKov2ArmType2 && address <= 0x38000003)
+                {
+                    uint pc = m_arm7.Registers[15] - 8;
+                    uint value = m_kov2_latchdata_68k_w;
+                    TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] kov2 arm latch r8 off={(address - 0x38000000) & 3} val=0x{((value >> (int)(((address - 0x38000000) & 3) * 8)) & 0xff):x2} latch68=0x{value:x8} pc=0x{pc:x8} fiqLine={(m_arm7.FiqLineAsserted ? 1 : 0)} fiqPending={(m_arm7.FiqPending ? 1 : 0)}", 128);
+                    m_arm7.ClearFiq();
+                    return (byte)(value >> (int)(((address - 0x38000000) & 3) * 8));
+                }
+                if (m_useKov2ArmType2)
+                    return 0xff;
+
                 uint offset = (address - 0x38000000) & 0xffff;
                 if ((offset & 0xfff8) == 0x150 || (offset & 0xfff8) == 0xa038)
                     TraceArmEvent(ref m_traceArmSharedReads, $"[PGM-ARM] arm shared r8 bank={m_svg_ram_sel & 1} off=0x{offset:x5} val=0x{m_svg_shareram[m_svg_ram_sel & 1][offset]:x2} pc=0x{m_arm7.Registers[15] - 8:x8}", 160);
@@ -1027,6 +1129,9 @@ namespace mame
             }
             if (address >= 0x48000000 && address <= 0x48000003)
             {
+                if (m_useKov2ArmType2)
+                    return m_kov2ArmSharedRam[(address - 0x48000000) & 0xffff];
+
                 uint shift = ((address - 0x48000000) & 3) * 8;
                 uint pc = m_arm7.Registers[15] - 8;
                 if (m_useSvgArmType3 && m_svg_latchdata_68k_w == 0 && (pc == 0x08000fb4 || pc == 0x08000fb8))
@@ -1034,6 +1139,8 @@ namespace mame
                 TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] arm latch r8 off={(address - 0x48000000) & 3} val=0x{((m_svg_latchdata_68k_w >> (int)shift) & 0xff):x2} latch68=0x{m_svg_latchdata_68k_w:x8} pc=0x{m_arm7.Registers[15] - 8:x8}", 64);
                 return (byte)(m_svg_latchdata_68k_w >> (int)(((address - 0x48000000) & 3) * 8));
             }
+            if (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)
+                return m_kov2ArmSharedRam[(address - 0x48000000) & 0xffff];
             if (address >= 0x50000000 && address <= 0x500003ff)
                 return m_armAuxRam[(address - 0x50000000) & 0x3ff];
             return 0xff;
@@ -1044,20 +1151,40 @@ namespace mame
             address &= ~1u;
             if (address < 0x4000)
                 return ReadLe16(m_armInternalRom, address & 0x3fff);
-            if (address >= 0x08000000 && address <= 0x087fffff)
+            if (address >= 0x08000000 && address <= (m_useKov2ArmType2 ? 0x083fffff : 0x087fffff))
             {
                 uint offset = address - 0x08000000;
+                if (m_useKov2ArmType2)
+                    return (u16)(ReadKov2ExternalArmWord(offset & ~3u) >> (int)((offset & 2) * 8));
                 if (offset + 1 < m_armExternalRomBytes)
                     return (u16)(m_armExternalRom[(int)offset] | (m_armExternalRom[(int)(offset + 1)] << 8));
             }
             if (address >= 0x10000000 && address <= 0x100003ff)
                 return ReadLe16(m_armRam2, (address - 0x10000000) & 0x3ff);
-            if (address >= 0x18000000 && address <= 0x1803ffff)
-                return ReadLe16(m_armRam, (address - 0x18000000) & 0x3ffff);
-            if (address >= 0x38000000 && address <= 0x3800ffff)
+            if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
+                return ReadLe16(m_armRam, (address - 0x18000000) & (m_useKov2ArmType2 ? 0xffffu : 0x3ffffu));
+            if (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000003 : 0x3800ffff))
+            {
+                if (m_useKov2ArmType2 && address <= 0x38000002)
+                {
+                    uint pc = m_arm7.Registers[15] - 8;
+                    uint value = m_kov2_latchdata_68k_w;
+                    TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] kov2 arm latch r16 off={(address - 0x38000000) & 2} val=0x{((value >> (int)(((address - 0x38000000) & 2) * 8)) & 0xffff):x4} latch68=0x{value:x8} pc=0x{pc:x8} fiqLine={(m_arm7.FiqLineAsserted ? 1 : 0)} fiqPending={(m_arm7.FiqPending ? 1 : 0)}", 128);
+                    m_arm7.ClearFiq();
+                    return (u16)(value >> (int)(((address - 0x38000000) & 2) * 8));
+                }
+                if (m_useKov2ArmType2)
+                    return 0xffff;
                 return ReadLe16(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff);
+            }
             if (address >= 0x48000000 && address <= 0x48000002)
+            {
+                if (m_useKov2ArmType2)
+                    return ReadLe16(m_kov2ArmSharedRam, (address - 0x48000000) & 0xffff);
                 return (u16)(m_svg_latchdata_68k_w >> (int)(((address - 0x48000000) & 2) * 8));
+            }
+            if (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)
+                return ReadLe16(m_kov2ArmSharedRam, (address - 0x48000000) & 0xffff);
             if (address >= 0x50000000 && address <= 0x500003ff)
                 return ReadLe16(m_armAuxRam, (address - 0x50000000) & 0x3ff);
             return (ushort)(ArmRead8(address) | (ArmRead8(address + 1) << 8));
@@ -1068,9 +1195,11 @@ namespace mame
             address &= ~3u;
             if (address < 0x4000)
                 return ReadLe32(m_armInternalRom, address & 0x3fff);
-            if (address >= 0x08000000 && address <= 0x087fffff)
+            if (address >= 0x08000000 && address <= (m_useKov2ArmType2 ? 0x083fffff : 0x087fffff))
             {
                 uint offset = address - 0x08000000;
+                if (m_useKov2ArmType2)
+                    return ReadKov2ExternalArmWord(offset);
                 if (offset + 3 < m_armExternalRomBytes)
                     return (u32)(m_armExternalRom[(int)offset]
                         | (m_armExternalRom[(int)(offset + 1)] << 8)
@@ -1079,12 +1208,30 @@ namespace mame
             }
             if (address >= 0x10000000 && address <= 0x100003ff)
                 return ReadLe32(m_armRam2, (address - 0x10000000) & 0x3ff);
-            if (address >= 0x18000000 && address <= 0x1803ffff)
-                return ReadLe32(m_armRam, (address - 0x18000000) & 0x3ffff);
-            if (address >= 0x38000000 && address <= 0x3800ffff)
+            if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
+                return ReadLe32(m_armRam, (address - 0x18000000) & (m_useKov2ArmType2 ? 0xffffu : 0x3ffffu));
+            if (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000003 : 0x3800ffff))
+            {
+                if (m_useKov2ArmType2 && address == 0x38000000)
+                {
+                    uint pc = m_arm7.Registers[15] - 8;
+                    uint value = m_kov2_latchdata_68k_w;
+                    TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] kov2 arm latch r32 val=0x{value:x8} pc=0x{pc:x8} fiqLine={(m_arm7.FiqLineAsserted ? 1 : 0)} fiqPending={(m_arm7.FiqPending ? 1 : 0)}", 128);
+                    m_arm7.ClearFiq();
+                    return value;
+                }
+                if (m_useKov2ArmType2)
+                    return 0xffff_ffff;
                 return ReadLe32(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff);
+            }
             if (address == 0x48000000)
+            {
+                if (m_useKov2ArmType2)
+                    return ReadLe32(m_kov2ArmSharedRam, 0);
                 return m_svg_latchdata_68k_w;
+            }
+            if (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)
+                return ReadLe32(m_kov2ArmSharedRam, (address - 0x48000000) & 0xffff);
             if (address >= 0x50000000 && address <= 0x500003ff)
                 return ReadLe32(m_armAuxRam, (address - 0x50000000) & 0x3ff);
             return (uint)(ArmRead8(address)
@@ -1097,10 +1244,18 @@ namespace mame
         {
             if (address >= 0x10000000 && address <= 0x100003ff)
                 m_armRam2[(address - 0x10000000) & 0x3ff] = value;
-            else if (address >= 0x18000000 && address <= 0x1803ffff)
-                m_armRam[(address - 0x18000000) & 0x3ffff] = value;
-            else if (address >= 0x38000000 && address <= 0x3800ffff)
+            else if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
+                m_armRam[(address - 0x18000000) & (m_useKov2ArmType2 ? 0xffffu : 0x3ffffu)] = value;
+            else if (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000003 : 0x3800ffff))
             {
+                if (m_useKov2ArmType2)
+                {
+                    uint shift = ((address - 0x38000000) & 3) * 8;
+                    m_kov2_latchdata_arm_w = (m_kov2_latchdata_arm_w & ~(0xffu << (int)shift)) | ((uint)value << (int)shift);
+                    TraceArmEvent(ref m_traceArmLatchWrites, $"[PGM-ARM] kov2 arm latch w8 off={(address - 0x38000000) & 3} val=0x{value:x2} latchArm=0x{m_kov2_latchdata_arm_w:x8} pc=0x{m_arm7.Registers[15] - 8:x8}", 64);
+                    return;
+                }
+
                 uint offset = (address - 0x38000000) & 0xffff;
                 m_svg_shareram[m_svg_ram_sel & 1][(address - 0x38000000) & 0xffff] = value;
                 if ((offset & 0xfff8) == 0x150 || (offset & 0xfff8) == 0xa038)
@@ -1108,17 +1263,29 @@ namespace mame
             }
             else if (address >= 0x48000000 && address <= 0x48000003)
             {
+                if (m_useKov2ArmType2)
+                {
+                    m_kov2ArmSharedRam[(address - 0x48000000) & 0xffff] = value;
+                    return;
+                }
+
                 uint shift = ((address - 0x48000000) & 3) * 8;
                 m_svg_latchdata_arm_w = (m_svg_latchdata_arm_w & ~(0xffu << (int)shift)) | ((uint)value << (int)shift);
                 TraceArmEvent(ref m_traceArmLatchWrites, $"[PGM-ARM] arm latch w8 off={(address - 0x48000000) & 3} val=0x{value:x2} latchArm=0x{m_svg_latchdata_arm_w:x8} pc=0x{m_arm7.Registers[15] - 8:x8}", 64);
             }
+            else if (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)
+                m_kov2ArmSharedRam[(address - 0x48000000) & 0xffff] = value;
             else if (address >= 0x40000018 && address <= 0x4000001b)
             {
                 m_svg_ram_sel = value & 1;
                 TraceArmEvent(ref m_traceArmRamSelWrites, $"[PGM-ARM] arm ram_sel w8 addr=0x{address:x8} val=0x{value:x2} sel={m_svg_ram_sel} pc=0x{m_arm7.Registers[15] - 8:x8}", 64);
             }
             else if (address >= 0x50000000 && address <= 0x500003ff)
+            {
+                if (m_useKov2ArmType2)
+                    Kov2XorTableWrite(address, value);
                 m_armAuxRam[(address - 0x50000000) & 0x3ff] = value;
+            }
         }
 
         void ArmWrite16(uint address, ushort value)
@@ -1131,24 +1298,44 @@ namespace mame
                     WriteLe16(m_armRam2, (address - 0x10000000) & 0x3ff, value);
                     return;
                 }
-                if (address >= 0x18000000 && address <= 0x1803ffff)
+                if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
                 {
-                    WriteLe16(m_armRam, (address - 0x18000000) & 0x3ffff, value);
+                    WriteLe16(m_armRam, (address - 0x18000000) & (m_useKov2ArmType2 ? 0xffffu : 0x3ffffu), value);
                     return;
                 }
-                if (address >= 0x38000000 && address <= 0x3800ffff)
+                if (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000002 : 0x3800ffff))
                 {
+                    if (m_useKov2ArmType2)
+                    {
+                        uint shift = ((address - 0x38000000) & 2) * 8;
+                        m_kov2_latchdata_arm_w = (m_kov2_latchdata_arm_w & ~(0xffffu << (int)shift)) | ((uint)value << (int)shift);
+                        return;
+                    }
+
                     WriteLe16(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff, value);
                     return;
                 }
                 if (address >= 0x48000000 && address <= 0x48000002)
                 {
+                    if (m_useKov2ArmType2)
+                    {
+                        WriteLe16(m_kov2ArmSharedRam, (address - 0x48000000) & 0xffff, value);
+                        return;
+                    }
+
                     uint shift = ((address - 0x48000000) & 2) * 8;
                     m_svg_latchdata_arm_w = (m_svg_latchdata_arm_w & ~(0xffffu << (int)shift)) | ((uint)value << (int)shift);
                     return;
                 }
+                if (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)
+                {
+                    WriteLe16(m_kov2ArmSharedRam, (address - 0x48000000) & 0xffff, value);
+                    return;
+                }
                 if (address >= 0x50000000 && address <= 0x500003ff)
                 {
+                    if (m_useKov2ArmType2)
+                        Kov2XorTableWrite(address, (byte)value);
                     WriteLe16(m_armAuxRam, (address - 0x50000000) & 0x3ff, value);
                     return;
                 }
@@ -1174,23 +1361,42 @@ namespace mame
                     WriteLe32(m_armRam2, (address - 0x10000000) & 0x3ff, value);
                     return;
                 }
-                if (address >= 0x18000000 && address <= 0x1803ffff)
+                if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
                 {
-                    WriteLe32(m_armRam, (address - 0x18000000) & 0x3ffff, value);
+                    WriteLe32(m_armRam, (address - 0x18000000) & (m_useKov2ArmType2 ? 0xffffu : 0x3ffffu), value);
                     return;
                 }
-                if (address >= 0x38000000 && address <= 0x3800ffff)
+                if (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000000 : 0x3800ffff))
                 {
+                    if (m_useKov2ArmType2)
+                    {
+                        m_kov2_latchdata_arm_w = value;
+                        return;
+                    }
+
                     WriteLe32(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff, value);
                     return;
                 }
                 if (address == 0x48000000)
                 {
+                    if (m_useKov2ArmType2)
+                    {
+                        WriteLe32(m_kov2ArmSharedRam, 0, value);
+                        return;
+                    }
+
                     m_svg_latchdata_arm_w = value;
+                    return;
+                }
+                if (m_useKov2ArmType2 && address >= 0x48000000 && address <= 0x4800ffff)
+                {
+                    WriteLe32(m_kov2ArmSharedRam, (address - 0x48000000) & 0xffff, value);
                     return;
                 }
                 if (address >= 0x50000000 && address <= 0x500003ff)
                 {
+                    if (m_useKov2ArmType2)
+                        Kov2XorTableWrite(address, (byte)value);
                     WriteLe32(m_armAuxRam, (address - 0x50000000) & 0x3ff, value);
                     return;
                 }
@@ -1204,7 +1410,7 @@ namespace mame
 
         void RunArmSlice(int cycles)
         {
-            if (!m_useSvgArmType3 || cycles <= 0 || m_arm7.CrashDetected)
+            if ((!m_useSvgArmType3 && !m_useKov2ArmType2) || cycles <= 0 || m_arm7.CrashDetected)
                 return;
 
             m_arm7.Run(m_arm7.Cycles + cycles);
@@ -1212,17 +1418,17 @@ namespace mame
 
         void RunArmFrame()
         {
-            if (!m_useSvgArmType3 || m_arm7.CrashDetected)
+            if ((!m_useSvgArmType3 && !m_useKov2ArmType2) || m_arm7.CrashDetected)
                 return;
 
-            long targetCycles = Math.Max(GetArmTargetCyclesFromMainTime(), (long)m_pgmFrameCounter * Arm7CyclesPerFrame);
+            long targetCycles = Math.Max(GetArmTargetCyclesFromMainTime(), (long)m_pgmFrameCounter * GetArmCyclesPerFrame());
             if (targetCycles > m_arm7.Cycles)
                 m_arm7.Run(targetCycles);
         }
 
         void SyncArmToMainTime()
         {
-            if (!m_useSvgArmType3 || m_arm7.CrashDetected)
+            if ((!m_useSvgArmType3 && !m_useKov2ArmType2) || m_arm7.CrashDetected)
                 return;
 
             long targetCycles = GetArmTargetCyclesFromMainTime();
@@ -1233,8 +1439,12 @@ namespace mame
         long GetArmTargetCyclesFromMainTime()
         {
             ulong mainCycles = m_maincpu.op0.execute().total_cycles();
-            return (long)Math.Min((ulong)long.MaxValue, mainCycles * (ulong)Arm7ClockHz / MainCpuClockHz);
+            return (long)Math.Min((ulong)long.MaxValue, mainCycles * (ulong)GetArmClockHz() / MainCpuClockHz);
         }
+
+        int GetArmClockHz() => m_useKov2ArmType2 ? Kov2Arm7ClockHz : SvgArm7ClockHz;
+
+        int GetArmCyclesPerFrame() => m_useKov2ArmType2 ? Kov2Arm7CyclesPerFrame : SvgArm7CyclesPerFrame;
 
         void TraceArmFrame()
         {
@@ -1247,11 +1457,9 @@ namespace mame
                 return;
 
             Console.Error.WriteLine(
-                $"[PGM-ARM] frame={m_pgmFrameCounter} m68k=0x{m_maincpu.op0.Pc:x6} " +
-                $"armPc=0x{m_arm7.Registers[15]:x8} armCyc={m_arm7.Cycles} crash={m_arm7.CrashDetected} crashPc=0x{m_arm7.CrashPc:x8} " +
-                $"sel={m_svg_ram_sel} latch68=0x{m_svg_latchdata_68k_w:x8} latchArm=0x{m_svg_latchdata_arm_w:x8} " +
-                $"ram0[158]=0x{ReadLe16(m_svg_shareram[0], 0x158):x4} ram1[158]=0x{ReadLe16(m_svg_shareram[1], 0x158):x4} " +
-                $"main[a03c]=0x{ReadMainRamWord(0xa03c):x4}");
+                m_useKov2ArmType2
+                    ? $"[PGM-ARM] frame={m_pgmFrameCounter} m68k=0x{m_maincpu.op0.Pc:x6} armPc=0x{m_arm7.Registers[15]:x8} armCyc={m_arm7.Cycles} crash={m_arm7.CrashDetected} crashPc=0x{m_arm7.CrashPc:x8} kov2Latch68=0x{m_kov2_latchdata_68k_w:x8} kov2LatchArm=0x{m_kov2_latchdata_arm_w:x8} fiqLine={(m_arm7.FiqLineAsserted ? 1 : 0)} fiqPending={(m_arm7.FiqPending ? 1 : 0)} shared000=0x{ReadLe32(m_kov2ArmSharedRam, 0x000):x8} shared138=0x{ReadLe32(m_kov2ArmSharedRam, 0x138):x8} xor0=0x{m_kov2XorTable[0]:x8} main[a03c]=0x{ReadMainRamWord(0xa03c):x4}"
+                    : $"[PGM-ARM] frame={m_pgmFrameCounter} m68k=0x{m_maincpu.op0.Pc:x6} armPc=0x{m_arm7.Registers[15]:x8} armCyc={m_arm7.Cycles} crash={m_arm7.CrashDetected} crashPc=0x{m_arm7.CrashPc:x8} sel={m_svg_ram_sel} latch68=0x{m_svg_latchdata_68k_w:x8} latchArm=0x{m_svg_latchdata_arm_w:x8} ram0[158]=0x{ReadLe16(m_svg_shareram[0], 0x158):x4} ram1[158]=0x{ReadLe16(m_svg_shareram[1], 0x158):x4} main[a03c]=0x{ReadMainRamWord(0xa03c):x4}");
         }
 
         static bool TracePgmArmEnabled()
@@ -1309,6 +1517,50 @@ namespace mame
             WriteLe16(m_svg_shareram[1], 0x158, 0x0005);
             WriteLe16(m_svg_shareram[0], 0x158, 0x0005);
             m_arm7.Reset(0);
+        }
+
+        void ResetKov2ArmType2Runtime()
+        {
+            if (!m_useKov2ArmType2)
+                return;
+
+            memory_region prot = memregion("prot");
+            if (prot != null && prot.base_() != null)
+            {
+                int count = (int)Math.Min(prot.bytes(), (ulong)m_armInternalRom.Length);
+                for (int i = 0; i < count; i++)
+                    m_armInternalRom[i] = prot.base_()[i];
+            }
+
+            Array.Clear(m_kov2XorTable, 0, m_kov2XorTable.Length);
+            m_kov2_latchdata_68k_w = 0;
+            m_kov2_latchdata_arm_w = 0;
+            m_armLastPrefetchedPc = 0;
+            m_arm7.Reset(0);
+        }
+
+        u32 ReadKov2ExternalArmWord(uint offset)
+        {
+            offset &= ~3u;
+            u32 value = 0xffff_ffff;
+            if (offset + 3 < m_armExternalRomBytes)
+            {
+                value = (u32)(m_armExternalRom[(int)offset]
+                    | (m_armExternalRom[(int)(offset + 1)] << 8)
+                    | (m_armExternalRom[(int)(offset + 2)] << 16)
+                    | (m_armExternalRom[(int)(offset + 3)] << 24));
+            }
+
+            return value ^ m_kov2XorTable[(offset >> 2) & 0xff];
+        }
+
+        void Kov2XorTableWrite(uint address, byte value)
+        {
+            uint offset = address - 0x50000000;
+            if ((offset & 3) != 0)
+                return;
+
+            m_kov2XorTable[(offset >> 2) & 0xff] = ((u32)value << 24) | ((u32)value << 8);
         }
 
         void CreateDummyInternalArmRegion()
@@ -1779,6 +2031,9 @@ namespace mame
             memory_region region = memregion("user1");
             if (region != null && region.base_() != null)
                 PgmCrypt.Kov2Decrypt(region.base_(), 0, 0x200000);
+
+            m_useKov2ArmType2 = true;
+            ResetKov2ArmType2Runtime();
         }
 
         public void init_orlegend()
