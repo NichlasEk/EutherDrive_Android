@@ -654,7 +654,7 @@ namespace mame
                 return 15;
 
             u8 packed = m_gfxRaw[offset];
-            return (x & 1) == 0 ? (packed >> 4) & 0x0f : packed & 0x0f;
+            return (x & 1) == 0 ? packed & 0x0f : (packed >> 4) & 0x0f;
         }
 
         int DecodeBgPixel(u16 tile, int x, int y)

@@ -10087,10 +10087,7 @@ public partial class MainWindow : Window
         }
         else if (UsesFourThreeArcadePhysicalAspectPresentation(core, width, height))
         {
-            if (_tateRotation == TateRotation.Off)
-                ApplyPresentationSize(Math.Round(height * (4.0 / 3.0)), height);
-            else
-                ApplyPresentationSize(width, Math.Round(width * (4.0 / 3.0)));
+            ApplyFourThreeArcadePhysicalPresentation(width, height);
         }
         else if (core is Cps1DinoAdapter)
         {
@@ -10105,6 +10102,24 @@ public partial class MainWindow : Window
         => core is KovPgmAdapter ||
            core is NeoGeoAdapter ||
            (core is McsArcadeAdapter && ((width == 448 && height == 224) || (width == 224 && height == 448)));
+
+    private void ApplyFourThreeArcadePhysicalPresentation(int width, int height)
+    {
+        double aspect = _tateRotation == TateRotation.Off ? 4.0 / 3.0 : 3.0 / 4.0;
+        ApplyNoDownscaleAspectPresentation(width, height, aspect);
+    }
+
+    private void ApplyNoDownscaleAspectPresentation(int width, int height, double aspect)
+    {
+        if (width <= 0 || height <= 0 || aspect <= 0)
+            return;
+
+        double sourceAspect = width / (double)height;
+        if (sourceAspect > aspect)
+            ApplyPresentationSize(width, Math.Round(width / aspect));
+        else
+            ApplyPresentationSize(Math.Round(height * aspect), height);
+    }
 
     private void PresentPendingFrame()
     {
