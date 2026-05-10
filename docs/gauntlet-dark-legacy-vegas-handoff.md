@@ -1488,3 +1488,54 @@ voodoo packetTypes=0:0,1:607402,2:0,3:0,4:276095,5:0,6:0,7:0
 ```
 
 The next runtime hotspot is `0x8005ec0c`, reached from the event/cleanup path after `0x8005f9d0` and the `0x8005fab4` wrapper. It is not yet proven safe to fastpath; it likely performs event/callback cleanup and should be traced or dumped before any Core-side shortcut.
+
+## 2026-05-10 Runtime Event Status No-Callback Fastpath
+
+Added a conservative Core fastpath for the observed no-callback path in `0x8005ec0c`.
+
+Trace summary:
+
+- `0x8005ec0c` receives an output pointer in `a0` and a status/value in `a1`.
+- It computes an event offset from `a0 - record+4`.
+- The hot path checks the current runtime record at `0x800b2f2c`.
+- In observed boot/render-init traffic, `record+0xd8 == 0`, so there is no callback.
+- That path sets a local success flag, writes `a1` to `*a0`, then returns.
+
+The new fastpath is deliberately narrow:
+
+- requires the exact `0x8005ec0c` signature;
+- requires `record+0xd8 == 0`;
+- performs the real `_memory.Write32(a0, a1)` so Voodoo/PCI writes such as `0xa8000210`, `0xa8000214`, and `0xa8000244` are preserved;
+- returns with `v0 = a0`, `v1 = a1`, and falls back to interpreted execution if a callback exists.
+
+Build and smoke:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+
+dotnet /tmp/eutherdrive-gauntlet-probe/bin/Debug/net8.0/GauntletProbe.dll \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 1800 200000 16384
+
+extraCpuSteps=16384
+drainedHelperSteps=238
+pc=0xffffffff8005ed8c
+voodoo regs=2046844 fifoWords=2650463 fifoPackets=883497
+fastFills=55223 swaps=110446
+```
+
+Still no triangle traffic:
+
+```text
+drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:607402,2:0,3:0,4:276095,5:0,6:0,7:0
+```
+
+Note for next pass: the temp probe drain currently stops at `0x8005ed8c`, which is the epilogue area after the event-status helper. If continuing from this exact state, either widen the probe-only drain through the final epilogue or trace the caller around `ra=0xffffffff8005dfc8`. Do not synthesize draw packets yet; the guest still has not submitted FIFO type 3/type 5 or direct triangle commands.

@@ -496,6 +496,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeEventPollWrapper(pc))
             return;
+        if (TryFastPathKnownRuntimeEventStatusNoCallback(pc))
+            return;
         if (TryFastPathKnownGlideVertexCopyLoop(pc))
             return;
         if (TryFastPathKnownGlideSetupPacketHelper(pc))
@@ -1720,6 +1722,68 @@ internal sealed class MipsR5000Core
            _memory.Read32(entry + 0x108) == 0x8fbe0018U &&
            _memory.Read32(entry + 0x10c) == 0x27bd0020U &&
            _memory.Read32(entry + 0x110) == 0x03e00008U;
+
+    private bool TryFastPathKnownRuntimeEventStatusNoCallback(ulong pc)
+    {
+        const ulong entry = 0xffffffff8005ec0cUL;
+        if (pc != entry)
+            return false;
+        if (!MatchesKnownRuntimeEventStatusSignature(entry))
+            return false;
+
+        ulong record = SignExtend32(_memory.Read32(0xffffffff800b2f2cUL));
+        if (!IsMainRamRange(record + 0xd8UL, 4))
+            return false;
+        if (_memory.Read32(record + 0xd8UL) != 0)
+            return false;
+
+        ulong outputAddress = _gpr[4];
+        uint outputValue = (uint)_gpr[5];
+        _memory.Write32(outputAddress, outputValue);
+
+        _gpr[2] = SignExtend32((uint)outputAddress);
+        _gpr[3] = SignExtend32(outputValue);
+        _gpr[4] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 38UL);
+        _instructionCounter += 38UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool MatchesKnownRuntimeEventStatusSignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdffe0U &&
+           _memory.Read32(entry + 0x04) == 0xafbf001cU &&
+           _memory.Read32(entry + 0x08) == 0xafbe0018U &&
+           _memory.Read32(entry + 0x0c) == 0x03a0f02dU &&
+           _memory.Read32(entry + 0x10) == 0xafc40020U &&
+           _memory.Read32(entry + 0x14) == 0xafc50024U &&
+           _memory.Read32(entry + 0x18) == 0x3c02800bU &&
+           _memory.Read32(entry + 0x1c) == 0x8c422f2cU &&
+           _memory.Read32(entry + 0x20) == 0x8fc30020U &&
+           _memory.Read32(entry + 0x24) == 0x8c420004U &&
+           _memory.Read32(entry + 0x28) == 0x00621823U &&
+           _memory.Read32(entry + 0x2c) == 0xafc30010U &&
+           _memory.Read32(entry + 0x30) == 0x0000102dU &&
+           _memory.Read32(entry + 0x34) == 0x3c03800bU &&
+           _memory.Read32(entry + 0x38) == 0x8c632f2cU &&
+           _memory.Read32(entry + 0x3c) == 0x10600037U &&
+           _memory.Read32(entry + 0x48) == 0x8c6400d8U &&
+           _memory.Read32(entry + 0x50) == 0x10800032U &&
+           _memory.Read32(entry + 0x11c) == 0x24020001U &&
+           _memory.Read32(entry + 0x120) == 0xafc20014U &&
+           _memory.Read32(entry + 0x124) == 0x8fc20014U &&
+           _memory.Read32(entry + 0x128) == 0x1040000eU &&
+           _memory.Read32(entry + 0x140) == 0x8fc20020U &&
+           _memory.Read32(entry + 0x144) == 0x8fc30024U &&
+           _memory.Read32(entry + 0x148) == 0xac430000U &&
+           _memory.Read32(entry + 0x180) == 0x03c0e82dU &&
+           _memory.Read32(entry + 0x184) == 0x8fbf001cU &&
+           _memory.Read32(entry + 0x188) == 0x8fbe0018U &&
+           _memory.Read32(entry + 0x18c) == 0x27bd0020U &&
+           _memory.Read32(entry + 0x190) == 0x03e00008U;
 
     private bool TryFastPathKnownGlideVertexCopyLoop(ulong pc)
     {
