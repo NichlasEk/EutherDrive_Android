@@ -17,8 +17,11 @@ public sealed class KovPgmAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "kov";
+        return IsSupportedDriverName(name);
     }
+
+    public static bool IsSupportedDriverName(string driverName)
+        => driverName is "kov" or "orlegend" or "dmnfrnt";
 
     public void LoadRom(string path) => _adapter.LoadRom(path);
     public void Reset() => _adapter.Reset();

@@ -1668,7 +1668,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         }
 
         private bool ShouldUseNativePixelAspectView()
-            => string.Equals(_owner._driverName, "kov", StringComparison.OrdinalIgnoreCase);
+            => !string.IsNullOrWhiteSpace(_owner._driverName)
+                && EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_owner._driverName);
 
         public void machine_update(mame.running_machine machine)
         {

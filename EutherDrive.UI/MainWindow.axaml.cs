@@ -4355,7 +4355,7 @@ public partial class MainWindow : Window
             Deco32Adapter => "Data East Deco32",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             NeoGeoAdapter => "Neo Geo",
-            KovPgmAdapter => "IGS PGM / Knights of Valour",
+            KovPgmAdapter => "IGS PGM",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
         };

@@ -40,6 +40,8 @@ namespace mame
                 //gottlieb.driver_qbert,
                 hshavoc.driver_hshavoc,
                 pgm.driver_kov,
+                pgm.driver_orlegend,
+                pgm.driver_dmnfrnt,
                 m52.driver_mpatrol,
                 //mappy.driver_superpac,
                 mcr.driver_demoderb,
