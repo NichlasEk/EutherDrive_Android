@@ -13,6 +13,7 @@ artifacts/
 .vscode/
 .idea/
 .ruff_cache/
+research/hshavoc/__pycache__/
 *.swp
 *.swo
 *~

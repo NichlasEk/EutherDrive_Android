@@ -58,7 +58,7 @@ public partial class PgmArm7Core
 	public bool CrashDetected;
 	public uint CrashPc;
 	public uint CrashCpsr;
-	public uint[] CrashRegs;
+	public uint[] CrashRegs = new uint[16];
 	public bool CrashThumb;
 
 	public uint[] BankedSPSRs => _bankedSPSRs;
@@ -245,6 +245,50 @@ public partial class PgmArm7Core
 		_prefetchFlushed = r.ReadBoolean();
 		_prefetch0 = r.ReadUInt32();
 		_prefetch1 = r.ReadUInt32();
+	}
+
+	public void RegisterSaveState( device_t owner, string prefix )
+	{
+		save_manager save = owner.machine().save();
+		string module = owner.name();
+		string tag = owner.tag();
+
+		save.save_item( owner, module, tag, 0, Gprs, $"{prefix}.gprs" );
+		for ( int i = 0; i < _bankedRegisters.Length; i++ )
+			save.save_item( owner, module, tag, i, _bankedRegisters[i], $"{prefix}.banked_registers" );
+		save.save_item( owner, module, tag, 0, _bankedSPSRs, $"{prefix}.banked_spsrs" );
+		save.save_item( owner, module, tag, 0, _fiqRegsHi, $"{prefix}.fiq_regs_hi" );
+		save.save_item( owner, module, tag, 0, _usrRegsHi, $"{prefix}.usr_regs_hi" );
+		save.save_item( owner, module, tag, 0, PcTrace, $"{prefix}.pc_trace" );
+		save.save_item( owner, module, tag, 0, PcTraceThumb, $"{prefix}.pc_trace_thumb" );
+		save.save_item( owner, module, tag, 0, CrashRegs, $"{prefix}.crash_regs" );
+
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.cpsr", () => GetCpsrRaw(), value =>
+		{
+			FlagN = ( value & 0x80000000 ) != 0;
+			FlagZ = ( value & 0x40000000 ) != 0;
+			FlagC = ( value & 0x20000000 ) != 0;
+			FlagV = ( value & 0x10000000 ) != 0;
+			IrqDisable = ( value & 0x80 ) != 0;
+			FiqDisable = ( value & 0x40 ) != 0;
+			ThumbMode = ( value & 0x20 ) != 0;
+			PrivilegeMode = (PrivilegeMode)( value & 0x1F );
+		} );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.privilege_mode", () => (int)PrivilegeMode, value => PrivilegeMode = (PrivilegeMode)value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.cycles", () => Cycles, value => Cycles = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.instruction_start_cycles", () => InstructionStartCycles, value => InstructionStartCycles = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.halted", () => Halted, value => Halted = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.irq_pending", () => IrqPending, value => IrqPending = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.fiq_pending", () => FiqPending, value => FiqPending = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.open_bus_prefetch", () => OpenBusPrefetch, value => OpenBusPrefetch = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.pc_trace_index", () => PcTraceIndex, value => PcTraceIndex = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.crash_detected", () => CrashDetected, value => CrashDetected = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.crash_pc", () => CrashPc, value => CrashPc = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.crash_cpsr", () => CrashCpsr, value => CrashCpsr = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.crash_thumb", () => CrashThumb, value => CrashThumb = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.prefetch_flushed", () => _prefetchFlushed, value => _prefetchFlushed = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.prefetch0", () => _prefetch0, value => _prefetch0 = value );
+		save.save_item_ref( owner, module, tag, 0, $"{prefix}.prefetch1", () => _prefetch1, value => _prefetch1 = value );
 	}
 
 	public void RaiseIrq()

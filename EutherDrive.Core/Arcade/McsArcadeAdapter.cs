@@ -1658,18 +1658,11 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 mame.profiler_global.g_profiler.enable(true);
 
             _target = machine.render().target_alloc(null, mame.render_global.RENDER_CREATE_NO_ART);
-            if (ShouldUseNativePixelAspectView())
-                _target.set_view(1);
-            else
-                _target.set_view(_target.configured_view("auto", 0, 1));
+            _target.set_view(_target.configured_view("auto", 0, 1));
             if (TraceMcsRender)
                 Console.Error.WriteLine($"[MCS-RENDER] target view='{_target.current_view().name()}' aspect={_target.current_view().effective_aspect():0.###}");
             _target.set_screen_overlay_enabled(false);
         }
-
-        private bool ShouldUseNativePixelAspectView()
-            => !string.IsNullOrWhiteSpace(_owner._driverName)
-                && EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_owner._driverName);
 
         public void machine_update(mame.running_machine machine)
         {
@@ -1712,7 +1705,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 mame.render_primitive_list primitives = _target.get_primitives();
                 primitives.acquire_lock();
                 long drawStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
-                if (!TryDrawDirectRgb32(primitives, width, height) &&
+                int publishWidth = width;
+                int publishHeight = height;
+                if (!TryDrawNativeRaster(_machine, primitives, out publishWidth, out publishHeight) &&
+                    !TryDrawDirectRgb32(primitives, width, height) &&
                     !TryDrawDirectPalette16(primitives, width, height))
                 {
                     mame.software_renderer<uint, mame.int_const_0, mame.int_const_0, mame.int_const_0, mame.int_const_16, mame.int_const_8, mame.int_const_0, mame.bool_const_false, mame.bool_const_false>.draw_primitives(
@@ -1721,13 +1717,15 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                         (uint)width,
                         (uint)height,
                         (uint)_bitmap.rowpixels());
+                    publishWidth = width;
+                    publishHeight = height;
                 }
                 if (TraceMcsProfile)
                     drawTicks = Stopwatch.GetTimestamp() - drawStart;
                 primitives.release_lock();
 
                 long publishStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
-                _owner.PublishFrame(_bitmap.pix(0), width, height, _bitmap.rowpixels());
+                _owner.PublishFrame(_bitmap.pix(0), publishWidth, publishHeight, _bitmap.rowpixels());
                 if (TraceMcsProfile)
                     publishTicks = Stopwatch.GetTimestamp() - publishStart;
                 _runtime.MarkFrameReady();
@@ -1752,6 +1750,92 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         {
             _runtime.MarkFrameReady();
             _runtime.ProcessFrameBoundaryStateRequest(machine);
+        }
+
+        private bool ShouldPublishNativeRaster()
+            => !string.IsNullOrWhiteSpace(_owner._driverName)
+                && EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_owner._driverName);
+
+        private bool TryDrawNativeRaster(mame.running_machine machine, mame.render_primitive_list primitives, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            if (!ShouldPublishNativeRaster())
+                return false;
+
+            mame.screen_device? screen = new mame.device_type_enumerator<mame.screen_device>(machine.root_device()).first();
+            if (screen == null)
+            {
+                if (TraceMcsRender)
+                    Console.Error.WriteLine($"[MCS-RENDER] native raster driver={_owner._driverName} no screen");
+                return false;
+            }
+
+            mame.rectangle visible = screen.visible_area();
+            width = visible.width();
+            height = visible.height();
+            if (width <= 0 || height <= 0)
+            {
+                return false;
+            }
+
+            mame.render_texture[]? textures = GetPrivateField<mame.render_texture[]>(screen, typeof(mame.screen_device), "m_texture");
+            if (textures == null || textures.Length == 0)
+            {
+                if (TraceMcsRender)
+                    Console.Error.WriteLine($"[MCS-RENDER] native raster driver={_owner._driverName} no texture array");
+                return false;
+            }
+
+            byte currentTexture = GetPrivateField<byte>(screen, typeof(mame.screen_device), "m_curtexture");
+            if (currentTexture >= textures.Length || textures[currentTexture] == null)
+            {
+                if (TraceMcsRender)
+                    Console.Error.WriteLine($"[MCS-RENDER] native raster driver={_owner._driverName} bad texture index {currentTexture}/{textures.Length}");
+                return false;
+            }
+
+            mame.render_texture texture = textures[currentTexture];
+            mame.render_texinfo texinfo = new();
+            texture.get_scaled((uint)width, (uint)height, ref texinfo, primitives);
+            if (TraceMcsRender)
+            {
+                Console.Error.WriteLine(
+                    $"[MCS-RENDER] native raster driver={_owner._driverName} vis={width}x{height} " +
+                    $"tex={texinfo.width}x{texinfo.height}/{texinfo.rowpixels} base={(texinfo.base_ != null)} fmt={texture.format()}");
+            }
+            if (texinfo.base_ == null || texinfo.width != width || texinfo.height != height || texinfo.rowpixels < texinfo.width)
+                return false;
+
+            if (_bitmap.width() != width || _bitmap.height() != height)
+                _bitmap.resize(width, height);
+
+            if (texture.format() == mame.texture_format.TEXFORMAT_PALETTE16)
+            {
+                uint paletteLength = 0;
+                mame.Pointer<mame.rgb_t> palette = texture.get_adjusted_palette(screen.container(), ref paletteLength);
+                if (palette == null)
+                    return false;
+
+                CopyPalette16ToBgra(
+                    texinfo.base_,
+                    palette,
+                    _bitmap.pix(0),
+                    width,
+                    height,
+                    (int)texinfo.rowpixels,
+                    _bitmap.rowpixels());
+                return true;
+            }
+
+            CopyRgb32ToBgra(
+                texinfo.base_,
+                _bitmap.pix(0),
+                width,
+                height,
+                (int)texinfo.rowpixels,
+                _bitmap.rowpixels());
+            return true;
         }
 
         private bool TryDrawDirectRgb32(mame.render_primitive_list primitives, int width, int height)
@@ -1780,10 +1864,13 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 screenQuad = prim;
             }
 
-            if (screenQuad == null ||
+            if (screenQuad == null)
+                return false;
+
+            uint textureOrientation = mame.render_global.PRIMFLAG_GET_TEXORIENT(screenQuad.flags);
+            if (
                 screenQuad.texture.palette != null ||
-                screenQuad.texture.width != width ||
-                screenQuad.texture.height != height ||
+                !CanDrawDirectTexture(textureOrientation, (int)screenQuad.texture.width, (int)screenQuad.texture.height, width, height) ||
                 screenQuad.texture.rowpixels < screenQuad.texture.width)
             {
                 return false;
@@ -1835,7 +1922,23 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             if (destX0 != 0 || destY0 != 0 || destWidth != width || destHeight != height)
                 FillBgra(_bitmap.pix(0), width, height, _bitmap.rowpixels(), 0xff000000);
 
-            if (destWidth == screenQuad.texture.width && destHeight == screenQuad.texture.height)
+            if (textureOrientation != 0)
+            {
+                if (!CanDrawDirectTexture(textureOrientation, (int)screenQuad.texture.width, (int)screenQuad.texture.height, destWidth, destHeight))
+                    return false;
+
+                CopyRgb32ToBgraOriented(
+                    screenQuad.texture.base_,
+                    _bitmap.pix(destY0, destX0),
+                    (int)screenQuad.texture.width,
+                    (int)screenQuad.texture.height,
+                    destWidth,
+                    destHeight,
+                    (int)screenQuad.texture.rowpixels,
+                    _bitmap.rowpixels(),
+                    textureOrientation);
+            }
+            else if (destWidth == screenQuad.texture.width && destHeight == screenQuad.texture.height)
             {
                 CopyRgb32ToBgra(
                     screenQuad.texture.base_,
@@ -1887,10 +1990,16 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 screenQuad = prim;
             }
 
-            if (screenQuad == null ||
+            if (screenQuad == null)
+            {
+                TraceDirectPalette16Miss(primitives, width, height, "shape");
+                return false;
+            }
+
+            uint textureOrientation = mame.render_global.PRIMFLAG_GET_TEXORIENT(screenQuad.flags);
+            if (
                 screenQuad.texture.palette == null ||
-                screenQuad.texture.width != width ||
-                screenQuad.texture.height != height ||
+                !CanDrawDirectTexture(textureOrientation, (int)screenQuad.texture.width, (int)screenQuad.texture.height, width, height) ||
                 screenQuad.texture.rowpixels < screenQuad.texture.width)
             {
                 TraceDirectPalette16Miss(primitives, width, height, "shape");
@@ -1939,7 +2048,27 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             if (destX0 != 0 || destY0 != 0 || destWidth != width || destHeight != height)
                 FillBgra(_bitmap.pix(0), width, height, _bitmap.rowpixels(), 0xff000000);
 
-            if (destWidth == screenQuad.texture.width && destHeight == screenQuad.texture.height)
+            if (textureOrientation != 0)
+            {
+                if (!CanDrawDirectTexture(textureOrientation, (int)screenQuad.texture.width, (int)screenQuad.texture.height, destWidth, destHeight))
+                {
+                    TraceDirectPalette16Miss(primitives, width, height, "orient-shape");
+                    return false;
+                }
+
+                CopyPalette16ToBgraOriented(
+                    screenQuad.texture.base_,
+                    screenQuad.texture.palette,
+                    _bitmap.pix(destY0, destX0),
+                    (int)screenQuad.texture.width,
+                    (int)screenQuad.texture.height,
+                    destWidth,
+                    destHeight,
+                    (int)screenQuad.texture.rowpixels,
+                    _bitmap.rowpixels(),
+                    textureOrientation);
+            }
+            else if (destWidth == screenQuad.texture.width && destHeight == screenQuad.texture.height)
             {
                 CopyPalette16ToBgra(
                     screenQuad.texture.base_,
@@ -1968,9 +2097,19 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         }
 
         private bool ShouldFillTargetFromNativeScreenTexture(mame.render_primitive screenQuad, int width, int height)
-            => ShouldUseNativePixelAspectView() &&
-               screenQuad.texture.width == width &&
+            => screenQuad.texture.width == width &&
                screenQuad.texture.height == height;
+
+        private static bool CanDrawDirectTexture(uint orientation, int sourceWidth, int sourceHeight, int destinationWidth, int destinationHeight)
+        {
+            if (orientation == 0)
+                return sourceWidth == destinationWidth && sourceHeight == destinationHeight;
+
+            if ((orientation & mame.emucore_global.ORIENTATION_SWAP_XY) == 0)
+                return sourceWidth == destinationWidth && sourceHeight == destinationHeight;
+
+            return sourceWidth == destinationHeight && sourceHeight == destinationWidth;
+        }
 
         private void TraceDirectPalette16Miss(mame.render_primitive_list primitives, int width, int height, string reason)
         {
@@ -2067,6 +2206,40 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             }
         }
 
+        private static unsafe void CopyRgb32ToBgraOriented(
+            mame.Pointer<byte> source,
+            mame.PointerU32 destination,
+            int sourceWidth,
+            int sourceHeight,
+            int destinationWidth,
+            int destinationHeight,
+            int sourceRowPixels,
+            int destinationRowPixels,
+            uint orientation)
+        {
+            byte[] sourceData = source.Buffer.data_raw;
+            byte[] destinationData = destination.Buffer.data_raw;
+            int sourceOffset = source.Offset;
+            int destinationOffset = destination.Offset;
+
+            fixed (byte* sourceBase = sourceData)
+            fixed (byte* destinationBase = destinationData)
+            {
+                uint* source32 = (uint*)(sourceBase + sourceOffset);
+                uint* destination32 = (uint*)(destinationBase + destinationOffset);
+
+                for (int y = 0; y < destinationHeight; y++)
+                {
+                    int destinationRow = y * destinationRowPixels;
+                    for (int x = 0; x < destinationWidth; x++)
+                    {
+                        GetOrientedSourceCoordinate(orientation, sourceWidth, sourceHeight, x, y, out int sourceX, out int sourceY);
+                        destination32[destinationRow + x] = source32[sourceY * sourceRowPixels + sourceX];
+                    }
+                }
+            }
+        }
+
         private static unsafe void CopyRgb32ToBgraScaled(
             mame.Pointer<byte> source,
             mame.PointerU32 destination,
@@ -2100,6 +2273,72 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                     }
                 }
             }
+        }
+
+        private static unsafe void CopyPalette16ToBgraOriented(
+            mame.Pointer<byte> source,
+            mame.Pointer<mame.rgb_t> palette,
+            mame.PointerU32 destination,
+            int sourceWidth,
+            int sourceHeight,
+            int destinationWidth,
+            int destinationHeight,
+            int sourceRowPixels,
+            int destinationRowPixels,
+            uint orientation)
+        {
+            byte[] sourceData = source.Buffer.data_raw;
+            byte[] destinationData = destination.Buffer.data_raw;
+            mame.rgb_t[] paletteData = palette.Buffer.data_raw;
+            int sourceOffset = source.Offset;
+            int destinationOffset = destination.Offset;
+            int paletteOffset = palette.Offset;
+
+            fixed (byte* sourceBase = sourceData)
+            fixed (byte* destinationBase = destinationData)
+            {
+                ushort* source16 = (ushort*)(sourceBase + sourceOffset);
+                uint* destination32 = (uint*)(destinationBase + destinationOffset);
+
+                for (int y = 0; y < destinationHeight; y++)
+                {
+                    int destinationRow = y * destinationRowPixels;
+                    for (int x = 0; x < destinationWidth; x++)
+                    {
+                        GetOrientedSourceCoordinate(orientation, sourceWidth, sourceHeight, x, y, out int sourceX, out int sourceY);
+                        ushort pen = source16[sourceY * sourceRowPixels + sourceX];
+                        destination32[destinationRow + x] = paletteData[paletteOffset + pen];
+                    }
+                }
+            }
+        }
+
+        private static void GetOrientedSourceCoordinate(
+            uint orientation,
+            int sourceWidth,
+            int sourceHeight,
+            int destinationX,
+            int destinationY,
+            out int sourceX,
+            out int sourceY)
+        {
+            if ((orientation & mame.emucore_global.ORIENTATION_SWAP_XY) != 0)
+            {
+                sourceX = (orientation & mame.emucore_global.ORIENTATION_FLIP_Y) != 0
+                    ? sourceWidth - 1 - destinationY
+                    : destinationY;
+                sourceY = (orientation & mame.emucore_global.ORIENTATION_FLIP_X) != 0
+                    ? sourceHeight - 1 - destinationX
+                    : destinationX;
+                return;
+            }
+
+            sourceX = (orientation & mame.emucore_global.ORIENTATION_FLIP_X) != 0
+                ? sourceWidth - 1 - destinationX
+                : destinationX;
+            sourceY = (orientation & mame.emucore_global.ORIENTATION_FLIP_Y) != 0
+                ? sourceHeight - 1 - destinationY
+                : destinationY;
         }
 
         private static unsafe void CopyPalette16ToBgraScaled(

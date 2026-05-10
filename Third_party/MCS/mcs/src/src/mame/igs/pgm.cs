@@ -41,6 +41,7 @@ namespace mame
         const int Arm7ClockHz = 22_000_000;
         // PGM screen timing is 10 MHz / (640 * 264), so the ARM7 gets 371,712 cycles per video frame.
         const int Arm7CyclesPerFrame = 371_712;
+        const int Arm7SavestateCookie = 0x41524d37;
         static readonly bool TracePgmSound = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM_SOUND_TRACE") == "1";
         static readonly int[] ArmWait0 = new int[16];
         static readonly u8 [] KovBATable =
@@ -89,11 +90,13 @@ namespace mame
         u16 m_asic3_hilo;
         u16 m_asic3_hold;
         int m_asic3Region;
+        bool m_useCaveType1Sim;
         bool m_useSvgArmType3;
         int m_svg_ram_sel;
         u32 m_svg_latchdata_68k_w;
         u32 m_svg_latchdata_arm_w;
         uint m_armLastPrefetchedPc;
+        int m_arm7SavestateCookie;
         int m_pgmFrameCounter;
         int m_traceArmRamSelWrites;
         int m_traceArmSharedReads;
@@ -150,6 +153,7 @@ namespace mame
         void pgm_68k_map(address_map map, device_t device)
         {
             map.op(0x000000, 0x5fffff).rom();
+            map.op(0x400000, 0x400005).rw((read16_delegate)cave_type1_sim_r, (write16_delegate)cave_type1_sim_w);
             map.op(0x4f0000, 0x4f003f).r((read16_delegate)kov_protram_r);
             map.op(0x500000, 0x50ffff).rw((read16_delegate)pgm_500000_r, (write16_delegate)pgm_500000_w);
             map.op(0x5c0000, 0x5c0001).rw((read16_delegate)svg_68k_nmi_r, (write16_delegate)svg_68k_nmi_w);
@@ -197,7 +201,9 @@ namespace mame
                 Fast68kReadByte,
                 Fast68kReadWord,
                 Fast68kWriteByte,
-                Fast68kWriteWord);
+                Fast68kWriteWord,
+                Fast68kReadLong,
+                Fast68kWriteLong);
             m_soundcpu.op0.set_fast_memory_handlers(
                 FastZ80ReadByte,
                 FastZ80WriteByte);
@@ -226,14 +232,19 @@ namespace mame
             SaveStateRef(nameof(m_asic3_hilo), () => m_asic3_hilo, value => m_asic3_hilo = value);
             SaveStateRef(nameof(m_asic3_hold), () => m_asic3_hold, value => m_asic3_hold = value);
             SaveStateRef(nameof(m_asic3Region), () => m_asic3Region, value => m_asic3Region = value);
+            SaveStateRef(nameof(m_useCaveType1Sim), () => m_useCaveType1Sim, value => m_useCaveType1Sim = value);
             SaveStateRef(nameof(m_useSvgArmType3), () => m_useSvgArmType3, value => m_useSvgArmType3 = value);
             SaveStateRef(nameof(m_svg_ram_sel), () => m_svg_ram_sel, value => m_svg_ram_sel = value);
             SaveStateRef(nameof(m_svg_latchdata_68k_w), () => m_svg_latchdata_68k_w, value => m_svg_latchdata_68k_w = value);
             SaveStateRef(nameof(m_svg_latchdata_arm_w), () => m_svg_latchdata_arm_w, value => m_svg_latchdata_arm_w = value);
             SaveStateRef(nameof(m_armLastPrefetchedPc), () => m_armLastPrefetchedPc, value => m_armLastPrefetchedPc = value);
+            SaveStateRef(nameof(m_arm7SavestateCookie), () => m_arm7SavestateCookie, value => m_arm7SavestateCookie = value);
             SaveStateRef(nameof(m_pgmFrameCounter), () => m_pgmFrameCounter, value => m_pgmFrameCounter = value);
             SaveStateRef(nameof(m_simregion), () => m_simregion, value => m_simregion = value);
+            m_arm7.RegisterSaveState(this, "m_arm7");
             m_rtc.RegisterSaveState(this, "m_rtc");
+            machine().save().register_presave(PreparePgmSaveState);
+            machine().save().register_postload(PostloadPgmSaveState);
         }
 
         protected override void machine_reset()
@@ -249,6 +260,7 @@ namespace mame
             m_trace_z80_ram_writes = 0;
             m_trace_sound_writes = 0;
             m_traceDmnfrntErrorDumped = false;
+            m_arm7SavestateCookie = 0;
             m_pgmFrameCounter = 0;
             m_rtc.Reset();
             ResetKovProtection();
@@ -261,6 +273,27 @@ namespace mame
         void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
         {
             machine().save().save_item_ref(this, name(), tag(), 0, itemName, getter, setter);
+        }
+
+        void PreparePgmSaveState()
+        {
+            m_arm7SavestateCookie = Arm7SavestateCookie;
+        }
+
+        void PostloadPgmSaveState()
+        {
+            if (!m_useSvgArmType3)
+                return;
+
+            if (m_arm7SavestateCookie == Arm7SavestateCookie)
+                return;
+
+            // Older PGM savestates did not contain the local ARM7 core state. Avoid
+            // a long synchronous catch-up from the wrong ARM timeline after load.
+            long targetCycles = GetArmTargetCyclesFromMainTime();
+            if (targetCycles > m_arm7.Cycles)
+                m_arm7.Cycles = targetCycles;
+            m_arm7SavestateCookie = Arm7SavestateCookie;
         }
 
         bool Fast68kReadByte(u32 address, out u8 value)
@@ -323,6 +356,52 @@ namespace mame
             return false;
         }
 
+        bool Fast68kReadLong(u32 address, out u32 value)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) != 0)
+            {
+                value = 0xffff_ffff;
+                return false;
+            }
+
+            if (IsFastRomWordAddress(address) && IsFastRomWordAddress((address + 2) & 0x00ff_ffff))
+            {
+                value = ((u32)m_mainrom[(int)(address + 1)] << 24)
+                    | ((u32)m_mainrom[(int)address] << 16)
+                    | ((u32)m_mainrom[(int)(address + 3)] << 8)
+                    | m_mainrom[(int)(address + 2)];
+                return true;
+            }
+            if (IsFastMainRamAddress(address) && IsFastMainRamAddress((address + 3) & 0x00ff_ffff))
+            {
+                if (m_useSvgArmType3 && address == 0x80a03c)
+                {
+                    value = 0xffff_ffff;
+                    return false;
+                }
+
+                uint byteOffset = address & (uint)(m_mainram.Length - 1);
+                value = ((u32)m_mainram[byteOffset] << 24)
+                    | ((u32)m_mainram[(byteOffset + 1) & (m_mainram.Length - 1)] << 16)
+                    | ((u32)m_mainram[(byteOffset + 2) & (m_mainram.Length - 1)] << 8)
+                    | m_mainram[(byteOffset + 3) & (m_mainram.Length - 1)];
+                return true;
+            }
+            if (IsFastZ80RamAddress(address) && IsFastZ80RamAddress((address + 3) & 0x00ff_ffff))
+            {
+                uint byteOffset = address & 0xffff;
+                value = ((u32)m_z80ram[byteOffset] << 24)
+                    | ((u32)m_z80ram[(byteOffset + 1) & 0xffff] << 16)
+                    | ((u32)m_z80ram[(byteOffset + 2) & 0xffff] << 8)
+                    | m_z80ram[(byteOffset + 3) & 0xffff];
+                return true;
+            }
+
+            value = 0xffff_ffff;
+            return false;
+        }
+
         bool Fast68kWriteByte(u32 address, u8 value)
         {
             address &= 0x00ff_ffff;
@@ -375,6 +454,38 @@ namespace mame
             return false;
         }
 
+        bool Fast68kWriteLong(u32 address, u32 value)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) != 0)
+                return false;
+
+            if (IsFastMainRamAddress(address) && IsFastMainRamAddress((address + 3) & 0x00ff_ffff))
+            {
+                uint byteOffset = address & (uint)(m_mainram.Length - 1);
+                m_mainram[byteOffset] = (u8)(value >> 24);
+                m_mainram[(byteOffset + 1) & (m_mainram.Length - 1)] = (u8)(value >> 16);
+                m_mainram[(byteOffset + 2) & (m_mainram.Length - 1)] = (u8)(value >> 8);
+                m_mainram[(byteOffset + 3) & (m_mainram.Length - 1)] = (u8)value;
+                return true;
+            }
+            if (IsFastZ80RamAddress(address) && IsFastZ80RamAddress((address + 3) & 0x00ff_ffff))
+            {
+                uint byteOffset = address & 0xffff;
+                m_z80ram[byteOffset] = (u8)(value >> 24);
+                TraceZ80RamWrite(byteOffset, (u8)(value >> 24));
+                m_z80ram[(byteOffset + 1) & 0xffff] = (u8)(value >> 16);
+                TraceZ80RamWrite((byteOffset + 1) & 0xffff, (u8)(value >> 16));
+                m_z80ram[(byteOffset + 2) & 0xffff] = (u8)(value >> 8);
+                TraceZ80RamWrite((byteOffset + 2) & 0xffff, (u8)(value >> 8));
+                m_z80ram[(byteOffset + 3) & 0xffff] = (u8)value;
+                TraceZ80RamWrite((byteOffset + 3) & 0xffff, (u8)value);
+                return true;
+            }
+
+            return false;
+        }
+
         bool IsFastRomByteAddress(u32 address)
         {
             if (m_mainrom == null || address >= 0x600000 || address >= (uint)m_mainromBytes)
@@ -384,6 +495,7 @@ namespace mame
                 return false;
 
             return (address < 0x4f0000 || address > 0x4f003f)
+                && (!m_useCaveType1Sim || address < 0x400000 || address > 0x400005)
                 && (address < 0x500000 || address > 0x500005);
         }
 
@@ -396,6 +508,7 @@ namespace mame
                 return false;
 
             return (address < 0x4f0000 || address > 0x4f003e)
+                && (!m_useCaveType1Sim || address < 0x400000 || address > 0x400004)
                 && (address < 0x500000 || address > 0x500004);
         }
 
@@ -412,6 +525,11 @@ namespace mame
         bool TryFast68kMappedRead(u32 address, u16 memMask, out u16 value)
         {
             u32 wordAddress = address & 0x00ff_fffe;
+            if (m_useCaveType1Sim && wordAddress >= 0x400000 && wordAddress <= 0x400004)
+            {
+                value = cave_type1_sim_r(null, (wordAddress - 0x400000) >> 1, memMask);
+                return true;
+            }
             if (wordAddress >= 0x900000 && wordAddress <= 0x9ffffe)
             {
                 value = video_ram_r(null, (wordAddress & 0x7fff) >> 1, memMask);
@@ -465,6 +583,11 @@ namespace mame
         bool TryFast68kMappedWrite(u32 address, u16 data, u16 memMask)
         {
             u32 wordAddress = address & 0x00ff_fffe;
+            if (m_useCaveType1Sim && wordAddress >= 0x400000 && wordAddress <= 0x400004)
+            {
+                cave_type1_sim_w(null, (wordAddress - 0x400000) >> 1, data, memMask);
+                return true;
+            }
             if (wordAddress == 0x700006)
                 return true;
             if (wordAddress >= 0x900000 && wordAddress <= 0x9ffffe)
@@ -706,7 +829,6 @@ namespace mame
 
         u16 svg_latch_68k_r(address_space space, offs_t offset, u16 mem_mask)
         {
-            SyncArmToMainTime();
             return (u16)m_svg_latchdata_arm_w;
         }
 
@@ -906,6 +1028,9 @@ namespace mame
             if (address >= 0x48000000 && address <= 0x48000003)
             {
                 uint shift = ((address - 0x48000000) & 3) * 8;
+                uint pc = m_arm7.Registers[15] - 8;
+                if (m_useSvgArmType3 && m_svg_latchdata_68k_w == 0 && (pc == 0x08000fb4 || pc == 0x08000fb8))
+                    m_arm7.Cycles += 512;
                 TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] arm latch r8 off={(address - 0x48000000) & 3} val=0x{((m_svg_latchdata_68k_w >> (int)shift) & 0xff):x2} latch68=0x{m_svg_latchdata_68k_w:x8} pc=0x{m_arm7.Registers[15] - 8:x8}", 64);
                 return (byte)(m_svg_latchdata_68k_w >> (int)(((address - 0x48000000) & 3) * 8));
             }
@@ -917,12 +1042,51 @@ namespace mame
         ushort ArmRead16(uint address)
         {
             address &= ~1u;
+            if (address < 0x4000)
+                return ReadLe16(m_armInternalRom, address & 0x3fff);
+            if (address >= 0x08000000 && address <= 0x087fffff)
+            {
+                uint offset = address - 0x08000000;
+                if (offset + 1 < m_armExternalRomBytes)
+                    return (u16)(m_armExternalRom[(int)offset] | (m_armExternalRom[(int)(offset + 1)] << 8));
+            }
+            if (address >= 0x10000000 && address <= 0x100003ff)
+                return ReadLe16(m_armRam2, (address - 0x10000000) & 0x3ff);
+            if (address >= 0x18000000 && address <= 0x1803ffff)
+                return ReadLe16(m_armRam, (address - 0x18000000) & 0x3ffff);
+            if (address >= 0x38000000 && address <= 0x3800ffff)
+                return ReadLe16(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff);
+            if (address >= 0x48000000 && address <= 0x48000002)
+                return (u16)(m_svg_latchdata_68k_w >> (int)(((address - 0x48000000) & 2) * 8));
+            if (address >= 0x50000000 && address <= 0x500003ff)
+                return ReadLe16(m_armAuxRam, (address - 0x50000000) & 0x3ff);
             return (ushort)(ArmRead8(address) | (ArmRead8(address + 1) << 8));
         }
 
         uint ArmRead32(uint address)
         {
             address &= ~3u;
+            if (address < 0x4000)
+                return ReadLe32(m_armInternalRom, address & 0x3fff);
+            if (address >= 0x08000000 && address <= 0x087fffff)
+            {
+                uint offset = address - 0x08000000;
+                if (offset + 3 < m_armExternalRomBytes)
+                    return (u32)(m_armExternalRom[(int)offset]
+                        | (m_armExternalRom[(int)(offset + 1)] << 8)
+                        | (m_armExternalRom[(int)(offset + 2)] << 16)
+                        | (m_armExternalRom[(int)(offset + 3)] << 24));
+            }
+            if (address >= 0x10000000 && address <= 0x100003ff)
+                return ReadLe32(m_armRam2, (address - 0x10000000) & 0x3ff);
+            if (address >= 0x18000000 && address <= 0x1803ffff)
+                return ReadLe32(m_armRam, (address - 0x18000000) & 0x3ffff);
+            if (address >= 0x38000000 && address <= 0x3800ffff)
+                return ReadLe32(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff);
+            if (address == 0x48000000)
+                return m_svg_latchdata_68k_w;
+            if (address >= 0x50000000 && address <= 0x500003ff)
+                return ReadLe32(m_armAuxRam, (address - 0x50000000) & 0x3ff);
             return (uint)(ArmRead8(address)
                 | (ArmRead8(address + 1) << 8)
                 | (ArmRead8(address + 2) << 16)
@@ -960,6 +1124,35 @@ namespace mame
         void ArmWrite16(uint address, ushort value)
         {
             address &= ~1u;
+            if (!TracePgmArmEnabled())
+            {
+                if (address >= 0x10000000 && address <= 0x100003ff)
+                {
+                    WriteLe16(m_armRam2, (address - 0x10000000) & 0x3ff, value);
+                    return;
+                }
+                if (address >= 0x18000000 && address <= 0x1803ffff)
+                {
+                    WriteLe16(m_armRam, (address - 0x18000000) & 0x3ffff, value);
+                    return;
+                }
+                if (address >= 0x38000000 && address <= 0x3800ffff)
+                {
+                    WriteLe16(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff, value);
+                    return;
+                }
+                if (address >= 0x48000000 && address <= 0x48000002)
+                {
+                    uint shift = ((address - 0x48000000) & 2) * 8;
+                    m_svg_latchdata_arm_w = (m_svg_latchdata_arm_w & ~(0xffffu << (int)shift)) | ((uint)value << (int)shift);
+                    return;
+                }
+                if (address >= 0x50000000 && address <= 0x500003ff)
+                {
+                    WriteLe16(m_armAuxRam, (address - 0x50000000) & 0x3ff, value);
+                    return;
+                }
+            }
             ArmWrite8(address, (byte)value);
             ArmWrite8(address + 1, (byte)(value >> 8));
         }
@@ -972,6 +1165,35 @@ namespace mame
                 m_svg_ram_sel = (int)(value & 1);
                 TraceArmEvent(ref m_traceArmRamSelWrites, $"[PGM-ARM] arm ram_sel w32 val=0x{value:x8} sel={m_svg_ram_sel} pc=0x{m_arm7.Registers[15] - 8:x8}", 64);
                 return;
+            }
+
+            if (!TracePgmArmEnabled())
+            {
+                if (address >= 0x10000000 && address <= 0x100003ff)
+                {
+                    WriteLe32(m_armRam2, (address - 0x10000000) & 0x3ff, value);
+                    return;
+                }
+                if (address >= 0x18000000 && address <= 0x1803ffff)
+                {
+                    WriteLe32(m_armRam, (address - 0x18000000) & 0x3ffff, value);
+                    return;
+                }
+                if (address >= 0x38000000 && address <= 0x3800ffff)
+                {
+                    WriteLe32(m_svg_shareram[m_svg_ram_sel & 1], (address - 0x38000000) & 0xffff, value);
+                    return;
+                }
+                if (address == 0x48000000)
+                {
+                    m_svg_latchdata_arm_w = value;
+                    return;
+                }
+                if (address >= 0x50000000 && address <= 0x500003ff)
+                {
+                    WriteLe32(m_armAuxRam, (address - 0x50000000) & 0x3ff, value);
+                    return;
+                }
             }
 
             ArmWrite8(address, (byte)value);
@@ -1106,6 +1328,15 @@ namespace mame
             return (u16)(data[offset] | (data[(offset + 1) % (uint)data.Length] << 8));
         }
 
+        static u32 ReadLe32(byte[] data, uint offset)
+        {
+            offset %= (uint)data.Length;
+            return (u32)(data[offset]
+                | (data[(offset + 1) % (uint)data.Length] << 8)
+                | (data[(offset + 2) % (uint)data.Length] << 16)
+                | (data[(offset + 3) % (uint)data.Length] << 24));
+        }
+
         static void WriteLe16(byte[] data, uint offset, u16 value)
         {
             offset %= (uint)data.Length;
@@ -1220,6 +1451,28 @@ namespace mame
             m_value0 ^= realkey;
             m_ddp3lastcommand = (u16)(m_value1 & 0xff);
             CommandHandlerKov();
+        }
+
+        u16 cave_type1_sim_r(address_space space, offs_t offset, u16 mem_mask)
+        {
+            if (!m_useCaveType1Sim)
+                return ReadMainRomWord(0x400000 + (offset << 1));
+
+            return kov_sim_r(space, offset, mem_mask);
+        }
+
+        void cave_type1_sim_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
+        {
+            if (m_useCaveType1Sim)
+                kov_sim_w(space, offset, data, mem_mask);
+        }
+
+        u16 ReadMainRomWord(u32 address)
+        {
+            if (m_mainrom == null || address + 1 >= (uint)m_mainromBytes)
+                return 0xffff;
+
+            return (u16)((m_mainrom[(int)(address + 1)] << 8) | m_mainrom[(int)address]);
         }
 
         u16 kov_protram_r(address_space space, offs_t offset, u16 mem_mask)
@@ -1491,6 +1744,43 @@ namespace mame
             ResetKovProtection();
         }
 
+        public void init_ddpdoj()
+        {
+            memory_region region = memregion("maincpu");
+            if (region != null && region.base_() != null)
+                PgmCrypt.Py2k2Decrypt(region.base_(), 0x100000, 0x400000);
+
+            m_useCaveType1Sim = true;
+            ResetKovProtection();
+        }
+
+        public void init_ket()
+        {
+            memory_region region = memregion("maincpu");
+            if (region != null && region.base_() != null)
+                PgmCrypt.KetDecrypt(region.base_(), 0, 0x400000);
+
+            m_useCaveType1Sim = true;
+            ResetKovProtection();
+        }
+
+        public void init_espgal()
+        {
+            memory_region region = memregion("maincpu");
+            if (region != null && region.base_() != null)
+                PgmCrypt.EspgalDecrypt(region.base_(), 0, 0x400000);
+
+            m_useCaveType1Sim = true;
+            ResetKovProtection();
+        }
+
+        public void init_kov2()
+        {
+            memory_region region = memregion("user1");
+            if (region != null && region.base_() != null)
+                PgmCrypt.Kov2Decrypt(region.base_(), 0, 0x200000);
+        }
+
         public void init_orlegend()
         {
             ResetAsic3Protection();
@@ -1653,8 +1943,120 @@ namespace mame
             ROM_END,
         };
 
+        static readonly tiny_rom_entry [] rom_ddpdoj =
+        {
+            ROM_REGION(0x600000, "maincpu", 0),
+            ROM_LOAD16_WORD_SWAP("ddp3_bios.u37", 0x000000, 0x080000, CRC("b3cc5c8f") + SHA1("02d9511cf71e4a0d6ca8fd9a1ef2c79b0d001824")),
+            ROM_LOAD16_WORD_SWAP("ddp3_v101.u36", 0x100000, 0x200000, CRC("195b5c1e") + SHA1("f18d791c034b0a3d85888a92fb5d326ee3deb04f")),
+
+            ROM_REGION(0x4000, "prot", ROMREGION_ERASEFF),
+
+            ROM_REGION(0xa00000, "igs023", 0),
+            ROM_LOAD("pgm_t01s.rom", 0x000000, 0x200000, CRC("1a7123a0") + SHA1("cc567f577bfbf45427b54d6695b11b74f2578af3")),
+            ROM_LOAD("t04401w064.u19", 0x180000, 0x800000, CRC("3a95f19c") + SHA1("fd3c47cf0b8b1e20c6bec4be68a089fc8bbf4dbe")),
+
+            ROM_REGION16_LE(0x2000000, "igs023:sprcol", 0),
+            ROM_LOAD("a04401w064.u7", 0x0000000, 0x0800000, CRC("ed229794") + SHA1("1cf1863495a18c7c7d277a9be43ec116b00960b0")),
+            ROM_LOAD("a04402w064.u8", 0x0800000, 0x0800000, CRC("752167b0") + SHA1("c33c3398dd8e479c9d5bd348924958a6aecbf0fc")),
+
+            ROM_REGION16_LE(0x1000000, "igs023:sprmask", 0),
+            ROM_LOAD("b04401w064.u1", 0x0000000, 0x0800000, CRC("8cbff066") + SHA1("eef1cd566bc70ebf45f047e56026803d5c1dac43")),
+
+            ROM_REGION(0x1000000, "ics", 0),
+            ROM_LOAD("pgm_m01s.rom", 0x000000, 0x200000, CRC("45ae7159") + SHA1("d3ed3ff3464557fd0df6b069b2e431528b0ebfa8")),
+            ROM_LOAD("m04401b032.u17", 0x400000, 0x400000, CRC("5a0dbd76") + SHA1("06ab202f6bd5ebfb35b9d8cc7a8fb83ec8840659")),
+
+            ROM_END,
+        };
+
+        static readonly tiny_rom_entry [] rom_ket =
+        {
+            ROM_REGION(0x600000, "maincpu", 0),
+            ROM_LOAD16_WORD_SWAP("ketsui_v100.u38", 0x000000, 0x200000, CRC("dfe62f3b") + SHA1("baa58d1ce47a707f84f65779ac0689894793e9d9")),
+
+            ROM_REGION(0x4000, "prot", ROMREGION_ERASEFF),
+
+            ROM_REGION(0xa00000, "igs023", 0),
+            ROM_LOAD("pgm_t01s.rom", 0x000000, 0x200000, CRC("1a7123a0") + SHA1("cc567f577bfbf45427b54d6695b11b74f2578af3")),
+            ROM_LOAD("t04701w064.u19", 0x180000, 0x800000, CRC("2665b041") + SHA1("fb1107778b66f2af0de77ac82e1ee2902f53a959")),
+
+            ROM_REGION16_LE(0x1000000, "igs023:sprcol", 0),
+            ROM_LOAD("a04701w064.u7", 0x0000000, 0x0800000, CRC("5ef1b94b") + SHA1("f10dfa46e0a4d297c3a856aea5b49d648f98935c")),
+            ROM_LOAD("a04702w064.u8", 0x0800000, 0x0800000, CRC("26d6da7f") + SHA1("f20e07a7994f41b5ed917f8b0119dc5542f3541c")),
+
+            ROM_REGION16_LE(0x0800000, "igs023:sprmask", 0),
+            ROM_LOAD("b04701w064.u1", 0x0000000, 0x0800000, CRC("1bec008d") + SHA1("07d117dc2eebb35727fb18a7c563acbaf25a8d36")),
+
+            ROM_REGION(0x1000000, "ics", 0),
+            ROM_LOAD("m04701b032.u17", 0x400000, 0x400000, CRC("b46e22d1") + SHA1("670853dc485942fb96380568494bdf3235f446ee")),
+
+            ROM_END,
+        };
+
+        static readonly tiny_rom_entry [] rom_espgal =
+        {
+            ROM_REGION(0x600000, "maincpu", 0),
+            ROM_LOAD16_WORD_SWAP("espgaluda_v100.u38", 0x000000, 0x200000, CRC("08ecec34") + SHA1("bce2e7fb9105ed51603d09cbd3a9eeb5b8f47ee2")),
+
+            ROM_REGION(0x4000, "prot", ROMREGION_ERASEFF),
+
+            ROM_REGION(0xa00000, "igs023", 0),
+            ROM_LOAD("t01s.u18", 0x000000, 0x200000, CRC("1a7123a0") + SHA1("cc567f577bfbf45427b54d6695b11b74f2578af3")),
+            ROM_LOAD("t04801w064.u19", 0x180000, 0x800000, CRC("6021c79e") + SHA1("fbc340dafb18aa3094de29b881318a5a9794e4bc")),
+
+            ROM_REGION16_LE(0x1000000, "igs023:sprcol", 0),
+            ROM_LOAD("a04801w064.u7", 0x0000000, 0x0800000, CRC("26dd4932") + SHA1("9bbabb5a53cb5ba88397cc2c258980f3b70314ce")),
+            ROM_LOAD("a04802w064.u8", 0x0800000, 0x0800000, CRC("0e6bf7a9") + SHA1("a7541e2b5a0df2bc62a5b347e54dbc2ed1922db2")),
+
+            ROM_REGION16_LE(0x0800000, "igs023:sprmask", 0),
+            ROM_LOAD("b04801w064.u1", 0x0000000, 0x0800000, CRC("98dce13a") + SHA1("61d48b7117459f7babc022b68231f6928177a71d")),
+
+            ROM_REGION(0x1000000, "ics", 0),
+            ROM_LOAD("w04801b032.u17", 0x400000, 0x400000, CRC("60298536") + SHA1("6b7333f16cce778c5725dbdf75a5446f0906397a")),
+
+            ROM_END,
+        };
+
+        static readonly tiny_rom_entry [] rom_kov2 =
+        {
+            ROM_REGION(0x600000, "maincpu", 0),
+            ROM_LOAD16_WORD_SWAP("pgm_p01s.u20", 0x000000, 0x020000, CRC("e42b166e") + SHA1("2a9df9ec746b14b74fae48b1a438da14973702ea")),
+            ROM_LOAD16_WORD_SWAP("u18.107", 0x100000, 0x400000, CRC("661a5b2c") + SHA1("125054fabc93d4f4cba869c3e6adf863650d30cf")),
+
+            ROM_REGION(0x4000, "prot", 0),
+            ROM_LOAD("kov2_v100_hongkong.asic", 0x000000, 0x004000, CRC("e0d7679f") + SHA1("e1c2d127eba4ddbeb8ad173c55b90ac1467e1ca8")),
+
+            ROM_REGION(0x800000, "user1", 0),
+            ROM_LOAD("u19.102", 0x000000, 0x200000, CRC("462e2980") + SHA1("3da7c3d2c65b59f50c78be1c25922b71d40f6080")),
+
+            ROM_REGION(0xa00000, "igs023", 0),
+            ROM_LOAD("pgm_t01s.rom", 0x000000, 0x200000, CRC("1a7123a0") + SHA1("cc567f577bfbf45427b54d6695b11b74f2578af3")),
+            ROM_LOAD("t1200.rom", 0x180000, 0x800000, CRC("d7e26609") + SHA1("bdad810f82fcf1d50a8791bdc495374ec5a309c6")),
+
+            ROM_REGION16_LE(0x4000000, "igs023:sprcol", 0),
+            ROM_LOAD("a1200.rom", 0x0000000, 0x0800000, CRC("ceeb81d8") + SHA1("5476729443fc1bc9593ae10fbf7cbc5d7290b017")),
+            ROM_LOAD("a1201.rom", 0x0800000, 0x0800000, CRC("21063ca7") + SHA1("cf561b44902425a920d5cbea5bf65dd9530b2289")),
+            ROM_LOAD("a1202.rom", 0x1000000, 0x0800000, CRC("4bb92fae") + SHA1("f0b6d72ed425de1c69dc8f8d5795ea760a4a59b0")),
+            ROM_LOAD("a1203.rom", 0x1800000, 0x0800000, CRC("e73cb627") + SHA1("4c6e48b845a5d1e8f9899010fbf273d54c2b8899")),
+            ROM_LOAD("a1204.rom", 0x2000000, 0x0200000, CRC("14b4b5bb") + SHA1("d7db5740eec971f2782fb2885ee3af8f2a796550")),
+
+            ROM_REGION16_LE(0x2000000, "igs023:sprmask", 0),
+            ROM_LOAD("b1200.rom", 0x0000000, 0x0800000, CRC("bed7d994") + SHA1("019dfba8154256d64cd249eb0fa4c451edce34b8")),
+            ROM_LOAD("b1201.rom", 0x0800000, 0x0800000, CRC("f251eb57") + SHA1("56a5fc14ab7822f83379cecb26638e5bb266349a")),
+
+            ROM_REGION(0x1000000, "ics", 0),
+            ROM_LOAD("pgm_m01s.rom", 0x000000, 0x200000, CRC("45ae7159") + SHA1("d3ed3ff3464557fd0df6b069b2e431528b0ebfa8")),
+            ROM_LOAD("m1200.rom", 0x800000, 0x800000, CRC("b0d88720") + SHA1("44ab137e3f8e15b7cb5697ffbd9b1143d8210c4f")),
+
+            ROM_END,
+        };
+
         static void pgm_state_pgm(machine_config config, device_t device) { ((pgm_state)device).pgm(config); }
         static void pgm_state_init_kov(device_t owner) { ((pgm_state)owner).init_kov(); }
+        static void pgm_state_init_ddpdoj(device_t owner) { ((pgm_state)owner).init_ddpdoj(); }
+        static void pgm_state_init_ket(device_t owner) { ((pgm_state)owner).init_ket(); }
+        static void pgm_state_init_espgal(device_t owner) { ((pgm_state)owner).init_espgal(); }
+        static void pgm_state_init_kov2(device_t owner) { ((pgm_state)owner).init_kov2(); }
         static void pgm_state_init_orlegend(device_t owner) { ((pgm_state)owner).init_orlegend(); }
         static void pgm_state_init_dmnfrnt(device_t owner) { ((pgm_state)owner).init_dmnfrnt(); }
         static device_t device_creator_pgm_state(emu.detail.device_type_impl_base type, machine_config mconfig, string tag, device_t owner, u32 clock) { return new pgm_state(mconfig, (device_type)type, tag); }
@@ -1731,6 +2133,10 @@ namespace mame
         public static readonly game_driver driver_kov = GAME(device_creator_pgm_state, rom_kov, "1999", "kov", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_kov, ROT0, "IGS", "Knights of Valour / Sanguo Zhan Ji / Sangoku Senki (ver. 117, Hong Kong)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
         public static readonly game_driver driver_orlegend = GAME(device_creator_pgm_state, rom_orlegend, "1997", "orlegend", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_orlegend, ROT0, "IGS", "Oriental Legend / Xiyou Shi E Zhuan (ver. 126)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND);
         public static readonly game_driver driver_dmnfrnt = GAME(device_creator_pgm_state, rom_dmnfrnt, "2002", "dmnfrnt", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_dmnfrnt, ROT0, "IGS", "Demon Front / Moyu Zhanxian (V105)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND);
+        public static readonly game_driver driver_ddpdoj = GAME(device_creator_pgm_state, rom_ddpdoj, "2002", "ddpdoj", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_ddpdoj, ROT270, "Cave (AMI license)", "DoDonPachi Dai-Ou-Jou (V101)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
+        public static readonly game_driver driver_ket = GAME(device_creator_pgm_state, rom_ket, "2002", "ket", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_ket, ROT270, "Cave (AMI license)", "Ketsui Kizuna Jigoku Tachi (V100)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
+        public static readonly game_driver driver_espgal = GAME(device_creator_pgm_state, rom_espgal, "2003", "espgal", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_espgal, ROT270, "Cave (AMI license)", "Espgaluda (V100)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
+        public static readonly game_driver driver_kov2 = GAME(device_creator_pgm_state, rom_kov2, "2000", "kov2", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_kov2, ROT0, "IGS", "Knights of Valour 2 / Sanguo Zhan Ji 2 / Sangoku Senki 2 (ver. 100, Hong Kong)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
     }
 
     sealed class PgmV3021Rtc
@@ -2001,6 +2407,66 @@ namespace mame
             0x80, 0xe6, 0xba, 0xb3, 0x08, 0xd8, 0x30, 0x5b, 0x5f, 0xf2, 0x5a, 0xfb, 0x63, 0xb0, 0xa4, 0x41
         };
 
+        static readonly u8 [] Py2k2Tab =
+        {
+            0x74, 0xe8, 0xa8, 0x64, 0x26, 0x44, 0xa6, 0x9a, 0xa5, 0x69, 0xa2, 0xd3, 0x6d, 0xba, 0xff, 0xf3,
+            0xeb, 0x6e, 0xe3, 0x70, 0x72, 0x58, 0x27, 0xd9, 0xe4, 0x9f, 0x50, 0xa2, 0xdd, 0xce, 0x6e, 0xf6,
+            0x44, 0x72, 0x0c, 0x7e, 0x4d, 0x41, 0x77, 0x2d, 0x00, 0xad, 0x1a, 0x5f, 0x6b, 0xc0, 0x1d, 0x4e,
+            0x4c, 0x72, 0x62, 0x3c, 0x32, 0x28, 0x43, 0xf8, 0x9d, 0x52, 0x05, 0x7e, 0xd1, 0xee, 0x82, 0x61,
+            0x3b, 0x3f, 0x77, 0xf3, 0x8f, 0x7e, 0x3f, 0xf1, 0xdf, 0x8f, 0x68, 0x43, 0xd7, 0x68, 0xdf, 0x19,
+            0x87, 0xff, 0x74, 0xe5, 0x3f, 0x43, 0x8e, 0x80, 0x0f, 0x7e, 0xdb, 0x32, 0xe8, 0xd1, 0x66, 0x8f,
+            0xbe, 0xe2, 0x33, 0x94, 0xc8, 0x32, 0x39, 0xfa, 0xf0, 0x43, 0xde, 0x84, 0x18, 0xd0, 0x6d, 0xd5,
+            0x74, 0x98, 0xf8, 0x64, 0xcf, 0x84, 0xc6, 0xea, 0x55, 0x32, 0xe2, 0x38, 0xdd, 0xea, 0xfd, 0x6c,
+            0xeb, 0x6e, 0xe3, 0x70, 0xae, 0x38, 0xc7, 0xd9, 0x54, 0x84, 0x10, 0xc1, 0xfd, 0x1e, 0x6e, 0x6d,
+            0x37, 0xe0, 0x03, 0x9e, 0x06, 0x36, 0x68, 0x5b, 0xe3, 0xf6, 0x7f, 0x0b, 0x56, 0x79, 0xe0, 0xa8,
+            0x98, 0x77, 0xc7, 0x2b, 0xa5, 0x79, 0xff, 0x2f, 0xca, 0x15, 0x71, 0x7e, 0x02, 0xbf, 0x87, 0xb7,
+            0x7a, 0x8e, 0xe6, 0x64, 0x32, 0x62, 0x2a, 0xca, 0x23, 0x72, 0x87, 0xb5, 0x0c, 0x02, 0x4b, 0xee,
+            0x44, 0x72, 0x9c, 0x7e, 0x5d, 0xc1, 0xa7, 0x1d, 0x30, 0x38, 0xda, 0xc9, 0x5b, 0xd0, 0x11, 0xf9,
+            0xb1, 0x72, 0x6c, 0x04, 0x31, 0xc9, 0x50, 0x60, 0x6f, 0xc1, 0xf2, 0xae, 0x00, 0xf4, 0x5d, 0x66,
+            0x43, 0x0e, 0x7a, 0xc3, 0x76, 0xae, 0x3c, 0xc2, 0xb7, 0xc9, 0x52, 0xf4, 0x74, 0x51, 0xaf, 0x12,
+            0x19, 0xc6, 0x75, 0xe8, 0x6c, 0x54, 0x7e, 0x63, 0xdd, 0xae, 0x07, 0x5a, 0xb7, 0x00, 0xb5, 0x5e
+        };
+
+        static readonly u8 [] KetTab =
+        {
+            0x49, 0x47, 0x53, 0x30, 0x30, 0x30, 0x34, 0x52, 0x44, 0x31, 0x30, 0x32, 0x31, 0x30, 0x31, 0x35,
+            0x7c, 0x49, 0x27, 0xa5, 0xff, 0xf6, 0x98, 0x2d, 0x0f, 0x3d, 0x12, 0x23, 0xe2, 0x30, 0x50, 0xcf,
+            0xf1, 0x82, 0xf0, 0xce, 0x48, 0x44, 0x5b, 0xf3, 0x0d, 0xdf, 0xf8, 0x5d, 0x50, 0x53, 0x91, 0xd9,
+            0x12, 0xaf, 0x05, 0x7a, 0x98, 0xd0, 0x2f, 0x76, 0xf1, 0x5d, 0x17, 0x44, 0xc5, 0x03, 0x58, 0xf4,
+            0x61, 0xee, 0xd1, 0xce, 0x00, 0x88, 0x90, 0x2e, 0x5c, 0x76, 0xfb, 0x9f, 0x75, 0xcf, 0x40, 0x37,
+            0xa1, 0x9f, 0x00, 0x32, 0xd5, 0x9c, 0x37, 0xd2, 0x32, 0x27, 0x6f, 0x76, 0xd3, 0x86, 0x25, 0xf9,
+            0xd6, 0x60, 0x7b, 0x4e, 0xa9, 0x7a, 0x20, 0x59, 0x96, 0xb1, 0x7d, 0x10, 0x92, 0x37, 0x22, 0xd2,
+            0x42, 0x12, 0x6f, 0x07, 0x4f, 0xd2, 0x87, 0xfa, 0xeb, 0x92, 0x71, 0xf3, 0xa4, 0x31, 0x91, 0x98,
+            0x68, 0xd2, 0x47, 0x86, 0xda, 0x92, 0xe5, 0x2b, 0xd4, 0x89, 0xd7, 0xe7, 0x3d, 0x03, 0x0d, 0x63,
+            0x0c, 0x00, 0xac, 0x31, 0x9d, 0xe9, 0xf6, 0xa5, 0x34, 0x95, 0x77, 0xf2, 0xcf, 0x7c, 0x72, 0x89,
+            0x31, 0x3a, 0x8b, 0xae, 0x2b, 0x47, 0xb6, 0x5d, 0x2d, 0xf5, 0x5f, 0x5c, 0x0e, 0xab, 0xdb, 0xa1,
+            0x18, 0x60, 0x0e, 0xe6, 0x58, 0x5b, 0x5e, 0x8b, 0x24, 0x29, 0xd8, 0xac, 0xed, 0xdf, 0xa2, 0x83,
+            0x46, 0x91, 0xa1, 0xff, 0x35, 0x13, 0x6a, 0xa5, 0xba, 0xef, 0x6e, 0xa8, 0x9e, 0xa6, 0x62, 0x44,
+            0x7e, 0x2c, 0xed, 0x60, 0x17, 0x9e, 0x96, 0x64, 0xd3, 0x46, 0xec, 0x58, 0x95, 0xd1, 0xf7, 0x3e,
+            0xc2, 0xcf, 0xdf, 0xb0, 0x90, 0x6c, 0xdb, 0xbe, 0x93, 0x6d, 0x5d, 0x02, 0x85, 0x6e, 0x7c, 0x05,
+            0x55, 0x5a, 0xa1, 0xd7, 0x73, 0x2b, 0x76, 0xe9, 0x5b, 0xe4, 0x0c, 0x2e, 0x60, 0xcb, 0x4b, 0x72
+        };
+
+        static readonly u8 [] EspgalTab =
+        {
+            0x49, 0x47, 0x53, 0x30, 0x30, 0x30, 0x37, 0x52, 0x44, 0x31, 0x30, 0x33, 0x30, 0x39, 0x30, 0x39,
+            0xa7, 0xf1, 0x0a, 0xca, 0x69, 0xb2, 0xce, 0x86, 0xec, 0x3d, 0xa2, 0x5a, 0x03, 0xe9, 0xbf, 0xba,
+            0xf7, 0xd5, 0xec, 0x68, 0x03, 0x90, 0x15, 0xcc, 0x0d, 0x08, 0x2d, 0x76, 0xa5, 0xb5, 0x41, 0xf1,
+            0x43, 0x06, 0xdd, 0xcb, 0xbd, 0x0c, 0xa4, 0xe2, 0x08, 0x65, 0x2a, 0xf0, 0x30, 0x6b, 0x15, 0x59,
+            0x99, 0x9e, 0x75, 0x35, 0x77, 0x4f, 0x60, 0x99, 0x8c, 0x8f, 0xd2, 0x2b, 0x21, 0x57, 0xc3, 0xe5,
+            0x48, 0xf9, 0x8a, 0x29, 0x50, 0xc6, 0x71, 0x06, 0x89, 0x01, 0x9a, 0xc9, 0x39, 0x04, 0x12, 0xc8,
+            0xdf, 0xb1, 0x33, 0x6b, 0xa7, 0x1c, 0x3f, 0x7b, 0x2d, 0x76, 0x3a, 0xaf, 0x76, 0x3d, 0x08, 0x74,
+            0x2c, 0xa2, 0xc8, 0xfd, 0x1a, 0x3a, 0x6f, 0x8b, 0xe8, 0xe9, 0xa9, 0xfe, 0x17, 0x0c, 0xed, 0x9d,
+            0x40, 0xe6, 0xdf, 0x22, 0x89, 0x4d, 0xea, 0x09, 0x68, 0x96, 0x1e, 0x1a, 0x9c, 0xbd, 0x47, 0x35,
+            0x68, 0xd9, 0x4f, 0x5e, 0x12, 0xbf, 0xd6, 0x09, 0x9d, 0xf6, 0x0f, 0xa7, 0xc2, 0xdb, 0xde, 0x70,
+            0x35, 0x15, 0x2f, 0x73, 0x16, 0x3c, 0x9a, 0xdc, 0xb5, 0xc5, 0x35, 0x86, 0x8a, 0x31, 0xb8, 0xc1,
+            0x74, 0x76, 0xd7, 0x65, 0x32, 0xad, 0xdc, 0x17, 0x1f, 0xfe, 0x85, 0xda, 0x32, 0xc9, 0x1d, 0xda,
+            0x36, 0x16, 0xde, 0x76, 0x45, 0x3f, 0x85, 0x8c, 0x8b, 0xdc, 0x37, 0x08, 0x39, 0xef, 0x94, 0xaf,
+            0xc8, 0x51, 0x19, 0x29, 0x70, 0x5d, 0xbb, 0x4e, 0xe8, 0xdb, 0xc2, 0xb2, 0x5f, 0x2e, 0xe3, 0x73,
+            0xba, 0xc2, 0xa1, 0x42, 0x10, 0xb0, 0xe5, 0xb0, 0x64, 0xb4, 0xdc, 0xbb, 0xa1, 0x51, 0x12, 0x98,
+            0xdc, 0x43, 0xcc, 0xc3, 0xc5, 0x25, 0xab, 0x45, 0x6e, 0x63, 0x7e, 0x45, 0x40, 0x63, 0x67, 0xd2
+        };
+
         public static void KovDecrypt(MemoryU8 rom, int offset, int length)
         {
             int words = Math.Min(length, rom.Count - offset) / 2;
@@ -2041,6 +2507,90 @@ namespace mame
                 if ((i & 0x004820) == 0x004820) x ^= 0x0080;
                 x ^= (u16)(DemonFrontTab[(i >> 1) & 0xff] << 8);
 
+                WriteLeWord(rom, byteOffset, x);
+            }
+        }
+
+        public static void Py2k2Decrypt(MemoryU8 rom, int offset, int length)
+        {
+            Decrypt(rom, offset, length, Py2k2Tab, i =>
+            {
+                u16 x = 0;
+                if ((i & 0x040480) != 0x000080) x ^= 0x0001;
+                if ((i & 0x084008) == 0x084008) x ^= 0x0002;
+                if ((i & 0x000030) == 0x000010 && (i & 0x180000) != 0x080000) x ^= 0x0004;
+                if ((i & 0x000042) != 0x000042) x ^= 0x0008;
+                if ((i & 0x008100) == 0x008000) x ^= 0x0010;
+                if ((i & 0x022004) != 0x000004) x ^= 0x0020;
+                if ((i & 0x011800) != 0x010000) x ^= 0x0040;
+                if ((i & 0x004820) == 0x004820) x ^= 0x0080;
+                return x;
+            });
+        }
+
+        public static void KetDecrypt(MemoryU8 rom, int offset, int length)
+        {
+            Decrypt(rom, offset, length, KetTab, i =>
+            {
+                u16 x = 0;
+                if ((i & 0x040480) != 0x000080) x ^= 0x0001;
+                if ((i & 0x004008) == 0x004008) x ^= 0x0002;
+                if ((i & 0x080030) == 0x000010) x ^= 0x0004;
+                if ((i & 0x000042) != 0x000042) x ^= 0x0008;
+                if ((i & 0x008100) == 0x008000) x ^= 0x0010;
+                if ((i & 0x002004) != 0x000004) x ^= 0x0020;
+                if ((i & 0x011800) != 0x010000) x ^= 0x0040;
+                if ((i & 0x000820) == 0x000820) x ^= 0x0080;
+                return x;
+            });
+        }
+
+        public static void EspgalDecrypt(MemoryU8 rom, int offset, int length)
+        {
+            Decrypt(rom, offset, length, EspgalTab, i =>
+            {
+                u16 x = 0;
+                if ((i & 0x040480) != 0x000080) x ^= 0x0001;
+                if ((i & 0x084008) == 0x084008) x ^= 0x0002;
+                if ((i & 0x000030) == 0x000010) x ^= 0x0004;
+                if ((i & 0x000042) != 0x000042) x ^= 0x0008;
+                if ((i & 0x048100) == 0x048000) x ^= 0x0010;
+                if ((i & 0x022004) != 0x000004) x ^= 0x0020;
+                if ((i & 0x011800) != 0x010000) x ^= 0x0040;
+                if ((i & 0x000820) == 0x000820) x ^= 0x0080;
+                return x;
+            });
+        }
+
+        public static void Kov2Decrypt(MemoryU8 rom, int offset, int length)
+        {
+            int words = Math.Min(length, rom.Count - offset) / 2;
+            for (int i = 0; i < words; i++)
+            {
+                int byteOffset = offset + i * 2;
+                u16 x = ReadLeWord(rom, byteOffset);
+
+                if ((i & 0x040080) != 0x000080) x ^= 0x0001;
+                if ((i & 0x080030) == 0x080010) x ^= 0x0004;
+                if ((i & 0x000042) != 0x000042) x ^= 0x0008;
+                if ((i & 0x048100) == 0x048000) x ^= 0x0010;
+                if ((i & 0x022004) != 0x000004) x ^= 0x0020;
+                if ((i & 0x001800) != 0x000000) x ^= 0x0040;
+                if ((i & 0x000820) == 0x000820) x ^= 0x0080;
+
+                WriteLeWord(rom, byteOffset, x);
+            }
+        }
+
+        static void Decrypt(MemoryU8 rom, int offset, int length, u8 [] table, Func<int, u16> bitDecrypt)
+        {
+            int words = Math.Min(length, rom.Count - offset) / 2;
+            for (int i = 0; i < words; i++)
+            {
+                int byteOffset = offset + i * 2;
+                u16 x = ReadLeWord(rom, byteOffset);
+                x ^= bitDecrypt(i);
+                x ^= (u16)(table[i & 0xff] << 8);
                 WriteLeWord(rom, byteOffset, x);
             }
         }

@@ -68,7 +68,13 @@ namespace mame
                     return value;
                 return m_owner.read_word(address);
             }
-            public u32 ReadLong(u32 address) => ((u32)ReadWord(address) << 16) | ReadWord(address + 2);
+            public u32 ReadLong(u32 address)
+            {
+                address &= 0x00ff_ffff;
+                if (m_owner.m_fast_read_long != null && m_owner.m_fast_read_long(address, out u32 value))
+                    return value;
+                return ((u32)ReadWord(address) << 16) | ReadWord(address + 2);
+            }
 
             public void WriteByte(u32 address, u8 value)
             {
@@ -87,6 +93,9 @@ namespace mame
             }
             public void WriteLong(u32 address, u32 value)
             {
+                address &= 0x00ff_ffff;
+                if (m_owner.m_fast_write_long != null && m_owner.m_fast_write_long(address, value))
+                    return;
                 WriteWord(address, (u16)(value >> 16));
                 WriteWord(address + 2, (u16)value);
             }
@@ -107,12 +116,16 @@ namespace mame
         readonly mcs_bus m_bus;
         public delegate bool fast_read_byte_delegate(u32 address, out u8 value);
         public delegate bool fast_read_word_delegate(u32 address, out u16 value);
+        public delegate bool fast_read_long_delegate(u32 address, out u32 value);
         public delegate bool fast_write_byte_delegate(u32 address, u8 value);
         public delegate bool fast_write_word_delegate(u32 address, u16 value);
+        public delegate bool fast_write_long_delegate(u32 address, u32 value);
         fast_read_byte_delegate m_fast_read_byte;
         fast_read_word_delegate m_fast_read_word;
+        fast_read_long_delegate m_fast_read_long;
         fast_write_byte_delegate m_fast_write_byte;
         fast_write_word_delegate m_fast_write_word;
+        fast_write_long_delegate m_fast_write_long;
         readonly bool[] m_irq_lines = new bool[8];
         readonly u32[] m_state_d = new u32[8];
         readonly u32[] m_state_a = new u32[7];
@@ -163,12 +176,16 @@ namespace mame
             fast_read_byte_delegate read_byte,
             fast_read_word_delegate read_word,
             fast_write_byte_delegate write_byte,
-            fast_write_word_delegate write_word)
+            fast_write_word_delegate write_word,
+            fast_read_long_delegate read_long = null,
+            fast_write_long_delegate write_long = null)
         {
             m_fast_read_byte = read_byte;
             m_fast_read_word = read_word;
+            m_fast_read_long = read_long;
             m_fast_write_byte = write_byte;
             m_fast_write_word = write_word;
+            m_fast_write_long = write_long;
         }
 
 
