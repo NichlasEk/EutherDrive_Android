@@ -669,12 +669,7 @@ namespace mame
                 return 31;
 
             int bits = m_gfxRaw[byteOffset] | (m_gfxRaw[byteOffset + 1] << 8);
-            int raw = (bits >> (bitBase & 7)) & 0x1f;
-            return ((raw & 0x01) << 4)
-                | ((raw & 0x02) << 2)
-                | (raw & 0x04)
-                | ((raw & 0x08) >> 2)
-                | ((raw & 0x10) >> 4);
+            return (bits >> (bitBase & 7)) & 0x1f;
         }
 
         byte [] GetDecodedBgTile(u16 tile)
@@ -701,12 +696,7 @@ namespace mame
                     int bitBase = rowBitBase + x * 5;
                     int byteOffset = bitBase >> 3;
                     int bits = m_gfxRaw[byteOffset] | (m_gfxRaw[byteOffset + 1] << 8);
-                    int raw = (bits >> (bitBase & 7)) & 0x1f;
-                    decoded[rowOffset + x] = (byte)(((raw & 0x01) << 4)
-                        | ((raw & 0x02) << 2)
-                        | (raw & 0x04)
-                        | ((raw & 0x08) >> 2)
-                        | ((raw & 0x10) >> 4));
+                    decoded[rowOffset + x] = (byte)((bits >> (bitBase & 7)) & 0x1f);
                 }
             }
 
