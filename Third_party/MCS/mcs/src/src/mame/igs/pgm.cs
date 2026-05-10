@@ -59,6 +59,8 @@ namespace mame
         readonly u8 [] m_z80ram = new u8[0x10000];
         readonly u16 [] m_paletteram = new u16[0xa00];
         readonly u32 [] m_kov_slots = new u32[0x100];
+        MemoryU8 m_mainrom;
+        int m_mainromBytes;
         u16 m_value0;
         u16 m_value1;
         u16 m_valuekey;
@@ -143,6 +145,22 @@ namespace mame
 
         protected override void machine_start()
         {
+            memory_region maincpu = memregion("maincpu");
+            if (maincpu != null)
+            {
+                m_mainrom = maincpu.base_();
+                m_mainromBytes = (int)Math.Min(maincpu.bytes(), int.MaxValue);
+            }
+
+            m_maincpu.op0.set_fast_memory_handlers(
+                Fast68kReadByte,
+                Fast68kReadWord,
+                Fast68kWriteByte,
+                Fast68kWriteWord);
+            m_soundcpu.op0.set_fast_memory_handlers(
+                FastZ80ReadByte,
+                FastZ80WriteByte);
+
             save_item(NAME(new { m_mainram }));
             save_item(NAME(new { m_z80ram }));
             save_item(NAME(new { m_paletteram }));
@@ -176,6 +194,208 @@ namespace mame
         void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
         {
             machine().save().save_item_ref(this, name(), tag(), 0, itemName, getter, setter);
+        }
+
+        bool Fast68kReadByte(u32 address, out u8 value)
+        {
+            address &= 0x00ff_ffff;
+            if (IsFastRomByteAddress(address))
+            {
+                value = m_mainrom[(int)(address ^ 1)];
+                return true;
+            }
+            if (IsFastMainRamAddress(address))
+            {
+                value = m_mainram[address & (uint)(m_mainram.Length - 1)];
+                return true;
+            }
+            if (IsFastZ80RamAddress(address))
+            {
+                value = m_z80ram[address & 0xffff];
+                return true;
+            }
+            if (TryFast68kMappedRead(address, (address & 1) == 0 ? (u16)0xff00 : (u16)0x00ff, out u16 mappedValue))
+            {
+                value = (address & 1) == 0 ? (u8)(mappedValue >> 8) : (u8)mappedValue;
+                return true;
+            }
+
+            value = 0xff;
+            return false;
+        }
+
+        bool Fast68kReadWord(u32 address, out u16 value)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) == 0 && IsFastRomWordAddress(address))
+            {
+                value = (u16)((m_mainrom[(int)(address + 1)] << 8) | m_mainrom[(int)address]);
+                return true;
+            }
+            if ((address & 1) == 0 && IsFastMainRamAddress(address))
+            {
+                uint byteOffset = address & (uint)(m_mainram.Length - 1);
+                value = (u16)((m_mainram[byteOffset] << 8) | m_mainram[(byteOffset + 1) & (m_mainram.Length - 1)]);
+                return true;
+            }
+            if ((address & 1) == 0 && IsFastZ80RamAddress(address))
+            {
+                uint byteOffset = address & 0xffff;
+                value = (u16)((m_z80ram[byteOffset] << 8) | m_z80ram[(byteOffset + 1) & 0xffff]);
+                return true;
+            }
+            if ((address & 1) == 0 && TryFast68kMappedRead(address, 0xffff, out value))
+                return true;
+
+            value = 0xffff;
+            return false;
+        }
+
+        bool Fast68kWriteByte(u32 address, u8 value)
+        {
+            address &= 0x00ff_ffff;
+            if (IsFastMainRamAddress(address))
+            {
+                m_mainram[address & (uint)(m_mainram.Length - 1)] = value;
+                return true;
+            }
+            if (IsFastZ80RamAddress(address))
+            {
+                uint byteOffset = address & 0xffff;
+                m_z80ram[byteOffset] = value;
+                TraceZ80RamWrite(byteOffset, value);
+                return true;
+            }
+            if (TryFast68kMappedWrite(
+                address,
+                (address & 1) == 0 ? (u16)(value << 8) : value,
+                (address & 1) == 0 ? (u16)0xff00 : (u16)0x00ff))
+                return true;
+
+            return false;
+        }
+
+        bool Fast68kWriteWord(u32 address, u16 value)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) != 0)
+                return false;
+
+            if (IsFastMainRamAddress(address))
+            {
+                uint byteOffset = address & (uint)(m_mainram.Length - 1);
+                m_mainram[byteOffset] = (u8)(value >> 8);
+                m_mainram[(byteOffset + 1) & (m_mainram.Length - 1)] = (u8)value;
+                return true;
+            }
+            if (IsFastZ80RamAddress(address))
+            {
+                uint byteOffset = address & 0xffff;
+                m_z80ram[byteOffset] = (u8)(value >> 8);
+                TraceZ80RamWrite(byteOffset, (u8)(value >> 8));
+                m_z80ram[(byteOffset + 1) & 0xffff] = (u8)value;
+                TraceZ80RamWrite((byteOffset + 1) & 0xffff, (u8)value);
+                return true;
+            }
+            if (TryFast68kMappedWrite(address, value, 0xffff))
+                return true;
+
+            return false;
+        }
+
+        bool IsFastRomByteAddress(u32 address)
+        {
+            if (m_mainrom == null || address >= 0x600000 || address >= (uint)m_mainromBytes)
+                return false;
+
+            return (address < 0x4f0000 || address > 0x4f003f)
+                && (address < 0x500000 || address > 0x500005);
+        }
+
+        bool IsFastRomWordAddress(u32 address)
+        {
+            if (m_mainrom == null || address >= 0x600000 || address + 1 >= (uint)m_mainromBytes)
+                return false;
+
+            return (address < 0x4f0000 || address > 0x4f003e)
+                && (address < 0x500000 || address > 0x500004);
+        }
+
+        static bool IsFastMainRamAddress(u32 address)
+        {
+            return address >= MainRamStart && address <= 0x8fffff;
+        }
+
+        static bool IsFastZ80RamAddress(u32 address)
+        {
+            return address >= 0xc10000 && address <= 0xc1ffff;
+        }
+
+        bool TryFast68kMappedRead(u32 address, u16 memMask, out u16 value)
+        {
+            u32 wordAddress = address & 0x00ff_fffe;
+            if (wordAddress >= 0x900000 && wordAddress <= 0x9ffffe)
+            {
+                value = video_ram_r(null, (wordAddress & 0x7fff) >> 1, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xa00000 && wordAddress <= 0xa013fe)
+            {
+                value = palette_r(null, (wordAddress - 0xa00000) >> 1, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xb00000 && wordAddress <= 0xb0fffe)
+            {
+                value = video_regs_r(null, (wordAddress - 0xb00000) >> 1, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xc00000 && wordAddress <= 0xc0000e)
+            {
+                value = sound_rtc_stub_r(null, (wordAddress - 0xc00000) >> 1, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xc08000 && wordAddress <= 0xc08006)
+            {
+                value = input_stub_r(null, (wordAddress - 0xc08000) >> 1, memMask);
+                return true;
+            }
+
+            value = 0xffff;
+            return false;
+        }
+
+        bool TryFast68kMappedWrite(u32 address, u16 data, u16 memMask)
+        {
+            u32 wordAddress = address & 0x00ff_fffe;
+            if (wordAddress == 0x700006)
+                return true;
+            if (wordAddress >= 0x900000 && wordAddress <= 0x9ffffe)
+            {
+                video_ram_w(null, (wordAddress & 0x7fff) >> 1, data, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xa00000 && wordAddress <= 0xa013fe)
+            {
+                palette_w(null, (wordAddress - 0xa00000) >> 1, data, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xb00000 && wordAddress <= 0xb0fffe)
+            {
+                video_regs_w(null, (wordAddress - 0xb00000) >> 1, data, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xc00000 && wordAddress <= 0xc0000e)
+            {
+                sound_rtc_stub_w(null, (wordAddress - 0xc00000) >> 1, data, memMask);
+                return true;
+            }
+            if (wordAddress >= 0xc08000 && wordAddress <= 0xc08006)
+            {
+                input_stub_w(null, (wordAddress - 0xc08000) >> 1, data, memMask);
+                return true;
+            }
+
+            return false;
         }
 
         void vblank_irq(int state)
@@ -381,6 +601,18 @@ namespace mame
         void z80_program_w(offs_t offset, u8 data)
         {
             m_z80ram[offset & 0xffff] = data;
+        }
+
+        bool FastZ80ReadByte(u16 address, out u8 value)
+        {
+            value = m_z80ram[address];
+            return true;
+        }
+
+        bool FastZ80WriteByte(u16 address, u8 value)
+        {
+            m_z80ram[address] = value;
+            return true;
         }
 
         void TraceZ80RamWrite(uint offset, u8 data)

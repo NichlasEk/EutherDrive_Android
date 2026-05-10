@@ -2,6 +2,7 @@
 // copyright-holders:Edward Fast
 
 using System;
+using System.Diagnostics;
 
 using nvram_interface_enumerator = mame.device_interface_enumerator<mame.device_nvram_interface>;  //typedef device_interface_enumerator<device_nvram_interface> nvram_interface_enumerator;
 using offs_t = System.UInt32;  //using offs_t = u32;
@@ -466,20 +467,29 @@ namespace mame
                 {
                     g_profiler.start(profile_type.PROFILER_EXTRA);
 
+                    long machineUpdateStart = Stopwatch.GetTimestamp();
                     osd().machine_update(this);
+                    long machineUpdateTicks = Stopwatch.GetTimestamp() - machineUpdateStart;
                     if (m_hard_reset_pending || m_exit_pending)
                         break;
 
+                    long schedulerStart = Stopwatch.GetTimestamp();
                     // execute CPUs if not paused
                     if (!m_paused)
                         m_scheduler.timeslice();
                     // otherwise, just pump video updates through
                     else
                         m_video.frame_update();
+                    long schedulerTicks = Stopwatch.GetTimestamp() - schedulerStart;
 
+                    long saveLoadStart = Stopwatch.GetTimestamp();
                     // handle save/load
                     if (m_saveload_schedule != saveload_schedule.NONE)
                         handle_saveload();
+                    long saveLoadTicks = Stopwatch.GetTimestamp() - saveLoadStart;
+
+                    if (osd() is osd_profile_sink profileSink)
+                        profileSink.machine_loop_profile(machineUpdateTicks, schedulerTicks, saveLoadTicks);
 
                     g_profiler.stop();
                 }

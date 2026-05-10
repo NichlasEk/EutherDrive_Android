@@ -10384,6 +10384,8 @@ public partial class MainWindow : Window
             }
 
             long frameWorkStart = Stopwatch.GetTimestamp();
+            long? frameCounterBefore = TryGetCoreFrameCounter(core);
+            int producedFrames = frameCounterBefore.HasValue ? 0 : 1;
             try
             {
                 lock (_coreAudioLock)
@@ -10393,6 +10395,12 @@ public partial class MainWindow : Window
                     core.RunFrame();
                     if (TraceUiProfile)
                         _uiProfileRunFrameTicks += Stopwatch.GetTimestamp() - runStart;
+                    if (frameCounterBefore.HasValue && TryGetCoreFrameCounter(core) is long frameCounterAfter)
+                    {
+                        long delta = frameCounterAfter - frameCounterBefore.Value;
+                        producedFrames = delta > 0 && delta <= int.MaxValue ? (int)delta : 0;
+                    }
+
                     long audioStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
                     GenerateAudioFromSystemCycles(core);
                     if (core is MdTracerAdapter mdAudioAdapter)
@@ -10598,10 +10606,10 @@ public partial class MainWindow : Window
 
             ProducePsgForFrame();
             SubmitAudio();
-            TrackEmuCapacityFrame(Stopwatch.GetTimestamp() - frameWorkStart);
+            TrackEmuCapacityFrame(Stopwatch.GetTimestamp() - frameWorkStart, producedFrames);
 
             // Track actual emu FPS
-            _emuFpsFrames++;
+            _emuFpsFrames += producedFrames;
             long emuFpsNow = Stopwatch.GetTimestamp();
             if (_emuFpsLastTicks == 0)
                 _emuFpsLastTicks = emuFpsNow;
@@ -10668,13 +10676,13 @@ public partial class MainWindow : Window
         Console.WriteLine($"[EmuLoop] Thread exiting gen={generation}");
     }
 
-    private void TrackEmuCapacityFrame(long frameWorkTicks)
+    private void TrackEmuCapacityFrame(long frameWorkTicks, int producedFrames)
     {
         if (frameWorkTicks <= 0)
             return;
 
         _emuCapacityTicks += frameWorkTicks;
-        _emuCapacityFrames++;
+        _emuCapacityFrames += Math.Max(0, producedFrames);
 
         if (_emuCapacityFrames < 30 && _emuCapacityTicks < Stopwatch.Frequency)
             return;

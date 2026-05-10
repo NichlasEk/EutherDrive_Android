@@ -271,6 +271,10 @@ namespace mame
         device_execute_interface_z80 m_diexec;
         device_memory_interface_z80 m_dimemory;
         device_state_interface_z80 m_distate;
+        public delegate bool fast_read_byte_delegate(u16 address, out u8 value);
+        public delegate bool fast_write_byte_delegate(u16 address, u8 value);
+        fast_read_byte_delegate m_fast_read_byte;
+        fast_write_byte_delegate m_fast_write_byte;
 
 
         z80_daisy_chain_interface m_z80daisy;
@@ -464,6 +468,15 @@ namespace mame
         public devcb_write8.binder refresh_cb() { return m_refresh_cb.bind(); }  //auto refresh_cb() { return m_refresh_cb.bind(); }
         //auto nomreq_cb() { return m_nomreq_cb.bind(); }
         //auto halt_cb() { return m_halt_cb.bind(); }
+
+
+        public void set_fast_memory_handlers(
+            fast_read_byte_delegate read_byte,
+            fast_write_byte_delegate write_byte)
+        {
+            m_fast_read_byte = read_byte;
+            m_fast_write_byte = write_byte;
+        }
 
 
         // device-level overrides
@@ -3254,7 +3267,9 @@ namespace mame
          ***************************************************************/
         public virtual uint8_t rm(uint16_t addr)
         {
-            u8 res = m_data.read_byte(addr);
+            u8 res = m_fast_read_byte != null && m_fast_read_byte(addr, out u8 fastValue)
+                ? fastValue
+                : m_data.read_byte(addr);
             T(MTM);
             return res;
         }
@@ -3282,7 +3297,8 @@ namespace mame
         {
             // As we don't count changes between read and write, simply adjust to the end of requested.
             if (m_icount_executing != MTM) T(m_icount_executing - MTM);
-            m_data.write_byte(addr, value);
+            if (m_fast_write_byte == null || !m_fast_write_byte(addr, value))
+                m_data.write_byte(addr, value);
             T(MTM);
         }
 
@@ -3321,7 +3337,9 @@ namespace mame
         {
             // Use leftovers from previous instruction. Mainly to support recursive EXEC(.., rop())
             if (m_icount_executing != 0) T(m_icount_executing);
-            uint8_t res = m_opcodes.read_byte(PCD);
+            uint8_t res = m_fast_read_byte != null && m_fast_read_byte((u16)PCD, out u8 fastValue)
+                ? fastValue
+                : m_opcodes.read_byte(PCD);
             T((int)device_execute_interface_execute_min_cycles());
             m_refresh_cb.op_u8((uint16_t)((m_i << 8) | (m_r2 & 0x80) | (m_r & 0x7f)), 0x00, 0xff);
             T((int)device_execute_interface_execute_min_cycles());
@@ -3339,7 +3357,9 @@ namespace mame
          ***************************************************************/
         protected virtual uint8_t arg()
         {
-            u8 res = m_args.read_byte(PCD);
+            u8 res = m_fast_read_byte != null && m_fast_read_byte((u16)PCD, out u8 fastValue)
+                ? fastValue
+                : m_args.read_byte(PCD);
             T(MTM);
             PC++;
 

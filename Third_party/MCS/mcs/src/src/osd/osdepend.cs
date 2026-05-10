@@ -66,6 +66,11 @@ namespace mame
         //virtual osd_midi_device *create_midi_device() = 0;
     }
 
+    public interface osd_profile_sink
+    {
+        void machine_loop_profile(long machineUpdateTicks, long schedulerTicks, long saveLoadTicks);
+    }
+
 
     /***************************************************************************
         MIDI I/O INTERFACES

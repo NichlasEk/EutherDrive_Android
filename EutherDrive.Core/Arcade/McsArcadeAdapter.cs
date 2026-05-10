@@ -771,6 +771,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private readonly McsOsd _osd;
         private readonly Thread _thread;
         private StateRequest? _pendingStateRequest;
+        private volatile bool _hasPendingStateRequest;
         private long _consumerFrameCursor;
         private int _frameAdvancePermits;
         private bool _shutdownFrameGate;
@@ -953,6 +954,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                     throw new InvalidOperationException("A MCS savestate operation is already pending.");
 
                 _pendingStateRequest = request;
+                _hasPendingStateRequest = true;
             }
 
             _frameGateChanged.Set();
@@ -978,8 +980,14 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         public void ProcessMachineUpdate(mame.running_machine machine)
         {
+            if (!_exitRequested && !_hasPendingStateRequest)
+                return;
+
             _lifecycleStage = "machine_update";
             ApplyExitRequest(machine);
+            if (!_hasPendingStateRequest)
+                return;
+
             StateRequest? request = ProcessOneStateRequest(machine);
             if (request != null)
             {
@@ -1028,6 +1036,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             {
                 request = _pendingStateRequest;
                 _pendingStateRequest = null;
+                _hasPendingStateRequest = false;
             }
 
             if (request == null)
@@ -1633,6 +1642,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private long _lastInputTraceTicks;
         private Action<bool, bool>? _driverLocalInputSetter;
         private bool _driverLocalInputResolved;
+        private ArcadeInputState _lastAppliedInput;
+        private bool _hasLastAppliedInput;
 
         public McsOsd(McsRuntime runtime, McsArcadeAdapter owner)
         {
@@ -2138,6 +2149,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         {
             ArcadeInputState input = _owner.SnapshotInput();
             machine.set_ui_active(false);
+            if (_hasLastAppliedInput && input.Equals(_lastAppliedInput))
+                return;
+
+            _lastAppliedInput = input;
+            _hasLastAppliedInput = true;
+
             bool anyInput =
                 input.Up || input.Down || input.Left || input.Right ||
                 input.Button1 || input.Button2 || input.Button3 || input.Button4 ||

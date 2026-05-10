@@ -41,10 +41,14 @@ namespace mame
         readonly uint [] m_bgPaletteCache = new uint[32 * 32];
         readonly uint [] m_txPaletteCache = new uint[32 * 16];
         readonly uint [] m_spritePaletteCache = new uint[32 * 32];
+        readonly byte [] [] m_bgTileCache = new byte[0x10000][];
 
         MemoryU8 m_gfx;
         MemoryU8 m_adata;
         MemoryU8 m_bdata;
+        byte [] m_gfxRaw;
+        byte [] m_adataRaw;
+        byte [] m_bdataRaw;
         int m_gfxBytes;
         int m_adataWords;
         int m_bdataWords;
@@ -94,6 +98,7 @@ namespace mame
             if (gfx != null)
             {
                 m_gfx = gfx.base_();
+                m_gfxRaw = m_gfx.data_raw;
                 m_gfxBytes = (int)Math.Min(gfx.bytes(), int.MaxValue);
             }
 
@@ -101,6 +106,7 @@ namespace mame
             if (sprcol != null)
             {
                 m_adata = sprcol.base_();
+                m_adataRaw = m_adata.data_raw;
                 m_adataWords = (int)Math.Min(sprcol.bytes() / 2, int.MaxValue);
             }
 
@@ -108,6 +114,7 @@ namespace mame
             if (sprmask != null)
             {
                 m_bdata = sprmask.base_();
+                m_bdataRaw = m_bdata.data_raw;
                 m_bdataWords = (int)Math.Min(sprmask.bytes() / 2, int.MaxValue);
             }
 
@@ -122,6 +129,7 @@ namespace mame
             SaveStateRef(nameof(m_tx_yscroll), () => m_tx_yscroll, value => m_tx_yscroll = value);
             SaveStateRef(nameof(m_tx_xscroll), () => m_tx_xscroll, value => m_tx_xscroll = value);
             SaveStateRef(nameof(m_ctrl), () => m_ctrl, value => m_ctrl = value);
+            machine().save().register_postload(ParseSpriteBuffer);
         }
 
         void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
@@ -232,6 +240,11 @@ namespace mame
             if (!sprite_dma(readSpriteRam))
                 return;
 
+            ParseSpriteBuffer();
+        }
+
+        void ParseSpriteBuffer()
+        {
             m_spriteCount = 0;
             for (int spriteNum = 0; spriteNum < 0x1000 / 2 && m_spriteCount < m_spritelist.Length; spriteNum += 8)
             {
@@ -332,7 +345,7 @@ namespace mame
 
         void DrawBackground(bitmap_rgb32 bitmap, int minX, int maxX, int minY, int maxY)
         {
-            if (m_gfx == null || m_gfxBytes <= 0)
+            if (m_gfxRaw == null || m_gfxBytes <= 0)
                 return;
 
             for (int y = minY; y <= maxY; y++)
@@ -358,13 +371,17 @@ namespace mame
                     int palette = (attr & 0x003e) >> 1;
                     int paletteBase = palette * 32;
                     int run = Math.Min(maxX - x + 1, 32 - px);
+                    byte [] decodedTile = GetDecodedBgTile(tile);
+                    int decodedRowBase = py << 5;
 
                     if ((attr & 0x0040) != 0)
                     {
                         int flippedPx = 31 - px;
                         for (int i = 0; i < run; i++, x++, srcXBase++, flippedPx--)
                         {
-                            int pen = DecodeBgPixel(tile, flippedPx, py);
+                            int pen = decodedTile != null
+                                ? decodedTile[decodedRowBase + flippedPx]
+                                : DecodeBgPixel(tile, flippedPx, py);
                             if (pen == 31)
                                 continue;
 
@@ -376,7 +393,9 @@ namespace mame
                     {
                         for (int i = 0; i < run; i++, x++, srcXBase++, px++)
                         {
-                            int pen = DecodeBgPixel(tile, px, py);
+                            int pen = decodedTile != null
+                                ? decodedTile[decodedRowBase + px]
+                                : DecodeBgPixel(tile, px, py);
                             if (pen == 31)
                                 continue;
 
@@ -390,7 +409,7 @@ namespace mame
 
         void DrawText(bitmap_rgb32 bitmap, int minX, int maxX, int minY, int maxY)
         {
-            if (m_gfx == null || m_gfxBytes <= 0)
+            if (m_gfxRaw == null || m_gfxBytes <= 0)
                 return;
 
             for (int y = minY; y <= maxY; y++)
@@ -460,7 +479,7 @@ namespace mame
 
         void DrawSpriteBasic(Sprite sprite, bitmap_rgb32 bitmap, int minX, int maxX, int minY, int maxY)
         {
-            if (m_adata == null || m_bdata == null || m_adataWords == 0 || m_bdataWords == 0 || sprite.Width == 0 || sprite.Height == 0)
+            if (m_adataRaw == null || m_bdataRaw == null || m_adataWords == 0 || m_bdataWords == 0 || sprite.Width == 0 || sprite.Height == 0)
                 return;
 
             m_aoffset = (((u32)ReadMaskWord(m_boffset + 1) << 16) | ReadMaskWord(m_boffset)) >> 2;
@@ -481,7 +500,7 @@ namespace mame
 
         void DrawSpriteZoomed(Sprite sprite, bitmap_rgb32 bitmap, int minX, int maxX, int minY, int maxY)
         {
-            if (m_adata == null || m_bdata == null || m_adataWords == 0 || m_bdataWords == 0 || sprite.Width == 0 || sprite.Height == 0)
+            if (m_adataRaw == null || m_bdataRaw == null || m_adataWords == 0 || m_bdataWords == 0 || sprite.Width == 0 || sprite.Height == 0)
                 return;
 
             m_aoffset = (((u32)ReadMaskWord(m_boffset + 1) << 16) | ReadMaskWord(m_boffset)) >> 2;
@@ -634,18 +653,22 @@ namespace mame
             if ((uint)offset >= (uint)m_gfxBytes)
                 return 15;
 
-            u8 packed = m_gfx[offset];
+            u8 packed = m_gfxRaw[offset];
             return (x & 1) == 0 ? (packed >> 4) & 0x0f : packed & 0x0f;
         }
 
         int DecodeBgPixel(u16 tile, int x, int y)
         {
+            byte [] decoded = GetDecodedBgTile(tile);
+            if (decoded != null)
+                return decoded[(y << 5) | x];
+
             int bitBase = tile * 32 * 32 * 5 + y * 32 * 5 + x * 5;
             int byteOffset = bitBase >> 3;
             if ((uint)(byteOffset + 1) >= (uint)m_gfxBytes)
                 return 31;
 
-            int bits = m_gfx[byteOffset] | (m_gfx[byteOffset + 1] << 8);
+            int bits = m_gfxRaw[byteOffset] | (m_gfxRaw[byteOffset + 1] << 8);
             int raw = (bits >> (bitBase & 7)) & 0x1f;
             return ((raw & 0x01) << 4)
                 | ((raw & 0x02) << 2)
@@ -654,24 +677,61 @@ namespace mame
                 | ((raw & 0x10) >> 4);
         }
 
+        byte [] GetDecodedBgTile(u16 tile)
+        {
+            if (m_gfxRaw == null)
+                return null;
+
+            byte [] decoded = m_bgTileCache[tile];
+            if (decoded != null)
+                return decoded;
+
+            int tileBitBase = tile * 32 * 32 * 5;
+            int lastByte = (tileBitBase + (32 * 32 * 5) - 1) >> 3;
+            if ((uint)(lastByte + 1) >= (uint)m_gfxBytes)
+                return null;
+
+            decoded = new byte[32 * 32];
+            for (int y = 0; y < 32; y++)
+            {
+                int rowBitBase = tileBitBase + y * 32 * 5;
+                int rowOffset = y << 5;
+                for (int x = 0; x < 32; x++)
+                {
+                    int bitBase = rowBitBase + x * 5;
+                    int byteOffset = bitBase >> 3;
+                    int bits = m_gfxRaw[byteOffset] | (m_gfxRaw[byteOffset + 1] << 8);
+                    int raw = (bits >> (bitBase & 7)) & 0x1f;
+                    decoded[rowOffset + x] = (byte)(((raw & 0x01) << 4)
+                        | ((raw & 0x02) << 2)
+                        | (raw & 0x04)
+                        | ((raw & 0x08) >> 2)
+                        | ((raw & 0x10) >> 4));
+                }
+            }
+
+            m_bgTileCache[tile] = decoded;
+            return decoded;
+        }
+
         u16 ReadColorWord(u32 offset)
         {
-            if (m_adata == null || m_adataWords == 0)
+            if (m_adataRaw == null || m_adataWords == 0)
                 return 0xffff;
 
             int word = (int)(offset & (u32)(m_adataWords - 1));
             int byteOffset = word << 1;
-            return (u16)(m_adata[byteOffset] | (m_adata[byteOffset + 1] << 8));
+            return (u16)(m_adataRaw[byteOffset] | (m_adataRaw[byteOffset + 1] << 8));
         }
 
         u16 ReadMaskWord(u32 offset)
         {
-            if (m_bdata == null || m_bdataWords == 0)
+            if (m_bdataRaw == null || m_bdataWords == 0)
                 return 0xffff;
 
             int word = (int)(offset & (u32)(m_bdataWords - 1));
             int byteOffset = word << 1;
-            return (u16)(m_bdata[byteOffset] | (m_bdata[byteOffset + 1] << 8));
+            return (u16)(m_bdataRaw[byteOffset] | (m_bdataRaw[byteOffset + 1] << 8));
         }
 
         uint PalettePen(int pen)
