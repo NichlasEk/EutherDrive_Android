@@ -492,6 +492,10 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeCopyLoop(pc))
             return;
+        if (TryFastPathKnownRuntimeTableLookup(pc))
+            return;
+        if (TryFastPathKnownRuntimeEventPollWrapper(pc))
+            return;
         if (TryFastPathKnownGlideVertexCopyLoop(pc))
             return;
         if (TryFastPathKnownGlideSetupPacketHelper(pc))
@@ -1495,6 +1499,227 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
         Pc = targetPc;
     }
+
+    private bool TryFastPathKnownRuntimeTableLookup(ulong pc)
+    {
+        const ulong entry = 0xffffffff8005d230UL;
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is < 0x0005d230UL or > 0x0005d344UL)
+            return false;
+        if (!MatchesKnownRuntimeTableLookupSignature(entry))
+            return false;
+
+        bool frameEntered = pc != entry;
+        ulong argument;
+        ulong framePointer = _gpr[30];
+        if (frameEntered)
+        {
+            if (!IsMainRamRange(framePointer, 0x14))
+                return false;
+
+            argument = SignExtend32(_memory.Read32(framePointer + 0x10UL));
+        }
+        else
+        {
+            argument = SignExtend32((uint)_gpr[4]);
+        }
+
+        if (!TryKnownRuntimeTableLookup(argument, out uint found, out uint count))
+            return false;
+
+        _gpr[2] = found;
+        if (frameEntered)
+        {
+            _gpr[30] = SignExtend32(_memory.Read32(framePointer + 8UL));
+            _gpr[29] = framePointer + 0x10UL;
+        }
+
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * Math.Max(16UL, (ulong)count * 24UL));
+        _instructionCounter += Math.Max(16UL, (ulong)count * 24UL);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool TryKnownRuntimeTableLookup(ulong argument, out uint found, out uint count)
+    {
+        found = 0;
+        count = _memory.Read32(0xffffffff800b2f24UL);
+        if (count > 0x1000u)
+            return false;
+
+        const ulong table = 0xffffffff800b4c30UL;
+        ulong tableBytes = count == 0 ? 1UL : (ulong)(count - 1) * 0xecUL + 0x18UL;
+        if (!IsMainRamRange(table, tableBytes))
+            return false;
+
+        for (uint index = 0; index < count; index++)
+        {
+            ulong record = table + index * 0xecUL;
+            if (SignExtend32(_memory.Read32(record + 4UL)) != argument)
+                continue;
+
+            _memory.Write32(0xffffffff800b2f34UL, _memory.Read32(record + 0x14UL));
+            _memory.Write32(0xffffffff800b2f2cUL, (uint)record);
+            found = 1;
+            break;
+        }
+
+        return true;
+    }
+
+    private bool MatchesKnownRuntimeTableLookupSignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdfff0U &&
+           _memory.Read32(entry + 0x04) == 0xafbe0008U &&
+           _memory.Read32(entry + 0x08) == 0x03a0f02dU &&
+           _memory.Read32(entry + 0x0c) == 0xafc40010U &&
+           _memory.Read32(entry + 0x10) == 0xafc00004U &&
+           _memory.Read32(entry + 0x14) == 0xafc00000U &&
+           _memory.Read32(entry + 0x18) == 0x8fc20000U &&
+           _memory.Read32(entry + 0x20) == 0x8c632f24U &&
+           _memory.Read32(entry + 0x24) == 0x0043102bU &&
+           _memory.Read32(entry + 0x5c) == 0x8c634c34U &&
+           _memory.Read32(entry + 0x60) == 0x8fc20010U &&
+           _memory.Read32(entry + 0x64) == 0x1462001eU &&
+           _memory.Read32(entry + 0x90) == 0x8c634c44U &&
+           _memory.Read32(entry + 0x98) == 0xac232f34U &&
+           _memory.Read32(entry + 0xbc) == 0x64634c30U &&
+           _memory.Read32(entry + 0xc8) == 0xac222f2cU &&
+           _memory.Read32(entry + 0xf4) == 0x8fc30004U &&
+           _memory.Read32(entry + 0x104) == 0x03c0e82dU &&
+           _memory.Read32(entry + 0x10c) == 0x27bd0010U &&
+           _memory.Read32(entry + 0x110) == 0x03e00008U;
+
+    private bool TryFastPathKnownRuntimeEventPollWrapper(ulong pc)
+    {
+        const ulong entry = 0xffffffff8005fab4UL;
+        const ulong body = 0xffffffff8005fac0UL;
+        const ulong afterLookup = 0xffffffff8005faf4UL;
+        if (pc != entry && pc != body && pc != afterLookup)
+            return false;
+        if (!MatchesKnownRuntimeEventPollWrapperSignature(entry) ||
+            !MatchesKnownRuntimeTableLookupSignature(0xffffffff8005d230UL))
+        {
+            return false;
+        }
+
+        uint returnValue;
+        uint count = 0;
+        ulong skippedInstructions = 12UL;
+        ulong returnPc = _gpr[31];
+        bool restoreFrame = pc != entry;
+        ulong framePointer = 0;
+        if (restoreFrame)
+        {
+            framePointer = pc == body ? _gpr[29] : _gpr[30];
+            if (!IsMainRamRange(framePointer + 0x18UL, 8))
+                return false;
+
+            returnPc = SignExtend32(_memory.Read32(framePointer + 0x1cUL));
+        }
+
+        if (pc != afterLookup)
+        {
+            ulong argument = SignExtend32((uint)_gpr[4]);
+            if (argument == 0)
+            {
+                returnValue = 0;
+            }
+            else
+            {
+                if (!TryKnownRuntimeTableLookup(argument, out uint found, out count))
+                    return false;
+
+                skippedInstructions += Math.Max(16UL, (ulong)count * 24UL);
+                if (found == 0)
+                    returnValue = 0;
+                else if (!TryFinishKnownRuntimeEventPollWrapperEarlyReturn(out returnValue, ref skippedInstructions))
+                    return false;
+            }
+        }
+        else
+        {
+            skippedInstructions = 4UL;
+            if (_gpr[2] == 0)
+                returnValue = 0;
+            else if (!TryFinishKnownRuntimeEventPollWrapperEarlyReturn(out returnValue, ref skippedInstructions))
+                return false;
+        }
+
+        if (restoreFrame)
+        {
+            _gpr[31] = returnPc;
+            _gpr[30] = SignExtend32(_memory.Read32(framePointer + 0x18UL));
+            _gpr[29] = framePointer + 0x20UL;
+        }
+
+        _gpr[2] = returnValue;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * skippedInstructions);
+        _instructionCounter += skippedInstructions;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnPc;
+        return true;
+    }
+
+    private bool TryFinishKnownRuntimeEventPollWrapperEarlyReturn(out uint returnValue, ref ulong skippedInstructions)
+    {
+        ulong record = SignExtend32(_memory.Read32(0xffffffff800b2f2cUL));
+        if (!IsMainRamRange(record + 0x58UL, 8))
+        {
+            returnValue = 0;
+            return false;
+        }
+
+        uint pending = _memory.Read32(record + 0x58UL);
+        _gpr[3] = SignExtend32(pending);
+        if (pending == 0)
+        {
+            returnValue = 1;
+            skippedInstructions += 16UL;
+            return true;
+        }
+
+        uint busy = _memory.Read32(record + 0x5cUL);
+        _gpr[3] = SignExtend32(busy);
+        if (busy == 0)
+        {
+            returnValue = 0;
+            return false;
+        }
+
+        returnValue = 1;
+        skippedInstructions += 20UL;
+        return true;
+    }
+
+    private bool MatchesKnownRuntimeEventPollWrapperSignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdffe0U &&
+           _memory.Read32(entry + 0x04) == 0xafbf001cU &&
+           _memory.Read32(entry + 0x08) == 0xafbe0018U &&
+           _memory.Read32(entry + 0x0c) == 0x03a0f02dU &&
+           _memory.Read32(entry + 0x10) == 0xafc40020U &&
+           _memory.Read32(entry + 0x1c) == 0x8fc20010U &&
+           _memory.Read32(entry + 0x20) == 0x14400004U &&
+           _memory.Read32(entry + 0x34) == 0x8fc40020U &&
+           _memory.Read32(entry + 0x38) == 0x0c01748dU &&
+           _memory.Read32(entry + 0x40) == 0x14400004U &&
+           _memory.Read32(entry + 0x54) == 0x3c02800bU &&
+           _memory.Read32(entry + 0x58) == 0x8c422f2cU &&
+           _memory.Read32(entry + 0x5c) == 0x8c430058U &&
+           _memory.Read32(entry + 0x60) == 0x10600008U &&
+           _memory.Read32(entry + 0x6c) == 0x8c422f2cU &&
+           _memory.Read32(entry + 0x70) == 0x8c43005cU &&
+           _memory.Read32(entry + 0x74) == 0x14600006U &&
+           _memory.Read32(entry + 0x84) == 0x24020001U &&
+           _memory.Read32(entry + 0x100) == 0x03c0e82dU &&
+           _memory.Read32(entry + 0x104) == 0x8fbf001cU &&
+           _memory.Read32(entry + 0x108) == 0x8fbe0018U &&
+           _memory.Read32(entry + 0x10c) == 0x27bd0020U &&
+           _memory.Read32(entry + 0x110) == 0x03e00008U;
 
     private bool TryFastPathKnownGlideVertexCopyLoop(ulong pc)
     {

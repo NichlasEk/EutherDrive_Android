@@ -1453,3 +1453,38 @@ voodoo packetTypes=0:0,1:607369,2:0,3:0,4:276080,5:0,6:0,7:0
 ```
 
 Frame dumps at `/tmp/gauntdl_after_memcpy_fastpath_900.png` and `/tmp/gauntdl_after_statepacket_fastpath_1800.ppm` are still fill/debugbar-only. Next useful target is the `0x800533xx` path, but it needs a fuller code dump before fast-pathing because it has state conditionals and a call to `0x8005f9d0`.
+
+## 2026-05-09 Post-Freeze Runtime/Event Wrapper Push
+
+Added two more signature-gated runtime fastpaths in `GauntletDarkLegacyAdapter.cs`:
+
+- `0x80053340`: Glide buffer-swap packet tail. It decrements `state+0x38c`; when the counter reaches zero it emits the observed FIFO packets `0x00010261`/`state+0x280`, `0x00010221`/`state+0x26c`, and optional `0x00010241`/`0`, then updates `state+0x374/0x37c` and restores the frame.
+- `0x8005d230..0x8005d344`: runtime table lookup. It scans the `0x800b4c30` table with stride `0xec`, compares signed `record+4` against the argument, updates `0x800b2f34` and `0x800b2f2c` on match, and returns `v0=1/0`.
+- `0x8005fab4` / `0x8005fac0` / `0x8005faf4`: runtime event-poll wrapper. Only the safe early-return cases are fastpathed. If `record+0x58 != 0` and `record+0x5c == 0`, it falls back to interpreted execution so the callback/work branch remains faithful.
+
+Important correction: `0x8005fab4` is the true wrapper entry. `0x8005fac0` is post-prologue and must restore `ra/fp/sp` from the current stack frame if fastpathed. Do not treat `0x8005fac0` as a no-frame entry point.
+
+Current smoke status with `/tmp/eutherdrive-gauntlet-probe`, `frames=1800`, `CPU_STEPS_PER_FRAME=200000`:
+
+```text
+extra=512, helper-drain enabled
+pc=0xffffffff8005fa70
+previous blocker 0xffffffff8005faf4 is now passed
+
+extra=4096
+pc=0xffffffff80052bb8
+voodoo regs=2046762 fifoWords=2650361 fifoPackets=883463 fastFills=55221 swaps=110442
+
+extra=16384, broader helper-drain enabled
+pc=0xffffffff8005ec0c
+voodoo regs=2046843 fifoWords=2650463 fifoPackets=883497 fastFills=55223 swaps=110446
+```
+
+Still no real triangle traffic:
+
+```text
+drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:607402,2:0,3:0,4:276095,5:0,6:0,7:0
+```
+
+The next runtime hotspot is `0x8005ec0c`, reached from the event/cleanup path after `0x8005f9d0` and the `0x8005fab4` wrapper. It is not yet proven safe to fastpath; it likely performs event/callback cleanup and should be traced or dumped before any Core-side shortcut.
