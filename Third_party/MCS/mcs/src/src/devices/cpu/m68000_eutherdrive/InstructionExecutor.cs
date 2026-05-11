@@ -22,10 +22,26 @@ internal sealed partial class InstructionExecutor
     private bool _pgmDemonFrontByteSlotSignatureValid;
     private bool _pgmDemonFrontByteCounterSignatureChecked;
     private bool _pgmDemonFrontByteCounterSignatureValid;
+    private bool _pgmDemonFrontMissingBitScanSignatureChecked;
+    private bool _pgmDemonFrontMissingBitScanSignatureValid;
     private bool _pgmObjectMaskSignatureChecked;
     private bool _pgmObjectMaskSignatureValid;
+    private bool _pgmDemonFrontObjectDrawSignatureChecked;
+    private bool _pgmDemonFrontObjectDrawSignatureValid;
+    private bool _pgmDemonFrontCounterClearSignatureChecked;
+    private bool _pgmDemonFrontCounterClearSignatureValid;
+    private bool _pgmSpriteFlagPairSignatureChecked;
+    private bool _pgmSpriteFlagPairSignatureValid;
+    private bool _pgmDemonFrontPointerFlagSignatureChecked;
+    private bool _pgmDemonFrontPointerFlagSignatureValid;
+    private bool _pgmDemonFrontPointerPollSignatureChecked;
+    private bool _pgmDemonFrontPointerPollSignatureValid;
+    private bool _pgmDemonFrontStatusPollSignatureChecked;
+    private bool _pgmDemonFrontStatusPollSignatureValid;
     private bool _pgmDemonFrontDispatchSignatureChecked;
     private bool _pgmDemonFrontDispatchSignatureValid;
+    private bool _pgmSvgLatchReadHelperSignatureChecked;
+    private bool _pgmSvgLatchReadHelperSignatureValid;
 
     private static readonly bool TraceExceptions =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
@@ -60,11 +76,17 @@ internal sealed partial class InstructionExecutor
     private static int _traceInterruptRemaining = TraceInterrupts ? TraceInterruptLimit : 0;
     private static readonly bool ProfileOpcodes =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_OPCODE_PROFILE"), "1", StringComparison.Ordinal);
+    private static readonly bool ProfileFastOpcodes =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_FAST_PROFILE"), "1", StringComparison.Ordinal);
     private static readonly long[] ProfileOpcodeCounts = new long[ushort.MaxValue + 1];
     private static readonly long[] ProfileKindCounts = new long[Enum.GetValues(typeof(InstructionKind)).Length];
     private static readonly Dictionary<ulong, long> ProfilePcOpcodeCounts = new();
+    private static readonly long[] ProfileFastOpcodeCounts = new long[ushort.MaxValue + 1];
+    private static readonly Dictionary<ulong, long> ProfileFastPcOpcodeCounts = new();
     private static long _profileTotalInstructions;
+    private static long _profileTotalFastInstructions;
     private static long _profileWindowStartTicks = Stopwatch.GetTimestamp();
+    private static long _profileFastWindowStartTicks = Stopwatch.GetTimestamp();
 
     private const uint AddressErrorVector = 3;
     private const uint IllegalOpcodeVector = 4;
@@ -142,7 +164,14 @@ internal sealed partial class InstructionExecutor
                 return TryConsumePgmSpriteFlagScanLoop(cycleBudget, out cycles);
 
             case 0x0010E2C6:
+            case 0x0010E398:
                 return TryConsumePgmSvgLatchDelayLoop(cycleBudget, out cycles);
+
+            case 0x00105C8E:
+                return TryConsumePgmDemonFrontByteSlotScanLoop(cycleBudget, out cycles);
+
+            case 0x00107A0C:
+                return TryConsumePgmDemonFrontByteCounterTail(cycleBudget, out cycles);
 
             case 0x00125308:
                 return TryConsumePgmObjectMaskScanLoop(cycleBudget, out cycles);
@@ -184,6 +213,12 @@ internal sealed partial class InstructionExecutor
 
         switch (_registers.Prefetch)
         {
+            case 0x60FE:
+                cycles = (uint)(cycleBudget - (cycleBudget % 10));
+                if (cycles == 0)
+                    cycles = 10;
+                return true;
+
             case 0x20C0:
                 return TryConsumeMoveLongFillDbfLoop(cycleBudget, out cycles);
 
@@ -266,6 +301,127 @@ internal sealed partial class InstructionExecutor
         return true;
     }
 
+    private bool TryReadPgmDemonFrontZeroTableEntry(uint index, out uint entryAddress)
+    {
+        entryAddress = 0;
+
+        if (!_pgmDemonFrontZeroTableSignatureChecked)
+        {
+            _pgmDemonFrontZeroTableSignatureValid =
+                _bus.ReadWord(0x00101D7E) == 0x202F
+                && _bus.ReadWord(0x00101D82) == 0x2200
+                && _bus.ReadWord(0x00101D84) == 0xD080
+                && _bus.ReadWord(0x00101D86) == 0xD081
+                && _bus.ReadWord(0x00101D88) == 0xD080
+                && _bus.ReadWord(0x00101D8A) == 0x207C
+                && _bus.ReadWord(0x00101D90) == 0xD1C0
+                && _bus.ReadWord(0x00101D92) == 0x2248
+                && _bus.ReadWord(0x00101D94) == 0x4A69
+                && _bus.ReadWord(0x00101D98) == 0x671A
+                && _bus.ReadWord(0x00101DB4) == 0x7000
+                && _bus.ReadWord(0x00101DB6) == 0x4E75;
+            _pgmDemonFrontZeroTableSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontZeroTableSignatureValid)
+            return false;
+
+        uint baseAddress = ((uint)_bus.ReadWord(0x00101D8C) << 16) | _bus.ReadWord(0x00101D8E);
+        entryAddress = (baseAddress + index * 6u) & 0x00ff_ffffu;
+        uint testAddress = (entryAddress + unchecked((uint)(short)_bus.ReadWord(0x00101D96))) & 0x00ff_ffffu;
+        return _bus.ReadWord(testAddress) == 0;
+    }
+
+    private bool TryConsumePgmDemonFrontStatusPollBlock(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x001020BA)
+            return false;
+
+        if (!_pgmDemonFrontStatusPollSignatureChecked)
+        {
+            _pgmDemonFrontStatusPollSignatureValid =
+                _bus.ReadWord(0x001020BA) == 0x48E7
+                && _bus.ReadWord(0x001020BC) == 0x2020
+                && _bus.ReadWord(0x001020BE) == 0x4242
+                && _bus.ReadWord(0x001020C0) == 0x4878
+                && _bus.ReadWord(0x001020C2) == 0x0025
+                && _bus.ReadWord(0x001020C4) == 0x4EB9
+                && _bus.ReadWord(0x001020C6) == 0x0010
+                && _bus.ReadWord(0x001020C8) == 0x1D7E
+                && _bus.ReadWord(0x001020F8) == 0x4A39
+                && _bus.ReadWord(0x001020FA) == 0x0080
+                && _bus.ReadWord(0x001020FC) == 0xA1A4
+                && _bus.ReadWord(0x00102102) == 0x0839
+                && _bus.ReadWord(0x00102104) == 0x0003
+                && _bus.ReadWord(0x00102106) == 0x0080
+                && _bus.ReadWord(0x00102108) == 0xA1A9
+                && _bus.ReadWord(0x00102196) == 0x4EB9
+                && _bus.ReadWord(0x00102198) == 0x0010
+                && _bus.ReadWord(0x0010219A) == 0x1E00
+                && _bus.ReadWord(0x0010219C) == 0x5D80
+                && _bus.ReadWord(0x0010219E) == 0x2440
+                && _bus.ReadWord(0x001021A0) == 0x4A2A
+                && _bus.ReadWord(0x001021A2) == 0x00CA
+                && _bus.ReadWord(0x001021E0) == 0x4A2A
+                && _bus.ReadWord(0x001021E2) == 0x00D0
+                && _bus.ReadWord(0x00102226) == 0x4A2A
+                && _bus.ReadWord(0x00102228) == 0x00D6
+                && _bus.ReadWord(0x0010222A) == 0x4A2A
+                && _bus.ReadWord(0x0010222C) == 0x00DC
+                && _bus.ReadWord(0x0010222E) == 0x4A42
+                && _bus.ReadWord(0x00102230) == 0x671C
+                && _bus.ReadWord(0x0010224E) == 0x4CDF
+                && _bus.ReadWord(0x00102250) == 0x0404
+                && _bus.ReadWord(0x00102252) == 0x4E75;
+            _pgmDemonFrontStatusPollSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontStatusPollSignatureValid)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        if (!TryReadPgmDemonFrontZeroTableEntry(0x25, out _))
+            return false;
+        if (!TryReadPgmDemonFrontZeroTableEntry(0x2D, out _))
+            return false;
+        if (_bus.ReadByte(0x0080A1A4) == 0)
+            return false;
+        if ((_bus.ReadByte(0x0080A1A9) & 0x08) != 0)
+            return false;
+        if (!TryReadPgmDemonFrontZeroTableEntry(0x26, out _))
+            return false;
+        if (!TryReadPgmDemonFrontZeroTableEntry(0x28, out uint entry28))
+            return false;
+
+        uint statusBase = 0x0080A064;
+        if (_bus.ReadByte(statusBase + 0x00CA) != 0
+            || _bus.ReadByte(statusBase + 0x00D0) != 0
+            || _bus.ReadByte(statusBase + 0x00D6) != 0
+            || _bus.ReadByte(statusBase + 0x00DC) != 0)
+        {
+            return false;
+        }
+
+        _registers.SetStackPointer(stackPointer + 4u);
+        _registers.Data[0] = statusBase;
+        _registers.Data[1] = 0x28;
+        _registers.Address[0] = entry28;
+        _registers.Address[1] = entry28;
+        SetMoveWordFlags(0);
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+        cycles = 920;
+        return true;
+    }
+
     private bool TryConsumePgmDemonFrontByteSlotScanLoop(int cycleBudget, out uint cycles)
     {
         cycles = 0;
@@ -328,6 +484,44 @@ internal sealed partial class InstructionExecutor
         return true;
     }
 
+    private bool TryConsumePgmDemonFrontByteSlotTail(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00105CCE)
+            return false;
+
+        if (!_pgmDemonFrontByteSlotSignatureChecked)
+        {
+            _pgmDemonFrontByteSlotSignatureValid =
+                _bus.ReadWord(0x00105C8E) == 0x0C12
+                && _bus.ReadWord(0x00105C92) == 0x6638
+                && _bus.ReadWord(0x00105CCC) == 0x588A
+                && _bus.ReadWord(0x00105CCE) == 0x2002
+                && _bus.ReadWord(0x00105CD0) == 0x5342
+                && _bus.ReadWord(0x00105CD2) == 0x4A40
+                && _bus.ReadWord(0x00105CD4) == 0x66B8
+                && _bus.ReadWord(0x00105CD6) == 0x4CDF;
+            _pgmDemonFrontByteSlotSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontByteSlotSignatureValid)
+            return false;
+
+        uint d2Full = _registers.Data[2];
+        ushort d0Low = (ushort)d2Full;
+        ushort newD2 = (ushort)(d0Low - 1);
+        _registers.Data[0] = d2Full;
+        _registers.Data[2] = (d2Full & 0xffff_0000u) | newD2;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = d0Low == 0;
+        _registers.Ccr.Negative = d0Low.SignBit();
+        _registers.Pc = d0Low == 0 ? 0x00105CD6u : 0x00105C8Eu;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = 24;
+        return true;
+    }
+
     private bool TryConsumePgmDemonFrontByteCounterTail(int cycleBudget, out uint cycles)
     {
         cycles = 0;
@@ -363,6 +557,58 @@ internal sealed partial class InstructionExecutor
         _registers.Pc = (byte)d0 == 0 ? 0x00107A16u : 0x0010795Eu;
         _registers.Prefetch = _bus.ReadWord(_registers.Pc);
         cycles = (uint)Math.Max(34, cycleBudget);
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontMissingBitScanLoop(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x0010795E)
+            return false;
+
+        if (!_pgmDemonFrontMissingBitScanSignatureChecked)
+        {
+            _pgmDemonFrontMissingBitScanSignatureValid =
+                _bus.ReadWord(0x0010795E) == 0x0813
+                && _bus.ReadWord(0x00107960) == 0x0007
+                && _bus.ReadWord(0x00107962) == 0x6700
+                && _bus.ReadWord(0x00107964) == 0x00A4
+                && _bus.ReadWord(0x00107A08) == 0x700E
+                && _bus.ReadWord(0x00107A0A) == 0xD7C0
+                && _bus.ReadWord(0x00107A0C) == 0x2002
+                && _bus.ReadWord(0x00107A0E) == 0x5302
+                && _bus.ReadWord(0x00107A10) == 0x4A00
+                && _bus.ReadWord(0x00107A12) == 0x6600
+                && _bus.ReadWord(0x00107A14) == 0xFF4A
+                && _bus.ReadWord(0x00107A16) == 0x4CDF
+                && _bus.ReadWord(0x00107A1A) == 0x4E75;
+            _pgmDemonFrontMissingBitScanSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontMissingBitScanSignatureValid)
+            return false;
+
+        uint a3 = _registers.Address[3];
+        byte d2 = (byte)_registers.Data[2];
+        uint iterations = (uint)d2 + 1u;
+        for (uint i = 0; i < iterations; i++)
+        {
+            if ((_bus.ReadByte(a3) & 0x80) != 0)
+                return false;
+
+            a3 = (a3 + 0x0eu) & 0x00ff_ffff;
+        }
+
+        _registers.Address[3] = a3;
+        _registers.Data[0] = 0;
+        _registers.Data[2] = (_registers.Data[2] & 0xffff_ff00u) | 0xffu;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = true;
+        _registers.Ccr.Negative = false;
+        _registers.Pc = 0x00107A16u;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = Math.Max(34u, iterations * 42u);
         return true;
     }
 
@@ -1107,6 +1353,27 @@ internal sealed partial class InstructionExecutor
                 consumeToLimit: false);
         }
 
+        if (pc == 0x0010E398)
+        {
+            return TryConsumePgmSvgLatchDelayLoopVariant(
+                cycleBudget,
+                out cycles,
+                start: 0x0010E398,
+                firstBsrDisplacement: 0xFE9E,
+                secondBsrDisplacement: 0xFE94,
+                mismatchBranch: 0x6616,
+                equalBranch: 0x6700,
+                addOffset: 0x2E,
+                compareOffset: 0x30,
+                limitOffset: 0x32,
+                loopBranchOffset: 0x36,
+                loopBranch: 0x65C8,
+                fallthroughOffset: 0x38,
+                cyclesPerIteration: 190,
+                iterationBudgetCycles: 190,
+                consumeToLimit: false);
+        }
+
         return false;
     }
 
@@ -1181,6 +1448,7 @@ internal sealed partial class InstructionExecutor
         _registers.Data[2] = d2;
         _registers.Data[3] = (_registers.Data[3] & 0xffff_0000u) | masked;
         _registers.Data[4] = (_registers.Data[4] & 0xffff_0000u) | masked;
+        CompareLongWords(limit, d2, ref _registers.Ccr);
         _registers.Pc = d2 >= limit ? start + fallthroughOffset : start;
         _registers.Prefetch = _bus.ReadWord(_registers.Pc);
         cycles = Math.Max(cyclesPerIteration, iterations * cyclesPerIteration);
@@ -1256,6 +1524,338 @@ internal sealed partial class InstructionExecutor
         return true;
     }
 
+    private bool TryConsumePgmSpriteFlagScanSubroutine(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00101AF0)
+            return false;
+
+        if (_bus.ReadWord(0x00101AF0) != 0x48E7
+            || _bus.ReadWord(0x00101AF4) != 0x262F
+            || _bus.ReadWord(0x00101AF6) != 0x001C
+            || _bus.ReadWord(0x00101AF8) != 0x282F
+            || _bus.ReadWord(0x00101AFA) != 0x0018
+            || _bus.ReadWord(0x00101AFC) != 0x246F
+            || _bus.ReadWord(0x00101AFE) != 0x0014)
+        {
+            return false;
+        }
+
+        uint stackPointer = _registers.StackPointer();
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        uint a2 = _bus.ReadLong((stackPointer + 4u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+        uint d4 = _bus.ReadLong((stackPointer + 8u) & 0x00ff_ffffu);
+        uint count = _bus.ReadLong((stackPointer + 12u) & 0x00ff_ffffu);
+
+        if (!CanConsumePgmSpriteFlagScanArguments(a2, d4, count, out uint iterations))
+            return false;
+
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Data[0] = 0;
+        _registers.Data[1] = 3;
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = Math.Max(180u, iterations * 94u);
+        return true;
+    }
+
+    private bool TryConsumePgmSpriteFlagPairSubroutine(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00101B80)
+            return false;
+
+        if (!_pgmSpriteFlagPairSignatureChecked)
+        {
+            _pgmSpriteFlagPairSignatureValid =
+                _bus.ReadWord(0x00101B80) == 0x2F02
+                && _bus.ReadWord(0x00101B82) == 0x2439
+                && _bus.ReadLong(0x00101B84) == 0x00C0_8000u
+                && _bus.ReadWord(0x00101B88) == 0x4842
+                && _bus.ReadWord(0x00101B8A) == 0x4682
+                && _bus.ReadWord(0x00101B8C) == 0x4AB9
+                && _bus.ReadLong(0x00101B8E) == 0x0080_4900u
+                && _bus.ReadWord(0x00101B92) == 0x6722
+                && _bus.ReadWord(0x00101BB6) == 0x4878
+                && _bus.ReadWord(0x00101BB8) == 0x0020
+                && _bus.ReadWord(0x00101BBA) == 0x2F02
+                && _bus.ReadWord(0x00101BBC) == 0x4879
+                && _bus.ReadLong(0x00101BBE) == 0x0080_A06Au
+                && _bus.ReadWord(0x00101BC2) == 0x6100
+                && _bus.ReadWord(0x00101BC4) == 0xFF2C
+                && _bus.ReadWord(0x00101BC6) == 0x4FEF
+                && _bus.ReadWord(0x00101BC8) == 0x000C
+                && _bus.ReadWord(0x00101BCA) == 0x3439
+                && _bus.ReadLong(0x00101BCC) == 0x00C0_8004u
+                && _bus.ReadWord(0x00101BD0) == 0x4642
+                && _bus.ReadWord(0x00101BD2) == 0x4878
+                && _bus.ReadWord(0x00101BD4) == 0x0010
+                && _bus.ReadWord(0x00101BD6) == 0x2F02
+                && _bus.ReadWord(0x00101BD8) == 0x4879
+                && _bus.ReadLong(0x00101BDA) == 0x0080_A12Au
+                && _bus.ReadWord(0x00101BDE) == 0x6100
+                && _bus.ReadWord(0x00101BE0) == 0xFF10
+                && _bus.ReadWord(0x00101BE2) == 0x4FEF
+                && _bus.ReadWord(0x00101BE4) == 0x000C
+                && _bus.ReadWord(0x00101BE6) == 0x241F
+                && _bus.ReadWord(0x00101BE8) == 0x4E75;
+            _pgmSpriteFlagPairSignatureChecked = true;
+        }
+
+        if (!_pgmSpriteFlagPairSignatureValid)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        uint originalD2 = _registers.Data[2];
+        uint latchMask = _bus.ReadLong(0x00C08000);
+        latchMask = ~((latchMask << 16) | (latchMask >> 16));
+
+        if (_bus.ReadLong(0x00804900) != 0)
+            return false;
+
+        if (!CanConsumePgmSpriteFlagScanArguments(0x0080A06A, latchMask, 0x20, out uint firstIterations))
+            return false;
+
+        uint dipswitchMask = (ushort)~_bus.ReadWord(0x00C08004);
+        if (!CanConsumePgmSpriteFlagScanArguments(0x0080A12A, dipswitchMask, 0x10, out uint secondIterations))
+            return false;
+
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Data[0] = 0;
+        _registers.Data[1] = 3;
+        _registers.Data[2] = originalD2;
+        SetMoveLongFlags(originalD2);
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+        cycles = 244u + Math.Max(180u, firstIterations * 94u) + Math.Max(180u, secondIterations * 94u);
+        return true;
+    }
+
+    private bool CanConsumePgmSpriteFlagScanArguments(uint a2, uint d4, uint count, out uint iterations)
+    {
+        ushort d3 = unchecked((ushort)(count - 1u));
+        uint d2 = 1;
+        iterations = 0;
+        uint maxIterations = (uint)d3 + 1u;
+
+        while (iterations < maxIterations)
+        {
+            if (_bus.ReadByte(a2) != 0 || (d4 & d2) != 0)
+                return false;
+
+            a2 = (a2 + 6u) & 0x00ff_ffffu;
+            d2 = (d2 << 1) & 0xffff_ffffu;
+            iterations++;
+
+            if (d3 == 0)
+            {
+                d3 = 0xffff;
+                break;
+            }
+
+            d3--;
+        }
+
+        return d3 == 0xffff;
+    }
+
+    private bool TryConsumePgmDemonFrontPointerFlagHelper(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x0010D9EA)
+            return false;
+
+        if (!_pgmDemonFrontPointerFlagSignatureChecked)
+        {
+            _pgmDemonFrontPointerFlagSignatureValid =
+                _bus.ReadWord(0x0010D9EA) == 0x206F
+                && _bus.ReadWord(0x0010D9EC) == 0x0004
+                && _bus.ReadWord(0x0010D9EE) == 0x4AA8
+                && _bus.ReadWord(0x0010D9F0) == 0x0018
+                && _bus.ReadWord(0x0010D9F2) == 0x6704
+                && _bus.ReadWord(0x0010D9F4) == 0x7000
+                && _bus.ReadWord(0x0010D9F6) == 0x6002
+                && _bus.ReadWord(0x0010D9F8) == 0x7001
+                && _bus.ReadWord(0x0010D9FA) == 0x4E75;
+            _pgmDemonFrontPointerFlagSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontPointerFlagSignatureValid)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        uint argument = _bus.ReadLong((stackPointer + 4u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+        if (((argument + 0x18u) & 1) != 0)
+            return false;
+
+        uint flag = _bus.ReadLong((argument + 0x18u) & 0x00ff_ffffu);
+        uint result = flag == 0 ? 1u : 0u;
+
+        _registers.Address[0] = argument;
+        _registers.Data[0] = result;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = result == 0;
+        _registers.Ccr.Negative = false;
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+        cycles = flag == 0 ? 42u : 48u;
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontPointerPollFastRoutine(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x0010D890)
+            return false;
+
+        if (!_pgmDemonFrontPointerPollSignatureChecked)
+        {
+            _pgmDemonFrontPointerPollSignatureValid =
+                _bus.ReadWord(0x0010D890) == 0x4E56
+                && _bus.ReadWord(0x0010D892) == 0xFFFC
+                && _bus.ReadWord(0x0010D894) == 0x2F02
+                && _bus.ReadWord(0x0010D896) == 0x4A79
+                && _bus.ReadLong(0x0010D898) == 0x0080F68Au
+                && _bus.ReadWord(0x0010D89C) == 0x6700
+                && _bus.ReadWord(0x0010D8A0) == 0x4879
+                && _bus.ReadLong(0x0010D8A2) == 0x0080F890u
+                && _bus.ReadWord(0x0010D8A6) == 0x4EB9
+                && _bus.ReadLong(0x0010D8A8) == 0x0010D9EAu
+                && _bus.ReadWord(0x0010D8AC) == 0x588F
+                && _bus.ReadWord(0x0010D8AE) == 0x4A80
+                && _bus.ReadWord(0x0010D8B0) == 0x6600
+                && _bus.ReadWord(0x0010D970) == 0x242E
+                && _bus.ReadWord(0x0010D972) == 0xFFFC
+                && _bus.ReadWord(0x0010D974) == 0x4E5E
+                && _bus.ReadWord(0x0010D976) == 0x4E75
+                && _bus.ReadWord(0x0010D9EA) == 0x206F
+                && _bus.ReadWord(0x0010D9EC) == 0x0004
+                && _bus.ReadWord(0x0010D9FA) == 0x4E75;
+            _pgmDemonFrontPointerPollSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontPointerPollSignatureValid)
+            return false;
+
+        if (_bus.ReadWord(0x0080F68A) == 0)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        const uint argument = 0x0080F890u;
+        uint flag = _bus.ReadLong(argument + 0x18u);
+        if (flag != 0)
+            return false;
+
+        _registers.Address[0] = argument;
+        _registers.Data[0] = 1u;
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = false;
+        _registers.Ccr.Negative = false;
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+        cycles = 132;
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontCounterClearLoop(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00101C0E)
+            return false;
+
+        if (!_pgmDemonFrontCounterClearSignatureChecked)
+        {
+            _pgmDemonFrontCounterClearSignatureValid =
+                _bus.ReadWord(0x00101C0E) == 0x3004
+                && _bus.ReadWord(0x00101C10) == 0xC043
+                && _bus.ReadWord(0x00101C12) == 0x6704
+                && _bus.ReadWord(0x00101C18) == 0x0C52
+                && _bus.ReadWord(0x00101C1A) == 0x0003
+                && _bus.ReadWord(0x00101C1C) == 0x650C
+                && _bus.ReadWord(0x00101C2A) == 0x4252
+                && _bus.ReadWord(0x00101C2C) == 0xD643
+                && _bus.ReadWord(0x00101C2E) == 0x5282
+                && _bus.ReadWord(0x00101C30) == 0x548A
+                && _bus.ReadWord(0x00101C32) == 0x5C8B
+                && _bus.ReadWord(0x00101C34) == 0x7004
+                && _bus.ReadWord(0x00101C36) == 0xB082
+                && _bus.ReadWord(0x00101C38) == 0x6ED4
+                && _bus.ReadWord(0x00101C3A) == 0x4CDF
+                && _bus.ReadWord(0x00101C3E) == 0x4E75;
+            _pgmDemonFrontCounterClearSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontCounterClearSignatureValid)
+            return false;
+
+        uint d2Start = _registers.Data[2];
+        if (d2Start >= 4)
+            return false;
+
+        uint a2 = _registers.Address[2];
+        uint a3 = _registers.Address[3];
+        uint d2 = d2Start;
+        uint d3Full = _registers.Data[3];
+        uint d3 = d3Full;
+        ushort d4 = (ushort)_registers.Data[4];
+        uint iterations = 4u - d2Start;
+
+        for (uint i = 0; i < iterations; i++)
+        {
+            ushort d3Word = (ushort)d3;
+            if ((d4 & d3Word) != 0 || _bus.ReadWord(a2) >= 3)
+                return false;
+
+            d3 = (d3 & 0xffff_0000u) | unchecked((ushort)(d3Word + d3Word));
+            d2++;
+            a2 = (a2 + 2u) & 0x00ff_ffffu;
+            a3 = (a3 + 6u) & 0x00ff_ffffu;
+        }
+
+        a2 = _registers.Address[2];
+        for (uint i = 0; i < iterations; i++)
+        {
+            _bus.WriteWord(a2, 0);
+            a2 = (a2 + 2u) & 0x00ff_ffffu;
+        }
+
+        _registers.Address[2] = a2;
+        _registers.Address[3] = a3;
+        _registers.Data[0] = 4;
+        _registers.Data[2] = d2;
+        _registers.Data[3] = d3;
+        CompareLongWords(d2, 4, ref _registers.Ccr);
+        _registers.Pc = 0x00101C3Au;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = Math.Max(76u, iterations * 76u);
+        return true;
+    }
+
     private bool TryConsumePgmObjectMaskScanLoop(int cycleBudget, out uint cycles)
     {
         cycles = 0;
@@ -1328,6 +1928,194 @@ internal sealed partial class InstructionExecutor
         _registers.Prefetch = _bus.ReadWord(_registers.Pc);
         cycles = Math.Max(52u, iterations * 52u);
         return true;
+    }
+
+    private bool TryConsumePgmDemonFrontObjectDrawOuter(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x001252E6)
+            return false;
+
+        if (!_pgmDemonFrontObjectDrawSignatureChecked)
+        {
+            _pgmDemonFrontObjectDrawSignatureValid =
+                _bus.ReadWord(0x001252E6) == 0x206E
+                && _bus.ReadWord(0x001252E8) == 0xFFF8
+                && _bus.ReadWord(0x001252EA) == 0x1810
+                && _bus.ReadWord(0x001252EC) == 0x0284
+                && _bus.ReadLong(0x001252EE) == 0x0000_00FFu
+                && _bus.ReadWord(0x001252F2) == 0x5384
+                && _bus.ReadWord(0x001252F4) == 0x2004
+                && _bus.ReadWord(0x001252F6) == 0x2200
+                && _bus.ReadWord(0x001252F8) == 0xE589
+                && _bus.ReadWord(0x001252FA) == 0xD081
+                && _bus.ReadWord(0x001252FC) == 0xE988
+                && _bus.ReadWord(0x001252FE) == 0xD081
+                && _bus.ReadWord(0x00125300) == 0x206E
+                && _bus.ReadWord(0x00125302) == 0xFFFC
+                && _bus.ReadWord(0x00125304) == 0xD090
+                && _bus.ReadWord(0x00125306) == 0x2840
+                && _bus.ReadWord(0x00125308) == 0x1A14
+                && _bus.ReadWord(0x0012530A) == 0x0205
+                && _bus.ReadWord(0x0012530C) == 0x0001
+                && _bus.ReadWord(0x00125314) == 0x7A00
+                && _bus.ReadWord(0x00125316) == 0x1A14
+                && _bus.ReadWord(0x00125318) == 0xE88D
+                && _bus.ReadWord(0x0012531A) == 0x0205
+                && _bus.ReadWord(0x0012531C) == 0x0001
+                && _bus.ReadWord(0x00125324) == 0x266C
+                && _bus.ReadWord(0x00125326) == 0x0008
+                && _bus.ReadWord(0x00125328) == 0x0814
+                && _bus.ReadWord(0x0012532A) == 0x0003
+                && _bus.ReadWord(0x0012532E) == 0x244C
+                && _bus.ReadWord(0x00125330) == 0x700C
+                && _bus.ReadWord(0x00125332) == 0xD5C0
+                && _bus.ReadWord(0x00125336) == 0x246C
+                && _bus.ReadWord(0x00125338) == 0x0004
+                && _bus.ReadWord(0x0012533A) == 0x1C2C
+                && _bus.ReadWord(0x0012533C) == 0x0002
+                && _bus.ReadWord(0x0012533E) == 0x0C06
+                && _bus.ReadWord(0x00125340) == 0x0020
+                && _bus.ReadWord(0x00125342) == 0x6622
+                && _bus.ReadWord(0x00125344) == 0x26DA
+                && _bus.ReadWord(0x00125362) == 0x26DA
+                && _bus.ReadWord(0x0012537A) == 0x0894
+                && _bus.ReadWord(0x0012537C) == 0x0004
+                && _bus.ReadWord(0x0012537E) == 0x0814
+                && _bus.ReadWord(0x00125380) == 0x0001
+                && _bus.ReadWord(0x00125382) == 0x672A
+                && _bus.ReadWord(0x001253AE) == 0x7054
+                && _bus.ReadWord(0x001253B0) == 0x99C0
+                && _bus.ReadWord(0x001253B2) == 0x51CC
+                && _bus.ReadWord(0x001253B4) == 0xFF54
+                && _bus.ReadWord(0x001253B6) == 0x59AE
+                && _bus.ReadWord(0x001253B8) == 0xFFFC
+                && _bus.ReadWord(0x001253BA) == 0x53AE
+                && _bus.ReadWord(0x001253BC) == 0xFFF8
+                && _bus.ReadWord(0x001253BE) == 0x51CA
+                && _bus.ReadWord(0x001253C0) == 0xFF26;
+            _pgmDemonFrontObjectDrawSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontObjectDrawSignatureValid)
+            return false;
+
+        uint a6 = _registers.Address[6];
+        uint countPointerSlot = (a6 + unchecked((uint)(short)0xFFF8)) & 0x00ff_ffff;
+        uint tablePointerSlot = (a6 + unchecked((uint)(short)0xFFFC)) & 0x00ff_ffff;
+        uint countPointer = _bus.ReadLong(countPointerSlot) & 0x00ff_ffff;
+        uint tablePointer = _bus.ReadLong(tablePointerSlot) & 0x00ff_ffff;
+        byte count = _bus.ReadByte(countPointer);
+        if (count == 0)
+            return false;
+
+        ushort d4Start = (ushort)(count - 1);
+        uint d1 = (uint)d4Start << 2;
+        uint a4Start = (_bus.ReadLong(tablePointer) + d4Start * 0x54u) & 0x00ff_ffff;
+
+        if (!CanConsumeDemonFrontObjectDrawRecords(a4Start, d4Start))
+            return false;
+
+        uint a2 = _registers.Address[2];
+        uint a3 = _registers.Address[3];
+        uint a4 = a4Start;
+        uint d5 = _registers.Data[5];
+        uint d6 = _registers.Data[6];
+        ushort d4 = d4Start;
+        uint activeRecords = 0;
+        uint scannedRecords = 0;
+
+        while (true)
+        {
+            byte flags = _bus.ReadByte(a4);
+            d5 = (d5 & 0xffff_ff00u) | (uint)(flags & 0x01);
+            if ((flags & 0x01) != 0)
+            {
+                d5 = (uint)((flags >> 4) & 0x01);
+                if (d5 != 0)
+                {
+                    a3 = _bus.ReadLong((a4 + 8u) & 0x00ff_ffff) & 0x00ff_ffff;
+                    a2 = (flags & 0x08) != 0
+                        ? (a4 + 12u) & 0x00ff_ffff
+                        : _bus.ReadLong((a4 + 4u) & 0x00ff_ffff) & 0x00ff_ffff;
+                    d6 = (d6 & 0xffff_ff00u) | _bus.ReadByte((a4 + 2u) & 0x00ff_ffff);
+
+                    for (int i = 0; i < 16; i++)
+                    {
+                        _bus.WriteLong(a3, _bus.ReadLong(a2));
+                        a2 = (a2 + 4u) & 0x00ff_ffff;
+                        a3 = (a3 + 4u) & 0x00ff_ffff;
+                    }
+
+                    _bus.WriteByte(a4, (byte)(flags & ~0x10));
+                    activeRecords++;
+                }
+            }
+
+            scannedRecords++;
+            a4 = (a4 - 0x54u) & 0x00ff_ffff;
+            if (d4 == 0)
+            {
+                d4 = 0xffff;
+                break;
+            }
+            d4--;
+        }
+
+        uint newTablePointer = (tablePointer - 4u) & 0x00ff_ffff;
+        uint newCountPointer = (countPointer - 1u) & 0x00ff_ffff;
+        _bus.WriteLong(tablePointerSlot, newTablePointer);
+        _bus.WriteLong(countPointerSlot, newCountPointer);
+
+        ushort d2Low = (ushort)_registers.Data[2];
+        ushort newD2Low = (ushort)(d2Low - 1);
+        _registers.Data[0] = 0x54;
+        _registers.Data[1] = d1;
+        _registers.Data[2] = (_registers.Data[2] & 0xffff_0000u) | newD2Low;
+        _registers.Data[4] = (_registers.Data[4] & 0xffff_0000u) | d4;
+        _registers.Data[5] = d5;
+        _registers.Data[6] = d6;
+        _registers.Address[0] = tablePointer;
+        _registers.Address[2] = a2;
+        _registers.Address[3] = a3;
+        _registers.Address[4] = a4;
+
+        var (subValue, carry, overflow) = SubLongWords(countPointer, 1, false);
+        _registers.Ccr.Carry = carry;
+        _registers.Ccr.Overflow = overflow;
+        _registers.Ccr.Zero = subValue == 0;
+        _registers.Ccr.Negative = subValue.SignBit();
+        _registers.Ccr.Extend = carry;
+
+        _registers.Pc = d2Low == 0 ? 0x001253C2u : 0x001252E6u;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = 132u + scannedRecords * 52u + activeRecords * 236u;
+        return true;
+    }
+
+    private bool CanConsumeDemonFrontObjectDrawRecords(uint a4Start, ushort d4Start)
+    {
+        uint a4 = a4Start;
+        ushort d4 = d4Start;
+
+        while (true)
+        {
+            byte flags = _bus.ReadByte(a4);
+            if ((flags & 0x01) != 0 && ((flags >> 4) & 0x01) != 0)
+            {
+                if (_bus.ReadByte((a4 + 2u) & 0x00ff_ffff) != 0x20)
+                    return false;
+
+                if ((flags & 0x02) != 0)
+                    return false;
+            }
+
+            if (d4 == 0)
+                return true;
+
+            d4--;
+            a4 = (a4 - 0x54u) & 0x00ff_ffff;
+        }
     }
 
     private bool TryConsumePgmObjectBitScanLoop(int cycleBudget, out uint cycles)
@@ -1825,6 +2613,14 @@ internal sealed partial class InstructionExecutor
         _registers.Ccr.Negative = value.SignBit();
     }
 
+    private void SetMoveByteFlags(byte value)
+    {
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+    }
+
     private void SetMoveLongFlags(uint value)
     {
         _registers.Ccr.Carry = false;
@@ -1835,9 +2631,61 @@ internal sealed partial class InstructionExecutor
 
     private ExecuteResult<uint> DoExecute()
     {
+        if (_registers.Pc == 0x00101D7E && TryConsumePgmDemonFrontZeroTableLookup(118, out uint zeroTableCycles))
+            return ExecuteResult<uint>.Ok(zeroTableCycles);
+
+        if (_registers.Pc == 0x00125308 && TryConsumePgmObjectMaskScanLoop(52, out uint objectMaskCycles))
+            return ExecuteResult<uint>.Ok(objectMaskCycles);
+
+        if (_registers.Pc == 0x001252E6 && TryConsumePgmDemonFrontObjectDrawOuter(out uint objectDrawCycles))
+            return ExecuteResult<uint>.Ok(objectDrawCycles);
+
+        if (_registers.Pc == 0x00105C8E && TryConsumePgmDemonFrontByteSlotScanLoop(58, out uint byteSlotCycles))
+            return ExecuteResult<uint>.Ok(byteSlotCycles);
+
+        if (_registers.Pc == 0x00105CCE && TryConsumePgmDemonFrontByteSlotTail(out uint byteSlotTailCycles))
+            return ExecuteResult<uint>.Ok(byteSlotTailCycles);
+
+        if (_registers.Pc == 0x00107A0C && TryConsumePgmDemonFrontByteCounterTail(34, out uint byteCounterCycles))
+            return ExecuteResult<uint>.Ok(byteCounterCycles);
+
+        if (_registers.Pc == 0x0010795E && TryConsumePgmDemonFrontMissingBitScanLoop(out uint missingBitCycles))
+            return ExecuteResult<uint>.Ok(missingBitCycles);
+
+        if (_registers.Pc == 0x00101B80 && TryConsumePgmSpriteFlagPairSubroutine(out uint spriteFlagPairCycles))
+            return ExecuteResult<uint>.Ok(spriteFlagPairCycles);
+
+        if (_registers.Pc == 0x0010D9EA && TryConsumePgmDemonFrontPointerFlagHelper(out uint pointerFlagCycles))
+            return ExecuteResult<uint>.Ok(pointerFlagCycles);
+
+        if (_registers.Pc == 0x001020BA && TryConsumePgmDemonFrontStatusPollBlock(out uint statusPollCycles))
+            return ExecuteResult<uint>.Ok(statusPollCycles);
+
+        if (_registers.Pc == 0x00101AF0 && TryConsumePgmSpriteFlagScanSubroutine(out uint spriteFlagSubroutineCycles))
+            return ExecuteResult<uint>.Ok(spriteFlagSubroutineCycles);
+
+        if (_registers.Pc == 0x00101B04 && TryConsumePgmSpriteFlagScanLoop(4096, out uint spriteFlagCycles))
+            return ExecuteResult<uint>.Ok(spriteFlagCycles);
+
+        if (_registers.Pc == 0x00101C0E && TryConsumePgmDemonFrontCounterClearLoop(out uint counterClearCycles))
+            return ExecuteResult<uint>.Ok(counterClearCycles);
+
+        if (_registers.Pc == 0x0010E398 && TryConsumePgmSvgLatchDelayLoop(190, out uint latchDelayCycles))
+            return ExecuteResult<uint>.Ok(latchDelayCycles);
+
+        if (_registers.Pc == 0x0010E238 && TryExecutePgmSvgLatchReadHelper(out uint latchReadCycles))
+            return ExecuteResult<uint>.Ok(latchReadCycles);
+
         uint pcBefore = _registers.Pc;
         _tracePc = pcBefore;
         _opcode = _registers.Prefetch;
+        if (!TracePcInRange(pcBefore) && TryExecuteCommonFastOpcode(pcBefore, _opcode, out uint commonFastCycles))
+        {
+            if (ProfileFastOpcodes)
+                AddFastOpcodeProfile(pcBefore, _opcode);
+            return ExecuteResult<uint>.Ok(commonFastCycles);
+        }
+
         _instruction = InstructionTable.Decode(_opcode);
         _traceThisInstruction = TracePcInRange(pcBefore) && _tracePcRemaining > 0;
 
@@ -1993,6 +2841,509 @@ internal sealed partial class InstructionExecutor
         };
     }
 
+    private bool TryExecuteCommonFastOpcode(uint pc, ushort opcode, out uint cycles)
+    {
+        cycles = 0;
+        uint maskedPc = pc & 0x00ff_ffffu;
+
+        switch (opcode)
+        {
+            case 0x4E75:
+            {
+                uint stackPointer = _registers.StackPointer();
+                if ((stackPointer & 1) != 0)
+                    return false;
+
+                uint target = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+                if ((target & 1) != 0)
+                    return false;
+
+                _registers.SetStackPointer(stackPointer + 4u);
+                _registers.Pc = target;
+                _registers.Prefetch = _bus.ReadWord(target);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x4EB9:
+            {
+                uint target = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                uint stackPointer = _registers.StackPointer();
+                if ((target & 1) != 0 || (stackPointer & 1) != 0)
+                    return false;
+
+                uint newStackPointer = stackPointer - 4u;
+                _registers.SetStackPointer(newStackPointer);
+                _bus.WriteLong(newStackPointer, (maskedPc + 6u) & 0x00ff_ffffu);
+                _registers.Pc = target;
+                _registers.Prefetch = _bus.ReadWord(target);
+                cycles = 20;
+                return true;
+            }
+
+            case 0x4A39:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                byte value = _bus.ReadByte(address);
+                SetMoveByteFlags(value);
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x4A79:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if ((address & 1) != 0)
+                    return false;
+
+                ushort value = _bus.ReadWord(address);
+                SetMoveWordFlags(value);
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x4AB9:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if ((address & 1) != 0)
+                    return false;
+
+                uint value = _bus.ReadLong(address);
+                SetMoveLongFlags(value);
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 20;
+                return true;
+            }
+
+            case 0x4878:
+            {
+                uint address = unchecked((uint)(short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu));
+                if (!PushFastLong(address))
+                    return false;
+
+                SetSequentialPc(maskedPc + 4u);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x4879:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if (!PushFastLong(address))
+                    return false;
+
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 20;
+                return true;
+            }
+
+            case 0x203C:
+            {
+                uint value = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu);
+                _registers.Data[0] = value;
+                SetMoveLongFlags(value);
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 12;
+                return true;
+            }
+
+            case 0x1039:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                byte value = _bus.ReadByte(address);
+                _registers.Data[0] = (_registers.Data[0] & 0xffff_ff00u) | value;
+                SetMoveByteFlags(value);
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x13FC:
+            {
+                byte value = (byte)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                uint address = _bus.ReadLong((maskedPc + 4u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                _bus.WriteByte(address, value);
+                SetMoveByteFlags(value);
+                SetSequentialPc(maskedPc + 8u);
+                cycles = 20;
+                return true;
+            }
+
+            case 0x23C0:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if ((address & 1) != 0)
+                    return false;
+
+                _bus.WriteLong(address, _registers.Data[0]);
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 20;
+                return true;
+            }
+
+            case 0x2D48:
+            {
+                short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                uint address = unchecked(_registers.Address[6] + (uint)displacement) & 0x00ff_ffffu;
+                if ((address & 1) != 0)
+                    return false;
+
+                _bus.WriteLong(address, _registers.Address[0]);
+                SetSequentialPc(maskedPc + 4u);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x2F39:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if ((address & 1) != 0)
+                    return false;
+
+                if (!PushFastLong(_bus.ReadLong(address)))
+                    return false;
+
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 28;
+                return true;
+            }
+
+            case 0x33F9:
+            {
+                uint source = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                uint dest = _bus.ReadLong((maskedPc + 6u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if (((source | dest) & 1) != 0)
+                    return false;
+
+                ushort value = _bus.ReadWord(source);
+                _bus.WriteWord(dest, value);
+                SetMoveWordFlags(value);
+                SetSequentialPc(maskedPc + 10u);
+                cycles = 28;
+                return true;
+            }
+
+            case 0x52B9:
+            {
+                uint address = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if ((address & 1) != 0)
+                    return false;
+
+                uint original = _bus.ReadLong(address);
+                var (value, carry, overflow) = AddLongWords(original, 1u, false);
+                _registers.Ccr.Carry = carry;
+                _registers.Ccr.Overflow = overflow;
+                _registers.Ccr.Zero = value == 0;
+                _registers.Ccr.Negative = value.SignBit();
+                _registers.Ccr.Extend = carry;
+                _bus.WriteLong(address, value);
+                SetSequentialPc(maskedPc + 6u);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x588F:
+                _registers.SetStackPointer(_registers.StackPointer() + 4u);
+                SetSequentialPc(maskedPc + 2u);
+                cycles = 8;
+                return true;
+
+            case 0x08B9:
+            case 0x08F9:
+            {
+                byte bitIndex = (byte)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                uint address = _bus.ReadLong((maskedPc + 4u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                int bit = bitIndex & 7;
+                byte value = _bus.ReadByte(address);
+                _registers.Ccr.Zero = !value.Test(bit);
+                byte mask = (byte)(1 << bit);
+                byte newValue = opcode == 0x08B9
+                    ? (byte)(value & ~mask)
+                    : (byte)(value | mask);
+                _bus.WriteByte(address, newValue);
+                SetSequentialPc(maskedPc + 8u);
+                cycles = 24;
+                return true;
+            }
+
+            case 0x0C39:
+            {
+                byte immediate = (byte)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                uint address = _bus.ReadLong((maskedPc + 4u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                byte dest = _bus.ReadByte(address);
+                var (value, carry, overflow) = SubBytes(dest, immediate, false);
+                _registers.Ccr.Carry = carry;
+                _registers.Ccr.Overflow = overflow;
+                _registers.Ccr.Zero = value == 0;
+                _registers.Ccr.Negative = value.SignBit();
+                SetSequentialPc(maskedPc + 8u);
+                cycles = 20;
+                return true;
+            }
+
+            case 0x48E7:
+            {
+                ushort mask = _bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                uint address = _registers.StackPointer();
+                if ((address & 1) != 0)
+                    return false;
+
+                int count = 0;
+                for (int i = 0; i < 16; i++)
+                {
+                    if (((mask >> i) & 1) == 0)
+                        continue;
+
+                    int registerIndex = 15 - i;
+                    address = (address - 4u) & 0x00ff_ffffu;
+                    _bus.WriteLong(address, ReadMovemRegister(registerIndex));
+                    count++;
+                }
+
+                _registers.SetStackPointer(address);
+                SetSequentialPc(maskedPc + 4u);
+                cycles = (uint)(8 + count * 8);
+                return true;
+            }
+
+            case 0x4CDF:
+            {
+                ushort mask = _bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                uint address = _registers.StackPointer();
+                if ((address & 1) != 0)
+                    return false;
+
+                int count = 0;
+                for (int registerIndex = 0; registerIndex < 16; registerIndex++)
+                {
+                    if (((mask >> registerIndex) & 1) == 0)
+                        continue;
+
+                    uint value = _bus.ReadLong(address);
+                    if (registerIndex != 15)
+                        WriteMovemRegister(registerIndex, value);
+                    address = (address + 4u) & 0x00ff_ffffu;
+                    count++;
+                }
+
+                _registers.SetStackPointer(address);
+                SetSequentialPc(maskedPc + 4u);
+                cycles = (uint)(8 + count * 8);
+                return true;
+            }
+
+            case 0x4E56:
+            {
+                short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                uint stackPointer = _registers.StackPointer();
+                if ((stackPointer & 1) != 0)
+                    return false;
+
+                uint oldA6 = _registers.Address[6];
+                uint newStackPointer = (stackPointer - 4u) & 0x00ff_ffffu;
+                _bus.WriteLong(newStackPointer, oldA6);
+                _registers.Address[6] = newStackPointer;
+                _registers.SetStackPointer(unchecked(newStackPointer + (uint)displacement));
+                SetSequentialPc(maskedPc + 4u);
+                cycles = 16;
+                return true;
+            }
+
+            case 0x4E5E:
+            {
+                uint stackPointer = _registers.Address[6];
+                if ((stackPointer & 1) != 0)
+                    return false;
+
+                uint restoredA6 = _bus.ReadLong(stackPointer);
+                _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+                _registers.Address[6] = restoredA6;
+                SetSequentialPc(maskedPc + 2u);
+                cycles = 12;
+                return true;
+            }
+
+            case 0x4E73:
+            {
+                if (!_registers.SupervisorMode)
+                    return false;
+
+                uint stackPointer = _registers.StackPointer();
+                if ((stackPointer & 1) != 0)
+                    return false;
+
+                ushort sr = _bus.ReadWord(stackPointer);
+                uint target = _bus.ReadLong((stackPointer + 2u) & 0x00ff_ffffu) & 0x00ff_ffffu;
+                if ((target & 1) != 0)
+                    return false;
+
+                _registers.SetStackPointer((stackPointer + 6u) & 0x00ff_ffffu);
+                _registers.SetStatusRegister(sr);
+                _registers.Pc = target;
+                _registers.Prefetch = _bus.ReadWord(target);
+                cycles = 20;
+                return true;
+            }
+        }
+
+        if ((opcode & 0xf100) == 0x7000)
+        {
+            int register = (opcode >> 9) & 7;
+            uint value = unchecked((uint)(sbyte)(byte)opcode);
+            _registers.Data[register] = value;
+            SetMoveLongFlags(value);
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 4;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) == 0x207c)
+        {
+            int register = (opcode >> 9) & 7;
+            uint value = _bus.ReadLong((maskedPc + 2u) & 0x00ff_ffffu);
+            if (register == 7)
+                _registers.SetStackPointer(value);
+            else
+                _registers.Address[register] = value;
+            SetSequentialPc(maskedPc + 6u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xfff8) == 0x4A80)
+        {
+            uint value = _registers.Data[opcode & 0x0007];
+            SetMoveLongFlags(value);
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 4;
+            return true;
+        }
+
+        if ((opcode & 0xfff8) == 0x2F00)
+        {
+            if (!PushFastLong(_registers.Data[opcode & 0x0007]))
+                return false;
+
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xff00) == 0x6600 || (opcode & 0xff00) == 0x6700)
+        {
+            bool isEqualBranch = (opcode & 0xff00) == 0x6700;
+            bool take = isEqualBranch ? _registers.Ccr.Zero : !_registers.Ccr.Zero;
+            byte displacement8 = (byte)opcode;
+
+            if (displacement8 == 0)
+            {
+                short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                if (take)
+                {
+                    uint target = unchecked(maskedPc + 2u + (uint)displacement) & 0x00ff_ffffu;
+                    if ((target & 1) != 0)
+                        return false;
+
+                    _registers.Pc = target;
+                    _registers.Prefetch = _bus.ReadWord(target);
+                    cycles = 10;
+                    return true;
+                }
+
+                SetSequentialPc(maskedPc + 4u);
+                cycles = 12;
+                return true;
+            }
+
+            if (take)
+            {
+                uint target = unchecked(maskedPc + 2u + (uint)(sbyte)displacement8) & 0x00ff_ffffu;
+                if ((target & 1) != 0)
+                    return false;
+
+                _registers.Pc = target;
+                _registers.Prefetch = _bus.ReadWord(target);
+                cycles = 10;
+                return true;
+            }
+
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 8;
+            return true;
+        }
+
+        return false;
+    }
+
+    private uint ReadMovemRegister(int index)
+    {
+        return index < 8
+            ? _registers.Data[index]
+            : index == 15
+                ? _registers.StackPointer()
+                : _registers.Address[index - 8];
+    }
+
+    private void WriteMovemRegister(int index, uint value)
+    {
+        if (index < 8)
+            _registers.Data[index] = value;
+        else if (index == 15)
+            _registers.SetStackPointer(value);
+        else
+            _registers.Address[index - 8] = value;
+    }
+
+    private void SetSequentialPc(uint pc)
+    {
+        uint masked = pc & 0x00ff_ffffu;
+        _registers.Pc = masked;
+        _registers.Prefetch = _bus.ReadWord(masked);
+    }
+
+    private bool PushFastLong(uint value)
+    {
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint newStackPointer = stackPointer - 4u;
+        _registers.SetStackPointer(newStackPointer);
+        _bus.WriteLong(newStackPointer, value);
+        return true;
+    }
+
+    private bool TryExecutePgmSvgLatchReadHelper(out uint cycles)
+    {
+        cycles = 0;
+        if (!_pgmSvgLatchReadHelperSignatureChecked)
+        {
+            _pgmSvgLatchReadHelperSignatureValid =
+                _bus.ReadWord(0x0010E238) == 0x3039
+                && _bus.ReadWord(0x0010E23A) == 0x005C
+                && _bus.ReadWord(0x0010E23C) == 0x0300
+                && _bus.ReadWord(0x0010E23E) == 0x4E75;
+            _pgmSvgLatchReadHelperSignatureChecked = true;
+        }
+
+        if (!_pgmSvgLatchReadHelperSignatureValid)
+            return false;
+
+        ushort value = _bus.ReadWord(0x005C0300);
+        uint stackPointer = _registers.StackPointer();
+        uint returnAddress = _bus.ReadLong(stackPointer);
+
+        _registers.Data[0] = (_registers.Data[0] & 0xffff_0000u) | value;
+        SetMoveWordFlags(value);
+        _registers.SetStackPointer(stackPointer + 4u);
+        _registers.Pc = returnAddress & 0x00ff_ffff;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = 32;
+        return true;
+    }
+
     private static void AddOpcodeProfile(uint pc, ushort opcode, Instruction instruction)
     {
         ProfileOpcodeCounts[opcode]++;
@@ -2018,6 +3369,29 @@ internal sealed partial class InstructionExecutor
         _profileWindowStartTicks = now;
     }
 
+    private static void AddFastOpcodeProfile(uint pc, ushort opcode)
+    {
+        ProfileFastOpcodeCounts[opcode]++;
+        ulong pcOpcode = ((ulong)(pc & 0x00ff_ffff) << 16) | opcode;
+        ProfileFastPcOpcodeCounts.TryGetValue(pcOpcode, out long pcOpcodeCount);
+        ProfileFastPcOpcodeCounts[pcOpcode] = pcOpcodeCount + 1;
+        long total = ++_profileTotalFastInstructions;
+        if ((total & 0xffff) != 0)
+            return;
+
+        long now = Stopwatch.GetTimestamp();
+        long elapsed = now - _profileFastWindowStartTicks;
+        if (elapsed < Stopwatch.Frequency)
+            return;
+
+        double seconds = elapsed / (double)Stopwatch.Frequency;
+        Console.WriteLine($"[M68K-FAST] ips={total / seconds:0} opcodes={FormatTopFastOpcodes()} pcs={FormatTopFastPcOpcodes()}");
+        Array.Clear(ProfileFastOpcodeCounts, 0, ProfileFastOpcodeCounts.Length);
+        ProfileFastPcOpcodeCounts.Clear();
+        _profileTotalFastInstructions = 0;
+        _profileFastWindowStartTicks = now;
+    }
+
     private static string FormatTopKinds()
     {
         Span<int> top = stackalloc int[8];
@@ -2040,6 +3414,16 @@ internal sealed partial class InstructionExecutor
             Instruction instruction = InstructionTable.Decode((ushort)opcode);
             return $"0x{opcode:X4}/{instruction.Kind}";
         });
+    }
+
+    private static string FormatTopFastOpcodes()
+    {
+        Span<int> top = stackalloc int[12];
+        Span<long> counts = stackalloc long[12];
+        for (int opcode = 0; opcode < ProfileFastOpcodeCounts.Length; opcode++)
+            InsertTop(top, counts, opcode, ProfileFastOpcodeCounts[opcode]);
+
+        return FormatTop(top, counts, opcode => $"0x{opcode:X4}");
     }
 
     private static string FormatTopPcOpcodes()
@@ -2076,6 +3460,44 @@ internal sealed partial class InstructionExecutor
             ushort opcode = (ushort)keys[i];
             Instruction instruction = InstructionTable.Decode(opcode);
             parts[partCount++] = $"0x{pc:X6}:0x{opcode:X4}/{instruction.Kind}:{counts[i]}";
+        }
+
+        return partCount == 0 ? "-" : string.Join(",", parts, 0, partCount);
+    }
+
+    private static string FormatTopFastPcOpcodes()
+    {
+        Span<long> counts = stackalloc long[12];
+        ulong[] keys = new ulong[12];
+
+        foreach (var pair in ProfileFastPcOpcodeCounts)
+        {
+            long count = pair.Value;
+            if (count <= 0 || count <= counts[^1])
+                continue;
+
+            int index = counts.Length - 1;
+            while (index > 0 && count > counts[index - 1])
+            {
+                counts[index] = counts[index - 1];
+                keys[index] = keys[index - 1];
+                index--;
+            }
+
+            counts[index] = count;
+            keys[index] = pair.Key;
+        }
+
+        string[] parts = new string[counts.Length];
+        int partCount = 0;
+        for (int i = 0; i < counts.Length; i++)
+        {
+            if (counts[i] <= 0)
+                break;
+
+            uint pc = (uint)(keys[i] >> 16);
+            ushort opcode = (ushort)keys[i];
+            parts[partCount++] = $"0x{pc:X6}:0x{opcode:X4}:{counts[i]}";
         }
 
         return partCount == 0 ? "-" : string.Join(",", parts, 0, partCount);

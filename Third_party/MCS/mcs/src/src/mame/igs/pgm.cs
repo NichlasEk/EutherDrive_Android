@@ -755,7 +755,7 @@ namespace mame
 
         void MainCpuIdleLoopConsumed(u32 startPc, u32 cycles)
         {
-            if (m_useSvgArmType3 && (startPc == 0x0011a8 || startPc == 0x0010e2c6))
+            if (m_useSvgArmType3 && (startPc == 0x0011a8 || startPc == 0x0010e2c6 || startPc == 0x0010e398))
                 SyncArmToMainTime();
             else if (m_useKov2ArmType2 && (startPc == 0x00106868 || startPc == 0x00106884))
                 SyncArmToMainTime();
@@ -1195,7 +1195,7 @@ namespace mame
                 uint shift = ((address - 0x48000000) & 3) * 8;
                 uint pc = m_arm7.Registers[15] - 8;
                 if (m_useSvgArmType3 && m_svg_latchdata_68k_w == 0 && (pc == 0x08000fb4 || pc == 0x08000fb8))
-                    m_arm7.Cycles += 512;
+                    m_arm7.Cycles += 500;
                 TraceArmEvent(ref m_traceArmLatchReads, $"[PGM-ARM] arm latch r8 off={(address - 0x48000000) & 3} val=0x{((m_svg_latchdata_68k_w >> (int)shift) & 0xff):x2} latch68=0x{m_svg_latchdata_68k_w:x8} pc=0x{pc:x8}", 64);
                 return (byte)(m_svg_latchdata_68k_w >> (int)(((address - 0x48000000) & 3) * 8));
             }
@@ -1269,7 +1269,10 @@ namespace mame
             if (address >= 0x10000000 && address <= 0x100003ff)
                 return ReadLe32(m_armRam2, (address - 0x10000000) & 0x3ff);
             if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
+            {
+                ApplyDemonFrontArmRamSpeedup(address);
                 return ReadLe32(m_armRam, (address - 0x18000000) & (m_useKov2ArmType2 ? 0xffffu : 0x3ffffu));
+            }
             if (address >= 0x38000000 && address <= (m_useKov2ArmType2 ? 0x38000003 : 0x3800ffff))
             {
                 if (m_useKov2ArmType2 && address == 0x38000000)
@@ -1298,6 +1301,16 @@ namespace mame
                 | (ArmRead8(address + 1) << 8)
                 | (ArmRead8(address + 2) << 16)
                 | (ArmRead8(address + 3) << 24));
+        }
+
+        void ApplyDemonFrontArmRamSpeedup(uint address)
+        {
+            if (!m_useSvgArmType3 || (address & ~3u) != 0x18000444)
+                return;
+
+            uint pc = m_arm7.Registers[15] - 8;
+            if (pc == 0x08000fea)
+                m_arm7.Cycles += 500;
         }
 
         void ArmWrite8(uint address, byte value)

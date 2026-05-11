@@ -2170,8 +2170,7 @@ class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[HEADLESS-ERROR] {ex.Message}");
-            Console.Error.WriteLine(ex.StackTrace);
+            Console.Error.WriteLine($"[HEADLESS-ERROR] {ex}");
             return 1;
         }
     }

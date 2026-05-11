@@ -366,8 +366,7 @@ namespace mame
                     continue;
                 }
 
-                attotime tp = attotime.from_ticks(period, Math.Max(1U, clock()));
-                m_timer[i].Timer?.adjust(tp, i, tp);
+                ScheduleTimer(i);
             }
 
             recalc_irq();
@@ -544,6 +543,7 @@ namespace mame
                 ret = m_timer[timer].Preset;
                 m_irq_pending = (u8)(m_irq_pending & ~(1 << timer));
                 recalc_irq();
+                ScheduleTimer(timer);
                 break;
             case 0x43: ret = (u16)(m_irq_pending & 3); break;
             case 0x4a: ret = m_irq_pending; break;
@@ -811,6 +811,8 @@ namespace mame
                 m_irq_pending = (u8)(m_irq_pending | (1 << bit));
                 recalc_irq();
             }
+
+            ScheduleTimer(bit);
         }
 
         void recalc_timer(int timer)
@@ -821,8 +823,19 @@ namespace mame
                 return;
 
             m_timer[timer].Period = period;
-            attotime tp = attotime.from_ticks(period, Math.Max(1U, clock()));
-            m_timer[timer].Timer?.adjust(tp, timer, tp);
+            ScheduleTimer(timer);
+        }
+
+        void ScheduleTimer(int timer)
+        {
+            if (m_timer[timer].Period == 0 || (m_irq_pending & (1 << timer)) != 0)
+            {
+                m_timer[timer].Timer?.adjust(attotime.never, timer);
+                return;
+            }
+
+            attotime tp = attotime.from_ticks(m_timer[timer].Period, Math.Max(1U, clock()));
+            m_timer[timer].Timer?.adjust(tp, timer);
         }
 
         static u16 Combine(u16 oldValue, u16 data, u16 memMask)
