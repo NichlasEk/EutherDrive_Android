@@ -38,6 +38,14 @@ internal sealed partial class InstructionExecutor
     private bool _pgmDemonFrontPointerPollSignatureValid;
     private bool _pgmDemonFrontStatusPollSignatureChecked;
     private bool _pgmDemonFrontStatusPollSignatureValid;
+    private bool _pgmDemonFrontStatusSummarySignatureChecked;
+    private bool _pgmDemonFrontStatusSummarySignatureValid;
+    private bool _pgmDemonFrontVblankDispatchEntrySignatureChecked;
+    private bool _pgmDemonFrontVblankDispatchEntrySignatureValid;
+    private bool _pgmDemonFrontCbdeGateSignatureChecked;
+    private bool _pgmDemonFrontCbdeGateSignatureValid;
+    private bool _pgmDemonFrontCcGateSignatureChecked;
+    private bool _pgmDemonFrontCcGateSignatureValid;
     private bool _pgmDemonFrontDispatchSignatureChecked;
     private bool _pgmDemonFrontDispatchSignatureValid;
     private bool _pgmSvgLatchReadHelperSignatureChecked;
@@ -410,6 +418,212 @@ internal sealed partial class InstructionExecutor
         _registers.Pc = returnAddress;
         _registers.Prefetch = _bus.ReadWord(returnAddress);
         cycles = 920;
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontStatusSummaryHelper(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00101EC8)
+            return false;
+
+        if (!_pgmDemonFrontStatusSummarySignatureChecked)
+        {
+            _pgmDemonFrontStatusSummarySignatureValid =
+                _bus.ReadWord(0x00101EC8) == 0x7000
+                && _bus.ReadWord(0x00101ECA) == 0x1039
+                && _bus.ReadWord(0x00101ECC) == 0x0080
+                && _bus.ReadWord(0x00101ECE) == 0xA19C
+                && _bus.ReadWord(0x00101ED0) == 0x6714
+                && _bus.ReadWord(0x00101EE6) == 0x4A79
+                && _bus.ReadWord(0x00101EE8) == 0x0080
+                && _bus.ReadWord(0x00101EEA) == 0xA194
+                && _bus.ReadWord(0x00101EEC) == 0x6716
+                && _bus.ReadWord(0x00101F04) == 0x4A79
+                && _bus.ReadWord(0x00101F06) == 0x0080
+                && _bus.ReadWord(0x00101F08) == 0xA196
+                && _bus.ReadWord(0x00101F0A) == 0x6716
+                && _bus.ReadWord(0x00101F22) == 0x4A79
+                && _bus.ReadWord(0x00101F24) == 0x0080
+                && _bus.ReadWord(0x00101F26) == 0xA198
+                && _bus.ReadWord(0x00101F28) == 0x6716
+                && _bus.ReadWord(0x00101F40) == 0x4A79
+                && _bus.ReadWord(0x00101F42) == 0x0080
+                && _bus.ReadWord(0x00101F44) == 0xA19A
+                && _bus.ReadWord(0x00101F46) == 0x6716
+                && _bus.ReadWord(0x00101F5E) == 0x0C39
+                && _bus.ReadWord(0x00101F62) == 0x0080
+                && _bus.ReadWord(0x00101F64) == 0xA19C
+                && _bus.ReadWord(0x00101F66) == 0x6676
+                && _bus.ReadWord(0x00101FDE) == 0x4E75;
+            _pgmDemonFrontStatusSummarySignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontStatusSummarySignatureValid)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        byte statusByte = _bus.ReadByte(0x0080A19C);
+        if (statusByte != 0
+            || _bus.ReadWord(0x0080A194) != 0
+            || _bus.ReadWord(0x0080A196) != 0
+            || _bus.ReadWord(0x0080A198) != 0
+            || _bus.ReadWord(0x0080A19A) != 0)
+        {
+            return false;
+        }
+
+        byte compareValue = (byte)_bus.ReadWord(0x00101F60);
+        CompareBytes(compareValue, statusByte, ref _registers.Ccr);
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Data[0] &= 0xffff_ff00u;
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+        cycles = 154;
+        return true;
+    }
+
+    private bool TryEnterPgmDemonFrontVblankDispatch(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x001008AE)
+            return false;
+
+        if (!_pgmDemonFrontVblankDispatchEntrySignatureChecked)
+        {
+            _pgmDemonFrontVblankDispatchEntrySignatureValid =
+                _bus.ReadWord(0x001008AE) == 0x4A39
+                && _bus.ReadWord(0x001008B0) == 0x0080
+                && _bus.ReadWord(0x001008B2) == 0x3800
+                && _bus.ReadWord(0x001008B4) == 0x661C
+                && _bus.ReadWord(0x001008B6) == 0x13FC
+                && _bus.ReadWord(0x001008BA) == 0x0080
+                && _bus.ReadWord(0x001008BC) == 0x3800
+                && _bus.ReadWord(0x001008BE) == 0x48E7
+                && _bus.ReadWord(0x001008C2) == 0x4EB9
+                && _bus.ReadWord(0x001008C4) == 0x0010
+                && _bus.ReadWord(0x001008C6) == 0x196C
+                && _bus.ReadWord(0x001008C8) == 0x4CDF
+                && _bus.ReadWord(0x001008CC) == 0x4239
+                && _bus.ReadWord(0x001008CE) == 0x0080
+                && _bus.ReadWord(0x001008D0) == 0x3800
+                && _bus.ReadWord(0x001008D2) == 0x4E73;
+            _pgmDemonFrontVblankDispatchEntrySignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontVblankDispatchEntrySignatureValid || _bus.ReadByte(0x00803800) != 0)
+            return false;
+
+        ushort movemMask = _bus.ReadWord(0x001008C0);
+        ushort flagWord = _bus.ReadWord(0x001008B8);
+        _bus.WriteByte(0x00803800, (byte)flagWord);
+
+        ExecuteResult<uint> movemCycles = MovemPredecrement(OpSize.LongWord, AddressRegister.All[7], movemMask);
+        if (!movemCycles.IsOk)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnStackPointer = (stackPointer - 4u) & 0x00ff_ffffu;
+        _bus.WriteLong(returnStackPointer, 0x001008C8);
+        _registers.SetStackPointer(returnStackPointer);
+        _registers.Pc = 0x0010196C;
+        _registers.Prefetch = _bus.ReadWord(0x0010196C);
+        cycles = 44u + movemCycles.Value + 20u;
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontCbdeGateHelper(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x00104EEE)
+            return false;
+
+        if (!_pgmDemonFrontCbdeGateSignatureChecked)
+        {
+            _pgmDemonFrontCbdeGateSignatureValid =
+                _bus.ReadWord(0x00104EEE) == 0x4A39
+                && _bus.ReadWord(0x00104EF0) == 0x0080
+                && _bus.ReadWord(0x00104EF2) == 0xCBDE
+                && _bus.ReadWord(0x00104EF4) == 0x6736
+                && _bus.ReadWord(0x00104F2C) == 0x4E75;
+            _pgmDemonFrontCbdeGateSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontCbdeGateSignatureValid)
+            return false;
+
+        byte gate = _bus.ReadByte(0x0080CBDE);
+        if (gate != 0)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        SetMoveByteFlags(gate);
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+        cycles = 42;
+        return true;
+    }
+
+    private bool TryConsumePgmDemonFrontCcGateHelper(out uint cycles)
+    {
+        cycles = 0;
+        if (_registers.Pc != 0x0010555C)
+            return false;
+
+        if (!_pgmDemonFrontCcGateSignatureChecked)
+        {
+            _pgmDemonFrontCcGateSignatureValid =
+                _bus.ReadWord(0x0010555C) == 0x4A39
+                && _bus.ReadWord(0x0010555E) == 0x0080
+                && _bus.ReadWord(0x00105560) == 0xCC04
+                && _bus.ReadWord(0x00105562) == 0x6720
+                && _bus.ReadWord(0x00105584) == 0x4A39
+                && _bus.ReadWord(0x00105586) == 0x0080
+                && _bus.ReadWord(0x00105588) == 0xCC48
+                && _bus.ReadWord(0x0010558A) == 0x6718
+                && _bus.ReadWord(0x001055A4) == 0x4E75;
+            _pgmDemonFrontCcGateSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontCcGateSignatureValid)
+            return false;
+
+        byte firstGate = _bus.ReadByte(0x0080CC04);
+        byte secondGate = _bus.ReadByte(0x0080CC48);
+        if (firstGate != 0 || secondGate != 0)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        SetMoveByteFlags(secondGate);
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+        cycles = 68;
         return true;
     }
 
@@ -1722,12 +1936,15 @@ internal sealed partial class InstructionExecutor
                 && _bus.ReadWord(0x0010D892) == 0xFFFC
                 && _bus.ReadWord(0x0010D894) == 0x2F02
                 && _bus.ReadWord(0x0010D896) == 0x4A79
-                && _bus.ReadLong(0x0010D898) == 0x0080F68Au
+                && _bus.ReadWord(0x0010D898) == 0x0080
+                && _bus.ReadWord(0x0010D89A) == 0xF68A
                 && _bus.ReadWord(0x0010D89C) == 0x6700
                 && _bus.ReadWord(0x0010D8A0) == 0x4879
-                && _bus.ReadLong(0x0010D8A2) == 0x0080F890u
+                && _bus.ReadWord(0x0010D8A2) == 0x0080
+                && _bus.ReadWord(0x0010D8A4) == 0xF890
                 && _bus.ReadWord(0x0010D8A6) == 0x4EB9
-                && _bus.ReadLong(0x0010D8A8) == 0x0010D9EAu
+                && _bus.ReadWord(0x0010D8A8) == 0x0010
+                && _bus.ReadWord(0x0010D8AA) == 0xD9EA
                 && _bus.ReadWord(0x0010D8AC) == 0x588F
                 && _bus.ReadWord(0x0010D8AE) == 0x4A80
                 && _bus.ReadWord(0x0010D8B0) == 0x6600
@@ -2669,6 +2886,18 @@ internal sealed partial class InstructionExecutor
 
         if (_registers.Pc == 0x001020BA && TryConsumePgmDemonFrontStatusPollBlock(out uint statusPollCycles))
             return ExecuteResult<uint>.Ok(statusPollCycles);
+
+        if (_registers.Pc == 0x00101EC8 && TryConsumePgmDemonFrontStatusSummaryHelper(out uint statusSummaryCycles))
+            return ExecuteResult<uint>.Ok(statusSummaryCycles);
+
+        if (_registers.Pc == 0x001008AE && TryEnterPgmDemonFrontVblankDispatch(out uint vblankDispatchCycles))
+            return ExecuteResult<uint>.Ok(vblankDispatchCycles);
+
+        if (_registers.Pc == 0x00104EEE && TryConsumePgmDemonFrontCbdeGateHelper(out uint cbdeGateCycles))
+            return ExecuteResult<uint>.Ok(cbdeGateCycles);
+
+        if (_registers.Pc == 0x0010555C && TryConsumePgmDemonFrontCcGateHelper(out uint ccGateCycles))
+            return ExecuteResult<uint>.Ok(ccGateCycles);
 
         if (_registers.Pc == 0x00101AF0 && TryConsumePgmSpriteFlagScanSubroutine(out uint spriteFlagSubroutineCycles))
             return ExecuteResult<uint>.Ok(spriteFlagSubroutineCycles);
