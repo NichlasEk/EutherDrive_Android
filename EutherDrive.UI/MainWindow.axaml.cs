@@ -10365,7 +10365,11 @@ public partial class MainWindow : Window
                 continue;
 
             bool useSpeedLock = _speedLockEnabled;
-            if (audioStartupPriming && _audioEngine != null && core is not EutherDrive.Core.Arcade.Konami.TmntAdapter)
+            if (audioStartupPriming
+                && _audioEngine != null
+                && core is not EutherDrive.Core.Arcade.Konami.TmntAdapter
+                && core is not McsArcadeAdapter
+                && core is not KovPgmAdapter)
             {
                 int buffered = _audioEngine.BufferedFrames;
                 if (buffered >= AudioTargetBufferedFrames || now >= audioStartupPrimeUntilTicks)

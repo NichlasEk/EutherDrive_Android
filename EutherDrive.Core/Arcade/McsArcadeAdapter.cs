@@ -1093,6 +1093,9 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         private bool HasBufferedFrameCapacity()
         {
+            if (EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_driverName))
+                return false;
+
             lock (_frameSync)
                 return PublishedFrames - _consumerFrameCursor < MaxBufferedMcsFrames;
         }
