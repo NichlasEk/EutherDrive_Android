@@ -48,6 +48,10 @@ internal sealed partial class InstructionExecutor
     private bool _pgmDemonFrontCcGateSignatureValid;
     private bool _pgmDemonFrontVblankHeadSignatureChecked;
     private bool _pgmDemonFrontVblankHeadSignatureValid;
+    private bool _pgmDemonFrontMicroJitReturnSignatureChecked;
+    private bool _pgmDemonFrontMicroJitReturnSignatureValid;
+    private bool _pgmDemonFrontMicroJitObjectSetupSignatureChecked;
+    private bool _pgmDemonFrontMicroJitObjectSetupSignatureValid;
     private bool _pgmDemonFrontDispatchSignatureChecked;
     private bool _pgmDemonFrontDispatchSignatureValid;
     private bool _pgmSvgLatchReadHelperSignatureChecked;
@@ -88,6 +92,8 @@ internal sealed partial class InstructionExecutor
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_OPCODE_PROFILE"), "1", StringComparison.Ordinal);
     private static readonly bool ProfileFastOpcodes =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_FAST_PROFILE"), "1", StringComparison.Ordinal);
+    private static readonly bool EnableMicroJit =
+        !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_MICROJIT"), "0", StringComparison.Ordinal);
     private static readonly long[] ProfileOpcodeCounts = new long[ushort.MaxValue + 1];
     private static readonly long[] ProfileKindCounts = new long[Enum.GetValues(typeof(InstructionKind)).Length];
     private static readonly Dictionary<ulong, long> ProfilePcOpcodeCounts = new();
@@ -734,6 +740,138 @@ internal sealed partial class InstructionExecutor
 
         uint spriteCycles = 244u + Math.Max(180u, firstIterations * 94u) + Math.Max(180u, secondIterations * 94u);
         cycles = 4u + 20u + 100u + spriteCycles + 920u + 154u + 22u + 42u + 68u;
+        return true;
+    }
+
+    private bool TryExecutePgmDemonFrontMicroJit(out uint cycles)
+    {
+        cycles = 0;
+        if (!EnableMicroJit)
+            return false;
+
+        return _registers.Pc switch
+        {
+            0x00107DA2 => TryExecutePgmDemonFrontZeroReturnJit(out cycles),
+            0x001252C0 => TryExecutePgmDemonFrontObjectSetupJit(out cycles),
+            _ => false,
+        };
+    }
+
+    private bool TryExecutePgmDemonFrontZeroReturnJit(out uint cycles)
+    {
+        cycles = 0;
+        if (!_pgmDemonFrontMicroJitReturnSignatureChecked)
+        {
+            _pgmDemonFrontMicroJitReturnSignatureValid =
+                _bus.ReadWord(0x00107DA2) == 0x48E7
+                && _bus.ReadWord(0x00107DA6) == 0x4A39
+                && _bus.ReadLong(0x00107DA8) == 0x0080_E9BEu
+                && _bus.ReadWord(0x00107DAC) == 0x6700
+                && _bus.ReadWord(0x00107DAE) == 0x0136
+                && _bus.ReadWord(0x00107EE4) == 0x4CDF
+                && _bus.ReadWord(0x00107EE8) == 0x4E75;
+            _pgmDemonFrontMicroJitReturnSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontMicroJitReturnSignatureValid)
+            return false;
+
+        byte value = _bus.ReadByte(0x0080E9BE);
+        if (value != 0)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint returnAddress = _bus.ReadLong(stackPointer) & 0x00ff_ffffu;
+        if ((returnAddress & 1) != 0)
+            return false;
+
+        ushort pushMask = _bus.ReadWord(0x00107DA4);
+        ushort popMask = _bus.ReadWord(0x00107EE6);
+        SetMoveByteFlags(0);
+        _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+        _registers.Pc = returnAddress;
+        _registers.Prefetch = _bus.ReadWord(returnAddress);
+
+        cycles = (uint)(8 + CountBits(pushMask) * 8 + 16 + 10 + 8 + CountBits(popMask) * 8 + 16);
+        return true;
+    }
+
+    private bool TryExecutePgmDemonFrontObjectSetupJit(out uint cycles)
+    {
+        cycles = 0;
+        if (!_pgmDemonFrontMicroJitObjectSetupSignatureChecked)
+        {
+            _pgmDemonFrontMicroJitObjectSetupSignatureValid =
+                _bus.ReadWord(0x001252C0) == 0x4E56
+                && _bus.ReadWord(0x001252C2) == 0xFFF8
+                && _bus.ReadWord(0x001252C4) == 0x48E7
+                && _bus.ReadWord(0x001252C8) == 0x7402
+                && _bus.ReadWord(0x001252CA) == 0x2002
+                && _bus.ReadWord(0x001252CC) == 0xE588
+                && _bus.ReadWord(0x001252CE) == 0x207C
+                && _bus.ReadWord(0x001252D4) == 0xD1C0
+                && _bus.ReadWord(0x001252D6) == 0x2D48
+                && _bus.ReadWord(0x001252D8) == 0xFFFC
+                && _bus.ReadWord(0x001252DA) == 0x207C
+                && _bus.ReadWord(0x001252E0) == 0xD1C2
+                && _bus.ReadWord(0x001252E2) == 0x2D48
+                && _bus.ReadWord(0x001252E4) == 0xFFF8
+                && _bus.ReadWord(0x001252E6) == 0x206E;
+            _pgmDemonFrontMicroJitObjectSetupSignatureChecked = true;
+        }
+
+        if (!_pgmDemonFrontMicroJitObjectSetupSignatureValid)
+            return false;
+
+        uint stackPointer = _registers.StackPointer();
+        if ((stackPointer & 1) != 0)
+            return false;
+
+        uint framePointer = (stackPointer - 4u) & 0x00ff_ffffu;
+        _bus.WriteLong(framePointer, _registers.Address[6]);
+        _registers.Address[6] = framePointer;
+        _registers.SetStackPointer((framePointer - 8u) & 0x00ff_ffffu);
+
+        ushort movemMask = _bus.ReadWord(0x001252C6);
+        uint movemAddress = _registers.StackPointer();
+        if ((movemAddress & 1) != 0)
+            return false;
+
+        int movemCount = 0;
+        for (int i = 0; i < 16; i++)
+        {
+            if (((movemMask >> i) & 1) == 0)
+                continue;
+
+            int registerIndex = 15 - i;
+            movemAddress = (movemAddress - 4u) & 0x00ff_ffffu;
+            _bus.WriteLong(movemAddress, ReadMovemRegister(registerIndex));
+            movemCount++;
+        }
+
+        _registers.SetStackPointer(movemAddress);
+
+        uint d2 = 2;
+        uint d0 = d2 << 2;
+        uint tablePointerBase = _bus.ReadLong(0x001252D0);
+        uint tablePointerSlot = (tablePointerBase + d0) & 0x00ff_ffffu;
+        _bus.WriteLong((framePointer - 4u) & 0x00ff_ffffu, tablePointerSlot);
+
+        uint countPointerBase = _bus.ReadLong(0x001252DC);
+        uint countPointer = (countPointerBase + d2) & 0x00ff_ffffu;
+        _bus.WriteLong((framePointer - 8u) & 0x00ff_ffffu, countPointer);
+
+        _registers.Data[0] = d0;
+        _registers.Data[2] = d2;
+        _registers.Address[0] = countPointer;
+        SetMoveLongFlags(countPointer);
+        _registers.Pc = 0x001252E6;
+        _registers.Prefetch = _bus.ReadWord(0x001252E6);
+
+        cycles = (uint)(16 + 8 + movemCount * 8 + 4 + 4 + 12 + 12 + 8 + 16 + 12 + 8 + 16);
         return true;
     }
 
@@ -3027,6 +3165,9 @@ internal sealed partial class InstructionExecutor
         if (_registers.Pc == 0x0010E238 && TryExecutePgmSvgLatchReadHelper(out uint latchReadCycles))
             return ExecuteResult<uint>.Ok(latchReadCycles);
 
+        if (TryExecutePgmDemonFrontMicroJit(out uint microJitCycles))
+            return ExecuteResult<uint>.Ok(microJitCycles);
+
         uint pcBefore = _registers.Pc;
         _tracePc = pcBefore;
         _opcode = _registers.Prefetch;
@@ -3869,6 +4010,18 @@ internal sealed partial class InstructionExecutor
 
         counts[index] = count;
         top[index] = key;
+    }
+
+    private static int CountBits(ushort value)
+    {
+        int count = 0;
+        while (value != 0)
+        {
+            value &= (ushort)(value - 1);
+            count++;
+        }
+
+        return count;
     }
 
     private static string FormatTop(Span<int> top, Span<long> counts, Func<int, string> nameForKey)
