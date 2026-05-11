@@ -180,15 +180,6 @@ internal sealed partial class InstructionExecutor
             case 0x00125D2C:
                 return TryConsumePgmObjectBitScanLoop(cycleBudget, out cycles);
 
-            case 0x0012D762:
-                return TryConsumePgmDemonFrontCommonMultiplyHelper(cycleBudget, out cycles);
-
-            case 0x0012D790:
-                return TryConsumePgmDemonFrontCommonDivideHelper(cycleBudget, out cycles);
-
-            case 0x0010E70A:
-                return TryConsumePgmDemonFrontDispatchBlock(cycleBudget, out cycles);
-
             case 0x00125B44:
             case 0x00125C04:
                 return TryConsumePgmDemonFrontObjectAccumulatorLoop(cycleBudget, out cycles);
@@ -1740,20 +1731,15 @@ internal sealed partial class InstructionExecutor
                 && _bus.ReadWord(0x0010D8AC) == 0x588F
                 && _bus.ReadWord(0x0010D8AE) == 0x4A80
                 && _bus.ReadWord(0x0010D8B0) == 0x6600
+                && _bus.ReadWord(0x0010D8B2) == 0x00BE
                 && _bus.ReadWord(0x0010D970) == 0x242E
                 && _bus.ReadWord(0x0010D972) == 0xFFFC
                 && _bus.ReadWord(0x0010D974) == 0x4E5E
-                && _bus.ReadWord(0x0010D976) == 0x4E75
-                && _bus.ReadWord(0x0010D9EA) == 0x206F
-                && _bus.ReadWord(0x0010D9EC) == 0x0004
-                && _bus.ReadWord(0x0010D9FA) == 0x4E75;
+                && _bus.ReadWord(0x0010D976) == 0x4E75;
             _pgmDemonFrontPointerPollSignatureChecked = true;
         }
 
         if (!_pgmDemonFrontPointerPollSignatureValid)
-            return false;
-
-        if (_bus.ReadWord(0x0080F68A) == 0)
             return false;
 
         uint stackPointer = _registers.StackPointer();
@@ -1764,8 +1750,19 @@ internal sealed partial class InstructionExecutor
         if ((returnAddress & 1) != 0)
             return false;
 
+        ushort gate = _bus.ReadWord(0x0080F68A);
+        if (gate == 0)
+        {
+            SetMoveWordFlags(gate);
+            _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
+            _registers.Pc = returnAddress;
+            _registers.Prefetch = _bus.ReadWord(returnAddress);
+            cycles = 98;
+            return true;
+        }
+
         const uint argument = 0x0080F890u;
-        uint flag = _bus.ReadLong(argument + 0x18u);
+        uint flag = _bus.ReadLong((argument + 0x18u) & 0x00ff_ffffu);
         if (flag != 0)
             return false;
 
@@ -1778,7 +1775,7 @@ internal sealed partial class InstructionExecutor
         _registers.SetStackPointer((stackPointer + 4u) & 0x00ff_ffffu);
         _registers.Pc = returnAddress;
         _registers.Prefetch = _bus.ReadWord(returnAddress);
-        cycles = 132;
+        cycles = 184;
         return true;
     }
 
@@ -2652,11 +2649,23 @@ internal sealed partial class InstructionExecutor
         if (_registers.Pc == 0x0010795E && TryConsumePgmDemonFrontMissingBitScanLoop(out uint missingBitCycles))
             return ExecuteResult<uint>.Ok(missingBitCycles);
 
+        if (_registers.Pc == 0x0012D762 && TryConsumePgmDemonFrontCommonMultiplyHelper(108, out uint multiplyCycles))
+            return ExecuteResult<uint>.Ok(multiplyCycles);
+
+        if (_registers.Pc == 0x0012D790 && TryConsumePgmDemonFrontCommonDivideHelper(136, out uint divideCycles))
+            return ExecuteResult<uint>.Ok(divideCycles);
+
+        if (_registers.Pc == 0x0010E70A && TryConsumePgmDemonFrontDispatchBlock(136, out uint dispatchCycles))
+            return ExecuteResult<uint>.Ok(dispatchCycles);
+
         if (_registers.Pc == 0x00101B80 && TryConsumePgmSpriteFlagPairSubroutine(out uint spriteFlagPairCycles))
             return ExecuteResult<uint>.Ok(spriteFlagPairCycles);
 
         if (_registers.Pc == 0x0010D9EA && TryConsumePgmDemonFrontPointerFlagHelper(out uint pointerFlagCycles))
             return ExecuteResult<uint>.Ok(pointerFlagCycles);
+
+        if (_registers.Pc == 0x0010D890 && TryConsumePgmDemonFrontPointerPollFastRoutine(out uint pointerPollCycles))
+            return ExecuteResult<uint>.Ok(pointerPollCycles);
 
         if (_registers.Pc == 0x001020BA && TryConsumePgmDemonFrontStatusPollBlock(out uint statusPollCycles))
             return ExecuteResult<uint>.Ok(statusPollCycles);
