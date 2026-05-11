@@ -1601,12 +1601,15 @@ namespace mame
                 CreateTheGladDummyInternalArmRegion();
             else
                 CreateDummyInternalArmRegion();
-            m_svg_ram_sel = 1;
+            m_svg_ram_sel = m_useTheGladArmType3 ? 0 : 1;
             m_svg_latchdata_68k_w = 0;
             m_svg_latchdata_arm_w = 0;
             m_armLastPrefetchedPc = 0;
-            WriteLe16(m_svg_shareram[1], 0x158, 0x0005);
-            WriteLe16(m_svg_shareram[0], 0x158, 0x0005);
+            if (!m_useTheGladArmType3)
+            {
+                WriteLe16(m_svg_shareram[1], 0x158, 0x0005);
+                WriteLe16(m_svg_shareram[0], 0x158, 0x0005);
+            }
             m_arm7.Reset(0);
         }
 
