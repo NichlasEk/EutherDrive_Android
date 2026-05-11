@@ -21,7 +21,7 @@ public sealed class KovPgmAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
     }
 
     public static bool IsSupportedDriverName(string driverName)
-        => driverName is "kov" or "orlegend" or "dmnfrnt" or "ddpdoj" or "espgal" or "ket" or "kov2";
+        => driverName is "kov" or "orlegend" or "dmnfrnt" or "ddpdoj" or "espgal" or "ket" or "kov2" or "theglad";
 
     public void LoadRom(string path) => _adapter.LoadRom(path);
     public void Reset() => _adapter.Reset();

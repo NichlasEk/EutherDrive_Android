@@ -46,6 +46,7 @@ namespace mame
                 pgm.driver_kov2,
                 pgm.driver_orlegend,
                 pgm.driver_dmnfrnt,
+                pgm.driver_theglad,
                 m52.driver_mpatrol,
                 //mappy.driver_superpac,
                 mcr.driver_demoderb,

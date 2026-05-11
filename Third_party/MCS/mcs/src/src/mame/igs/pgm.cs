@@ -99,6 +99,7 @@ namespace mame
         bool m_useCaveType1Sim;
         bool m_useDdp3Type1Sim;
         bool m_useSvgArmType3;
+        bool m_useTheGladArmType3;
         bool m_useKov2ArmType2;
         int m_svg_ram_sel;
         u32 m_svg_latchdata_68k_w;
@@ -256,6 +257,7 @@ namespace mame
             SaveStateRef(nameof(m_useCaveType1Sim), () => m_useCaveType1Sim, value => m_useCaveType1Sim = value);
             SaveStateRef(nameof(m_useDdp3Type1Sim), () => m_useDdp3Type1Sim, value => m_useDdp3Type1Sim = value);
             SaveStateRef(nameof(m_useSvgArmType3), () => m_useSvgArmType3, value => m_useSvgArmType3 = value);
+            SaveStateRef(nameof(m_useTheGladArmType3), () => m_useTheGladArmType3, value => m_useTheGladArmType3 = value);
             SaveStateRef(nameof(m_useKov2ArmType2), () => m_useKov2ArmType2, value => m_useKov2ArmType2 = value);
             SaveStateRef(nameof(m_svg_ram_sel), () => m_svg_ram_sel, value => m_svg_ram_sel = value);
             SaveStateRef(nameof(m_svg_latchdata_68k_w), () => m_svg_latchdata_68k_w, value => m_svg_latchdata_68k_w = value);
@@ -361,7 +363,7 @@ namespace mame
             }
             if ((address & 1) == 0 && IsFastMainRamAddress(address))
             {
-                if (m_useSvgArmType3 && address == 0x80a03c)
+                if (m_useSvgArmType3 && !m_useTheGladArmType3 && address == 0x80a03c)
                 {
                     value = dmnfrnt_main_speedup_r();
                     return true;
@@ -402,7 +404,7 @@ namespace mame
             }
             if (IsFastMainRamAddress(address) && IsFastMainRamAddress((address + 3) & 0x00ff_ffff))
             {
-                if (m_useSvgArmType3 && address == 0x80a03c)
+                if (m_useSvgArmType3 && !m_useTheGladArmType3 && address == 0x80a03c)
                 {
                     value = 0xffff_ffff;
                     return false;
@@ -763,7 +765,7 @@ namespace mame
 
         u16 mainram_r(address_space space, offs_t offset, u16 mem_mask)
         {
-            if (m_useSvgArmType3 && ((offset << 1) & 0x0fffff) == 0x00a03c)
+            if (m_useSvgArmType3 && !m_useTheGladArmType3 && ((offset << 1) & 0x0fffff) == 0x00a03c)
                 return dmnfrnt_main_speedup_r();
 
             uint byteOffset = (offset << 1) & (uint)(m_mainram.Length - 1);
@@ -1267,7 +1269,10 @@ namespace mame
                         | (m_armExternalRom[(int)(offset + 3)] << 24));
             }
             if (address >= 0x10000000 && address <= 0x100003ff)
+            {
+                ApplyTheGladArmRam2Speedup(address);
                 return ReadLe32(m_armRam2, (address - 0x10000000) & 0x3ff);
+            }
             if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
             {
                 ApplyDemonFrontArmRamSpeedup(address);
@@ -1305,11 +1310,21 @@ namespace mame
 
         void ApplyDemonFrontArmRamSpeedup(uint address)
         {
-            if (!m_useSvgArmType3 || (address & ~3u) != 0x18000444)
+            if (!m_useSvgArmType3 || m_useTheGladArmType3 || (address & ~3u) != 0x18000444)
                 return;
 
             uint pc = m_arm7.Registers[15] - 8;
             if (pc == 0x08000fea)
+                m_arm7.Cycles += 500;
+        }
+
+        void ApplyTheGladArmRam2Speedup(uint address)
+        {
+            if (!m_useTheGladArmType3 || (address & ~3u) != 0x1000000c)
+                return;
+
+            uint pc = m_arm7.Registers[15] - 8;
+            if (pc == 0x000007c4)
                 m_arm7.Cycles += 500;
         }
 
@@ -1551,7 +1566,7 @@ namespace mame
 
         void TraceDmnfrntResourceError()
         {
-            if (m_traceDmnfrntErrorDumped || !m_useSvgArmType3 || m_maincpu.op0.Pc != 0x101194)
+            if (m_traceDmnfrntErrorDumped || !m_useSvgArmType3 || m_useTheGladArmType3 || m_maincpu.op0.Pc != 0x101194)
                 return;
 
             m_traceDmnfrntErrorDumped = true;
@@ -1582,7 +1597,10 @@ namespace mame
             if (!m_useSvgArmType3)
                 return;
 
-            CreateDummyInternalArmRegion();
+            if (m_useTheGladArmType3)
+                CreateTheGladDummyInternalArmRegion();
+            else
+                CreateDummyInternalArmRegion();
             m_svg_ram_sel = 1;
             m_svg_latchdata_68k_w = 0;
             m_svg_latchdata_arm_w = 0;
@@ -1645,6 +1663,65 @@ namespace mame
             WriteLe32(m_armInternalRom, 0x0004, 0xe3a00680);
             WriteLe32(m_armInternalRom, 0x0008, 0xe12fff10);
             WriteLe32(m_armInternalRom, 0x0090, 0x10000400);
+        }
+
+        void CreateTheGladDummyInternalArmRegion()
+        {
+            memory_region prot = memregion("prot");
+            if (prot != null && prot.base_() != null)
+            {
+                int count = (int)Math.Min(prot.bytes(), (ulong)m_armInternalRom.Length);
+                for (int i = 0; i < count; i++)
+                    m_armInternalRom[i] = prot.base_()[i];
+            }
+            else
+            {
+                Array.Clear(m_armInternalRom, 0, m_armInternalRom.Length);
+            }
+
+            for (uint i = 0; i < 0x188; i += 4)
+                WriteLe32(m_armInternalRom, i, 0xeafffffe);
+
+            WriteLe32(m_armInternalRom, 0x0000, 0xea00000a);
+            WriteLe32(m_armInternalRom, 0x001c, 0xe59ff000);
+            WriteLe32(m_armInternalRom, 0x0020, 0x08000010);
+            WriteLe32(m_armInternalRom, 0x0024, 0x08000010);
+
+            uint baseOffset = 0x30;
+            WriteTheGladWords(ref baseOffset,
+                0x00d2, 0xe3a0, 0xf000, 0xe121,
+                0x4001, 0xe3a0, 0x4b06, 0xe284, 0x0cfa, 0xe3a0, 0xd804, 0xe080,
+                0x00d1, 0xe3a0, 0xf000, 0xe121, 0x0cf6, 0xe3a0, 0xd804, 0xe080,
+                0x00d7, 0xe3a0, 0xf000, 0xe121, 0x0cff, 0xe3a0, 0xd804, 0xe080,
+                0x00db, 0xe3a0, 0xf000, 0xe121, 0x4140, 0xe1c4, 0x0cfe, 0xe3a0,
+                0xd804, 0xe080, 0x00d3, 0xe3a0, 0xf000, 0xe121, 0x4a01, 0xe3a0,
+                0x0b01, 0xe3a0, 0xd804, 0xe080, 0x5a0f, 0xe3a0, 0x0008, 0xe3a0,
+                0x8805, 0xe080, 0x0010, 0xe3a0, 0x0000, 0xe5c8, 0x7805, 0xe1a0,
+                0x6a01, 0xe3a0, 0x0012, 0xe3a0, 0x0a02, 0xe280, 0x6806, 0xe080,
+                0x6000, 0xe587,
+                0x00d3, 0xe3a0, 0xf000, 0xe121, 0x4001, 0xe3a0, 0x4b06, 0xe284,
+                0x0cf2, 0xe3a0, 0xd804, 0xe080, 0x0013, 0xe3a0, 0xf000, 0xe121,
+                0x0028, 0xea00);
+
+            baseOffset = 0xe8;
+            WriteTheGladWords(ref baseOffset,
+                0xe004, 0xe52d, 0x00d3, 0xe3a0, 0xf000, 0xe121, 0xe004, 0xe49d, 0xff1e, 0xe12f,
+                0xe004, 0xe52d, 0x0013, 0xe3a0, 0xf000, 0xe121, 0xe004, 0xe49d, 0xff1e, 0xe12f,
+                0x00d1, 0xe3a0, 0xf000, 0xe121, 0xd0b8, 0xe59f, 0x00d3, 0xe3a0,
+                0xf000, 0xe121, 0xd0b0, 0xe59f, 0x10b8, 0xe59f, 0x0000, 0xe3a0,
+                0x0000, 0xe581, 0xf302, 0xe3a0);
+
+            WriteLe32(m_armInternalRom, 0x0150, 0xe12fff1e);
+            WriteLe32(m_armInternalRom, 0x0184, 0xe59f105c);
+        }
+
+        void WriteTheGladWords(ref uint offset, params u16[] words)
+        {
+            foreach (u16 word in words)
+            {
+                WriteLe16(m_armInternalRom, offset, word);
+                offset += 2;
+            }
         }
 
         static u16 ReadLe16(byte[] data, uint offset)
@@ -2166,8 +2243,22 @@ namespace mame
                 PgmCrypt.DemonFrontDecrypt(region.base_(), 0, Math.Min(0x400000, (int)region.bytes()));
 
             m_useSvgArmType3 = true;
+            m_useTheGladArmType3 = false;
             if (TracePgmArmEnabled())
                 Console.Error.WriteLine("[PGM-ARM] init_dmnfrnt type3 enabled");
+            ResetSvgArmType3Runtime();
+        }
+
+        public void init_theglad()
+        {
+            memory_region region = memregion("user1");
+            if (region != null && region.base_() != null)
+                PgmCrypt.TheGladDecrypt(region.base_(), 0, Math.Min(0x200000, (int)region.bytes()));
+
+            m_useSvgArmType3 = true;
+            m_useTheGladArmType3 = true;
+            if (TracePgmArmEnabled())
+                Console.Error.WriteLine("[PGM-ARM] init_theglad type3 enabled");
             ResetSvgArmType3Runtime();
         }
 
@@ -2316,6 +2407,38 @@ namespace mame
             ROM_END,
         };
 
+        static readonly tiny_rom_entry [] rom_theglad =
+        {
+            ROM_REGION(0x600000, "maincpu", 0),
+            ROM_LOAD16_WORD_SWAP("pgm_p01s.u20", 0x000000, 0x020000, CRC("e42b166e") + SHA1("2a9df9ec746b14b74fae48b1a438da14973702ea")),
+            ROM_LOAD16_WORD_SWAP("v101.u6", 0x100000, 0x080000, CRC("f799e866") + SHA1("dccc3c903357c40c3cf85ac0ae8fc12fb0f853a6")),
+
+            ROM_REGION(0x4000, "prot", 0),
+            ROM_LOAD("theglad_igs027a_v100_overseas.bin", 0x0188, 0x3e78, CRC("02fe6f52") + SHA1("0b0ddf4507856cfc5b7d4ef7e4c5375254c2a024")),
+
+            ROM_REGION(0x800000, "user1", 0),
+            ROM_LOAD("v107.u26", 0x000000, 0x200000, CRC("f7c61357") + SHA1("52d31c464dfc83c5371b078cb6b73c0d0e0d57e3")),
+
+            ROM_REGION(0xa00000, "igs023", 0),
+            ROM_LOAD("pgm_t01s.rom", 0x000000, 0x200000, CRC("1a7123a0") + SHA1("cc567f577bfbf45427b54d6695b11b74f2578af3")),
+            ROM_LOAD("t04601.u33", 0x180000, 0x800000, CRC("e5dab371") + SHA1("2e3c93958eb0326b6b84b95c2168626f26bbac76")),
+
+            ROM_REGION16_LE(0x2000000, "igs023:sprcol", 0),
+            ROM_LOAD("a04601.u2", 0x0000000, 0x0800000, CRC("d9b2e004") + SHA1("8e1882b800fe9f12d7d49303e7417ba5b6f8ef85")),
+            ROM_LOAD("a04602.u4", 0x0800000, 0x0800000, CRC("14f22308") + SHA1("7fad54704e8c97eab723f53dfb50fb3e7bb606d2")),
+            ROM_LOAD("a04603.u6", 0x1000000, 0x0800000, CRC("8f621e17") + SHA1("b0f87f378e0115d0c95017ca0f1b0d508827a7c6")),
+
+            ROM_REGION16_LE(0x1000000, "igs023:sprmask", 0),
+            ROM_LOAD("b04601.u11", 0x0000000, 0x0800000, CRC("ee72bccf") + SHA1("73c25fe659f6c903447066e4ef83d2f580449d76")),
+            ROM_LOAD("b04602.u12", 0x0800000, 0x0400000, CRC("7dba9c38") + SHA1("a03d509274e8f6a500a7ebe2da5aab8bed4e7f2f")),
+
+            ROM_REGION(0x1000000, "ics", 0),
+            ROM_LOAD("pgm_m01s.rom", 0x000000, 0x200000, CRC("45ae7159") + SHA1("d3ed3ff3464557fd0df6b069b2e431528b0ebfa8")),
+            ROM_LOAD("w04601.u1", 0x400000, 0x800000, CRC("5f15ddb3") + SHA1("c38dcef8e06802a84e42a7fc9fa505475fc3ac65")),
+
+            ROM_END,
+        };
+
         static readonly tiny_rom_entry [] rom_ddpdoj =
         {
             ROM_REGION(0x600000, "maincpu", 0),
@@ -2432,6 +2555,7 @@ namespace mame
         static void pgm_state_init_kov2(device_t owner) { ((pgm_state)owner).init_kov2(); }
         static void pgm_state_init_orlegend(device_t owner) { ((pgm_state)owner).init_orlegend(); }
         static void pgm_state_init_dmnfrnt(device_t owner) { ((pgm_state)owner).init_dmnfrnt(); }
+        static void pgm_state_init_theglad(device_t owner) { ((pgm_state)owner).init_theglad(); }
         static device_t device_creator_pgm_state(emu.detail.device_type_impl_base type, machine_config mconfig, string tag, device_t owner, u32 clock) { return new pgm_state(mconfig, (device_type)type, tag); }
 
         void construct_ioport_pgm(device_t owner, ioport_list portlist, ref string errorbuf)
@@ -2506,6 +2630,7 @@ namespace mame
         public static readonly game_driver driver_kov = GAME(device_creator_pgm_state, rom_kov, "1999", "kov", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_kov, ROT0, "IGS", "Knights of Valour / Sanguo Zhan Ji / Sangoku Senki (ver. 117, Hong Kong)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
         public static readonly game_driver driver_orlegend = GAME(device_creator_pgm_state, rom_orlegend, "1997", "orlegend", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_orlegend, ROT0, "IGS", "Oriental Legend / Xiyou Shi E Zhuan (ver. 126)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND);
         public static readonly game_driver driver_dmnfrnt = GAME(device_creator_pgm_state, rom_dmnfrnt, "2002", "dmnfrnt", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_dmnfrnt, ROT0, "IGS", "Demon Front / Moyu Zhanxian (V105)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND);
+        public static readonly game_driver driver_theglad = GAME(device_creator_pgm_state, rom_theglad, "2003", "theglad", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_theglad, ROT0, "IGS", "The Gladiator / Shen Jian Fu Mo Lu / Shen Jian Fengyun (V101)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND);
         public static readonly game_driver driver_ddpdoj = GAME(device_creator_pgm_state, rom_ddpdoj, "2002", "ddpdoj", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_ddpdoj, ROT270, "Cave (AMI license)", "DoDonPachi Dai-Ou-Jou (V101)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
         public static readonly game_driver driver_ket = GAME(device_creator_pgm_state, rom_ket, "2002", "ket", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_ket, ROT270, "Cave (AMI license)", "Ketsui Kizuna Jigoku Tachi (V100)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
         public static readonly game_driver driver_espgal = GAME(device_creator_pgm_state, rom_espgal, "2003", "espgal", "pgm", pgm_state_pgm, m_pgm.construct_ioport_pgm, pgm_state_init_espgal, ROT270, "Cave (AMI license)", "Espgaluda (V100)", MACHINE_IS_SKELETON | MACHINE_IMPERFECT_SOUND | MACHINE_UNEMULATED_PROTECTION);
@@ -2740,6 +2865,26 @@ namespace mame
 
     static class PgmCrypt
     {
+        static readonly u8 [] TheGladTab =
+        {
+            0x49, 0x47, 0x53, 0x30, 0x30, 0x30, 0x35, 0x52, 0x44, 0x31, 0x30, 0x32, 0x31, 0x32, 0x30, 0x33,
+            0xc4, 0xa3, 0x46, 0x78, 0x30, 0xb3, 0x8b, 0xd5, 0x2f, 0xc4, 0x44, 0xbf, 0xdb, 0x76, 0xdb, 0xea,
+            0xb4, 0xeb, 0x95, 0x4d, 0x15, 0x21, 0x99, 0xa1, 0xd7, 0x8c, 0x40, 0x1d, 0x43, 0xf3, 0x9f, 0x71,
+            0x3d, 0x8c, 0x52, 0x01, 0xaf, 0x5b, 0x8b, 0x63, 0x34, 0xc8, 0x5c, 0x1b, 0x06, 0x7f, 0x41, 0x96,
+            0x2a, 0x8d, 0xf1, 0x64, 0xda, 0xb8, 0x67, 0xba, 0x33, 0x1f, 0x2b, 0x28, 0x20, 0x13, 0xe6, 0x96,
+            0x86, 0x34, 0x25, 0x85, 0xb0, 0xd0, 0x6d, 0x85, 0xfe, 0x78, 0x81, 0xf1, 0xca, 0xe4, 0xef, 0xf2,
+            0x9b, 0x09, 0xe1, 0xb4, 0x8d, 0x79, 0x22, 0xe2, 0x00, 0xfb, 0x6f, 0x68, 0x80, 0x6a, 0x00, 0x69,
+            0xf5, 0xd3, 0x57, 0x7e, 0x0c, 0xca, 0x48, 0x31, 0xe5, 0x0d, 0x4a, 0xb9, 0xfd, 0x5c, 0xfd, 0xf8,
+            0x5f, 0x98, 0xfb, 0xb3, 0x07, 0x1a, 0xe3, 0x10, 0x96, 0x56, 0xa3, 0x56, 0x3d, 0xb1, 0x07, 0xe0,
+            0xe3, 0x9f, 0x7f, 0x62, 0x99, 0x01, 0x35, 0x60, 0x40, 0xbe, 0x4f, 0xeb, 0x79, 0xa0, 0x82, 0x9f,
+            0xcd, 0x71, 0xd8, 0xda, 0x1e, 0x56, 0xc2, 0x3e, 0x4e, 0x6b, 0x60, 0x69, 0x2d, 0x9f, 0x10, 0xf4,
+            0xa9, 0xd3, 0x36, 0xaa, 0x31, 0x2e, 0x4c, 0x0a, 0x69, 0xc3, 0x2a, 0xff, 0x15, 0x67, 0x96, 0xde,
+            0x3f, 0xcc, 0x0f, 0xa1, 0xac, 0xe2, 0xd6, 0x62, 0x7e, 0x6f, 0x3e, 0x1b, 0x2a, 0xed, 0x36, 0x9c,
+            0x9d, 0xa4, 0x14, 0xcd, 0xaa, 0x08, 0xa4, 0x26, 0xb7, 0x55, 0x70, 0x6c, 0xa9, 0x69, 0x52, 0xae,
+            0x0c, 0xe1, 0x38, 0x7f, 0x87, 0x78, 0x38, 0x75, 0x80, 0x9c, 0xd4, 0xe2, 0x0b, 0x52, 0x8f, 0xd2,
+            0x19, 0x4c, 0xb0, 0x45, 0xde, 0x48, 0x55, 0xae, 0x82, 0xab, 0xbc, 0xab, 0x0c, 0x5e, 0xce, 0x07
+        };
+
         static readonly u8 [] DemonFrontTab =
         {
             0x51, 0xc4, 0xe3, 0x10, 0x1c, 0xad, 0x8a, 0x39, 0x8c, 0xe0, 0xa5, 0x04, 0x0f, 0xe4, 0x35, 0xc3,
@@ -2879,6 +3024,28 @@ namespace mame
                 if ((i & 0x011800) != 0x010000) x ^= 0x0040;
                 if ((i & 0x004820) == 0x004820) x ^= 0x0080;
                 x ^= (u16)(DemonFrontTab[(i >> 1) & 0xff] << 8);
+
+                WriteLeWord(rom, byteOffset, x);
+            }
+        }
+
+        public static void TheGladDecrypt(MemoryU8 rom, int offset, int length)
+        {
+            int words = Math.Min(length, rom.Count - offset) / 2;
+            for (int i = 0; i < words; i++)
+            {
+                int byteOffset = offset + i * 2;
+                u16 x = ReadLeWord(rom, byteOffset);
+
+                if ((i & 0x040080) != 0x000080) x ^= 0x0001;
+                if ((i & 0x104008) == 0x104008) x ^= 0x0002;
+                if ((i & 0x080030) == 0x080010) x ^= 0x0004;
+                if ((i & 0x000042) != 0x000042) x ^= 0x0008;
+                if ((i & 0x008100) == 0x008000) x ^= 0x0010;
+                if ((i & 0x022004) != 0x000004) x ^= 0x0020;
+                if ((i & 0x011800) != 0x010000) x ^= 0x0040;
+                if ((i & 0x000820) == 0x000820) x ^= 0x0080;
+                x ^= (u16)(TheGladTab[(i >> 1) & 0xff] << 8);
 
                 WriteLeWord(rom, byteOffset, x);
             }
