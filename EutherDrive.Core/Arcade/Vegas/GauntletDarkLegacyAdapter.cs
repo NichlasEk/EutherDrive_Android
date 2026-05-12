@@ -5042,7 +5042,17 @@ internal sealed class VegasIdePciDevice
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IDE") == "1";
     private IdeDiskDevice? _disk;
 
-    public bool InterruptLine => _disk?.InterruptLine == true;
+    public bool InterruptLine
+    {
+        get
+        {
+            bool asserted = _disk?.InterruptLine == true;
+            uint control = BinaryPrimitives.ReadUInt32LittleEndian(_config.AsSpan(0x50, 4));
+            control = asserted ? control | BusMasterStatusInterrupt : control & ~(uint)BusMasterStatusInterrupt;
+            BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x50, 4), control);
+            return asserted;
+        }
+    }
 
     public void AttachDisk(IdeDiskDevice disk) => _disk = disk;
 
@@ -5056,7 +5066,7 @@ internal sealed class VegasIdePciDevice
         _config[0x0e] = 0x00;
         for (int i = 0; i < _bars.Length; i++)
             WriteConfigBarBytes(i);
-        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x40, 4), 0x00000c40);
+        BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x50, 4), 0x00000c40);
         _config[0x3c] = PciInterruptLine;
         _config[0x3d] = PciInterruptPin;
         _busMaster[2] = BusMasterStatusSimplex;
@@ -5088,6 +5098,9 @@ internal sealed class VegasIdePciDevice
             case 0x04:
                 BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), (ushort)(value & 0x0007));
                 break;
+            case 0x08:
+                _config[0x09] = (byte)(value >> 8);
+                break;
             case >= 0x10 and <= 0x20 when ((offset - 0x10) / 4) < _bars.Length:
                 int bar = (int)((offset - 0x10) / 4);
                 _bars[bar] = value;
@@ -5097,7 +5110,10 @@ internal sealed class VegasIdePciDevice
                 _config[0x3c] = (byte)value;
                 break;
             case >= 0x40 and < 0x60:
-                BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan((int)offset, 4), value);
+                uint controlValue = value;
+                if (offset == 0x50 && (value & BusMasterStatusInterrupt) != 0)
+                    controlValue &= ~(uint)BusMasterStatusInterrupt;
+                BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan((int)offset, 4), controlValue);
                 break;
             case >= 0x70 and < 0x80:
                 WriteBusMasterConfigWindow(offset - 0x70, value);

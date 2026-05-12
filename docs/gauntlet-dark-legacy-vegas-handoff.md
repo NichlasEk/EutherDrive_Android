@@ -1785,3 +1785,41 @@ Current conclusion:
 - The guest fails earlier: the filesystem open path returns `0x300b` before any sector I/O.
 - RAM dumps show populated device/list nodes around `0x800b2ee0` and heap nodes such as `0x800e6748`, `0x800e6a60`, `0x800e6d78`, `0x800e7090`, but the `/d0` block device path still is not resolved.
 - NILE tracing confirms the guest enables high interrupt control bits for INTC/INTD (`0x8000ba00`), so the next investigation should follow the IDE driver's registration path and device table names/ops, not add a high-level fake filesystem yet.
+
+## 2026-05-12 CMD646 Control Follow-Up
+
+Added one more MAME-aligned CMD646 compatibility fix in `GauntletDarkLegacyAdapter.cs`:
+
+- The PCI0646U `0x0c40` BAR/control enable bits now reset at PCI config `0x50`, matching MAME's `ide_pci_device`, instead of `0x40`.
+- Guest writes to config dword `0x08` now update the programming-interface byte at `0x09`, so the write from `0x01018a05` to `0x01018f05` reads back correctly.
+- IDE interrupt assertion now mirrors bit `0x04` in the same `0x50` control/status dword and writing that bit clears it, matching MAME's `pcictrl_w` behavior.
+
+Verified:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded. 326 Warning(s), 0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded. 1 Warning(s), 0 Error(s)
+```
+
+The corrected trace now shows the expected MAME-style readback:
+
+```text
+[GAUNTDL:IDEPCI] pci cfg read off=50 value=00000c40
+```
+
+This still does not reach sector I/O. The more precise blocker is now:
+
+```text
+qio_getioq @ 0x80014724 returns [0x800b2dd8]
+```
+
+By the `/rd0` open call at `0x80022a48`, `0x800b2dd8` is already zero, so the open object never gets a real underlying handle. `/d0` then fails because the object field at `+0x0c` is `-1`, and the mount/open wrapper returns `0x300b`.
+
+Next useful implementation target:
+
+1. Trace who consumes the QIO free list before `/rd0` and why those entries are not returned.
+2. Inspect the completion paths around `0x800146c0..0x80014814` and the queue nodes rooted at `0x800b2dd8/0x800b2dcc`.
+3. Only after `/rd0` gets a valid handle should disk-sector/home-block parsing be expected to run.
