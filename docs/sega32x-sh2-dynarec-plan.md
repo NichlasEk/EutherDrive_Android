@@ -225,3 +225,67 @@ The next code patch should not emit native code yet. It should add:
 5. No behavioral change unless `EUTHERDRIVE_S32X_TRACE_PATHS=1`.
 
 After that, the next patch can add the amber interpreter for only one or two measured traces. That gives us a stable platform for real dynarec work without gambling on the whole SH-2 ISA at once.
+
+## Current Cast Catalog
+
+These are the first measured "amber" shapes from the current 32X verification set. They should stay generic even when discovered from one title.
+
+### After Burner Complete
+
+Slave SH-2 linked idle ring:
+
+```text
+060003C0 D834  MOV.L literal,R8
+060003C2 6181  MOV.W @R8,R1
+060003C4 8581  MOV.W @(1,R8),R0
+060003C6 3100  CMP/EQ R0,R1
+060003C8 8B02  BF exit
+060003CA A229  BRA poll
+060003CC 0009  NOP
+06000820 D808  MOV.L literal,R8
+06000822 6081  MOV.W @R8,R0
+06000824 2008  TST R0,R0
+06000826 89E5  BT back
+060007F4 ADE4  BRA 060003C0
+060007F6 0009  NOP
+```
+
+Current implementation: `idle_ring_fusion`.
+
+### Knuckles' Chaotix
+
+Master SH-2 PC-relative register polling:
+
+```text
+060008F8 D10D  MOV.L literal,R1
+060008FA 6211  MOV.W @R1,R2
+060008FC 2228  TST R2,R2
+060008FE 89FB  BT 060008F8
+```
+
+Current implementation: `pc_relative_polling_fusion`.
+
+### Doom 32X
+
+Slave SH-2 self branch:
+
+```text
+0203612A AFFE  BRA 0203612A
+0203612C 0009  NOP
+```
+
+Current implementation: `idle_branch_fusion`.
+
+### Kolibri
+
+Master SH-2 register polling:
+
+```text
+06000B34 6011  MOV.W @R1,R0
+06000B36 2008  TST R0,R0
+06000B38 8BFC  BF 06000B34
+```
+
+Current implementation: `polling_fusion`.
+
+Kolibri also has a slave-side hot PC around `0207416A`. Keep it as a candidate for trace collection rather than hand-coding it until we have a stable path shape from longer gameplay captures.

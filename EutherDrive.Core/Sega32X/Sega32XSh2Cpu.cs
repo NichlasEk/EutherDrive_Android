@@ -39,6 +39,12 @@ internal sealed class Sega32XSh2Cpu
     private ulong _decodedBlockCompiledOps;
     private ulong _memLoopFusionHits;
     private ulong _memLoopFusionIterations;
+    private ulong _idleBranchFusionHits;
+    private ulong _idleBranchFusionCycles;
+    private ulong _pollingLoopFusionHits;
+    private ulong _pollingLoopFusionCycles;
+    private ulong _pcRelativePollingFusionHits;
+    private ulong _pcRelativePollingFusionCycles;
     private ulong _idleRingFusionHits;
     private ulong _idleRingFusionIterations;
     [NonSerialized] private bool _turboStraightLineEnabled = TurboStraightLineDefaultEnabled;
@@ -162,14 +168,28 @@ internal sealed class Sega32XSh2Cpu
         _decodedBlockCompiledOps = 0;
         _memLoopFusionHits = 0;
         _memLoopFusionIterations = 0;
+        _idleBranchFusionHits = 0;
+        _idleBranchFusionCycles = 0;
+        _pollingLoopFusionHits = 0;
+        _pollingLoopFusionCycles = 0;
+        _pcRelativePollingFusionHits = 0;
+        _pcRelativePollingFusionCycles = 0;
         _idleRingFusionHits = 0;
         _idleRingFusionIterations = 0;
     }
 
     public string? BuildAndResetPerfPcSummary(int maxEntries = 4)
     {
-        if ((!PerfPcHistogramEnabled || _pcSampleTicks.Count == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0 && _idleRingFusionHits == 0)
+        if ((!PerfPcHistogramEnabled || _pcSampleTicks.Count == 0) &&
+            !BlockInterpreterEnabled &&
+            _memLoopFusionHits == 0 &&
+            _idleBranchFusionHits == 0 &&
+            _pollingLoopFusionHits == 0 &&
+            _pcRelativePollingFusionHits == 0 &&
+            _idleRingFusionHits == 0)
+        {
             return null;
+        }
 
         KeyValuePair<uint, ulong>[] top = PerfPcHistogramEnabled
             ? _pcSampleTicks
@@ -182,8 +202,16 @@ internal sealed class Sega32XSh2Cpu
             total += ticks;
 
         _pcSampleTicks.Clear();
-        if ((top.Length == 0 || total == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0 && _idleRingFusionHits == 0)
+        if ((top.Length == 0 || total == 0) &&
+            !BlockInterpreterEnabled &&
+            _memLoopFusionHits == 0 &&
+            _idleBranchFusionHits == 0 &&
+            _pollingLoopFusionHits == 0 &&
+            _pcRelativePollingFusionHits == 0 &&
+            _idleRingFusionHits == 0)
+        {
             return null;
+        }
 
         var sb = new System.Text.StringBuilder();
         sb.Append(Name);
@@ -232,6 +260,10 @@ internal sealed class Sega32XSh2Cpu
             sb.Append(avgIterations.ToString("0.0"));
         }
 
+        AppendCycleFusionSummary(sb, "idle_branch_fusion", _idleBranchFusionHits, _idleBranchFusionCycles);
+        AppendCycleFusionSummary(sb, "polling_fusion", _pollingLoopFusionHits, _pollingLoopFusionCycles);
+        AppendCycleFusionSummary(sb, "pc_relative_polling_fusion", _pcRelativePollingFusionHits, _pcRelativePollingFusionCycles);
+
         if (_idleRingFusionHits != 0)
         {
             double avgIterations = _idleRingFusionIterations / (double)_idleRingFusionHits;
@@ -245,6 +277,23 @@ internal sealed class Sega32XSh2Cpu
         }
 
         return sb.ToString();
+    }
+
+    private static void AppendCycleFusionSummary(System.Text.StringBuilder sb, string name, ulong hits, ulong cycles)
+    {
+        if (hits == 0)
+            return;
+
+        double avgCycles = cycles / (double)hits;
+        sb.Append(' ');
+        sb.Append(name);
+        sb.Append('=');
+        sb.Append("hits=");
+        sb.Append(hits);
+        sb.Append(" cycles=");
+        sb.Append(cycles);
+        sb.Append(" avg_cycles=");
+        sb.Append(avgCycles.ToString("0.0"));
     }
 
     public void Execute(ulong ticks, Sega32XSh2Bus bus)
@@ -540,6 +589,8 @@ internal sealed class Sega32XSh2Cpu
         bus.IncrementCycleCounter(remainingCycles);
         CycleCounter += remainingCycles;
         AccumulatePcSample(loopStartPc, remainingCycles);
+        _idleBranchFusionHits++;
+        _idleBranchFusionCycles += remainingCycles;
         return true;
     }
 
@@ -611,6 +662,8 @@ internal sealed class Sega32XSh2Cpu
         bus.IncrementCycleCounter(cyclesToConsume);
         CycleCounter += cyclesToConsume;
         AccumulatePcSample(loopStartPc, cyclesToConsume);
+        _pollingLoopFusionHits++;
+        _pollingLoopFusionCycles += cyclesToConsume;
         return true;
     }
 
@@ -674,6 +727,8 @@ internal sealed class Sega32XSh2Cpu
         bus.IncrementCycleCounter(cyclesToConsume);
         CycleCounter += cyclesToConsume;
         AccumulatePcSample(loopStartPc, cyclesToConsume);
+        _pcRelativePollingFusionHits++;
+        _pcRelativePollingFusionCycles += cyclesToConsume;
         return true;
     }
 
@@ -2825,6 +2880,8 @@ internal sealed class Sega32XSh2Cpu
         bus.IncrementCycleCounter(cyclesToConsume);
         CycleCounter += cyclesToConsume;
         AccumulatePcSample(loopStartPc, cyclesToConsume);
+        _idleBranchFusionHits++;
+        _idleBranchFusionCycles += cyclesToConsume;
         consumedInstructions = cyclesToConsume;
         return true;
     }
@@ -2912,6 +2969,8 @@ internal sealed class Sega32XSh2Cpu
         bus.IncrementCycleCounter(cyclesToConsume);
         CycleCounter += cyclesToConsume;
         AccumulatePcSample(loopStartPc, cyclesToConsume);
+        _pollingLoopFusionHits++;
+        _pollingLoopFusionCycles += cyclesToConsume;
         consumedInstructions = cyclesToConsume;
         return true;
     }
@@ -3121,6 +3180,8 @@ internal sealed class Sega32XSh2Cpu
         bus.IncrementCycleCounter(cyclesToConsume);
         CycleCounter += cyclesToConsume;
         AccumulatePcSample(loopStartPc, cyclesToConsume);
+        _pollingLoopFusionHits++;
+        _pollingLoopFusionCycles += cyclesToConsume;
         consumedInstructions = cyclesToConsume;
         return true;
     }
@@ -3191,6 +3252,8 @@ internal sealed class Sega32XSh2Cpu
         bus.IncrementCycleCounter(cyclesToConsume);
         CycleCounter += cyclesToConsume;
         AccumulatePcSample(loopStartPc, cyclesToConsume);
+        _pcRelativePollingFusionHits++;
+        _pcRelativePollingFusionCycles += cyclesToConsume;
         consumedInstructions = cyclesToConsume;
         return true;
     }
