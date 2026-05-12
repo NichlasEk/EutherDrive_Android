@@ -282,9 +282,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         if (remaining <= 10)
             return false;
 
-        if (_loadedVariant != TmntHardwareVariant.Metamrph)
-            return false;
-        // Metamorphic Force parks here between IRQs; batching full 10-cycle branches preserves phase timing.
+        // Several Konami 68k titles park on a tight self-branch between IRQs;
+        // batching full 10-cycle branches preserves phase timing.
         if ((_mainCpu.Pc & 0x00ff_ffffu) != 0x0011B8u || _mainCpu.NextOpcode != 0x60FE)
             return false;
         if (_mainCpu.PendingInterruptLevel.HasValue || _bus.InterruptLevel() != 0)
