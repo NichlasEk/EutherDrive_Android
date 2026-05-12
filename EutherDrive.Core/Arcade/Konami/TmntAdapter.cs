@@ -229,8 +229,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _sound.RestoreRuntimeState(_loadedVariant);
             _bus.RestoreRuntimeState(_sound, _loadedVariant);
             TryReadExtendedState(reader);
+            RefreshLoadedFrameBuffer();
             if (_audioBuffer.Length == 0)
                 _audioBuffer = new short[Math.Max(1, (int)Math.Round(OutputSampleRate / TargetFps)) * OutputChannels];
+        }
+    }
+
+    private void RefreshLoadedFrameBuffer()
+    {
+        _bus.Render(_renderFrameBuffer);
+        lock (_frameSync)
+        {
+            Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
         }
     }
 
