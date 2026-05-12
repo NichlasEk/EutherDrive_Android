@@ -46,6 +46,7 @@ public partial class PgmArm7Core
 
 	public long Cycles;
 	public long InstructionStartCycles;
+	public uint CurrentInstructionAddress;
 	public bool Halted;
 	public bool IrqPending;
 	public bool FiqPending;
@@ -92,6 +93,7 @@ public partial class PgmArm7Core
 		CrashDetected = false;
 		_prefetchFlushed = true;
 		Cycles = 0;
+		CurrentInstructionAddress = 0;
 
 		for ( int i = 0; i < 6; i++ )
 		{
@@ -131,6 +133,7 @@ public partial class PgmArm7Core
 				continue;
 
 			uint instrAddr = ThumbMode ? Gprs[15] - 4 : Gprs[15] - 8;
+			CurrentInstructionAddress = instrAddr;
 			if ( !Memory.IsExecutableAddress( instrAddr ) )
 			{
 				if ( !CrashDetected )
