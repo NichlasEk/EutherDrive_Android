@@ -432,37 +432,45 @@ internal sealed class Sega32XBus
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort ReadSh2CartridgeWord(uint romAddress)
     {
-        if (_cartridgeRom.Length == 0)
+        int length = _cartridgeRom.Length;
+        if (length == 0)
             return 0xFFFF;
 
-        uint index = romAddress % (uint)_cartridgeRom.Length;
-        byte msb = _cartridgeRom[index];
-        byte lsb = index + 1 < _cartridgeRom.Length
-            ? _cartridgeRom[index + 1]
+        if (romAddress + 1 < (uint)length)
+        {
+            byte msb = _cartridgeRom[(int)romAddress];
+            byte lsb = _cartridgeRom[(int)(romAddress + 1)];
+            return (ushort)((msb << 8) | lsb);
+        }
+
+        uint index = romAddress % (uint)length;
+        byte fallbackMsb = _cartridgeRom[(int)index];
+        byte fallbackLsb = index + 1 < (uint)length
+            ? _cartridgeRom[(int)(index + 1)]
             : _cartridgeRom[0];
-        return (ushort)((msb << 8) | lsb);
+        return (ushort)((fallbackMsb << 8) | fallbackLsb);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint ReadSh2CartridgeLongword(uint romAddress)
     {
-        if (_cartridgeRom.Length == 0)
+        int length = _cartridgeRom.Length;
+        if (length == 0)
             return 0xFFFFFFFF;
 
-        uint index = romAddress % (uint)_cartridgeRom.Length;
-        uint length = (uint)_cartridgeRom.Length;
-        if (index + 3 < length)
+        if (romAddress + 3 < (uint)length)
         {
-            return ((uint)_cartridgeRom[index] << 24)
-                | ((uint)_cartridgeRom[index + 1] << 16)
-                | ((uint)_cartridgeRom[index + 2] << 8)
-                | _cartridgeRom[index + 3];
+            return ((uint)_cartridgeRom[(int)romAddress] << 24)
+                | ((uint)_cartridgeRom[(int)(romAddress + 1)] << 16)
+                | ((uint)_cartridgeRom[(int)(romAddress + 2)] << 8)
+                | _cartridgeRom[(int)(romAddress + 3)];
         }
 
-        byte b0 = _cartridgeRom[index];
-        byte b1 = _cartridgeRom[(index + 1) % length];
-        byte b2 = _cartridgeRom[(index + 2) % length];
-        byte b3 = _cartridgeRom[(index + 3) % length];
+        uint index = romAddress % (uint)length;
+        byte b0 = _cartridgeRom[(int)index];
+        byte b1 = _cartridgeRom[(int)((index + 1) % (uint)length)];
+        byte b2 = _cartridgeRom[(int)((index + 2) % (uint)length)];
+        byte b3 = _cartridgeRom[(int)((index + 3) % (uint)length)];
         return ((uint)b0 << 24) | ((uint)b1 << 16) | ((uint)b2 << 8) | b3;
     }
 

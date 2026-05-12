@@ -541,9 +541,10 @@ internal sealed class Sega32XScaffoldCore
         if (ulong.TryParse(raw, out ulong parsed) && parsed > 0)
             return parsed;
 
-        // Middle-ground slice: reduces dual-SH2 scheduler overhead without the Doom
-        // regression seen with much larger global slices.
-        return ScaleS32xQuantum(96, 4096);
+        // Coarser default slice: reduces dual-SH2 scheduler overhead while still preserving
+        // tested frame fingerprints for Doom, Chaotix, and Virtua Fighter. The env override
+        // remains useful for games that need finer timing while the 32X scheduler matures.
+        return ScaleS32xQuantum(1024, 4096);
     }
 
     private static ulong ParseM68kCommSyncSliceLength()
