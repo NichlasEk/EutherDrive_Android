@@ -57,6 +57,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         .Build();
 
     private readonly object _frameSync = new();
+    private readonly object _stateSync = new();
     private byte[] _presentFrameBuffer = new byte[FrameHeight * FrameStride];
     private byte[] _renderFrameBuffer = new byte[FrameHeight * FrameStride];
     private byte[] _snapshotFrameBuffer = new byte[FrameHeight * FrameStride];
@@ -118,11 +119,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         if (!_loaded)
             return;
 
-        _bus.ResetMachine();
-        _sound.ResetMachine();
-        _mainCpu.Reset(_bus);
-        _frameCounter = 0;
-        ClearFrameBuffers();
+        lock (_stateSync)
+        {
+            _bus.ResetMachine();
+            _sound.ResetMachine();
+            _mainCpu.Reset(_bus);
+            _frameCounter = 0;
+            ClearFrameBuffers();
+        }
     }
 
     public void RunFrame()
@@ -130,38 +134,41 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         if (!_loaded)
             return;
 
-        _bus.SetInput(_input);
-        _sound.BeginFrame(_audioBuffer);
-        _bus.BeginVisible();
-
-        int mainCyclesPerFrame = MainCyclesPerFrame(_loadedVariant);
-        int visibleCycles = mainCyclesPerFrame * ScreenVisibleLines / ScreenTotalLines;
-        int vblankCycles = mainCyclesPerFrame - visibleCycles;
-        int cycles = 0;
-        while (cycles < visibleCycles)
+        lock (_stateSync)
         {
-            int elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
-            cycles += elapsed;
-            _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
-        }
+            _bus.SetInput(_input);
+            _sound.BeginFrame(_audioBuffer);
+            _bus.BeginVisible();
 
-        _bus.Render(_renderFrameBuffer);
-        lock (_frameSync)
-        {
-            Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
-        }
+            int mainCyclesPerFrame = MainCyclesPerFrame(_loadedVariant);
+            int visibleCycles = mainCyclesPerFrame * ScreenVisibleLines / ScreenTotalLines;
+            int vblankCycles = mainCyclesPerFrame - visibleCycles;
+            int cycles = 0;
+            while (cycles < visibleCycles)
+            {
+                int elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
+                cycles += elapsed;
+                _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+            }
 
-        _bus.BeginVblank();
-        cycles = 0;
-        while (cycles < vblankCycles)
-        {
-            int elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
-            cycles += elapsed;
-            _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
-        }
+            _bus.Render(_renderFrameBuffer);
+            lock (_frameSync)
+            {
+                Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
+            }
 
-        _sound.EndFrame();
-        _frameCounter++;
+            _bus.BeginVblank();
+            cycles = 0;
+            while (cycles < vblankCycles)
+            {
+                int elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
+                cycles += elapsed;
+                _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+            }
+
+            _sound.EndFrame();
+            _frameCounter++;
+        }
     }
 
     public void SaveState(BinaryWriter writer)
@@ -170,20 +177,26 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         if (!_loaded)
             throw new InvalidOperationException("TMNT core not initialized.");
 
-        writer.Write(SavestateMagic);
-        writer.Write(SavestateVersion);
-        writer.Write(_frameCounter);
-        WriteInputState(writer, _input);
-        WriteByteArray(writer, _presentFrameBuffer);
-        WriteByteArray(writer, _renderFrameBuffer);
-        WriteByteArray(writer, _snapshotFrameBuffer);
-        StateBinarySerializer.WriteInto(writer, _mainCpu);
-        StateBinarySerializer.WriteInto(writer, _bus);
-        StateBinarySerializer.WriteInto(writer, _sound);
-        writer.Write(SavestateExtendedMagic);
-        writer.Write(SavestateExtendedVersion);
-        _sound.SaveExtendedState(writer);
-        _bus.SaveExtendedState(writer);
+        lock (_stateSync)
+        {
+            writer.Write(SavestateMagic);
+            writer.Write(SavestateVersion);
+            writer.Write(_frameCounter);
+            WriteInputState(writer, _input);
+            lock (_frameSync)
+            {
+                WriteByteArray(writer, _presentFrameBuffer);
+                WriteByteArray(writer, _renderFrameBuffer);
+                WriteByteArray(writer, _snapshotFrameBuffer);
+            }
+            StateBinarySerializer.WriteInto(writer, _mainCpu);
+            StateBinarySerializer.WriteInto(writer, _bus);
+            StateBinarySerializer.WriteInto(writer, _sound);
+            writer.Write(SavestateExtendedMagic);
+            writer.Write(SavestateExtendedVersion);
+            _sound.SaveExtendedState(writer);
+            _bus.SaveExtendedState(writer);
+        }
     }
 
     public void LoadState(BinaryReader reader)
@@ -200,19 +213,25 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         if (version != SavestateVersion)
             throw new InvalidDataException($"Unsupported TMNT savestate version: {version}.");
 
-        _frameCounter = reader.ReadInt64();
-        _input = ReadInputState(reader);
-        ReadByteArray(reader, _presentFrameBuffer);
-        ReadByteArray(reader, _renderFrameBuffer);
-        ReadByteArray(reader, _snapshotFrameBuffer);
-        StateBinarySerializer.ReadInto(reader, _mainCpu);
-        StateBinarySerializer.ReadInto(reader, _bus);
-        StateBinarySerializer.ReadInto(reader, _sound);
-        _sound.RestoreRuntimeState(_loadedVariant);
-        _bus.RestoreRuntimeState(_sound, _loadedVariant);
-        TryReadExtendedState(reader);
-        if (_audioBuffer.Length == 0)
-            _audioBuffer = new short[Math.Max(1, (int)Math.Round(OutputSampleRate / TargetFps)) * OutputChannels];
+        lock (_stateSync)
+        {
+            _frameCounter = reader.ReadInt64();
+            _input = ReadInputState(reader);
+            lock (_frameSync)
+            {
+                ReadByteArray(reader, _presentFrameBuffer);
+                ReadByteArray(reader, _renderFrameBuffer);
+                ReadByteArray(reader, _snapshotFrameBuffer);
+            }
+            StateBinarySerializer.ReadInto(reader, _mainCpu);
+            StateBinarySerializer.ReadInto(reader, _bus);
+            StateBinarySerializer.ReadInto(reader, _sound);
+            _sound.RestoreRuntimeState(_loadedVariant);
+            _bus.RestoreRuntimeState(_sound, _loadedVariant);
+            TryReadExtendedState(reader);
+            if (_audioBuffer.Length == 0)
+                _audioBuffer = new short[Math.Max(1, (int)Math.Round(OutputSampleRate / TargetFps)) * OutputChannels];
+        }
     }
 
     private void TryReadExtendedState(BinaryReader reader)
@@ -434,6 +453,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             _sound = sound;
             _variant = loadedVariant;
+            _k052109.RestoreDerivedState();
+            ResetK053251Indexes();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
             _k053245.NormalPlaneSpriteDecode = UsesMoomesaHardware;
@@ -2752,6 +2773,23 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             LayerColorBase[0] = 0;
             LayerColorBase[1] = 32;
             LayerColorBase[2] = 40;
+        }
+
+        public void RestoreDerivedState()
+        {
+            _addrMap = _ram[0x1c00];
+            _scrollCtrl = _ram[0x1c80];
+            _charBank[0] = (byte)(_ram[0x1d80] & 0x0f);
+            _charBank[1] = (byte)(_ram[0x1d80] >> 4);
+            _irqControl = _ram[0x1d00];
+            _tileFlipEnable = _ram[0x1e80];
+            _romSubBank = _ram[0x3e00] != 0 ? _ram[0x3e00] : _ram[0x1e00];
+            _charBank[2] = (byte)(_ram[0x1f00] & 0x0f);
+            _charBank[3] = (byte)(_ram[0x1f00] >> 4);
+            _charBank2[0] = (byte)(_ram[0x3d80] & 0x0f);
+            _charBank2[1] = (byte)(_ram[0x3d80] >> 4);
+            _charBank2[2] = (byte)(_ram[0x3f00] & 0x0f);
+            _charBank2[3] = (byte)(_ram[0x3f00] >> 4);
         }
 
         public byte Read(int offset)
