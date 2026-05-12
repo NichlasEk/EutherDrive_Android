@@ -1238,7 +1238,11 @@ namespace Ryu64.MIPS
 
             NoteRdpPixelWrites(writtenPixels, IsRgbaNonZero(rgba) ? writtenPixels : 0);
             if (wroteAny)
+            {
                 MarkRdpColorImageWritten(bytesPerPixel);
+                if (writtenPixels >= 256 && IsRgbaNonZero(rgba))
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+            }
             return wroteAny;
         }
 
@@ -1558,7 +1562,8 @@ namespace Ryu64.MIPS
             }
 
             long pixels = (long)(y1 - y0 + 1u) * (x1 - x0 + 1u);
-            NoteRdpPixelWrites(pixels, IsRdpFillColorRgbNonZero(bytesPerPixel) ? pixels : 0);
+            bool visibleFill = IsRdpFillColorRgbNonZero(bytesPerPixel);
+            NoteRdpPixelWrites(pixels, visibleFill ? pixels : 0);
             MarkRdpColorImageWritten(bytesPerPixel);
         }
 

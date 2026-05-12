@@ -1471,7 +1471,8 @@ class Program
                 Console.WriteLine("[HEADLESS] Framebuffer BEFORE running:");
                 ReadOnlySpan<byte> fb0 = n64.GetFrameBuffer(out int w0, out int h0, out int s0);
                 var stats0 = GetFrameStats(fb0, w0, h0, s0);
-                Console.WriteLine($"[HEADLESS] N64 fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY})");
+                ulong initialFingerprint = ComputeFrameFingerprint(fb0, w0, h0, s0);
+                Console.WriteLine($"[HEADLESS] N64 fb_has_content={stats0.HasContent} nonzero_pixels={stats0.NonZeroPixels} first_nonzero=({stats0.FirstX},{stats0.FirstY}) fp=0x{initialFingerprint:X16}");
                 DumpBgraToPpm(fb0, w0, h0, s0, Path.Combine(dumpDir, "headless_frame0.ppm"));
 
                 bool stopOnFramebuffer = IsEnvEnabled("EUTHERDRIVE_N64_HEADLESS_STOP_ON_FRAMEBUFFER");
@@ -1505,7 +1506,8 @@ class Program
                     {
                         ReadOnlySpan<byte> fb = n64.GetFrameBuffer(out int w, out int h, out int s);
                         var stats = GetFrameStats(fb, w, h, s);
-                        Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
+                        ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16}");
                         if (dumpN64Frame)
                         {
                             string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
@@ -1532,7 +1534,8 @@ class Program
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
                 ReadOnlySpan<byte> fbOut = n64.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
-                Console.WriteLine($"[HEADLESS] N64 fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] N64 fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 n64AudioSink?.Dispose();
                 // Stop R4300 thread before exit to avoid background runaway logs after frame loop.
