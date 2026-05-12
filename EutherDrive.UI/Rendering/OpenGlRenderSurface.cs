@@ -123,6 +123,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         private bool _applyScanlines;
         private bool _applyAdvancedPixelFilter;
         private AdvancedPixelFilterProfile _advancedFilterProfile;
+        private bool _frameUseSafeRgbaUpload;
         private bool _interlaceBlendEnabled;
         private int _interlaceBlendFieldParity = -1;
         private float _scanlineDarken = 1.0f;
@@ -306,6 +307,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 _frameDirty = false;
                 _interlaceBlendEnabled = false;
                 _interlaceBlendFieldParity = -1;
+                _frameUseSafeRgbaUpload = _useSafeRgbaUpload;
             }
             QueueRenderRequest();
         }
@@ -725,6 +727,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             bool frameDirty;
             bool sharpPixelsEnabled;
             bool forceOpaque;
+            bool frameUseSafeRgbaUpload;
             bool applyScanlines;
             bool applyAdvancedPixelFilter;
             AdvancedPixelFilterProfile advancedFilterProfile;
@@ -739,6 +742,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 frameDirty = _frameDirty;
                 sharpPixelsEnabled = _sharpPixelsEnabled;
                 forceOpaque = _forceOpaque;
+                frameUseSafeRgbaUpload = _frameUseSafeRgbaUpload;
                 applyScanlines = _applyScanlines;
                 applyAdvancedPixelFilter = _applyAdvancedPixelFilter;
                 advancedFilterProfile = _advancedFilterProfile;
@@ -763,7 +767,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 long uploadStart = Stopwatch.GetTimestamp();
                 fixed (byte* pFrame = frameBytes)
                 {
-                    UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pFrame, _useSafeRgbaUpload ? GlRgba : GlBgra);
+                    UploadTexturePixels(gl, frameWidth, frameHeight, (IntPtr)pFrame, frameUseSafeRgbaUpload ? GlRgba : GlBgra);
                 }
                 uploadTicks = Stopwatch.GetTimestamp() - uploadStart;
 
@@ -791,7 +795,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             if (_scanlineDarkenLocation >= 0 && _uniform1f != null)
                 _uniform1f.Invoke(_scanlineDarkenLocation, scanlineDarken);
             if (_swapRedBlueLocation >= 0 && _uniform1f != null)
-                _uniform1f.Invoke(_swapRedBlueLocation, _useSafeRgbaUpload ? 1.0f : 0.0f);
+                _uniform1f.Invoke(_swapRedBlueLocation, frameUseSafeRgbaUpload ? 1.0f : 0.0f);
             if (_interlaceBlendLocation >= 0 && _uniform1f != null)
                 _uniform1f.Invoke(_interlaceBlendLocation, interlaceBlendEnabled ? 1.0f : 0.0f);
             if (_interlaceFieldParityLocation >= 0 && _uniform1f != null)
@@ -862,6 +866,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         {
             _sharpPixelsEnabled = options.SharpPixels;
             _forceOpaque = options.ForceOpaque;
+            _frameUseSafeRgbaUpload = options.ForceOpaque || _useSafeRgbaUpload;
             _applyScanlines = options.ApplyScanlines;
             _applyAdvancedPixelFilter = options.ApplyAdvancedPixelFilter;
             _advancedFilterProfile = options.AdvancedFilterProfile;
