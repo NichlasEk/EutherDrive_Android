@@ -1143,14 +1143,27 @@ internal sealed class Sega32XSh2Bus
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsSimpleSdramWordAddress(uint address)
     {
+        return IsSimpleSdramAddress(address, 2);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsSimpleSdramAddress(uint address, int sizeBytes)
+    {
         uint addressSpace = address >> 29;
         if (addressSpace is not 0 and not 1)
             return false;
 
         uint masked = address & Sh2ExternalAddressMask;
-        return (masked & 1) == 0
-            && masked >= 0x06000000
-            && masked < 0x06040000;
+        if (masked < 0x06000000 || masked >= 0x06040000)
+            return false;
+
+        return sizeBytes switch
+        {
+            1 => true,
+            2 => (masked & 1) == 0,
+            4 => (masked & 3) == 0 && masked <= 0x0603FFFC,
+            _ => false,
+        };
     }
 
     public bool TryBulkFillSdram(uint address, uint value, bool isLongword, ulong iterations)

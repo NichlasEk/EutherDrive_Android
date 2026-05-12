@@ -497,7 +497,7 @@ internal sealed class Sega32XSh2Cpu
 
         if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize))
             return false;
-        if (!bus.IsFastPollingRegister(address))
+        if (!IsFastPollingSource(bus, address, loadSize))
             return false;
 
         if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort testOpcode) ||
@@ -2421,7 +2421,7 @@ internal sealed class Sega32XSh2Cpu
 
         if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize))
             return false;
-        if (!bus.IsFastPollingRegister(address))
+        if (!IsFastPollingSource(bus, address, loadSize))
             return false;
 
         if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort testOpcode) ||
@@ -2807,6 +2807,21 @@ internal sealed class Sega32XSh2Cpu
         }
 
         return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsFastPollingSource(Sega32XSh2Bus bus, uint address, PollingLoadSize loadSize)
+    {
+        if (bus.IsFastPollingRegister(address))
+            return true;
+
+        int sizeBytes = loadSize switch
+        {
+            PollingLoadSize.Byte => 1,
+            PollingLoadSize.Word => 2,
+            _ => 4,
+        };
+        return bus.IsSimpleSdramAddress(address, sizeBytes);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
