@@ -3368,6 +3368,7 @@ internal sealed class VegasMemoryMap
     private const uint NileTimerControlBitsOffset = 0x04;
     private const uint NileTimerCounterOffset = 0x08;
     private const ushort NilePciInterruptC = 1 << 10;
+    private const ushort NilePciInterruptD = 1 << 11;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
     private const int MainRamSize = 32 * 1024 * 1024;
     private const uint UnmappedReadValue = 0xffffffffu;
@@ -4006,6 +4007,11 @@ internal sealed class VegasMemoryMap
             _nileIrqState |= NilePciInterruptC;
         else
             _nileIrqState &= unchecked((ushort)~NilePciInterruptC);
+
+        if (_idePci.InterruptLine)
+            _nileIrqState |= NilePciInterruptD;
+        else
+            _nileIrqState &= unchecked((ushort)~NilePciInterruptD);
 
         uint lowControl = ReadNileRegister32(NileInterruptControlOffset);
         uint highControl = ReadNileRegister32(NileInterruptControlOffset + 4);
@@ -5036,6 +5042,8 @@ internal sealed class VegasIdePciDevice
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IDE") == "1";
     private IdeDiskDevice? _disk;
 
+    public bool InterruptLine => _disk?.InterruptLine == true;
+
     public void AttachDisk(IdeDiskDevice disk) => _disk = disk;
 
     public void Reset()
@@ -5100,9 +5108,9 @@ internal sealed class VegasIdePciDevice
     public byte ReadIo8(uint address)
     {
         if (TryGetIdeRegister(address, out byte register))
-            return register == 0 ? (byte)ReadIo16(address) : _disk?.ReadRegister8(register) ?? 0xff;
+            return register == 0 ? (byte)ReadIo16(address) : _disk?.ReadRegister8(register, clearInterrupt: register == 7) ?? 0xff;
         if (TryGetControlRegister(address))
-            return _disk?.ReadRegister8(7) ?? 0xff;
+            return _disk?.ReadRegister8(7, clearInterrupt: false) ?? 0xff;
         if (TryGetBusMasterOffset(address, out uint bmOffset))
             return _busMaster[bmOffset];
         return 0xff;
@@ -5144,7 +5152,10 @@ internal sealed class VegasIdePciDevice
         }
 
         if (TryGetControlRegister(address))
+        {
+            _disk?.WriteDeviceControl(value);
             return;
+        }
 
         if (TryGetBusMasterOffset(address, out uint bmOffset))
             _busMaster[bmOffset] = value;
@@ -5218,6 +5229,7 @@ internal sealed class VegasIdePciDevice
 
         _busMaster[0] &= unchecked((byte)~BusMasterCommandStart);
         _busMaster[2] |= BusMasterStatusInterrupt;
+        _disk.SignalInterrupt();
         Trace($"bmdma primary read copied={copied}");
     }
 
@@ -5305,10 +5317,13 @@ internal sealed class IdeDiskDevice
     private byte _cylinderHigh;
     private byte _driveHead = 0xe0;
     private byte _status;
+    private byte _deviceControl;
+    private bool _interruptPending;
 
     public string? ImagePath { get; private set; }
     public DiskGeometry Geometry => _image?.Geometry ?? DiskGeometry.Empty;
     public bool Attached => _image is not null;
+    public bool InterruptLine => _interruptPending && (_deviceControl & 0x02) == 0;
 
     public void Attach(string? imagePath)
     {
@@ -5328,9 +5343,11 @@ internal sealed class IdeDiskDevice
         _cylinderHigh = 0;
         _driveHead = 0xe0;
         _status = Attached ? (byte)(StatusDrdy | StatusDsc) : (byte)0;
+        _deviceControl = 0;
+        _interruptPending = false;
     }
 
-    public byte ReadRegister8(byte register)
+    public byte ReadRegister8(byte register, bool clearInterrupt = true)
     {
         byte value = register switch
         {
@@ -5343,6 +5360,9 @@ internal sealed class IdeDiskDevice
             7 => _status,
             _ => 0xff
         };
+
+        if (clearInterrupt && register == 7)
+            _interruptPending = false;
 
         Trace($"read r{register}={value:x2}");
         return value;
@@ -5377,6 +5397,20 @@ internal sealed class IdeDiskDevice
         }
     }
 
+    public void WriteDeviceControl(byte value)
+    {
+        _deviceControl = value;
+        if ((value & 0x02) != 0)
+            _interruptPending = false;
+        Trace($"device control={value:x2}");
+    }
+
+    public void SignalInterrupt()
+    {
+        if ((_deviceControl & 0x02) == 0)
+            _interruptPending = true;
+    }
+
     public ushort ReadData16()
     {
         if ((_status & StatusDrq) == 0 || _transferOffset + 1 >= _transferBuffer.Length)
@@ -5389,6 +5423,7 @@ internal sealed class IdeDiskDevice
             _transferBuffer = Array.Empty<byte>();
             _transferOffset = 0;
             _status = (byte)(StatusDrdy | StatusDsc);
+            SignalInterrupt();
         }
 
         return value;
@@ -5433,8 +5468,14 @@ internal sealed class IdeDiskDevice
                     Trace("identify");
                     break;
                 case 0x20:
+                case 0x21:
                 case 0x24:
-                    StartReadSectors(command == 0x24);
+                case 0xc4:
+                case 0xc8:
+                    StartReadSectors();
+                    break;
+                case 0x91:
+                    ApplySetConfig();
                     break;
                 case 0xef:
                     _status = (byte)(StatusDrdy | StatusDsc);
@@ -5446,6 +5487,8 @@ internal sealed class IdeDiskDevice
                     Trace($"unsupported command {command:x2}");
                     break;
             }
+
+            SignalInterrupt();
         }
         catch (Exception ex)
         {
@@ -5454,16 +5497,17 @@ internal sealed class IdeDiskDevice
             _error = 0x04;
             _status = (byte)(StatusDrdy | StatusDsc | StatusErr);
             Trace($"command {command:x2} failed: {ex.Message}");
+            SignalInterrupt();
         }
     }
 
-    private void StartReadSectors(bool lba48)
+    private void StartReadSectors()
     {
         if (_image is null)
             throw new InvalidOperationException("No IDE disk image attached.");
 
         uint count = _sectorCount == 0 ? 256u : _sectorCount;
-        ulong lba = lba48 ? BuildLba28() : BuildLba28();
+        ulong lba = BuildAddress();
         byte[] buffer = new byte[count * (uint)_image.Geometry.BytesPerSector];
         for (uint i = 0; i < count; i++)
             _image.ReadSector(lba + i, buffer.AsSpan((int)(i * (uint)_image.Geometry.BytesPerSector), _image.Geometry.BytesPerSector));
@@ -5472,17 +5516,36 @@ internal sealed class IdeDiskDevice
         Trace($"read sectors lba={lba} count={count}");
     }
 
-    private ulong BuildLba28()
-        => (ulong)(((_driveHead & 0x0f) << 24) |
-                   (_cylinderHigh << 16) |
-                   (_cylinderLow << 8) |
-                   _sectorNumber);
+    private ulong BuildAddress()
+    {
+        if ((_driveHead & 0x40) != 0)
+        {
+            return (ulong)(((_driveHead & 0x0f) << 24) |
+                           (_cylinderHigh << 16) |
+                           (_cylinderLow << 8) |
+                           _sectorNumber);
+        }
+
+        DiskGeometry geometry = Geometry;
+        int head = _driveHead & 0x0f;
+        int cylinder = (_cylinderHigh << 8) | _cylinderLow;
+        int sector = Math.Max(1, (int)_sectorNumber);
+        return (ulong)(((cylinder * geometry.Heads) + head) * geometry.SectorsPerTrack + (sector - 1));
+    }
+
+    private void ApplySetConfig()
+    {
+        _status = (byte)(StatusDrdy | StatusDsc);
+        Trace($"set config sectors={_sectorCount} heads={(_driveHead & 0x0f) + 1}");
+        SignalInterrupt();
+    }
 
     private void StartTransfer(byte[] buffer)
     {
         _transferBuffer = buffer;
         _transferOffset = 0;
         _status = (byte)(StatusDrdy | StatusDsc | StatusDrq);
+        SignalInterrupt();
     }
 
     private byte[] BuildIdentifySector()

@@ -1723,3 +1723,65 @@ Frame dump after the IOASIC unlock pass:
 ```
 
 It is still just clear/overlay output, not game graphics. Next pass should inspect IDE/raw disk reads and the boot filesystem home-block parser around `0x80015e80..0x80015f40`, not Voodoo draw submission.
+
+## 2026-05-12 Disk/IDE Pass
+
+Committed the IOASIC/PIC bring-up checkpoint as:
+
+```text
+a959eff gauntdl ioasic bringup
+```
+
+MAME does not model a high-level GUTS filesystem for Vegas. It exposes a CMD/Silicon Image IDE PCI controller and an `ide_hdd_device`; the game filesystem is read by the guest from disk sectors:
+
+```text
+IDE_PCI(config, PCI_ID_IDE, 0, 0x10950646, 0x05, 0x0)
+ide.irq_handler().set(PCI_ID_NILE, FUNC(vrc5074_device::pci_intr_d))
+DISK_REGION(PCI_ID_IDE ":ide:0:hdd")
+```
+
+This pass moved the adapter in that direction:
+
+- Added ATA command handling for `READ SECTORS NO RETRY` (`0x21`), `READ MULTIPLE` (`0xc4`), `READ DMA` (`0xc8`), and `SET CONFIG` (`0x91`).
+- Split disk addressing into LBA28 vs CHS decode so the guest can use either IDE mode.
+- Added a device-control `nIEN` bit and IDE interrupt pending state.
+- Wired IDE PCI interrupts into NILE PCI INTD (`bit 11`), matching MAME's `pci_intr_d` route.
+- Kept SIO/DUART on NILE PCI INTC (`bit 10`).
+
+Verified:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded. 326 Warning(s), 0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-restore /clp:ErrorsOnly
+Build succeeded. 326 Warning(s), 0 Error(s)
+```
+
+Probe after the ATA/IRQ work still reaches the same fatal loop:
+
+```text
+rom=gauntdl24
+frame=1000
+pc=0xffffffff80015784
+attached=True
+voodoo regs=14086 fifoWords=13371 fifoPackets=4464 drawPackets=0
+```
+
+The important trace result is that the guest still only performs IDE IDENTIFY and SET FEATURES:
+
+```text
+[GAUNTDL:IDE] write r7=ec
+[GAUNTDL:IDE] identify
+[GAUNTDL:IDE] write r7=ef
+[GAUNTDL:IDE] set features feature=03 value=08
+```
+
+There are no `read sectors`, `READ DMA`, bus-master DMA, or unsupported IDE commands before the `/d0` failure. The raw disk sidecar is usable and contains plausible GUTS/home-block data (`0xfeedf00d` / `0xf00dface` near sectors 1 and 2), so the current blocker is not sector decoding yet.
+
+Current conclusion:
+
+- The adapter now has the lower ATA commands and MAME-style IDE INTD route needed for the next phase.
+- The guest fails earlier: the filesystem open path returns `0x300b` before any sector I/O.
+- RAM dumps show populated device/list nodes around `0x800b2ee0` and heap nodes such as `0x800e6748`, `0x800e6a60`, `0x800e6d78`, `0x800e7090`, but the `/d0` block device path still is not resolved.
+- NILE tracing confirms the guest enables high interrupt control bits for INTC/INTD (`0x8000ba00`), so the next investigation should follow the IDE driver's registration path and device table names/ops, not add a high-level fake filesystem yet.
