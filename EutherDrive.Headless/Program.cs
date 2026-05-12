@@ -29,6 +29,7 @@ using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.Cps2;
 using EutherDrive.Core.Arcade.DataEast.Hshavoc;
+using EutherDrive.Core.Arcade.Igs;
 using EutherDrive.Core.Arcade.Konami;
 using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.Arcade.System32;
@@ -378,11 +379,14 @@ class Program
             bool useNeoGeo = string.Equals(coreOverride, "neogeo", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "neo-geo", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && NeoGeoAdapter.IsSupportedArchive(romPath));
+            bool usePgm2 = string.Equals(coreOverride, "pgm2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "igs-pgm2", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Pgm2Adapter.IsSupportedArchive(romPath));
             bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -402,6 +406,7 @@ class Program
                 useHshavoc = false;
                 useTmnt = false;
                 useNeoGeo = false;
+                usePgm2 = false;
                 useMcsArcade = false;
             }
 
@@ -674,6 +679,58 @@ class Program
                 int audioNonZero = CountNonZeroAudioSamples(audioOut);
                 Console.WriteLine($"[HEADLESS] NeoGeo final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 Console.WriteLine($"[HEADLESS] NeoGeo audio samples={audioOut.Length} rate={audioRate} channels={neoGeoAudioChannels} nonzero_samples={audioNonZero} max_abs={AudioPeak(audioOut)}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (usePgm2)
+            {
+                Console.WriteLine("[HEADLESS] Using IGS PGM2 native bringup core");
+                using var pgm2 = new Pgm2Adapter();
+                pgm2.LoadRom(romPath);
+
+                ReadOnlySpan<byte> fbIn = pgm2.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                var pgm2InputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_HEADLESS_INPUT_SCRIPT"));
+
+                Console.WriteLine($"[HEADLESS] PGM2 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] PGM2 debug {pgm2.DebugSummary}");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, pgm2InputScript);
+                    pgm2.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X,
+                        input.Start,
+                        input.Y, input.L, input.R,
+                        input.Select,
+                        PadType.SixButton);
+                    pgm2.RunFrame();
+
+                    ReadOnlySpan<byte> fb = pgm2.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: pgm2_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} debug={pgm2.DebugSummary}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = pgm2.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] PGM2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] PGM2 debug {pgm2.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
@@ -1420,6 +1477,11 @@ class Program
                 bool stopOnFramebuffer = IsEnvEnabled("EUTHERDRIVE_N64_HEADLESS_STOP_ON_FRAMEBUFFER");
                 int stopMinFrame = ParseOptionalIntEnv("EUTHERDRIVE_N64_HEADLESS_STOP_MIN_FRAME") ?? 0;
                 int stopStableFrames = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_N64_HEADLESS_STOP_STABLE_FRAMES") ?? 1);
+                HashSet<int> n64DumpFrames = ParseFrameSetEnv("EUTHERDRIVE_N64_HEADLESS_DUMP_FRAMES", "EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                int? n64DumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_N64_HEADLESS_DUMP_FRAME") ?? ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (n64DumpFrameSingle.HasValue && n64DumpFrameSingle.Value >= 0)
+                    n64DumpFrames.Add(n64DumpFrameSingle.Value);
+                bool traceN64Frames = IsEnvEnabled("EUTHERDRIVE_N64_HEADLESS_TRACE_FRAMES");
                 int framebufferStableCount = 0;
                 int completedFrames = 0;
 
@@ -1437,14 +1499,19 @@ class Program
                             n64AudioSink.Submit(audio);
                     }
 
-                    if (frame == 0 || frame == 5 || frame == 10)
+                    bool dumpN64Frame = frame == 0 || frame == 5 || frame == 10 || n64DumpFrames.Contains(frame);
+                    bool traceN64Frame = dumpN64Frame || (traceN64Frames && ((frame + 1) % 60) == 0);
+                    if (traceN64Frame)
                     {
                         ReadOnlySpan<byte> fb = n64.GetFrameBuffer(out int w, out int h, out int s);
                         var stats = GetFrameStats(fb, w, h, s);
                         Console.WriteLine($"[HEADLESS] Frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY})");
-                        string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
-                        DumpBgraToPpm(fb, w, h, s, ppmPath);
-                        Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                        if (dumpN64Frame)
+                        {
+                            string ppmPath = Path.Combine(dumpDir, $"headless_frame{frame}.ppm");
+                            DumpBgraToPpm(fb, w, h, s, ppmPath);
+                            Console.WriteLine($"[HEADLESS] Dumped frame {frame} to {ppmPath}");
+                        }
                     }
 
                     if (stopOnFramebuffer && frame >= stopMinFrame)

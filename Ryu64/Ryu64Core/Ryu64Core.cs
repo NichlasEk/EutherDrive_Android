@@ -26,6 +26,12 @@ namespace Ryu64Core
         private const uint AiDacRateReg = 0xA4500010;
         private const uint MiIntrReg = 0xA4300008;
         private const uint MiIntrMaskReg = 0xA430000C;
+        private const uint SpStatusReg = 0xA4040010;
+        private const uint SpPcReg = 0xA4080000;
+        private const uint DpcCurrentReg = 0xA4100008;
+        private const uint DpcStatusReg = 0xA410000C;
+        private const uint DpcStartReg = 0xA4100000;
+        private const uint DpcEndReg = 0xA4100004;
         private const uint PiStatusReg = 0xA4600010;
         private const uint SiDramAddrReg = 0xA4800000;
         private const uint SiPifAddrRd64bReg = 0xA4800004;
@@ -76,6 +82,12 @@ namespace Ryu64Core
                     uint aiLen = R4300.memory.ReadUInt32(AiLenReg) & 0x3FFF8;
                     uint miIntr = R4300.memory.ReadUInt32(MiIntrReg);
                     uint miMask = R4300.memory.ReadUInt32(MiIntrMaskReg);
+                    uint spStatus = R4300.memory.ReadUInt32(SpStatusReg);
+                    uint spPc = R4300.memory.ReadUInt32(SpPcReg);
+                    uint dpcStatus = R4300.memory.ReadUInt32(DpcStatusReg);
+                    uint dpcStart = R4300.memory.ReadUInt32(DpcStartReg);
+                    uint dpcEnd = R4300.memory.ReadUInt32(DpcEndReg);
+                    uint dpcCurrent = R4300.memory.ReadUInt32(DpcCurrentReg);
                     uint piStatus = R4300.memory.ReadUInt32(PiStatusReg);
                     uint siStatus = R4300.memory.ReadUInt32(SiStatusReg);
                     uint siDram = R4300.memory.ReadUInt32(SiDramAddrReg);
@@ -92,6 +104,8 @@ namespace Ryu64Core
                     ulong cop0Cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
                     ulong cop0BadVaddr = Registers.COP0.Reg[Registers.COP0.BADVADDR_REG];
                     ulong cop0Epc = Registers.COP0.Reg[Registers.COP0.EPC_REG];
+                    ulong cop0Count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
+                    ulong cop0Compare = Registers.COP0.Reg[Registers.COP0.COMPARE_REG];
                     uint epc = (uint)cop0Epc;
                     uint epcOp = 0;
                     uint epcPrevOp = 0;
@@ -110,11 +124,23 @@ namespace Ryu64Core
                     ulong a0 = Registers.R4300.Reg[4];
                     ulong a1 = Registers.R4300.Reg[5];
                     ulong ra = Registers.R4300.Reg[31];
+                    long rspGraphics = R4300.memory.RspGraphicsTaskCount;
+                    long rspAudio = R4300.memory.RspAudioTaskCount;
+                    long rspOther = R4300.memory.RspOtherTaskCount;
+                    long rdpLists = R4300.memory.RdpDisplayListCount;
+                    long rdpCommands = R4300.memory.RdpCommandCount;
+                    long rdpHandled = R4300.memory.RdpHandledCommandCount;
+                    long rdpSetColor = R4300.memory.RdpSetColorImageCommandCount;
+                    long rdpTriangles = R4300.memory.RdpTriangleCommandCount;
+                    long rdpTexRects = R4300.memory.RdpTextureRectangleCommandCount;
+                    long rdpFillRects = R4300.memory.RdpFillRectangleCommandCount;
+                    long rdpPixels = R4300.memory.RdpPixelWriteCount;
+                    long rdpNonZeroPixels = R4300.memory.RdpNonZeroPixelWriteCount;
                     uint a0w = SafeReadWord((uint)a0);
                     uint a0w4 = SafeReadWord((uint)a0 + 4u);
                     uint v0w = SafeReadWord((uint)v0);
                     uint v0w4 = SafeReadWord((uint)v0 + 4u);
-                    return $"pc=0x{pc:x8} op=0x{op:x8} epc=0x{epc:x8} epcPrev=0x{epcPrevOp:x8} epcOp=0x{epcOp:x8} epcNext=0x{epcNextOp:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} badv=0x{cop0BadVaddr:x8} v0=0x{v0:x16} v1=0x{v1:x16} a0=0x{a0:x16} a1=0x{a1:x16} [a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} ra=0x{ra:x16}";
+                    return $"pc=0x{pc:x8} op=0x{op:x8} epc=0x{epc:x8} epcPrev=0x{epcPrevOp:x8} epcOp=0x{epcOp:x8} epcNext=0x{epcNextOp:x8} cycles={cycles} unk={unknown} viStatus=0x{viStatus:x8} viOrigin=0x{viOrigin:x8} viWidth={viWidth} aiLen=0x{aiLen:x} miIntr=0x{miIntr:x8} miMask=0x{miMask:x8} spStatus=0x{spStatus:x8} spPc=0x{spPc:x8} dpcStatus=0x{dpcStatus:x8} dpc=0x{dpcStart:x8}/0x{dpcCurrent:x8}/0x{dpcEnd:x8} piStatus=0x{piStatus:x8} piDram=0x{piDram:x8} piCart=0x{piCart:x8} piRdLen=0x{piRdLen:x8} piWrLen=0x{piWrLen:x8} siStatus=0x{siStatus:x8} siDram=0x{siDram:x8} siRd=0x{siRd64:x8} siWr=0x{siWr64:x8} pifCtl=0x{pifCtrl:x2} rsp[g={rspGraphics},a={rspAudio},o={rspOther}] rdp[lists={rdpLists},cmds={rdpHandled}/{rdpCommands},ci={rdpSetColor},tri={rdpTriangles},tex={rdpTexRects},fill={rdpFillRects},pix={rdpNonZeroPixels}/{rdpPixels}] cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} count=0x{cop0Count:x8} compare=0x{cop0Compare:x8} badv=0x{cop0BadVaddr:x8} v0=0x{v0:x16} v1=0x{v1:x16} a0=0x{a0:x16} a1=0x{a1:x16} [a0]=0x{a0w:x8} [a0+4]=0x{a0w4:x8} [v0]=0x{v0w:x8} [v0+4]=0x{v0w4:x8} t0=0x{t0:x16} t1=0x{t1:x16} t6=0x{t6:x16} t7=0x{t7:x16} t8=0x{t8:x16} t9=0x{t9:x16} ra=0x{ra:x16}";
                 }
                 catch (Exception ex)
                 {
@@ -302,9 +328,24 @@ namespace Ryu64Core
                     && rdpColorImageBytesPerPixel == bytesPerPixel
                     && (rdpColorImageWidth == 0 || Math.Abs((int)rdpColorImageWidth - width) <= 16))
                 {
-                    uint rdpCandidate = suspiciousViOrigin ? rdpColorImage : origin;
-                    string rdpCandidateSource = suspiciousViOrigin ? "color" : "vi";
-                    int rdpScore = ScoreFramebufferCandidate(rdpCandidate, width, height, bytesPerPixel);
+                    int rdpVisiblePixels = CountVisibleFramebufferPixels(rdpColorImage, width, height, bytesPerPixel);
+                    int viVisiblePixels = suspiciousViOrigin ? 0 : CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel);
+                    uint rdpCandidate = suspiciousViOrigin || (rdpVisiblePixels > 0 && viVisiblePixels == 0)
+                        ? rdpColorImage
+                        : origin;
+                    string rdpCandidateSource = rdpCandidate == rdpColorImage ? "color" : "vi";
+                    int rdpScore = ScoreFramebufferCandidate(rdpColorImage, width, height, bytesPerPixel);
+                    if (!suspiciousViOrigin)
+                    {
+                        int viScore = ScoreFramebufferCandidate(origin, width, height, bytesPerPixel);
+                        if (viVisiblePixels > 0 && rdpVisiblePixels > 0 && viScore != int.MinValue && (rdpScore == int.MinValue || viScore + 64 >= rdpScore))
+                        {
+                            rdpCandidate = origin;
+                            rdpCandidateSource = "vi";
+                            rdpScore = viScore;
+                        }
+                    }
+
                     origin = rdpCandidate;
                     _lastTrackedFramebufferOrigin = origin;
                     rdpColorImageSelected = true;
@@ -681,6 +722,44 @@ namespace Ryu64Core
                 - (hugeDiff * 2)
                 - sparsePenalty
                 + (sampleCount - zeroCount);
+        }
+
+        private int CountVisibleFramebufferPixels(uint origin, int width, int height, int bytesPerPixel)
+        {
+            int bufferSize = checked(width * height * bytesPerPixel);
+            if (bufferSize <= 0 || (long)origin + bufferSize > RdramSizeBytes)
+                return 0;
+
+            int visible = 0;
+            for (int y = 0; y < height; y++)
+            {
+                uint row = origin + (uint)(y * width * bytesPerPixel);
+                for (int x = 0; x < width; x++)
+                {
+                    uint offset = row + (uint)(x * bytesPerPixel);
+                    if (bytesPerPixel >= 4)
+                    {
+                        byte r = R4300.memory.ReadUInt8PhysicalUncached(offset);
+                        byte g = R4300.memory.ReadUInt8PhysicalUncached(offset + 1u);
+                        byte b = R4300.memory.ReadUInt8PhysicalUncached(offset + 2u);
+                        if (r != 0 || g != 0 || b != 0)
+                            visible++;
+                    }
+                    else if (bytesPerPixel >= 2)
+                    {
+                        byte hi = R4300.memory.ReadUInt8PhysicalUncached(offset);
+                        byte lo = R4300.memory.ReadUInt8PhysicalUncached(offset + 1u);
+                        if ((((hi << 8) | lo) & 0xFFFE) != 0)
+                            visible++;
+                    }
+                    else if (R4300.memory.ReadUInt8PhysicalUncached(offset) != 0)
+                    {
+                        visible++;
+                    }
+                }
+            }
+
+            return visible;
         }
 
         private uint FindBestFramebufferOrigin(int width, int height, int bytesPerPixel, uint viOrigin, out int bestScore, out int viScore)

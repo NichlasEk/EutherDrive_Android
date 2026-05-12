@@ -49,6 +49,12 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_LOW_RAM_MUTATIONS"), "1", StringComparison.Ordinal);
         private static readonly bool MirrorPiRdLenAsCartToDram =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PI_RDLEN_MIRROR"), "1", StringComparison.Ordinal);
+        private static readonly bool FastPiStatusPoll =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_PI_POLL"), "0", StringComparison.Ordinal);
+        private static readonly bool SuppressDpInterrupt =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_SUPPRESS_DP_IRQ"), "1", StringComparison.Ordinal);
+        private static readonly bool MupenStyleDpcStatus =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_MUPEN_DPC_STATUS"), "0", StringComparison.Ordinal);
         private static readonly bool TraceSm64SlotWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_SLOT_WRITES"), "1", StringComparison.Ordinal);
         private static readonly ushort N64ControllerButtons = ParseN64ControllerButtons();
@@ -75,6 +81,7 @@ namespace Ryu64.MIPS
         private static int _traceRdpTexRectWriteCount;
         private static int _traceRdpTextureLoadCount;
         private static int _traceRdpTriangleCount;
+        private static int _traceRdpFillRectCount;
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
         private const int TraceLowRamMutationWriteLimit = 1024;
@@ -85,6 +92,7 @@ namespace Ryu64.MIPS
         private const int TraceRdpTexRectWriteLimit = 64;
         private const int TraceRdpTextureLoadLimit = 128;
         private const int TraceRdpTriangleLimit = 128;
+        private const int TraceRdpFillRectLimit = 64;
         private static bool _warnedRspTaskStub;
         private const uint SpStatusHalt = 0x00000001u;
         private const uint SpStatusBroke = 0x00000002u;
@@ -650,6 +658,18 @@ namespace Ryu64.MIPS
         private uint _lastRdpColorImageWidth;
         private uint _lastRdpColorImageBytesPerPixel;
         private uint _lastRdpColorImageWriteEpoch;
+        private long _rspGraphicsTaskCount;
+        private long _rspAudioTaskCount;
+        private long _rspOtherTaskCount;
+        private long _rdpDisplayListCount;
+        private long _rdpCommandCount;
+        private long _rdpHandledCommandCount;
+        private long _rdpSetColorImageCommandCount;
+        private long _rdpTriangleCommandCount;
+        private long _rdpTextureRectangleCommandCount;
+        private long _rdpFillRectangleCommandCount;
+        private long _rdpPixelWriteCount;
+        private long _rdpNonZeroPixelWriteCount;
 
         private struct RdpTileState
         {
@@ -697,6 +717,18 @@ namespace Ryu64.MIPS
         public uint LastRdpColorImageWidth => Volatile.Read(ref _lastRdpColorImageWidth);
         public uint LastRdpColorImageBytesPerPixel => Volatile.Read(ref _lastRdpColorImageBytesPerPixel);
         public uint LastRdpColorImageWriteEpoch => Volatile.Read(ref _lastRdpColorImageWriteEpoch);
+        public long RspGraphicsTaskCount => Volatile.Read(ref _rspGraphicsTaskCount);
+        public long RspAudioTaskCount => Volatile.Read(ref _rspAudioTaskCount);
+        public long RspOtherTaskCount => Volatile.Read(ref _rspOtherTaskCount);
+        public long RdpDisplayListCount => Volatile.Read(ref _rdpDisplayListCount);
+        public long RdpCommandCount => Volatile.Read(ref _rdpCommandCount);
+        public long RdpHandledCommandCount => Volatile.Read(ref _rdpHandledCommandCount);
+        public long RdpSetColorImageCommandCount => Volatile.Read(ref _rdpSetColorImageCommandCount);
+        public long RdpTriangleCommandCount => Volatile.Read(ref _rdpTriangleCommandCount);
+        public long RdpTextureRectangleCommandCount => Volatile.Read(ref _rdpTextureRectangleCommandCount);
+        public long RdpFillRectangleCommandCount => Volatile.Read(ref _rdpFillRectangleCommandCount);
+        public long RdpPixelWriteCount => Volatile.Read(ref _rdpPixelWriteCount);
+        public long RdpNonZeroPixelWriteCount => Volatile.Read(ref _rdpNonZeroPixelWriteCount);
 
         private void NoteRdramWriteRange(uint physicalAddress, uint size)
         {
@@ -952,10 +984,12 @@ namespace Ryu64.MIPS
                     case 0x0D: // TriangleShadeZ
                     case 0x0E: // TriangleShadeTexture
                     case 0x0F: // TriangleShadeTextureZ
+                        Interlocked.Increment(ref _rdpTriangleCommandCount);
                         ExecuteRdpTriangle(command, current, xbusDmem);
                         break;
                     case 0x24: // TextureRectangle
                     case 0x25: // TextureRectangleFlip
+                        Interlocked.Increment(ref _rdpTextureRectangleCommandCount);
                         ExecuteRdpTextureRectangle(w0, w1, ReadRdpCommandWord(current + 8u, xbusDmem), ReadRdpCommandWord(current + 12u, xbusDmem));
                         break;
                     case 0x26: // SyncLoad
@@ -983,6 +1017,7 @@ namespace Ryu64.MIPS
                         ExecuteRdpSetTile(w0, w1);
                         break;
                     case 0x36: // FillRectangle
+                        Interlocked.Increment(ref _rdpFillRectangleCommandCount);
                         ExecuteRdpFillRectangle(w0, w1);
                         break;
                     case 0x37: // SetFillColor
@@ -1004,6 +1039,7 @@ namespace Ryu64.MIPS
                         _rdpTextureImageAddress = w1 & 0x00FFFFFFu;
                         break;
                     case 0x3F: // SetColorImage
+                        Interlocked.Increment(ref _rdpSetColorImageCommandCount);
                         _rdpColorImageSize = (w0 >> 19) & 0x3u;
                         _rdpColorImageWidth = (w0 & 0x03FFu) + 1u;
                         _rdpColorImageAddress = w1 & 0x00FFFFFFu;
@@ -1025,6 +1061,13 @@ namespace Ryu64.MIPS
                     handledCount++;
 
                 current += (uint)(words * 4);
+            }
+
+            if (commandCount > 0)
+            {
+                Interlocked.Increment(ref _rdpDisplayListCount);
+                Interlocked.Add(ref _rdpCommandCount, commandCount);
+                Interlocked.Add(ref _rdpHandledCommandCount, handledCount);
             }
 
             if (commandCounts != null && commandCount > 0)
@@ -1149,6 +1192,7 @@ namespace Ryu64.MIPS
                 return false;
 
             bool wroteAny = false;
+            long writtenPixels = 0;
             for (int y = firstY; y <= lastY; y++)
             {
                 double sampleY = y + 0.5;
@@ -1179,11 +1223,13 @@ namespace Ryu64.MIPS
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     wroteAny = true;
                 }
+                writtenPixels += lastX - firstX + 1;
 
                 uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
                 NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
             }
 
+            NoteRdpPixelWrites(writtenPixels, IsRgbaNonZero(rgba) ? writtenPixels : 0);
             if (wroteAny)
                 MarkRdpColorImageWritten(bytesPerPixel);
             return wroteAny;
@@ -1483,6 +1529,14 @@ namespace Ryu64.MIPS
             if (y1 >= maxRows)
                 y1 = maxRows - 1u;
 
+            if (TraceRdpCommands && _traceRdpFillRectCount < TraceRdpFillRectLimit)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64RDP] fillrect ci=0x{_rdpColorImageAddress:x8} size={_rdpColorImageSize} width={_rdpColorImageWidth} " +
+                    $"rect=({x0},{y0})-({x1},{y1}) fill=0x{_rdpFillColor:x8} visible={IsRdpFillColorRgbNonZero(bytesPerPixel)}");
+                _traceRdpFillRectCount++;
+            }
+
             for (uint y = y0; y <= y1; y++)
             {
                 uint rowStart = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0) * bytesPerPixel);
@@ -1496,6 +1550,8 @@ namespace Ryu64.MIPS
                 NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
             }
 
+            long pixels = (long)(y1 - y0 + 1u) * (x1 - x0 + 1u);
+            NoteRdpPixelWrites(pixels, IsRdpFillColorRgbNonZero(bytesPerPixel) ? pixels : 0);
             MarkRdpColorImageWritten(bytesPerPixel);
         }
 
@@ -1524,8 +1580,11 @@ namespace Ryu64.MIPS
             bool wroteAny = false;
             uint sampleMisses = 0;
             uint sampleHits = 0;
+            uint nonZeroSampleHits = 0;
             uint firstAddress = 0;
             uint firstRgba = 0;
+            uint firstNonZeroAddress = 0;
+            uint firstNonZeroRgba = 0;
 
             for (uint y = y0; y <= y1; y++)
             {
@@ -1549,6 +1608,15 @@ namespace Ryu64.MIPS
                     }
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     sampleHits++;
+                    if (IsRgbaNonZero(rgba))
+                    {
+                        if (firstNonZeroAddress == 0)
+                        {
+                            firstNonZeroAddress = address;
+                            firstNonZeroRgba = rgba;
+                        }
+                        nonZeroSampleHits++;
+                    }
                     wroteAny = true;
                 }
 
@@ -1561,13 +1629,18 @@ namespace Ryu64.MIPS
                 uint firstStored = firstAddress + 1u < RDRAM.Length
                     ? (uint)((RDRAM[firstAddress] << 8) | RDRAM[firstAddress + 1u])
                     : 0u;
+                uint firstNonZeroStored = firstNonZeroAddress + 1u < RDRAM.Length
+                    ? (uint)((RDRAM[firstNonZeroAddress] << 8) | RDRAM[firstNonZeroAddress + 1u])
+                    : 0u;
                 Common.Logger.PrintWarningLine(
                     $"[N64RDP] texrect-write ci=0x{_rdpColorImageAddress:x8} rect=({x0},{y0})-({x1},{y1}) tile={tileIndex} " +
-                    $"hits={sampleHits} misses={sampleMisses} firstAddr=0x{firstAddress:x8} firstRgba=0x{firstRgba:x8} firstStored=0x{firstStored:x4} " +
+                    $"hits={sampleHits} nz={nonZeroSampleHits} misses={sampleMisses} firstAddr=0x{firstAddress:x8} firstRgba=0x{firstRgba:x8} firstStored=0x{firstStored:x4} " +
+                    $"firstNzAddr=0x{firstNonZeroAddress:x8} firstNzRgba=0x{firstNonZeroRgba:x8} firstNzStored=0x{firstNonZeroStored:x4} " +
                     $"tileSizeSet={tile.TileSizeSet} tile=fmt{tile.Format}:sz{tile.Size}:line{tile.Line}:tmem0x{tile.Tmem:x}:uls{tile.Uls}:ult{tile.Ult}:lrs{tile.Lrs}:lrt{tile.Lrt}");
                 _traceRdpTexRectWriteCount++;
             }
 
+            NoteRdpPixelWrites(sampleHits, nonZeroSampleHits);
             if (wroteAny)
                 MarkRdpColorImageWritten(bytesPerPixel);
             return wroteAny;
@@ -1808,7 +1881,40 @@ namespace Ryu64.MIPS
                 NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
             }
 
+            long pixels = (long)(y1 - y0 + 1u) * (x1 - x0 + 1u);
+            NoteRdpPixelWrites(pixels, IsRgbaNonZero(rgba) ? pixels : 0);
             MarkRdpColorImageWritten(bytesPerPixel);
+        }
+
+        private void NoteRdpPixelWrites(long totalPixels, long nonZeroPixels)
+        {
+            if (totalPixels <= 0)
+                return;
+
+            Interlocked.Add(ref _rdpPixelWriteCount, totalPixels);
+            if (nonZeroPixels > 0)
+                Interlocked.Add(ref _rdpNonZeroPixelWriteCount, nonZeroPixels);
+        }
+
+        private static bool IsRgbaNonZero(uint rgba)
+        {
+            return (rgba & 0xFFFFFF00u) != 0;
+        }
+
+        private bool IsRdpFillColorRgbNonZero(uint bytesPerPixel)
+        {
+            switch (bytesPerPixel)
+            {
+                case 1u:
+                    return (_rdpFillColor & 0xFFFFFFFFu) != 0;
+                case 2u:
+                    return ((_rdpFillColor >> 16) & 0xFFFEu) != 0
+                        || (_rdpFillColor & 0xFFFEu) != 0;
+                case 4u:
+                    return (_rdpFillColor & 0xFFFFFF00u) != 0;
+                default:
+                    return false;
+            }
         }
 
         private void MarkRdpColorImageWritten(uint bytesPerPixel)
@@ -1899,7 +2005,19 @@ namespace Ryu64.MIPS
             uint g = (rgba >> 16) & 0xFFu;
             uint b = (rgba >> 8) & 0xFFu;
             uint a = rgba & 0xFFu;
-            return (ushort)(((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (a >= 0x80u ? 1u : 0u));
+            return (ushort)((QuantizeRgbaChannelTo5551(r) << 11)
+                | (QuantizeRgbaChannelTo5551(g) << 6)
+                | (QuantizeRgbaChannelTo5551(b) << 1)
+                | (a >= 0x80u ? 1u : 0u));
+        }
+
+        private static uint QuantizeRgbaChannelTo5551(uint value)
+        {
+            if (value == 0)
+                return 0;
+
+            uint quantized = value >> 3;
+            return quantized == 0 ? 1u : quantized;
         }
 
         private static uint Rgba5551ToRgba8888(ushort color)
@@ -2935,7 +3053,8 @@ namespace Ryu64.MIPS
                     $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8} miMask=0x{ReadBigEndianWord(MI_INTR_MASK_REG_R):x8} " +
                     $"dpcStatus=0x{ReadBigEndianWord(DPC_STATUS_REG_R):x8}");
             }
-            SetMiDpInterrupt(immediate: true);
+            if (!SuppressDpInterrupt)
+                SetMiDpInterrupt(immediate: true);
         }
 
         private void FinalizeGraphicsTask()
@@ -3253,6 +3372,9 @@ namespace Ryu64.MIPS
 
         public void PI_STATUS_READ_EVENT()
         {
+            if (FastPiStatusPoll && _piInterruptDelayArmed)
+                FinalizePiDmaCompletion();
+
             uint piStatus = ReadBigEndianWord(PI_STATUS_REG_R);
             if (_piDmaBusy)
                 piStatus |= PiStatusDmaBusy;
@@ -3888,7 +4010,8 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(DPC_START_REG_RW, value);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, value);
             uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
-            status |= DpcStatusStartValid | DpcStatusStartGclk | DpcStatusCbufReady;
+            if (!MupenStyleDpcStatus)
+                status |= DpcStatusStartValid | DpcStatusStartGclk | DpcStatusCbufReady;
             WriteBigEndianWord(DPC_STATUS_REG_R, status);
 
             if (TraceN64Io)
@@ -3918,9 +4041,16 @@ namespace Ryu64.MIPS
             uint span = consumed > current ? consumed - current : 0u;
             if (span != 0)
             {
-                _dpCompletionPending = true;
-                _dpInterruptDelayArmed = true;
-                _dpInterruptDelayRemaining = Math.Max(1u, span / 8u);
+                if (MupenStyleDpcStatus && !SuppressDpInterrupt)
+                {
+                    SetMiDpInterrupt();
+                }
+                else
+                {
+                    _dpCompletionPending = true;
+                    _dpInterruptDelayArmed = true;
+                    _dpInterruptDelayRemaining = Math.Max(1u, span / 8u);
+                }
             }
 
             if (TraceN64Io)
@@ -3981,6 +4111,7 @@ namespace Ryu64.MIPS
                 return;
 
             _rspKickCount++;
+            NoteRspTaskDispatch(task.Type);
 
             if (!_warnedRspTaskHle)
             {
@@ -4005,7 +4136,7 @@ namespace Ryu64.MIPS
             _rspTaskLocked = false;
             _rspInterruptDelayArmed = false;
 
-            if (task.Type == 1)
+            if (task.Type == 1 && !SuppressDpInterrupt)
                 SetMiDpInterrupt();
 
             status |= SpStatusHalt | SpStatusBroke;
@@ -4017,6 +4148,16 @@ namespace Ryu64.MIPS
         {
             bool hasTask = TryReadRspTaskFromDmem(out RspTask task);
 
+            if (!hasTask && IsIplRawRspKick())
+            {
+                // The IPL clears SP halt before any OS task exists. Running the raw RSP
+                // interpreter synchronously here can trap the CPU thread in boot bring-up,
+                // so acknowledge the kick as an already-completed boot helper.
+                status |= SpStatusHalt | SpStatusBroke;
+                WriteBigEndianWord(SP_STATUS_REG_R, status);
+                return;
+            }
+
             if (hasTask && EnableRspInterpreterGraphicsOnly && task.Type != 1)
             {
                 if (EnableRspTaskHleDispatcher)
@@ -4025,6 +4166,8 @@ namespace Ryu64.MIPS
             }
 
             _rspKickCount++;
+            if (hasTask)
+                NoteRspTaskDispatch(task.Type);
             _activeRspTask = hasTask ? task : default;
 
             if (hasTask && (TraceN64Io || TraceRspTaskDmem))
@@ -4115,6 +4258,28 @@ namespace Ryu64.MIPS
             _rspInterruptDelayArmed = false;
 
             ArmSynchronousRspCompletion(ref status);
+        }
+
+        private static bool IsIplRawRspKick()
+        {
+            uint pc = Registers.R4300.PC;
+            return pc >= 0xA4000000u && pc <= 0xA4001FFFu;
+        }
+
+        private void NoteRspTaskDispatch(uint taskType)
+        {
+            switch (taskType)
+            {
+                case 1u:
+                    Interlocked.Increment(ref _rspGraphicsTaskCount);
+                    break;
+                case 2u:
+                    Interlocked.Increment(ref _rspAudioTaskCount);
+                    break;
+                default:
+                    Interlocked.Increment(ref _rspOtherTaskCount);
+                    break;
+            }
         }
 
         private bool TryReadRspTaskFromDmem(out RspTask task)
@@ -6185,6 +6350,20 @@ namespace Ryu64.MIPS
                     return value;
                 }
             }
+        }
+
+        internal uint ReadUInt32PhysicalFast(uint physical)
+        {
+            physical &= 0x1FFFFFFFu;
+            if (physical + 3u < RDRAM.Length)
+            {
+                return ((uint)RDRAM[physical] << 24)
+                    | ((uint)RDRAM[physical + 1u] << 16)
+                    | ((uint)RDRAM[physical + 2u] << 8)
+                    | RDRAM[physical + 3u];
+            }
+
+            return ReadUInt32(0xA0000000u | physical);
         }
 
         public void WriteUInt32(uint index, uint value)

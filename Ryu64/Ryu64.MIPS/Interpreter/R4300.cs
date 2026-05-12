@@ -157,6 +157,14 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_ALIGN_MISALIGNED_PC"), "0", StringComparison.Ordinal);
         private static readonly bool UseBootRomHleStartup =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_DISABLE_BOOTROM_HLE"), "1", StringComparison.Ordinal);
+        private static readonly bool FastBootChecksumLoop =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_CHECKSUM"), "0", StringComparison.Ordinal);
+        private static readonly bool FastBootClearLoop =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_CLEAR"), "0", StringComparison.Ordinal);
+        private static readonly bool FastIdleLoop =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_IDLE_LOOP"), "0", StringComparison.Ordinal);
+        private static readonly uint IdleLoopFastForwardCycles =
+            (uint)Math.Max(2, ParseTraceLimit("EUTHERDRIVE_N64_IDLE_FAST_FORWARD_CYCLES", 65536));
         // Bring-up default: prefer RAM vectors when BEV is set because PIF/boot ROM exception
         // vectors are not fully emulated yet. Set EUTHERDRIVE_N64_STRICT_BEV_VECTORS=1 to force
         // strict VR4300 ROM-vector behavior.
@@ -287,8 +295,34 @@ namespace Ryu64.MIPS
             }
             else
             {
-                Registers.R4300.PC = exlAlreadySet ? 0x80000180u : 0x80000000u;
+                Registers.R4300.PC = exlAlreadySet || ShouldUseGeneralVectorForTlbRefill()
+                    ? 0x80000180u
+                    : 0x80000000u;
             }
+        }
+
+        private static bool ShouldUseGeneralVectorForTlbRefill()
+        {
+            if (memory == null)
+                return false;
+
+            uint refill0 = memory.ReadUInt32PhysicalFast(0x00000000u);
+            uint refill1 = memory.ReadUInt32PhysicalFast(0x00000004u);
+            if (LooksLikeExceptionVectorStub(refill0, refill1))
+                return false;
+
+            uint general0 = memory.ReadUInt32PhysicalFast(0x00000180u);
+            uint general1 = memory.ReadUInt32PhysicalFast(0x00000184u);
+            return LooksLikeExceptionVectorStub(general0, general1);
+        }
+
+        private static bool LooksLikeExceptionVectorStub(uint firstWord, uint secondWord)
+        {
+            return ((firstWord & 0xFFFF0000u) == 0x3C1A0000u && (secondWord & 0xFFFF0000u) == 0x275A0000u)
+                || firstWord == 0x03400008u
+                || firstWord == 0x42000018u
+                || (firstWord & 0xFC000000u) == 0x08000000u
+                || (firstWord & 0xFC000000u) == 0x0C000000u;
         }
 
         internal static void RaiseCpuException(ulong exceptionCode, uint faultingPc)
@@ -521,6 +555,184 @@ namespace Ryu64.MIPS
         internal static void ClearLoadLinkedReservation()
         {
             _loadLinkedActive = false;
+        }
+
+        private static uint Reg32(int reg)
+        {
+            return (uint)Registers.R4300.Reg[reg];
+        }
+
+        private static ulong SignExtend32(uint value)
+        {
+            return unchecked((ulong)(long)(int)value);
+        }
+
+        private static void SetReg32(int reg, uint value)
+        {
+            Registers.R4300.Reg[reg] = SignExtend32(value);
+        }
+
+        private static void AddSyntheticCycles(uint cycles)
+        {
+            CycleCounter += cycles;
+            Count += cycles;
+            memory?.Tick(cycles);
+
+            uint previousCount = (uint)Registers.COP0.Reg[Registers.COP0.COUNT_REG];
+            uint newCount = (uint)(Count >> 1);
+            Registers.COP0.Reg[Registers.COP0.COUNT_REG] = newCount;
+            uint compare = (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG];
+            if (CountCompareReached(previousCount, newCount, compare))
+                Registers.COP0.Reg[Registers.COP0.CAUSE_REG] |= CauseIp7Bit;
+            Common.Measure.CycleCounter = CycleCounter;
+        }
+
+        private static bool TryFastForwardBootChecksumLoop(uint pc)
+        {
+            if (!FastBootChecksumLoop || pc != 0x80000184u)
+                return false;
+
+            uint t0 = Reg32(8);
+            uint ra = Reg32(31);
+            uint t1 = Reg32(9);
+            uint s6 = Reg32(22);
+            if (ra != 0x00100000u || t0 >= ra || t1 < 0x80000400u || t1 >= 0x80100000u)
+                return false;
+
+            ulong a2 = Registers.R4300.Reg[6];
+            ulong a3 = Registers.R4300.Reg[7];
+            ulong t2 = Registers.R4300.Reg[10];
+            ulong t3 = Registers.R4300.Reg[11];
+            ulong t4 = Registers.R4300.Reg[12];
+            ulong t5 = Registers.R4300.Reg[13];
+            ulong s0 = Registers.R4300.Reg[16];
+            ulong v0 = Registers.R4300.Reg[2];
+            ulong v1 = Registers.R4300.Reg[3];
+            ulong a0 = Registers.R4300.Reg[4];
+            ulong a1 = Registers.R4300.Reg[5];
+            ulong t6 = Registers.R4300.Reg[14];
+            ulong t7 = Registers.R4300.Reg[15];
+            ulong t8 = Registers.R4300.Reg[24];
+            ulong t9 = Registers.R4300.Reg[25];
+            uint iterations = 0;
+            while (t0 < ra)
+            {
+                v0 = SignExtend32(memory.ReadUInt32PhysicalFast(t1));
+                v1 = SignExtend32(unchecked((uint)a3 + (uint)v0));
+                bool carry = v1 < a3;
+                a1 = v1;
+                if (carry)
+                    t2 = SignExtend32(unchecked((uint)t2 + 1u));
+
+                v1 = v0 & 0x1Fu;
+                t7 = SignExtend32(unchecked((uint)t5 - (uint)v1));
+                t8 = SignExtend32((uint)v0 >> (int)(t7 & 0x1Fu));
+                t6 = SignExtend32((uint)v0 << (int)(v1 & 0x1Fu));
+                a0 = t6 | t8;
+
+                bool a2LessThanV0 = a2 < v0;
+                a3 = a1;
+                t3 ^= v0;
+                s0 = SignExtend32(unchecked((uint)s0 + (uint)a0));
+                if (a2LessThanV0)
+                {
+                    t9 = a3 ^ v0;
+                    a2 = t9 ^ a2;
+                }
+                else
+                {
+                    a2 ^= a0;
+                }
+
+                ulong table = SignExtend32(memory.ReadUInt32PhysicalFast(s6));
+                t0 = unchecked(t0 + 4u);
+                s6 = unchecked(s6 + 4u);
+                t7 = v0 ^ table;
+                t4 = SignExtend32(unchecked((uint)t7 + (uint)t4));
+                t1 = unchecked(t1 + 4u);
+                s6 &= 0xA00002FFu;
+                iterations++;
+            }
+
+            Registers.R4300.Reg[2] = v0;
+            Registers.R4300.Reg[3] = v1;
+            Registers.R4300.Reg[4] = a0;
+            Registers.R4300.Reg[5] = a1;
+            Registers.R4300.Reg[6] = a2;
+            Registers.R4300.Reg[7] = a3;
+            SetReg32(8, t0);
+            SetReg32(9, t1);
+            Registers.R4300.Reg[10] = t2;
+            Registers.R4300.Reg[11] = t3;
+            Registers.R4300.Reg[12] = t4;
+            Registers.R4300.Reg[13] = t5;
+            Registers.R4300.Reg[14] = t6;
+            Registers.R4300.Reg[15] = t7;
+            Registers.R4300.Reg[16] = s0;
+            SetReg32(22, s6);
+            Registers.R4300.Reg[24] = t8;
+            Registers.R4300.Reg[25] = t9;
+            Registers.R4300.PC = 0x8000018Cu;
+            AddSyntheticCycles(iterations * 24u);
+            Common.Measure.InstructionCount += iterations * 24UL;
+            return true;
+        }
+
+        private static bool TryFastForwardBootClearLoop(uint pc)
+        {
+            if (!FastBootClearLoop || pc != 0x80003074u)
+                return false;
+
+            if (memory.ReadUInt32PhysicalFast(0x00003074u) != 0x24840020u
+                || memory.ReadUInt32PhysicalFast(0x00003078u) != 0xAC80FFE0u
+                || memory.ReadUInt32PhysicalFast(0x0000307Cu) != 0xAC80FFE4u
+                || memory.ReadUInt32PhysicalFast(0x00003080u) != 0xAC80FFE8u
+                || memory.ReadUInt32PhysicalFast(0x00003084u) != 0xAC80FFECu
+                || memory.ReadUInt32PhysicalFast(0x00003088u) != 0xAC80FFF0u
+                || memory.ReadUInt32PhysicalFast(0x0000308Cu) != 0xAC80FFF4u
+                || memory.ReadUInt32PhysicalFast(0x00003090u) != 0xAC80FFF8u
+                || memory.ReadUInt32PhysicalFast(0x00003094u) != 0x1487FFF7u)
+            {
+                return false;
+            }
+
+            uint startAddress = Reg32(4);
+            uint endAddress = Reg32(7);
+            uint start = startAddress & 0x1FFFFFFFu;
+            uint end = endAddress & 0x1FFFFFFFu;
+            if ((startAddress & 0xE0000000u) != 0x80000000u
+                || (endAddress & 0xE0000000u) != 0x80000000u
+                || end <= start
+                || end > memory.RDRAM.Length
+                || ((start | end) & 0x1Fu) != 0)
+            {
+                return false;
+            }
+
+            Array.Clear(memory.RDRAM, (int)start, (int)(end - start));
+            uint iterations = (end - start) >> 5;
+            SetReg32(4, endAddress);
+            Registers.R4300.PC = 0x8000309Cu;
+            AddSyntheticCycles(iterations * 10u);
+            Common.Measure.InstructionCount += iterations * 10UL;
+            return true;
+        }
+
+        private static bool TryFastForwardIdleLoop(uint pc)
+        {
+            if (!FastIdleLoop || (pc != 0x80000810u && pc != 0x80000814u))
+                return false;
+
+            if (memory.ReadUInt32PhysicalFast(0x00000810u) != 0x1000FFFFu
+                || memory.ReadUInt32PhysicalFast(0x00000814u) != 0x00000000u)
+            {
+                return false;
+            }
+
+            Registers.R4300.PC = 0x80000810u;
+            AddSyntheticCycles(IdleLoopFastForwardCycles);
+            Common.Measure.InstructionCount += IdleLoopFastForwardCycles >> 1;
+            return true;
         }
 
         public static void ExecuteDelaySlot()
@@ -895,6 +1107,12 @@ namespace Ryu64.MIPS
                     {
                         uint pc = Registers.R4300.PC;
                         if (ServiceInterrupts(pc))
+                            continue;
+                        if (TryFastForwardBootChecksumLoop(pc))
+                            continue;
+                        if (TryFastForwardBootClearLoop(pc))
+                            continue;
+                        if (TryFastForwardIdleLoop(pc))
                             continue;
 
                         if ((pc & 0x3) != 0)
