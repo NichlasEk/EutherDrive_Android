@@ -288,6 +288,8 @@ namespace EutherDrive.Core.Cpu.Z80Emu
         private readonly Registers _registers;
         private bool _stalled;
         private uint _tCyclesWait;
+        [NonSerialized] private IBusInterface? _executorBus;
+        [NonSerialized] private Instructions.InstructionExecutor? _executor;
 
         public Z80()
         {
@@ -337,7 +339,13 @@ namespace EutherDrive.Core.Cpu.Z80Emu
             }
 
             _stalled = false;
-            return Instructions.Execute(_registers, bus);
+            if (!ReferenceEquals(bus, _executorBus) || _executor == null)
+            {
+                _executorBus = bus;
+                _executor = Instructions.CreateExecutor(_registers, bus);
+            }
+
+            return _executor.Execute();
         }
 
         public void Tick(IBusInterface bus)

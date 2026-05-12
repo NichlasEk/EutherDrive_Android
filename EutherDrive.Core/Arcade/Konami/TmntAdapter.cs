@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using SharpCompress.Archives;
@@ -69,6 +71,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     private long _frameCounter;
     private RomIdentity? _romIdentity;
     private TmntHardwareVariant _loadedVariant;
+    private readonly bool _profileFrame = Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT_PROFILE") == "1";
+    private long _profileLastTicks = Stopwatch.GetTimestamp();
+    private long _profileFrames;
+    private long _profileVisibleTicks;
+    private long _profileVisibleMainTicks;
+    private long _profileVisibleSoundTicks;
+    private long _profileRenderTicks;
+    private long _profileCopyTicks;
+    private long _profileVblankTicks;
+    private long _profileVblankMainTicks;
+    private long _profileVblankSoundTicks;
+    private long _profileSoundEndTicks;
 
     public string DebugSummary => _bus.DebugSummary(_mainCpu.Pc) + " " + _sound.DebugSummary;
 
@@ -136,6 +150,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         lock (_stateSync)
         {
+            long phaseStart = _profileFrame ? Stopwatch.GetTimestamp() : 0;
             _bus.SetInput(_input);
             _sound.BeginFrame(_audioBuffer);
             _bus.BeginVisible();
@@ -144,31 +159,171 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int visibleCycles = mainCyclesPerFrame * ScreenVisibleLines / ScreenTotalLines;
             int vblankCycles = mainCyclesPerFrame - visibleCycles;
             int cycles = 0;
-            while (cycles < visibleCycles)
+            if (_profileFrame)
             {
-                int elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
-                cycles += elapsed;
-                _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                while (cycles < visibleCycles)
+                {
+                    _bus.SetVisibleProgress(cycles, visibleCycles);
+                    long callStart = Stopwatch.GetTimestamp();
+                    int elapsed;
+                    bool fastIdle = TryFastForwardMainCpuIdle(ref cycles, visibleCycles, out elapsed);
+                    if (!fastIdle)
+                    {
+                        elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
+                        cycles += elapsed;
+                    }
+                    long callMid = Stopwatch.GetTimestamp();
+                    _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                    long callEnd = Stopwatch.GetTimestamp();
+                    _profileVisibleMainTicks += callMid - callStart;
+                    _profileVisibleSoundTicks += callEnd - callMid;
+                    if (fastIdle)
+                        continue;
+                }
+            }
+            else
+            {
+                while (cycles < visibleCycles)
+                {
+                    _bus.SetVisibleProgress(cycles, visibleCycles);
+                    if (TryFastForwardMainCpuIdle(ref cycles, visibleCycles, out int elapsed))
+                    {
+                        _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                        continue;
+                    }
+                    elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
+                    cycles += elapsed;
+                    _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                }
+            }
+            if (_profileFrame)
+            {
+                long now = Stopwatch.GetTimestamp();
+                _profileVisibleTicks += now - phaseStart;
+                phaseStart = now;
             }
 
             _bus.Render(_renderFrameBuffer);
+            if (_profileFrame)
+            {
+                long now = Stopwatch.GetTimestamp();
+                _profileRenderTicks += now - phaseStart;
+                phaseStart = now;
+            }
             lock (_frameSync)
             {
                 Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
             }
+            if (_profileFrame)
+            {
+                long now = Stopwatch.GetTimestamp();
+                _profileCopyTicks += now - phaseStart;
+                phaseStart = now;
+            }
 
             _bus.BeginVblank();
             cycles = 0;
-            while (cycles < vblankCycles)
+            if (_profileFrame)
             {
-                int elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
-                cycles += elapsed;
-                _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                while (cycles < vblankCycles)
+                {
+                    long callStart = Stopwatch.GetTimestamp();
+                    int elapsed;
+                    bool fastIdle = TryFastForwardMainCpuIdle(ref cycles, vblankCycles, out elapsed);
+                    if (!fastIdle)
+                    {
+                        elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
+                        cycles += elapsed;
+                    }
+                    long callMid = Stopwatch.GetTimestamp();
+                    _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                    long callEnd = Stopwatch.GetTimestamp();
+                    _profileVblankMainTicks += callMid - callStart;
+                    _profileVblankSoundTicks += callEnd - callMid;
+                    if (fastIdle)
+                        continue;
+                }
+            }
+            else
+            {
+                while (cycles < vblankCycles)
+                {
+                    if (TryFastForwardMainCpuIdle(ref cycles, vblankCycles, out int elapsed))
+                    {
+                        _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                        continue;
+                    }
+                    elapsed = checked((int)_mainCpu.ExecuteInstruction(_bus));
+                    cycles += elapsed;
+                    _sound.RunMainCpuCycles(elapsed, mainCyclesPerFrame);
+                }
+            }
+            if (_profileFrame)
+            {
+                long now = Stopwatch.GetTimestamp();
+                _profileVblankTicks += now - phaseStart;
+                phaseStart = now;
             }
 
             _sound.EndFrame();
+            if (_profileFrame)
+            {
+                long now = Stopwatch.GetTimestamp();
+                _profileSoundEndTicks += now - phaseStart;
+                _profileFrames++;
+                PrintFrameProfile(now);
+            }
             _frameCounter++;
         }
+    }
+
+    private bool TryFastForwardMainCpuIdle(ref int cycles, int targetCycles, out int elapsed)
+    {
+        elapsed = 0;
+        int remaining = targetCycles - cycles;
+        if (remaining <= 10)
+            return false;
+
+        if (_loadedVariant != TmntHardwareVariant.Metamrph)
+            return false;
+        // Metamorphic Force parks here between IRQs; batching full 10-cycle branches preserves phase timing.
+        if ((_mainCpu.Pc & 0x00ff_ffffu) != 0x0011B8u || _mainCpu.NextOpcode != 0x60FE)
+            return false;
+        if (_mainCpu.PendingInterruptLevel.HasValue || _bus.InterruptLevel() != 0)
+            return false;
+
+        elapsed = (remaining / 10) * 10;
+        cycles += elapsed;
+        return true;
+    }
+
+    private void PrintFrameProfile(long now)
+    {
+        long elapsed = now - _profileLastTicks;
+        if (elapsed < Stopwatch.Frequency || _profileFrames <= 0)
+            return;
+
+        double scale = 1000.0 / Stopwatch.Frequency;
+        double seconds = elapsed / (double)Stopwatch.Frequency;
+        Console.WriteLine(
+            $"[TMNT-PROFILE] variant={_loadedVariant} frames={_profileFrames} fps={_profileFrames / seconds:0.###} " +
+            $"visible_ms={_profileVisibleTicks * scale:0.0} render_ms={_profileRenderTicks * scale:0.0} " +
+            $"copy_ms={_profileCopyTicks * scale:0.0} vblank_ms={_profileVblankTicks * scale:0.0} " +
+            $"sound_end_ms={_profileSoundEndTicks * scale:0.0} " +
+            $"vis_main_ms={_profileVisibleMainTicks * scale:0.0} vis_sound_ms={_profileVisibleSoundTicks * scale:0.0} " +
+            $"vb_main_ms={_profileVblankMainTicks * scale:0.0} vb_sound_ms={_profileVblankSoundTicks * scale:0.0}");
+
+        _profileLastTicks = now;
+        _profileFrames = 0;
+        _profileVisibleTicks = 0;
+        _profileVisibleMainTicks = 0;
+        _profileVisibleSoundTicks = 0;
+        _profileRenderTicks = 0;
+        _profileCopyTicks = 0;
+        _profileVblankTicks = 0;
+        _profileVblankMainTicks = 0;
+        _profileVblankSoundTicks = 0;
+        _profileSoundEndTicks = 0;
     }
 
     public void SaveState(BinaryWriter writer)
@@ -388,6 +543,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private TmntSound? _sound;
         [NonSerialized] private byte[]? _tmnt2RawFrameBuffer;
         [NonSerialized] private byte[]? _tmnt2PriorityBuffer;
+        [NonSerialized] private bool _tmnt2PartialFrameActive;
+        [NonSerialized] private int _tmnt2PartialRawLine;
+        [NonSerialized] private int _tmnt2VisibleCyclesElapsed;
+        [NonSerialized] private int _tmnt2VisibleCyclesTotal = 1;
         [NonSerialized] private byte[]? _moomesaPriorityBuffer;
         [NonSerialized] private readonly byte[] _moomesaBaseFrameCache = new byte[FrameHeight * FrameStride];
         [NonSerialized] private readonly byte[] _moomesaBasePriorityCache = new byte[FrameWidth * FrameHeight];
@@ -567,7 +726,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return;
             }
             if (UsesK053245Hardware)
+            {
                 _tmnt2InVblank = false;
+                _tmnt2PartialFrameActive = false;
+                _tmnt2PartialRawLine = 0;
+                _tmnt2VisibleCyclesElapsed = 0;
+                _tmnt2VisibleCyclesTotal = 1;
+            }
             if (UsesMystwarrHardware)
             {
                 _k053252.SetVpos(0);
@@ -622,6 +787,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k051960.BufferSprites();
             if (_irq5Enabled)
                 _interruptLevel = 5;
+        }
+
+        public void SetVisibleProgress(int elapsedCycles, int totalVisibleCycles)
+        {
+            if (!UsesK053245Hardware || _tmnt2InVblank)
+                return;
+
+            _tmnt2VisibleCyclesElapsed = Math.Max(0, elapsedCycles);
+            _tmnt2VisibleCyclesTotal = Math.Max(1, totalVisibleCycles);
         }
 
         public void Render(byte[] frameBuffer)
@@ -994,6 +1168,50 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             byte[] rawFrameBuffer = EnsureTmnt2RawFrameBuffer();
             byte[] priorityBuffer = EnsureTmnt2PriorityBuffer();
+            if (!_tmnt2PartialFrameActive)
+            {
+                FillTmnt2Background(rawFrameBuffer);
+                Array.Clear(priorityBuffer);
+                _tmnt2PartialRawLine = 0;
+            }
+
+            RenderTmnt2Range(rawFrameBuffer, priorityBuffer, _tmnt2PartialRawLine, Tmnt2RawFrameHeight);
+            _tmnt2PartialFrameActive = false;
+            _tmnt2PartialRawLine = 0;
+            CopyTmnt2VisibleArea(rawFrameBuffer, frameBuffer);
+        }
+
+        private void RenderTmnt2PartialToCurrentLine()
+        {
+            if (!UsesK053245Hardware || _tmnt2InVblank)
+                return;
+
+            int visibleLine = _tmnt2VisibleCyclesElapsed * ScreenVisibleLines / Math.Max(1, _tmnt2VisibleCyclesTotal);
+            int rawLine = Math.Clamp(Tmnt2VisibleStartY + visibleLine, 0, Tmnt2RawFrameHeight);
+            if (rawLine <= _tmnt2PartialRawLine)
+                return;
+
+            byte[] rawFrameBuffer = EnsureTmnt2RawFrameBuffer();
+            byte[] priorityBuffer = EnsureTmnt2PriorityBuffer();
+            if (!_tmnt2PartialFrameActive)
+            {
+                FillTmnt2Background(rawFrameBuffer);
+                Array.Clear(priorityBuffer);
+                _tmnt2PartialFrameActive = true;
+                _tmnt2PartialRawLine = 0;
+            }
+
+            RenderTmnt2Range(rawFrameBuffer, priorityBuffer, _tmnt2PartialRawLine, rawLine);
+            _tmnt2PartialRawLine = rawLine;
+        }
+
+        private void RenderTmnt2Range(byte[] rawFrameBuffer, byte[] priorityBuffer, int startRawY, int endRawY)
+        {
+            startRawY = Math.Clamp(startRawY, 0, Tmnt2RawFrameHeight);
+            endRawY = Math.Clamp(endRawY, startRawY, Tmnt2RawFrameHeight);
+            if (endRawY <= startRawY)
+                return;
+
             string renderMask = Environment.GetEnvironmentVariable("EUTHERDRIVE_TMNT_RENDER_MASK") ?? "all";
             bool drawLayer0 = renderMask == "all" || renderMask.Contains('0', StringComparison.Ordinal);
             bool drawLayer1 = renderMask == "all" || renderMask.Contains('1', StringComparison.Ordinal);
@@ -1001,8 +1219,6 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             bool drawSprites = renderMask == "all" || renderMask.Contains('s', StringComparison.OrdinalIgnoreCase);
 
             UpdateTmnt2LayerColorBases();
-            FillFrame(rawFrameBuffer, _palette[(16 * _k053251PaletteIndex[0]) & 0x7ff]);
-            Array.Clear(priorityBuffer);
 
             Span<int> layer = stackalloc int[] { 0, 1, 2 };
             Span<int> priority = stackalloc int[]
@@ -1024,13 +1240,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 };
                 if (drawLayer)
                     _k052109.RenderLayer(rawFrameBuffer, _palette, currentLayer, opaque: false, paletteMask: 0x7ff,
-                        outputHeight: Tmnt2RawFrameHeight, priorityBuffer: priorityBuffer, priorityCode: 1 << i);
+                        outputHeight: Tmnt2RawFrameHeight, priorityBuffer: priorityBuffer, priorityCode: 1 << i,
+                        startY: startRawY, endY: endRawY);
             }
 
             if (drawSprites)
-                _k053245.RenderPriorityMasked(rawFrameBuffer, _palette, priority, priorityBuffer, Tmnt2RawFrameHeight);
+                _k053245.RenderPriorityMasked(rawFrameBuffer, _palette, priority, priorityBuffer, Tmnt2RawFrameHeight, startRawY, endRawY);
+        }
 
-            CopyTmnt2VisibleArea(rawFrameBuffer, frameBuffer);
+        private void FillTmnt2Background(byte[] rawFrameBuffer)
+        {
+            UpdateTmnt2LayerColorBases();
+            FillFrame(rawFrameBuffer, _palette[(16 * _k053251PaletteIndex[0]) & 0x7ff]);
         }
 
         private void RenderMystwarr(byte[] frameBuffer)
@@ -2605,6 +2826,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             int mappedOffset = offset % 0x6000;
             CountK052109Write(mappedOffset);
+            if (UsesK053245Hardware)
+                RenderTmnt2PartialToCurrentLine();
             _k052109.Write(mappedOffset, value);
         }
 
@@ -2844,22 +3067,26 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private static int WrapRamOffset(int offset) => offset % 0x6000;
 
         public void RenderLayer(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int layer, bool opaque, int paletteMask,
-            int outputHeight = FrameHeight, byte[]? priorityBuffer = null, int priorityCode = 0)
+            int outputHeight = FrameHeight, byte[]? priorityBuffer = null, int priorityCode = 0, int startY = 0, int endY = -1)
         {
             int attrBase = layer switch { 0 => 0x0000, 1 => 0x0800, _ => 0x1000 };
             int codeBase = layer switch { 0 => 0x2000, 1 => 0x2800, _ => 0x3000 };
             int code2Base = layer switch { 0 => 0x4000, 1 => 0x4800, _ => 0x5000 };
-            int scrollY = GetScrollY(layer);
+            int baseScrollY = GetBaseScrollY(layer);
+            bool columnScroll = UsesColumnScroll(layer);
+            startY = Math.Clamp(startY, 0, outputHeight);
+            endY = endY < 0 ? outputHeight : Math.Clamp(endY, startY, outputHeight);
 
-            for (int sy = 0; sy < outputHeight; sy++)
+            for (int sy = startY; sy < endY; sy++)
             {
-                int scrollX = GetScrollX(layer, sy, scrollY);
-                int worldY = (sy + scrollY) & 0xff;
-                int tileY = worldY >> 3;
-                int pixelY = worldY & 7;
+                int scrollX = GetScrollX(layer, sy);
                 for (int sx = 0; sx < FrameWidth; sx++)
                 {
                     int worldX = (sx + scrollX) & 0x1ff;
+                    int scrollY = columnScroll ? GetColumnScrollY(layer, sx, worldX, scrollX) : baseScrollY;
+                    int worldY = (sy + scrollY) & 0xff;
+                    int tileY = worldY >> 3;
+                    int pixelY = worldY & 7;
                     int tileX = worldX >> 3;
                     int pixelX = worldX & 7;
                     int tileIndex = ((tileY & 31) * 64) + (tileX & 63);
@@ -2879,7 +3106,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int color = (attr & 0x7f) * 16 + pen;
                     WritePixel(frameBuffer, sx, sy, palette[color & paletteMask]);
                     if (priorityBuffer != null)
-                        priorityBuffer[sy * FrameWidth + sx] = (byte)priorityCode;
+                        priorityBuffer[sy * FrameWidth + sx] = (byte)(priorityBuffer[sy * FrameWidth + sx] | priorityCode);
                 }
             }
         }
@@ -2968,7 +3195,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 : $"{first:X3}-{last:X3}:a{_ram[attrBase + first]:X2}:c{firstCode:X4}:same{sameCode}";
         }
 
-        private int GetScrollY(int layer)
+        private int GetBaseScrollY(int layer)
         {
             if (layer == 0)
                 return 0;
@@ -2978,31 +3205,73 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return _ram[scrollYBase + 12];
         }
 
-        private int GetScrollX(int layer, int screenY, int scrollY)
+        private bool UsesColumnScroll(int layer)
         {
             if (layer == 0)
-                return 96;
+                return false;
 
             int tmap = layer - 1;
             int scrollControl = (_scrollCtrl >> (tmap * 3)) & 0x07;
-            int rows = scrollControl switch
+            return (scrollControl & 0x04) != 0;
+        }
+
+        private int GetColumnScrollY(int layer, int screenX, int worldX, int scrollX)
+        {
+            if (layer == 0)
+                return 0;
+
+            int tmap = layer - 1;
+            int scrollControl = (_scrollCtrl >> (tmap * 3)) & 0x07;
+            if ((scrollControl & 0x04) == 0)
+                return GetBaseScrollY(layer);
+
+            int baseMask = layer == 1 ? 0x0000 : 0x2000;
+            int scrollYBase = 0x1800 | baseMask;
+            int rows = ScrollRows(scrollControl);
+            int column;
+            if (rows == 1)
             {
-                0 => 1,
-                1 => 1,
-                2 => 32,
-                _ => 256
-            };
+                int globalScrollX = _ram[(0x1a00 | baseMask)] | (_ram[(0x1a00 | baseMask) + 1] << 8);
+                column = ((worldX >> 3) - (globalScrollX >> 3)) & 0x3f;
+            }
+            else
+            {
+                int rawScrollX = scrollX - LayerScrollDx(layer);
+                int scrollXi = -(rawScrollX & ~7);
+                column = ((scrollXi + (worldX & ~7)) >> 3) & 0x3f;
+            }
+
+            return _ram[scrollYBase + column];
+        }
+
+        private int GetScrollX(int layer, int screenY)
+        {
+            if (layer == 0)
+                return LayerScrollDx(layer);
+
+            int tmap = layer - 1;
+            int scrollControl = (_scrollCtrl >> (tmap * 3)) & 0x07;
+            int rows = ScrollRows(scrollControl);
             int baseMask = layer == 1 ? 0x0000 : 0x2000;
             int scrollXBase = 0x1a00 | baseMask;
 
             if (rows == 1)
-                return (_ram[scrollXBase] | (_ram[scrollXBase + 1] << 8)) + 90;
+                return (_ram[scrollXBase] | (_ram[scrollXBase + 1] << 8)) + LayerScrollDx(layer);
 
-            int row = (screenY - scrollY) & 0xff;
             int rowMask = rows == 256 ? 0xff : 0xf8;
-            int offset = 2 * (row & rowMask);
-            return (_ram[scrollXBase + offset] | (_ram[scrollXBase + offset + 1] << 8)) + 90;
+            int offset = 2 * (screenY & rowMask);
+            return (_ram[scrollXBase + offset] | (_ram[scrollXBase + offset + 1] << 8)) + LayerScrollDx(layer);
         }
+
+        private static int LayerScrollDx(int layer) => layer == 0 ? 96 : 90;
+
+        private static int ScrollRows(int scrollControl)
+            => (scrollControl & 0x03) switch
+            {
+                2 => 32,
+                3 => 256,
+                _ => 1
+            };
 
         private byte ReadCharRom(int offset)
         {
@@ -3812,6 +4081,28 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
             int srcY = tileFlipY ? 7 - pixelY : pixelY;
             int tileCode = code & 0x1ffff;
+            int paletteBase = color * 16;
+            if (alpha >= 255 && brightness >= 255 && priorityBuffer == null)
+            {
+                int rowOffset = py * FrameStride + px * 4;
+                for (int i = 0; i < run; i++)
+                {
+                    int runPixelX = screenFlipX ? pixelX - i : pixelX + i;
+                    int srcX = tileFlipX ? 7 - runPixelX : runPixelX;
+                    int pen = Decode5BppPixel(tileCode, srcX, srcY);
+                    if (pen == 0 && !opaque)
+                        continue;
+
+                    ushort xBgr555 = palette[(paletteBase + pen) & 0x7ff];
+                    int offset = rowOffset + i * 4;
+                    frameBuffer[offset] = Color5To8[(xBgr555 >> 10) & 0x1f];
+                    frameBuffer[offset + 1] = Color5To8[(xBgr555 >> 5) & 0x1f];
+                    frameBuffer[offset + 2] = Color5To8[xBgr555 & 0x1f];
+                    frameBuffer[offset + 3] = 0xff;
+                }
+                return;
+            }
+
             for (int i = 0; i < run; i++)
             {
                 int runPixelX = screenFlipX ? pixelX - i : pixelX + i;
@@ -3820,7 +4111,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (pen == 0 && !opaque)
                     continue;
 
-                WriteTilePixel(frameBuffer, px + i, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
+                WriteTilePixel(frameBuffer, px + i, py, palette[(paletteBase + pen) & 0x7ff], alpha, brightness);
                 if (priorityBuffer != null)
                     priorityBuffer[py * FrameWidth + px + i] = (byte)(priorityBuffer[py * FrameWidth + px + i] | priorityCode);
             }
@@ -3839,6 +4130,28 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (alpha <= 0)
                 return;
 
+            int paletteBase = color * 16;
+            if (alpha >= 255 && brightness >= 255 && priorityBuffer == null)
+            {
+                int rowOffset = py * FrameStride + px * 4;
+                for (int i = 0; i < run; i++)
+                {
+                    int x = screenFlipX ? localX - i : localX + i;
+                    int src = x & 0x3f;
+                    int pen = Decode5BppPixel(code + ((x >> 6) & 7), src & 7, src >> 3);
+                    if (pen == 0 && !opaque)
+                        continue;
+
+                    ushort xBgr555 = palette[(paletteBase + pen) & 0x7ff];
+                    int offset = rowOffset + i * 4;
+                    frameBuffer[offset] = Color5To8[(xBgr555 >> 10) & 0x1f];
+                    frameBuffer[offset + 1] = Color5To8[(xBgr555 >> 5) & 0x1f];
+                    frameBuffer[offset + 2] = Color5To8[xBgr555 & 0x1f];
+                    frameBuffer[offset + 3] = 0xff;
+                }
+                return;
+            }
+
             for (int i = 0; i < run; i++)
             {
                 int x = screenFlipX ? localX - i : localX + i;
@@ -3846,7 +4159,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int pen = Decode5BppPixel(code + ((x >> 6) & 7), src & 7, src >> 3);
                 if (pen == 0 && !opaque)
                     continue;
-                WriteTilePixel(frameBuffer, px + i, py, palette[MystwarrTilePaletteIndex(color, pen)], alpha, brightness);
+                WriteTilePixel(frameBuffer, px + i, py, palette[(paletteBase + pen) & 0x7ff], alpha, brightness);
                 if (priorityBuffer != null)
                     priorityBuffer[py * FrameWidth + px + i] = (byte)(priorityBuffer[py * FrameWidth + px + i] | priorityCode);
             }
@@ -5072,15 +5385,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 FinishRenderFrameStats();
         }
 
-        public void RenderPriorityMasked(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, byte[] priorityBuffer, int outputHeight = FrameHeight)
+        public void RenderPriorityMasked(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, byte[] priorityBuffer,
+            int outputHeight = FrameHeight, int startY = 0, int endY = -1)
         {
             BeginRenderFrameStats();
-            RenderSprites(frameBuffer, palette, sortedLayerPriorities, -1, outputHeight, priorityBuffer);
+            RenderSprites(frameBuffer, palette, sortedLayerPriorities, -1, outputHeight, priorityBuffer, -1, null, startY, endY);
             FinishRenderFrameStats();
         }
 
-        private void RenderSprites(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight, byte[]? priorityBuffer, int mystwarrPriority = -1, K054338? k054338 = null)
+        private void RenderSprites(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight,
+            byte[]? priorityBuffer, int mystwarrPriority = -1, K054338? k054338 = null, int startY = 0, int endY = -1)
         {
+            startY = Math.Clamp(startY, 0, outputHeight);
+            endY = endY < 0 ? outputHeight : Math.Clamp(endY, startY, outputHeight);
             ushort[] spriteRam = (_mystwarrSpriteLayout || _metamrphSpriteLayout) ? _ram : _buffer;
             Span<int> sorted = stackalloc int[SpriteCount];
             int sortedCount = BuildSortedSpriteList(sorted, spriteRam);
@@ -5088,13 +5405,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (int sortedIndex = sortedCount - 1; sortedIndex >= 0; sortedIndex--)
             {
                 int offs = sorted[sortedIndex];
-                RenderSpriteObject(frameBuffer, palette, spriteRam, offs, sortedLayerPriorities, band, outputHeight, priorityBuffer, mystwarrPriority, k054338, -1, 0, -1, -1);
+                RenderSpriteObject(frameBuffer, palette, spriteRam, offs, sortedLayerPriorities, band, outputHeight, priorityBuffer, mystwarrPriority, k054338, -1, 0, -1, -1, startY, endY);
             }
         }
 
         private void RenderSpriteObject(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ushort[] spriteRam, int offs,
             ReadOnlySpan<int> sortedLayerPriorities, int band, int outputHeight, byte[]? priorityBuffer,
-            int mystwarrPriority, K054338? k054338, int gxDrawMode, int gxShadowMode, int gxZCode, int gxPriority)
+            int mystwarrPriority, K054338? k054338, int gxDrawMode, int gxShadowMode, int gxZCode, int gxPriority, int startY = 0, int endY = -1)
         {
             if ((uint)offs >= (uint)spriteRam.Length)
                 return;
@@ -5154,7 +5471,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int sx = ox + ((zoomX * x + (1 << 11)) >> 12);
                     int zw = Math.Max(1, ox + ((zoomX * (x + 1) + (1 << 11)) >> 12) - sx);
                     int tile = SpriteTileCode(code, x, y, w, h, flipX, flipY, mirrorX, mirrorY, gxLayout, out bool tileFlipX, out bool tileFlipY);
-                    _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask, shadow, alpha, gxDrawMode, gxShadowMode, gxZCode, gxPriority, k054338);
+                    _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask, shadow, alpha, gxDrawMode, gxShadowMode, gxZCode, gxPriority, k054338, startY, endY);
                 }
             }
         }
@@ -5489,9 +5806,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
 
         private int DrawSpriteTile(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int code, int colorBase, int sx, int sy, int zw, int zh,
-            bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask, bool shadow, int alpha, int gxDrawMode, int gxShadowMode, int gxZCode, int gxPriority, K054338? k054338)
+            bool flipX, bool flipY, int outputHeight, byte[]? priorityBuffer, int priorityMask, bool shadow, int alpha, int gxDrawMode, int gxShadowMode, int gxZCode, int gxPriority, K054338? k054338,
+            int startY = 0, int endY = -1)
         {
             int drawn = 0;
+            startY = Math.Clamp(startY, 0, outputHeight);
+            endY = endY < 0 ? outputHeight : Math.Clamp(endY, startY, outputHeight);
             int tileMask = (_metamrphSpriteLayout || _normalPlaneSpriteDecode) ? 0xffff : 0x7fff;
             int baseAddress = ((code & tileMask) * 128) & (_rom.Length - 1);
             bool gxLayout = _mystwarrSpriteLayout || _metamrphSpriteLayout;
@@ -5501,7 +5821,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (int dy = 0; dy < zh; dy++)
             {
                 int py = sy + dy;
-                if ((uint)py >= (uint)outputHeight)
+                if ((uint)py >= (uint)outputHeight || py < startY || py >= endY)
                     continue;
                 int srcY = Math.Clamp(dy * 16 / zh, 0, 15);
                 if (flipY) srcY = 15 - srcY;

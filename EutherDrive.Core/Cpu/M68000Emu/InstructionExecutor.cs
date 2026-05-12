@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 
 namespace EutherDrive.Core.Cpu.M68000Emu;
@@ -35,6 +38,12 @@ internal sealed partial class InstructionExecutor
         Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_IRQ_CPU");
     private static readonly int TraceInterruptLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_IRQ_LIMIT", 256);
     private static int _traceInterruptRemaining = TraceInterrupts ? TraceInterruptLimit : 0;
+    private static readonly bool ProfilePcOpcodes =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_PROFILE"), "1", StringComparison.Ordinal);
+    private static readonly Dictionary<ulong, int> ProfilePcOpcodeCounts = new();
+    private static readonly object ProfileLock = new();
+    private static long _profileInstructionCount;
+    private static long _profileWindowStartTicks = Stopwatch.GetTimestamp();
 
     private const uint AddressErrorVector = 3;
     private const uint IllegalOpcodeVector = 4;
@@ -93,6 +102,11 @@ internal sealed partial class InstructionExecutor
         uint pcBefore = _registers.Pc;
         _tracePc = pcBefore;
         _opcode = _registers.Prefetch;
+        if (ProfilePcOpcodes)
+            AddPcOpcodeProfile(pcBefore, _opcode);
+        if (!ShouldTracePc(pcBefore) && TryExecuteCommonFastOpcode(pcBefore, _opcode, out uint fastCycles))
+            return ExecuteResult<uint>.Ok(fastCycles);
+
         _instruction = InstructionTable.Decode(_opcode);
 
         if (_instruction.Value.Kind == InstructionKind.Illegal)
@@ -241,6 +255,193 @@ internal sealed partial class InstructionExecutor
             InstructionKind.Unlink => Unlk(inst.AddrReg),
             _ => ExecuteResult<uint>.Err(M68kException.IllegalInstruction(_opcode)),
         };
+    }
+
+    private static void AddPcOpcodeProfile(uint pc, ushort opcode)
+    {
+        ulong key = ((ulong)(pc & 0x00ff_ffffu) << 16) | opcode;
+        lock (ProfileLock)
+        {
+            ProfilePcOpcodeCounts.TryGetValue(key, out int count);
+            ProfilePcOpcodeCounts[key] = count + 1;
+
+            long total = ++_profileInstructionCount;
+            if ((total & 0xffff) != 0)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            long elapsed = now - _profileWindowStartTicks;
+            if (elapsed < Stopwatch.Frequency)
+                return;
+
+            double seconds = elapsed / (double)Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[M68K-PROFILE] ips={total / seconds:0} top={FormatTopPcOpcodes(ProfilePcOpcodeCounts)}");
+            ProfilePcOpcodeCounts.Clear();
+            _profileInstructionCount = 0;
+            _profileWindowStartTicks = now;
+        }
+    }
+
+    private static string FormatTopPcOpcodes(Dictionary<ulong, int> counts)
+    {
+        Span<ulong> topKeys = stackalloc ulong[10];
+        Span<int> topCounts = stackalloc int[10];
+        foreach (var pair in counts)
+        {
+            int insert = -1;
+            for (int i = 0; i < topCounts.Length; i++)
+            {
+                if (pair.Value > topCounts[i])
+                {
+                    insert = i;
+                    break;
+                }
+            }
+            if (insert < 0)
+                continue;
+
+            for (int i = topCounts.Length - 1; i > insert; i--)
+            {
+                topCounts[i] = topCounts[i - 1];
+                topKeys[i] = topKeys[i - 1];
+            }
+            topCounts[insert] = pair.Value;
+            topKeys[insert] = pair.Key;
+        }
+
+        var parts = new string[topCounts.Length];
+        int partCount = 0;
+        for (int i = 0; i < topCounts.Length; i++)
+        {
+            if (topCounts[i] <= 0)
+                break;
+            uint pc = (uint)(topKeys[i] >> 16);
+            ushort opcode = (ushort)topKeys[i];
+            parts[partCount++] = string.Create(
+                CultureInfo.InvariantCulture,
+                $"0x{pc:X6}:0x{opcode:X4}={topCounts[i]}");
+        }
+        return string.Join(",", parts, 0, partCount);
+    }
+
+    private bool TryExecuteCommonFastOpcode(uint pc, ushort opcode, out uint cycles)
+    {
+        cycles = 0;
+        uint maskedPc = pc & 0x00ff_ffffu;
+
+        if (opcode == 0x4A10)
+        {
+            byte value = _bus.ReadByte(_registers.Address[0]);
+            SetTestByteFlags(value);
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 8;
+            return true;
+        }
+
+        if (opcode == 0x41E8)
+        {
+            short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+            _registers.Address[0] = unchecked(_registers.Address[0] + (uint)displacement);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 8;
+            return true;
+        }
+
+        if (opcode == 0x51C8)
+        {
+            short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+            ushort value = (ushort)_registers.Data[0];
+            _registers.Data[0] = (_registers.Data[0] & 0xffff_0000u) | unchecked((ushort)(value - 1));
+            if (value != 0)
+            {
+                uint target = unchecked(maskedPc + 2u + (uint)displacement) & 0x00ff_ffffu;
+                if ((target & 1) != 0)
+                    return false;
+                SetSequentialPc(target);
+                cycles = 10;
+                return true;
+            }
+
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 14;
+            return true;
+        }
+
+        if ((opcode & 0xff00) == 0x6600 || (opcode & 0xff00) == 0x6700)
+        {
+            bool isEqualBranch = (opcode & 0xff00) == 0x6700;
+            bool take = isEqualBranch ? _registers.Ccr.Zero : !_registers.Ccr.Zero;
+            byte displacement8 = (byte)opcode;
+
+            if (displacement8 == 0)
+            {
+                short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                if (take)
+                {
+                    uint target = unchecked(maskedPc + 2u + (uint)displacement) & 0x00ff_ffffu;
+                    if ((target & 1) != 0)
+                        return false;
+                    SetSequentialPc(target);
+                    cycles = 10;
+                    return true;
+                }
+
+                SetSequentialPc(maskedPc + 4u);
+                cycles = 12;
+                return true;
+            }
+
+            if (take)
+            {
+                uint target = unchecked(maskedPc + 2u + (uint)(sbyte)displacement8) & 0x00ff_ffffu;
+                if ((target & 1) != 0)
+                    return false;
+                SetSequentialPc(target);
+                cycles = 10;
+                return true;
+            }
+
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 8;
+            return true;
+        }
+
+        if ((opcode & 0xf100) == 0x7000)
+        {
+            int register = (opcode >> 9) & 7;
+            uint value = unchecked((uint)(sbyte)(byte)opcode);
+            _registers.Data[register] = value;
+            SetTestLongFlags(value);
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 4;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void SetSequentialPc(uint pc)
+    {
+        uint masked = pc & 0x00ff_ffffu;
+        _registers.Pc = masked;
+        _registers.Prefetch = _bus.ReadWord(masked);
+    }
+
+    private void SetTestByteFlags(byte value)
+    {
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+    }
+
+    private void SetTestLongFlags(uint value)
+    {
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
     }
 
     private ExecuteResult<ushort> ReadBusWord(uint address)

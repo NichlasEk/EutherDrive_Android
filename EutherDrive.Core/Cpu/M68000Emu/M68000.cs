@@ -9,6 +9,8 @@ public sealed class M68000
     private readonly Registers _regs = new();
     private readonly bool _allowTasWrites;
     private readonly string _name;
+    [NonSerialized] private IBusInterface? _executorBus;
+    [NonSerialized] private InstructionExecutor? _executor;
 
     private M68000(bool allowTasWrites, string name)
     {
@@ -130,7 +132,13 @@ public sealed class M68000
         if (bus.Halt() || _regs.Frozen)
             return 1;
 
-        return new InstructionExecutor(_regs, bus, _allowTasWrites, _name).Execute();
+        if (!ReferenceEquals(bus, _executorBus) || _executor == null)
+        {
+            _executorBus = bus;
+            _executor = new InstructionExecutor(_regs, bus, _allowTasWrites, _name);
+        }
+
+        return _executor.Execute();
     }
 
     private static ushort ReadOpcodeWord(IBusInterface bus, uint address)
