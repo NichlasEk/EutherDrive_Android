@@ -229,18 +229,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _sound.RestoreRuntimeState(_loadedVariant);
             _bus.RestoreRuntimeState(_sound, _loadedVariant);
             TryReadExtendedState(reader);
-            RefreshLoadedFrameBuffer();
             if (_audioBuffer.Length == 0)
                 _audioBuffer = new short[Math.Max(1, (int)Math.Round(OutputSampleRate / TargetFps)) * OutputChannels];
-        }
-    }
-
-    private void RefreshLoadedFrameBuffer()
-    {
-        _bus.Render(_renderFrameBuffer);
-        lock (_frameSync)
-        {
-            Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
         }
     }
 
@@ -5363,7 +5353,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (rawY is >= 0x0100 and < 0x0200 && oy >= Tmnt2RawFrameHeight)
                 oy -= 128;
             if (Tmnt2CoordinateMode && rawY is >= 0x0100 and < 0x0200 && oy < -128)
-                oy += 384;
+                oy += 512;
 
             int right = ox + ((zoomX * w + (1 << 11)) >> 12);
             int bottom = oy + ((zoomY * h + (1 << 11)) >> 12);
