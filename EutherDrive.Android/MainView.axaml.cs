@@ -4165,6 +4165,12 @@ public partial class MainView : UserControl
             case N64Adapter n64:
                 n64.SetMasterVolumePercent(100);
                 break;
+            case EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1:
+                cps1.SetMasterVolumePercent(100);
+                break;
+            case EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2:
+                cps2.SetMasterVolumePercent(100);
+                break;
         }
     }
 

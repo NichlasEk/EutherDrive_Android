@@ -41,6 +41,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
     private Cps1Video? _video;
     private short[] _audioBuffer = Array.Empty<short>();
+    private short[] _scaledAudioBuffer = Array.Empty<short>();
+    private int _masterVolumePercent = 100;
     private int _audioSampleFramesThisFrame;
     private double _audioSampleAccumulator;
     private int _audioCpuCyclesPerFrame = GetQSoundAudioCpuCyclesPerFrame();
@@ -321,7 +323,24 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
     {
         sampleRate = OutputSampleRate;
         channels = OutputChannels;
-        return _audioBuffer.AsSpan(0, _audioSampleFramesThisFrame * OutputChannels);
+        int sampleCount = _audioSampleFramesThisFrame * OutputChannels;
+        ReadOnlySpan<short> source = _audioBuffer.AsSpan(0, sampleCount);
+        if (_masterVolumePercent == 100 || source.IsEmpty)
+            return source;
+
+        if (_scaledAudioBuffer.Length < source.Length)
+            _scaledAudioBuffer = new short[source.Length];
+
+        int volume = _masterVolumePercent;
+        for (int i = 0; i < source.Length; i++)
+            _scaledAudioBuffer[i] = (short)Math.Clamp((source[i] * volume) / 100, short.MinValue, short.MaxValue);
+
+        return _scaledAudioBuffer.AsSpan(0, source.Length);
+    }
+
+    public void SetMasterVolumePercent(int percent)
+    {
+        _masterVolumePercent = Math.Clamp(percent, 0, 100);
     }
 
     public double GetTargetFps() => TargetFps;

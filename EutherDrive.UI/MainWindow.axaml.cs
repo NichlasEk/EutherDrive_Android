@@ -3927,6 +3927,10 @@ public partial class MainWindow : Window
             deco32.SetMasterVolumePercent(_masterVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             tmnt.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1)
+            cps1.SetMasterVolumePercent(_masterVolumePercent);
+        else if (_core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2)
+            cps2.SetMasterVolumePercent(_masterVolumePercent);
     }
 
     private void ApplyAudioMixToCore()
