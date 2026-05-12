@@ -39,6 +39,8 @@ internal sealed class Sega32XSh2Cpu
     private ulong _decodedBlockCompiledOps;
     private ulong _memLoopFusionHits;
     private ulong _memLoopFusionIterations;
+    private ulong _idleRingFusionHits;
+    private ulong _idleRingFusionIterations;
     [NonSerialized] private bool _turboStraightLineEnabled = TurboStraightLineDefaultEnabled;
 
     private static readonly byte ResetInterruptMask = 0x0F;
@@ -160,11 +162,13 @@ internal sealed class Sega32XSh2Cpu
         _decodedBlockCompiledOps = 0;
         _memLoopFusionHits = 0;
         _memLoopFusionIterations = 0;
+        _idleRingFusionHits = 0;
+        _idleRingFusionIterations = 0;
     }
 
     public string? BuildAndResetPerfPcSummary(int maxEntries = 4)
     {
-        if ((!PerfPcHistogramEnabled || _pcSampleTicks.Count == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0)
+        if ((!PerfPcHistogramEnabled || _pcSampleTicks.Count == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0 && _idleRingFusionHits == 0)
             return null;
 
         KeyValuePair<uint, ulong>[] top = PerfPcHistogramEnabled
@@ -178,7 +182,7 @@ internal sealed class Sega32XSh2Cpu
             total += ticks;
 
         _pcSampleTicks.Clear();
-        if ((top.Length == 0 || total == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0)
+        if ((top.Length == 0 || total == 0) && !BlockInterpreterEnabled && _memLoopFusionHits == 0 && _idleRingFusionHits == 0)
             return null;
 
         var sb = new System.Text.StringBuilder();
@@ -224,6 +228,18 @@ internal sealed class Sega32XSh2Cpu
             sb.Append(_memLoopFusionHits);
             sb.Append(" iterations=");
             sb.Append(_memLoopFusionIterations);
+            sb.Append(" avg_iter=");
+            sb.Append(avgIterations.ToString("0.0"));
+        }
+
+        if (_idleRingFusionHits != 0)
+        {
+            double avgIterations = _idleRingFusionIterations / (double)_idleRingFusionHits;
+            sb.Append(" idle_ring_fusion=");
+            sb.Append("hits=");
+            sb.Append(_idleRingFusionHits);
+            sb.Append(" iterations=");
+            sb.Append(_idleRingFusionIterations);
             sb.Append(" avg_iter=");
             sb.Append(avgIterations.ToString("0.0"));
         }
@@ -340,6 +356,15 @@ internal sealed class Sega32XSh2Cpu
 
             if (!DisablePollingLoopAcceleration &&
                 TryExecuteDelayedBranchPollingLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (!DisablePollingLoopAcceleration &&
+                TryExecuteLinkedIdleRing(bus, remainingInstructions, pc, opcode, out consumedInstructions))
             {
                 remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
                 if (bus.ShouldStopExecution)
@@ -650,6 +675,180 @@ internal sealed class Sega32XSh2Cpu
         CycleCounter += cyclesToConsume;
         AccumulatePcSample(loopStartPc, cyclesToConsume);
         return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteLinkedIdleRing(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        const int InstructionsPerIteration = 13;
+        consumedInstructions = 0;
+
+        if (remainingInstructions < InstructionsPerIteration ||
+            bus.CycleLimit == ulong.MaxValue ||
+            TraceInstructionStart.HasValue ||
+            TraceInstructionEnd.HasValue ||
+            Registers.NextInstructionInDelaySlot ||
+            HasPendingInterrupt(bus))
+        {
+            return false;
+        }
+
+        if (!TryMatchLinkedIdleRing(bus, loopStartPc, firstOpcode, out int comparePointerRegister, out uint compareAddress, out int pollPointerRegister, out uint pollAddress))
+            return false;
+
+        ushort compareLeft = bus.ReadWord(compareAddress, Sega32XSh2AccessContext.Data);
+        ushort compareRight = bus.ReadWord(compareAddress + 2, Sega32XSh2AccessContext.Data);
+        if (compareLeft != compareRight)
+            return false;
+
+        ushort pollValue = bus.ReadWord(pollAddress, Sega32XSh2AccessContext.Data);
+        if (pollValue != 0)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        ulong iterations = Math.Min(
+            remainingInstructions / InstructionsPerIteration,
+            remainingCycles / InstructionsPerIteration);
+        if (iterations == 0)
+            return false;
+
+        Registers.GeneralPurposeRegisters[comparePointerRegister] = compareAddress;
+        Registers.GeneralPurposeRegisters[pollPointerRegister] = pollAddress;
+        Registers.GeneralPurposeRegisters[1] = unchecked((uint)(short)compareLeft);
+        Registers.GeneralPurposeRegisters[0] = 0;
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = true;
+        Registers.StatusRegister = sr;
+
+        Registers.ProgramCounter = loopStartPc;
+        Registers.NextProgramCounter = loopStartPc + 2;
+        Registers.NextInstructionInDelaySlot = false;
+
+        ulong cycles = iterations * InstructionsPerIteration;
+        bus.IncrementCycleCounter(cycles);
+        CycleCounter += cycles;
+        AccumulatePcSample(loopStartPc, cycles);
+        consumedInstructions = cycles;
+        _idleRingFusionHits++;
+        _idleRingFusionIterations += iterations;
+        return true;
+    }
+
+    private static bool TryMatchLinkedIdleRing(
+        Sega32XSh2Bus bus,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out int comparePointerRegister,
+        out uint compareAddress,
+        out int pollPointerRegister,
+        out uint pollAddress)
+    {
+        comparePointerRegister = 0;
+        compareAddress = 0;
+        pollPointerRegister = 0;
+        pollAddress = 0;
+
+        if ((firstOpcode & 0xF000) != 0xD000) // MOV.L @(disp, PC), Rn
+            return false;
+
+        comparePointerRegister = (firstOpcode >> 8) & 0xF;
+        if (!TryReadPcRelativeLongLiteral(bus, loopStartPc, firstOpcode, out compareAddress))
+            return false;
+
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort loadLeftOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort loadRightOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort compareOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 8, out ushort exitBranchOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 10, out ushort pollBranchOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 12, out ushort pollBranchDelayOpcode))
+        {
+            return false;
+        }
+
+        if ((loadLeftOpcode & 0xF00F) != 0x6001 || // MOV.W @Rm, Rn
+            ((loadLeftOpcode >> 8) & 0xF) != 1 ||
+            ((loadLeftOpcode >> 4) & 0xF) != comparePointerRegister)
+        {
+            return false;
+        }
+
+        if ((loadRightOpcode & 0xFF00) != 0x8500 || // MOV.W @(disp, Rm), R0
+            ((loadRightOpcode >> 4) & 0xF) != comparePointerRegister ||
+            (loadRightOpcode & 0xF) != 1)
+        {
+            return false;
+        }
+
+        if (compareOpcode != 0x3100 || // CMP/EQ R0, R1
+            (exitBranchOpcode & 0xFF00) != 0x8B00 || // BF exit
+            (pollBranchOpcode & 0xF000) != 0xA000 || // BRA poll
+            pollBranchDelayOpcode != 0x0009)
+        {
+            return false;
+        }
+
+        uint pollPc = DecodeBraTarget(loopStartPc + 10, pollBranchOpcode);
+        if (!bus.TryPeekInstructionWord(pollPc, out ushort pollPointerOpcode) ||
+            !bus.TryPeekInstructionWord(pollPc + 2, out ushort pollLoadOpcode) ||
+            !bus.TryPeekInstructionWord(pollPc + 4, out ushort pollTestOpcode) ||
+            !bus.TryPeekInstructionWord(pollPc + 6, out ushort pollBackBranchOpcode))
+        {
+            return false;
+        }
+
+        if ((pollPointerOpcode & 0xF000) != 0xD000)
+            return false;
+        pollPointerRegister = (pollPointerOpcode >> 8) & 0xF;
+        if (!TryReadPcRelativeLongLiteral(bus, pollPc, pollPointerOpcode, out pollAddress))
+            return false;
+
+        if ((pollLoadOpcode & 0xF00F) != 0x6001 || // MOV.W @Rm, R0
+            ((pollLoadOpcode >> 8) & 0xF) != 0 ||
+            ((pollLoadOpcode >> 4) & 0xF) != pollPointerRegister ||
+            pollTestOpcode != 0x2008 || // TST R0, R0
+            (pollBackBranchOpcode & 0xFF00) != 0x8900) // BT back-branch
+        {
+            return false;
+        }
+
+        uint backBranchPc = unchecked(pollPc + 10u + (uint)(((sbyte)(pollBackBranchOpcode & 0xFF)) << 1));
+        if (!bus.TryPeekInstructionWord(backBranchPc, out ushort loopBranchOpcode) ||
+            !bus.TryPeekInstructionWord(backBranchPc + 2, out ushort loopBranchDelayOpcode))
+        {
+            return false;
+        }
+
+        return (loopBranchOpcode & 0xF000) == 0xA000 &&
+            loopBranchDelayOpcode == 0x0009 &&
+            DecodeBraTarget(backBranchPc, loopBranchOpcode) == loopStartPc;
+    }
+
+    private static bool TryReadPcRelativeLongLiteral(Sega32XSh2Bus bus, uint pc, ushort opcode, out uint value)
+    {
+        value = 0;
+        uint literalAddress = ((pc + 4) & ~3u) + (uint)((opcode & 0xFF) << 2);
+        if (!bus.TryPeekInstructionWord(literalAddress, out ushort high) ||
+            !bus.TryPeekInstructionWord(literalAddress + 2, out ushort low))
+        {
+            return false;
+        }
+
+        value = ((uint)high << 16) | low;
+        return true;
+    }
+
+    private static uint DecodeBraTarget(uint branchPc, ushort opcode)
+    {
+        int displacement = ((short)(opcode << 4)) >> 4;
+        return unchecked(branchPc + 4u + (uint)(displacement << 1));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
