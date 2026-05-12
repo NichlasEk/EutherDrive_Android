@@ -98,7 +98,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return false;
 
         string name = Path.GetFileNameWithoutExtension(path).Trim().ToLowerInvariant();
-        return name is "tmnt" or "tmntu" or "tmntj" or "tmhta" or "tmnt2p" or "tmht2p" or "tmnt2" or "ssriders" or "mystwarr" or "metamrph" or "moomesa";
+        return name is "tmnt" or "tmntu" or "tmntj" or "tmhta" or "tmnt2p" or "tmht2p" or "tmnt2" or "ssriders" or "mystwarr" or "metamrph" or "viostorm" or "bucky" or "moomesa";
     }
 
     public void LoadRom(string path)
@@ -420,7 +420,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         lock (_frameSync)
         {
             Buffer.BlockCopy(_presentFrameBuffer, 0, _snapshotFrameBuffer, 0, _presentFrameBuffer.Length);
-            width = _loadedVariant == TmntHardwareVariant.Moomesa
+            width = _loadedVariant is TmntHardwareVariant.Moomesa or TmntHardwareVariant.Bucky or TmntHardwareVariant.Viostorm
                 ? MoomesaVisibleWidth
                 : IsMystwarrFamily(_loadedVariant) ? MysticVisibleWidth : TmntVisibleWidth;
             height = FrameHeight;
@@ -498,14 +498,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         Ssriders,
         Mystwarr,
         Metamrph,
+        Viostorm,
+        Bucky,
         Moomesa
     }
 
     private static bool IsMystwarrFamily(TmntHardwareVariant variant)
-        => variant is TmntHardwareVariant.Mystwarr or TmntHardwareVariant.Metamrph;
+        => variant is TmntHardwareVariant.Mystwarr or TmntHardwareVariant.Metamrph or TmntHardwareVariant.Viostorm;
 
     private static int MainCyclesPerFrame(TmntHardwareVariant variant)
-        => variant is TmntHardwareVariant.Mystwarr or TmntHardwareVariant.Metamrph or TmntHardwareVariant.Moomesa
+        => variant is TmntHardwareVariant.Mystwarr or TmntHardwareVariant.Metamrph or TmntHardwareVariant.Viostorm or TmntHardwareVariant.Bucky or TmntHardwareVariant.Moomesa
             ? MysticCpuCyclesPerFrame
             : MainCpuCyclesPerFrame;
 
@@ -515,7 +517,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_MOOMESA_TRACE_QUEUE"), "1", StringComparison.Ordinal);
         private static readonly int TraceMoomesaQueueLimit =
             ParseTmntBusEnvInt("EUTHERDRIVE_MOOMESA_TRACE_QUEUE_LIMIT", defaultValue: 160, minValue: 1, maxValue: 8192);
-        [NonSerialized] private readonly byte[] _program = new byte[0x200000];
+        [NonSerialized] private readonly byte[] _program = new byte[0x240000];
         private readonly byte[] _ram = new byte[0x10000];
         private readonly byte[] _metamrphExtraRam = new byte[0xf000];
         private readonly byte[] _moomesaSpriteRam = new byte[0x10000];
@@ -535,6 +537,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly byte[] _tmnt2UnknownRam = new byte[0x80];
         private readonly ushort[] _tmnt2ProtRam = new ushort[0x10];
         private readonly ushort[] _moomesaProtRam = new ushort[0x10];
+        private ushort[] _gxProtRam = new ushort[0x20];
         private readonly byte[] _k053251 = new byte[0x10];
         private readonly byte[] _k053251PaletteIndex = new byte[5];
         [NonSerialized] private TmntSound? _sound;
@@ -583,13 +586,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private int _ssridersProtectionReads;
         [NonSerialized] private int _ssridersUnknownProtectionReads;
         [NonSerialized] private string _lastSsridersProtectionRead = "";
+        [NonSerialized] private int _gxProtectionRuns;
+        [NonSerialized] private string _lastGxProtection = "";
 
         private bool UsesK053245Hardware => _variant is TmntHardwareVariant.Tmnt2 or TmntHardwareVariant.Ssriders;
         private bool UsesMystwarrHardware => IsMystwarrFamily(_variant);
+        private bool UsesGx4BppHardware => _variant is TmntHardwareVariant.Metamrph or TmntHardwareVariant.Viostorm;
         private bool UsesMetamrphHardware => _variant == TmntHardwareVariant.Metamrph;
+        private bool UsesViostormHardware => _variant == TmntHardwareVariant.Viostorm;
+        private bool UsesBuckyHardware => _variant == TmntHardwareVariant.Bucky;
         private bool UsesMoomesaHardware => _variant == TmntHardwareVariant.Moomesa;
+        private bool UsesMooHardware => _variant is TmntHardwareVariant.Bucky or TmntHardwareVariant.Moomesa;
 
-        private int ProgramRomLength => UsesMoomesaHardware ? 0x180000 : UsesMystwarrHardware ? 0x200000 : UsesK053245Hardware ? 0x100000 : 0x60000;
+        private int ProgramRomLength => UsesBuckyHardware ? 0x240000 : UsesMoomesaHardware ? 0x180000 : UsesMystwarrHardware ? 0x200000 : UsesK053245Hardware ? 0x100000 : 0x60000;
 
         private static int ParseTmntBusEnvInt(string name, int defaultValue, int minValue, int maxValue)
         {
@@ -608,13 +617,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k052109.RestoreDerivedState();
             ResetK053251Indexes();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
-            _k053245.ZRejection = UsesK053245Hardware ? 0 : -1;
+            _k053245.ZRejection = (UsesK053245Hardware || UsesBuckyHardware) ? 0 : -1;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
-            _k053245.NormalPlaneSpriteDecode = UsesMoomesaHardware;
-            _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
-            _k056832.MoomesaTileCallback = UsesMoomesaHardware;
-            _k056832.Bpp4TileDecode = UsesMoomesaHardware;
-            _k053250.MoomesaClipWindow = UsesMoomesaHardware;
+            _k053245.NormalPlaneSpriteDecode = UsesMooHardware;
+            _k053245.MetamrphSpriteLayout = UsesGx4BppHardware;
+            _k053245.ViostormSpriteLayout = UsesViostormHardware;
+            _k056832.ViostormTileCallback = UsesViostormHardware;
+            _k056832.MoomesaTileCallback = UsesMooHardware;
+            _k056832.Bpp4TileDecode = UsesMooHardware;
+            _k053250.MoomesaClipWindow = UsesMooHardware;
+            EnsureGxProtectionRamSize();
             InvalidateMoomesaBaseFrameCache();
         }
 
@@ -631,6 +643,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_tmnt2UnknownRam);
             Array.Clear(_tmnt2ProtRam);
             Array.Clear(_moomesaProtRam);
+            Array.Clear(_gxProtRam);
             Array.Clear(_k053251);
             ResetK053251Indexes();
             Array.Copy(roms.Program, _program, Math.Min(roms.Program.Length, _program.Length));
@@ -641,16 +654,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k051960.Load(_spriteRom);
             _k053245.Load(_spriteRom);
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
-            _k053245.ZRejection = UsesK053245Hardware ? 0 : -1;
+            _k053245.ZRejection = (UsesK053245Hardware || UsesBuckyHardware) ? 0 : -1;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
-            _k053245.NormalPlaneSpriteDecode = UsesMoomesaHardware;
-            _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
-            _k056832.MoomesaTileCallback = UsesMoomesaHardware;
-            _k056832.Bpp4TileDecode = UsesMoomesaHardware;
+            _k053245.NormalPlaneSpriteDecode = UsesMooHardware;
+            _k053245.MetamrphSpriteLayout = UsesGx4BppHardware;
+            _k053245.ViostormSpriteLayout = UsesViostormHardware;
+            _k056832.ViostormTileCallback = UsesViostormHardware;
+            _k056832.MoomesaTileCallback = UsesMooHardware;
+            _k056832.Bpp4TileDecode = UsesMooHardware;
             _k053250.Load(roms.K053250);
-            _k053250.MoomesaClipWindow = UsesMoomesaHardware;
+            _k053250.MoomesaClipWindow = UsesMooHardware;
             _tmnt2Eeprom.ResetContents();
-            if (UsesK053245Hardware || UsesMystwarrHardware || UsesMoomesaHardware)
+            if (UsesK053245Hardware || UsesMystwarrHardware || UsesMooHardware)
                 _tmnt2Eeprom.Import(roms.Eeprom);
             ResetMachine();
         }
@@ -665,6 +680,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_tmnt2UnknownRam);
             Array.Clear(_tmnt2ProtRam);
             Array.Clear(_moomesaProtRam);
+            Array.Clear(_gxProtRam);
             Array.Clear(_k053251);
             ResetK053251Indexes();
             _k052109.Reset();
@@ -676,13 +692,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k054338.Reset();
             _k053252.Reset();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
-            _k053245.ZRejection = UsesK053245Hardware ? 0 : -1;
+            _k053245.ZRejection = (UsesK053245Hardware || UsesBuckyHardware) ? 0 : -1;
             _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
-            _k053245.NormalPlaneSpriteDecode = UsesMoomesaHardware;
-            _k053245.MetamrphSpriteLayout = UsesMetamrphHardware;
-            _k056832.MoomesaTileCallback = UsesMoomesaHardware;
-            _k056832.Bpp4TileDecode = UsesMoomesaHardware;
-            _k053250.MoomesaClipWindow = UsesMoomesaHardware;
+            _k053245.NormalPlaneSpriteDecode = UsesMooHardware;
+            _k053245.MetamrphSpriteLayout = UsesGx4BppHardware;
+            _k053245.ViostormSpriteLayout = UsesViostormHardware;
+            _k056832.ViostormTileCallback = UsesViostormHardware;
+            _k056832.MoomesaTileCallback = UsesMooHardware;
+            _k056832.Bpp4TileDecode = UsesMooHardware;
+            _k053250.MoomesaClipWindow = UsesMooHardware;
             InvalidateMoomesaBaseFrameCache();
             _interruptLevel = 0;
             _irq5Enabled = false;
@@ -710,13 +728,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _ssridersProtectionReads = 0;
             _ssridersUnknownProtectionReads = 0;
             _lastSsridersProtectionRead = "";
+            _gxProtectionRuns = 0;
+            _lastGxProtection = "";
         }
 
         public void SetInput(ArcadeInputState input) => _input = input;
 
         public void BeginVisible()
         {
-            if (UsesMoomesaHardware)
+            if (UsesMooHardware)
             {
                 _k053252.SetVpos(0);
                 return;
@@ -728,7 +748,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (UsesMystwarrHardware)
             {
                 _k053252.SetVpos(0);
-                if (UsesMetamrphHardware)
+                if (UsesGx4BppHardware)
                     _interruptLevel = 6;
                 else if ((_mystwarrIrqControl & 0x01) != 0)
                     _interruptLevel = 4;
@@ -737,7 +757,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void BeginVblank()
         {
-            if (UsesMoomesaHardware)
+            if (UsesMooHardware)
             {
                 _k053252.SetVpos(ScreenVisibleLines);
                 bool spriteIrq = _moomesaSpriteIrqEnabled && _k053245.ObjectIrqEnabled;
@@ -765,7 +785,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (UsesMystwarrHardware)
             {
                 _k053252.SetVpos(ScreenVisibleLines);
-                if (UsesMetamrphHardware)
+                if (UsesGx4BppHardware)
                 {
                     _k053245.BufferSprites();
                     if (_k053245.ObjectIrqEnabled)
@@ -783,7 +803,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void Render(byte[] frameBuffer)
         {
-            if (UsesMoomesaHardware)
+            if (UsesMooHardware)
             {
                 RenderMoomesa(frameBuffer);
                 return;
@@ -821,6 +841,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public byte ReadByte(uint address)
         {
             address &= 0x00ff_ffff;
+            if (UsesBuckyHardware)
+                return ReadByteBucky(address);
             if (UsesMoomesaHardware)
                 return ReadByteMoomesa(address);
             if (UsesK053245Hardware)
@@ -852,6 +874,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public ushort ReadWord(uint address)
         {
             address &= 0x00ff_ffff;
+            if (UsesBuckyHardware)
+                return ReadWordBucky(address);
             if (UsesMoomesaHardware)
                 return ReadWordMoomesa(address);
             if (UsesK053245Hardware)
@@ -898,6 +922,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteByte(uint address, byte value)
         {
             address &= 0x00ff_ffff;
+            if (UsesBuckyHardware)
+            {
+                WriteByteBucky(address, value);
+                return;
+            }
             if (UsesMoomesaHardware)
             {
                 WriteByteMoomesa(address, value);
@@ -966,6 +995,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         public void WriteWord(uint address, ushort value)
         {
             address &= 0x00ff_ffff;
+            if (UsesBuckyHardware)
+            {
+                WriteWordBucky(address, value);
+                return;
+            }
             if (UsesMoomesaHardware)
             {
                 WriteWordMoomesa(address, value);
@@ -1076,7 +1110,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (_interruptLevel == level)
             {
                 _interruptLevel = 0;
-                if (UsesMoomesaHardware && level == 5 && _moomesaPendingSpriteIrq)
+                if (UsesMooHardware && level == 5 && _moomesaPendingSpriteIrq)
                 {
                     _moomesaPendingSpriteIrq = false;
                     _interruptLevel = 4;
@@ -1095,6 +1129,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + $"k052Byte={_k052EvenByteWrites}/{_k052OddByteWrites} "
                + $"prot={_tmnt2ProtectionRuns}:{_lastTmnt2Protection} "
                + $"ssprot={_ssridersProtectionReads}/{_ssridersUnknownProtectionReads}:{_lastSsridersProtectionRead} "
+               + GxProtectionDebugSummary()
                + K053251DebugSummary()
                + MoomesaDebugSummary()
                + PaletteDebugSummary()
@@ -1137,14 +1172,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             => $"k053251=pri{_k053251[2]:X2}/{_k053251[4]:X2}/{_k053251[3]:X2}/spr{_k053251[1]:X2}/dim{_k053251[5]:X2}/{_k053251[6]:X2} "
                + $"pal{_k053251PaletteIndex[2]:X2}/{_k053251PaletteIndex[4]:X2}/{_k053251PaletteIndex[3]:X2}/spr{_k053251PaletteIndex[1]:X2}/bg{_k053251PaletteIndex[0]:X2} ";
 
+        private string GxProtectionDebugSummary()
+            => UsesViostormHardware ? $"gxprot={_gxProtectionRuns}:{_lastGxProtection} " : string.Empty;
+
         private string MoomesaDebugSummary()
         {
-            if (!UsesMoomesaHardware)
+            if (!UsesMooHardware)
                 return string.Empty;
 
+            uint ramBase = UsesBuckyHardware ? 0x080000u : 0x180000u;
             uint queue = ReadBigEndianLong(_ram, 0x154);
-            ushort queueWord = queue >= 0x180000 && queue <= 0x18fffe
-                ? ReadBigEndianWord(_ram, (int)(queue - 0x180000))
+            ushort queueWord = queue >= ramBase && queue <= ramBase + 0xfffe
+                ? ReadBigEndianWord(_ram, (int)(queue - ramBase))
                 : (ushort)0xffff;
             return $"mooctl=0x{_moomesaControl2:X4}/{(_moomesaVblankIrqEnabled ? 1 : 0)}/{(_moomesaSpriteIrqEnabled ? 1 : 0)} mooq=0x{queue:X6}:0x{queueWord:X4} ";
         }
@@ -1226,7 +1265,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k056832.LayerColorBase[2] = _k055555.GetPaletteIndex(2) << 4;
             _k056832.LayerColorBase[3] = _k055555.GetPaletteIndex(3) << 4;
             _k056832.MetamrphTileCallback = UsesMetamrphHardware;
-            _k053245.SpriteColorBase = _k055555.GetPaletteIndex(4) << (UsesMetamrphHardware ? 4 : 5);
+            _k056832.ViostormTileCallback = UsesViostormHardware;
+            _k053245.SpriteColorBase = _k055555.GetPaletteIndex(4) << (UsesGx4BppHardware ? 4 : 5);
 
             _k054338.FillSolidBackground(frameBuffer);
             if (inputEnables == 0)
@@ -1539,6 +1579,31 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return 0xff;
         }
 
+        private byte ReadByteBucky(uint address)
+        {
+            if (address < 0x080000 || (address >= 0x200000 && address < 0x240000))
+                return _program[address];
+            if (address >= 0x080000 && address <= 0x08ffff)
+                return _ram[address - 0x080000];
+            if (address >= 0x090000 && address <= 0x09ffff)
+                return _moomesaSpriteRam[address - 0x090000];
+            if (address >= 0x0a0000 && address <= 0x0affff)
+                return 0;
+            if (address >= 0x180000 && address <= 0x183fff)
+                return ReadWordByte(_k056832.ReadRamWord((int)(((address - 0x180000) & 0x1fff) >> 1)), address);
+            if (address >= 0x190000 && address <= 0x191fff)
+                return ReadWordByte(_k056832.ReadRomWord((int)((address - 0x190000) >> 1)), address);
+            if (address >= 0x1b0000 && address <= 0x1b3fff)
+                return _paletteRam[address - 0x1b0000];
+            if ((address >= 0x0c4000 && address <= 0x0c4001)
+                || (address >= 0x0d0000 && address <= 0x0d001f)
+                || (address >= 0x0d6000 && address <= 0x0d601f)
+                || (address >= 0x0da000 && address <= 0x0dc003)
+                || (address >= 0x0de000 && address <= 0x0de001))
+                return ReadWordByte(ReadWordBucky(address & ~1u), address);
+            return 0xff;
+        }
+
         private ushort ReadWordMoomesa(uint address)
         {
             if (address < 0x07ffff || (address >= 0x100000 && address < 0x17ffff))
@@ -1569,6 +1634,41 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return _k056832.ReadRomWord((int)((address - 0x1b0000) >> 1));
             if (address >= 0x1c0000 && address <= 0x1c1ffe)
                 return ReadBigEndianWord(_paletteRam, (int)(address - 0x1c0000));
+            return 0xffff;
+        }
+
+        private ushort ReadWordBucky(uint address)
+        {
+            if (address < 0x080000 || (address >= 0x200000 && address < 0x240000))
+                return ReadBigEndianWord(_program, (int)address);
+            if (address >= 0x080000 && address <= 0x08fffe)
+                return ReadBigEndianWord(_ram, (int)(address - 0x080000));
+            if (address >= 0x090000 && address <= 0x09fffe)
+                return ReadBigEndianWord(_moomesaSpriteRam, (int)(address - 0x090000));
+            if (address >= 0x0a0000 && address <= 0x0afffe)
+                return 0;
+            if (address >= 0x0c4000 && address <= 0x0c4001)
+                return _k053245.ReadControlWordNoA1(0);
+            if (address >= 0x0d0000 && address <= 0x0d001e)
+                return (ushort)(0xff00 | _k053252.Read((int)((address - 0x0d0000) >> 1)));
+            if (address >= 0x0d6000 && address <= 0x0d601e)
+                return (ushort)(0xff00 | (_sound?.K054321MainRead((int)((address - 0x0d6000) >> 1)) ?? 0xff));
+            if (address >= 0x0da000 && address <= 0x0da001)
+                return (ushort)((Player(3) << 8) | Player(1));
+            if (address >= 0x0da002 && address <= 0x0da003)
+                return (ushort)((Player(2) << 8) | 0xff);
+            if (address >= 0x0dc000 && address <= 0x0dc001)
+                return (ushort)(0xff00 | MysticCoins());
+            if (address >= 0x0dc002 && address <= 0x0dc003)
+                return (ushort)(0xff00 | MoomesaEepromPort());
+            if (address >= 0x0de000 && address <= 0x0de001)
+                return _moomesaControl2;
+            if (address >= 0x180000 && address <= 0x183ffe)
+                return _k056832.ReadRamWord((int)(((address - 0x180000) & 0x1fff) >> 1));
+            if (address >= 0x190000 && address <= 0x191ffe)
+                return _k056832.ReadRomWord((int)((address - 0x190000) >> 1));
+            if (address >= 0x1b0000 && address <= 0x1b3ffe)
+                return ReadBigEndianWord(_paletteRam, (int)(address - 0x1b0000));
             return 0xffff;
         }
 
@@ -1732,6 +1832,166 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
         }
 
+        private void WriteByteBucky(uint address, byte value)
+        {
+            if (address >= 0x080000 && address <= 0x08ffff)
+            {
+                TraceMoomesaQueueWrite("b", address + 0x100000, value);
+                _ram[address - 0x080000] = value;
+                return;
+            }
+            if (address >= 0x090000 && address <= 0x09ffff)
+            {
+                _moomesaSpriteRam[address - 0x090000] = value;
+                return;
+            }
+            if (address >= 0x0c0000 && address <= 0x0c003f)
+            {
+                _k056832.WriteRegByte((int)(address - 0x0c0000), value);
+                return;
+            }
+            if (address >= 0x0c2000 && address <= 0x0c2007)
+            {
+                _k053245.WriteControl((int)(address - 0x0c2000), value);
+                return;
+            }
+            if (address >= 0x0ca000 && address <= 0x0ca01f)
+            {
+                _k054338.WriteByte((int)(address - 0x0ca000), value);
+                return;
+            }
+            if (address >= 0x0cc000 && address <= 0x0cc01f)
+            {
+                if ((address & 1) != 0)
+                    WriteK053251((int)((address - 0x0cc000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0d0000 && address <= 0x0d001f)
+            {
+                if ((address & 1) != 0)
+                    _k053252.Write((int)((address - 0x0d0000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0d4000 && address <= 0x0d4001)
+            {
+                _sound?.PulseIrq();
+                return;
+            }
+            if (address >= 0x0d6000 && address <= 0x0d601f)
+            {
+                if ((address & 1) != 0)
+                    _sound?.K054321MainWrite((int)((address - 0x0d6000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0d8000 && address <= 0x0d8007)
+            {
+                _k056832.WriteBoardRegByte((int)(address - 0x0d8000), value);
+                return;
+            }
+            if (address >= 0x0de000 && address <= 0x0de001)
+            {
+                ushort control = _moomesaControl2;
+                WriteWordByte(ref control, address, value);
+                WriteMoomesaControl2(control);
+                return;
+            }
+            if (address >= 0x180000 && address <= 0x183fff)
+            {
+                uint wordAddress = address & ~1u;
+                ushort tileWord = _k056832.ReadRamWord((int)(((wordAddress - 0x180000) & 0x1fff) >> 1));
+                WriteWordByte(ref tileWord, address, value);
+                _k056832.WriteRamWord((int)(((wordAddress - 0x180000) & 0x1fff) >> 1), tileWord);
+                return;
+            }
+            if (address >= 0x1b0000 && address <= 0x1b3fff)
+            {
+                _paletteRam[address - 0x1b0000] = value;
+                UpdatePaletteMoomesa((int)((address - 0x1b0000) >> 2));
+                _paletteWrites++;
+                return;
+            }
+            ushort word = ReadWordBucky(address & ~1u);
+            WriteWordByte(ref word, address, value);
+            WriteWordBucky(address & ~1u, word);
+        }
+
+        private void WriteWordBucky(uint address, ushort value)
+        {
+            if (address >= 0x080000 && address <= 0x08fffe)
+            {
+                TraceMoomesaQueueWrite("w", address + 0x100000, value);
+                WriteBigEndianWord(_ram, (int)(address - 0x080000), value);
+                return;
+            }
+            if (address >= 0x090000 && address <= 0x09fffe)
+            {
+                WriteBigEndianWord(_moomesaSpriteRam, (int)(address - 0x090000), value);
+                return;
+            }
+            if (address >= 0x0c0000 && address <= 0x0c003e)
+            {
+                _k056832.WriteRegWord((int)((address - 0x0c0000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0c2000 && address <= 0x0c2006)
+            {
+                _k053245.WriteControlWordNoA1((int)(address - 0x0c2000), value);
+                return;
+            }
+            if (address >= 0x0ca000 && address <= 0x0ca01e)
+            {
+                _k054338.WriteWord((int)((address - 0x0ca000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0cc000 && address <= 0x0cc01e)
+            {
+                WriteK053251((int)((address - 0x0cc000) >> 1), (byte)value);
+                return;
+            }
+            if (address >= 0x0ce000 && address <= 0x0ce01e)
+            {
+                WriteMoomesaProtection((int)((address - 0x0ce000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0d0000 && address <= 0x0d001e)
+            {
+                _k053252.Write((int)((address - 0x0d0000) >> 1), (byte)value);
+                return;
+            }
+            if (address >= 0x0d4000 && address <= 0x0d4001)
+            {
+                _sound?.PulseIrq();
+                return;
+            }
+            if (address >= 0x0d6000 && address <= 0x0d601e)
+            {
+                _sound?.K054321MainWrite((int)((address - 0x0d6000) >> 1), (byte)value);
+                return;
+            }
+            if (address >= 0x0d8000 && address <= 0x0d8006)
+            {
+                _k056832.WriteBoardRegWord((int)((address - 0x0d8000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0de000 && address <= 0x0de001)
+            {
+                WriteMoomesaControl2(value);
+                return;
+            }
+            if (address >= 0x180000 && address <= 0x183ffe)
+            {
+                _k056832.WriteRamWord((int)(((address - 0x180000) & 0x1fff) >> 1), value);
+                return;
+            }
+            if (address >= 0x1b0000 && address <= 0x1b3ffe)
+            {
+                int offset = (int)(address - 0x1b0000);
+                WriteBigEndianWord(_paletteRam, offset, value);
+                UpdatePaletteMoomesa(offset >> 2);
+                _paletteWrites++;
+            }
+        }
+
         private void TraceMoomesaQueueWrite(string size, uint address, uint value)
         {
             if (!TraceMoomesaQueue || _moomesaQueueTraceWrites >= TraceMoomesaQueueLimit)
@@ -1756,7 +2016,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private void WriteMoomesaControl2(ushort value)
         {
             _moomesaControl2 = value;
-            _tmnt2Eeprom.Write((byte)value);
+            byte eepromPins = UsesBuckyHardware
+                ? (byte)((value & ~0x02) | ((value & 0x02) == 0 ? 0x02 : 0x00))
+                : (byte)value;
+            _tmnt2Eeprom.Write(eepromPins);
             _moomesaVblankIrqEnabled = (value & 0x20) != 0;
             _moomesaSpriteIrqEnabled = (value & 0x0800) != 0;
         }
@@ -1787,6 +2050,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
             for (; destination < 256 * 8; destination++)
                 _k053245.WriteHardwareWord(destination, 0);
+            _k053245.BufferSprites();
         }
 
         private void WriteMoomesaProtection(int offset, ushort value)
@@ -1801,18 +2065,29 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int length = _moomesaProtRam[0x0f];
             while (length-- > 0)
             {
-                ushort a = ReadWordMoomesa(src1);
-                ushort b = ReadWordMoomesa(src2);
-                WriteWordMoomesa(dst, (ushort)(a + 2 * b));
+                ushort a = ReadMooProtectionWord(src1);
+                ushort b = ReadMooProtectionWord(src2);
+                WriteMooProtectionWord(dst, (ushort)(a + 2 * b));
                 src1 += 2;
                 src2 += 2;
                 dst += 2;
             }
         }
 
+        private ushort ReadMooProtectionWord(uint address)
+            => UsesBuckyHardware ? ReadWordBucky(address) : ReadWordMoomesa(address);
+
+        private void WriteMooProtectionWord(uint address, ushort value)
+        {
+            if (UsesBuckyHardware)
+                WriteWordBucky(address, value);
+            else
+                WriteWordMoomesa(address, value);
+        }
+
         private byte ReadByteMystwarr(uint address)
         {
-            if (UsesMetamrphHardware)
+            if (UsesGx4BppHardware)
                 return ReadByteMetamrph(address);
 
             if (address < 0x200000)
@@ -1840,7 +2115,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private ushort ReadWordMystwarr(uint address)
         {
-            if (UsesMetamrphHardware)
+            if (UsesGx4BppHardware)
                 return ReadWordMetamrph(address);
 
             if (address < 0x1fffff)
@@ -1874,7 +2149,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void WriteByteMystwarr(uint address, byte value)
         {
-            if (UsesMetamrphHardware)
+            if (UsesGx4BppHardware)
             {
                 WriteByteMetamrph(address, value);
                 return;
@@ -1951,6 +2226,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return ReadWordByte(_k053250.ReadRamWord((int)((address - 0x24c000) >> 1)), address);
             if (address >= 0x250000 && address <= 0x25000f)
                 return ReadWordByte(_k053250.ReadRegWord((int)((address - 0x250000) >> 1)), address);
+            if (UsesViostormHardware && address >= 0x25c000 && address <= 0x25c03f)
+                return ReadWordByte(_gxProtRam[(address - 0x25c000) >> 1], address);
             if (address >= 0x260000 && address <= 0x26001f)
                 return ReadK053252MainByte(address);
             if (address >= 0x268000 && address <= 0x26801f)
@@ -1984,6 +2261,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return _k053250.ReadRamWord((int)((address - 0x24c000) >> 1));
             if (address >= 0x250000 && address <= 0x25000e)
                 return _k053250.ReadRegWord((int)((address - 0x250000) >> 1));
+            if (UsesViostormHardware && address >= 0x25c000 && address <= 0x25c03e)
+                return _gxProtRam[(address - 0x25c000) >> 1];
             if (address >= 0x260000 && address <= 0x26001e)
                 return (ushort)(0xff00 | _k053252.Read((int)((address - 0x260000) >> 1)));
             if (address >= 0x268000 && address <= 0x26801e)
@@ -2043,6 +2322,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 ushort k053250RegWord = _k053250.ReadRegWord((int)((address - 0x250000) >> 1));
                 WriteWordByte(ref k053250RegWord, address, value);
                 _k053250.WriteRegWord((int)((address - 0x250000) >> 1), k053250RegWord);
+                return;
+            }
+            if (UsesViostormHardware && address >= 0x25c000 && address <= 0x25c03f)
+            {
+                int offset = (int)((address - 0x25c000) >> 1);
+                ushort protWord = _gxProtRam[offset];
+                WriteWordByte(ref protWord, address, value);
+                WriteGxProtectionWord(offset, protWord, (address & 1) == 0);
                 return;
             }
             if (address >= 0x254000 && address <= 0x25401f)
@@ -2120,6 +2407,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _k053250.WriteRegWord((int)((address - 0x250000) >> 1), value);
                 return;
             }
+            if (UsesViostormHardware && address >= 0x25c000 && address <= 0x25c03e)
+            {
+                WriteGxProtectionWord((int)((address - 0x25c000) >> 1), value, highByteAccess: true);
+                return;
+            }
             if (address >= 0x254000 && address <= 0x25401e)
             {
                 _k054338.WriteWord((int)((address - 0x254000) >> 1), value);
@@ -2174,12 +2466,162 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
         }
 
+        private void WriteGxProtectionWord(int offset, ushort value, bool highByteAccess)
+        {
+            EnsureGxProtectionRamSize();
+            offset &= 0x1f;
+            _gxProtRam[offset] = value;
+            if (offset != 0 || !highByteAccess)
+                return;
+
+            byte command = (byte)(value >> 8);
+            _gxProtectionRuns++;
+            _lastGxProtection = $"{command:X2}@{_gxProtectionRuns}";
+            switch (command)
+            {
+                case 0x9f:
+                    GxProtectionMemset();
+                    break;
+                case 0x98:
+                    GxProtectionMemcpyPalette();
+                    break;
+                case 0xa0:
+                    GxProtectionUpdateCollisionTable();
+                    break;
+                case 0xc0:
+                    GxProtectionCalculateVector();
+                    break;
+            }
+        }
+
+        private void EnsureGxProtectionRamSize()
+        {
+            if (_gxProtRam.Length >= 0x20)
+                return;
+
+            ushort[] expanded = new ushort[0x20];
+            Array.Copy(_gxProtRam, expanded, _gxProtRam.Length);
+            _gxProtRam = expanded;
+        }
+
+        private void GxProtectionMemset()
+        {
+            uint address = ((uint)_gxProtRam[7] << 16) | _gxProtRam[8];
+            uint blockSize = ((uint)_gxProtRam[10] << 16) | _gxProtRam[11];
+            uint count = (uint)((_gxProtRam[0] & 0xff) + 1);
+            uint limit = address + blockSize * count;
+            ushort fill = _gxProtRam[13];
+            for (uint current = address; current < limit; current += 2)
+                WriteWordMetamrph(current, fill);
+        }
+
+        private void GxProtectionMemcpyPalette()
+        {
+            uint destination = ((uint)_gxProtRam[7] << 16) | _gxProtRam[8];
+            uint source = ((uint)_gxProtRam[2] << 16) | _gxProtRam[3];
+            uint count = (((uint)_gxProtRam[10] << 16) | _gxProtRam[11]) >> 2;
+            for (uint i = 0; i < count; i++)
+            {
+                uint value = ReadLong(source + i * 8);
+                WriteWordMetamrph(destination + i * 4, (ushort)(value >> 16));
+                WriteWordMetamrph(destination + i * 4 + 2, (ushort)value);
+            }
+        }
+
+        private void GxProtectionUpdateCollisionTable()
+        {
+            int count = _gxProtRam[0] & 0xff;
+            uint skip = (uint)(_gxProtRam[1] >> 7);
+            uint address = ((uint)_gxProtRam[2] << 16) | _gxProtRam[3];
+            uint blockSize = ((uint)_gxProtRam[5] << 16) | _gxProtRam[6];
+            if (blockSize == 0)
+                return;
+
+            uint sourceEnd = address + blockSize * (uint)count;
+            uint targetEnd = sourceEnd + blockSize;
+            for (uint source = address; source < sourceEnd; source += blockSize)
+            {
+                int cx1 = (short)ReadWordMetamrph(source);
+                int sx1 = (short)ReadWordMetamrph(source + 2);
+                int wx1 = (short)ReadWordMetamrph(source + 4);
+                int cy1 = (short)ReadWordMetamrph(source + 6);
+                int sy1 = (short)ReadWordMetamrph(source + 8);
+                int wy1 = (short)ReadWordMetamrph(source + 10);
+                int cz1 = (short)ReadWordMetamrph(source + 12);
+                int sz1 = (short)ReadWordMetamrph(source + 14);
+                int wz1 = (short)ReadWordMetamrph(source + 16);
+
+                uint hit = source + skip;
+                uint clearEnd = source + blockSize;
+                for (uint current = hit; current < clearEnd; current++)
+                    WriteByteMetamrph(current, 0);
+
+                for (uint target = source + blockSize; target < targetEnd; hit++, target += blockSize)
+                {
+                    int c2 = (short)ReadWordMetamrph(target);
+                    int s2 = (short)ReadWordMetamrph(target + 2);
+                    int w2 = (short)ReadWordMetamrph(target + 4);
+                    if (Math.Abs((cx1 + sx1) - (c2 + s2)) >= wx1 + w2)
+                        continue;
+
+                    c2 = (short)ReadWordMetamrph(target + 6);
+                    s2 = (short)ReadWordMetamrph(target + 8);
+                    w2 = (short)ReadWordMetamrph(target + 10);
+                    if (Math.Abs((cy1 + sy1) - (c2 + s2)) >= wy1 + w2)
+                        continue;
+
+                    c2 = (short)ReadWordMetamrph(target + 12);
+                    s2 = (short)ReadWordMetamrph(target + 14);
+                    w2 = (short)ReadWordMetamrph(target + 16);
+                    if (Math.Abs((cz1 + sz1) - (c2 + s2)) >= wz1 + w2)
+                        continue;
+
+                    WriteByteMetamrph(hit, 0x80);
+                }
+            }
+        }
+
+        private void GxProtectionCalculateVector()
+        {
+            int dx = (short)_gxProtRam[12];
+            int dy = (short)_gxProtRam[13];
+            int angle;
+            if (dx != 0)
+            {
+                if (dy != 0)
+                {
+                    angle = (int)(Math.Atan(dy / (double)dx) * 128.0 / Math.PI);
+                    if (dx < 0)
+                        angle += 128;
+                    angle = (angle - 0x40) & 0xff;
+                }
+                else
+                {
+                    angle = dx > 0 ? 0xc0 : 0x40;
+                }
+            }
+            else if (dy > 0)
+            {
+                angle = 0;
+            }
+            else if (dy < 0)
+            {
+                angle = 0x80;
+            }
+            else
+            {
+                angle = 0;
+            }
+
+            _gxProtRam[0x10] = (ushort)angle;
+        }
+
         private byte ReadK054321MainByte(uint address)
         {
             if ((address & 1) == 0)
                 return 0xff;
 
-            uint baseAddress = UsesMetamrphHardware ? 0x268000u : 0x498000u;
+            uint baseAddress = UsesGx4BppHardware ? 0x268000u : 0x498000u;
             int offset = (int)((address - baseAddress) >> 1) & 0x0f;
             return _sound?.K054321MainRead(offset) ?? 0xff;
         }
@@ -2189,7 +2631,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if ((address & 1) == 0)
                 return 0xff;
 
-            uint baseAddress = UsesMetamrphHardware ? 0x260000u : 0x49c000u;
+            uint baseAddress = UsesGx4BppHardware ? 0x260000u : 0x49c000u;
             return _k053252.Read((int)((address - baseAddress) >> 1));
         }
 
@@ -2198,13 +2640,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if ((address & 1) == 0)
                 return;
 
-            uint baseAddress = UsesMetamrphHardware ? 0x260000u : 0x49c000u;
+            uint baseAddress = UsesGx4BppHardware ? 0x260000u : 0x49c000u;
             _k053252.Write((int)((address - baseAddress) >> 1), value);
         }
 
         private void WriteWordMystwarr(uint address, ushort value)
         {
-            if (UsesMetamrphHardware)
+            if (UsesGx4BppHardware)
             {
                 WriteWordMetamrph(address, value);
                 return;
@@ -3744,6 +4186,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private ushort _lastRomReadValue;
         [NonSerialized] private int _lastAlphaTileMixCode;
         [NonSerialized] private bool _metamrphTileCallback;
+        [NonSerialized] private bool _viostormTileCallback;
         [NonSerialized] private bool _moomesaTileCallback;
         [NonSerialized] private bool _bpp4TileDecode;
         [NonSerialized] private bool _bpp4TilePensDecoded;
@@ -3768,6 +4211,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             get => _metamrphTileCallback;
             set => _metamrphTileCallback = value;
+        }
+
+        public bool ViostormTileCallback
+        {
+            get => _viostormTileCallback;
+            set => _viostormTileCallback = value;
         }
 
         public bool MoomesaTileCallback
@@ -3803,6 +4252,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _lastRomReadValue = 0;
             _lastAlphaTileMixCode = 0;
             _metamrphTileCallback = false;
+            _viostormTileCallback = false;
             _moomesaTileCallback = false;
             _bpp4TileDecode = false;
             _vramVersion = 0;
@@ -4301,10 +4751,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             flip &= (attr >> MystwarrTileFlipShifts[fbits]) & 3;
 
             int rawColor = (attr & MystwarrTilePaletteMask1[fbits]) | ((attr >> MystwarrTilePaletteShift2[fbits]) & MystwarrTilePaletteMask2[fbits]);
-            color = colorBase | ((_metamrphTileCallback || _moomesaTileCallback) ? ((rawColor >> 2) & 0x0f) : ((rawColor >> 1) & 0x0f));
+            color = colorBase | ((_metamrphTileCallback || _viostormTileCallback || _moomesaTileCallback) ? ((rawColor >> 2) & 0x0f) : ((rawColor >> 1) & 0x0f));
             flipX = (flip & 1) != 0;
             flipY = (flip & 2) != 0;
-            mixCode = _metamrphTileCallback ? attr & 3 : (attr >> 2) & 3;
+            mixCode = (_metamrphTileCallback || _viostormTileCallback) ? attr & 3 : (attr >> 2) & 3;
             if (mixCode != 0)
                 _lastAlphaTileMixCode = mixCode;
         }
@@ -4319,6 +4769,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private int LayerOffsetX(int layer)
         {
+            if (_viostormTileCallback)
+            {
+                return layer switch
+                {
+                    0 => -1,
+                    1 => 1,
+                    2 => 3,
+                    _ => 4
+                };
+            }
+
             if (_metamrphTileCallback)
             {
                 return layer switch
@@ -4341,7 +4802,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private int LayerOffsetY(int layer) => 0;
 
-        private int VisibleOriginX => _moomesaTileCallback ? MoomesaVisibleOriginX : MysticVisibleOriginX;
+        private int VisibleOriginX => (_moomesaTileCallback || _viostormTileCallback) ? MoomesaVisibleOriginX : MysticVisibleOriginX;
 
         private int VisibleOriginY => _metamrphTileCallback ? 15 : MoomesaVisibleOriginY;
 
@@ -4889,6 +5350,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private bool _tmnt2CoordinateMode;
         [NonSerialized] private bool _mystwarrSpriteLayout;
         [NonSerialized] private bool _metamrphSpriteLayout;
+        [NonSerialized] private bool _viostormSpriteLayout;
         [NonSerialized] private bool _normalPlaneSpriteDecode;
         [NonSerialized] private readonly byte[] _mystwarrObjZBuffer = new byte[FrameWidth * FrameHeight];
         [NonSerialized] private readonly byte[] _mystwarrShadowZBuffer = new byte[FrameWidth * FrameHeight];
@@ -4917,6 +5379,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             get => _metamrphSpriteLayout;
             set => _metamrphSpriteLayout = value;
+        }
+
+        public bool ViostormSpriteLayout
+        {
+            get => _viostormSpriteLayout;
+            set => _viostormSpriteLayout = value;
         }
 
         public bool NormalPlaneSpriteDecode
@@ -4956,10 +5424,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _tmnt2CoordinateMode = false;
             _mystwarrSpriteLayout = false;
             _metamrphSpriteLayout = false;
+            _viostormSpriteLayout = false;
             _normalPlaneSpriteDecode = false;
         }
 
-        private int ActiveSpriteCount => (_mystwarrSpriteLayout || _metamrphSpriteLayout) ? SpriteCount : LegacySpriteCount;
+        private int ActiveSpriteCount => (_mystwarrSpriteLayout || _metamrphSpriteLayout || _normalPlaneSpriteDecode) ? SpriteCount : LegacySpriteCount;
 
         public void BufferSprites() => Array.Copy(_ram, _buffer, _ram.Length);
 
@@ -5611,9 +6080,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (flipScreenY)
                     mysticY = -mysticY;
 
-                int chipDx = _metamrphSpriteLayout ? -51 : -48;
-                int chipDy = -24;
-                int visibleOriginY = _metamrphSpriteLayout ? 15 : MysticVisibleOriginY;
+                int chipDx = _viostormSpriteLayout ? -62 : _metamrphSpriteLayout ? -51 : -48;
+                int chipDy = _viostormSpriteLayout ? -23 : -24;
+                int visibleOriginX = _viostormSpriteLayout ? MoomesaVisibleOriginX : MysticVisibleOriginX;
+                int visibleOriginY = _viostormSpriteLayout ? MoomesaVisibleOriginY : _metamrphSpriteLayout ? 15 : MysticVisibleOriginY;
                 mysticX += chipDx;
                 mysticY -= chipDy;
                 mysticX = (mysticX - offx) & (wrapSize - 1);
@@ -5622,7 +6092,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (mysticY >= yWrapLimit) mysticY -= wrapSize;
                 mysticX -= (zoomX * w) >> 13;
                 mysticY -= (zoomY * h) >> 13;
-                mysticX -= MysticVisibleOriginX;
+                mysticX -= visibleOriginX;
                 mysticY -= visibleOriginY;
 
                 int mysticRight = mysticX + ((zoomX * w + (1 << 11)) >> 12);
@@ -6378,7 +6848,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         _k054539_2.SetGain(i + 4, 0.8);
                     }
                 }
-                else if (_variant == TmntHardwareVariant.Moomesa)
+                else if (_variant is TmntHardwareVariant.Moomesa or TmntHardwareVariant.Bucky)
                 {
                     for (int i = 0; i <= 7; i++)
                         _k054539_1.SetGain(i, 1.0);
@@ -6803,7 +7273,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private bool UsesMystwarrSound => IsMystwarrFamily(_variant);
 
-        private bool UsesMoomesaSound => _variant == TmntHardwareVariant.Moomesa;
+        private bool UsesMoomesaSound => _variant is TmntHardwareVariant.Moomesa or TmntHardwareVariant.Bucky;
 
         private int CurrentAudioCpuClock => UsesK053260Sound || UsesMystwarrSound || UsesMoomesaSound ? Tmnt2AudioCpuClock : AudioCpuClock;
 
@@ -9226,7 +9696,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
     private sealed class TmntRomSet
     {
-        public byte[] Program { get; } = new byte[0x200000];
+        public byte[] Program { get; } = new byte[0x240000];
         public byte[] AudioCpu { get; } = new byte[0x40000];
         public byte[] K007232 { get; } = new byte[0x20000];
         public byte[] Upd7759 { get; } = new byte[0x20000];
@@ -9328,6 +9798,26 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
                 return roms;
             }
+            if (name == "viostorm")
+            {
+                roms.Variant = TmntHardwareVariant.Viostorm;
+                Load16Byte(entries, roms.Program, 0x000001, "168eac01.15h");
+                Load16Byte(entries, roms.Program, 0x000000, "168eac02.15f");
+                byte[] vioSound = Find(entries, "168a05.7c");
+                vioSound.CopyTo(roms.AudioCpu, 0);
+                vioSound.CopyTo(roms.AudioCpu, 0x20000);
+                LoadTileWord(entries, roms.TileRom, 0x000000, "168a09.1h");
+                LoadTileWord(entries, roms.TileRom, 0x000002, "168a08.1k");
+                Load64Word(entries, roms.SpriteRom, 0x000000, "168a10.22k");
+                Load64Word(entries, roms.SpriteRom, 0x000002, "168a11.19k");
+                Load64Word(entries, roms.SpriteRom, 0x000004, "168a12.20k");
+                Load64Word(entries, roms.SpriteRom, 0x000006, "168a13.17k");
+                Find(entries, "168a06.1c").CopyTo(roms.K054539, 0x000000);
+                Find(entries, "168a07.1e").CopyTo(roms.K054539, 0x200000);
+                if (TryFind(entries, "viostorm.nv", out byte[]? nv))
+                    Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
+                return roms;
+            }
             if (name == "moomesa")
             {
                 roms.Variant = TmntHardwareVariant.Moomesa;
@@ -9344,6 +9834,26 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 Load64Word(entries, roms.SpriteRom, 0x000006, "151a13.a10");
                 Find(entries, "151a08.b6").CopyTo(roms.K054539, 0);
                 if (TryFind(entries, "moomesa.nv", out byte[]? nv))
+                    Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
+                return roms;
+            }
+            if (name == "bucky")
+            {
+                roms.Variant = TmntHardwareVariant.Bucky;
+                Load16Byte(entries, roms.Program, 0x000000, "173eab01.q5");
+                Load16Byte(entries, roms.Program, 0x000001, "173eab02.q6");
+                Load16Byte(entries, roms.Program, 0x200000, "173a03.t5");
+                Load16Byte(entries, roms.Program, 0x200001, "173a04.t6");
+                Find(entries, "173a07.f5").CopyTo(roms.AudioCpu, 0);
+                Load32Word(entries, roms.TileRom, 0x000000, "173a05.t8");
+                Load32Word(entries, roms.TileRom, 0x000002, "173a06.t10");
+                Load64Word(entries, roms.SpriteRom, 0x000000, "173a10.b8");
+                Load64Word(entries, roms.SpriteRom, 0x000002, "173a11.a8");
+                Load64Word(entries, roms.SpriteRom, 0x000004, "173a12.b10");
+                Load64Word(entries, roms.SpriteRom, 0x000006, "173a13.a10");
+                Find(entries, "173a08.b6").CopyTo(roms.K054539, 0x000000);
+                Find(entries, "173a09.a6").CopyTo(roms.K054539, 0x200000);
+                if (TryFind(entries, "bucky.nv", out byte[]? nv))
                     Array.Copy(nv, roms.Eeprom, Math.Min(nv.Length, roms.Eeprom.Length));
                 return roms;
             }
