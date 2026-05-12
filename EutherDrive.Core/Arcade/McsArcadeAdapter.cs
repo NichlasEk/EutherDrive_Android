@@ -1710,9 +1710,11 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 long drawStart = TraceMcsProfile ? Stopwatch.GetTimestamp() : 0;
                 int publishWidth = width;
                 int publishHeight = height;
+                bool useDirectPrimitiveFastPath = !RequiresSoftwareRenderer();
                 if (!TryDrawNativeRaster(_machine, primitives, out publishWidth, out publishHeight) &&
-                    !TryDrawDirectRgb32(primitives, width, height) &&
-                    !TryDrawDirectPalette16(primitives, width, height))
+                    (!useDirectPrimitiveFastPath ||
+                        (!TryDrawDirectRgb32(primitives, width, height) &&
+                         !TryDrawDirectPalette16(primitives, width, height))))
                 {
                     mame.software_renderer<uint, mame.int_const_0, mame.int_const_0, mame.int_const_0, mame.int_const_16, mame.int_const_8, mame.int_const_0, mame.bool_const_false, mame.bool_const_false>.draw_primitives(
                         primitives,
@@ -1758,6 +1760,9 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         private bool ShouldPublishNativeRaster()
             => !string.IsNullOrWhiteSpace(_owner._driverName)
                 && EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_owner._driverName);
+
+        private bool RequiresSoftwareRenderer()
+            => _owner._driverName is "rampage" or "rampage2";
 
         private bool TryDrawNativeRaster(mame.running_machine machine, mame.render_primitive_list primitives, out int width, out int height)
         {
