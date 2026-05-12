@@ -503,7 +503,7 @@ internal sealed class Sega32XSh2Cpu
             return false;
 
         if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize))
-            return false;
+            return TryFastForwardSchedulerPcRelativePollingLoop(bus, remainingCycles, loopStartPc, firstOpcode);
         if (!IsFastPollingSource(bus, address, loadSize))
             return false;
 
@@ -552,6 +552,69 @@ internal sealed class Sega32XSh2Cpu
         else
         {
             uint exitPc = loopStartPc + 6;
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        Registers.NextInstructionInDelaySlot = false;
+
+        bus.IncrementCycleCounter(cyclesToConsume);
+        CycleCounter += cyclesToConsume;
+        AccumulatePcSample(loopStartPc, cyclesToConsume);
+        return true;
+    }
+
+    private bool TryFastForwardSchedulerPcRelativePollingLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingCycles,
+        uint loopStartPc,
+        ushort firstOpcode)
+    {
+        const ulong InstructionsPerIteration = 4;
+        if (remainingCycles < InstructionsPerIteration)
+            return false;
+        if (!TryDecodePcRelativePollingLoop(bus, loopStartPc, firstOpcode, out int pointerRegister, out uint address, out int loadRegister, out PollingLoadSize loadSize, out ushort testOpcode, out ushort branchOpcode))
+            return false;
+
+        bool branchOnTrue;
+        switch (branchOpcode & 0xFF00)
+        {
+            case 0x8900:
+                branchOnTrue = true;
+                break;
+            case 0x8B00:
+                branchOnTrue = false;
+                break;
+            default:
+                return false;
+        }
+
+        uint branchPc = loopStartPc + 6;
+        uint branchTarget = unchecked(branchPc + 4u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        if (branchTarget != loopStartPc)
+            return false;
+
+        Registers.GeneralPurposeRegisters[pointerRegister] = address;
+        Registers.GeneralPurposeRegisters[loadRegister] = ReadPollingLoadValue(bus, address, loadSize);
+        if (!TryEvaluatePollingTest(testOpcode, loadRegister, out bool testResult))
+            return false;
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = testResult;
+        Registers.StatusRegister = sr;
+
+        bool branchTaken = branchOnTrue ? testResult : !testResult;
+        ulong cyclesToConsume = branchTaken ? remainingCycles : InstructionsPerIteration;
+        if (cyclesToConsume < InstructionsPerIteration)
+            return false;
+
+        if (branchTaken)
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+        else
+        {
+            uint exitPc = loopStartPc + 8;
             Registers.ProgramCounter = exitPc;
             Registers.NextProgramCounter = exitPc + 2;
         }
@@ -2427,7 +2490,7 @@ internal sealed class Sega32XSh2Cpu
             return false;
 
         if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize))
-            return false;
+            return TryExecutePcRelativePollingLoop(bus, remainingInstructions, remainingCycles, loopStartPc, firstOpcode, out consumedInstructions);
         if (!IsFastPollingSource(bus, address, loadSize))
             return false;
 
@@ -2480,6 +2543,76 @@ internal sealed class Sega32XSh2Cpu
         else
         {
             uint exitPc = loopStartPc + 6;
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        Registers.NextInstructionInDelaySlot = false;
+
+        bus.IncrementCycleCounter(cyclesToConsume);
+        CycleCounter += cyclesToConsume;
+        AccumulatePcSample(loopStartPc, cyclesToConsume);
+        consumedInstructions = cyclesToConsume;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecutePcRelativePollingLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        ulong remainingCycles,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        const ulong InstructionsPerIteration = 4;
+        consumedInstructions = 0;
+        if (remainingInstructions < InstructionsPerIteration || remainingCycles < InstructionsPerIteration)
+            return false;
+        if (!TryDecodePcRelativePollingLoop(bus, loopStartPc, firstOpcode, out int pointerRegister, out uint address, out int loadRegister, out PollingLoadSize loadSize, out ushort testOpcode, out ushort branchOpcode))
+            return false;
+
+        bool branchOnTrue;
+        switch (branchOpcode & 0xFF00)
+        {
+            case 0x8900: // BT disp
+                branchOnTrue = true;
+                break;
+            case 0x8B00: // BF disp
+                branchOnTrue = false;
+                break;
+            default:
+                return false;
+        }
+
+        uint branchPc = loopStartPc + 6;
+        uint branchTarget = unchecked(branchPc + 4u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        if (branchTarget != loopStartPc)
+            return false;
+
+        Registers.GeneralPurposeRegisters[pointerRegister] = address;
+        Registers.GeneralPurposeRegisters[loadRegister] = ReadPollingLoadValue(bus, address, loadSize);
+        if (!TryEvaluatePollingTest(testOpcode, loadRegister, out bool testResult))
+            return false;
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = testResult;
+        Registers.StatusRegister = sr;
+
+        bool branchTaken = branchOnTrue ? testResult : !testResult;
+        ulong cyclesToConsume = InstructionsPerIteration;
+        if (branchTaken)
+            cyclesToConsume = Math.Min(remainingInstructions, remainingCycles);
+        if (cyclesToConsume < InstructionsPerIteration)
+            return false;
+
+        if (branchTaken)
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+        else
+        {
+            uint exitPc = loopStartPc + 8;
             Registers.ProgramCounter = exitPc;
             Registers.NextProgramCounter = exitPc + 2;
         }
@@ -2731,6 +2864,100 @@ internal sealed class Sega32XSh2Cpu
             consumedInstructions = cycles;
             return true;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryDecodePcRelativePollingLoop(
+        Sega32XSh2Bus bus,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out int pointerRegister,
+        out uint address,
+        out int loadRegister,
+        out PollingLoadSize loadSize,
+        out ushort testOpcode,
+        out ushort branchOpcode)
+    {
+        pointerRegister = 0;
+        address = 0;
+        loadRegister = 0;
+        loadSize = PollingLoadSize.Word;
+        testOpcode = 0;
+        branchOpcode = 0;
+
+        if ((firstOpcode & 0xF000) != 0xD000) // MOV.L @(disp, PC), Rn
+            return false;
+
+        pointerRegister = (firstOpcode >> 8) & 0xF;
+        uint literalAddress = ((loopStartPc + 4) & ~3u) + (uint)((firstOpcode & 0xFF) << 2);
+        if (!bus.TryPeekInstructionWord(literalAddress, out ushort high) ||
+            !bus.TryPeekInstructionWord(literalAddress + 2, out ushort low))
+        {
+            return false;
+        }
+
+        uint baseAddress = ((uint)high << 16) | low;
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort loadOpcode) ||
+            !TryDecodePointerPollingLoad(loadOpcode, pointerRegister, baseAddress, out loadRegister, out address, out loadSize) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out testOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out branchOpcode))
+        {
+            return false;
+        }
+
+        return IsFastPollingSource(bus, address, loadSize) &&
+            CanEvaluatePollingTest(testOpcode, loadRegister);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryDecodePointerPollingLoad(
+        ushort opcode,
+        int pointerRegister,
+        uint baseAddress,
+        out int loadRegister,
+        out uint address,
+        out PollingLoadSize loadSize)
+    {
+        loadRegister = 0;
+        address = 0;
+        loadSize = PollingLoadSize.Word;
+
+        int n = (opcode >> 8) & 0xF;
+        int m = (opcode >> 4) & 0xF;
+        switch (opcode & 0xF00F)
+        {
+            case 0x6000 when m == pointerRegister: // MOV.B @Rm, Rn
+                loadRegister = n;
+                address = baseAddress;
+                loadSize = PollingLoadSize.Byte;
+                return true;
+            case 0x6001 when m == pointerRegister: // MOV.W @Rm, Rn
+                loadRegister = n;
+                address = baseAddress;
+                loadSize = PollingLoadSize.Word;
+                return true;
+            case 0x6002 when m == pointerRegister: // MOV.L @Rm, Rn
+                loadRegister = n;
+                address = baseAddress;
+                loadSize = PollingLoadSize.Longword;
+                return true;
+        }
+
+        switch (opcode & 0xFF00)
+        {
+            case 0x8400 when m == pointerRegister: // MOV.B @(disp, Rm), R0
+                loadRegister = 0;
+                address = baseAddress + (uint)(opcode & 0xF);
+                loadSize = PollingLoadSize.Byte;
+                return true;
+            case 0x8500 when m == pointerRegister: // MOV.W @(disp, Rm), R0
+                loadRegister = 0;
+                address = baseAddress + (uint)((opcode & 0xF) << 1);
+                loadSize = PollingLoadSize.Word;
+                return true;
+        }
+
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
