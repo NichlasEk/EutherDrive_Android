@@ -936,6 +936,7 @@ namespace mame
 
         u16 svg_latch_68k_r(address_space space, offs_t offset, u16 mem_mask)
         {
+            SyncArmToMainTime();
             return (u16)m_svg_latchdata_arm_w;
         }
 
@@ -1168,7 +1169,10 @@ namespace mame
                 return offset < m_armExternalRomBytes ? m_armExternalRom[(int)offset] : (byte)0xff;
             }
             if (address >= 0x10000000 && address <= 0x100003ff)
+            {
+                ApplyTheGladArmRam2Speedup(address);
                 return m_armRam2[(address - 0x10000000) & 0x3ff];
+            }
             if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
             {
                 ApplyDemonFrontArmRamSpeedup(address);
@@ -1225,7 +1229,10 @@ namespace mame
                     return (u16)(m_armExternalRom[(int)offset] | (m_armExternalRom[(int)(offset + 1)] << 8));
             }
             if (address >= 0x10000000 && address <= 0x100003ff)
+            {
+                ApplyTheGladArmRam2Speedup(address);
                 return ReadLe16(m_armRam2, (address - 0x10000000) & 0x3ff);
+            }
             if (address >= 0x18000000 && address <= (m_useKov2ArmType2 ? 0x1800ffff : 0x1803ffff))
             {
                 ApplyDemonFrontArmRamSpeedup(address);
