@@ -83,7 +83,7 @@ internal sealed class AmbientMusicController : IDisposable
     public void SetMasterVolumePercent(int percent)
     {
         lock (_lock)
-            _masterVolumePercent = Math.Clamp(percent, 0, 100);
+            _masterVolumePercent = Math.Clamp(percent, 0, 200);
     }
 
     public void SetAudioEnabled(bool audioEnabled)

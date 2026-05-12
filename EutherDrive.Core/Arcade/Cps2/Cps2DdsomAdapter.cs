@@ -163,7 +163,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
 
     public void SetMasterVolumePercent(int percent)
     {
-        _masterVolumePercent = Math.Clamp(percent, 0, 100);
+        _masterVolumePercent = Math.Clamp(percent, 0, 200);
     }
 
     public double GetTargetFps() => TargetFps;

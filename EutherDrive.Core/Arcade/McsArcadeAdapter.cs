@@ -450,7 +450,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     public void SetMasterVolumePercent(int percent)
     {
         lock (_sync)
-            _masterVolumePercent = Math.Clamp(percent, 0, 100);
+            _masterVolumePercent = Math.Clamp(percent, 0, 200);
     }
 
     public bool TryDumpHshavocDebugSnapshot(string prefix)

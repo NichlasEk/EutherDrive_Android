@@ -340,7 +340,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
     public void SetMasterVolumePercent(int percent)
     {
-        _masterVolumePercent = Math.Clamp(percent, 0, 100);
+        _masterVolumePercent = Math.Clamp(percent, 0, 200);
     }
 
     public double GetTargetFps() => TargetFps;

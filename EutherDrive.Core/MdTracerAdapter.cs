@@ -770,7 +770,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
     public void SetMasterVolumePercent(int percent)
     {
         if (percent < 0) percent = 0;
-        else if (percent > 100) percent = 100;
+        else if (percent > 200) percent = 200;
         _masterVolumePercent = percent;
     }
 
@@ -802,7 +802,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
             return;
 
         int percent = Volatile.Read(ref _masterVolumePercent);
-        if (percent >= 100)
+        if (percent == 100)
             return;
 
         for (int i = 0; i < samples; i++)

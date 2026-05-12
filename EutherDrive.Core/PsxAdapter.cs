@@ -574,8 +574,8 @@ public sealed class PsxAdapter : IEmulatorCore, ISavestateCapable, IExtendedInpu
     {
         if (percent < 0)
             percent = 0;
-        else if (percent > 100)
-            percent = 100;
+        else if (percent > 200)
+            percent = 200;
         _masterVolumeScale = percent / 100f;
     }
 

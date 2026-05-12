@@ -167,6 +167,12 @@
                         ValueChanged="OnMasterVolumeChanged"/>
                 <TextBlock Name="MasterVolumeValueText" Width="36" Text="50%" VerticalAlignment="Center"/>
               </StackPanel>
+              <CheckBox Name="MasterVolumeX2OverrideCheck"
+                        Content="x2 override"
+                        FontSize="11"
+                        Margin="0,-2,0,0"
+                        Checked="OnMasterVolumeX2OverrideChanged"
+                        Unchecked="OnMasterVolumeX2OverrideChanged"/>
             </StackPanel>
           </Border>
           <Border Classes="panel" Padding="8,5" MinWidth="300">

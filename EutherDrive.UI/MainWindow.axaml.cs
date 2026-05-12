@@ -455,6 +455,7 @@ public partial class MainWindow : Window
     private long _audioPullLastFrameCounter = -1;
     private long _audioPullLastFrameCounterTicks;
     private int _masterVolumePercent = DefaultMasterVolumePercent;
+    private bool _masterVolumeX2Override;
     private int _machineRoomMusicVolumePercent = DefaultMachineRoomMusicVolumePercent;
     private int _psgMixPercent = DefaultPsgMixPercent;
     private int _ymMixPercent = DefaultYmMixPercent;
@@ -626,6 +627,8 @@ public partial class MainWindow : Window
         UpdateTateButton();
         if (MasterVolumeSlider != null)
             MasterVolumeSlider.Value = _masterVolumePercent;
+        if (MasterVolumeX2OverrideCheck != null)
+            MasterVolumeX2OverrideCheck.IsChecked = _masterVolumeX2Override;
         UpdateMasterVolumeText();
         if (MachineRoomMusicVolumeSlider != null)
             MachineRoomMusicVolumeSlider.Value = _machineRoomMusicVolumePercent;
@@ -678,7 +681,7 @@ public partial class MainWindow : Window
         UpdateCrtScanlinesUi();
         UpdateCrtPowerIntroUi();
         UpdateDangerousSportTitlesUi();
-        _ambientMusicController.SetMasterVolumePercent(_masterVolumePercent);
+        _ambientMusicController.SetMasterVolumePercent(GetEffectiveMasterVolumePercent());
         _machineRoomMiniPlayerController.SetVolumePercent(_machineRoomMusicVolumePercent);
         _ambientMusicController.SetAudioEnabled(AudioEnabledCheck?.IsChecked == true || AudioEnvEnabled);
         UpdateMachineRoomUi(_ambientMusicController.GetSnapshot(), _machineRoomMiniPlayerController.GetSnapshot());
@@ -3896,42 +3899,46 @@ public partial class MainWindow : Window
 
     private void ApplyMasterVolumeToCore()
     {
-        _ambientMusicController.SetMasterVolumePercent(_masterVolumePercent);
+        int effectiveVolumePercent = GetEffectiveMasterVolumePercent();
+        _ambientMusicController.SetMasterVolumePercent(effectiveVolumePercent);
         if (_core is MdTracerAdapter adapter)
-            adapter.SetMasterVolumePercent(_masterVolumePercent);
+            adapter.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is SmsGgAdapter sms)
-            sms.SetMasterVolumePercent(_masterVolumePercent);
+            sms.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is SnesAdapter snes)
-            snes.SetMasterVolumePercent(_masterVolumePercent);
+            snes.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is PceCdAdapter pce)
-            pce.SetMasterVolumePercent(_masterVolumePercent);
+            pce.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is GbaAdapter gba)
-            gba.SetMasterVolumePercent(_masterVolumePercent);
+            gba.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is GbAdapter gb)
-            gb.SetMasterVolumePercent(_masterVolumePercent);
+            gb.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is NesAdapter nes)
-            nes.SetMasterVolumePercent(_masterVolumePercent);
+            nes.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is PsxAdapter psx)
-            psx.SetMasterVolumePercent(_masterVolumePercent);
+            psx.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is N64Adapter n64)
-            n64.SetMasterVolumePercent(_masterVolumePercent);
+            n64.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is McsArcadeAdapter mcs)
-            mcs.SetMasterVolumePercent(_masterVolumePercent);
+            mcs.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is KovPgmAdapter kov)
-            kov.SetMasterVolumePercent(_masterVolumePercent);
+            kov.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is NeoGeoAdapter neoGeo)
-            neoGeo.SetMasterVolumePercent(_masterVolumePercent);
+            neoGeo.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter xain)
-            xain.SetMasterVolumePercent(_masterVolumePercent);
+            xain.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is Deco32Adapter deco32)
-            deco32.SetMasterVolumePercent(_masterVolumePercent);
+            deco32.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
-            tmnt.SetMasterVolumePercent(_masterVolumePercent);
+            tmnt.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1)
-            cps1.SetMasterVolumePercent(_masterVolumePercent);
+            cps1.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2)
-            cps2.SetMasterVolumePercent(_masterVolumePercent);
+            cps2.SetMasterVolumePercent(effectiveVolumePercent);
     }
+
+    private int GetEffectiveMasterVolumePercent()
+        => Math.Clamp(_masterVolumeX2Override ? _masterVolumePercent * 2 : _masterVolumePercent, 0, 200);
 
     private void ApplyAudioMixToCore()
     {
@@ -3958,6 +3965,8 @@ public partial class MainWindow : Window
     {
         if (MasterVolumeValueText != null)
             MasterVolumeValueText.Text = $"{_masterVolumePercent}%";
+        if (MasterVolumeX2OverrideCheck != null)
+            ToolTip.SetTip(MasterVolumeX2OverrideCheck, $"Effective master volume: {GetEffectiveMasterVolumePercent()}%");
     }
 
     private void UpdateMachineRoomMusicVolumeText()
@@ -4251,6 +4260,19 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private void OnMasterVolumeX2OverrideChanged(object? sender, RoutedEventArgs e)
+    {
+        bool enabled = MasterVolumeX2OverrideCheck?.IsChecked == true;
+        if (enabled == _masterVolumeX2Override)
+            return;
+
+        _masterVolumeX2Override = enabled;
+        UpdateMasterVolumeText();
+        ApplyMasterVolumeToCore();
+        MaybeUpdateDeckMonitorUi(force: true);
+        SaveSettings();
+    }
+
     private void OnMachineRoomMusicVolumeChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         int percent = ClampPercent((int)Math.Round(e.NewValue));
@@ -4316,6 +4338,7 @@ public partial class MainWindow : Window
 
     private string GetDeckMonitorPulseText(bool romRunning, bool audioEnabled, AmbientMusicSnapshot ambient)
     {
+        int effectiveVolumePercent = GetEffectiveMasterVolumePercent();
         string romText = romRunning
             ? "ROM LIVE"
             : string.IsNullOrWhiteSpace(_romPath)
@@ -4323,7 +4346,7 @@ public partial class MainWindow : Window
                 : "ROM ARMED";
         string audioText = !audioEnabled
             ? "AUDIO OFF"
-            : _masterVolumePercent == 0
+            : effectiveVolumePercent == 0
                 ? "AUDIO 0%"
                 : "AUDIO ON";
         string ambientText = ambient.IsBusy
@@ -4331,7 +4354,7 @@ public partial class MainWindow : Window
             : ambient.IsActive
                 ? romRunning
                     ? "AMBIENT HOLD"
-                    : audioEnabled && _masterVolumePercent > 0
+                    : audioEnabled && effectiveVolumePercent > 0
                         ? "AMBIENT LIVE"
                         : "AMBIENT ARMED"
                 : "AMBIENT OFF";
@@ -4405,19 +4428,23 @@ public partial class MainWindow : Window
 
     private string GetDeckMonitorMixText(bool romRunning, bool audioEnabled, AmbientMusicSnapshot ambient)
     {
+        int effectiveVolumePercent = GetEffectiveMasterVolumePercent();
         string audioText = !audioEnabled
             ? "audio disabled"
-            : _masterVolumePercent == 0
+            : effectiveVolumePercent == 0
                 ? "audio gated"
                 : "audio live";
         string ambientText = ambient.IsBusy
             ? "ambient loading"
             : ambient.IsActive
-                ? audioEnabled && _masterVolumePercent > 0
+                ? audioEnabled && effectiveVolumePercent > 0
                     ? "ambient playing"
                     : "ambient armed"
                 : "ambient off";
-        return $"Master {_masterVolumePercent}% / {audioText} / {ambientText}";
+        string volumeText = _masterVolumeX2Override
+            ? $"Master {_masterVolumePercent}% x2 ({effectiveVolumePercent}%)"
+            : $"Master {_masterVolumePercent}%";
+        return $"{volumeText} / {audioText} / {ambientText}";
     }
 
     private string GetDeckMonitorHeadroomText(bool romRunning)
@@ -5954,6 +5981,7 @@ public partial class MainWindow : Window
         public bool PsxSuperFastBootEnabled { get; set; }
         public PsxVideoStandardMode PsxVideoStandardMode { get; set; } = PsxVideoStandardMode.Auto;
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
+        public bool MasterVolumeX2Override { get; set; }
         public int MachineRoomMusicVolumePercent { get; set; } = DefaultMachineRoomMusicVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -6009,6 +6037,7 @@ public partial class MainWindow : Window
         public bool PsxSuperFastBootEnabled { get; set; }
         public string? PsxVideoStandardMode { get; set; }
         public int MasterVolumePercent { get; set; } = DefaultMasterVolumePercent;
+        public bool MasterVolumeX2Override { get; set; }
         public int MachineRoomMusicVolumePercent { get; set; } = DefaultMachineRoomMusicVolumePercent;
         public int PsgMixPercent { get; set; } = DefaultPsgMixPercent;
         public int YmMixPercent { get; set; } = DefaultYmMixPercent;
@@ -6241,6 +6270,7 @@ public partial class MainWindow : Window
         UpdateRecentRomCombo();
 
         _masterVolumePercent = ClampPercent(settings.MasterVolumePercent);
+        _masterVolumeX2Override = settings.MasterVolumeX2Override;
         _machineRoomMusicVolumePercent = ClampPercent(settings.MachineRoomMusicVolumePercent);
         _psgMixPercent = ClampMixPercent(settings.PsgMixPercent);
         _ymMixPercent = ClampMixPercent(settings.YmMixPercent);
@@ -6490,6 +6520,7 @@ public partial class MainWindow : Window
             PsxSuperFastBootEnabled = _psxSuperFastBootEnabled,
             PsxVideoStandardMode = _psxVideoStandardMode,
             MasterVolumePercent = _masterVolumePercent,
+            MasterVolumeX2Override = _masterVolumeX2Override,
             MachineRoomMusicVolumePercent = _machineRoomMusicVolumePercent,
             PsgMixPercent = _psgMixPercent,
             YmMixPercent = _ymMixPercent,
@@ -6653,6 +6684,7 @@ public partial class MainWindow : Window
             PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled,
             PsxVideoStandardMode = settings.PsxVideoStandardMode.ToString(),
             MasterVolumePercent = settings.MasterVolumePercent,
+            MasterVolumeX2Override = settings.MasterVolumeX2Override,
             MachineRoomMusicVolumePercent = settings.MachineRoomMusicVolumePercent,
             PsgMixPercent = settings.PsgMixPercent,
             YmMixPercent = settings.YmMixPercent,
@@ -6771,6 +6803,7 @@ public partial class MainWindow : Window
             PsxFastLoadEnabled = raw.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = raw.PsxSuperFastBootEnabled,
             MasterVolumePercent = raw.MasterVolumePercent,
+            MasterVolumeX2Override = raw.MasterVolumeX2Override,
             MachineRoomMusicVolumePercent = raw.MachineRoomMusicVolumePercent,
             PsgMixPercent = raw.PsgMixPercent,
             YmMixPercent = raw.YmMixPercent,

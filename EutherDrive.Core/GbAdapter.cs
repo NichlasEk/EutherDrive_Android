@@ -100,7 +100,7 @@ public sealed class GbAdapter : IEmulatorCore, IDisposable, ISavestateCapable
             return ReadOnlySpan<short>.Empty;
 
         ReadOnlySpan<short> source = _emulator.ConsumeAudioBuffer();
-        if (_masterVolumePercent >= 100 || source.IsEmpty)
+        if (_masterVolumePercent == 100 || source.IsEmpty)
             return source;
 
         if (_scaledAudioBuffer.Length < source.Length)
@@ -108,7 +108,7 @@ public sealed class GbAdapter : IEmulatorCore, IDisposable, ISavestateCapable
 
         int scale = _masterVolumePercent;
         for (int i = 0; i < source.Length; i++)
-            _scaledAudioBuffer[i] = (short)((source[i] * scale) / 100);
+            _scaledAudioBuffer[i] = (short)Math.Clamp((source[i] * scale) / 100, short.MinValue, short.MaxValue);
 
         return _scaledAudioBuffer.AsSpan(0, source.Length);
     }
@@ -140,8 +140,8 @@ public sealed class GbAdapter : IEmulatorCore, IDisposable, ISavestateCapable
     {
         if (percent < 0)
             percent = 0;
-        else if (percent > 100)
-            percent = 100;
+        else if (percent > 200)
+            percent = 200;
         _masterVolumePercent = percent;
     }
 

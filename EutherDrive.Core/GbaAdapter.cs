@@ -148,7 +148,7 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
         ReadOnlySpan<short> source = _gba.Audio.OutputBuffer.AsSpan(0, samples);
         if (OutputSampleRate == GbaAudio.SampleRate)
         {
-            if (_masterVolumePercent >= 100)
+            if (_masterVolumePercent == 100)
             {
                 if (GbaPerfEnabled)
                     RecordAudioPerf(Stopwatch.GetTimestamp() - audioStart, samples / 2);
@@ -158,7 +158,7 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
             EnsureScaledAudioCapacity(samples);
             int scale = _masterVolumePercent;
             for (int i = 0; i < samples; i++)
-                _scaledAudioBuffer[i] = (short)((source[i] * scale) / 100);
+                _scaledAudioBuffer[i] = (short)Math.Clamp((source[i] * scale) / 100, short.MinValue, short.MaxValue);
             if (GbaPerfEnabled)
                 RecordAudioPerf(Stopwatch.GetTimestamp() - audioStart, samples / 2);
             return _scaledAudioBuffer.AsSpan(0, samples);
@@ -208,8 +208,8 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
     {
         if (percent < 0)
             percent = 0;
-        else if (percent > 100)
-            percent = 100;
+        else if (percent > 200)
+            percent = 200;
         _masterVolumePercent = percent;
     }
 
@@ -385,10 +385,10 @@ public sealed class GbaAdapter : IEmulatorCore, ISavestateCapable
             int left = InterpolateSample(source, baseIndex * 2, nextIndex * 2, frac);
             int right = InterpolateSample(source, baseIndex * 2 + 1, nextIndex * 2 + 1, frac);
 
-            if (scale < 100)
+            if (scale != 100)
             {
-                left = (left * scale) / 100;
-                right = (right * scale) / 100;
+                left = Math.Clamp((left * scale) / 100, short.MinValue, short.MaxValue);
+                right = Math.Clamp((right * scale) / 100, short.MinValue, short.MaxValue);
             }
 
             _resampledAudioBuffer[outFrame * 2] = (short)left;

@@ -112,8 +112,8 @@ public sealed class N64Adapter : IEmulatorCore
     {
         if (percent < 0)
             percent = 0;
-        else if (percent > 100)
-            percent = 100;
+        else if (percent > 200)
+            percent = 200;
 
         _masterVolumeScale = percent / 100f;
     }
@@ -261,7 +261,7 @@ public sealed class N64Adapter : IEmulatorCore
             _noAudioCount = 0;
         }
 
-        if (_masterVolumeScale < 0.999f)
+        if (Math.Abs(_masterVolumeScale - 1.0f) >= 0.001f)
         {
             float scale = _masterVolumeScale;
             for (int i = 0; i < samples.Length; i++)
