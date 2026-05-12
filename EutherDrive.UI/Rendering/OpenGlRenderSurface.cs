@@ -123,7 +123,6 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         private bool _applyScanlines;
         private bool _applyAdvancedPixelFilter;
         private AdvancedPixelFilterProfile _advancedFilterProfile;
-        private bool _frameUseSafeRgbaUpload;
         private bool _interlaceBlendEnabled;
         private int _interlaceBlendFieldParity = -1;
         private float _scanlineDarken = 1.0f;
@@ -307,7 +306,6 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 _frameDirty = false;
                 _interlaceBlendEnabled = false;
                 _interlaceBlendFieldParity = -1;
-                _frameUseSafeRgbaUpload = _useSafeRgbaUpload;
             }
             QueueRenderRequest();
         }
@@ -742,7 +740,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 frameDirty = _frameDirty;
                 sharpPixelsEnabled = _sharpPixelsEnabled;
                 forceOpaque = _forceOpaque;
-                frameUseSafeRgbaUpload = _frameUseSafeRgbaUpload;
+                frameUseSafeRgbaUpload = _useSafeRgbaUpload;
                 applyScanlines = _applyScanlines;
                 applyAdvancedPixelFilter = _applyAdvancedPixelFilter;
                 advancedFilterProfile = _advancedFilterProfile;
@@ -866,7 +864,6 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         {
             _sharpPixelsEnabled = options.SharpPixels;
             _forceOpaque = options.ForceOpaque;
-            _frameUseSafeRgbaUpload = options.ForceOpaque || _useSafeRgbaUpload;
             _applyScanlines = options.ApplyScanlines;
             _applyAdvancedPixelFilter = options.ApplyAdvancedPixelFilter;
             _advancedFilterProfile = options.AdvancedFilterProfile;
