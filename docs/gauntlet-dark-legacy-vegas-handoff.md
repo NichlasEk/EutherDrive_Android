@@ -1539,3 +1539,187 @@ voodoo packetTypes=0:0,1:607402,2:0,3:0,4:276095,5:0,6:0,7:0
 ```
 
 Note for next pass: the temp probe drain currently stops at `0x8005ed8c`, which is the epilogue area after the event-status helper. If continuing from this exact state, either widen the probe-only drain through the final epilogue or trace the caller around `ra=0xffffffff8005dfc8`. Do not synthesize draw packets yet; the guest still has not submitted FIFO type 3/type 5 or direct triangle commands.
+
+## 2026-05-12 Runtime Read/Delay Helper Fastpath
+
+Continued the post-event/runtime push toward first real Gauntlet graphics.
+
+Added a narrow signature-gated Core fastpath in `GauntletDarkLegacyAdapter.cs` for:
+
+- `0x8005e37c`: wrapper around the runtime read/delay helper.
+- `0x8005eda4`: helper that reads `*(a0)`, calls a short delay routine, and returns the read value.
+
+The fastpath deliberately preserves the actual `_memory.Read32(a0)` so MMIO/Voodoo status reads still get their existing side effects. It only skips the wrapper/prologue/delay overhead.
+
+Verification:
+
+```text
+dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+
+dotnet build /tmp/eutherdrive-gauntlet-probe/GauntletProbe.csproj --no-restore /clp:ErrorsOnly
+Build succeeded.
+328 Warning(s)
+0 Error(s)
+```
+
+Probe status with `/tmp/eutherdrive-gauntlet-probe`, raw disk `/tmp/gauntd24.raw`, `frames=1800`, `CPU_STEPS_PER_FRAME=200000`:
+
+```text
+extra=1048576 before the fastpath:
+pc=0xffffffff8005e37c
+voodoo regs=2054059 fifoWords=2659823 fifoPackets=886617 fastFills=55418 swaps=110836
+
+extra=1049600 after the fastpath:
+pc=0xffffffff8004cc24
+voodoo regs=2054081 fifoWords=2659851 fifoPackets=886624 fastFills=55419 swaps=110838
+
+extra=2097152 after the fastpath:
+pc=0xffffffff80015280
+voodoo regs=2061407 fifoWords=2669355 fifoPackets=889792 fastFills=55617 swaps=111234
+```
+
+Still no real triangle traffic:
+
+```text
+drawPackets=0 directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:611728,2:0,3:0,4:278064,5:0,6:0,7:0
+```
+
+The `0x8004cc24` stop was dumped and is not a small device helper. It is part of a larger formatter/dispatcher path beginning around `0x8004cbd0` with callbacks and stack arguments, so it was not fastpathed. The current next target is `0x80015280` (`lastOp=0x8e070004`) after a 2M-extra run. Dump or trace `0x80015200..0x80015300` before deciding whether it is safe to model.
+
+## 2026-05-12 Probe Sweep Optimization
+
+The repeated Gauntlet probe runs were spending most wall time re-running the same 1800-frame warmup. The temp probe at `/tmp/eutherdrive-gauntlet-probe/Program.cs` now supports:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=1048576,2097152,4194304,8388608
+```
+
+When set, it runs the frame warmup once, then advances cumulatively to each extra-step checkpoint in the same process and prints one compact `checkpoint` line per target. This is currently probe-only and does not affect Core.
+
+Observed sweep with `frames=1800`, `CPU_STEPS_PER_FRAME=200000`:
+
+```text
+checkpoint extra=1048576 pc=0xffffffff8005e37c fifoPackets=886617 drawPackets=0
+checkpoint extra=2097152 pc=0xffffffff8006cd80 fifoPackets=889792 drawPackets=0
+checkpoint extra=4194304 pc=0xffffffff8003a080 fifoPackets=896128 drawPackets=0
+checkpoint extra=8388608 pc=0xffffffff8005ed8c fifoPackets=908809 drawPackets=0
+```
+
+This cut the workflow cost from several full warmups to one full warmup plus incremental stepping. Still no type 3/type 5 or triangle traffic by 8M extra steps:
+
+```text
+voodoo packetTypes=0:0,1:624804,2:0,3:0,4:284005,5:0,6:0,7:0
+```
+
+## 2026-05-12 Probe Warmup Snapshot
+
+Added a probe-only warmup snapshot path in `/tmp/eutherdrive-gauntlet-probe/Program.cs`. This caches the full state after the expensive Gauntlet warmup: adapter frame counter/buffer, R5000 CPU state, Vegas RAM/register state, IDE/SIO/PCI state, and the Voodoo bringup backend counters/buffers.
+
+Use:
+
+```text
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/gauntdl_warmup_1800_200k_v1.bin
+```
+
+If the file exists, the probe loads it immediately after `LoadRom()` and skips the 1800-frame warmup. If the file is missing, the probe runs the warmup once and saves it. Set `EUTHERDRIVE_GAUNTDL_SAVE_WARMUP=1` to force rewriting the snapshot, and `EUTHERDRIVE_GAUNTDL_LOAD_WARMUP=0` to ignore an existing snapshot.
+
+Created and verified:
+
+```text
+/tmp/gauntdl_warmup_1800_200k_v1.bin
+frames=1800
+CPU_STEPS_PER_FRAME=200000
+pc=0xffffffff80053340
+voodoo regs=2046731 fifoWords=2650319 fifoPackets=883449
+```
+
+The immediate load path reproduces the same PC/counters and avoids the frame-progress warmup. A full 1M/2M/4M/8M extra-step sweep from the snapshot completed in seconds and reproduced the current checkpoints:
+
+```text
+checkpoint extra=1048576 drained=3 pc=0xffffffff8005e37c fifoPackets=886617 drawPackets=0
+checkpoint extra=2097152 drained=0 pc=0xffffffff8006cd80 fifoPackets=889792 drawPackets=0
+checkpoint extra=4194304 drained=0 pc=0xffffffff8003a080 fifoPackets=896128 drawPackets=0
+checkpoint extra=8388608 drained=55 pc=0xffffffff8005ed8c fifoPackets=908809 drawPackets=0
+```
+
+This is still probe-only and intentionally not a general emulator save-state. It is enough to make divergent Gauntlet trace/dump passes cheap while bringup is still hunting the first type 3/type 5 draw traffic.
+
+## 2026-05-12 Long Snapshot Sweep
+
+Ran a larger extra-step sweep from `/tmp/gauntdl_warmup_1800_200k_v1.bin`:
+
+```text
+checkpoint extra=16777216 drained=0 pc=0xffffffff80051370 fifoPackets=934174 drawPackets=0
+checkpoint extra=33554432 drained=0 pc=0xffffffff80018efc fifoPackets=984896 drawPackets=0
+checkpoint extra=67108864 drained=105 pc=0xffffffff8005ed8c fifoPackets=1086345 drawPackets=0
+checkpoint extra=134217728 drained=0 pc=0xffffffff8005eda4 fifoPackets=1289241 drawPackets=0
+```
+
+Still no real draw traffic even at 128M extra:
+
+```text
+directTriangles=0 setupTriangles=0
+voodoo packetTypes=0:0,1:886351,2:0,3:0,4:402890,5:0,6:0,7:0
+```
+
+Added a probe-only narrow code-dump env var:
+
+```text
+EUTHERDRIVE_GAUNTDL_DUMP_CODE_RANGES=0xffffffff80018e80:48,0xffffffff80051320:48
+```
+
+Traced `0x80018e80..0x80018f40` at the 32M stop. It is a tight byte/text pack loop that reads bytes from `0x800a5cxx`, converts/combines character values, and writes halfwords through `s2`; it is not the missing Voodoo draw submit. The more useful current target is `0x80051320..0x800513d0`: it touches the command/state area at `0x800b4d20`, updates values around `+0x37c`, and was seen at the 16M checkpoint. Next pass should trace/dump that path and its callers rather than extending blind sweeps.
+
+## 2026-05-12 IOASIC Shuffle/PIC Pass
+
+Implemented a first Gauntlet-DL-specific IOASIC model in `GauntletDarkLegacyAdapter.cs`:
+
+- Wired the loaded `346_gauntlet-dl.u37` security PIC payload into `VegasMemoryMap`.
+- Added the MAME `SHUFFLE_GAUNTDL` register map and IOASIC unlock state.
+- Added a deterministic MAME-style serial PIC2 simulator for serial number, RTC, and NVRAM commands.
+- Updated the existing IOASIC/PIC bit-wait fastpath to mark the IOASIC unlocked, because that fastpath skips the hardware-side unlock path during boot.
+- Updated the probe warmup snapshot format to v2 so it serializes the new IOASIC/PIC state.
+
+The old snapshot was invalid for this pass because it had no IOASIC shuffle/PIC fields. Rebuilt:
+
+```text
+/tmp/gauntdl_warmup_1800_200k_v1.bin
+frames=1800
+CPU_STEPS_PER_FRAME=200000
+pc=0xffffffff80015784
+voodoo regs=14086 fifoWords=13371 fifoPackets=4464
+```
+
+This moved the failure mode. The previous repeated serial callback at `0x80015248` is no longer the active stop from the saved state. The new hard stop is a fatal loop at:
+
+```text
+pc=0xffffffff80015784
+ra=0xffffffff80015784
+s0=0x11
+s1=0x300b
+```
+
+Tracing the caller showed it entered from `0x80015ed4` with the format/error path around `0x80015708`. The string table at `0x80089660` identifies the next blocker:
+
+```text
+"Unable to get home blocks:"
+```
+
+So the bringup has moved from IOASIC/PIC serial failure to disk/filesystem boot-volume discovery. Voodoo still only sees clear/swap/FIFO state packets:
+
+```text
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:3065,2:0,3:0,4:1399,5:0,6:0,7:0
+```
+
+Frame dump after the IOASIC unlock pass:
+
+```text
+/tmp/gauntdl_after_unlock_200k.png
+```
+
+It is still just clear/overlay output, not game graphics. Next pass should inspect IDE/raw disk reads and the boot filesystem home-block parser around `0x80015e80..0x80015f40`, not Voodoo draw submission.

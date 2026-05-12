@@ -164,6 +164,7 @@ internal sealed class GauntletDarkLegacyMachine
         Disk.Attach(romSet.ChdPath);
         Sio.LoadBootRom(romSet.VegasSioRom);
         MemoryMap.LoadMainBootRom(romSet.MainRom);
+        MemoryMap.LoadSecurityPic(romSet.SecurityPic);
         MemoryMap.AttachDevices(Sio, Disk, Audio, Voodoo);
     }
 
@@ -495,6 +496,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeTableLookup(pc))
             return;
         if (TryFastPathKnownRuntimeEventPollWrapper(pc))
+            return;
+        if (TryFastPathKnownRuntimeReadDelayHelper(pc))
             return;
         if (TryFastPathKnownRuntimeEventStatusNoCallback(pc))
             return;
@@ -962,6 +965,7 @@ internal sealed class MipsR5000Core
         ushort mask = _memory.Read16(sp + 0x12);
         _memory.Write16(sp + 0x30, (ushort)~mask);
         _memory.Write32(sp + 0x2c, 1);
+        _memory.MarkIoasicUnlocked();
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
@@ -1722,6 +1726,65 @@ internal sealed class MipsR5000Core
            _memory.Read32(entry + 0x108) == 0x8fbe0018U &&
            _memory.Read32(entry + 0x10c) == 0x27bd0020U &&
            _memory.Read32(entry + 0x110) == 0x03e00008U;
+
+    private bool TryFastPathKnownRuntimeReadDelayHelper(ulong pc)
+    {
+        const ulong wrapperEntry = 0xffffffff8005e37cUL;
+        const ulong readEntry = 0xffffffff8005eda4UL;
+        if (pc != wrapperEntry && pc != readEntry)
+            return false;
+
+        if (!MatchesKnownRuntimeReadDelayWrapperSignature(wrapperEntry) ||
+            !MatchesKnownRuntimeReadWithDelaySignature(readEntry))
+        {
+            return false;
+        }
+
+        uint value = _memory.Read32(_gpr[4]);
+        _gpr[2] = SignExtend32(value);
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (pc == wrapperEntry ? 18UL : 14UL));
+        _instructionCounter += pc == wrapperEntry ? 18UL : 14UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool MatchesKnownRuntimeReadDelayWrapperSignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdffe0U &&
+           _memory.Read32(entry + 0x04) == 0xafbf001cU &&
+           _memory.Read32(entry + 0x08) == 0xafbe0018U &&
+           _memory.Read32(entry + 0x0c) == 0x03a0f02dU &&
+           _memory.Read32(entry + 0x10) == 0xafc40020U &&
+           _memory.Read32(entry + 0x14) == 0x8fc20020U &&
+           _memory.Read32(entry + 0x18) == 0xafc20010U &&
+           _memory.Read32(entry + 0x1c) == 0x8fc40010U &&
+           _memory.Read32(entry + 0x20) == 0x0c017b69U &&
+           _memory.Read32(entry + 0x24) == 0x00000000U &&
+           _memory.Read32(entry + 0x28) == 0x0040182dU &&
+           _memory.Read32(entry + 0x2c) == 0x0060102dU &&
+           _memory.Read32(entry + 0x30) == 0x080178edU &&
+           _memory.Read32(entry + 0x38) == 0x03c0e82dU &&
+           _memory.Read32(entry + 0x48) == 0x03e00008U;
+
+    private bool MatchesKnownRuntimeReadWithDelaySignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdffe0U &&
+           _memory.Read32(entry + 0x04) == 0xafbf001cU &&
+           _memory.Read32(entry + 0x08) == 0xafbe0018U &&
+           _memory.Read32(entry + 0x0c) == 0x03a0f02dU &&
+           _memory.Read32(entry + 0x10) == 0xafc40020U &&
+           _memory.Read32(entry + 0x14) == 0x08017b72U &&
+           _memory.Read32(entry + 0x20) == 0x8fc20020U &&
+           _memory.Read32(entry + 0x24) == 0x8c430000U &&
+           _memory.Read32(entry + 0x28) == 0xafc30010U &&
+           _memory.Read32(entry + 0x2c) == 0x24040002U &&
+           _memory.Read32(entry + 0x30) == 0x0c0043fbU &&
+           _memory.Read32(entry + 0x38) == 0x8fc30010U &&
+           _memory.Read32(entry + 0x3c) == 0x0060102dU &&
+           _memory.Read32(entry + 0x40) == 0x08017b7cU &&
+           _memory.Read32(entry + 0x48) == 0x03c0e82dU &&
+           _memory.Read32(entry + 0x54) == 0x03e00008U;
 
     private bool TryFastPathKnownRuntimeEventStatusNoCallback(ulong pc)
     {
@@ -3311,6 +3374,13 @@ internal sealed class VegasMemoryMap
     private const int PciTypeIo = 0x2;
     private const int PciTypeMemory = 0x6;
     private const int PciTypeConfig = 0x0a;
+    private static readonly int[] GauntletDarkLegacyIoasicShuffleMap =
+    {
+        0x0c, 0x0d, 0x0e, 0x0f,
+        0x00, 0x01, 0x02, 0x03,
+        0x07, 0x08, 0x09, 0x0b,
+        0x0a, 0x05, 0x06, 0x04
+    };
 
     private readonly List<VegasMemoryRange> _ranges = new();
     private readonly byte[] _mainRam = new byte[MainRamSize];
@@ -3318,17 +3388,31 @@ internal sealed class VegasMemoryMap
     private readonly byte[] _fpgaConfigRegisters = new byte[4];
     private readonly byte[] _cpuIoRegisters = new byte[4];
     private readonly ushort[] _ioasicRegisters = new ushort[16];
+    private readonly byte[] _ioasicPicSerialData = new byte[16];
+    private readonly byte[] _ioasicPicBuffer = new byte[16];
+    private readonly byte[] _ioasicPicNvram = new byte[0x100];
+    private readonly byte[] _ioasicPicTimeBuffer = new byte[8];
     private readonly VegasIdePciDevice _idePci = new();
     private readonly VegasVoodooPciDevice _voodooPci = new();
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM") == "1";
     private readonly string? _traceTargetFilter = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET");
     private byte[] _mainBootRom = Array.Empty<byte>();
+    private byte[] _securityPic = Array.Empty<byte>();
     private VegasSioDevice? _sio;
     private IdeDiskDevice? _disk;
     private DcsAudioDevice? _audio;
     private VoodooFacade? _voodoo;
     private ushort _nileIrqState;
     private byte _nileIrqPins;
+    private bool _ioasicShuffleActive;
+    private ushort _ioasicSoundIrqState;
+    private ushort _ioasicPicLatch;
+    private byte _ioasicPicState;
+    private byte _ioasicPicIndex;
+    private byte _ioasicPicTotal;
+    private byte _ioasicPicNvramAddress;
+    private byte _ioasicPicTimeIndex;
+    private bool _ioasicPicTimeJustWritten;
     private bool _fpgaConfigSeenLow;
     private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
@@ -3366,13 +3450,28 @@ internal sealed class VegasMemoryMap
 
     public void LoadMainBootRom(byte[] mainBootRom) => _mainBootRom = mainBootRom.ToArray();
 
+    public void LoadSecurityPic(byte[] securityPic) => _securityPic = securityPic.ToArray();
+
+    public void MarkIoasicUnlocked()
+    {
+        _ioasicShuffleActive = true;
+        _ioasicRegisters[15] = 0;
+        _ioasicRegisters[4] = 0;
+        UpdateIoasicIrq();
+    }
+
     public void Reset()
     {
         Array.Clear(_nileRegisters);
         Array.Clear(_fpgaConfigRegisters);
         Array.Clear(_cpuIoRegisters);
         Array.Clear(_ioasicRegisters);
+        Array.Fill(_ioasicPicNvram, (byte)0xff);
         _ioasicRegisters[8] = 0x0001;
+        _ioasicShuffleActive = false;
+        _ioasicSoundIrqState = 0x0080;
+        ResetIoasicPic();
+        GenerateIoasicPicSerialData();
         _fpgaConfigSeenLow = false;
         _fpgaConfigStatusHigh = false;
         _fpgaConfigDone = false;
@@ -4231,16 +4330,22 @@ internal sealed class VegasMemoryMap
 
     private byte ReadIoasicPackedByte(uint offset)
     {
-        ushort value = ReadIoasicRegister(GetIoasicPackedRegister(offset));
+        ushort value = ReadIoasicRegister(DecodeIoasicRegister(GetIoasicPackedRegister(offset)));
         return (byte)(value >> (int)((offset & 1) * 8));
     }
 
     private void WriteIoasicPackedByte(uint offset, byte value)
     {
-        int register = GetIoasicPackedRegister(offset);
+        int physicalRegister = GetIoasicPackedRegister(offset);
+        int register = DecodeIoasicRegister(physicalRegister);
         int shift = (int)((offset & 1) * 8);
         ushort current = _ioasicRegisters[register];
-        _ioasicRegisters[register] = (ushort)((current & ~(0xff << shift)) | (value << shift));
+        ushort merged = (ushort)((current & ~(0xff << shift)) | (value << shift));
+
+        if (_ioasicShuffleActive)
+            _ioasicRegisters[register] = merged;
+
+        WriteIoasicRegister(register, merged);
         UpdateIoasicIrq();
     }
 
@@ -4251,25 +4356,58 @@ internal sealed class VegasMemoryMap
 
         return register switch
         {
-            0 => 0x2001,
+            0 => _ioasicShuffleActive ? ReadIoasicInputPort(0) : (ushort)0x2001,
+            1 => ReadIoasicInputPort(1),
+            2 => ReadIoasicInputPort(2),
+            3 => ReadIoasicInputPort(3),
             10 => 0x0048,
             11 => 0x000a,
-            13 => 0x0100,
+            13 => (ushort)(ReadIoasicPicData() | (ReadIoasicPicStatus() << 8)),
             _ => _ioasicRegisters[register]
         };
+    }
+
+    private void WriteIoasicRegister(int register, ushort value)
+    {
+        switch (register)
+        {
+            case 0:
+                if (!_ioasicShuffleActive && (value & 0xff) == 0xe2)
+                {
+                    _ioasicShuffleActive = true;
+                    _ioasicRegisters[15] = 0;
+                    _ioasicRegisters[4] = 0;
+                }
+                break;
+            case 4:
+                break;
+            case 5:
+                _ioasicRegisters[6] = (ushort)((value & 0x00ff) | 0x3000);
+                break;
+            case 8:
+                break;
+            case 12:
+                WriteIoasicPic((byte)value);
+                break;
+            case 13:
+                break;
+            case 15:
+                UpdateIoasicIrq();
+                break;
+        }
     }
 
     private void UpdateIoasicIrq()
     {
         ushort intCtl = _ioasicRegisters[15];
-        ushort irqBits = (ushort)(_ioasicRegisters[6] & 0x3f00);
+        ushort irqBits = 0x2000;
+        irqBits |= (ushort)(_ioasicSoundIrqState & 0x00ff);
+        irqBits |= (ushort)(_ioasicRegisters[6] & 0x3f00);
         const ushort fifoState = 0x0008;
         if ((fifoState & 0x08) != 0)
-            irqBits |= 0x0002;
-        if ((fifoState & 0x10) != 0)
-            irqBits |= 0x0004;
-        if ((fifoState & 0x20) != 0)
             irqBits |= 0x0008;
+        if (irqBits != 0)
+            irqBits |= 0x0001;
 
         _ioasicRegisters[14] = irqBits;
         bool asserted = (intCtl & 0x0001) != 0 && (irqBits & intCtl & 0x3ffe) != 0;
@@ -4278,6 +4416,240 @@ internal sealed class VegasMemoryMap
 
     private static int GetIoasicPackedRegister(uint offset)
         => (int)(((offset >> 2) * 2 + ((offset >> 1) & 1)) & 0x0f);
+
+    private int DecodeIoasicRegister(int register)
+        => _ioasicShuffleActive ? GauntletDarkLegacyIoasicShuffleMap[register & 0x0f] : register & 0x0f;
+
+    private ushort ReadIoasicInputPort(int port)
+    {
+        return port switch
+        {
+            0 => 0xffff,
+            1 => BuildSystemInputPort(),
+            2 => BuildPlayerInputPort12(),
+            3 => 0xffff,
+            _ => 0xffff
+        };
+    }
+
+    private ushort BuildSystemInputPort()
+    {
+        ushort value = 0xffff;
+        return value;
+    }
+
+    private ushort BuildPlayerInputPort12()
+    {
+        ushort value = 0xffff;
+        return value;
+    }
+
+    private void GenerateIoasicPicSerialData()
+    {
+        uint serialNumber = 346_123_456;
+        Span<byte> digit = stackalloc byte[9];
+        for (int i = 8; i >= 0; i--)
+        {
+            digit[i] = (byte)(serialNumber % 10);
+            serialNumber /= 10;
+        }
+
+        _ioasicPicSerialData[12] = 0x12;
+        _ioasicPicSerialData[13] = 0x34;
+        _ioasicPicSerialData[14] = 0;
+        _ioasicPicSerialData[15] = 0;
+
+        uint temp = 0x174u * (1999u - 1980u) + 0x1fu * (12u - 1u) + 11u;
+        _ioasicPicSerialData[10] = (byte)(temp >> 8);
+        _ioasicPicSerialData[11] = (byte)temp;
+
+        temp = (uint)(digit[4] + digit[7] * 10 + digit[1] * 100);
+        temp = (temp + 5u * _ioasicPicSerialData[13]) * 0x1bcdu + 0x1f3f0u;
+        _ioasicPicSerialData[7] = (byte)temp;
+        _ioasicPicSerialData[8] = (byte)(temp >> 8);
+        _ioasicPicSerialData[9] = (byte)(temp >> 16);
+
+        temp = (uint)(digit[6] + digit[8] * 10 + digit[0] * 100 + digit[2] * 10000);
+        temp = (temp + 2u * _ioasicPicSerialData[13] + _ioasicPicSerialData[12]) * 0x107fu + 0x71e259u;
+        _ioasicPicSerialData[3] = (byte)temp;
+        _ioasicPicSerialData[4] = (byte)(temp >> 8);
+        _ioasicPicSerialData[5] = (byte)(temp >> 16);
+        _ioasicPicSerialData[6] = (byte)(temp >> 24);
+
+        temp = (uint)(digit[5] * 10 + digit[3] * 100);
+        temp = (temp + _ioasicPicSerialData[12]) * 0x245u + 0x3d74u;
+        _ioasicPicSerialData[0] = (byte)temp;
+        _ioasicPicSerialData[1] = (byte)(temp >> 8);
+        _ioasicPicSerialData[2] = (byte)(temp >> 16);
+    }
+
+    private void ResetIoasicPic()
+    {
+        _ioasicPicLatch = 0;
+        _ioasicPicState = 0;
+        _ioasicPicIndex = 0;
+        _ioasicPicTotal = 0;
+        _ioasicPicNvramAddress = 0;
+        _ioasicPicTimeIndex = 0;
+        _ioasicPicTimeJustWritten = false;
+        Array.Clear(_ioasicPicBuffer);
+        Array.Clear(_ioasicPicTimeBuffer);
+    }
+
+    private byte ReadIoasicPicData()
+    {
+        if ((_ioasicPicLatch & 0x0f00) != 0)
+            return (byte)_ioasicPicLatch;
+        return _ioasicPicIndex < _ioasicPicTotal ? (byte)0xff : (byte)0;
+    }
+
+    private byte ReadIoasicPicStatus()
+    {
+        if ((_ioasicPicLatch & 0x0f00) == 0)
+            return 0;
+
+        _ioasicPicLatch = (ushort)(_ioasicPicLatch >= 0x100 ? _ioasicPicLatch - 0x100 : 0);
+        return 1;
+    }
+
+    private void WriteIoasicPic(byte data)
+    {
+        _ioasicPicLatch = (ushort)((data & 0x0f) | 0x0480);
+        if ((data & 0x10) == 0)
+            return;
+
+        int command = _ioasicPicState != 0 ? _ioasicPicState & 0x0f : _ioasicPicLatch & 0x0f;
+        switch (command)
+        {
+            case 0:
+                LatchNextIoasicPicByte();
+                break;
+            case 1:
+                if (_ioasicPicIndex < _ioasicPicTotal)
+                    LatchNextIoasicPicByte();
+                else
+                {
+                    _ioasicPicSerialData.CopyTo(_ioasicPicBuffer, 0);
+                    _ioasicPicTotal = 16;
+                    _ioasicPicIndex = 0;
+                }
+                break;
+            case 3:
+                PrepareIoasicPicClockRead();
+                break;
+            case 4:
+                WriteIoasicPicClockNibble();
+                break;
+            case 5:
+                WriteIoasicPicNvramNibble();
+                break;
+            case 6:
+                ReadIoasicPicNvramCommand();
+                break;
+            case 8:
+                _ioasicPicLatch = (ushort)(0x0400 | (~command & 0xff));
+                break;
+        }
+    }
+
+    private void LatchNextIoasicPicByte()
+    {
+        if (_ioasicPicIndex < _ioasicPicTotal)
+            _ioasicPicLatch = (ushort)(0x0400 | _ioasicPicBuffer[_ioasicPicIndex++]);
+    }
+
+    private void PrepareIoasicPicClockRead()
+    {
+        _ioasicPicIndex = 0;
+        _ioasicPicTotal = 0;
+        if (_ioasicPicTimeJustWritten)
+        {
+            for (int i = 0; i < 7; i++)
+                _ioasicPicBuffer[_ioasicPicTotal++] = _ioasicPicTimeBuffer[i];
+            return;
+        }
+
+        _ioasicPicBuffer[_ioasicPicTotal++] = MakeBcd(0);
+        _ioasicPicBuffer[_ioasicPicTotal++] = MakeBcd(0);
+        _ioasicPicBuffer[_ioasicPicTotal++] = MakeBcd(12);
+        _ioasicPicBuffer[_ioasicPicTotal++] = MakeBcd(6);
+        _ioasicPicBuffer[_ioasicPicTotal++] = MakeBcd(11);
+        _ioasicPicBuffer[_ioasicPicTotal++] = MakeBcd(12);
+        _ioasicPicBuffer[_ioasicPicTotal++] = MakeBcd(1999 - 1900 - 80);
+    }
+
+    private void WriteIoasicPicClockNibble()
+    {
+        if (_ioasicPicState == 0)
+        {
+            _ioasicPicState = 0x14;
+            _ioasicPicTimeIndex = 0;
+        }
+        else if (_ioasicPicState == 0x14)
+        {
+            _ioasicPicTimeBuffer[_ioasicPicTimeIndex] = (byte)(_ioasicPicLatch & 0x0f);
+            _ioasicPicState = 0x24;
+        }
+        else if (_ioasicPicState == 0x24)
+        {
+            _ioasicPicTimeBuffer[_ioasicPicTimeIndex++] |= (byte)((_ioasicPicLatch & 0x0f) << 4);
+            if (_ioasicPicTimeIndex < 7)
+                _ioasicPicState = 0x14;
+            else
+            {
+                _ioasicPicTimeJustWritten = true;
+                _ioasicPicState = 0;
+            }
+        }
+    }
+
+    private void WriteIoasicPicNvramNibble()
+    {
+        if (_ioasicPicState == 0)
+            _ioasicPicState = 0x15;
+        else if (_ioasicPicState == 0x15)
+        {
+            _ioasicPicNvramAddress = (byte)(_ioasicPicLatch & 0x0f);
+            _ioasicPicState = 0x25;
+        }
+        else if (_ioasicPicState == 0x25)
+        {
+            _ioasicPicNvramAddress |= (byte)((_ioasicPicLatch & 0x0f) << 4);
+            _ioasicPicState = 0x35;
+        }
+        else if (_ioasicPicState == 0x35)
+        {
+            _ioasicPicNvram[_ioasicPicNvramAddress] = (byte)(_ioasicPicLatch & 0x0f);
+            _ioasicPicState = 0x45;
+        }
+        else if (_ioasicPicState == 0x45)
+        {
+            _ioasicPicNvram[_ioasicPicNvramAddress] |= (byte)((_ioasicPicLatch & 0x0f) << 4);
+            _ioasicPicState = 0;
+        }
+    }
+
+    private void ReadIoasicPicNvramCommand()
+    {
+        if (_ioasicPicState == 0)
+            _ioasicPicState = 0x16;
+        else if (_ioasicPicState == 0x16)
+        {
+            _ioasicPicNvramAddress = (byte)(_ioasicPicLatch & 0x0f);
+            _ioasicPicState = 0x26;
+        }
+        else if (_ioasicPicState == 0x26)
+        {
+            _ioasicPicNvramAddress |= (byte)((_ioasicPicLatch & 0x0f) << 4);
+            _ioasicPicBuffer[0] = _ioasicPicNvram[_ioasicPicNvramAddress];
+            _ioasicPicTotal = 1;
+            _ioasicPicIndex = 0;
+            _ioasicPicState = 0;
+        }
+    }
+
+    private static byte MakeBcd(int value)
+        => (byte)(((value / 10) << 4) | (value % 10));
 
     private byte ReadCpuIo(uint offset)
     {
@@ -6233,6 +6605,7 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
 {
     private readonly bool _traceRegisters = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1";
     private readonly bool _traceFifo = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO") == "1";
+    private readonly bool _traceInterestingFifo = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_INTERESTING") == "1";
     private readonly bool _traceLfb = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB") == "1";
     private readonly bool _traceTexture = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX") == "1";
     private readonly int _fifoTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT", 64);
@@ -6245,6 +6618,7 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
     public static bool IsEnabled()
         => Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1" ||
            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO") == "1" ||
+           Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_INTERESTING") == "1" ||
            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB") == "1" ||
            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX") == "1";
 
@@ -6265,6 +6639,15 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
             for (int i = 0; i < words.Length && _fifoTraceCount < _fifoTraceLimit; i++, _fifoTraceCount++)
                 Console.WriteLine($"[GAUNTDL:VOODOO] fifo[{_fifoTraceCount:x6}]={words[i]:x8}");
         }
+        else if (_traceInterestingFifo)
+        {
+            for (int i = 0; i < words.Length && _fifoTraceCount < _fifoTraceLimit; i++)
+            {
+                uint word = words[i];
+                if (IsInterestingFifoWord(word, out string description))
+                    Console.WriteLine($"[GAUNTDL:VOODOO] fifoInteresting[{_fifoTraceCount++:x6}]={word:x8} {description}");
+            }
+        }
     }
 
     public override void WriteLfb32(uint offset, uint value)
@@ -6283,4 +6666,54 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
 
     private static int ParseTraceLimit(string name, int fallback)
         => int.TryParse(Environment.GetEnvironmentVariable(name), out int value) && value >= 0 ? value : fallback;
+
+    private static bool IsInterestingFifoWord(uint word, out string description)
+    {
+        uint type = word & 7u;
+        description = "";
+        switch (type)
+        {
+            case 1:
+            {
+                int count = (int)(word >> 16);
+                uint target = (word >> 3) & 0xfffu;
+                description = $"type1 count={count} target=0x{target:x3}";
+                return count is > 0 and <= 64 && TouchesInterestingRegister(target, (uint)count);
+            }
+            case 3:
+                description = $"type3 count={(word >> 6) & 0xfu} code={(word >> 3) & 7u}";
+                return true;
+            case 4:
+            {
+                uint target = (word >> 3) & 0xfffu;
+                uint mask = (word >> 15) & 0x3fffu;
+                description = $"type4 target=0x{target:x3} mask=0x{mask:x4}";
+                for (uint bit = 0; bit < 14; bit++)
+                {
+                    if (((mask >> (int)bit) & 1u) != 0 && IsInterestingRegister(target + bit))
+                        return true;
+                }
+                return false;
+            }
+            case 5:
+                description = $"type5 count={(word >> 3) & 0x7ffffu} space={word >> 30}";
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TouchesInterestingRegister(uint target, uint count)
+    {
+        for (uint i = 0; i < count; i++)
+        {
+            if (IsInterestingRegister(target + i))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsInterestingRegister(uint register)
+        => register is 0x20u or 0x40u or 0x98u or 0xa8u or 0xa9u;
 }
