@@ -930,9 +930,8 @@ namespace mame
 
             SyncArmToMainTime();
             m_arm7.PulseFiq();
-            RunArmSlice(256);
-            m_arm7.ClearFiq();
             SyncArmToMainTime();
+            m_arm7.ClearFiq();
         }
 
         u16 svg_latch_68k_r(address_space space, offs_t offset, u16 mem_mask)
