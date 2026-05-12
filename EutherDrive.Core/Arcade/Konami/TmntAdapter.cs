@@ -2879,7 +2879,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     int color = (attr & 0x7f) * 16 + pen;
                     WritePixel(frameBuffer, sx, sy, palette[color & paletteMask]);
                     if (priorityBuffer != null)
-                        priorityBuffer[sy * FrameWidth + sx] = (byte)(priorityBuffer[sy * FrameWidth + sx] | priorityCode);
+                        priorityBuffer[sy * FrameWidth + sx] = (byte)priorityCode;
                 }
             }
         }
@@ -5349,8 +5349,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (oy >= 640) oy -= 1024;
             ox -= (zoomX * w) >> 13;
             oy -= (zoomY * h) >> 13;
-            // TMNT2's protection output lands in the adjacent K053245 Y phase for gameplay sprites.
-            if (rawY is >= 0x0100 and < 0x0200 && oy >= Tmnt2RawFrameHeight)
+            // TMNT2 protection output can land in adjacent K053245 Y phases; wrap the high phase
+            // by the full 512-pixel sprite span, while keeping the mid phase aligned with gameplay.
+            if (rawY is >= 0x0180 and < 0x0200 && oy >= 384)
+                oy -= 512;
+            else if (rawY is >= 0x0100 and < 0x0200 && oy >= Tmnt2RawFrameHeight)
                 oy -= 128;
             if (Tmnt2CoordinateMode && rawY is >= 0x0100 and < 0x0200 && oy < -128)
                 oy += 512;
