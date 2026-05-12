@@ -9497,6 +9497,11 @@ public partial class MainWindow : Window
     private FrameBlitOptions CreateCurrentFrameBlitOptions(IEmulatorCore core, bool forceOpaque)
     {
         bool applyScanlines = _crtScanlinesEnabled;
+        bool useSafeRgbaUpload =
+            core is McsArcadeAdapter
+            || core is KovPgmAdapter
+            || core is NeoGeoAdapter
+            || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter
             || core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
             || core is Deco32Adapter;
@@ -9509,6 +9514,7 @@ public partial class MainWindow : Window
             ForceOpaque: forceOpaque,
             ApplyScanlines: applyScanlines,
             ApplyAdvancedPixelFilter: applyAdvancedPixelFilter,
+            UseSafeRgbaUpload: useSafeRgbaUpload,
             ScanlineDarkenFactor: scanlineDarkenFactor);
     }
 

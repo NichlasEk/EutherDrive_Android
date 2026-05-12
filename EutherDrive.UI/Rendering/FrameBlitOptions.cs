@@ -14,6 +14,7 @@ public readonly record struct FrameBlitOptions(
     bool ForceOpaque = false,
     bool ApplyScanlines = false,
     bool ApplyAdvancedPixelFilter = false,
+    bool UseSafeRgbaUpload = false,
     int ScanlineDarkenFactor = 256,
     AdvancedPixelFilterProfile AdvancedFilterProfile = AdvancedPixelFilterProfile.Default);
 

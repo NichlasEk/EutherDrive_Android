@@ -87,6 +87,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         private int _textureId;
         private int _textureWidth;
         private int _textureHeight;
+        private bool _textureUseSafeRgbaUpload;
         private readonly int[] _pixelUnpackBufferIds = new int[2];
         private int _pixelUnpackBufferIndex;
         private bool _usePixelUnpackBuffers;
@@ -123,6 +124,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         private bool _applyScanlines;
         private bool _applyAdvancedPixelFilter;
         private AdvancedPixelFilterProfile _advancedFilterProfile;
+        private bool _frameUseSafeRgbaUpload;
         private bool _interlaceBlendEnabled;
         private int _interlaceBlendFieldParity = -1;
         private float _scanlineDarken = 1.0f;
@@ -304,6 +306,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 _frameBytes = Array.Empty<byte>();
                 _uploadBytes = Array.Empty<byte>();
                 _frameDirty = false;
+                _frameUseSafeRgbaUpload = _useSafeRgbaUpload;
                 _interlaceBlendEnabled = false;
                 _interlaceBlendFieldParity = -1;
             }
@@ -595,6 +598,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             gl.TexParameteri(GlTexture2D, GlTextureWrapT, GlClampToEdge);
             _textureWidth = 0;
             _textureHeight = 0;
+            _textureUseSafeRgbaUpload = _useSafeRgbaUpload;
             _texSubImage2D = TexSubImage2DInvoker.Create(gl.GetProcAddress("glTexSubImage2D"));
             _usePixelUnpackBuffers = _enablePixelUnpackBuffers && _texSubImage2D != null && SupportsPixelUnpackBuffers(gl.Version);
             if (_usePixelUnpackBuffers)
@@ -631,6 +635,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             DeletePixelUnpackBuffers(gl);
             _textureWidth = 0;
             _textureHeight = 0;
+            _textureUseSafeRgbaUpload = _useSafeRgbaUpload;
             _texSubImage2D = null;
             _usePixelUnpackBuffers = false;
             _getUniformLocation = null;
@@ -666,6 +671,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             _textureId = 0;
             _textureWidth = 0;
             _textureHeight = 0;
+            _textureUseSafeRgbaUpload = _useSafeRgbaUpload;
             _pixelUnpackBufferIds[0] = 0;
             _pixelUnpackBufferIds[1] = 0;
             _pixelUnpackBufferIndex = 0;
@@ -740,7 +746,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 frameDirty = _frameDirty;
                 sharpPixelsEnabled = _sharpPixelsEnabled;
                 forceOpaque = _forceOpaque;
-                frameUseSafeRgbaUpload = _useSafeRgbaUpload;
+                frameUseSafeRgbaUpload = _frameUseSafeRgbaUpload;
                 applyScanlines = _applyScanlines;
                 applyAdvancedPixelFilter = _applyAdvancedPixelFilter;
                 advancedFilterProfile = _advancedFilterProfile;
@@ -761,7 +767,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
 
             if (frameDirty && frameBytes.Length > 0)
             {
-                EnsureTextureStorage(gl, frameWidth, frameHeight);
+                EnsureTextureStorage(gl, frameWidth, frameHeight, frameUseSafeRgbaUpload);
                 long uploadStart = Stopwatch.GetTimestamp();
                 fixed (byte* pFrame = frameBytes)
                 {
@@ -864,6 +870,7 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
         {
             _sharpPixelsEnabled = options.SharpPixels;
             _forceOpaque = options.ForceOpaque;
+            _frameUseSafeRgbaUpload = options.UseSafeRgbaUpload || _useSafeRgbaUpload;
             _applyScanlines = options.ApplyScanlines;
             _applyAdvancedPixelFilter = options.ApplyAdvancedPixelFilter;
             _advancedFilterProfile = options.AdvancedFilterProfile;
@@ -916,9 +923,9 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
             return OperatingSystem.IsAndroid();
         }
 
-        private void EnsureTextureStorage(GlInterface gl, int frameWidth, int frameHeight)
+        private void EnsureTextureStorage(GlInterface gl, int frameWidth, int frameHeight, bool useSafeRgbaUpload)
         {
-            if (_textureWidth == frameWidth && _textureHeight == frameHeight)
+            if (_textureWidth == frameWidth && _textureHeight == frameHeight && _textureUseSafeRgbaUpload == useSafeRgbaUpload)
                 return;
 
             gl.TexImage2D(
@@ -928,15 +935,16 @@ public sealed class OpenGlRenderSurface : IAcceleratedRenderSurface, IDisposable
                 frameWidth,
                 frameHeight,
                 0,
-                _useSafeRgbaUpload ? GlRgba : GlBgra,
+                useSafeRgbaUpload ? GlRgba : GlBgra,
                 GlUnsignedByte,
                 IntPtr.Zero);
 
             _textureWidth = frameWidth;
             _textureHeight = frameHeight;
+            _textureUseSafeRgbaUpload = useSafeRgbaUpload;
 
             if (_traceEnabled)
-                Console.WriteLine($"[OpenGL] Alloc texture {_textureWidth}x{_textureHeight}");
+                Console.WriteLine($"[OpenGL] Alloc texture {_textureWidth}x{_textureHeight} safeUpload={useSafeRgbaUpload}");
         }
 
         private void UploadTexturePixels(GlInterface gl, int frameWidth, int frameHeight, IntPtr pixels, int format)
