@@ -36,6 +36,7 @@ internal sealed class Sega32XScaffoldCore
     private readonly ulong[] _commWriteM68kReferenceCycles = new ulong[CommWriteFifoSize];
     private readonly Sega32XCommSource[] _commWriteSources = new Sega32XCommSource[CommWriteFifoSize];
     private readonly bool[] _commWriteValid = new bool[CommWriteFifoSize];
+    private readonly ulong _sh2ExecutionSliceLength;
     private int _commWriteNextIndex;
     private ulong _globalSh2Cycles;
     private bool _commPortSyncInProgress;
@@ -69,6 +70,9 @@ internal sealed class Sega32XScaffoldCore
             MasterSh2.TurboStraightLineEnabled = true;
             SlaveSh2.TurboStraightLineEnabled = true;
         }
+        _sh2ExecutionSliceLength = ShouldUseCoarseSh2SliceForRom(_romData)
+            ? Math.Max(DefaultSh2ExecutionSliceLength, 4096)
+            : DefaultSh2ExecutionSliceLength;
         _masterBus = new Sega32XSh2Bus(this, Sega32XCpu.Master);
         _slaveBus = new Sega32XSh2Bus(this, Sega32XCpu.Slave);
     }
@@ -89,7 +93,7 @@ internal sealed class Sega32XScaffoldCore
     public ReadOnlySpan<byte> SlaveBootRom => _slaveBootRom;
     public bool UseExperimentalSharedTimebase => ExperimentalSharedTimebaseEnabled;
     public ulong Sh2InstructionsPerFrame => DefaultSh2InstructionsPerFrame;
-    public ulong Sh2ExecutionSliceLength => DefaultSh2ExecutionSliceLength;
+    public ulong Sh2ExecutionSliceLength => _sh2ExecutionSliceLength;
     public string? BuildAndResetPerfPcSummary()
     {
         string? master = MasterSh2.BuildAndResetPerfPcSummary();
@@ -247,7 +251,7 @@ internal sealed class Sega32XScaffoldCore
             ulong previousSlaveCycles = _slaveBus.SchedulerCycleCounter;
             ulong targetCycles = Math.Min(
                 _globalSh2Cycles,
-                Math.Min(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + DefaultSh2ExecutionSliceLength);
+                Math.Min(_masterBus.SchedulerCycleCounter, _slaveBus.SchedulerCycleCounter) + _sh2ExecutionSliceLength);
 
             if (SlaveFirstSh2Scheduling)
             {
@@ -303,7 +307,7 @@ internal sealed class Sega32XScaffoldCore
             return;
         }
 
-        ulong slice = DefaultSh2ExecutionSliceLength;
+        ulong slice = _sh2ExecutionSliceLength;
         if (WaitLoopFastForwardEnabled && cpu.IsAtBatchableWaitLoop(bus))
             slice = remaining;
         else if (slice > remaining)
@@ -603,6 +607,14 @@ internal sealed class Sega32XScaffoldCore
     private static bool ShouldEnableTurboStraightLineForRom(byte[] romData)
     {
         if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TURBO_STRAIGHT_LINE")))
+            return false;
+
+        return Sega32XRomDetector.IsKnucklesChaotix(romData);
+    }
+
+    private static bool ShouldUseCoarseSh2SliceForRom(byte[] romData)
+    {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_SCAFFOLD_SH2_SLICE")))
             return false;
 
         return Sega32XRomDetector.IsKnucklesChaotix(romData);
