@@ -1208,6 +1208,53 @@ internal sealed class Sega32XSh2Bus
         return true;
     }
 
+    public bool TryBulkFillSdramByte(uint address, byte value, ulong iterations)
+    {
+        if (iterations == 0)
+            return false;
+
+        uint addressSpace = address >> 29;
+        if (addressSpace is not 0 and not 1)
+            return false;
+
+        uint masked = address & Sh2ExternalAddressMask;
+        if (masked < 0x06000000 || masked >= 0x06040000)
+            return false;
+
+        ulong byteOffset = masked - 0x06000000;
+        ulong byteLength = (ulong)_core.Bus.Sdram.Length << 1;
+        if (byteOffset + iterations > byteLength || iterations > int.MaxValue)
+            return false;
+
+        ushort[] sdram = _core.Bus.Sdram;
+        int wordIndex = (int)(byteOffset >> 1);
+        int remainingBytes = (int)iterations;
+        ushort repeated = (ushort)((value << 8) | value);
+
+        if (((uint)byteOffset & 1) != 0 && remainingBytes > 0)
+        {
+            sdram[wordIndex] = (ushort)((sdram[wordIndex] & 0xFF00) | value);
+            wordIndex++;
+            remainingBytes--;
+        }
+
+        int fullWords = remainingBytes >> 1;
+        if (fullWords > 0)
+        {
+            sdram.AsSpan(wordIndex, fullWords).Fill(repeated);
+            wordIndex += fullWords;
+            remainingBytes -= fullWords << 1;
+        }
+
+        if (remainingBytes > 0)
+            sdram[wordIndex] = (ushort)((sdram[wordIndex] & 0x00FF) | (value << 8));
+
+        CountSdramWrite(iterations);
+        CycleCounter += iterations * (1 + Sh2SdramReadCycles);
+        InvalidateExecutableSdramPage(masked);
+        return true;
+    }
+
     public bool TryBulkCopySdram(uint sourceAddress, uint destinationAddress, bool isLongword, ulong iterations)
     {
         if (iterations == 0)

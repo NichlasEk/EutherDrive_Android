@@ -85,7 +85,8 @@ internal sealed class Sega32XSh2Cpu
         ParseBoolEnvDefault("EUTHERDRIVE_S32X_TURBO_STRAIGHT_LINE", false);
     private const ulong TurboStraightLineMaxOps = 48;
     private static readonly DecodedOp[] FastOpcodeTable = BuildFastOpcodeTable();
-    private static readonly bool MemLoopFusionEnabled =
+    [NonSerialized] private bool _memoryLoopFusionEnabled = MemoryLoopFusionDefaultEnabled;
+    private static readonly bool MemoryLoopFusionDefaultEnabled =
         string.Equals(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_MEM_LOOP_FUSION"),
             "1",
@@ -120,6 +121,12 @@ internal sealed class Sega32XSh2Cpu
     {
         get => _turboStraightLineEnabled;
         set => _turboStraightLineEnabled = value;
+    }
+
+    public bool MemoryLoopFusionEnabled
+    {
+        get => _memoryLoopFusionEnabled;
+        set => _memoryLoopFusionEnabled = value;
     }
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
@@ -322,7 +329,26 @@ internal sealed class Sega32XSh2Cpu
                 continue;
             }
 
-            if (MemLoopFusionEnabled &&
+            if (!DisablePollingLoopAcceleration &&
+                TryExecuteMemoryCountdownLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (!DisablePollingLoopAcceleration &&
+                TryExecuteDelayedBranchPollingLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
+            {
+                remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
+                if (bus.ShouldStopExecution)
+                    return;
+                continue;
+            }
+
+            if (_memoryLoopFusionEnabled &&
+                IsMemoryTransferLoopCandidate(opcode) &&
                 TryExecuteMemoryTransferLoop(bus, remainingInstructions, pc, opcode, out consumedInstructions))
             {
                 remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
@@ -761,6 +787,16 @@ internal sealed class Sega32XSh2Cpu
             return true;
         }
 
+        if (TryExecuteByteFillIncrementLoop(
+                bus,
+                remainingInstructions,
+                loopStartPc,
+                firstOpcode,
+                out consumedInstructions))
+        {
+            return true;
+        }
+
         if (TryExecuteFillIncrementLoop(
                 bus,
                 remainingInstructions,
@@ -779,6 +815,12 @@ internal sealed class Sega32XSh2Cpu
             firstOpcode,
             isLongword: false,
             out consumedInstructions);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsMemoryTransferLoopCandidate(ushort opcode)
+    {
+        return (opcode & 0xF00F) is 0x6005 or 0x6006 or 0x2000 or 0x2001 or 0x2002;
     }
 
     private bool TryExecuteCopyPostIncrementLoop(
@@ -801,22 +843,38 @@ internal sealed class Sega32XSh2Cpu
         if ((firstOpcode & 0xF00F) != loadMask)
             return false;
 
-        if (!bus.TryPeekInstructionWord(loopStartPc + 8, out ushort branchOpcode) ||
-            (branchOpcode & 0xFF00) != 0x8B00)
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort storeOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort thirdOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort fourthOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 8, out ushort fifthOpcode))
         {
             return false;
         }
 
-        uint branchTarget = unchecked(loopStartPc + 12u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        ushort addOpcode;
+        ushort dtOpcode;
+        ushort branchOpcode;
+        uint branchTarget;
+        if ((fourthOpcode & 0xFF00) == 0x8F00) // BF/S disp; ADD is the delay slot.
+        {
+            dtOpcode = thirdOpcode;
+            branchOpcode = fourthOpcode;
+            addOpcode = fifthOpcode;
+            branchTarget = unchecked(loopStartPc + 10u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        }
+        else
+        {
+            addOpcode = thirdOpcode;
+            dtOpcode = fourthOpcode;
+            branchOpcode = fifthOpcode;
+            if ((branchOpcode & 0xFF00) != 0x8B00) // BF disp.
+                return false;
+
+            branchTarget = unchecked(loopStartPc + 12u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        }
+
         if (branchTarget != loopStartPc)
             return false;
-
-        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort storeOpcode) ||
-            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort addOpcode) ||
-            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort dtOpcode))
-        {
-            return false;
-        }
 
         if ((storeOpcode & 0xF00F) != storeMask ||
             (addOpcode & 0xF000) != 0x7000 ||
@@ -900,6 +958,110 @@ internal sealed class Sega32XSh2Cpu
         Registers.GeneralPurposeRegisters[tempRegister] = value;
         Registers.GeneralPurposeRegisters[sourceRegister] += (uint)(iterations * (ulong)transferSize);
         Registers.GeneralPurposeRegisters[destinationRegister] += (uint)(iterations * (ulong)transferSize);
+        return FinishMemoryLoopIterations(bus, loopStartPc, InstructionsPerIteration, counterRegister, iterations, out consumedInstructions);
+    }
+
+    private bool TryExecuteByteFillIncrementLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        const int InstructionsPerIteration = 4;
+        consumedInstructions = 0;
+
+        if (remainingInstructions < InstructionsPerIteration ||
+            (firstOpcode & 0xF00F) != 0x2000) // MOV.B Rm, @Rn
+        {
+            return false;
+        }
+
+        if (!bus.TryPeekInstructionWord(loopStartPc + 2, out ushort secondOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort thirdOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort fourthOpcode))
+        {
+            return false;
+        }
+
+        ushort addOpcode;
+        ushort dtOpcode;
+        ushort branchOpcode;
+        uint branchTarget;
+        if ((thirdOpcode & 0xFF00) == 0x8F00) // BF/S disp; ADD is the delay slot.
+        {
+            dtOpcode = secondOpcode;
+            branchOpcode = thirdOpcode;
+            addOpcode = fourthOpcode;
+            branchTarget = unchecked(loopStartPc + 8u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        }
+        else
+        {
+            addOpcode = secondOpcode;
+            dtOpcode = thirdOpcode;
+            branchOpcode = fourthOpcode;
+            if ((branchOpcode & 0xFF00) != 0x8B00) // BF disp.
+                return false;
+
+            branchTarget = unchecked(loopStartPc + 10u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        }
+
+        if (branchTarget != loopStartPc ||
+            (addOpcode & 0xF000) != 0x7000 ||
+            (dtOpcode & 0xF0FF) != 0x4010)
+        {
+            return false;
+        }
+
+        int destinationRegister = (firstOpcode >> 8) & 0xF;
+        int valueRegister = (firstOpcode >> 4) & 0xF;
+        int addRegister = (addOpcode >> 8) & 0xF;
+        int counterRegister = (dtOpcode >> 8) & 0xF;
+
+        if (addRegister != destinationRegister ||
+            unchecked((sbyte)(addOpcode & 0xFF)) != 1)
+        {
+            return false;
+        }
+
+        if (valueRegister == destinationRegister ||
+            valueRegister == counterRegister ||
+            destinationRegister == counterRegister)
+        {
+            return false;
+        }
+
+        if (!TryGetMemoryLoopIterations(
+                bus,
+                remainingInstructions,
+                InstructionsPerIteration,
+                counterRegister,
+                out ulong iterations))
+        {
+            return false;
+        }
+
+        uint destination = Registers.GeneralPurposeRegisters[destinationRegister];
+        byte value = (byte)Registers.GeneralPurposeRegisters[valueRegister];
+
+        CurrentInstructionPc = loopStartPc;
+        try
+        {
+            if (!bus.TryBulkFillSdramByte(destination, value, iterations))
+            {
+                for (ulong i = 0; i < iterations; i++)
+                {
+                    bus.WriteByte(destination, value, Sega32XSh2AccessContext.Data);
+                    destination++;
+                }
+            }
+        }
+        finally
+        {
+            CurrentInstructionPc = 0;
+        }
+
+        Registers.GeneralPurposeRegisters[destinationRegister] += (uint)iterations;
         return FinishMemoryLoopIterations(bus, loopStartPc, InstructionsPerIteration, counterRegister, iterations, out consumedInstructions);
     }
 
@@ -2556,6 +2718,215 @@ internal sealed class Sega32XSh2Cpu
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteMemoryCountdownLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        const ulong InstructionsPerIteration = 5;
+        consumedInstructions = 0;
+
+        if (TraceInstructionStart.HasValue || TraceInstructionEnd.HasValue)
+            return false;
+        if (remainingInstructions < InstructionsPerIteration || bus.CycleLimit == ulong.MaxValue)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        if (remainingCycles < InstructionsPerIteration)
+            return false;
+
+        if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize) ||
+            !IsFastPollingSource(bus, address, loadSize) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 2, out ushort testOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort exitBranchOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort dtOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 8, out ushort loopBranchOpcode))
+        {
+            return false;
+        }
+
+        bool exitOnTrue;
+        switch (exitBranchOpcode & 0xFF00)
+        {
+            case 0x8900: // BT disp
+                exitOnTrue = true;
+                break;
+            case 0x8B00: // BF disp
+                exitOnTrue = false;
+                break;
+            default:
+                return false;
+        }
+
+        if (!CanEvaluatePollingTest(testOpcode, loadRegister) ||
+            (dtOpcode & 0xF0FF) != 0x4010 ||
+            (loopBranchOpcode & 0xFF00) != 0x8B00) // BF disp after DT.
+        {
+            return false;
+        }
+
+        int counterRegister = (dtOpcode >> 8) & 0xF;
+        if (counterRegister == loadRegister)
+            return false;
+
+        uint loopBranchPc = loopStartPc + 8;
+        uint loopBranchTarget = unchecked(loopBranchPc + 4u + (uint)(((sbyte)(loopBranchOpcode & 0xFF)) << 1));
+        if (loopBranchTarget != loopStartPc)
+            return false;
+
+        uint exitBranchPc = loopStartPc + 4;
+        uint exitBranchTarget = unchecked(exitBranchPc + 4u + (uint)(((sbyte)(exitBranchOpcode & 0xFF)) << 1));
+        if (exitBranchTarget == loopStartPc || exitBranchTarget == loopStartPc + 6)
+            return false;
+
+        Registers.GeneralPurposeRegisters[loadRegister] = ReadPollingLoadValue(bus, address, loadSize);
+        if (!TryEvaluatePollingTest(testOpcode, loadRegister, out bool testResult))
+            return false;
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = testResult;
+        Registers.StatusRegister = sr;
+
+        bool exitTaken = exitOnTrue ? testResult : !testResult;
+        if (exitTaken)
+            return false;
+
+        ulong maxIterations = Math.Min(
+            remainingInstructions / InstructionsPerIteration,
+            remainingCycles / InstructionsPerIteration);
+        if (maxIterations == 0)
+            return false;
+
+        uint counter = Registers.GeneralPurposeRegisters[counterRegister];
+        ulong iterationsToExit = counter == 0 ? 0x1_0000_0000UL : counter;
+        ulong iterations = Math.Min(maxIterations, iterationsToExit);
+        if (iterations == 0)
+            return false;
+
+        bool loopFinished = iterations == iterationsToExit;
+        Registers.GeneralPurposeRegisters[counterRegister] = unchecked(counter - (uint)iterations);
+
+        sr = Registers.StatusRegister;
+        sr.T = loopFinished;
+        Registers.StatusRegister = sr;
+
+        ulong cyclesToConsume = iterations * InstructionsPerIteration;
+        bus.IncrementCycleCounter(cyclesToConsume);
+        CycleCounter += cyclesToConsume;
+        AccumulatePcSample(loopStartPc, cyclesToConsume);
+
+        if (loopFinished)
+        {
+            uint exitPc = loopStartPc + 10;
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        else
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+
+        Registers.NextInstructionInDelaySlot = false;
+        consumedInstructions = cyclesToConsume;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryExecuteDelayedBranchPollingLoop(
+        Sega32XSh2Bus bus,
+        ulong remainingInstructions,
+        uint loopStartPc,
+        ushort firstOpcode,
+        out ulong consumedInstructions)
+    {
+        const ulong InstructionsPerIteration = 4;
+        consumedInstructions = 0;
+
+        if (TraceInstructionStart.HasValue || TraceInstructionEnd.HasValue)
+            return false;
+        if (remainingInstructions < InstructionsPerIteration || bus.CycleLimit == ulong.MaxValue)
+            return false;
+
+        ulong remainingCycles = bus.CycleLimit > bus.SchedulerCycleCounter
+            ? bus.CycleLimit - bus.SchedulerCycleCounter
+            : 0;
+        if (remainingCycles < InstructionsPerIteration)
+            return false;
+
+        if (!TryDecodePollingLoad(firstOpcode, out int loadRegister, out uint address, out PollingLoadSize loadSize) ||
+            !IsFastPollingSource(bus, address, loadSize) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 2, out ushort testOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 4, out ushort branchOpcode) ||
+            !bus.TryPeekInstructionWord(loopStartPc + 6, out ushort delayOpcode))
+        {
+            return false;
+        }
+
+        bool branchOnTrue;
+        switch (branchOpcode & 0xFF00)
+        {
+            case 0x8D00: // BT/S disp
+                branchOnTrue = true;
+                break;
+            case 0x8F00: // BF/S disp
+                branchOnTrue = false;
+                break;
+            default:
+                return false;
+        }
+
+        uint branchPc = loopStartPc + 4;
+        uint branchTarget = unchecked(branchPc + 4u + (uint)(((sbyte)(branchOpcode & 0xFF)) << 1));
+        if (branchTarget != loopStartPc ||
+            !CanEvaluatePollingTest(testOpcode, loadRegister) ||
+            !CanBatchDelaySlot(delayOpcode, loadRegister))
+        {
+            return false;
+        }
+
+        Registers.GeneralPurposeRegisters[loadRegister] = ReadPollingLoadValue(bus, address, loadSize);
+        if (!TryEvaluatePollingTest(testOpcode, loadRegister, out bool testResult))
+            return false;
+
+        ExecuteBatchableDelaySlot(delayOpcode);
+
+        Sega32XSh2StatusRegister sr = Registers.StatusRegister;
+        sr.T = testResult;
+        Registers.StatusRegister = sr;
+
+        bool branchTaken = branchOnTrue ? testResult : !testResult;
+        ulong cyclesToConsume = branchTaken
+            ? Math.Min(remainingInstructions, remainingCycles)
+            : InstructionsPerIteration;
+        if (cyclesToConsume < InstructionsPerIteration)
+            return false;
+
+        if (branchTaken)
+        {
+            Registers.ProgramCounter = loopStartPc;
+            Registers.NextProgramCounter = loopStartPc + 2;
+        }
+        else
+        {
+            uint exitPc = loopStartPc + 8;
+            Registers.ProgramCounter = exitPc;
+            Registers.NextProgramCounter = exitPc + 2;
+        }
+        Registers.NextInstructionInDelaySlot = false;
+
+        bus.IncrementCycleCounter(cyclesToConsume);
+        CycleCounter += cyclesToConsume;
+        AccumulatePcSample(loopStartPc, cyclesToConsume);
+        consumedInstructions = cyclesToConsume;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryExecutePcRelativePollingLoop(
         Sega32XSh2Bus bus,
         ulong remainingInstructions,
@@ -3123,6 +3494,26 @@ internal sealed class Sega32XSh2Cpu
         }
 
         return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool CanBatchDelaySlot(ushort opcode, int loadRegister)
+    {
+        if (opcode == 0x0009) // NOP
+            return true;
+
+        int n = (opcode >> 8) & 0xF;
+        return (opcode & 0xF000) == 0xE000 && n != loadRegister; // MOV #imm, Rn
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ExecuteBatchableDelaySlot(ushort opcode)
+    {
+        if (opcode == 0x0009)
+            return;
+
+        int n = (opcode >> 8) & 0xF;
+        Registers.GeneralPurposeRegisters[n] = unchecked((uint)(sbyte)(opcode & 0xFF));
     }
 
     private void ExecuteSingleInstruction(Sega32XSh2Bus bus)

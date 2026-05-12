@@ -70,6 +70,11 @@ internal sealed class Sega32XScaffoldCore
             MasterSh2.TurboStraightLineEnabled = true;
             SlaveSh2.TurboStraightLineEnabled = true;
         }
+        if (ShouldEnableMemoryLoopFusionForRom(_romData))
+        {
+            MasterSh2.MemoryLoopFusionEnabled = true;
+            SlaveSh2.MemoryLoopFusionEnabled = true;
+        }
         _sh2ExecutionSliceLength = ShouldUseCoarseSh2SliceForRom(_romData)
             ? Math.Max(DefaultSh2ExecutionSliceLength, 4096)
             : DefaultSh2ExecutionSliceLength;
@@ -609,7 +614,15 @@ internal sealed class Sega32XScaffoldCore
         if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TURBO_STRAIGHT_LINE")))
             return false;
 
-        return Sega32XRomDetector.IsKnucklesChaotix(romData);
+        return true;
+    }
+
+    private static bool ShouldEnableMemoryLoopFusionForRom(byte[] romData)
+    {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_MEM_LOOP_FUSION")))
+            return false;
+
+        return true;
     }
 
     private static bool ShouldUseCoarseSh2SliceForRom(byte[] romData)

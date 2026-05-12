@@ -49,6 +49,12 @@ public static class Sega32XRomDetector
             header.IndexOf("KNUCKLES", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
+    public static bool IsKolibri(byte[] romData)
+    {
+        string header = ReadAscii(romData, 0x100, 0x90);
+        return header.IndexOf("KOLIBRI", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     public static ConsoleRegion? DetectRegion(byte[] romData, out string rawHeader)
     {
         rawHeader = ReadAscii(romData, 0x1F0, 0x10);
