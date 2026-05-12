@@ -1,0 +1,1108 @@
+using System.Collections;
+using System.Reflection;
+using EutherDrive.Core.Arcade.Vegas;
+
+string romPath = args.Length > 0 ? args[0] : "/home/nichlas/roms/MAME/Midway/Vegas/gauntd";
+int frames = args.Length > 1 && int.TryParse(args[1], out int parsedFrames) ? parsedFrames : 600;
+int cpuStepsPerFrameConfig = args.Length > 2 && int.TryParse(args[2], out int cpuStepsPerFrame) && cpuStepsPerFrame > 0
+    ? cpuStepsPerFrame
+    : 0;
+if (cpuStepsPerFrameConfig > 0)
+    Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", cpuStepsPerFrameConfig.ToString());
+int extraStepsArg = args.Length > 3 && int.TryParse(args[3], out int parsedExtraStepsArg) ? parsedExtraStepsArg : 0;
+if (args.Length > 4 && !string.IsNullOrWhiteSpace(args[4]))
+    Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU", "1");
+if (args.Length > 4 && !string.IsNullOrWhiteSpace(args[4]))
+    Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN", args[4]);
+if (args.Length > 5 && !string.IsNullOrWhiteSpace(args[5]))
+    Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX", args[5]);
+if (args.Length > 6 && !string.IsNullOrWhiteSpace(args[6]))
+    Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", args[6]);
+if (args.Length > 7 && args[7] == "dumpcode")
+    Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CODE", "1");
+
+var adapter = new GauntletDarkLegacyAdapter();
+adapter.LoadRom(romPath);
+
+string? warmupSnapshotPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_WARMUP_STATE");
+int warmupFrames = ParseWarmupFrames(frames);
+warmupSnapshotPath = ResolveWarmupSnapshotPath(warmupSnapshotPath, adapter, warmupFrames, cpuStepsPerFrameConfig);
+bool forceSaveWarmupSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SAVE_WARMUP") == "1";
+bool allowLoadWarmupSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_WARMUP") != "0";
+bool loadedWarmupSnapshot = false;
+if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
+    allowLoadWarmupSnapshot &&
+    !forceSaveWarmupSnapshot &&
+    File.Exists(warmupSnapshotPath))
+{
+    LoadWarmupSnapshot(adapter, warmupSnapshotPath, warmupFrames, cpuStepsPerFrameConfig);
+    loadedWarmupSnapshot = true;
+    Console.Error.WriteLine($"warmupSnapshotLoaded={warmupSnapshotPath}");
+}
+
+if (!loadedWarmupSnapshot)
+{
+    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames);
+
+    if (!string.IsNullOrWhiteSpace(warmupSnapshotPath))
+    {
+        SaveWarmupSnapshot(adapter, warmupSnapshotPath, warmupFrames, cpuStepsPerFrameConfig);
+        Console.Error.WriteLine($"warmupSnapshotSaved={warmupSnapshotPath}");
+    }
+}
+
+RunUntilFrame(adapter, frames);
+
+int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
+    ? parsedExtraSteps
+    : extraStepsArg;
+int[] extraSeries = ParseExtraSeries(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_SERIES"));
+if (extraSeries.Length > 0)
+{
+    object probeMachine = GetField(adapter, "_machine");
+    object probeCpu = GetProperty(probeMachine, "Cpu");
+    object probeVoodoo = GetProperty(probeMachine, "Voodoo");
+    MethodInfo step = GetStepMethod(probeCpu);
+    int currentExtra = 0;
+    foreach (int targetExtra in extraSeries)
+    {
+        if (targetExtra < currentExtra)
+            continue;
+
+        int stepped = StepCpu(probeCpu, step, targetExtra - currentExtra);
+        currentExtra += stepped;
+        int drained = DrainHelperPcs(probeCpu, step, 4096);
+        PrintCheckpoint(currentExtra, drained, probeCpu, probeVoodoo);
+    }
+}
+else if (extraSteps > 0)
+{
+    object probeMachine = GetField(adapter, "_machine");
+    object probeCpu = GetProperty(probeMachine, "Cpu");
+    MethodInfo step = GetStepMethod(probeCpu);
+    StepCpu(probeCpu, step, extraSteps);
+    int drained = DrainHelperPcs(probeCpu, step, 4096);
+    Console.WriteLine($"extraCpuSteps={extraSteps}");
+    if (drained > 0)
+        Console.WriteLine($"drainedHelperSteps={drained}");
+}
+
+Console.WriteLine($"rom={adapter.RomIdentity?.Name ?? "unknown"}");
+Console.WriteLine($"frame={adapter.FrameCounter}");
+
+object machine = GetField(adapter, "_machine");
+object cpu = GetProperty(machine, "Cpu");
+Console.WriteLine($"pc=0x{GetProperty(cpu, "Pc"):x16}");
+Console.WriteLine($"lastOp=0x{GetProperty(cpu, "LastFetchedInstruction"):x8}");
+
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_GPRS") == "1")
+    DumpCpuState(cpu);
+
+object disk = GetProperty(machine, "Disk");
+Console.WriteLine($"attached={GetProperty(disk, "Attached")}");
+
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CMD_STATE") == "1")
+    DumpCommandState(GetProperty(machine, "MemoryMap"));
+
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CODE") == "1")
+    DumpCode(GetProperty(machine, "MemoryMap"));
+DumpRequestedCodeRanges(GetProperty(machine, "MemoryMap"));
+DumpRequestedByteRanges(GetProperty(machine, "MemoryMap"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
+    ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
+
+DumpVoodoo(GetProperty(machine, "Voodoo"));
+DumpFrame(adapter);
+
+static object GetField(object instance, string name)
+{
+    FieldInfo? field = FindField(instance.GetType(), name);
+    if (field is null)
+        throw new MissingFieldException(instance.GetType().FullName, name);
+    return field.GetValue(instance) ?? throw new InvalidOperationException($"{name} is null");
+}
+
+static object GetProperty(object instance, string name)
+{
+    PropertyInfo? property = instance.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    if (property is null)
+        throw new MissingMemberException(instance.GetType().FullName, name);
+    return property.GetValue(instance) ?? throw new InvalidOperationException($"{name} is null");
+}
+
+static FieldInfo? FindField(Type type, string name)
+{
+    for (Type? cursor = type; cursor is not null; cursor = cursor.BaseType)
+    {
+        FieldInfo? field = cursor.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (field is not null)
+            return field;
+    }
+
+    return null;
+}
+
+static MethodInfo GetStepMethod(object cpu)
+    => cpu.GetType().GetMethod("Step", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException(cpu.GetType().FullName, "Step");
+
+static int StepCpu(object cpu, MethodInfo step, int count)
+{
+    int stepped = 0;
+    for (; stepped < count; stepped++)
+        step.Invoke(cpu, null);
+    return stepped;
+}
+
+static int DrainHelperPcs(object cpu, MethodInfo step, int limit)
+{
+    int drained = 0;
+    while (drained < limit && IsDrainableHelperPc((ulong)GetProperty(cpu, "Pc")))
+    {
+        step.Invoke(cpu, null);
+        drained++;
+    }
+
+    return drained;
+}
+
+static int[] ParseExtraSeries(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+        return [];
+
+    return value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(item => int.TryParse(item, out int parsed) ? parsed : -1)
+        .Where(item => item >= 0)
+        .Distinct()
+        .Order()
+        .ToArray();
+}
+
+static int ParseWarmupFrames(int targetFrames)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES");
+    if (!int.TryParse(raw, out int parsed) || parsed <= 0)
+        return targetFrames;
+    return Math.Min(parsed, targetFrames);
+}
+
+static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames)
+{
+    while (adapter.FrameCounter.GetValueOrDefault() < targetFrames)
+    {
+        long frame = adapter.FrameCounter.GetValueOrDefault();
+        adapter.RunFrame();
+        if (frame > 0 && frame % 100 == 0)
+            Console.Error.WriteLine($"progress frame={frame}");
+    }
+}
+
+static string? ResolveWarmupSnapshotPath(string? configuredPath, GauntletDarkLegacyAdapter adapter, int frames, int cpuStepsPerFrame)
+{
+    if (string.IsNullOrWhiteSpace(configuredPath))
+        return null;
+    if (!string.Equals(configuredPath.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
+        return configuredPath;
+
+    string romName = adapter.RomIdentity?.Name ?? "unknown";
+    string moduleId = typeof(GauntletDarkLegacyAdapter).Assembly.ManifestModule.ModuleVersionId.ToString("N")[..12];
+    string fileName = $"gauntdl-{SanitizeFileName(romName)}-f{frames}-s{cpuStepsPerFrame}-{moduleId}.warm";
+    return Path.Combine(Path.GetTempPath(), "eutherdrive-gauntlet-probe", fileName);
+}
+
+static string SanitizeFileName(string value)
+{
+    char[] invalid = Path.GetInvalidFileNameChars();
+    Span<char> buffer = value.Length <= 256 ? stackalloc char[value.Length] : new char[value.Length];
+    for (int i = 0; i < value.Length; i++)
+        buffer[i] = invalid.Contains(value[i]) ? '_' : value[i];
+    return new string(buffer);
+}
+
+static void PrintCheckpoint(int extraSteps, int drained, object cpu, object voodoo)
+{
+    object backend = GetField(voodoo, "_backend");
+    int regs = GetIntField(backend, "_registerWriteCount");
+    int fifoWords = GetIntField(backend, "_fifoWriteCount");
+    int fifoPackets = GetIntField(backend, "_fifoPacketCount");
+    int drawPackets = GetIntField(backend, "_fifoDrawPacketCount");
+    int directTriangles = GetIntField(backend, "_directTriangleCommandCount");
+    int setupTriangles = GetIntField(backend, "_setupTriangleCommandCount");
+    int fastFills = GetIntField(backend, "_fastFillCount");
+    int swaps = GetIntField(backend, "_swapBufferCount");
+    var packetTypes = (int[])GetField(backend, "_fifoPacketTypeCounts");
+
+    Console.WriteLine(
+        $"checkpoint extra={extraSteps} drained={drained} pc=0x{GetProperty(cpu, "Pc"):x16} " +
+        $"lastOp=0x{GetProperty(cpu, "LastFetchedInstruction"):x8} regs={regs} fifoWords={fifoWords} " +
+        $"fifoPackets={fifoPackets} drawPackets={drawPackets} directTriangles={directTriangles} " +
+        $"setupTriangles={setupTriangles} fastFills={fastFills} swaps={swaps} " +
+        $"packetTypes={string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}"))}");
+}
+
+static void DumpCpuState(object cpu)
+{
+    var gpr = (ulong[])GetField(cpu, "_gpr");
+    var cp0 = (ulong[])GetField(cpu, "_cp0");
+    string[] names =
+    [
+        "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+        "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+        "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+        "t8", "t9", "k0", "k1", "gp", "sp", "s8", "ra"
+    ];
+
+    for (int i = 0; i < gpr.Length && i < names.Length; i++)
+        Console.WriteLine($"{names[i]}=0x{gpr[i]:x16}");
+
+    Console.WriteLine($"cp0 status=0x{cp0[12]:x16} cause=0x{cp0[13]:x16} epc=0x{cp0[14]:x16} errorepc=0x{cp0[30]:x16}");
+}
+
+static void DumpVoodoo(object facade)
+{
+    object backend = GetField(facade, "_backend");
+    int regs = GetIntField(backend, "_registerWriteCount");
+    int fifoWords = GetIntField(backend, "_fifoWriteCount");
+    int fifoPackets = GetIntField(backend, "_fifoPacketCount");
+    int drawPackets = GetIntField(backend, "_fifoDrawPacketCount");
+    int directTriangles = GetIntField(backend, "_directTriangleCommandCount");
+    int setupTriangles = GetIntField(backend, "_setupTriangleCommandCount");
+    int lfbWrites = GetIntField(backend, "_lfbWriteCount");
+    int texWrites = GetIntField(backend, "_textureWriteCount");
+    int fastFills = GetIntField(backend, "_fastFillCount");
+    int swaps = GetIntField(backend, "_swapBufferCount");
+    var packetTypes = (int[])GetField(backend, "_fifoPacketTypeCounts");
+
+    Console.WriteLine(
+        $"voodoo regs={regs} fifoWords={fifoWords} fifoPackets={fifoPackets} drawPackets={drawPackets} " +
+        $"directTriangles={directTriangles} setupTriangles={setupTriangles} lfbWrites={lfbWrites} texWrites={texWrites} " +
+        $"fastFills={fastFills} swaps={swaps}");
+    Console.WriteLine("voodoo packetTypes=" + string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}")));
+
+    var registers = (uint[])GetField(backend, "_registers");
+    foreach (int reg in new[] { 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x40, 0x46, 0x47, 0x49, 0x4a, 0x51, 0x52, 0x83, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa8, 0xa9 })
+        Console.WriteLine($"voodoo reg[{reg:x3}]=0x{registers[reg]:x8}");
+}
+
+static int GetIntField(object instance, string name)
+    => (int)GetField(instance, name);
+
+static void SetField(object instance, string name, object value)
+{
+    FieldInfo? field = FindField(instance.GetType(), name);
+    if (field is null)
+        throw new MissingFieldException(instance.GetType().FullName, name);
+    field.SetValue(instance, value);
+}
+
+static void SetProperty(object instance, string name, object value)
+{
+    PropertyInfo? property = instance.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    if (property is not null)
+    {
+        property.SetValue(instance, value);
+        return;
+    }
+
+    SetField(instance, $"<{name}>k__BackingField", value);
+}
+
+static T GetFieldValue<T>(object instance, string name)
+    => (T)GetField(instance, name);
+
+static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, int frames, int cpuStepsPerFrame)
+{
+    string? directory = Path.GetDirectoryName(path);
+    if (!string.IsNullOrWhiteSpace(directory))
+        Directory.CreateDirectory(directory);
+
+    string tempPath = $"{path}.tmp";
+    using (var stream = File.Create(tempPath))
+    using (var writer = new BinaryWriter(stream))
+    {
+        writer.Write(0x314d5241574c4447UL);
+        writer.Write(2);
+        writer.Write(frames);
+        writer.Write(cpuStepsPerFrame);
+        writer.Write(adapter.FrameCounter.GetValueOrDefault());
+        WriteByteArray(writer, GetFieldValue<byte[]>(adapter, "_frameBuffer"));
+
+        object machine = GetField(adapter, "_machine");
+        SaveCpu(writer, GetProperty(machine, "Cpu"));
+        SaveMemoryMap(writer, GetProperty(machine, "MemoryMap"));
+        SaveDisk(writer, GetProperty(machine, "Disk"));
+        SaveSio(writer, GetProperty(machine, "Sio"));
+        SaveVoodoo(writer, GetProperty(machine, "Voodoo"));
+    }
+
+    File.Move(tempPath, path, overwrite: true);
+}
+
+static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, int frames, int cpuStepsPerFrame)
+{
+    using var stream = File.OpenRead(path);
+    using var reader = new BinaryReader(stream);
+    ulong magic = reader.ReadUInt64();
+    int version = reader.ReadInt32();
+    if (magic != 0x314d5241574c4447UL || version is not (1 or 2))
+        throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
+
+    int savedFrames = reader.ReadInt32();
+    int savedCpuStepsPerFrame = reader.ReadInt32();
+    if (savedFrames != frames || savedCpuStepsPerFrame != cpuStepsPerFrame)
+        throw new InvalidDataException(
+            $"Warmup snapshot mismatch: saved frames={savedFrames} cpuStepsPerFrame={savedCpuStepsPerFrame}, " +
+            $"requested frames={frames} cpuStepsPerFrame={cpuStepsPerFrame}");
+
+    SetField(adapter, "_frameCounter", reader.ReadInt64());
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(adapter, "_frameBuffer"));
+
+    object machine = GetField(adapter, "_machine");
+    LoadCpu(reader, GetProperty(machine, "Cpu"));
+    LoadMemoryMap(reader, GetProperty(machine, "MemoryMap"), version);
+    LoadDisk(reader, GetProperty(machine, "Disk"));
+    LoadSio(reader, GetProperty(machine, "Sio"));
+    LoadVoodoo(reader, GetProperty(machine, "Voodoo"));
+
+    if (stream.Position != stream.Length)
+        throw new InvalidDataException($"Warmup snapshot has {stream.Length - stream.Position} trailing bytes");
+}
+
+static void SaveCpu(BinaryWriter writer, object cpu)
+{
+    WriteULongArray(writer, GetFieldValue<ulong[]>(cpu, "_gpr"));
+    WriteULongArray(writer, GetFieldValue<ulong[]>(cpu, "_cp0"));
+    WriteULongArray(writer, GetFieldValue<ulong[]>(cpu, "_fpr"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(cpu, "_fcr"));
+    writer.Write(GetFieldValue<bool>(cpu, "_halted"));
+    writer.Write(GetFieldValue<bool>(cpu, "_hasPendingBranch"));
+    writer.Write(GetFieldValue<ulong>(cpu, "_pendingBranchTarget"));
+    writer.Write(GetFieldValue<bool>(cpu, "_hasImmediatePcOverride"));
+    writer.Write(GetFieldValue<ulong>(cpu, "_immediatePcOverride"));
+    writer.Write(GetFieldValue<ulong>(cpu, "_instructionCounter"));
+    writer.Write(GetFieldValue<int>(cpu, "_traceInstructionCount"));
+    writer.Write(GetFieldValue<bool>(cpu, "_timerInterruptPending"));
+    writer.Write(GetFieldValue<ulong>(cpu, "_hi"));
+    writer.Write(GetFieldValue<ulong>(cpu, "_lo"));
+    writer.Write((ulong)GetProperty(cpu, "Pc"));
+    writer.Write((uint)GetProperty(cpu, "LastFetchedInstruction"));
+}
+
+static void LoadCpu(BinaryReader reader, object cpu)
+{
+    ReadULongArrayInto(reader, GetFieldValue<ulong[]>(cpu, "_gpr"));
+    ReadULongArrayInto(reader, GetFieldValue<ulong[]>(cpu, "_cp0"));
+    ReadULongArrayInto(reader, GetFieldValue<ulong[]>(cpu, "_fpr"));
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(cpu, "_fcr"));
+    SetField(cpu, "_halted", reader.ReadBoolean());
+    SetField(cpu, "_hasPendingBranch", reader.ReadBoolean());
+    SetField(cpu, "_pendingBranchTarget", reader.ReadUInt64());
+    SetField(cpu, "_hasImmediatePcOverride", reader.ReadBoolean());
+    SetField(cpu, "_immediatePcOverride", reader.ReadUInt64());
+    SetField(cpu, "_instructionCounter", reader.ReadUInt64());
+    SetField(cpu, "_traceInstructionCount", reader.ReadInt32());
+    SetField(cpu, "_timerInterruptPending", reader.ReadBoolean());
+    SetField(cpu, "_hi", reader.ReadUInt64());
+    SetField(cpu, "_lo", reader.ReadUInt64());
+    SetProperty(cpu, "Pc", reader.ReadUInt64());
+    SetProperty(cpu, "LastFetchedInstruction", reader.ReadUInt32());
+}
+
+static void SaveMemoryMap(BinaryWriter writer, object memory)
+{
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_mainRam"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_nileRegisters"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_fpgaConfigRegisters"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_cpuIoRegisters"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(memory, "_ioasicRegisters"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_ioasicPicSerialData"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_ioasicPicBuffer"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_ioasicPicNvram"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_ioasicPicTimeBuffer"));
+    writer.Write(GetFieldValue<bool>(memory, "_ioasicShuffleActive"));
+    writer.Write(GetFieldValue<ushort>(memory, "_ioasicSoundIrqState"));
+    writer.Write(GetFieldValue<ushort>(memory, "_ioasicPicLatch"));
+    writer.Write(GetFieldValue<byte>(memory, "_ioasicPicState"));
+    writer.Write(GetFieldValue<byte>(memory, "_ioasicPicIndex"));
+    writer.Write(GetFieldValue<byte>(memory, "_ioasicPicTotal"));
+    writer.Write(GetFieldValue<byte>(memory, "_ioasicPicNvramAddress"));
+    writer.Write(GetFieldValue<byte>(memory, "_ioasicPicTimeIndex"));
+    writer.Write(GetFieldValue<bool>(memory, "_ioasicPicTimeJustWritten"));
+    writer.Write(GetFieldValue<ushort>(memory, "_nileIrqState"));
+    writer.Write(GetFieldValue<byte>(memory, "_nileIrqPins"));
+    writer.Write(GetFieldValue<bool>(memory, "_fpgaConfigSeenLow"));
+    writer.Write(GetFieldValue<bool>(memory, "_fpgaConfigStatusHigh"));
+    writer.Write(GetFieldValue<bool>(memory, "_fpgaConfigDone"));
+    SaveIdePci(writer, GetField(memory, "_idePci"));
+    SaveVoodooPci(writer, GetField(memory, "_voodooPci"));
+}
+
+static void LoadMemoryMap(BinaryReader reader, object memory, int version)
+{
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_mainRam"));
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_nileRegisters"));
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_fpgaConfigRegisters"));
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_cpuIoRegisters"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(memory, "_ioasicRegisters"));
+    if (version >= 2)
+    {
+        ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_ioasicPicSerialData"));
+        ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_ioasicPicBuffer"));
+        ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_ioasicPicNvram"));
+        ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_ioasicPicTimeBuffer"));
+        SetField(memory, "_ioasicShuffleActive", reader.ReadBoolean());
+        SetField(memory, "_ioasicSoundIrqState", reader.ReadUInt16());
+        SetField(memory, "_ioasicPicLatch", reader.ReadUInt16());
+        SetField(memory, "_ioasicPicState", reader.ReadByte());
+        SetField(memory, "_ioasicPicIndex", reader.ReadByte());
+        SetField(memory, "_ioasicPicTotal", reader.ReadByte());
+        SetField(memory, "_ioasicPicNvramAddress", reader.ReadByte());
+        SetField(memory, "_ioasicPicTimeIndex", reader.ReadByte());
+        SetField(memory, "_ioasicPicTimeJustWritten", reader.ReadBoolean());
+    }
+    SetField(memory, "_nileIrqState", reader.ReadUInt16());
+    SetField(memory, "_nileIrqPins", reader.ReadByte());
+    SetField(memory, "_fpgaConfigSeenLow", reader.ReadBoolean());
+    SetField(memory, "_fpgaConfigStatusHigh", reader.ReadBoolean());
+    SetField(memory, "_fpgaConfigDone", reader.ReadBoolean());
+    LoadIdePci(reader, GetField(memory, "_idePci"));
+    LoadVoodooPci(reader, GetField(memory, "_voodooPci"));
+}
+
+static void SaveIdePci(BinaryWriter writer, object idePci)
+{
+    WriteUIntArray(writer, GetFieldValue<uint[]>(idePci, "_bars"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(idePci, "_config"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(idePci, "_busMaster"));
+}
+
+static void LoadIdePci(BinaryReader reader, object idePci)
+{
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(idePci, "_bars"));
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(idePci, "_config"));
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(idePci, "_busMaster"));
+}
+
+static void SaveVoodooPci(BinaryWriter writer, object voodooPci)
+{
+    WriteByteArray(writer, GetFieldValue<byte[]>(voodooPci, "_config"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(voodooPci, "_pciControl"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(voodooPci, "_registers"));
+    writer.Write(GetFieldValue<uint>(voodooPci, "_bar0"));
+    writer.Write(GetFieldValue<bool>(voodooPci, "_bar0Probe"));
+    writer.Write(GetFieldValue<uint>(voodooPci, "_statusReadCounter"));
+    writer.Write(GetFieldValue<uint>(voodooPci, "_swapStatusCounter"));
+    writer.Write(GetFieldValue<uint>(voodooPci, "_vRetraceCounter"));
+}
+
+static void LoadVoodooPci(BinaryReader reader, object voodooPci)
+{
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(voodooPci, "_config"));
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(voodooPci, "_pciControl"));
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(voodooPci, "_registers"));
+    SetField(voodooPci, "_bar0", reader.ReadUInt32());
+    SetField(voodooPci, "_bar0Probe", reader.ReadBoolean());
+    SetField(voodooPci, "_statusReadCounter", reader.ReadUInt32());
+    SetField(voodooPci, "_swapStatusCounter", reader.ReadUInt32());
+    SetField(voodooPci, "_vRetraceCounter", reader.ReadUInt32());
+}
+
+static void SaveDisk(BinaryWriter writer, object disk)
+{
+    WriteByteArray(writer, GetFieldValue<byte[]>(disk, "_transferBuffer"));
+    writer.Write(GetFieldValue<int>(disk, "_transferOffset"));
+    writer.Write(GetFieldValue<byte>(disk, "_features"));
+    writer.Write(GetFieldValue<byte>(disk, "_error"));
+    writer.Write(GetFieldValue<byte>(disk, "_sectorCount"));
+    writer.Write(GetFieldValue<byte>(disk, "_sectorNumber"));
+    writer.Write(GetFieldValue<byte>(disk, "_cylinderLow"));
+    writer.Write(GetFieldValue<byte>(disk, "_cylinderHigh"));
+    writer.Write(GetFieldValue<byte>(disk, "_driveHead"));
+    writer.Write(GetFieldValue<byte>(disk, "_status"));
+}
+
+static void LoadDisk(BinaryReader reader, object disk)
+{
+    ReadByteArrayInto(reader, GetFieldValue<byte[]>(disk, "_transferBuffer"));
+    SetField(disk, "_transferOffset", reader.ReadInt32());
+    SetField(disk, "_features", reader.ReadByte());
+    SetField(disk, "_error", reader.ReadByte());
+    SetField(disk, "_sectorCount", reader.ReadByte());
+    SetField(disk, "_sectorNumber", reader.ReadByte());
+    SetField(disk, "_cylinderLow", reader.ReadByte());
+    SetField(disk, "_cylinderHigh", reader.ReadByte());
+    SetField(disk, "_driveHead", reader.ReadByte());
+    SetField(disk, "_status", reader.ReadByte());
+}
+
+static void SaveSio(BinaryWriter writer, object sio)
+{
+    writer.Write(GetFieldValue<byte>(sio, "_resetControl"));
+    writer.Write(GetFieldValue<byte>(sio, "_irqEnable"));
+    writer.Write(GetFieldValue<byte>(sio, "_irqState"));
+    writer.Write(GetFieldValue<byte>(sio, "_ledState"));
+}
+
+static void LoadSio(BinaryReader reader, object sio)
+{
+    SetField(sio, "_resetControl", reader.ReadByte());
+    SetField(sio, "_irqEnable", reader.ReadByte());
+    SetField(sio, "_irqState", reader.ReadByte());
+    SetField(sio, "_ledState", reader.ReadByte());
+}
+
+static void SaveVoodoo(BinaryWriter writer, object facade)
+{
+    object backend = GetField(facade, "_backend");
+    WriteUIntArray(writer, GetFieldValue<uint[]>(backend, "_registers"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_lfb"));
+    WriteUIntList(writer, GetFieldValue<IList>(backend, "_fifoBuffer"));
+    WriteSetupVertices(writer, (Array)GetField(backend, "_setupVertices"));
+    WriteIntArray(writer, GetFieldValue<int[]>(backend, "_fifoPacketTypeCounts"));
+    writer.Write(GetFieldValue<int>(backend, "_registerWriteCount"));
+    writer.Write(GetFieldValue<int>(backend, "_fifoWriteCount"));
+    writer.Write(GetFieldValue<int>(backend, "_fifoPacketCount"));
+    writer.Write(GetFieldValue<int>(backend, "_fifoDrawPacketCount"));
+    writer.Write(GetFieldValue<int>(backend, "_directTriangleCommandCount"));
+    writer.Write(GetFieldValue<int>(backend, "_setupTriangleCommandCount"));
+    writer.Write(GetFieldValue<int>(backend, "_lfbWriteCount"));
+    writer.Write(GetFieldValue<int>(backend, "_textureWriteCount"));
+    writer.Write(GetFieldValue<int>(backend, "_fastFillCount"));
+    writer.Write(GetFieldValue<int>(backend, "_swapBufferCount"));
+    writer.Write(GetFieldValue<int>(backend, "_renderFrame"));
+    writer.Write(GetFieldValue<int>(backend, "_setupVertexCount"));
+}
+
+static void LoadVoodoo(BinaryReader reader, object facade)
+{
+    object backend = GetField(facade, "_backend");
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_registers"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_lfb"));
+    ReadUIntList(reader, GetFieldValue<IList>(backend, "_fifoBuffer"));
+    ReadSetupVertices(reader, (Array)GetField(backend, "_setupVertices"));
+    ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_fifoPacketTypeCounts"));
+    SetField(backend, "_registerWriteCount", reader.ReadInt32());
+    SetField(backend, "_fifoWriteCount", reader.ReadInt32());
+    SetField(backend, "_fifoPacketCount", reader.ReadInt32());
+    SetField(backend, "_fifoDrawPacketCount", reader.ReadInt32());
+    SetField(backend, "_directTriangleCommandCount", reader.ReadInt32());
+    SetField(backend, "_setupTriangleCommandCount", reader.ReadInt32());
+    SetField(backend, "_lfbWriteCount", reader.ReadInt32());
+    SetField(backend, "_textureWriteCount", reader.ReadInt32());
+    SetField(backend, "_fastFillCount", reader.ReadInt32());
+    SetField(backend, "_swapBufferCount", reader.ReadInt32());
+    SetField(backend, "_renderFrame", reader.ReadInt32());
+    SetField(backend, "_setupVertexCount", reader.ReadInt32());
+}
+
+static void WriteByteArray(BinaryWriter writer, byte[] values)
+{
+    writer.Write(values.Length);
+    writer.Write(values);
+}
+
+static void ReadByteArrayInto(BinaryReader reader, byte[] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"Byte array length mismatch: snapshot={length} runtime={values.Length}");
+    int offset = 0;
+    while (offset < values.Length)
+    {
+        int read = reader.Read(values, offset, values.Length - offset);
+        if (read <= 0)
+            throw new EndOfStreamException("Unexpected end of warmup snapshot");
+        offset += read;
+    }
+}
+
+static void WriteUShortArray(BinaryWriter writer, ushort[] values)
+{
+    writer.Write(values.Length);
+    foreach (ushort value in values)
+        writer.Write(value);
+}
+
+static void ReadUShortArrayInto(BinaryReader reader, ushort[] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"UInt16 array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        values[i] = reader.ReadUInt16();
+}
+
+static void WriteUIntArray(BinaryWriter writer, uint[] values)
+{
+    writer.Write(values.Length);
+    foreach (uint value in values)
+        writer.Write(value);
+}
+
+static void ReadUIntArrayInto(BinaryReader reader, uint[] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"UInt32 array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        values[i] = reader.ReadUInt32();
+}
+
+static void WriteULongArray(BinaryWriter writer, ulong[] values)
+{
+    writer.Write(values.Length);
+    foreach (ulong value in values)
+        writer.Write(value);
+}
+
+static void ReadULongArrayInto(BinaryReader reader, ulong[] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"UInt64 array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        values[i] = reader.ReadUInt64();
+}
+
+static void WriteIntArray(BinaryWriter writer, int[] values)
+{
+    writer.Write(values.Length);
+    foreach (int value in values)
+        writer.Write(value);
+}
+
+static void ReadIntArrayInto(BinaryReader reader, int[] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"Int32 array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        values[i] = reader.ReadInt32();
+}
+
+static void WriteUIntList(BinaryWriter writer, IList values)
+{
+    writer.Write(values.Count);
+    foreach (object? value in values)
+        writer.Write((uint)(value ?? 0u));
+}
+
+static void ReadUIntList(BinaryReader reader, IList values)
+{
+    values.Clear();
+    int count = reader.ReadInt32();
+    for (int i = 0; i < count; i++)
+        values.Add(reader.ReadUInt32());
+}
+
+static void WriteSetupVertices(BinaryWriter writer, Array values)
+{
+    writer.Write(values.Length);
+    for (int i = 0; i < values.Length; i++)
+    {
+        object vertex = values.GetValue(i) ?? throw new InvalidDataException("Null setup vertex");
+        writer.Write(Convert.ToSingle(GetProperty(vertex, "X")));
+        writer.Write(Convert.ToSingle(GetProperty(vertex, "Y")));
+        writer.Write(Convert.ToUInt16(GetProperty(vertex, "Color")));
+    }
+}
+
+static void ReadSetupVertices(BinaryReader reader, Array values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"Setup vertex array length mismatch: snapshot={length} runtime={values.Length}");
+    Type elementType = values.GetType().GetElementType() ?? throw new InvalidDataException("Missing setup vertex element type");
+    for (int i = 0; i < values.Length; i++)
+    {
+        float x = reader.ReadSingle();
+        float y = reader.ReadSingle();
+        ushort color = reader.ReadUInt16();
+        object vertex = Activator.CreateInstance(elementType, x, y, color)
+            ?? throw new InvalidDataException("Could not construct setup vertex");
+        values.SetValue(vertex, i);
+    }
+}
+
+static void DumpCommandState(object memory)
+{
+    Console.WriteLine("cmdState:");
+    foreach (ulong state in new[] { 0xffffffff800b4e04UL, 0xffffffff800e4e04UL })
+    {
+        Console.WriteLine($" state=0x{state:x16}");
+        foreach (int offset in new[]
+        {
+            0x000, 0x004, 0x008, 0x00c, 0x010, 0x014, 0x018, 0x01c,
+            0x024, 0x028, 0x02c, 0x030, 0x034, 0x038, 0x03c,
+            0x190, 0x194, 0x198, 0x19c,
+            0x258, 0x354, 0x358, 0x35c,
+            0x370, 0x374, 0x378, 0x37c, 0x380, 0x384
+        })
+        {
+            uint value = ReadMem32(memory, state + (uint)offset);
+            Console.WriteLine($"  +0x{offset:x3}=0x{value:x8}");
+        }
+    }
+
+    foreach (ulong address in new[]
+    {
+        0xffffffff800b4e04UL,
+        0xffffffff800b4e1cUL,
+        0xffffffff800b4e28UL,
+        0xffffffff800b4f94UL,
+        0xffffffff800b5004UL,
+        0xffffffff800b5050UL,
+        0xffffffff800b5090UL,
+        0xffffffff800b50d0UL,
+        0xffffffff800b5110UL,
+        0xffffffff800b5164UL,
+        0xffffffff800b5178UL,
+        0xffffffff800b517cUL,
+        0xffffffff800e4e04UL,
+        0xffffffff800e4e1cUL,
+        0xffffffff800e4f94UL,
+        0xffffffff800e5164UL,
+        0xffffffff800e5178UL,
+        0xffffffff800e517cUL
+    })
+    {
+        DumpWords(memory, address, 16);
+    }
+}
+
+static void DumpWords(object memory, ulong address, int words)
+{
+    Console.WriteLine($" mem[0x{address:x16}]:");
+    for (int i = 0; i < words; i += 4)
+    {
+        Console.Write($"  +0x{i * 4:x3}:");
+        for (int j = 0; j < 4 && i + j < words; j++)
+            Console.Write($" {ReadMem32(memory, address + (uint)((i + j) * 4)):x8}");
+        Console.WriteLine();
+    }
+}
+
+static uint ReadMem32(object memory, ulong address)
+{
+    MethodInfo? method = memory.GetType().GetMethod("Read32", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    if (method is null)
+        throw new MissingMethodException(memory.GetType().FullName, "Read32");
+    return (uint)(method.Invoke(memory, [address]) ?? 0u);
+}
+
+static byte ReadMem8(object memory, ulong address)
+{
+    uint aligned = ReadMem32(memory, address & ~3UL);
+    return (byte)(aligned >> (int)((address & 3UL) * 8));
+}
+
+static void DumpBytes(object memory, ulong address, int bytes)
+{
+    Console.WriteLine($" bytes[0x{address:x16}]:");
+    for (int offset = 0; offset < bytes; offset += 16)
+    {
+        int count = Math.Min(16, bytes - offset);
+        Span<byte> line = stackalloc byte[16];
+        for (int i = 0; i < count; i++)
+            line[i] = ReadMem8(memory, address + (uint)(offset + i));
+
+        Console.Write($"  +0x{offset:x3}:");
+        for (int i = 0; i < count; i++)
+            Console.Write($" {line[i]:x2}");
+        for (int i = count; i < 16; i++)
+            Console.Write("   ");
+
+        Console.Write("  ");
+        for (int i = 0; i < count; i++)
+        {
+            byte ch = line[i];
+            Console.Write(ch is >= 0x20 and <= 0x7e ? (char)ch : '.');
+        }
+        Console.WriteLine();
+    }
+}
+
+static bool IsDrainableHelperPc(ulong pc)
+{
+    ulong offset = pc & 0x1fffffffUL;
+    return offset is >= 0x0005d230UL and <= 0x0005d354UL or
+        >= 0x0005dbecUL and <= 0x0005dd20UL or
+        >= 0x0005df40UL and <= 0x0005e220UL or
+        >= 0x0005ec0cUL and <= 0x0005ed80UL or
+        >= 0x0005ed40UL and <= 0x0005ed80UL or
+        >= 0x0005f9d0UL and <= 0x0005fab0UL or
+        >= 0x0005fab4UL and <= 0x0005fbc8UL;
+}
+
+static void DumpCode(object memory)
+{
+    foreach (ulong address in new[]
+    {
+        0xffffffff80019200UL,
+        0xffffffff800151c0UL,
+        0xffffffff80015240UL,
+        0xffffffff800152c0UL,
+        0xffffffff80018e80UL,
+        0xffffffff80018f00UL,
+        0xffffffff80018f80UL,
+        0xffffffff80019280UL,
+        0xffffffff80019300UL,
+        0xffffffff80019580UL,
+        0xffffffff8001fb40UL,
+        0xffffffff8001fbc0UL,
+        0xffffffff8001fc40UL,
+        0xffffffff8003ce80UL,
+        0xffffffff8003cf00UL,
+        0xffffffff8004cd80UL,
+        0xffffffff8004cbc0UL,
+        0xffffffff8004cc40UL,
+        0xffffffff8004ccc0UL,
+        0xffffffff8004ce00UL,
+        0xffffffff8004ce80UL,
+        0xffffffff8004cf00UL,
+        0xffffffff80052680UL,
+        0xffffffff80052700UL,
+        0xffffffff80052780UL,
+        0xffffffff80052b60UL,
+        0xffffffff80052bc0UL,
+        0xffffffff80052c1cUL,
+        0xffffffff80052c9cUL,
+        0xffffffff80052d00UL,
+        0xffffffff80052d80UL,
+        0xffffffff80052e00UL,
+        0xffffffff80052e80UL,
+        0xffffffff80052ec0UL,
+        0xffffffff800532c0UL,
+        0xffffffff80053340UL,
+        0xffffffff800533c0UL,
+        0xffffffff8005d200UL,
+        0xffffffff8005d280UL,
+        0xffffffff8005d300UL,
+        0xffffffff8005d380UL,
+        0xffffffff8005dbc0UL,
+        0xffffffff8005dc40UL,
+        0xffffffff8005df40UL,
+        0xffffffff8005dfc0UL,
+        0xffffffff8005e140UL,
+        0xffffffff8005e1c0UL,
+        0xffffffff8005e240UL,
+        0xffffffff8005e2c0UL,
+        0xffffffff8005e340UL,
+        0xffffffff8005e3c0UL,
+        0xffffffff8005ebc0UL,
+        0xffffffff8005ec00UL,
+        0xffffffff8005ec40UL,
+        0xffffffff8005ecc0UL,
+        0xffffffff8005ed40UL,
+        0xffffffff8005edc0UL,
+        0xffffffff8005ee40UL,
+        0xffffffff8005f9c0UL,
+        0xffffffff8005fa40UL,
+        0xffffffff8005fac0UL,
+        0xffffffff8005fb40UL,
+        0xffffffff8005fbc0UL
+    })
+    {
+        DumpWords(memory, address, 32);
+    }
+}
+
+static void DumpRequestedCodeRanges(object memory)
+{
+    string? ranges = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CODE_RANGES");
+    if (string.IsNullOrWhiteSpace(ranges))
+        return;
+
+    foreach (string item in ranges.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0 || !TryParseHexUlong(parts[0], out ulong address))
+            continue;
+
+        int words = 32;
+        if (parts.Length > 1 && int.TryParse(parts[1], out int parsedWords) && parsedWords > 0)
+            words = parsedWords;
+        DumpWords(memory, address, words);
+    }
+}
+
+static void DumpRequestedByteRanges(object memory)
+{
+    string? ranges = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_BYTES_RANGES");
+    if (string.IsNullOrWhiteSpace(ranges))
+        return;
+
+    foreach (string item in ranges.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0 || !TryParseHexUlong(parts[0], out ulong address))
+            continue;
+
+        int bytes = 128;
+        if (parts.Length > 1 && int.TryParse(parts[1], out int parsedBytes) && parsedBytes > 0)
+            bytes = parsedBytes;
+        DumpBytes(memory, address, bytes);
+    }
+}
+
+static bool TryParseHexUlong(string value, out ulong parsed)
+{
+    value = value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? value[2..] : value;
+    return ulong.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out parsed);
+}
+
+static void ScanFifoCommandBuilders(object memory)
+{
+    string? ranges = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_CODE_RANGES");
+    (ulong Start, int Words)[] scanRanges = string.IsNullOrWhiteSpace(ranges)
+        ? [(0xffffffff80010000UL, 0x70000 / 4)]
+        : ranges.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(ParseScanRange)
+            .Where(item => item.Words > 0)
+            .ToArray();
+
+    foreach ((ulong start, int words) in scanRanges)
+    {
+        Console.WriteLine($"fifoBuilderScan start=0x{start:x16} words={words}");
+        for (int i = 0; i < words; i++)
+        {
+            ulong address = start + (uint)(i * 4);
+            uint op = ReadMem32(memory, address);
+            if ((op >> 26) != 0x0fu)
+                continue;
+
+            int rt = (int)((op >> 16) & 31u);
+            uint upper = op << 16;
+            for (int lookAhead = 1; lookAhead <= 8 && i + lookAhead < words; lookAhead++)
+            {
+                uint next = ReadMem32(memory, address + (uint)(lookAhead * 4));
+                if ((next >> 26) != 0x0du)
+                    continue;
+                int rs = (int)((next >> 21) & 31u);
+                int nextRt = (int)((next >> 16) & 31u);
+                if (rs != rt || nextRt != rt)
+                    continue;
+
+                uint command = upper | (next & 0xffffu);
+                if (TryDescribeInterestingFifoCommand(command, out string description))
+                    Console.WriteLine($"  pc=0x{address:x16} lookAhead={lookAhead} r{rt} cmd=0x{command:x8} {description}");
+            }
+        }
+    }
+}
+
+static (ulong Start, int Words) ParseScanRange(string item)
+{
+    string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length == 0 || !TryParseHexUlong(parts[0], out ulong start))
+        return (0, 0);
+
+    int words = 0x70000 / 4;
+    if (parts.Length > 1 && int.TryParse(parts[1], out int parsedWords) && parsedWords > 0)
+        words = parsedWords;
+    return (start, words);
+}
+
+static bool TryDescribeInterestingFifoCommand(uint command, out string description)
+{
+    uint type = command & 7u;
+    description = "";
+    switch (type)
+    {
+        case 1:
+        {
+            int count = (int)(command >> 16);
+            uint target = (command >> 3) & 0xfffu;
+            if (count <= 0 || count > 128)
+                return false;
+            description = $"type1 count={count} inc={(command >> 15) & 1u} target=0x{target:x3}";
+            return IsInterestingRegisterRange(target, count);
+        }
+        case 3:
+            description = $"type3 draw count={(command >> 6) & 0xfu} code={(command >> 3) & 7u}";
+            return true;
+        case 4:
+        {
+            uint target = (command >> 3) & 0xfffu;
+            uint mask = (command >> 15) & 0x3fffu;
+            uint extra = command >> 29;
+            List<uint> registers = [];
+            for (int bit = 0; bit < 14; bit++)
+            {
+                if (((mask >> bit) & 1u) != 0)
+                    registers.Add(target + (uint)bit);
+            }
+            if (registers.Count == 0)
+                return false;
+            description = $"type4 target=0x{target:x3} mask=0x{mask:x4} extra={extra} regs={string.Join(",", registers.Select(reg => $"0x{reg:x3}"))}";
+            return registers.Any(IsInterestingRegister);
+        }
+        case 5:
+            description = $"type5 count={(command >> 3) & 0x7ffffu} space={command >> 30}";
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool IsInterestingRegisterRange(uint start, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (IsInterestingRegister(start + (uint)i))
+            return true;
+    }
+
+    return false;
+}
+
+static bool IsInterestingRegister(uint register)
+    => register is 0x20u or 0x40u or 0x49u or 0x4au or 0xa8u or 0xa9u or
+        (>= 0x00u and <= 0x05u) or
+        (>= 0x22u and <= 0x2au) or
+        (>= 0x98u and <= 0x9eu);
+
+static void DumpFrame(GauntletDarkLegacyAdapter adapter)
+{
+    ReadOnlySpan<byte> frame = adapter.GetFrameBuffer(out int width, out int height, out int stride);
+    int nonBlack = 0;
+    int colored = 0;
+    for (int y = 0; y < height; y++)
+    {
+        int row = y * stride;
+        for (int x = 0; x < width; x++)
+        {
+            byte b = frame[row + x * 4 + 0];
+            byte g = frame[row + x * 4 + 1];
+            byte r = frame[row + x * 4 + 2];
+            if ((r | g | b) != 0)
+                nonBlack++;
+            if (r != g || g != b)
+                colored++;
+        }
+    }
+
+    Console.WriteLine($"framebuffer={width}x{height} stride={stride} nonBlack={nonBlack} colored={colored}");
+
+    string? ppmPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_FRAME");
+    if (string.IsNullOrWhiteSpace(ppmPath))
+        return;
+
+    using var stream = File.Create(ppmPath);
+    using var writer = new StreamWriter(stream, leaveOpen: true);
+    writer.Write($"P6\n{width} {height}\n255\n");
+    writer.Flush();
+    for (int y = 0; y < height; y++)
+    {
+        int row = y * stride;
+        for (int x = 0; x < width; x++)
+        {
+            stream.WriteByte(frame[row + x * 4 + 2]);
+            stream.WriteByte(frame[row + x * 4 + 1]);
+            stream.WriteByte(frame[row + x * 4 + 0]);
+        }
+    }
+
+    Console.WriteLine($"frameDump={ppmPath}");
+}

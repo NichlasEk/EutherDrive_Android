@@ -426,7 +426,7 @@ internal sealed class MipsR5000Core
     {
         ulong pc = Pc;
         UpdateInterruptPendingBits();
-        if (TryEnterPendingInterrupt(pc))
+        if (!_hasPendingBranch && TryEnterPendingInterrupt(pc))
             return;
         NormalizeKnownGlideFifoState(pc);
         if (TryFastPathKnownBootLoop(pc))
@@ -2367,7 +2367,7 @@ internal sealed class MipsR5000Core
                 QueueBranch((pc & 0xfffffffff0000000UL) | (((ulong)op & 0x03ffffffUL) << 2));
                 break;
             case 0x03:
-                _gpr[31] = pc + 8;
+                _gpr[31] = CanonicalizeCodeAddress(pc + 8);
                 QueueBranch((pc & 0xfffffffff0000000UL) | (((ulong)op & 0x03ffffffUL) << 2));
                 break;
             case 0x04:
@@ -2526,7 +2526,7 @@ internal sealed class MipsR5000Core
                 QueueBranch(_gpr[rs]);
                 break;
             case 0x09:
-                _gpr[rd == 0 ? 31 : rd] = pc + 8;
+                _gpr[rd == 0 ? 31 : rd] = CanonicalizeCodeAddress(pc + 8);
                 QueueBranch(_gpr[rs]);
                 break;
             case 0x0a:
@@ -2688,6 +2688,11 @@ internal sealed class MipsR5000Core
     private static ulong SignExtend32(uint value)
         => unchecked((ulong)(long)(int)value);
 
+    private static ulong CanonicalizeCodeAddress(ulong address)
+        => (address & 0xffffffff00000000UL) == 0 && (address & 0x80000000UL) != 0
+            ? SignExtend32((uint)address)
+            : address;
+
     private ulong LoadWordLeft(ulong address, ulong oldValue)
     {
         ulong aligned = address & ~3UL;
@@ -2771,7 +2776,7 @@ internal sealed class MipsR5000Core
         };
 
         if (rt is 0x10 or 0x11 or 0x12 or 0x13)
-            _gpr[31] = pc + 8;
+            _gpr[31] = CanonicalizeCodeAddress(pc + 8);
 
         if (take)
         {
@@ -2849,6 +2854,10 @@ internal sealed class MipsR5000Core
             case 13: // Cause
                 _cp0[13] = (_cp0[13] & ~Cp0CauseSoftwareInterruptMask) | (value & Cp0CauseSoftwareInterruptMask);
                 break;
+            case 14: // EPC
+            case 30: // ErrorEPC
+                _cp0[register] = CanonicalizeCodeAddress(value);
+                break;
             case 16: // Config
                 _cp0[16] = (_cp0[16] & ~Cp0ConfigWriteMask) | (value & Cp0ConfigWriteMask);
                 break;
@@ -2872,12 +2881,12 @@ internal sealed class MipsR5000Core
                 if ((_cp0[12] & Cp0StatusErl) != 0)
                 {
                     _cp0[12] &= ~Cp0StatusErl;
-                    OverrideNextPc(_cp0[30]);
+                    OverrideNextPc(CanonicalizeCodeAddress(_cp0[30]));
                 }
                 else
                 {
                     _cp0[12] &= ~Cp0StatusExl;
-                    OverrideNextPc(_cp0[14]);
+                    OverrideNextPc(CanonicalizeCodeAddress(_cp0[14]));
                 }
                 break;
             default:
@@ -2895,7 +2904,7 @@ internal sealed class MipsR5000Core
         if (pending == 0)
             return false;
 
-        _cp0[14] = pc;
+        _cp0[14] = CanonicalizeCodeAddress(pc);
         _cp0[13] &= ~Cp0CauseExceptionCodeMask;
         _cp0[12] |= Cp0StatusExl;
         _gpr[0] = 0;
@@ -3198,7 +3207,7 @@ internal sealed class MipsR5000Core
     private void QueueBranch(ulong target)
     {
         _hasPendingBranch = true;
-        _pendingBranchTarget = target;
+        _pendingBranchTarget = CanonicalizeCodeAddress(target);
     }
 
     private void ExecuteBranchLikely(ulong pc, short simm, bool take)
@@ -3212,7 +3221,7 @@ internal sealed class MipsR5000Core
     private void OverrideNextPc(ulong target)
     {
         _hasImmediatePcOverride = true;
-        _immediatePcOverride = target;
+        _immediatePcOverride = CanonicalizeCodeAddress(target);
     }
 
     private void HaltUnsupported(ulong pc, uint op, string reason)
@@ -3397,6 +3406,7 @@ internal sealed class VegasMemoryMap
     private readonly VegasVoodooPciDevice _voodooPci = new();
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM") == "1";
     private readonly string? _traceTargetFilter = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET");
+    private readonly ulong? _traceAddressFilter = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS"));
     private byte[] _mainBootRom = Array.Empty<byte>();
     private byte[] _securityPic = Array.Empty<byte>();
     private VegasSioDevice? _sio;
@@ -4806,10 +4816,26 @@ internal sealed class VegasMemoryMap
     {
         if (!_traceEnabled)
             return;
+        if (!TraceAddressMatches(address))
+            return;
         if (!TraceTargetMatches(target))
             return;
 
         Console.WriteLine($"[GAUNTDL:MEM] {op} {address:x16} {value:x8} {target}");
+    }
+
+    private bool TraceAddressMatches(ulong address)
+    {
+        if (!_traceAddressFilter.HasValue)
+            return true;
+
+        ulong filter = _traceAddressFilter.Value;
+        if (address == filter)
+            return true;
+
+        return TryTranslatePhysical(address, out uint addressPhysical) &&
+            TryTranslatePhysical(filter, out uint filterPhysical) &&
+            addressPhysical == filterPhysical;
     }
 
     private bool TraceTargetMatches(string target)
@@ -4821,6 +4847,20 @@ internal sealed class VegasMemoryMap
         return target.Equals(filter, StringComparison.OrdinalIgnoreCase) ||
             target.StartsWith(filter + " ", StringComparison.OrdinalIgnoreCase) ||
             target.StartsWith(filter + ":", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ulong? ParseOptionalHexUlong(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw[2..];
+
+        return ulong.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out ulong parsed)
+            ? parsed
+            : null;
     }
 }
 
