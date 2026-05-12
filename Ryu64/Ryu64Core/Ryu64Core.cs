@@ -351,7 +351,7 @@ namespace Ryu64Core
                     rdpColorImageSelected = true;
                     producerBackedFramebufferSelected = true;
                     _lastFramebufferStatus =
-                        $"RDP {rdpCandidateSource} framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, color=0x{rdpColorImage:x8}, width={rdpColorImageWidth}, writeEpoch={rdpColorImageWriteEpoch}, visualScore={rdpScore})";
+                        $"RDP {rdpCandidateSource} framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, color=0x{rdpColorImage:x8}, width={rdpColorImageWidth}, writeEpoch={rdpColorImageWriteEpoch}, visualScore={rdpScore}, viVisible={viVisiblePixels}, rdpVisible={rdpVisiblePixels})";
                 }
 
                 if (suspiciousViOrigin && bytesPerPixel > 0 && !rdpColorImageSelected)
@@ -496,6 +496,25 @@ namespace Ryu64Core
                 {
                     _lastFramebufferStatus = $"Framebuffer range out of RDRAM (origin=0x{origin:x8}, size=0x{bufferSize:x})";
                     return false;
+                }
+
+                if (producerBackedFramebufferSelected
+                    && CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel) == 0
+                    && R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
+                        (uint)width,
+                        (uint)height,
+                        (uint)bytesPerPixel,
+                        out byte[] visibleSnapshot,
+                        out uint visibleSnapshotOrigin,
+                        out uint visibleSnapshotEpoch))
+                {
+                    framebuffer = visibleSnapshot;
+                    _lastTrackedFramebufferOrigin = visibleSnapshotOrigin;
+                    R4300.memory.NotifyFramebufferConsumerRead(visibleSnapshotOrigin, (uint)bufferSize);
+                    FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
+                    _lastFramebufferStatus =
+                        $"RDP visible snapshot used (fb=0x{visibleSnapshotOrigin:x8}, size={width}x{height} bpp={bytesPerPixel}, snapshotEpoch={visibleSnapshotEpoch})";
+                    return true;
                 }
 
                 framebuffer = new byte[bufferSize];

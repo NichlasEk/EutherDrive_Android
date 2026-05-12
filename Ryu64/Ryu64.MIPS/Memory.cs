@@ -658,6 +658,13 @@ namespace Ryu64.MIPS
         private uint _lastRdpColorImageWidth;
         private uint _lastRdpColorImageBytesPerPixel;
         private uint _lastRdpColorImageWriteEpoch;
+        private readonly object _lastVisibleRdpFramebufferLock = new object();
+        private byte[] _lastVisibleRdpFramebufferSnapshot = Array.Empty<byte>();
+        private uint _lastVisibleRdpFramebufferAddress;
+        private uint _lastVisibleRdpFramebufferWidth;
+        private uint _lastVisibleRdpFramebufferHeight;
+        private uint _lastVisibleRdpFramebufferBytesPerPixel;
+        private uint _lastVisibleRdpFramebufferEpoch;
         private long _rspGraphicsTaskCount;
         private long _rspAudioTaskCount;
         private long _rspOtherTaskCount;
@@ -1642,7 +1649,11 @@ namespace Ryu64.MIPS
 
             NoteRdpPixelWrites(sampleHits, nonZeroSampleHits);
             if (wroteAny)
+            {
                 MarkRdpColorImageWritten(bytesPerPixel);
+                if (nonZeroSampleHits > 0)
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+            }
             return wroteAny;
         }
 
@@ -1929,6 +1940,69 @@ namespace Ryu64.MIPS
             Volatile.Write(ref _lastRdpColorImageWidth, _rdpColorImageWidth);
             Volatile.Write(ref _lastRdpColorImageBytesPerPixel, bytesPerPixel);
             Volatile.Write(ref _lastRdpColorImageWriteEpoch, _rdramWriteEpoch);
+        }
+
+        private void CaptureVisibleRdpFramebufferSnapshot(uint bytesPerPixel)
+        {
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0)
+                return;
+
+            uint height = GetFramebufferHeightHint();
+            if (height == 0)
+                height = 240u;
+
+            ulong length64 = (ulong)_rdpColorImageWidth * height * bytesPerPixel;
+            if (length64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
+                return;
+
+            byte[] snapshot = new byte[(int)length64];
+            Buffer.BlockCopy(RDRAM, (int)_rdpColorImageAddress, snapshot, 0, snapshot.Length);
+
+            lock (_lastVisibleRdpFramebufferLock)
+            {
+                _lastVisibleRdpFramebufferSnapshot = snapshot;
+                _lastVisibleRdpFramebufferAddress = _rdpColorImageAddress;
+                _lastVisibleRdpFramebufferWidth = _rdpColorImageWidth;
+                _lastVisibleRdpFramebufferHeight = height;
+                _lastVisibleRdpFramebufferBytesPerPixel = bytesPerPixel;
+                _lastVisibleRdpFramebufferEpoch = _rdramWriteEpoch;
+            }
+        }
+
+        public bool TryCopyLastVisibleRdpFramebufferSnapshot(
+            uint width,
+            uint height,
+            uint bytesPerPixel,
+            out byte[] snapshot,
+            out uint address,
+            out uint epoch)
+        {
+            snapshot = Array.Empty<byte>();
+            address = 0;
+            epoch = 0;
+
+            if (width == 0 || height == 0 || bytesPerPixel == 0)
+                return false;
+
+            int requested = checked((int)(width * height * bytesPerPixel));
+            lock (_lastVisibleRdpFramebufferLock)
+            {
+                if (_lastVisibleRdpFramebufferSnapshot.Length < requested
+                    || _lastVisibleRdpFramebufferWidth != width
+                    || _lastVisibleRdpFramebufferHeight < height
+                    || _lastVisibleRdpFramebufferBytesPerPixel != bytesPerPixel
+                    || _lastVisibleRdpFramebufferEpoch == 0)
+                    return false;
+
+                snapshot = new byte[requested];
+                Buffer.BlockCopy(_lastVisibleRdpFramebufferSnapshot, 0, snapshot, 0, requested);
+                address = _lastVisibleRdpFramebufferAddress;
+                epoch = _lastVisibleRdpFramebufferEpoch;
+                return true;
+            }
         }
 
         private uint SelectRdpSolidColor()
