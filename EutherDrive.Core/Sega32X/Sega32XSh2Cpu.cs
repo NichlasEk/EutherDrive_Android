@@ -39,6 +39,7 @@ internal sealed class Sega32XSh2Cpu
     private ulong _decodedBlockCompiledOps;
     private ulong _memLoopFusionHits;
     private ulong _memLoopFusionIterations;
+    [NonSerialized] private bool _turboStraightLineEnabled = TurboStraightLineDefaultEnabled;
 
     private static readonly byte ResetInterruptMask = 0x0F;
     private static readonly bool TraceBootLoop =
@@ -80,7 +81,7 @@ internal sealed class Sega32XSh2Cpu
             Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_FAST_CORE"),
             "1",
             StringComparison.Ordinal);
-    private static readonly bool TurboStraightLineEnabled =
+    private static readonly bool TurboStraightLineDefaultEnabled =
         ParseBoolEnvDefault("EUTHERDRIVE_S32X_TURBO_STRAIGHT_LINE", false);
     private const ulong TurboStraightLineMaxOps = 48;
     private static readonly DecodedOp[] FastOpcodeTable = BuildFastOpcodeTable();
@@ -113,6 +114,12 @@ internal sealed class Sega32XSh2Cpu
     {
         Name = name;
         RequestReset();
+    }
+
+    public bool TurboStraightLineEnabled
+    {
+        get => _turboStraightLineEnabled;
+        set => _turboStraightLineEnabled = value;
     }
 
     public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
@@ -324,7 +331,7 @@ internal sealed class Sega32XSh2Cpu
                 continue;
             }
 
-            if (TurboStraightLineEnabled &&
+            if (_turboStraightLineEnabled &&
                 TryExecuteTurboStraightLine(bus, remainingInstructions, pc, opcode, out consumedInstructions))
             {
                 remainingInstructions = consumedInstructions >= remainingInstructions ? 0 : remainingInstructions - consumedInstructions;
@@ -2673,7 +2680,7 @@ internal sealed class Sega32XSh2Cpu
                 return false;
 
             uint pollingAddress = cpu.Registers.GlobalBaseRegister + _pollingDisplacement;
-            if (!bus.IsFastPollingRegister(pollingAddress))
+            if (!IsFastPollingSource(bus, pollingAddress, _pollingLoadSize))
                 return false;
 
             ushort initialCounter = bus.ReadWord(counterAddress, Sega32XSh2AccessContext.Data);

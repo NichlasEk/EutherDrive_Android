@@ -31,13 +31,22 @@ public static class Sega32XRomDetector
     {
         bool securityMatch = Sega32XBootRom.SecurityProgramMatches(romData);
         string header = ReadAscii(romData, 0x100, 0x50).Trim();
-        string title = ReadAscii(romData, 0x150, 0x30).Trim();
+        string title = ReadInternationalTitle(romData);
         ConsoleRegion? region = DetectRegion(romData, out string regionRaw);
         if (string.IsNullOrWhiteSpace(title))
             title = Path.GetFileName(path);
 
         string regionLabel = region?.ToString() ?? ConsoleRegion.Auto.ToString();
         return $"32X scaffold: title='{title}', region={regionLabel} raw='{regionRaw}', securityProgram={(securityMatch ? "match" : "no-match")}, header='{header}'";
+    }
+
+    public static string ReadInternationalTitle(byte[] romData) => ReadAscii(romData, 0x150, 0x30).Trim();
+
+    public static bool IsKnucklesChaotix(byte[] romData)
+    {
+        string header = ReadAscii(romData, 0x100, 0x90);
+        return header.IndexOf("CHAOTIX", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            header.IndexOf("KNUCKLES", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     public static ConsoleRegion? DetectRegion(byte[] romData, out string rawHeader)

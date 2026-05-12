@@ -64,6 +64,11 @@ internal sealed class Sega32XScaffoldCore
         Bus = new Sega32XBus(_romData, vectors, Registers, SyncSh2sForM68kCommAccess);
         MasterSh2 = new Sega32XSh2Cpu("Master");
         SlaveSh2 = new Sega32XSh2Cpu("Slave");
+        if (ShouldEnableTurboStraightLineForRom(_romData))
+        {
+            MasterSh2.TurboStraightLineEnabled = true;
+            SlaveSh2.TurboStraightLineEnabled = true;
+        }
         _masterBus = new Sega32XSh2Bus(this, Sega32XCpu.Master);
         _slaveBus = new Sega32XSh2Bus(this, Sega32XCpu.Slave);
     }
@@ -593,6 +598,14 @@ internal sealed class Sega32XScaffoldCore
             return defaultValue;
 
         return raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldEnableTurboStraightLineForRom(byte[] romData)
+    {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_S32X_TURBO_STRAIGHT_LINE")))
+            return false;
+
+        return Sega32XRomDetector.IsKnucklesChaotix(romData);
     }
 
     private static ulong ParseNonNegativeUlong(string name, ulong defaultValue)
