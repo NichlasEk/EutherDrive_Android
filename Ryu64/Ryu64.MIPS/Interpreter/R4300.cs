@@ -87,6 +87,12 @@ namespace Ryu64.MIPS
         private static readonly uint TracePcWindowStart = ParseTracePc("EUTHERDRIVE_TRACE_N64_PC_WINDOW_START", 0x80000000u);
         private static readonly uint TracePcWindowEnd = ParseTracePc("EUTHERDRIVE_TRACE_N64_PC_WINDOW_END", 0x80000000u);
         private static int _tracePcWindowCount = 0;
+        private static readonly bool TraceHotPcSamples =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_HOT_PC"), "1", StringComparison.Ordinal);
+        private static readonly int HotPcSampleInterval = Math.Max(1, ParseTraceLimit("EUTHERDRIVE_TRACE_N64_HOT_PC_INTERVAL", 1024));
+        private static ulong _hotPcInstructionCounter;
+        private static readonly Dictionary<uint, long> HotPcSamples = new Dictionary<uint, long>();
+        private static readonly object HotPcSamplesLock = new object();
         private static readonly bool TraceStuckPcDetails =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_STUCK_PC"), "1", StringComparison.Ordinal);
         private static readonly bool TraceExceptionEntry =
@@ -775,6 +781,32 @@ namespace Ryu64.MIPS
             return string.Join(", ", chunks);
         }
 
+        private static void TrackHotPcSample(uint pc)
+        {
+            if (!TraceHotPcSamples)
+                return;
+
+            _hotPcInstructionCounter++;
+            if ((_hotPcInstructionCounter % (ulong)HotPcSampleInterval) != 0)
+                return;
+
+            lock (HotPcSamplesLock)
+            {
+                if (!HotPcSamples.TryGetValue(pc, out long count))
+                    count = 0;
+                HotPcSamples[pc] = count + 1;
+            }
+        }
+
+        public static string GetHotPcSummary(int topN = 8)
+        {
+            if (!TraceHotPcSamples)
+                return string.Empty;
+
+            lock (HotPcSamplesLock)
+                return FormatTopUnknownSummary(HotPcSamples, "pc", topN);
+        }
+
         private static bool CountCompareReached(uint previousCount, uint newCount, uint compare)
         {
             // compare match between previousCount(exclusive) -> newCount(inclusive), wrapping at 32-bit.
@@ -942,6 +974,7 @@ namespace Ryu64.MIPS
         public static void InterpretOpcode(uint Opcode)
         {
             if (Registers.R4300.Reg[0] != 0) Registers.R4300.Reg[0] = 0;
+            TrackHotPcSample(Registers.R4300.PC);
 
             if (Registers.COP0.Reg[Registers.COP0.COUNT_REG] >= 0xFFFFFFFF)
             {
@@ -1071,6 +1104,11 @@ namespace Ryu64.MIPS
             {
                 UnknownOpcodeByPc.Clear();
                 UnknownOpcodeByValue.Clear();
+            }
+            lock (HotPcSamplesLock)
+            {
+                HotPcSamples.Clear();
+                _hotPcInstructionCounter = 0;
             }
             _stuckPcLogCount = 0;
             _loggedPifTailEntry = false;
