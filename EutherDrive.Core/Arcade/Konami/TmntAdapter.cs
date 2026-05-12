@@ -23,7 +23,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
     private const string SavestateMagic = "KONAMITMNT";
     private const string SavestateExtendedMagic = "KONAMITMNTE";
     private const int SavestateVersion = 1;
-    private const int SavestateExtendedVersion = 7;
+    private const int SavestateExtendedVersion = 8;
     private const int TmntVisibleWidth = 320;
     private const int FrameWidth = 384;
     private const int FrameHeight = 224;
@@ -381,6 +381,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _sound.RestoreRuntimeState(_loadedVariant);
             _bus.RestoreRuntimeState(_sound, _loadedVariant);
             TryReadExtendedState(reader);
+            _bus.Render(_renderFrameBuffer);
+            lock (_frameSync)
+            {
+                Buffer.BlockCopy(_renderFrameBuffer, 0, _presentFrameBuffer, 0, _renderFrameBuffer.Length);
+                Buffer.BlockCopy(_renderFrameBuffer, 0, _snapshotFrameBuffer, 0, _renderFrameBuffer.Length);
+            }
             if (_audioBuffer.Length == 0)
                 _audioBuffer = new short[Math.Max(1, (int)Math.Round(OutputSampleRate / TargetFps)) * OutputChannels];
         }
@@ -521,8 +527,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly byte[] _ram = new byte[0x10000];
         private readonly byte[] _metamrphExtraRam = new byte[0xf000];
         private readonly byte[] _moomesaSpriteRam = new byte[0x10000];
+        [NonSerialized] private readonly byte[] _buckyExtraSpriteRam = new byte[0x10000];
+        [NonSerialized] private readonly byte[] _buckyExtraTileRam = new byte[0x4000];
         private readonly byte[] _paletteRam = new byte[0x4000];
-        private readonly ushort[] _palette = new ushort[0x800];
+        private readonly ushort[] _palette = new ushort[0x1000];
         [NonSerialized] private readonly byte[] _tileRom = new byte[0x500000];
         [NonSerialized] private readonly byte[] _spriteRom = new byte[0x800000];
         private readonly K052109 _k052109 = new();
@@ -533,6 +541,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private readonly K053250 _k053250 = new();
         [NonSerialized] private readonly K054338 _k054338 = new();
         [NonSerialized] private readonly K053252 _k053252 = new();
+        [NonSerialized] private readonly K054000Hitbox _k054000 = new();
         private readonly Tmnt2SerialEeprom _tmnt2Eeprom = new();
         private readonly byte[] _tmnt2UnknownRam = new byte[0x80];
         private readonly ushort[] _tmnt2ProtRam = new ushort[0x10];
@@ -618,13 +627,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             ResetK053251Indexes();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.ZRejection = (UsesK053245Hardware || UsesBuckyHardware) ? 0 : -1;
-            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
+            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMooHardware;
             _k053245.NormalPlaneSpriteDecode = UsesMooHardware;
             _k053245.MetamrphSpriteLayout = UsesGx4BppHardware;
             _k053245.ViostormSpriteLayout = UsesViostormHardware;
+            _k053245.BuckySpriteLayout = UsesBuckyHardware;
+            _k053245.PaletteMask = UsesBuckyHardware ? 0x0fff : 0x07ff;
             _k056832.ViostormTileCallback = UsesViostormHardware;
             _k056832.MoomesaTileCallback = UsesMooHardware;
+            _k056832.BuckyTileCallback = UsesBuckyHardware;
             _k056832.Bpp4TileDecode = UsesMooHardware;
+            _k056832.DisableLayerAssociation = UsesBuckyHardware;
+            _k056832.PaletteMask = UsesBuckyHardware ? 0x0fff : 0x07ff;
             _k053250.MoomesaClipWindow = UsesMooHardware;
             EnsureGxProtectionRamSize();
             InvalidateMoomesaBaseFrameCache();
@@ -637,6 +651,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_ram);
             Array.Clear(_metamrphExtraRam);
             Array.Clear(_moomesaSpriteRam);
+            Array.Clear(_buckyExtraSpriteRam);
+            Array.Clear(_buckyExtraTileRam);
             Array.Clear(_paletteRam);
             Array.Clear(_palette);
             InvalidateMoomesaBaseFrameCache();
@@ -655,15 +671,21 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053245.Load(_spriteRom);
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.ZRejection = (UsesK053245Hardware || UsesBuckyHardware) ? 0 : -1;
-            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
+            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMooHardware;
             _k053245.NormalPlaneSpriteDecode = UsesMooHardware;
             _k053245.MetamrphSpriteLayout = UsesGx4BppHardware;
             _k053245.ViostormSpriteLayout = UsesViostormHardware;
+            _k053245.BuckySpriteLayout = UsesBuckyHardware;
+            _k053245.PaletteMask = UsesBuckyHardware ? 0x0fff : 0x07ff;
             _k056832.ViostormTileCallback = UsesViostormHardware;
             _k056832.MoomesaTileCallback = UsesMooHardware;
+            _k056832.BuckyTileCallback = UsesBuckyHardware;
             _k056832.Bpp4TileDecode = UsesMooHardware;
+            _k056832.DisableLayerAssociation = UsesBuckyHardware;
+            _k056832.PaletteMask = UsesBuckyHardware ? 0x0fff : 0x07ff;
             _k053250.Load(roms.K053250);
             _k053250.MoomesaClipWindow = UsesMooHardware;
+            _k054000.Reset();
             _tmnt2Eeprom.ResetContents();
             if (UsesK053245Hardware || UsesMystwarrHardware || UsesMooHardware)
                 _tmnt2Eeprom.Import(roms.Eeprom);
@@ -675,6 +697,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_ram);
             Array.Clear(_metamrphExtraRam);
             Array.Clear(_moomesaSpriteRam);
+            Array.Clear(_buckyExtraSpriteRam);
+            Array.Clear(_buckyExtraTileRam);
             Array.Clear(_paletteRam);
             Array.Clear(_palette);
             Array.Clear(_tmnt2UnknownRam);
@@ -691,15 +715,21 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _k053250.Reset();
             _k054338.Reset();
             _k053252.Reset();
+            _k054000.Reset();
             _k053245.Tmnt2CoordinateMode = _variant == TmntHardwareVariant.Tmnt2;
             _k053245.ZRejection = (UsesK053245Hardware || UsesBuckyHardware) ? 0 : -1;
-            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMoomesaHardware;
+            _k053245.MystwarrSpriteLayout = _variant == TmntHardwareVariant.Mystwarr || UsesMooHardware;
             _k053245.NormalPlaneSpriteDecode = UsesMooHardware;
             _k053245.MetamrphSpriteLayout = UsesGx4BppHardware;
             _k053245.ViostormSpriteLayout = UsesViostormHardware;
+            _k053245.BuckySpriteLayout = UsesBuckyHardware;
+            _k053245.PaletteMask = UsesBuckyHardware ? 0x0fff : 0x07ff;
             _k056832.ViostormTileCallback = UsesViostormHardware;
             _k056832.MoomesaTileCallback = UsesMooHardware;
+            _k056832.BuckyTileCallback = UsesBuckyHardware;
             _k056832.Bpp4TileDecode = UsesMooHardware;
+            _k056832.DisableLayerAssociation = UsesBuckyHardware;
+            _k056832.PaletteMask = UsesBuckyHardware ? 0x0fff : 0x07ff;
             _k053250.MoomesaClipWindow = UsesMooHardware;
             InvalidateMoomesaBaseFrameCache();
             _interruptLevel = 0;
@@ -1134,13 +1164,16 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                + MoomesaDebugSummary()
                + PaletteDebugSummary()
                + _k052109.DebugSummary()
-               + $" k055555={_k055555.DebugSummary()} k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053252={_k053252.DebugSummary()} {_k053250.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
+               + $" k055555={_k055555.DebugSummary()} k056832={_k056832.DebugSummary()} k053245={_k053245.DebugSummary()} k054338={_k054338.DebugSummary()} k053252={_k053252.DebugSummary()} k054000={_k054000.DebugSummary()} {_k053250.DebugSummary()} k053260={_sound?.K053260DebugSummary ?? "detached"} eep={_tmnt2Eeprom.DebugSummary()}";
 
         public void SaveExtendedState(BinaryWriter writer)
         {
             StateBinarySerializer.WriteInto(writer, _k054338);
             StateBinarySerializer.WriteInto(writer, _k053252);
             StateBinarySerializer.WriteInto(writer, _k053250);
+            WriteByteArray(writer, _buckyExtraSpriteRam);
+            WriteByteArray(writer, _buckyExtraTileRam);
+            StateBinarySerializer.WriteInto(writer, _k054000);
         }
 
         public void LoadExtendedState(BinaryReader reader, int version)
@@ -1149,6 +1182,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             StateBinarySerializer.ReadInto(reader, _k053252);
             if (version >= 7)
                 StateBinarySerializer.ReadInto(reader, _k053250);
+            if (version >= 8)
+            {
+                ReadByteArray(reader, _buckyExtraSpriteRam);
+                ReadByteArray(reader, _buckyExtraTileRam);
+                StateBinarySerializer.ReadInto(reader, _k054000);
+            }
         }
 
         private string PaletteDebugSummary()
@@ -1185,7 +1224,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             ushort queueWord = queue >= ramBase && queue <= ramBase + 0xfffe
                 ? ReadBigEndianWord(_ram, (int)(queue - ramBase))
                 : (ushort)0xffff;
-            return $"mooctl=0x{_moomesaControl2:X4}/{(_moomesaVblankIrqEnabled ? 1 : 0)}/{(_moomesaSpriteIrqEnabled ? 1 : 0)} mooq=0x{queue:X6}:0x{queueWord:X4} ";
+            uint selfTest = UsesBuckyHardware
+                ? ReadBigEndianLong(_ram, 0x0bfc)
+                : _ram.Length >= 0x10000 ? ReadBigEndianLong(_ram, 0x0bfc) : 0;
+            return $"mooctl=0x{_moomesaControl2:X4}/{(_moomesaVblankIrqEnabled ? 1 : 0)}/{(_moomesaSpriteIrqEnabled ? 1 : 0)} mooq=0x{queue:X6}:0x{queueWord:X4} mooerr=0x{selfTest:X8} ";
         }
 
         private static uint ReadBigEndianLong(byte[] data, int offset)
@@ -1433,7 +1475,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int color = (colorBase | colorOffset) & 0x7f;
                 int paletteBase = color << 4;
                 for (int pen = 0; pen < 16; pen++)
-                    hash = (hash * 1099511628211UL) ^ _palette[(paletteBase + pen) & 0x7ff];
+                    hash = (hash * 1099511628211UL) ^ _palette[(paletteBase + pen) & (UsesBuckyHardware ? 0x0fff : 0x07ff)];
             }
             return hash;
         }
@@ -1588,9 +1630,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x090000 && address <= 0x09ffff)
                 return _moomesaSpriteRam[address - 0x090000];
             if (address >= 0x0a0000 && address <= 0x0affff)
-                return 0;
+                return _buckyExtraSpriteRam[address - 0x0a0000];
+            if (address >= 0x0d2000 && address <= 0x0d203f)
+                return (address & 1) != 0
+                    ? _k054000.Read((int)((address - 0x0d2000) >> 1))
+                    : (byte)0xff;
             if (address >= 0x180000 && address <= 0x183fff)
                 return ReadWordByte(_k056832.ReadRamWord((int)(((address - 0x180000) & 0x1fff) >> 1)), address);
+            if (address >= 0x184000 && address <= 0x187fff)
+                return _buckyExtraTileRam[address - 0x184000];
             if (address >= 0x190000 && address <= 0x191fff)
                 return ReadWordByte(_k056832.ReadRomWord((int)((address - 0x190000) >> 1)), address);
             if (address >= 0x1b0000 && address <= 0x1b3fff)
@@ -1646,11 +1694,13 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x090000 && address <= 0x09fffe)
                 return ReadBigEndianWord(_moomesaSpriteRam, (int)(address - 0x090000));
             if (address >= 0x0a0000 && address <= 0x0afffe)
-                return 0;
+                return ReadBigEndianWord(_buckyExtraSpriteRam, (int)(address - 0x0a0000));
             if (address >= 0x0c4000 && address <= 0x0c4001)
                 return _k053245.ReadControlWordNoA1(0);
             if (address >= 0x0d0000 && address <= 0x0d001e)
                 return (ushort)(0xff00 | _k053252.Read((int)((address - 0x0d0000) >> 1)));
+            if (address >= 0x0d2000 && address <= 0x0d203e)
+                return (ushort)(0xff00 | _k054000.Read((int)((address - 0x0d2000) >> 1)));
             if (address >= 0x0d6000 && address <= 0x0d601e)
                 return (ushort)(0xff00 | (_sound?.K054321MainRead((int)((address - 0x0d6000) >> 1)) ?? 0xff));
             if (address >= 0x0da000 && address <= 0x0da001)
@@ -1665,6 +1715,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return _moomesaControl2;
             if (address >= 0x180000 && address <= 0x183ffe)
                 return _k056832.ReadRamWord((int)(((address - 0x180000) & 0x1fff) >> 1));
+            if (address >= 0x184000 && address <= 0x187ffe)
+                return ReadBigEndianWord(_buckyExtraTileRam, (int)(address - 0x184000));
             if (address >= 0x190000 && address <= 0x191ffe)
                 return _k056832.ReadRomWord((int)((address - 0x190000) >> 1));
             if (address >= 0x1b0000 && address <= 0x1b3ffe)
@@ -1845,6 +1897,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _moomesaSpriteRam[address - 0x090000] = value;
                 return;
             }
+            if (address >= 0x0a0000 && address <= 0x0affff)
+            {
+                _buckyExtraSpriteRam[address - 0x0a0000] = value;
+                return;
+            }
             if (address >= 0x0c0000 && address <= 0x0c003f)
             {
                 _k056832.WriteRegByte((int)(address - 0x0c0000), value);
@@ -1870,6 +1927,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             {
                 if ((address & 1) != 0)
                     _k053252.Write((int)((address - 0x0d0000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0d2000 && address <= 0x0d203f)
+            {
+                if ((address & 1) != 0)
+                    _k054000.Write((int)((address - 0x0d2000) >> 1), value);
                 return;
             }
             if (address >= 0x0d4000 && address <= 0x0d4001)
@@ -1903,6 +1966,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _k056832.WriteRamWord((int)(((wordAddress - 0x180000) & 0x1fff) >> 1), tileWord);
                 return;
             }
+            if (address >= 0x184000 && address <= 0x187fff)
+            {
+                _buckyExtraTileRam[address - 0x184000] = value;
+                return;
+            }
             if (address >= 0x1b0000 && address <= 0x1b3fff)
             {
                 _paletteRam[address - 0x1b0000] = value;
@@ -1926,6 +1994,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             if (address >= 0x090000 && address <= 0x09fffe)
             {
                 WriteBigEndianWord(_moomesaSpriteRam, (int)(address - 0x090000), value);
+                return;
+            }
+            if (address >= 0x0a0000 && address <= 0x0afffe)
+            {
+                WriteBigEndianWord(_buckyExtraSpriteRam, (int)(address - 0x0a0000), value);
                 return;
             }
             if (address >= 0x0c0000 && address <= 0x0c003e)
@@ -1958,6 +2031,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _k053252.Write((int)((address - 0x0d0000) >> 1), (byte)value);
                 return;
             }
+            if (address >= 0x0d2000 && address <= 0x0d203e)
+            {
+                _k054000.Write((int)((address - 0x0d2000) >> 1), (byte)value);
+                return;
+            }
             if (address >= 0x0d4000 && address <= 0x0d4001)
             {
                 _sound?.PulseIrq();
@@ -1983,6 +2061,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 _k056832.WriteRamWord((int)(((address - 0x180000) & 0x1fff) >> 1), value);
                 return;
             }
+            if (address >= 0x184000 && address <= 0x187ffe)
+            {
+                WriteBigEndianWord(_buckyExtraTileRam, (int)(address - 0x184000), value);
+                return;
+            }
             if (address >= 0x1b0000 && address <= 0x1b3ffe)
             {
                 int offset = (int)(address - 0x1b0000);
@@ -2005,7 +2088,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void UpdatePaletteMoomesa(int index)
         {
-            index &= 0x7ff;
+            index &= UsesBuckyHardware ? 0x0fff : 0x07ff;
             int offset = index * 4;
             int r = _paletteRam[offset + 1];
             int g = _paletteRam[offset + 2];
@@ -2016,10 +2099,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private void WriteMoomesaControl2(ushort value)
         {
             _moomesaControl2 = value;
-            byte eepromPins = UsesBuckyHardware
-                ? (byte)((value & ~0x02) | ((value & 0x02) == 0 ? 0x02 : 0x00))
-                : (byte)value;
-            _tmnt2Eeprom.Write(eepromPins);
+            _tmnt2Eeprom.Write((byte)value);
             _moomesaVblankIrqEnabled = (value & 0x20) != 0;
             _moomesaSpriteIrqEnabled = (value & 0x0800) != 0;
         }
@@ -2036,10 +2116,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private void MoomesaObjectDma()
         {
+            if (UsesBuckyHardware)
+            {
+                BuckyObjectDma();
+                return;
+            }
+
+            int contiguousActive = CountActiveSpriteEntries(_moomesaSpriteRam, 0x10);
+            int stridedActive = CountActiveSpriteEntries(_moomesaSpriteRam, 0x100);
+            int sourceStride = stridedActive != 0 && stridedActive >= contiguousActive ? 0x100 : 0x10;
             int destination = 0;
             for (int i = 0; i < 256; i++)
             {
-                int source = i * 0x100;
+                int source = i * sourceStride;
                 ushort flags = ReadBigEndianWord(_moomesaSpriteRam, source);
                 if ((flags & 0x8000) == 0)
                     continue;
@@ -2051,6 +2140,68 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (; destination < 256 * 8; destination++)
                 _k053245.WriteHardwareWord(destination, 0);
             _k053245.BufferSprites();
+        }
+
+        private void BuckyObjectDma()
+        {
+            int destination = 0;
+            for (int source = 0; source <= _moomesaSpriteRam.Length - 16 && destination < 256 * 8; source += 0x10)
+            {
+                ushort flags = ReadBigEndianWord(_moomesaSpriteRam, source);
+                if ((flags & 0x8000) == 0 || (flags & 0x00ff) == 0 || IsAllOnesSpriteEntry(_moomesaSpriteRam, source))
+                    continue;
+
+                _k053245.WriteHardwareWord(destination, flags);
+                bool swapPayloadBytes = ShouldSwapBuckySpritePayload(source);
+                for (int word = 1; word < 8; word++)
+                {
+                    ushort value = ReadBigEndianWord(_moomesaSpriteRam, source + word * 2);
+                    if (swapPayloadBytes)
+                        value = (ushort)((value << 8) | (value >> 8));
+                    _k053245.WriteHardwareWord(destination + word, value);
+                }
+                destination += 8;
+            }
+            for (; destination < 256 * 8; destination++)
+                _k053245.WriteHardwareWord(destination, 0);
+            _k053245.BufferSprites();
+        }
+
+        private bool ShouldSwapBuckySpritePayload(int source)
+        {
+            ushort zoomY = ReadBigEndianWord(_moomesaSpriteRam, source + 8);
+            ushort zoomX = ReadBigEndianWord(_moomesaSpriteRam, source + 10);
+            if ((zoomY > 1 && zoomX > 1) || zoomY == 0 || zoomX == 0)
+                return false;
+
+            ushort swappedZoomY = (ushort)((zoomY << 8) | (zoomY >> 8));
+            ushort swappedZoomX = (ushort)((zoomX << 8) | (zoomX >> 8));
+            return swappedZoomY is >= 0x20 and <= 0x400
+                && swappedZoomX is >= 0x20 and <= 0x400;
+        }
+
+        private static bool IsAllOnesSpriteEntry(byte[] spriteRam, int source)
+        {
+            for (int word = 0; word < 8; word++)
+            {
+                if (ReadBigEndianWord(spriteRam, source + word * 2) != 0xffff)
+                    return false;
+            }
+            return true;
+        }
+
+        private static int CountActiveSpriteEntries(byte[] spriteRam, int sourceStride)
+        {
+            int active = 0;
+            for (int i = 0; i < 256; i++)
+            {
+                int source = i * sourceStride;
+                if (source + 1 >= spriteRam.Length)
+                    break;
+                if ((ReadBigEndianWord(spriteRam, source) & 0x8000) != 0)
+                    active++;
+            }
+            return active;
         }
 
         private void WriteMoomesaProtection(int offset, ushort value)
@@ -3365,6 +3516,125 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         }
     }
 
+    private sealed class K054000Hitbox
+    {
+        private readonly byte[] _rawAcx = new byte[4];
+        private readonly byte[] _rawAcy = new byte[4];
+        private readonly byte[] _rawBcx = new byte[4];
+        private readonly byte[] _rawBcy = new byte[4];
+        private int _acx;
+        private int _acy;
+        private int _aax = 1;
+        private int _aay = 1;
+        private int _bcx;
+        private int _bcy;
+        private int _bax = 1;
+        private int _bay = 1;
+        private int _reads;
+        private int _writes;
+        private byte _lastStatus;
+
+        public void Reset()
+        {
+            Array.Clear(_rawAcx);
+            Array.Clear(_rawAcy);
+            Array.Clear(_rawBcx);
+            Array.Clear(_rawBcy);
+            _acx = 0;
+            _acy = 0;
+            _bcx = 0;
+            _bcy = 0;
+            _aax = 1;
+            _aay = 1;
+            _bax = 1;
+            _bay = 1;
+            _reads = 0;
+            _writes = 0;
+            _lastStatus = 0;
+        }
+
+        public byte Read(int offset)
+        {
+            if ((offset & 0x1f) != 0x18)
+                return 0;
+
+            _lastStatus = (byte)(AxisCheck(_acx, _bcx, _aax, _bax) | AxisCheck(_acy, _bcy, _aay, _bay));
+            _reads++;
+            return _lastStatus;
+        }
+
+        public void Write(int offset, byte value)
+        {
+            offset &= 0x1f;
+            _writes++;
+            if (offset >= 0x01 && offset <= 0x04)
+            {
+                _rawAcx[offset - 0x01] = value;
+                _acx = ConvertRawDelta(_rawAcx);
+                return;
+            }
+            if (offset == 0x06)
+            {
+                _aax = value;
+                return;
+            }
+            if (offset == 0x07)
+            {
+                _aay = value;
+                return;
+            }
+            if (offset >= 0x09 && offset <= 0x0c)
+            {
+                _rawAcy[offset - 0x09] = value;
+                _acy = ConvertRawDelta(_rawAcy);
+                return;
+            }
+            if (offset == 0x0e)
+            {
+                _bax = value;
+                return;
+            }
+            if (offset == 0x0f)
+            {
+                _bay = value;
+                return;
+            }
+            if (offset >= 0x11 && offset <= 0x13)
+            {
+                _rawBcy[offset - 0x11] = value;
+                _bcy = ConvertRaw(_rawBcy);
+                return;
+            }
+            if (offset >= 0x15 && offset <= 0x17)
+            {
+                _rawBcx[offset - 0x15] = value;
+                _bcx = ConvertRaw(_rawBcx);
+            }
+        }
+
+        public string DebugSummary()
+            => $"r={_reads} w={_writes} st=0x{_lastStatus:X2} ac={_acx},{_acy}/{_aax},{_aay} bc={_bcx},{_bcy}/{_bax},{_bay}";
+
+        private static int ConvertRawDelta(byte[] raw)
+        {
+            int result = (raw[0] << 16) | (raw[1] << 8) | raw[2];
+            return (raw[3] & 0x80) != 0
+                ? result - (0x100 - raw[3])
+                : result + raw[3];
+        }
+
+        private static int ConvertRaw(byte[] raw)
+            => (raw[0] << 16) | (raw[1] << 8) | raw[2];
+
+        private static byte AxisCheck(int aCenter, int bCenter, int aAxis, int bAxis)
+        {
+            int delta = aCenter - bCenter;
+            if (delta > 511 || delta <= -1024)
+                return 1;
+            return (byte)(((Math.Abs(delta) & 0x1ff) > ((aAxis + bAxis) & 0x1ff)) ? 1 : 0);
+        }
+    }
+
     private sealed class K052109
     {
         private readonly byte[] _ram = new byte[0x6000];
@@ -4188,12 +4458,15 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private bool _metamrphTileCallback;
         [NonSerialized] private bool _viostormTileCallback;
         [NonSerialized] private bool _moomesaTileCallback;
+        [NonSerialized] private bool _buckyTileCallback;
+        [NonSerialized] private bool _disableLayerAssociation;
         [NonSerialized] private bool _bpp4TileDecode;
         [NonSerialized] private bool _bpp4TilePensDecoded;
         [NonSerialized] private ulong _vramVersion;
         [NonSerialized] private ulong _regVersion;
 
         public int[] LayerColorBase { get; } = new int[4];
+        public int PaletteMask { get; set; } = 0x07ff;
         public int LastAlphaTileMixCode => _lastAlphaTileMixCode;
         public ulong RenderStateVersion => (_vramVersion * 397UL) ^ _regVersion;
         public bool Bpp4TileDecode
@@ -4225,6 +4498,18 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             set => _moomesaTileCallback = value;
         }
 
+        public bool BuckyTileCallback
+        {
+            get => _buckyTileCallback;
+            set => _buckyTileCallback = value;
+        }
+
+        public bool DisableLayerAssociation
+        {
+            get => _disableLayerAssociation;
+            set => _disableLayerAssociation = value;
+        }
+
         public void Load(byte[] rom)
         {
             Array.Clear(_rom);
@@ -4254,7 +4539,10 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _metamrphTileCallback = false;
             _viostormTileCallback = false;
             _moomesaTileCallback = false;
+            _buckyTileCallback = false;
+            _disableLayerAssociation = false;
             _bpp4TileDecode = false;
+            PaletteMask = 0x07ff;
             _vramVersion = 0;
             _regVersion = 0;
         }
@@ -4421,7 +4709,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int pageColorBase = LayerColorBase[layer];
             Span<bool> pageBelongsToLayer = stackalloc bool[16];
             for (int page = 0; page < pageBelongsToLayer.Length; page++)
-                pageBelongsToLayer[page] = AssociatedLayerForPage(page) == layer;
+                pageBelongsToLayer[page] = LayerAssociationEnabled()
+                    ? AssociatedLayerForPage(page) == layer
+                    : PageMappedByAnyLayer(page);
 
             for (int py = 0; py < FrameHeight; py++)
             {
@@ -4454,7 +4744,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     }
 
                     int pageBase = page * PageWords;
-                    if (PageUsesTileMode(page))
+                    if (PageUsesTileMode(page, layer))
                         DrawTileSourceRun(frameBuffer, palette, pageBase, layer, pageColorBase, px, py, run, localX, tileY, pixelX, pixelY, flipX, opaque, mixAlphas, tileCategory, brightness, priorityBuffer, priorityCode);
                     else
                         DrawLineSourceRun(frameBuffer, palette, pageBase, layer, pageColorBase, px, py, run, localX, localY, flipX, opaque, mixAlphas, tileCategory, brightness, priorityBuffer, priorityCode);
@@ -4505,7 +4795,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     if (pen == 0 && !opaque)
                         continue;
 
-                    ushort xBgr555 = palette[(paletteBase + pen) & 0x7ff];
+                    ushort xBgr555 = palette[(paletteBase + pen) & PaletteMask];
                     int offset = rowOffset + i * 4;
                     frameBuffer[offset] = Color5To8[(xBgr555 >> 10) & 0x1f];
                     frameBuffer[offset + 1] = Color5To8[(xBgr555 >> 5) & 0x1f];
@@ -4523,7 +4813,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 if (pen == 0 && !opaque)
                     continue;
 
-                WriteTilePixel(frameBuffer, px + i, py, palette[(paletteBase + pen) & 0x7ff], alpha, brightness);
+                WriteTilePixel(frameBuffer, px + i, py, palette[(paletteBase + pen) & PaletteMask], alpha, brightness);
                 if (priorityBuffer != null)
                     priorityBuffer[py * FrameWidth + px + i] = (byte)(priorityBuffer[py * FrameWidth + px + i] | priorityCode);
             }
@@ -4554,7 +4844,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     if (pen == 0 && !opaque)
                         continue;
 
-                    ushort xBgr555 = palette[(paletteBase + pen) & 0x7ff];
+                    ushort xBgr555 = palette[(paletteBase + pen) & PaletteMask];
                     int offset = rowOffset + i * 4;
                     frameBuffer[offset] = Color5To8[(xBgr555 >> 10) & 0x1f];
                     frameBuffer[offset + 1] = Color5To8[(xBgr555 >> 5) & 0x1f];
@@ -4571,7 +4861,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int pen = Decode5BppPixel(code + ((x >> 6) & 7), src & 7, src >> 3);
                 if (pen == 0 && !opaque)
                     continue;
-                WriteTilePixel(frameBuffer, px + i, py, palette[(paletteBase + pen) & 0x7ff], alpha, brightness);
+                WriteTilePixel(frameBuffer, px + i, py, palette[(paletteBase + pen) & PaletteMask], alpha, brightness);
                 if (priorityBuffer != null)
                     priorityBuffer[py * FrameWidth + px + i] = (byte)(priorityBuffer[py * FrameWidth + px + i] | priorityCode);
             }
@@ -4676,12 +4966,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return;
 
             int page = (pageBase / PageWords) & 0x0f;
-            int pageLayer = AssociatedLayerForPage(page);
+            int pageLayer = LayerAssociationEnabled() ? AssociatedLayerForPage(page) : layer;
             if (pageLayer < 0 || pageLayer != (layer & 3))
                 return;
 
             int pageColorBase = LayerColorBase[pageLayer];
-            if (!PageUsesTileMode(page))
+            if (!PageUsesTileMode(page, pageLayer))
             {
                 DrawLinePage(frameBuffer, palette, pageBase, pageLayer, pageColorBase, pageX, pageY, screenFlipX, screenFlipY, opaque, mixAlphas, tileCategory, brightness);
                 return;
@@ -4780,6 +5070,17 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 };
             }
 
+            if (_buckyTileCallback)
+            {
+                return layer switch
+                {
+                    0 => -2,
+                    1 => 2,
+                    2 => 4,
+                    _ => 6
+                };
+            }
+
             if (_metamrphTileCallback)
             {
                 return layer switch
@@ -4806,9 +5107,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private int VisibleOriginY => _metamrphTileCallback ? 15 : MoomesaVisibleOriginY;
 
-        private bool PageUsesTileMode(int page)
+        private bool PageUsesTileMode(int page, int drawLayer)
         {
-            int layer = AssociatedLayerForPage(page);
+            int layer = LayerAssociationEnabled() ? AssociatedLayerForPage(page) : drawLayer;
             return layer < 0 || (_regs[4] & (1 << layer)) != 0;
         }
 
@@ -4839,6 +5140,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         private bool LayerAssociationEnabled()
         {
+            if (_disableLayerAssociation)
+                return false;
+
             for (int layer = 0; layer < 4; layer++)
             {
                 if (((_regs[0x08 + layer] & 3) == 3)
@@ -4850,6 +5154,27 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 }
             }
             return true;
+        }
+
+        private bool PageMappedByAnyLayer(int page)
+        {
+            for (int layer = 0; layer < 4; layer++)
+            {
+                int rowStart = (_regs[0x08 + layer] >> 3) & 3;
+                int rowSpan = (_regs[0x08 + layer] & 3) + 1;
+                int colStart = (_regs[0x0c + layer] >> 3) & 3;
+                int colSpan = (_regs[0x0c + layer] & 3) + 1;
+                for (int row = 0; row < rowSpan; row++)
+                {
+                    for (int col = 0; col < colSpan; col++)
+                    {
+                        int candidate = (((rowStart + row) & 3) << 2) | ((colStart + col) & 3);
+                        if (candidate == page)
+                            return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private int ActiveLayerForUnassociatedPages()
@@ -4893,8 +5218,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             }
         }
 
-        private static int MystwarrTilePaletteIndex(int color, int pen)
-            => (color * 16 + pen) & 0x7ff;
+        private int MystwarrTilePaletteIndex(int color, int pen)
+            => (color * 16 + pen) & PaletteMask;
 
         private static void WriteTilePixel(byte[] frameBuffer, int x, int y, ushort xBgr555, int alpha)
             => WriteTilePixel(frameBuffer, x, y, xBgr555, alpha, 255);
@@ -5351,12 +5676,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private bool _mystwarrSpriteLayout;
         [NonSerialized] private bool _metamrphSpriteLayout;
         [NonSerialized] private bool _viostormSpriteLayout;
+        [NonSerialized] private bool _buckySpriteLayout;
         [NonSerialized] private bool _normalPlaneSpriteDecode;
         [NonSerialized] private readonly byte[] _mystwarrObjZBuffer = new byte[FrameWidth * FrameHeight];
         [NonSerialized] private readonly byte[] _mystwarrShadowZBuffer = new byte[FrameWidth * FrameHeight];
         [NonSerialized] private readonly byte[] _mystwarrShadowPriorityBuffer = new byte[FrameWidth * FrameHeight];
 
         public int SpriteColorBase { get; set; }
+        public int PaletteMask { get; set; } = 0x07ff;
         public int ZRejection
         {
             get => _zRejection;
@@ -5385,6 +5712,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             get => _viostormSpriteLayout;
             set => _viostormSpriteLayout = value;
+        }
+
+        public bool BuckySpriteLayout
+        {
+            get => _buckySpriteLayout;
+            set => _buckySpriteLayout = value;
         }
 
         public bool NormalPlaneSpriteDecode
@@ -5421,10 +5754,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _lastMaxX = 0;
             _lastMaxY = 0;
             SpriteColorBase = 0;
+            PaletteMask = 0x07ff;
             _tmnt2CoordinateMode = false;
             _mystwarrSpriteLayout = false;
             _metamrphSpriteLayout = false;
             _viostormSpriteLayout = false;
+            _buckySpriteLayout = false;
             _normalPlaneSpriteDecode = false;
         }
 
@@ -5957,7 +6292,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int count = 0;
             for (int offs = 0; offs < spriteRam.Length && count < sorted.Length; offs += 8)
             {
-                if ((spriteRam[offs] & 0x8000) != 0)
+                if ((spriteRam[offs] & 0x8000) == 0)
+                    continue;
+                if (_zRejection >= 0 && (spriteRam[offs] & 0xff) == _zRejection)
+                    continue;
+                if (spriteRam[offs] != 0)
                     sorted[count++] = offs;
             }
 
@@ -6081,15 +6420,23 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     mysticY = -mysticY;
 
                 int chipDx = _viostormSpriteLayout ? -62 : _metamrphSpriteLayout ? -51 : -48;
-                int chipDy = _viostormSpriteLayout ? -23 : -24;
-                int visibleOriginX = _viostormSpriteLayout ? MoomesaVisibleOriginX : MysticVisibleOriginX;
-                int visibleOriginY = _viostormSpriteLayout ? MoomesaVisibleOriginY : _metamrphSpriteLayout ? 15 : MysticVisibleOriginY;
-                mysticX += chipDx;
-                mysticY -= chipDy;
+                int chipDy = _buckySpriteLayout ? 23 : _viostormSpriteLayout ? -23 : -24;
+                int visibleOriginX = (_viostormSpriteLayout || _buckySpriteLayout) ? MoomesaVisibleOriginX : MysticVisibleOriginX;
+                int visibleOriginY = (_viostormSpriteLayout || _buckySpriteLayout) ? MoomesaVisibleOriginY : _metamrphSpriteLayout ? 15 : MysticVisibleOriginY;
+                if (!_buckySpriteLayout)
+                {
+                    mysticX += chipDx;
+                    mysticY -= chipDy;
+                }
                 mysticX = (mysticX - offx) & (wrapSize - 1);
                 mysticY = (-mysticY - offy) & (wrapSize - 1);
                 if (mysticX >= xWrapLimit) mysticX -= wrapSize;
                 if (mysticY >= yWrapLimit) mysticY -= wrapSize;
+                if (_buckySpriteLayout)
+                {
+                    mysticX += chipDx;
+                    mysticY -= chipDy;
+                }
                 mysticX -= (zoomX * w) >> 13;
                 mysticY -= (zoomY * h) >> 13;
                 mysticX -= visibleOriginX;
@@ -6331,7 +6678,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                         continue;
                     }
                     int paletteIndex = (_mystwarrSpriteLayout && !_normalPlaneSpriteDecode) ? colorBase * 32 + pen : colorBase * 16 + pen;
-                    WriteSpritePixel(frameBuffer, px, py, palette[paletteIndex & 0x7ff], alpha);
+                    WriteSpritePixel(frameBuffer, px, py, palette[paletteIndex & PaletteMask], alpha);
                     drawn++;
                 }
             }
