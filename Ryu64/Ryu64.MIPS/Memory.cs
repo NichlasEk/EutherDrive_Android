@@ -35,7 +35,7 @@ namespace Ryu64.MIPS
         private static readonly bool TraceRdpTextureRectangles =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_TEXRECT"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRdpDepth =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RDP_DEPTH"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RDP_DEPTH"), "0", StringComparison.Ordinal);
         private static readonly bool UseReferenceTexRectFlip =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_FLIP"), "1", StringComparison.Ordinal);
         private static readonly bool UseReferenceTexRectExtents =
