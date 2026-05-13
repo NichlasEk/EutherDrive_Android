@@ -796,6 +796,14 @@ namespace Ryu64.MIPS
         private uint _lastVisibleRdpFramebufferHeight;
         private uint _lastVisibleRdpFramebufferBytesPerPixel;
         private uint _lastVisibleRdpFramebufferEpoch;
+        private const int RdpVisibleFramebufferSnapshotSlots = 4;
+        private readonly byte[][] _visibleRdpFramebufferSnapshots = new byte[RdpVisibleFramebufferSnapshotSlots][];
+        private readonly uint[] _visibleRdpFramebufferAddresses = new uint[RdpVisibleFramebufferSnapshotSlots];
+        private readonly uint[] _visibleRdpFramebufferWidths = new uint[RdpVisibleFramebufferSnapshotSlots];
+        private readonly uint[] _visibleRdpFramebufferHeights = new uint[RdpVisibleFramebufferSnapshotSlots];
+        private readonly uint[] _visibleRdpFramebufferBytesPerPixels = new uint[RdpVisibleFramebufferSnapshotSlots];
+        private readonly uint[] _visibleRdpFramebufferEpochs = new uint[RdpVisibleFramebufferSnapshotSlots];
+        private int _visibleRdpFramebufferSnapshotCursor;
         private long _rspGraphicsTaskCount;
         private long _rspAudioTaskCount;
         private long _rspOtherTaskCount;
@@ -1188,6 +1196,19 @@ namespace Ryu64.MIPS
                 _lastVisibleRdpFramebufferHeight = reader.ReadUInt32();
                 _lastVisibleRdpFramebufferBytesPerPixel = reader.ReadUInt32();
                 _lastVisibleRdpFramebufferEpoch = reader.ReadUInt32();
+                ResetVisibleRdpFramebufferSnapshotCacheLocked();
+                if (_lastVisibleRdpFramebufferSnapshot.Length != 0
+                    && _lastVisibleRdpFramebufferAddress != 0
+                    && _lastVisibleRdpFramebufferEpoch != 0)
+                {
+                    StoreVisibleRdpFramebufferSnapshotLocked(
+                        _lastVisibleRdpFramebufferSnapshot,
+                        _lastVisibleRdpFramebufferAddress,
+                        _lastVisibleRdpFramebufferWidth,
+                        _lastVisibleRdpFramebufferHeight,
+                        _lastVisibleRdpFramebufferBytesPerPixel,
+                        _lastVisibleRdpFramebufferEpoch);
+                }
             }
 
             _rspGraphicsTaskCount = reader.ReadInt64();
@@ -4030,15 +4051,21 @@ namespace Ryu64.MIPS
                 || bytesPerPixel == 0)
                 return;
 
-            uint height = GetFramebufferHeightHint();
-            if (height == 0)
-                height = 240u;
+            uint visibleHeight = GetFramebufferHeightHint();
+            if (visibleHeight == 0)
+                visibleHeight = 240u;
 
-            ulong length64 = (ulong)_rdpColorImageWidth * height * bytesPerPixel;
+            ulong rowBytes = (ulong)_rdpColorImageWidth * bytesPerPixel;
+            if (rowBytes == 0)
+                return;
+
+            uint maxHeight = (uint)Math.Min(480UL, ((ulong)RDRAM.Length - _rdpColorImageAddress) / rowBytes);
+            uint snapshotHeight = Math.Min(maxHeight, visibleHeight + 8u);
+            ulong length64 = rowBytes * snapshotHeight;
             if (length64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
                 return;
 
-            if (CountRdpVisibleFramebufferContent(bytesPerPixel, height) < 512u)
+            if (CountRdpVisibleFramebufferContent(bytesPerPixel, visibleHeight) < 512u)
                 return;
 
             byte[] snapshot = new byte[(int)length64];
@@ -4049,9 +4076,16 @@ namespace Ryu64.MIPS
                 _lastVisibleRdpFramebufferSnapshot = snapshot;
                 _lastVisibleRdpFramebufferAddress = _rdpColorImageAddress;
                 _lastVisibleRdpFramebufferWidth = _rdpColorImageWidth;
-                _lastVisibleRdpFramebufferHeight = height;
+                _lastVisibleRdpFramebufferHeight = snapshotHeight;
                 _lastVisibleRdpFramebufferBytesPerPixel = bytesPerPixel;
                 _lastVisibleRdpFramebufferEpoch = _rdramWriteEpoch;
+                StoreVisibleRdpFramebufferSnapshotLocked(
+                    snapshot,
+                    _rdpColorImageAddress,
+                    _rdpColorImageWidth,
+                    snapshotHeight,
+                    bytesPerPixel,
+                    _rdramWriteEpoch);
             }
             if (EnableN64Perf)
                 Interlocked.Add(ref _perfRdpSnapshotBytes, snapshot.Length);
@@ -4170,6 +4204,7 @@ namespace Ryu64.MIPS
         }
 
         public bool TryCopyLastVisibleRdpFramebufferSnapshot(
+            uint requestedAddress,
             uint width,
             uint height,
             uint bytesPerPixel,
@@ -4184,22 +4219,122 @@ namespace Ryu64.MIPS
             if (width == 0 || height == 0 || bytesPerPixel == 0)
                 return false;
 
-            int requested = checked((int)(width * height * bytesPerPixel));
+            ulong requested64 = (ulong)width * height * bytesPerPixel;
+            if (requested64 == 0 || requested64 > int.MaxValue)
+                return false;
+
+            int requested = (int)requested64;
+            ulong rowBytes = (ulong)width * bytesPerPixel;
             lock (_lastVisibleRdpFramebufferLock)
             {
-                if (_lastVisibleRdpFramebufferSnapshot.Length < requested
-                    || _lastVisibleRdpFramebufferWidth != width
-                    || _lastVisibleRdpFramebufferHeight < height
-                    || _lastVisibleRdpFramebufferBytesPerPixel != bytesPerPixel
-                    || _lastVisibleRdpFramebufferEpoch == 0)
+                int bestSlot = -1;
+                uint bestEpoch = 0;
+                ulong bestOffset = 0;
+                for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
+                {
+                    byte[] candidate = _visibleRdpFramebufferSnapshots[i];
+                    uint candidateAddress = _visibleRdpFramebufferAddresses[i];
+                    ulong offsetBytes = 0;
+                    if (candidateAddress == requestedAddress)
+                    {
+                        offsetBytes = 0;
+                    }
+                    else if (requestedAddress > candidateAddress)
+                    {
+                        offsetBytes = requestedAddress - candidateAddress;
+                        if (rowBytes == 0
+                            || offsetBytes > rowBytes * 8UL
+                            || offsetBytes % bytesPerPixel != 0)
+                        {
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        continue;
+                    }
+
+                    if (candidate == null
+                        || (ulong)candidate.Length < offsetBytes + requested64
+                        || _visibleRdpFramebufferWidths[i] != width
+                        || _visibleRdpFramebufferHeights[i] < height
+                        || _visibleRdpFramebufferBytesPerPixels[i] != bytesPerPixel
+                        || _visibleRdpFramebufferEpochs[i] == 0)
+                    {
+                        continue;
+                    }
+
+                    if (bestSlot < 0 || IsEpochNewer(_visibleRdpFramebufferEpochs[i], bestEpoch))
+                    {
+                        bestSlot = i;
+                        bestEpoch = _visibleRdpFramebufferEpochs[i];
+                        bestOffset = offsetBytes;
+                    }
+                }
+
+                if (bestSlot < 0)
                     return false;
 
                 snapshot = new byte[requested];
-                Buffer.BlockCopy(_lastVisibleRdpFramebufferSnapshot, 0, snapshot, 0, requested);
-                address = _lastVisibleRdpFramebufferAddress;
-                epoch = _lastVisibleRdpFramebufferEpoch;
+                Buffer.BlockCopy(_visibleRdpFramebufferSnapshots[bestSlot], (int)bestOffset, snapshot, 0, requested);
+                address = requestedAddress;
+                epoch = _visibleRdpFramebufferEpochs[bestSlot];
                 return true;
             }
+        }
+
+        private void StoreVisibleRdpFramebufferSnapshotLocked(
+            byte[] snapshot,
+            uint address,
+            uint width,
+            uint height,
+            uint bytesPerPixel,
+            uint epoch)
+        {
+            int slot = -1;
+            for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
+            {
+                if (_visibleRdpFramebufferAddresses[i] == address
+                    && _visibleRdpFramebufferWidths[i] == width
+                    && _visibleRdpFramebufferBytesPerPixels[i] == bytesPerPixel)
+                {
+                    slot = i;
+                    break;
+                }
+            }
+
+            if (slot < 0)
+            {
+                slot = _visibleRdpFramebufferSnapshotCursor;
+                _visibleRdpFramebufferSnapshotCursor = (_visibleRdpFramebufferSnapshotCursor + 1) % RdpVisibleFramebufferSnapshotSlots;
+            }
+
+            _visibleRdpFramebufferSnapshots[slot] = snapshot;
+            _visibleRdpFramebufferAddresses[slot] = address;
+            _visibleRdpFramebufferWidths[slot] = width;
+            _visibleRdpFramebufferHeights[slot] = height;
+            _visibleRdpFramebufferBytesPerPixels[slot] = bytesPerPixel;
+            _visibleRdpFramebufferEpochs[slot] = epoch;
+        }
+
+        private void ResetVisibleRdpFramebufferSnapshotCacheLocked()
+        {
+            for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
+            {
+                _visibleRdpFramebufferSnapshots[i] = null;
+                _visibleRdpFramebufferAddresses[i] = 0;
+                _visibleRdpFramebufferWidths[i] = 0;
+                _visibleRdpFramebufferHeights[i] = 0;
+                _visibleRdpFramebufferBytesPerPixels[i] = 0;
+                _visibleRdpFramebufferEpochs[i] = 0;
+            }
+
+            _visibleRdpFramebufferSnapshotCursor = 0;
+        }
+
+        private static bool IsEpochNewer(uint candidate, uint current)
+        {
+            return current == 0 || unchecked(candidate - current) < 0x80000000u;
         }
 
         private uint SelectRdpSolidColor()

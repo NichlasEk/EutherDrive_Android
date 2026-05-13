@@ -519,13 +519,14 @@ namespace Ryu64Core
                 if (producerBackedFramebufferSelected
                     && (preferRdpVisibleSnapshot || selectedVisiblePixels == 0)
                     && R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
+                        origin,
                         (uint)width,
                         (uint)height,
                         (uint)bytesPerPixel,
                         out byte[] visibleSnapshot,
                         out uint visibleSnapshotOrigin,
                         out uint visibleSnapshotEpoch)
-                    && (visibleSnapshotOrigin == origin || selectedVisiblePixels == 0))
+                    && visibleSnapshotOrigin == origin)
                 {
                     framebuffer = visibleSnapshot;
                     _lastTrackedFramebufferOrigin = visibleSnapshotOrigin;
