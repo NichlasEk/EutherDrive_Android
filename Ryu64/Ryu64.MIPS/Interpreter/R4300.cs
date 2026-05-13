@@ -1096,6 +1096,41 @@ namespace Ryu64.MIPS
             return true;
         }
 
+        private static bool TryFastForwardCompareLoadPollingLoop(uint pc)
+        {
+            if (!FastIdleLoop)
+                return false;
+
+            uint segment = pc & 0xE0000000u;
+            if (segment != 0x80000000u && segment != 0xA0000000u)
+                return false;
+
+            uint physical = pc & 0x1FFFFFFFu;
+            if (memory.ReadUInt32PhysicalFast(physical) != 0x01E4082Au
+                || memory.ReadUInt32PhysicalFast(physical + 4u) != 0x5420FFFEu
+                || memory.ReadUInt32PhysicalFast(physical + 8u) != 0x8C4F0000u)
+            {
+                return false;
+            }
+
+            uint loadAddress = Reg32(2);
+            uint loadSegment = loadAddress & 0xE0000000u;
+            if (loadSegment != 0x80000000u && loadSegment != 0xA0000000u)
+                return false;
+
+            ulong loaded = SignExtend32(memory.ReadUInt32PhysicalFast(loadAddress & 0x1FFFFFFFu));
+            ulong target = Registers.R4300.Reg[4];
+            if ((long)loaded >= (long)target)
+                return false;
+
+            Registers.R4300.Reg[1] = 1;
+            Registers.R4300.Reg[15] = loaded;
+            Registers.R4300.PC = pc;
+            AddSyntheticCycles(IdleLoopFastForwardCycles);
+            Common.Measure.InstructionCount += IdleLoopFastForwardCycles >> 1;
+            return true;
+        }
+
         public static void ExecuteDelaySlot()
         {
             uint delayPc = Registers.R4300.PC;
@@ -1519,6 +1554,8 @@ namespace Ryu64.MIPS
                         if (TryFastForwardBootClearLoop(pc))
                             continue;
                         if (TryFastForwardBootAssetDecode(pc))
+                            continue;
+                        if (TryFastForwardCompareLoadPollingLoop(pc))
                             continue;
                         if (TryFastForwardIdleLoop(pc))
                             continue;

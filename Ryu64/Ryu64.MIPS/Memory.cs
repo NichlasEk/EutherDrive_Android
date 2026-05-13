@@ -2356,8 +2356,10 @@ namespace Ryu64.MIPS
             if (wroteAny)
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
-                if (nonZeroSampleHits >= 256 || HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+                if (nonZeroSampleHits >= 256)
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, nonZeroSampleHits);
+                else if (HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
             }
             return wroteAny;
             }
@@ -2725,7 +2727,7 @@ namespace Ryu64.MIPS
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
                 if (writtenPixels >= 256 && IsRgbaNonZero(rgba))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, writtenPixels);
             }
             return wroteAny;
         }
@@ -2825,8 +2827,10 @@ namespace Ryu64.MIPS
             if (wroteAny)
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
-                if (writtenPixels >= 256 || (writtenPixels >= 32 && HasRdpVisibleFramebufferContent(bytesPerPixel, 512u)))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+                if (writtenPixels >= 256)
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, writtenPixels);
+                else if (writtenPixels >= 32 && HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
             }
             return wroteAny;
         }
@@ -3512,10 +3516,13 @@ namespace Ryu64.MIPS
             bool visibleFill = IsRdpFillColorRgbNonZero(bytesPerPixel);
             NoteRdpPixelWrites(pixels, visibleFill ? pixels : 0);
             MarkRdpColorImageWritten(bytesPerPixel);
-            if (visibleFill
-                && _rdpColorImageAddress >= 0x00300000u
-                && (pixels >= 256 || HasRdpVisibleFramebufferContent(bytesPerPixel, 512u)))
-                CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+            if (visibleFill && _rdpColorImageAddress >= 0x00300000u)
+            {
+                if (pixels >= 256)
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, pixels);
+                else if (HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
+            }
         }
 
         private bool DrawRdpTexturedRectangle(uint x0, uint y0, uint x1, uint y1, int tileIndex, uint w2, uint w3, bool flip, uint bytesPerPixel)
@@ -3637,8 +3644,10 @@ namespace Ryu64.MIPS
             if (wroteAny)
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
-                if (nonZeroSampleHits >= 256 || HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+                if (nonZeroSampleHits >= 256)
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, nonZeroSampleHits);
+                else if (HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
             }
             return wroteAny;
             }
@@ -4040,11 +4049,12 @@ namespace Ryu64.MIPS
             Volatile.Write(ref _lastRdpColorImageWriteEpoch, _rdramWriteEpoch);
         }
 
-        private void CaptureVisibleRdpFramebufferSnapshot(uint bytesPerPixel)
+        private void CaptureVisibleRdpFramebufferSnapshot(uint bytesPerPixel, long knownVisiblePixels = 0)
         {
             long perfStart = StartPerfTimer();
             try
             {
+            int snapshotLength = 0;
             if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
                 || _rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
@@ -4065,14 +4075,22 @@ namespace Ryu64.MIPS
             if (length64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
                 return;
 
-            if (CountRdpVisibleFramebufferContent(bytesPerPixel, visibleHeight) < 512u)
+            if (knownVisiblePixels < 512 && !HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
                 return;
-
-            byte[] snapshot = new byte[(int)length64];
-            Buffer.BlockCopy(RDRAM, (int)_rdpColorImageAddress, snapshot, 0, snapshot.Length);
 
             lock (_lastVisibleRdpFramebufferLock)
             {
+                int slot = SelectVisibleRdpFramebufferSnapshotSlotLocked(
+                    _rdpColorImageAddress,
+                    _rdpColorImageWidth,
+                    bytesPerPixel);
+                byte[] snapshot = _visibleRdpFramebufferSnapshots[slot];
+                if (snapshot == null || snapshot.Length != (int)length64)
+                    snapshot = new byte[(int)length64];
+
+                Buffer.BlockCopy(RDRAM, (int)_rdpColorImageAddress, snapshot, 0, snapshot.Length);
+                snapshotLength = snapshot.Length;
+
                 _lastVisibleRdpFramebufferSnapshot = snapshot;
                 _lastVisibleRdpFramebufferAddress = _rdpColorImageAddress;
                 _lastVisibleRdpFramebufferWidth = _rdpColorImageWidth;
@@ -4080,6 +4098,7 @@ namespace Ryu64.MIPS
                 _lastVisibleRdpFramebufferBytesPerPixel = bytesPerPixel;
                 _lastVisibleRdpFramebufferEpoch = _rdramWriteEpoch;
                 StoreVisibleRdpFramebufferSnapshotLocked(
+                    slot,
                     snapshot,
                     _rdpColorImageAddress,
                     _rdpColorImageWidth,
@@ -4088,7 +4107,7 @@ namespace Ryu64.MIPS
                     _rdramWriteEpoch);
             }
             if (EnableN64Perf)
-                Interlocked.Add(ref _perfRdpSnapshotBytes, snapshot.Length);
+                Interlocked.Add(ref _perfRdpSnapshotBytes, snapshotLength);
             }
             finally
             {
@@ -4291,30 +4310,43 @@ namespace Ryu64.MIPS
             uint bytesPerPixel,
             uint epoch)
         {
-            int slot = -1;
-            for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
-            {
-                if (_visibleRdpFramebufferAddresses[i] == address
-                    && _visibleRdpFramebufferWidths[i] == width
-                    && _visibleRdpFramebufferBytesPerPixels[i] == bytesPerPixel)
-                {
-                    slot = i;
-                    break;
-                }
-            }
+            int slot = SelectVisibleRdpFramebufferSnapshotSlotLocked(address, width, bytesPerPixel);
 
-            if (slot < 0)
-            {
-                slot = _visibleRdpFramebufferSnapshotCursor;
-                _visibleRdpFramebufferSnapshotCursor = (_visibleRdpFramebufferSnapshotCursor + 1) % RdpVisibleFramebufferSnapshotSlots;
-            }
+            StoreVisibleRdpFramebufferSnapshotLocked(slot, snapshot, address, width, height, bytesPerPixel, epoch);
+        }
 
+        private void StoreVisibleRdpFramebufferSnapshotLocked(
+            int slot,
+            byte[] snapshot,
+            uint address,
+            uint width,
+            uint height,
+            uint bytesPerPixel,
+            uint epoch)
+        {
             _visibleRdpFramebufferSnapshots[slot] = snapshot;
             _visibleRdpFramebufferAddresses[slot] = address;
             _visibleRdpFramebufferWidths[slot] = width;
             _visibleRdpFramebufferHeights[slot] = height;
             _visibleRdpFramebufferBytesPerPixels[slot] = bytesPerPixel;
             _visibleRdpFramebufferEpochs[slot] = epoch;
+        }
+
+        private int SelectVisibleRdpFramebufferSnapshotSlotLocked(uint address, uint width, uint bytesPerPixel)
+        {
+            for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
+            {
+                if (_visibleRdpFramebufferAddresses[i] == address
+                    && _visibleRdpFramebufferWidths[i] == width
+                    && _visibleRdpFramebufferBytesPerPixels[i] == bytesPerPixel)
+                {
+                    return i;
+                }
+            }
+
+            int slot = _visibleRdpFramebufferSnapshotCursor;
+            _visibleRdpFramebufferSnapshotCursor = (_visibleRdpFramebufferSnapshotCursor + 1) % RdpVisibleFramebufferSnapshotSlots;
+            return slot;
         }
 
         private void ResetVisibleRdpFramebufferSnapshotCacheLocked()
