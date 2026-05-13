@@ -334,6 +334,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             return;
 
         UpdateInputPorts();
+        DrawFrame();
         SetAicLine(AicVblankSource, true);
         _targetCycles += CyclesPerFrame;
         _cpu.Run(_targetCycles);
@@ -342,7 +343,6 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             Console.WriteLine($"[PGM2] {DebugSummary}");
 
         _frameCounter++;
-        DrawFrame();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -560,6 +560,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     public ushort Load16(uint address)
     {
+        address &= ~1u;
         _lastReadAddress = address;
         ushort value = (ushort)(Read8(address) | (Read8(address + 1) << 8));
         _openBus = (_openBus & 0xffff0000u) | value;
@@ -568,6 +569,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     public uint Load32(uint address)
     {
+        address &= ~3u;
         _lastReadAddress = address;
         if (IsAicAddress(address))
         {
@@ -615,6 +617,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     public void Store16(uint address, ushort value)
     {
+        address &= ~1u;
         _lastWriteAddress = address;
         _lastWriteValue = value;
         if (IsAicAddress(address))
@@ -631,6 +634,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     public void Store32(uint address, uint value)
     {
+        address &= ~3u;
         _lastWriteAddress = address;
         _lastWriteValue = value;
         if (IsAicAddress(address))
@@ -858,8 +862,10 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             return _spriteZoomRam[address - 0x300c0000];
         if (address >= 0x300e0000 && address <= 0x300e0fff)
             return _lineRam[(address - 0x300e0000) & 0x3ff];
-        if (address >= 0x30100000 && address <= 0x301000ff)
-            return _shareRam[((address - 0x30100000) + ((_shareBank & 1) * 0x80)) & 0xff];
+        if (IsShareRamAddress(address))
+            return TryMapShareRamByte(address, out int shareOffset)
+                ? _shareRam[shareOffset]
+                : (byte)(_openBus >> (int)((address & 3) * 8));
         if (address >= 0x30120000 && address <= 0x3012003f)
             return _gpuRegs[address - 0x30120000];
         if (address >= 0x40000000 && address <= 0x40000003)
@@ -945,9 +951,10 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             _lineRam[(address - 0x300e0000) & 0x3ff] = value;
             return;
         }
-        if (address >= 0x30100000 && address <= 0x301000ff)
+        if (IsShareRamAddress(address))
         {
-            _shareRam[((address - 0x30100000) + ((_shareBank & 1) * 0x80)) & 0xff] = value;
+            if (TryMapShareRamByte(address, out int shareOffset))
+                _shareRam[shareOffset] = value;
             return;
         }
         if (address >= 0x30120000 && address <= 0x3012003f)
@@ -985,6 +992,23 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             return 0;
 
         return _ymzRegs[offset];
+    }
+
+    private static bool IsShareRamAddress(uint address)
+        => address >= 0x30100000 && address <= 0x301000ff;
+
+    private bool TryMapShareRamByte(uint address, out int offset)
+    {
+        uint relative = address - 0x30100000;
+        uint lane = relative & 3;
+        if ((lane & 1) != 0)
+        {
+            offset = 0;
+            return false;
+        }
+
+        offset = (int)(((_shareBank & 1) * 0x80) + ((relative >> 2) * 2) + (lane >> 1));
+        return true;
     }
 
     private void WriteYmz774Byte(uint address, byte value)

@@ -8156,7 +8156,7 @@ public partial class MainWindow : Window
             return;
         try
         {
-            bool postedPsxAcceleratedPresent = ShouldUsePostedPsxAcceleratedPresenter(_core);
+            bool postedFramePresent = ShouldUsePostedFramePresenter(_core);
             UpdateUiPresentTimerCadence();
             MaybeUpdateStatusText();
             long tickStart = TracePerf ? Stopwatch.GetTimestamp() : 0;
@@ -8166,7 +8166,7 @@ public partial class MainWindow : Window
 
             // rendera frame
             var core = _core;
-            if (!postedPsxAcceleratedPresent && _renderSkipEnabled)
+            if (!postedFramePresent && _renderSkipEnabled)
             {
                 double emuFps = Volatile.Read(ref _emuActualFps);
                 double targetFps = GetLiveTargetFps();
@@ -8181,11 +8181,11 @@ public partial class MainWindow : Window
                     _renderSkipCounter = 0;
                 }
             }
-            if (!postedPsxAcceleratedPresent && Dispatcher.UIThread.CheckAccess())
+            if (!postedFramePresent && Dispatcher.UIThread.CheckAccess())
             {
                 RenderFrame(core);
             }
-            else if (!postedPsxAcceleratedPresent)
+            else if (!postedFramePresent)
             {
                 QueuePresentFrameOnUi(core);
             }
@@ -10214,6 +10214,10 @@ public partial class MainWindow : Window
         => _renderSurface is IAcceleratedRenderSurface
             && core is PsxAdapter;
 
+    private bool ShouldUsePostedFramePresenter(IEmulatorCore? core)
+        => core is Pgm2Adapter
+            || ShouldUsePostedPsxAcceleratedPresenter(core);
+
     private static bool ShouldSnapshotFrameBufferForPresentation(IEmulatorCore core)
         => core is Pgm2Adapter;
 
@@ -10577,7 +10581,7 @@ public partial class MainWindow : Window
                         _uiProfileAudioTicks += Stopwatch.GetTimestamp() - audioStart;
                 }
 
-                if (ShouldUsePostedPsxAcceleratedPresenter(core))
+                if (ShouldUsePostedFramePresenter(core))
                     QueuePresentFrameOnUi(core);
 
                 if (!emuLoopFirstFrameLogged)
