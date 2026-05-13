@@ -1185,10 +1185,15 @@ namespace Ryu64.MIPS
             bool wrote = false;
             if ((command & 0x02) != 0)
             {
+                RdpTriangleShadeCoefficients textureShade = default;
+                bool hasShade = (command & 0x04) != 0
+                    && TryReadRdpShadeCoefficients(commandAddress, xbusDmem, out textureShade);
                 wrote = DrawRdpTexturedTriangle(
                     command,
                     commandAddress,
                     xbusDmem,
+                    hasShade ? textureShade : default,
+                    hasShade,
                     tileIndex,
                     xh,
                     dxhdy,
@@ -1224,6 +1229,8 @@ namespace Ryu64.MIPS
             int command,
             uint commandAddress,
             bool xbusDmem,
+            RdpTriangleShadeCoefficients shade,
+            bool modulateShade,
             int tileIndex,
             double xh,
             double dxhdy,
@@ -1289,6 +1296,10 @@ namespace Ryu64.MIPS
                 long yStep = (long)Math.Round(sampleY - yh);
                 long rowS = tex.S + yStep * tex.DsDe;
                 long rowT = tex.T + yStep * tex.DtDe;
+                long rowR = modulateShade ? shade.R + yStep * (long)shade.DrDe : 0;
+                long rowG = modulateShade ? shade.G + yStep * (long)shade.DgDe : 0;
+                long rowB = modulateShade ? shade.B + yStep * (long)shade.DbDe : 0;
+                long rowA = modulateShade ? shade.A + yStep * (long)shade.DaDe : 0;
                 uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
                 bool rowWrote = false;
                 for (int x = firstX; x <= lastX; x++)
@@ -1300,6 +1311,16 @@ namespace Ryu64.MIPS
                     {
                         sampleMisses++;
                         continue;
+                    }
+
+                    if (modulateShade)
+                    {
+                        uint shadeRgba = RdpShadeToRgba(
+                            rowR + xStep * (long)shade.DrDx,
+                            rowG + xStep * (long)shade.DgDx,
+                            rowB + xStep * (long)shade.DbDx,
+                            rowA + xStep * (long)shade.DaDx);
+                        rgba = ModulateRdpRgba(rgba, shadeRgba);
                     }
 
                     sampleHits++;
@@ -1346,7 +1367,7 @@ namespace Ryu64.MIPS
                 if (nonZeroSampleHits >= 256 || HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
                     CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
             }
-            return nonZeroSampleHits >= 256;
+            return wroteAny;
         }
 
         private struct RdpTriangleTextureCoefficients
@@ -1676,6 +1697,15 @@ namespace Ryu64.MIPS
             if (component <= 0)
                 return 0;
             return (uint)Math.Min(0xFFL, component);
+        }
+
+        private static uint ModulateRdpRgba(uint texel, uint shade)
+        {
+            uint r = (((texel >> 24) & 0xFFu) * ((shade >> 24) & 0xFFu) + 0x80u) / 0xFFu;
+            uint g = (((texel >> 16) & 0xFFu) * ((shade >> 16) & 0xFFu) + 0x80u) / 0xFFu;
+            uint b = (((texel >> 8) & 0xFFu) * ((shade >> 8) & 0xFFu) + 0x80u) / 0xFFu;
+            uint a = ((texel & 0xFFu) * (shade & 0xFFu) + 0x80u) / 0xFFu;
+            return (r << 24) | (g << 16) | (b << 8) | (a == 0 ? (texel & 0xFFu) : a);
         }
 
         private static double RdpTriangleYToScreen(uint value)
