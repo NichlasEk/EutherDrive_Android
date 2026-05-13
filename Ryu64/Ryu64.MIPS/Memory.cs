@@ -2138,22 +2138,22 @@ namespace Ryu64.MIPS
             int tileIndex = (int)((w0 >> 16) & 0x7u);
 
             uint rgba = SelectRdpTriangleColor(command, commandAddress, xbusDmem);
+            RdpTriangleDepthCoefficients triangleDepth = default;
+            bool useDepth = ShouldUseRdpDepth(command)
+                && TryReadRdpDepthCoefficients(command, commandAddress, xbusDmem, out triangleDepth);
             bool wrote = false;
             if ((command & 0x02) != 0)
             {
                 RdpTriangleShadeCoefficients textureShade = default;
                 bool hasShade = (command & 0x04) != 0
                     && TryReadRdpShadeCoefficients(commandAddress, xbusDmem, out textureShade);
-                RdpTriangleDepthCoefficients textureDepth = default;
-                bool useDepth = ShouldUseRdpDepth(command)
-                    && TryReadRdpDepthCoefficients(command, commandAddress, xbusDmem, out textureDepth);
                 wrote = DrawRdpTexturedTriangle(
                     command,
                     commandAddress,
                     xbusDmem,
                     hasShade ? textureShade : default,
                     hasShade,
-                    useDepth ? textureDepth : default,
+                    useDepth ? triangleDepth : default,
                     useDepth,
                     tileIndex,
                     xh,
@@ -2171,9 +2171,9 @@ namespace Ryu64.MIPS
             if (!wrote)
             {
                 if ((command & 0x04) != 0 && TryReadRdpShadeCoefficients(commandAddress, xbusDmem, out RdpTriangleShadeCoefficients shade))
-                    wrote = DrawRdpShadedTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, shade, bytesPerPixel);
+                    wrote = DrawRdpShadedTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, shade, useDepth ? triangleDepth : default, useDepth, bytesPerPixel);
                 else
-                    wrote = DrawRdpTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, rgba, bytesPerPixel);
+                    wrote = DrawRdpTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, rgba, useDepth ? triangleDepth : default, useDepth, bytesPerPixel);
             }
 
             if (TraceRdpCommands && _traceRdpTriangleCount < TraceRdpTriangleLimit)
@@ -2671,6 +2671,8 @@ namespace Ryu64.MIPS
             double yl,
             bool flip,
             uint rgba,
+            RdpTriangleDepthCoefficients depth,
+            bool useDepth,
             uint bytesPerPixel)
         {
             if (yl <= yh)
@@ -2711,16 +2713,30 @@ namespace Ryu64.MIPS
                 if (lastX < firstX)
                     continue;
 
+                long yStep = useDepth ? (long)Math.Round(sampleY - yh) : 0;
+                long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
+                long rowWrittenPixels = 0;
                 for (int x = firstX; x <= lastX; x++)
                 {
+                    if (useDepth)
+                    {
+                        long xStep = (long)Math.Round(x + 0.5 - left);
+                        if (!PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
+                            continue;
+                    }
+
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     wroteAny = true;
+                    rowWrittenPixels++;
                 }
-                writtenPixels += lastX - firstX + 1;
+                writtenPixels += rowWrittenPixels;
 
-                uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
-                NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
+                if (rowWrittenPixels > 0)
+                {
+                    uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
+                    NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
+                }
             }
 
             NoteRdpPixelWrites(writtenPixels, IsRgbaNonZero(rgba) ? writtenPixels : 0);
@@ -2761,6 +2777,8 @@ namespace Ryu64.MIPS
             double yl,
             bool flip,
             RdpTriangleShadeCoefficients shade,
+            RdpTriangleDepthCoefficients depth,
+            bool useDepth,
             uint bytesPerPixel)
         {
             if (yl <= yh)
@@ -2806,9 +2824,14 @@ namespace Ryu64.MIPS
                 long rowG = shade.G + yStep * (long)shade.DgDe;
                 long rowB = shade.B + yStep * (long)shade.DbDe;
                 long rowA = shade.A + yStep * (long)shade.DaDe;
+                long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
+                long rowWrittenPixels = 0;
                 for (int x = firstX; x <= lastX; x++)
                 {
                     long xStep = (long)Math.Round(x + 0.5 - left);
+                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
+                        continue;
+
                     uint rgba = RdpShadeToRgba(
                         rowR + xStep * (long)shade.DrDx,
                         rowG + xStep * (long)shade.DgDx,
@@ -2817,11 +2840,15 @@ namespace Ryu64.MIPS
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     wroteAny = true;
+                    rowWrittenPixels++;
                 }
 
-                writtenPixels += lastX - firstX + 1;
-                uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
-                NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
+                writtenPixels += rowWrittenPixels;
+                if (rowWrittenPixels > 0)
+                {
+                    uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
+                    NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
+                }
             }
 
             NoteRdpPixelWrites(writtenPixels, writtenPixels);
