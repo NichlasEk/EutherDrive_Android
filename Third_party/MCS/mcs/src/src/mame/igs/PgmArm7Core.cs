@@ -298,6 +298,80 @@ public partial class PgmArm7Core
 		_prefetch1 = r.ReadUInt32();
 	}
 
+	public void SerializeBankedState( BinaryWriter w )
+	{
+		w.Write( InstructionStartCycles );
+		w.Write( CurrentInstructionAddress );
+		w.Write( Halted );
+		w.Write( IrqPending );
+		w.Write( FiqPending );
+		w.Write( FiqLineAsserted );
+		w.Write( OpenBusPrefetch );
+
+		for ( int bank = 0; bank < _bankedRegisters.Length; bank++ )
+		{
+			w.Write( _bankedRegisters[bank][0] );
+			w.Write( _bankedRegisters[bank][1] );
+		}
+
+		for ( int i = 0; i < _bankedSPSRs.Length; i++ )
+			w.Write( _bankedSPSRs[i] );
+		for ( int i = 0; i < _fiqRegsHi.Length; i++ )
+			w.Write( _fiqRegsHi[i] );
+		for ( int i = 0; i < _usrRegsHi.Length; i++ )
+			w.Write( _usrRegsHi[i] );
+	}
+
+	public void DeserializeBankedState( BinaryReader r )
+	{
+		InstructionStartCycles = r.ReadInt64();
+		CurrentInstructionAddress = r.ReadUInt32();
+		Halted = r.ReadBoolean();
+		IrqPending = r.ReadBoolean();
+		FiqPending = r.ReadBoolean();
+		FiqLineAsserted = r.ReadBoolean();
+		OpenBusPrefetch = r.ReadUInt32();
+
+		for ( int bank = 0; bank < _bankedRegisters.Length; bank++ )
+		{
+			_bankedRegisters[bank][0] = r.ReadUInt32();
+			_bankedRegisters[bank][1] = r.ReadUInt32();
+		}
+
+		for ( int i = 0; i < _bankedSPSRs.Length; i++ )
+			_bankedSPSRs[i] = r.ReadUInt32();
+		for ( int i = 0; i < _fiqRegsHi.Length; i++ )
+			_fiqRegsHi[i] = r.ReadUInt32();
+		for ( int i = 0; i < _usrRegsHi.Length; i++ )
+			_usrRegsHi[i] = r.ReadUInt32();
+	}
+
+	public void SeedMissingBankedStateFromVisibleRegisters()
+	{
+		for ( int bank = 0; bank < _bankedRegisters.Length; bank++ )
+		{
+			if ( _bankedRegisters[bank][0] == 0 )
+				_bankedRegisters[bank][0] = Gprs[13];
+			if ( _bankedRegisters[bank][1] == 0 )
+				_bankedRegisters[bank][1] = Gprs[14];
+		}
+	}
+
+	public void SetCpsrForStateLoad( uint cpsr )
+	{
+		FlagN = (cpsr & 0x80000000) != 0;
+		FlagZ = (cpsr & 0x40000000) != 0;
+		FlagC = (cpsr & 0x20000000) != 0;
+		FlagV = (cpsr & 0x10000000) != 0;
+		IrqDisable = (cpsr & 0x80) != 0;
+		FiqDisable = (cpsr & 0x40) != 0;
+		ThumbMode = (cpsr & 0x20) != 0;
+
+		PrivilegeMode mode = (PrivilegeMode)(cpsr & 0x1F);
+		if ( IsValidMode( mode ) )
+			PrivilegeMode = mode;
+	}
+
 	public void RegisterSaveState( device_t owner, string prefix )
 	{
 		save_manager save = owner.machine().save();

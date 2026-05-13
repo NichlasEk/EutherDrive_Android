@@ -736,6 +736,8 @@ class Program
                 Console.WriteLine($"[HEADLESS] PGM2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 Console.WriteLine($"[HEADLESS] PGM2 debug {pgm2.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_DUMP_LAYERS") == "1")
+                    pgm2.DumpDebugLayers(dumpDir, "headless_pgm2_final");
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -2791,6 +2793,9 @@ class Program
             || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && HshavocAdapter.IsSupportedArchive(romPath));
+        bool usePgm2 = string.Equals(coreOverride, "pgm2", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "igs-pgm2", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && Pgm2Adapter.IsSupportedArchive(romPath));
 
         if (useHshavoc)
         {
@@ -2873,6 +2878,46 @@ class Program
             }
 
             Console.WriteLine("[HEADLESS] CPS1 savestate roundtrip ok.");
+            return 0;
+        }
+
+        if (usePgm2)
+        {
+            using var pgm2 = new Pgm2Adapter();
+            pgm2.LoadRom(romPath);
+
+            int warmupFrames = ReadPositiveIntEnv("EUTHERDRIVE_HEADLESS_SAVESTATE_WARMUP_FRAMES", 180);
+            int verifyFrames = ReadPositiveIntEnv("EUTHERDRIVE_HEADLESS_SAVESTATE_VERIFY_FRAMES", 12);
+            for (int i = 0; i < warmupFrames; i++)
+                pgm2.RunFrame();
+
+            byte[] snapshotPgm2;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                pgm2.SaveState(writer);
+                writer.Flush();
+                snapshotPgm2 = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotPgm2))
+            using (var reader = new BinaryReader(ms))
+            {
+                pgm2.LoadState(reader);
+            }
+
+            for (int i = 0; i < verifyFrames; i++)
+                pgm2.RunFrame();
+
+            if (pgm2.DebugSummary.Contains("crash=1", StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine($"[HEADLESS] PGM2 savestate roundtrip failed: {pgm2.DebugSummary}");
+                return 1;
+            }
+
+            ReadOnlySpan<byte> fb = pgm2.GetFrameBuffer(out int w, out int h, out int s);
+            ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+            Console.WriteLine($"[HEADLESS] PGM2 savestate smoke ok. payload_bytes={snapshotPgm2.Length} frameCounter={pgm2.FrameCounter ?? -1} fp=0x{fingerprint:X16}");
             return 0;
         }
 

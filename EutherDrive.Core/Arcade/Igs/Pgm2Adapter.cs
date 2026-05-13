@@ -6,7 +6,7 @@ using EutherDrive.Core.Savestates;
 public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable, mame.IPgmArm7Bus
 {
     private const string SavestateMagic = "PGM2NAT";
-    private const int SavestateVersion = 3;
+    private const int SavestateVersion = 5;
     private const int Width = 448;
     private const int Height = 224;
     private const int Stride = Width * 4;
@@ -107,6 +107,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private uint _lastWriteValue;
     private int _romBytes;
     private int _internalRomBytes;
+    private string _loadedMainProgramName = string.Empty;
+    private string _loadedInternalRomName = string.Empty;
     private int _textRomBytes;
     private int _bgTileRomBytes;
     private int _spriteMaskRomBytes;
@@ -263,6 +265,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _driverName = DetectDriverName(path);
         _romBytes = 0;
         _internalRomBytes = 0;
+        _loadedMainProgramName = string.Empty;
+        _loadedInternalRomName = string.Empty;
         _textRomBytes = 0;
         _bgTileRomBytes = 0;
         _spriteMaskRomBytes = 0;
@@ -294,7 +298,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         UpdateInputPorts();
         DrawFrame();
 
-        Console.WriteLine($"[PGM2] Loaded {_driverName}: internal=0x{_internalRomBytes:X} main=0x{_romBytes:X} missing=[{string.Join(",", InspectAuxFiles(path).MissingFiles)}]");
+        Console.WriteLine($"[PGM2] Loaded {_driverName}: internal={_loadedInternalRomName}:0x{_internalRomBytes:X} main={_loadedMainProgramName}:0x{_romBytes:X} missing=[{string.Join(",", InspectAuxFiles(path).MissingFiles)}]");
     }
 
     public void Reset()
@@ -426,10 +430,12 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         writer.Write(_driverName);
         writer.Write(_frameCounter);
         writer.Write(_targetCycles);
+        writer.Write(_cpu.Cycles);
         writer.Write(_cpu.GetCpsrRaw());
         for (int i = 0; i < _cpu.Registers.Length; i++)
             writer.Write(_cpu.Registers[i]);
         _cpu.SerializePipeline(writer);
+        _cpu.SerializeBankedState(writer);
         writer.Write(_mainRam);
         writer.Write(_spriteVideoRam);
         writer.Write(_bgVideoRam);
@@ -470,11 +476,16 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _driverName = reader.ReadString();
         _frameCounter = reader.ReadInt64();
         _targetCycles = reader.ReadInt64();
+        _cpu.Cycles = version >= 4 ? reader.ReadInt64() : _targetCycles;
         uint cpsr = reader.ReadUInt32();
         for (int i = 0; i < _cpu.Registers.Length; i++)
             _cpu.Registers[i] = reader.ReadUInt32();
-        _cpu.SetCpsr(cpsr);
+        _cpu.SetCpsrForStateLoad(cpsr);
         _cpu.DeserializePipeline(reader);
+        if (version >= 5)
+            _cpu.DeserializeBankedState(reader);
+        else
+            _cpu.SeedMissingBankedStateFromVisibleRegisters();
         ReadExact(reader, _mainRam);
         if (version >= 3)
         {
@@ -694,6 +705,12 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     private void LoadRegions(ZipArchive archive)
     {
+        string mainProgramName = GetMainProgramName(_driverName);
+        Pgm2AuxFileSpec auxSpec = GetAuxFileSpec(_driverName);
+        string internalRomName = auxSpec.RequiredFiles.FirstOrDefault(IsInternalRomName) ?? string.Empty;
+        byte[]? fallbackMainProgram = null;
+        string fallbackMainProgramName = string.Empty;
+
         foreach (ZipArchiveEntry entry in archive.Entries)
         {
             string name = Path.GetFileName(entry.FullName);
@@ -701,15 +718,24 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 continue;
 
             byte[] data = ReadEntry(entry);
-            if (IsMainProgramName(name))
+            if (string.Equals(name, mainProgramName, StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(mainProgramName) && IsMainProgramName(name)))
             {
                 Buffer.BlockCopy(data, 0, _mainRom, 0, Math.Min(data.Length, _mainRom.Length));
                 _romBytes = Math.Max(_romBytes, Math.Min(data.Length, _mainRom.Length));
+                _loadedMainProgramName = name;
             }
-            else if (IsInternalRomName(name))
+            else if (IsMainProgramName(name) && fallbackMainProgram == null)
+            {
+                fallbackMainProgram = data;
+                fallbackMainProgramName = name;
+            }
+            else if (string.Equals(name, internalRomName, StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(internalRomName) && IsInternalRomName(name)))
             {
                 Buffer.BlockCopy(data, 0, _internalRom, 0, Math.Min(data.Length, _internalRom.Length));
                 _internalRomBytes = Math.Max(_internalRomBytes, Math.Min(data.Length, _internalRom.Length));
+                _loadedInternalRomName = name;
             }
             else if (IsTextRomName(name))
             {
@@ -752,6 +778,13 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             }
         }
 
+        if (_romBytes == 0 && fallbackMainProgram != null)
+        {
+            Buffer.BlockCopy(fallbackMainProgram, 0, _mainRom, 0, Math.Min(fallbackMainProgram.Length, _mainRom.Length));
+            _romBytes = Math.Min(fallbackMainProgram.Length, _mainRom.Length);
+            _loadedMainProgramName = fallbackMainProgramName;
+        }
+
         if (_spriteMaskRomBytes > 0)
             DecodeSpriteMaskRom();
         if (_spriteColorRomBytes > 0)
@@ -775,6 +808,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             {
                 Buffer.BlockCopy(data, 0, _internalRom, 0, Math.Min(data.Length, _internalRom.Length));
                 _internalRomBytes = Math.Max(_internalRomBytes, Math.Min(data.Length, _internalRom.Length));
+                _loadedInternalRomName = fileName;
             }
         }
     }
@@ -2048,14 +2082,25 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private static string DetectDriverName(string path)
     {
         string pathName = Path.GetFileNameWithoutExtension(path).Trim();
+        if (DriverNames.Contains(pathName))
+            return pathName;
+
         try
         {
             using ZipArchive archive = ZipFile.OpenRead(path);
             var names = archive.Entries.Select(e => Path.GetFileName(e.FullName)).ToArray();
             if (names.Any(n => string.Equals(n, "gsyx_v302cn.u7", StringComparison.OrdinalIgnoreCase)))
                 return "kov2nl_302cn";
+            if (names.Any(n => string.Equals(n, "gsyx_v301cn.u7", StringComparison.OrdinalIgnoreCase)))
+                return "kov2nl_301cn";
+            if (names.Any(n => string.Equals(n, "gsyx_v300cn.u7", StringComparison.OrdinalIgnoreCase)))
+                return "kov2nl_300cn";
             if (names.Any(n => string.Equals(n, "kov2nl_v302fa.u7", StringComparison.OrdinalIgnoreCase)))
                 return "kov2nl";
+            if (names.Any(n => string.Equals(n, "kov2nl_v301fa.u7", StringComparison.OrdinalIgnoreCase)))
+                return "kov2nl_301";
+            if (names.Any(n => string.Equals(n, "kov2nl_v300fa.u7", StringComparison.OrdinalIgnoreCase)))
+                return "kov2nl_300";
         }
         catch
         {
@@ -2074,6 +2119,18 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
         return Pgm2AuxFileSpec.Empty;
     }
+
+    private static string GetMainProgramName(string driverName)
+        => driverName.ToLowerInvariant() switch
+        {
+            "kov2nl" => "kov2nl_v302fa.u7",
+            "kov2nl_301" => "kov2nl_v301fa.u7",
+            "kov2nl_300" => "kov2nl_v300fa.u7",
+            "kov2nl_302cn" => "gsyx_v302cn.u7",
+            "kov2nl_301cn" => "gsyx_v301cn.u7",
+            "kov2nl_300cn" => "gsyx_v300cn.u7",
+            _ => string.Empty
+        };
 
     private static bool IsKnownPgm2Entry(string name)
         => IsMainProgramName(name)
