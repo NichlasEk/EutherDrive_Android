@@ -58,6 +58,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private static readonly bool TraceGpuWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_TRACE_GPU_WRITES") == "1";
     private static readonly long ConfiguredOverlayClipWidth = ParseLongEnv("EUTHERDRIVE_PGM2_OVERLAY_CLIP_WIDTH");
     private static readonly long ConfiguredTextLayerWidth = ParseLongEnv("EUTHERDRIVE_PGM2_TEXT_LAYER_WIDTH");
+    private static readonly bool ShowDebugHitboxSprites = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_SHOW_DEBUG_HITBOX_SPRITES") == "1";
     private static readonly bool InsertDefaultMemoryCards = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_INSERT_DEFAULT_CARDS") == "1";
     private static readonly string SpriteMaskOrder = (Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_SPRITE_MASK_ORDER") ?? "be").Trim().ToLowerInvariant();
     private static readonly string SpriteKeyMode = (Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_SPRITE_KEY_MODE") ?? "reverse-xor").Trim().ToLowerInvariant();
@@ -1955,6 +1956,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             bool reverse = (spr1 & 0x80000000u) != 0;
             int zoomX = (int)((spr1 >> 16) & 0x7f);
             int zoomY = (int)((spr1 >> 24) & 0x7f);
+            if (IsDebugHitboxSprite(spritePriority, palette, sizeX, sizeY, flipX, reverse, zoomX, zoomY))
+                continue;
+
             int maskOffset = (int)(spr2 << 1) & maskWrap;
             int paletteOffset = (int)spr3 & colorWrap;
             if (reverse)
@@ -2004,6 +2008,22 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         }
 
         return drawn;
+    }
+
+    private static bool IsDebugHitboxSprite(int priority, int palette, int sizeX, int sizeY, bool flipX, bool reverse, int zoomX, int zoomY)
+    {
+        if (ShowDebugHitboxSprites)
+            return false;
+
+        return priority == 0
+            && palette == 7
+            && sizeX == 1
+            && sizeY >= 8
+            && sizeY <= 24
+            && !flipX
+            && !reverse
+            && zoomX == 0x1f
+            && zoomY == 0x1f;
     }
 
     private int CopySpritesFromBitmap(int priority)
