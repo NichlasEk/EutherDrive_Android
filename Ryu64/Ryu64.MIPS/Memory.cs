@@ -40,6 +40,8 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_FLIP"), "1", StringComparison.Ordinal);
         private static readonly bool UseReferenceTexRectExtents =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_EXTENTS"), "1", StringComparison.Ordinal);
+        private static readonly bool EnableRdpPerspectiveTexture =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RDP_PERSPECTIVE_TEXTURE"), "0", StringComparison.Ordinal);
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
         private static readonly uint? TraceWatchRangeStart = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_START");
         private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
@@ -91,6 +93,29 @@ namespace Ryu64.MIPS
         private static int _traceRdpFillRectCount;
         private static readonly ushort[] RdpZCompressTable = BuildRdpZCompressTable();
         private static readonly uint[] RdpZDecompressTable = BuildRdpZDecompressTable();
+        private static readonly int[] RdpTextureCoordinateNormPointTable =
+        {
+            0x4000, 0x3f04, 0x3e10, 0x3d22, 0x3c3c, 0x3b5d, 0x3a83, 0x39b1,
+            0x38e4, 0x381c, 0x375a, 0x369d, 0x35e5, 0x3532, 0x3483, 0x33d9,
+            0x3333, 0x3291, 0x31f4, 0x3159, 0x30c3, 0x3030, 0x2fa1, 0x2f15,
+            0x2e8c, 0x2e06, 0x2d83, 0x2d03, 0x2c86, 0x2c0b, 0x2b93, 0x2b1e,
+            0x2aab, 0x2a3a, 0x29cc, 0x2960, 0x28f6, 0x288e, 0x2828, 0x27c4,
+            0x2762, 0x2702, 0x26a4, 0x2648, 0x25ed, 0x2594, 0x253d, 0x24e7,
+            0x2492, 0x243f, 0x23ee, 0x239e, 0x234f, 0x2302, 0x22b6, 0x226c,
+            0x2222, 0x21da, 0x2193, 0x214d, 0x2108, 0x20c5, 0x2082, 0x2041
+        };
+        private static readonly int[] RdpTextureCoordinateNormSlopeTable =
+        {
+            0xf03, 0xf0b, 0xf11, 0xf19, 0xf20, 0xf25, 0xf2d, 0xf32,
+            0xf37, 0xf3d, 0xf42, 0xf47, 0xf4c, 0xf50, 0xf55, 0xf59,
+            0xf5d, 0xf62, 0xf64, 0xf69, 0xf6c, 0xf70, 0xf73, 0xf76,
+            0xf79, 0xf7c, 0xf7f, 0xf82, 0xf84, 0xf87, 0xf8a, 0xf8c,
+            0xf8e, 0xf91, 0xf93, 0xf95, 0xf97, 0xf99, 0xf9b, 0xf9d,
+            0xf9f, 0xfa1, 0xfa3, 0xfa4, 0xfa6, 0xfa8, 0xfa9, 0xfaa,
+            0xfac, 0xfae, 0xfaf, 0xfb0, 0xfb2, 0xfb3, 0xfb5, 0xfb5,
+            0xfb7, 0xfb8, 0xfb9, 0xfba, 0xfbc, 0xfbc, 0xfbe, 0xfbe
+        };
+        private static readonly int[] RdpTextureCoordinateDivideTable = BuildRdpTextureCoordinateDivideTable();
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
         private const int TraceLowRamMutationWriteLimit = 1024;
@@ -187,6 +212,30 @@ namespace Ryu64.MIPS
                 int exponent = (i >> 11) & 7;
                 uint mantissa = (uint)(i & 0x7FF);
                 table[i] = ((mantissa << shifts[exponent]) + adds[exponent]) & 0x3FFFFu;
+            }
+
+            return table;
+        }
+
+        private static int[] BuildRdpTextureCoordinateDivideTable()
+        {
+            int[] table = new int[0x8000];
+            for (int i = 0; i < table.Length; i++)
+            {
+                int k;
+                for (k = 1; k <= 14 && ((i << k) & 0x8000) == 0; k++)
+                {
+                }
+
+                int shift = k - 1;
+                int norm = (i << shift) & 0x3FFF;
+                int wnorm = (norm & 0xFF) << 2;
+                norm >>= 8;
+
+                int point = RdpTextureCoordinateNormPointTable[norm];
+                int slope = (RdpTextureCoordinateNormSlopeTable[norm] | ~0x3FF) + 1;
+                int reciprocal = (((slope * wnorm) >> 10) + point) & 0x7FFF;
+                table[i] = shift | (reciprocal << 4);
             }
 
             return table;
@@ -713,6 +762,7 @@ namespace Ryu64.MIPS
         private uint _rdpOtherModesCycleType;
         private bool _rdpOtherModesEnableTlut;
         private bool _rdpOtherModesTlutType;
+        private bool _rdpOtherModesPerspectiveTexture;
         private uint _rdpOtherModesZMode;
         private bool _rdpOtherModesZUpdate;
         private bool _rdpOtherModesZCompare;
@@ -1398,6 +1448,7 @@ namespace Ryu64.MIPS
                 long yStep = (long)Math.Round(sampleY - yh);
                 long rowS = tex.S + yStep * tex.DsDe;
                 long rowT = tex.T + yStep * tex.DtDe;
+                long rowW = tex.W + yStep * tex.DwDe;
                 long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
                 long rowR = modulateShade ? shade.R + yStep * (long)shade.DrDe : 0;
                 long rowG = modulateShade ? shade.G + yStep * (long)shade.DgDe : 0;
@@ -1408,8 +1459,13 @@ namespace Ryu64.MIPS
                 for (int x = firstX; x <= lastX; x++)
                 {
                     long xStep = (long)Math.Round(x + 0.5 - left);
-                    int sampleS = RdpTriangleTextureFixedToTexel(rowS + xStep * tex.DsDx);
-                    int sampleT = RdpTriangleTextureFixedToTexel(rowT + xStep * tex.DtDx);
+                    RdpTriangleTextureFixedToTexels(
+                        rowS + xStep * tex.DsDx,
+                        rowT + xStep * tex.DtDx,
+                        rowW + xStep * tex.DwDx,
+                        EnableRdpPerspectiveTexture && _rdpOtherModesPerspectiveTexture,
+                        out int sampleS,
+                        out int sampleT);
                     if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
                     {
                         sampleMisses++;
@@ -1736,6 +1792,42 @@ namespace Ryu64.MIPS
             if (texel < int.MinValue)
                 return int.MinValue;
             return (int)texel;
+        }
+
+        private static void RdpTriangleTextureFixedToTexels(
+            long sFixed,
+            long tFixed,
+            long wFixed,
+            bool perspective,
+            out int s,
+            out int t)
+        {
+            if (!perspective)
+            {
+                s = RdpTriangleTextureFixedToTexel(sFixed);
+                t = RdpTriangleTextureFixedToTexel(tFixed);
+                return;
+            }
+
+            int swSigned = (short)(wFixed >> 16);
+            if (swSigned <= 0)
+            {
+                s = RdpTriangleTextureFixedToTexel(sFixed);
+                t = RdpTriangleTextureFixedToTexel(tFixed);
+                return;
+            }
+
+            int ss = (short)(sFixed >> 16);
+            int st = (short)(tFixed >> 16);
+            int table = RdpTextureCoordinateDivideTable[swSigned & 0x7FFF];
+            int shift = table & 0xF;
+            int reciprocal = table >> 4;
+            int sProduct = ss * reciprocal;
+            int tProduct = st * reciprocal;
+            int sCoordinate = shift == 0xE ? sProduct << 1 : sProduct >> (13 - shift);
+            int tCoordinate = shift == 0xE ? tProduct << 1 : tProduct >> (13 - shift);
+            s = SignExtend17(sCoordinate & 0x1FFFF) >> 5;
+            t = SignExtend17(tCoordinate & 0x1FFFF) >> 5;
         }
 
         private bool DrawRdpTriangle(
@@ -2226,6 +2318,14 @@ namespace Ryu64.MIPS
             return signed;
         }
 
+        private static int SignExtend17(int value)
+        {
+            int signed = value & 0x1FFFF;
+            if ((signed & 0x10000) != 0)
+                signed -= 0x20000;
+            return signed;
+        }
+
         private static int SignExtend30(uint value)
         {
             int signed = (int)(value & 0x3FFFFFFFu);
@@ -2296,6 +2396,7 @@ namespace Ryu64.MIPS
             _rdpOtherModesCycleType = (uint)((mode >> 52) & 0x3UL);
             _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
             _rdpOtherModesTlutType = ((mode >> 46) & 1UL) != 0;
+            _rdpOtherModesPerspectiveTexture = ((w1 >> 19) & 1u) != 0;
             _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
             _rdpOtherModesZUpdate = ((mode >> 5) & 1UL) != 0;
             _rdpOtherModesZCompare = ((mode >> 4) & 1UL) != 0;
