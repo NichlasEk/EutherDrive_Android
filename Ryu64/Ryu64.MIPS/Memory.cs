@@ -2585,6 +2585,8 @@ namespace Ryu64.MIPS
 
         private bool DrawRdpTexturedRectangle(uint x0, uint y0, uint x1, uint y1, int tileIndex, uint w2, uint w3, bool flip, uint bytesPerPixel)
         {
+            uint textureOriginX = x0;
+            uint textureOriginY = y0;
             if (!ClampRdpRectangleToScissor(ref x0, ref y0, ref x1, ref y1))
                 return false;
             if ((uint)tileIndex >= _rdpTiles.Length || x0 >= _rdpColorImageWidth)
@@ -2623,19 +2625,21 @@ namespace Ryu64.MIPS
                 bool rowWrote = false;
                 for (uint x = 0; x < rowPixels; x++)
                 {
-                    uint dy = y - y0;
+                    uint screenX = x0 + x;
+                    uint dx = screenX - textureOriginX;
+                    uint dy = y - textureOriginY;
                     int sampleS;
                     int sampleT;
                     if (flip && UseReferenceTexRectFlip)
                     {
                         long s1024 = (long)sFixed * 32L + (long)dy * dsdxFixed;
-                        long t1024 = (long)tFixed * 32L + (long)x * dtdyFixed;
+                        long t1024 = (long)tFixed * 32L + (long)dx * dtdyFixed;
                         sampleS = RdpTexRectFixedToTexel(s1024);
                         sampleT = RdpTexRectFixedToTexel(t1024);
                     }
                     else
                     {
-                        sampleS = (int)Math.Floor(startS + x * stepS);
+                        sampleS = (int)Math.Floor(startS + dx * stepS);
                         sampleT = (int)Math.Floor(startT + dy * stepT);
                     }
 
@@ -2645,7 +2649,7 @@ namespace Ryu64.MIPS
                         continue;
                     }
 
-                    uint address = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0 + x) * bytesPerPixel);
+                    uint address = _rdpColorImageAddress + ((y * _rdpColorImageWidth + screenX) * bytesPerPixel);
                     if (!wroteAny)
                     {
                         firstAddress = address;
