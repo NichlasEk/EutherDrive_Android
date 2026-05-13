@@ -39,7 +39,7 @@ namespace Ryu64.MIPS
         private static readonly bool EnableRdpDepth =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RDP_DEPTH"), "0", StringComparison.Ordinal);
         private static readonly bool UseReferenceTexRectFlip =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_FLIP"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_FLIP"), "0", StringComparison.Ordinal);
         private static readonly bool UseReferenceTexRectExtents =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_EXTENTS"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRdpPerspectiveTexture =
@@ -4296,6 +4296,61 @@ namespace Ryu64.MIPS
                 snapshot = new byte[requested];
                 Buffer.BlockCopy(_visibleRdpFramebufferSnapshots[bestSlot], (int)bestOffset, snapshot, 0, requested);
                 address = requestedAddress;
+                epoch = _visibleRdpFramebufferEpochs[bestSlot];
+                return true;
+            }
+        }
+
+        public bool TryCopyBestVisibleRdpFramebufferSnapshot(
+            uint width,
+            uint height,
+            uint bytesPerPixel,
+            out byte[] snapshot,
+            out uint address,
+            out uint epoch)
+        {
+            snapshot = Array.Empty<byte>();
+            address = 0;
+            epoch = 0;
+
+            if (width == 0 || height == 0 || bytesPerPixel == 0)
+                return false;
+
+            ulong requested64 = (ulong)width * height * bytesPerPixel;
+            if (requested64 == 0 || requested64 > int.MaxValue)
+                return false;
+
+            int requested = (int)requested64;
+            lock (_lastVisibleRdpFramebufferLock)
+            {
+                int bestSlot = -1;
+                uint bestEpoch = 0;
+                for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
+                {
+                    byte[] candidate = _visibleRdpFramebufferSnapshots[i];
+                    if (candidate == null
+                        || candidate.Length < requested
+                        || _visibleRdpFramebufferWidths[i] != width
+                        || _visibleRdpFramebufferHeights[i] < height
+                        || _visibleRdpFramebufferBytesPerPixels[i] != bytesPerPixel
+                        || _visibleRdpFramebufferEpochs[i] == 0)
+                    {
+                        continue;
+                    }
+
+                    if (bestSlot < 0 || IsEpochNewer(_visibleRdpFramebufferEpochs[i], bestEpoch))
+                    {
+                        bestSlot = i;
+                        bestEpoch = _visibleRdpFramebufferEpochs[i];
+                    }
+                }
+
+                if (bestSlot < 0)
+                    return false;
+
+                snapshot = new byte[requested];
+                Buffer.BlockCopy(_visibleRdpFramebufferSnapshots[bestSlot], 0, snapshot, 0, requested);
+                address = _visibleRdpFramebufferAddresses[bestSlot];
                 epoch = _visibleRdpFramebufferEpochs[bestSlot];
                 return true;
             }

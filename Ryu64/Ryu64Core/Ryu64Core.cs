@@ -18,6 +18,7 @@ namespace Ryu64Core
         private const uint UntrackedFramebufferOriginFloor = 0x00020000u;
         private const int MinimumUntrackedFramebufferScore = 12000;
         private const int MinimumTrackedFramebufferScore = 2500;
+        private const int MinimumLiveFramebufferVisiblePixels = 512;
         // Keep broad framebuffer scans opt-in; prefer explicit producer hints first.
         private static readonly bool EnableFramebufferOriginScanFallback =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FB_SCAN_FALLBACK"), "1", StringComparison.Ordinal);
@@ -516,17 +517,36 @@ namespace Ryu64Core
                 int selectedVisiblePixels = producerBackedFramebufferSelected
                     ? CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel)
                     : 0;
+                bool copiedVisibleSnapshot = false;
+                byte[] visibleSnapshot = Array.Empty<byte>();
+                uint visibleSnapshotOrigin = 0;
+                uint visibleSnapshotEpoch = 0;
                 if (producerBackedFramebufferSelected
-                    && (preferRdpVisibleSnapshot || selectedVisiblePixels == 0)
-                    && R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
+                    && (preferRdpVisibleSnapshot || selectedVisiblePixels < MinimumLiveFramebufferVisiblePixels))
+                {
+                    copiedVisibleSnapshot = R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
                         origin,
                         (uint)width,
                         (uint)height,
                         (uint)bytesPerPixel,
-                        out byte[] visibleSnapshot,
-                        out uint visibleSnapshotOrigin,
-                        out uint visibleSnapshotEpoch)
-                    && visibleSnapshotOrigin == origin)
+                        out visibleSnapshot,
+                        out visibleSnapshotOrigin,
+                        out visibleSnapshotEpoch)
+                        && visibleSnapshotOrigin == origin;
+
+                    if (!copiedVisibleSnapshot && selectedVisiblePixels < MinimumLiveFramebufferVisiblePixels)
+                    {
+                        copiedVisibleSnapshot = R4300.memory.TryCopyBestVisibleRdpFramebufferSnapshot(
+                            (uint)width,
+                            (uint)height,
+                            (uint)bytesPerPixel,
+                            out visibleSnapshot,
+                            out visibleSnapshotOrigin,
+                            out visibleSnapshotEpoch);
+                    }
+                }
+
+                if (copiedVisibleSnapshot)
                 {
                     framebuffer = visibleSnapshot;
                     _lastTrackedFramebufferOrigin = visibleSnapshotOrigin;
