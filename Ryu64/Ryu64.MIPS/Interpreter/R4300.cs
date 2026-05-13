@@ -577,6 +577,16 @@ namespace Ryu64.MIPS
             return unchecked((ulong)(long)(int)value);
         }
 
+        private static ulong AddU32(ulong lhs, ulong rhs)
+        {
+            return SignExtend32(unchecked((uint)lhs + (uint)rhs));
+        }
+
+        private static ulong AddIu32(ulong lhs, int rhs)
+        {
+            return SignExtend32(unchecked((uint)lhs + (uint)rhs));
+        }
+
         private static void SetReg32(int reg, uint value)
         {
             Registers.R4300.Reg[reg] = SignExtend32(value);
@@ -650,6 +660,37 @@ namespace Ryu64.MIPS
         {
             if (!FastBootChecksumLoop || pc != 0x80000184u)
                 return false;
+
+            if (memory.ReadUInt32PhysicalFast(0x00000130u) == 0x8D220000u
+                && memory.ReadUInt32PhysicalFast(0x00000134u) == 0x00E21821u
+                && memory.ReadUInt32PhysicalFast(0x00000138u) == 0x0067082Bu
+                && memory.ReadUInt32PhysicalFast(0x0000013Cu) == 0x10200002u
+                && memory.ReadUInt32PhysicalFast(0x00000144u) == 0x254A0001u
+                && memory.ReadUInt32PhysicalFast(0x00000148u) == 0x3043001Fu
+                && memory.ReadUInt32PhysicalFast(0x0000014Cu) == 0x01A37823u
+                && memory.ReadUInt32PhysicalFast(0x00000150u) == 0x01E2C006u
+                && memory.ReadUInt32PhysicalFast(0x00000154u) == 0x00627004u
+                && memory.ReadUInt32PhysicalFast(0x00000158u) == 0x01D82025u
+                && memory.ReadUInt32PhysicalFast(0x0000015Cu) == 0x00C2082Bu
+                && memory.ReadUInt32PhysicalFast(0x00000160u) == 0x00A03825u
+                && memory.ReadUInt32PhysicalFast(0x00000164u) == 0x01625826u
+                && memory.ReadUInt32PhysicalFast(0x00000168u) == 0x10200004u
+                && memory.ReadUInt32PhysicalFast(0x00000170u) == 0x00E2C826u
+                && memory.ReadUInt32PhysicalFast(0x00000174u) == 0x10000002u
+                && memory.ReadUInt32PhysicalFast(0x0000017Cu) == 0x00C43026u
+                && memory.ReadUInt32PhysicalFast(0x00000180u) == 0x25080004u
+                && memory.ReadUInt32PhysicalFast(0x00000184u) == 0x00507826u
+                && memory.ReadUInt32PhysicalFast(0x00000188u) == 0x25290004u
+                && memory.ReadUInt32PhysicalFast(0x0000018Cu) == 0x151FFFE8u)
+            {
+                return TryFastForwardBootChecksumLoop6102();
+            }
+
+            if (memory.ReadUInt32PhysicalFast(0x00000180u) != 0x25080004u
+                || memory.ReadUInt32PhysicalFast(0x00000188u) != 0x25290004u)
+            {
+                return false;
+            }
 
             uint t0 = Reg32(8);
             uint ra = Reg32(31);
@@ -732,6 +773,100 @@ namespace Ryu64.MIPS
             Registers.R4300.Reg[24] = t8;
             Registers.R4300.Reg[25] = t9;
             Registers.R4300.PC = 0x8000018Cu;
+            AddSyntheticCycles(iterations * 24u);
+            Common.Measure.InstructionCount += iterations * 24UL;
+            return true;
+        }
+
+        private static bool TryFastForwardBootChecksumLoop6102()
+        {
+            uint t0Word = Reg32(8);
+            uint raWord = Reg32(31);
+            uint t1Word = Reg32(9);
+            if (raWord != 0x00100000u || t0Word == 0 || t0Word > raWord || t1Word < 0x80000400u || t1Word >= 0x80800000u)
+                return false;
+
+            ulong v0 = Registers.R4300.Reg[2];
+            ulong v1 = Registers.R4300.Reg[3];
+            ulong a0 = Registers.R4300.Reg[4];
+            ulong a1 = Registers.R4300.Reg[5];
+            ulong a2 = Registers.R4300.Reg[6];
+            ulong a3 = Registers.R4300.Reg[7];
+            ulong t0 = Registers.R4300.Reg[8];
+            ulong t1 = Registers.R4300.Reg[9];
+            ulong t2 = Registers.R4300.Reg[10];
+            ulong t3 = Registers.R4300.Reg[11];
+            ulong t4 = Registers.R4300.Reg[12];
+            ulong t5 = Registers.R4300.Reg[13];
+            ulong t6 = Registers.R4300.Reg[14];
+            ulong t7 = Registers.R4300.Reg[15];
+            ulong s0 = Registers.R4300.Reg[16];
+            ulong t8 = Registers.R4300.Reg[24];
+            ulong t9 = Registers.R4300.Reg[25];
+
+            uint iterations = 0;
+
+            void ExecuteTail()
+            {
+                t7 = v0 ^ s0;
+                t1 = AddIu32(t1, 4);
+                t4 = AddU32(t4, t7);
+                iterations++;
+            }
+
+            ExecuteTail();
+
+            while ((uint)t0 < raWord)
+            {
+                v0 = SignExtend32(memory.ReadUInt32PhysicalFast((uint)t1));
+                v1 = AddU32(a3, v0);
+                bool carry = v1 < a3;
+                a1 = v1;
+                if (carry)
+                    t2 = AddIu32(t2, 1);
+
+                v1 = v0 & 0x1Fu;
+                t7 = SignExtend32(unchecked((uint)t5 - (uint)v1));
+                t8 = SignExtend32((uint)v0 >> (int)(t7 & 0x1Fu));
+                t6 = SignExtend32((uint)v0 << (int)(v1 & 0x1Fu));
+                a0 = t6 | t8;
+
+                bool a2LessThanV0 = a2 < v0;
+                a3 = a1;
+                t3 ^= v0;
+                s0 = AddU32(s0, a0);
+                if (a2LessThanV0)
+                {
+                    t9 = a3 ^ v0;
+                    a2 = t9 ^ a2;
+                }
+                else
+                {
+                    a2 ^= a0;
+                }
+
+                t0 = AddIu32(t0, 4);
+                ExecuteTail();
+            }
+
+            Registers.R4300.Reg[2] = v0;
+            Registers.R4300.Reg[3] = v1;
+            Registers.R4300.Reg[4] = a0;
+            Registers.R4300.Reg[5] = a1;
+            Registers.R4300.Reg[6] = a2;
+            Registers.R4300.Reg[7] = a3;
+            Registers.R4300.Reg[8] = t0;
+            Registers.R4300.Reg[9] = t1;
+            Registers.R4300.Reg[10] = t2;
+            Registers.R4300.Reg[11] = t3;
+            Registers.R4300.Reg[12] = t4;
+            Registers.R4300.Reg[13] = t5;
+            Registers.R4300.Reg[14] = t6;
+            Registers.R4300.Reg[15] = t7;
+            Registers.R4300.Reg[16] = s0;
+            Registers.R4300.Reg[24] = t8;
+            Registers.R4300.Reg[25] = t9;
+            Registers.R4300.PC = 0x80000194u;
             AddSyntheticCycles(iterations * 24u);
             Common.Measure.InstructionCount += iterations * 24UL;
             return true;
@@ -927,16 +1062,35 @@ namespace Ryu64.MIPS
 
         private static bool TryFastForwardIdleLoop(uint pc)
         {
-            if (!FastIdleLoop || (pc != 0x80000810u && pc != 0x80000814u))
+            if (!FastIdleLoop)
                 return false;
 
-            if (memory.ReadUInt32PhysicalFast(0x00000810u) != 0x1000FFFFu
-                || memory.ReadUInt32PhysicalFast(0x00000814u) != 0x00000000u)
+            if (pc == 0x80000810u || pc == 0x80000814u)
+            {
+                if (memory.ReadUInt32PhysicalFast(0x00000810u) != 0x1000FFFFu
+                    || memory.ReadUInt32PhysicalFast(0x00000814u) != 0x00000000u)
+                {
+                    return false;
+                }
+
+                Registers.R4300.PC = 0x80000810u;
+                AddSyntheticCycles(IdleLoopFastForwardCycles);
+                Common.Measure.InstructionCount += IdleLoopFastForwardCycles >> 1;
+                return true;
+            }
+
+            uint segment = pc & 0xE0000000u;
+            if (segment != 0x80000000u && segment != 0xA0000000u)
+                return false;
+
+            uint physical = pc & 0x1FFFFFFFu;
+            if (memory.ReadUInt32PhysicalFast(physical) != 0x1000FFFFu
+                || memory.ReadUInt32PhysicalFast(physical + 4u) != 0x00000000u)
             {
                 return false;
             }
 
-            Registers.R4300.PC = 0x80000810u;
+            Registers.R4300.PC = pc;
             AddSyntheticCycles(IdleLoopFastForwardCycles);
             Common.Measure.InstructionCount += IdleLoopFastForwardCycles >> 1;
             return true;

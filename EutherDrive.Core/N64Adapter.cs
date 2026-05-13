@@ -33,13 +33,14 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
     private long _runFrameCount;
     private long _noFramebufferCount;
     private long _noAudioCount;
+    private bool _hasSeenFramebuffer;
     private bool? _swap5551BytesDecision;
     private readonly ulong _targetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_TARGET_CYCLES_PER_RUNFRAME", 300_000);
     private readonly int _runFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_RUNFRAME_WAIT_MS", 12);
     private readonly ulong _bringupTargetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_BRINGUP_TARGET_CYCLES_PER_RUNFRAME", 8_000_000);
     // Keep N64 bringup responsive by default; slow diagnostic bootstraps can opt in to a larger wait via env.
     private readonly int _bringupRunFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_BRINGUP_RUNFRAME_WAIT_MS", 12);
-    private readonly long _bringupFrameLimit = ReadLongEnv("EUTHERDRIVE_N64_BRINGUP_FRAME_LIMIT", 120);
+    private readonly long _bringupFrameLimit = ReadLongEnv("EUTHERDRIVE_N64_BRINGUP_FRAME_LIMIT", 2000);
     private readonly bool _skipAudio = string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_SKIP_AUDIO"), "1", StringComparison.Ordinal);
 
     ~N64Adapter()
@@ -64,6 +65,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         _runFrameCount = 0;
         _noFramebufferCount = 0;
         _noAudioCount = 0;
+        _hasSeenFramebuffer = false;
         _swap5551BytesDecision = null;
         EnsureFrameBuffer(DefaultWidth, DefaultHeight);
         Console.WriteLine($"[N64Adapter] ROM loaded: '{Path.GetFileName(path)}' -> '{Path.GetFileName(_resolvedRomPath)}'");
@@ -83,6 +85,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         _runFrameCount = 0;
         _noFramebufferCount = 0;
         _noAudioCount = 0;
+        _hasSeenFramebuffer = false;
         _swap5551BytesDecision = null;
     }
 
@@ -224,6 +227,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         _audioBuffer = Array.Empty<short>();
         _core.LoadState(reader);
         _started = _core.IsRunning;
+        _hasSeenFramebuffer = framebufferLength > 0;
     }
 
     private void EnsureStarted()
@@ -272,6 +276,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
             return;
         }
 
+        _hasSeenFramebuffer = true;
         if (_noFramebufferCount > 0)
         {
             Console.WriteLine(
@@ -369,8 +374,10 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         ulong targetCyclesPerFrame = _targetCyclesPerRunFrame;
         int runFrameWaitMs = _runFrameWaitMs;
 
-        bool inBringup = (_runFrameCount == 1 || _noFramebufferCount > 0)
-            && _runFrameCount <= _bringupFrameLimit;
+        bool underBringupLimit = _bringupFrameLimit <= 0 || _runFrameCount <= _bringupFrameLimit;
+        bool inBringup = !_hasSeenFramebuffer
+            && (_runFrameCount == 1 || _noFramebufferCount > 0)
+            && underBringupLimit;
         if (inBringup)
         {
             if (_bringupTargetCyclesPerRunFrame > targetCyclesPerFrame)
