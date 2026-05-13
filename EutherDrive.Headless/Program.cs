@@ -3657,6 +3657,9 @@ class Program
                 || string.Equals(coreOverride, "pcecd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "pcengine", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && IsPceRomPath(romPath) && !IsSegaCdRomPath(romPath));
+            bool useN64 = string.Equals(coreOverride, "n64", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "nintendo64", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && IsN64RomPath(romPath));
             bool useCps1 = string.Equals(coreOverride, "cps1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-cps1", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Cps1DinoAdapter.IsSupportedArchive(romPath));
@@ -3684,6 +3687,70 @@ class Program
                 || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && HshavocAdapter.IsSupportedArchive(romPath));
+
+            if (useN64)
+            {
+                SetEnvDefault("EUTHERDRIVE_N64_SKIP_AUDIO", "1");
+                var n64 = new N64Adapter();
+                n64.LoadRom(romPath);
+
+                int? slotOverrideN64 = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadN64 = TryLoadSavestatePayload(savestatePath, n64.RomIdentity, slotOverrideN64, out var n64Error);
+                if (payloadN64 == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {n64Error}");
+                    return 1;
+                }
+
+                using (var n64StateStream = new MemoryStream(payloadN64, writable: false))
+                using (var n64StateReader = new BinaryReader(n64StateStream))
+                    n64.LoadState(n64StateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (N64)");
+                ReadOnlySpan<byte> fbBefore = n64.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong fingerprintBefore = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine(
+                    $"[HEADLESS] N64 state before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} " +
+                    $"first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) fp=0x{fingerprintBefore:X16}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_n64_state_before.ppm"));
+
+                bool n64Perf = IsEnvEnabled("EUTHERDRIVE_N64_HEADLESS_PERF");
+                var n64FrameWatch = n64Perf ? Stopwatch.StartNew() : null;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    n64.RunFrame();
+                    if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        ReadOnlySpan<byte> fb = n64.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                        Console.WriteLine(
+                            $"[HEADLESS] N64 state frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} " +
+                            $"first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16}");
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_n64_state_frame{frame}.ppm"));
+                    }
+                }
+
+                n64FrameWatch?.Stop();
+                ReadOnlySpan<byte> fbOut = n64.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong fingerprintOut = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine(
+                    $"[HEADLESS] N64 state after fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} " +
+                    $"first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{fingerprintOut:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_n64_state_output.ppm"));
+                if (n64Perf && n64FrameWatch != null)
+                {
+                    double totalMs = n64FrameWatch.Elapsed.TotalMilliseconds;
+                    double avgMs = framesToRun > 0 ? totalMs / framesToRun : 0.0;
+                    Console.WriteLine($"[HEADLESS] N64 state run_ms={totalMs:0.###} avg_frame_ms={avgMs:0.###} avg_fps={(avgMs > 0 ? 1000.0 / avgMs : 0.0):0.###}");
+                    Console.WriteLine($"[HEADLESS] N64 perf {n64.GetPerformanceStatus()}");
+                }
+                n64.Reset();
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
 
             if (useHshavoc)
             {
