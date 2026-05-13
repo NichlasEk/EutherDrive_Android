@@ -6,7 +6,7 @@ using EutherDrive.Core.Savestates;
 public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable, mame.IPgmArm7Bus
 {
     private const string SavestateMagic = "PGM2NAT";
-    private const int SavestateVersion = 6;
+    private const int SavestateVersion = 7;
     private const int Width = 448;
     private const int Height = 224;
     private const int Stride = Width * 4;
@@ -39,6 +39,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         "orleg2_104jp",
         "orleg2_103jp",
         "orleg2_101jp",
+        "ddpdojh",
         "ddpdojt",
         "kov3",
         "kov3_102",
@@ -72,12 +73,13 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private readonly byte[] _mainRom = new byte[0x1000000];
     private readonly byte[] _mainRomEncrypted = new byte[0x1000000];
     private readonly byte[] _textRom = new byte[0x200000];
-    private readonly byte[] _bgTileRom = new byte[0x1000000];
+    private readonly byte[] _bgTileRom = new byte[0x2000000];
     private readonly byte[] _spriteMaskRom = new byte[0x2000000];
     private readonly byte[] _spriteColorRom = new byte[0x4000000];
     private readonly byte[] _ymzRom = new byte[0x2000000];
     private readonly byte[] _sram = new byte[0x10000];
     private readonly byte[] _mainRam = new byte[0x80000];
+    private readonly byte[] _romBoardRam = new byte[0x200000];
     private readonly byte[] _spriteVideoRam = new byte[0x2000];
     private readonly byte[] _bgVideoRam = new byte[0x2000];
     private readonly byte[] _fgVideoRam = new byte[0x6000];
@@ -103,6 +105,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     private RomIdentity? _romIdentity;
     private Pgm2InputState _input;
+    private Pgm2InputState _input2;
     private bool _loaded;
     private string _driverName = string.Empty;
     private string _romPath = string.Empty;
@@ -127,6 +130,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private string _loadedMainProgramName = string.Empty;
     private string _loadedInternalRomName = string.Empty;
     private string _loadedMemoryCardName = string.Empty;
+    private string[]? _romSetErrorLines;
     private int _textRomBytes;
     private int _bgTileRomBytes;
     private int _spriteMaskRomBytes;
@@ -238,6 +242,11 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     public static bool IsSupportedDriverName(string driverName)
         => DriverNames.Contains(driverName);
 
+    public static bool IsSupportedSidecarFileName(string fileName)
+        => IsInternalRomName(fileName)
+            || string.Equals(fileName, "ddpdojt_sram", StringComparison.OrdinalIgnoreCase)
+            || IsMemoryCardName(fileName);
+
     public static Pgm2AuxFileReport InspectAuxFiles(string path)
     {
         string driverName = DetectDriverName(path);
@@ -259,7 +268,20 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     public void LoadRom(string path)
     {
         if (!IsSupportedArchive(path))
-            throw new NotSupportedException($"'{Path.GetFileName(path)}' is not a known PGM2 MAME set.");
+        {
+            _romPath = Path.GetFullPath(path);
+            _driverName = Path.GetFileNameWithoutExtension(path).Trim();
+            _loaded = true;
+            _romSetErrorLines = new[]
+            {
+                "PGM2 ROMSET ERROR",
+                $"UNKNOWN SET: {Path.GetFileName(path)}",
+                "ARCHIVE DOES NOT MATCH A KNOWN PGM2 SET.",
+                "CHECK THE ZIP NAME AND ROM FILE NAMES."
+            };
+            DrawRomSetErrorFrame();
+            return;
+        }
 
         Array.Clear(_internalRom);
         Array.Clear(_mainRom);
@@ -271,6 +293,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         Array.Clear(_ymzRom);
         Array.Clear(_sram);
         Array.Clear(_mainRam);
+        Array.Clear(_romBoardRam);
         Array.Clear(_spriteVideoRam);
         Array.Clear(_bgVideoRam);
         Array.Clear(_fgVideoRam);
@@ -294,6 +317,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _loadedMainProgramName = string.Empty;
         _loadedInternalRomName = string.Empty;
         _loadedMemoryCardName = string.Empty;
+        _romSetErrorLines = null;
         _textRomBytes = 0;
         _bgTileRomBytes = 0;
         _spriteMaskRomBytes = 0;
@@ -320,6 +344,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _ymz.LoadRom(_ymzRom, _ymzRomBytes);
         Array.Copy(_mainRom, _mainRomEncrypted, _mainRom.Length);
 
+        Pgm2AuxFileReport auxReport = InspectAuxFiles(path);
+        _romSetErrorLines = BuildRomSetErrorLines(path, auxReport);
+
         using (FileStream fs = File.OpenRead(path))
             _romIdentity = new RomIdentity(Path.GetFileName(path), RomIdentity.ComputeSha256(fs), Path.GetDirectoryName(_romPath));
 
@@ -328,16 +355,23 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         UpdateInputPorts();
         DrawFrame();
 
-        Console.WriteLine($"[PGM2] Loaded {_driverName}: internal={_loadedInternalRomName}:0x{_internalRomBytes:X} main={_loadedMainProgramName}:0x{_romBytes:X} card={_loadedMemoryCardName} missing=[{string.Join(",", InspectAuxFiles(path).MissingFiles)}]");
+        Console.WriteLine($"[PGM2] Loaded {_driverName}: internal={_loadedInternalRomName}:0x{_internalRomBytes:X} main={_loadedMainProgramName}:0x{_romBytes:X} card={_loadedMemoryCardName} missing=[{string.Join(",", auxReport.MissingFiles)}]");
     }
 
     public void Reset()
     {
         if (!_loaded)
             return;
+        if (_romSetErrorLines != null)
+        {
+            DrawRomSetErrorFrame();
+            Array.Clear(_audioBuffer);
+            return;
+        }
 
         Array.Copy(_mainRomEncrypted, _mainRom, _mainRom.Length);
         Array.Clear(_mainRam);
+        Array.Clear(_romBoardRam);
         Array.Clear(_shareRam);
         Array.Clear(_memoryCardAuthenticated);
         Array.Clear(_gpuRegs);
@@ -363,11 +397,19 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     {
         if (!_loaded)
             return;
+        if (_romSetErrorLines != null)
+        {
+            DrawRomSetErrorFrame();
+            Array.Clear(_audioBuffer);
+            _frameCounter++;
+            return;
+        }
 
         UpdateInputPorts();
         DrawFrame();
         SetAicLine(AicVblankSource, true);
         _targetCycles += CyclesPerFrame;
+        ApplyDdpdojtBootDelaySkip();
         _cpu.Run(_targetCycles);
         _ymz.Render(_audioBuffer);
 
@@ -468,6 +510,15 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _input = new Pgm2InputState(up, down, left, right, a, b, c, start, x, y, z, mode);
     }
 
+    public void SetPad2InputState(
+        bool up, bool down, bool left, bool right,
+        bool a, bool b, bool c, bool start,
+        bool x, bool y, bool z, bool mode,
+        PadType padType)
+    {
+        _input2 = new Pgm2InputState(up, down, left, right, a, b, c, start, x, y, z, mode);
+    }
+
     public void SaveState(BinaryWriter writer)
     {
         writer.Write(SavestateMagic);
@@ -482,6 +533,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _cpu.SerializePipeline(writer);
         _cpu.SerializeBankedState(writer);
         writer.Write(_mainRam);
+        writer.Write(_romBoardRam);
         writer.Write(_spriteVideoRam);
         writer.Write(_bgVideoRam);
         writer.Write(_fgVideoRam);
@@ -538,6 +590,10 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         else
             _cpu.SeedMissingBankedStateFromVisibleRegisters();
         ReadExact(reader, _mainRam);
+        if (version >= 7)
+            ReadExact(reader, _romBoardRam);
+        else
+            Array.Clear(_romBoardRam);
         if (version >= 3)
         {
             ReadExact(reader, _spriteVideoRam);
@@ -581,6 +637,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             _mcuLastCommand = 0;
         }
         _hasDecrypted = reader.ReadBoolean();
+        RestoreMainRomAfterStateLoad();
         if (version >= 6)
         {
             for (int i = 0; i < MemoryCardCount; i++)
@@ -613,6 +670,12 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     public byte Load8(uint address)
     {
         _lastReadAddress = address;
+        if (TryReadSpeedup8(address, out byte speedupValue))
+        {
+            _openBus = (_openBus & 0xffffff00u) | speedupValue;
+            return speedupValue;
+        }
+
         byte value = Read8(address);
         _openBus = (_openBus & 0xffffff00u) | value;
         return value;
@@ -622,6 +685,12 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     {
         address &= ~1u;
         _lastReadAddress = address;
+        if (TryReadSpeedup16(address, out ushort speedupValue))
+        {
+            _openBus = (_openBus & 0xffff0000u) | speedupValue;
+            return speedupValue;
+        }
+
         ushort value = (ushort)(Read8(address) | (Read8(address + 1) << 8));
         _openBus = (_openBus & 0xffff0000u) | value;
         return value;
@@ -782,16 +851,82 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private bool TryReadSpeedup(uint address, out uint value)
     {
         value = 0;
+        if (IsDdpdojtRamRomDriver())
+        {
+            uint ddpPc = CurrentInstructionPc;
+            if (address == 0x20000060)
+            {
+                value = ReadMainRam32(0x00060);
+                uint ddpNext = ReadMainRam32(0x00064);
+                if (value == 0 && ddpNext == 0 && ddpPc == 0x10001a7e)
+                    _cpu.Cycles = Math.Max(_cpu.Cycles, _targetCycles);
+
+                return true;
+            }
+
+            if (address == 0x20021e04)
+            {
+                value = ReadMainRam32(0x21e04);
+                if ((value & 0x00ff0000u) != 0 && (ddpPc == 0x1008fefe || ddpPc == 0x1008fbe8))
+                    _cpu.Cycles = Math.Max(_cpu.Cycles, _targetCycles);
+
+                return true;
+            }
+        }
+
         if (!string.Equals(_driverName, "kov2nl", StringComparison.OrdinalIgnoreCase) || address != 0x20020470)
             return false;
 
         value = ReadMainRam32(0x20470);
         uint next = ReadMainRam32(0x20474);
-        uint pc = CurrentPc;
+        uint pc = CurrentInstructionPc;
         if (value == 0 && next == 0 && (pc == 0x10053a94 || pc == 0x1005332c || pc == 0x1005327c))
             _cpu.Cycles = Math.Max(_cpu.Cycles, _targetCycles);
 
         return true;
+    }
+
+    private bool TryReadSpeedup16(uint address, out ushort value)
+    {
+        value = 0;
+        if (!IsDdpdojtRamRomDriver() || address != 0x20021e06)
+            return false;
+
+        value = (ushort)(_mainRam[0x21e06] | (_mainRam[0x21e07] << 8));
+        uint pc = CurrentInstructionPc;
+        if ((value & 0x00ffu) != 0 && (pc == 0x1008fefe || pc == 0x1008fbe8))
+            _cpu.Cycles = Math.Max(_cpu.Cycles, _targetCycles);
+
+        return true;
+    }
+
+    private bool TryReadSpeedup8(uint address, out byte value)
+    {
+        value = 0;
+        if (!IsDdpdojtRamRomDriver() || address != 0x20021e06)
+            return false;
+
+        value = _mainRam[0x21e06];
+        uint pc = CurrentInstructionPc;
+        if (value != 0 && (pc == 0x1008fefe || pc == 0x1008fbe8))
+            _cpu.Cycles = Math.Max(_cpu.Cycles, _targetCycles);
+
+        return true;
+    }
+
+    private uint CurrentInstructionPc => _cpu.CurrentInstructionAddress;
+
+    private bool IsDdpdojtRamRomDriver()
+        => string.Equals(_driverName, "ddpdojt", StringComparison.OrdinalIgnoreCase);
+
+    private void ApplyDdpdojtBootDelaySkip()
+    {
+        if (!IsDdpdojtRamRomDriver())
+            return;
+
+        uint pc = CurrentPc;
+        if ((pc == 0x000009bc || pc == 0x000009c4 || pc == 0x000009c8 || pc == 0x000009cc) && _cpu.Registers[0] > 1)
+            _cpu.Registers[0] = 1;
     }
 
     private uint ReadMainRam32(int offset)
@@ -846,6 +981,45 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             {
                 Buffer.BlockCopy(data, 0, _textRom, 0, Math.Min(data.Length, _textRom.Length));
                 _textRomBytes = Math.Max(_textRomBytes, Math.Min(data.Length, _textRom.Length));
+            }
+            else if (string.Equals(name, "ddpdoj_bgl.u23", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadInterleavedWordRegion(data, _bgTileRom, 0);
+                _bgTileRomBytes = Math.Max(_bgTileRomBytes, Math.Min(_bgTileRom.Length, data.Length * 2));
+            }
+            else if (string.Equals(name, "ddpdoj_bgh.u24", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadInterleavedWordRegion(data, _bgTileRom, 2);
+                _bgTileRomBytes = Math.Max(_bgTileRomBytes, Math.Min(_bgTileRom.Length, data.Length * 2));
+            }
+            else if (string.Equals(name, "ddpdoj_mapl0.u13", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadInterleavedWordRegion(data, _spriteMaskRom, 0);
+                _spriteMaskRomBytes = Math.Max(_spriteMaskRomBytes, Math.Min(_spriteMaskRom.Length, data.Length * 2));
+            }
+            else if (string.Equals(name, "ddpdoj_maph0.u15", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadInterleavedWordRegion(data, _spriteMaskRom, 2);
+                _spriteMaskRomBytes = Math.Max(_spriteMaskRomBytes, Math.Min(_spriteMaskRom.Length, data.Length * 2));
+            }
+            else if (string.Equals(name, "ddpdoj_spa0.u9", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadInterleavedWordRegion(data, _spriteColorRom, 0);
+                _spriteColorRomBytes = Math.Max(_spriteColorRomBytes, Math.Min(_spriteColorRom.Length, data.Length * 2));
+            }
+            else if (string.Equals(name, "ddpdoj_spb0.u18", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadInterleavedWordRegion(data, _spriteColorRom, 2);
+                _spriteColorRomBytes = Math.Max(_spriteColorRomBytes, Math.Min(_spriteColorRom.Length, data.Length * 2));
+            }
+            else if (string.Equals(name, "ddpdoj_wave0.u12", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadWordSwappedRegion(data, _ymzRom);
+                _ymzRomBytes = Math.Max(_ymzRomBytes, Math.Min(_ymzRom.Length, data.Length));
+            }
+            else if (string.Equals(name, "ddpdojt_sram", StringComparison.OrdinalIgnoreCase))
+            {
+                Buffer.BlockCopy(data, 0, _sram, 0, Math.Min(data.Length, _sram.Length));
             }
             else if (string.Equals(name, "ig-a3_bgl.u35", StringComparison.OrdinalIgnoreCase))
             {
@@ -929,6 +1103,10 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 LoadWordSwappedRegion(data, _ymzRom);
                 _ymzRomBytes = Math.Max(_ymzRomBytes, Math.Min(_ymzRom.Length, data.Length));
             }
+            else if (string.Equals(fileName, "ddpdojt_sram", StringComparison.OrdinalIgnoreCase))
+            {
+                Buffer.BlockCopy(data, 0, _sram, 0, Math.Min(data.Length, _sram.Length));
+            }
         }
     }
 
@@ -1005,7 +1183,11 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             return (byte)(_input0 >> (int)((address & 3) * 8));
         if (address >= 0x03a00000 && address <= 0x03a00003)
             return (byte)(_input1 >> (int)((address & 3) * 8));
-        if (address >= 0x10000000 && address <= 0x10ffffff)
+        if (IsDdpdojtRamRomDriver() && address >= 0x10000000 && address <= 0x101fffff)
+            return _romBoardRam[address - 0x10000000];
+        if (IsDdpdojtRamRomDriver() && address >= 0x10200000 && address <= 0x103fffff)
+            return _mainRom[address - 0x10200000];
+        if (!IsDdpdojtRamRomDriver() && address >= 0x10000000 && address <= 0x10ffffff)
             return _mainRom[address - 0x10000000];
         if (address >= 0x20000000 && address <= 0x2007ffff)
             return _mainRam[address - 0x20000000];
@@ -1064,6 +1246,11 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         if (address >= 0x03600000 && address <= 0x036bffff)
         {
             WriteMcuRegisterByte(address, value);
+            return;
+        }
+        if (IsDdpdojtRamRomDriver() && address >= 0x10000000 && address <= 0x101fffff)
+        {
+            _romBoardRam[address - 0x10000000] = value;
             return;
         }
         if (address >= 0x20000000 && address <= 0x2007ffff)
@@ -1187,7 +1374,15 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         {
             _encryptionTriggers++;
             Array.Copy(_mainRomEncrypted, _mainRom, _mainRom.Length);
-            Pgm2Igs036Decryptor.DecryptRom(_mainRom, _romBytes, 0, _encryptionTable);
+            if (IsDdpdojtRamRomDriver())
+            {
+                Pgm2Igs036Decryptor.DecryptRom(_romBoardRam, Math.Min(_romBytes, _romBoardRam.Length), 0, _encryptionTable);
+                Pgm2Igs036Decryptor.DecryptRom(_mainRom, _romBytes, _romBoardRam.Length, _encryptionTable);
+            }
+            else
+            {
+                Pgm2Igs036Decryptor.DecryptRom(_mainRom, _romBytes, 0, _encryptionTable);
+            }
             _hasDecrypted = true;
             DumpDecryptedMainRomIfRequested();
             Console.WriteLine($"[PGM2] encryption trigger value=0x{value:X8}; decrypted 0x{_romBytes:X} bytes");
@@ -1221,6 +1416,16 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
             _realSpriteKey = ReverseBits32(_spriteKey ^ 0x90055555u);
         }
+    }
+
+    private void RestoreMainRomAfterStateLoad()
+    {
+        Array.Copy(_mainRomEncrypted, _mainRom, _mainRom.Length);
+        if (!_hasDecrypted)
+            return;
+
+        int offset = IsDdpdojtRamRomDriver() ? _romBoardRam.Length : 0;
+        Pgm2Igs036Decryptor.DecryptRom(_mainRom, _romBytes, offset, _encryptionTable);
     }
 
     private void WriteMcuRegisterByte(uint address, byte value)
@@ -1617,7 +1822,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             || (address >= 0x02000000 && address <= 0x0200ffff)
             || (address >= 0x03600000 && address <= 0x036bffff)
             || (address >= 0x03900000 && address <= 0x03a00003)
-            || (address >= 0x10000000 && address <= 0x10ffffff)
+            || (IsDdpdojtRamRomDriver()
+                ? address >= 0x10000000 && address <= 0x103fffff
+                : address >= 0x10000000 && address <= 0x10ffffff)
             || (address >= 0x20000000 && address <= 0x2007ffff)
             || (address >= 0x30000000 && address <= 0x3012003f)
             || (address >= 0x40000000 && address <= 0x40000003)
@@ -1638,12 +1845,28 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         if (_input.X) inputs0 &= ~0x00000080u;
         if (_input.Start) inputs1 &= ~0x00000400u;
         if (_input.Mode) inputs1 &= ~0x00004000u;
+        if (_input2.Up) inputs0 &= ~0x00000400u;
+        if (_input2.Down) inputs0 &= ~0x00000800u;
+        if (_input2.Left) inputs0 &= ~0x00001000u;
+        if (_input2.Right) inputs0 &= ~0x00002000u;
+        if (_input2.A) inputs0 &= ~0x00004000u;
+        if (_input2.B) inputs0 &= ~0x00008000u;
+        if (_input2.C) inputs0 &= ~0x00010000u;
+        if (_input2.X) inputs0 &= ~0x00020000u;
+        if (_input2.Start) inputs1 &= ~0x00000800u;
+        if (_input2.Mode) inputs1 &= ~0x00008000u;
         _input0 = inputs0;
         _input1 = inputs1;
     }
 
     private void DrawFrame()
     {
+        if (_romSetErrorLines != null)
+        {
+            DrawRomSetErrorFrame();
+            return;
+        }
+
         ClearFrame(ReadPaletteColor(_bgPaletteRam, 0));
 
         _renderedBgPixels = 0;
@@ -2440,6 +2663,202 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         DrawStatusBar(5, _encryptionTriggers, 0xffc060d0);
     }
 
+    private string[]? BuildRomSetErrorLines(string path, Pgm2AuxFileReport auxReport)
+    {
+        var problems = new List<string>();
+        string mainProgramName = GetMainProgramName(_driverName);
+
+        if (_romBytes == 0)
+        {
+            problems.Add(string.IsNullOrEmpty(mainProgramName)
+                ? "MISSING MAIN PROGRAM ROM"
+                : $"MISSING MAIN: {mainProgramName}");
+        }
+        else if (!string.IsNullOrEmpty(mainProgramName)
+            && !string.Equals(_loadedMainProgramName, mainProgramName, StringComparison.OrdinalIgnoreCase))
+        {
+            problems.Add($"MAIN MISMATCH: {_loadedMainProgramName}");
+            problems.Add($"EXPECTED: {mainProgramName}");
+        }
+
+        if (_internalRomBytes == 0)
+        {
+            string internalRomName = GetAuxFileSpec(_driverName).RequiredFiles.FirstOrDefault(IsInternalRomName) ?? string.Empty;
+            problems.Add(string.IsNullOrEmpty(internalRomName)
+                ? "MISSING INTERNAL IGS036 ROM"
+                : $"MISSING INTERNAL: {internalRomName}");
+        }
+
+        foreach (string missing in auxReport.MissingFiles)
+        {
+            if (IsInternalRomName(missing) && _internalRomBytes == 0)
+                continue;
+            problems.Add($"MISSING AUX: {missing}");
+        }
+
+        if (problems.Count == 0)
+            return null;
+
+        var lines = new List<string>
+        {
+            "PGM2 ROMSET ERROR",
+            $"SET: {_driverName.ToUpperInvariant()}",
+            $"ZIP: {Path.GetFileName(path).ToUpperInvariant()}",
+            string.Empty
+        };
+        lines.AddRange(problems.Select(line => line.ToUpperInvariant()));
+        lines.Add(string.Empty);
+        lines.Add("COPY THE MISSING FILES NEXT TO THE ZIP");
+        lines.Add("OR INTO ~/ROMS/MAME/PGM2.");
+        lines.Add("CORE IS PAUSED UNTIL ROMSET MATCHES.");
+        return lines.ToArray();
+    }
+
+    private void DrawRomSetErrorFrame()
+    {
+        ClearFrame(0xff08080d);
+        FillFrameRect(0, 0, Width, 26, 0xff2a1010);
+        FillFrameRect(0, Height - 16, Width, 16, 0xff111118);
+        FillFrameRect(0, 0, Width, 1, 0xffe04040);
+        FillFrameRect(0, 25, Width, 1, 0xffe04040);
+
+        string[] lines = _romSetErrorLines ?? new[] { "PGM2 ROMSET ERROR", "UNKNOWN ROMSET ERROR" };
+        if (lines.Length > 0)
+            DrawDebugText(14, 8, lines[0], 0xffff6060, 2);
+
+        int y = 38;
+        for (int i = 1; i < lines.Length && y < Height - 24; i++)
+        {
+            string line = lines[i];
+            if (line.Length == 0)
+            {
+                y += 10;
+                continue;
+            }
+
+            uint color = line.StartsWith("MISSING", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("MAIN MISMATCH", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("EXPECTED", StringComparison.OrdinalIgnoreCase)
+                ? 0xffffd060
+                : 0xffe8e8e8;
+            int scale = line.Length > 35 ? 1 : 2;
+            DrawDebugText(14, y, line, color, scale);
+            y += scale == 1 ? 10 : 17;
+        }
+
+        DrawDebugText(14, Height - 12, "PGM2 ADAPTER ROMSET CHECK", 0xff9090a0, 1);
+    }
+
+    private void FillFrameRect(int x, int y, int width, int height, uint color)
+    {
+        int x0 = Math.Clamp(x, 0, Width);
+        int y0 = Math.Clamp(y, 0, Height);
+        int x1 = Math.Clamp(x + width, 0, Width);
+        int y1 = Math.Clamp(y + height, 0, Height);
+        for (int yy = y0; yy < y1; yy++)
+        {
+            int row = yy * Stride;
+            for (int xx = x0; xx < x1; xx++)
+                PutPixel(row + (xx * 4), color);
+        }
+    }
+
+    private void DrawDebugText(int x, int y, string text, uint color, int scale)
+    {
+        int cursorX = x;
+        foreach (char rawCh in text)
+        {
+            char ch = char.ToUpperInvariant(rawCh);
+            if (cursorX + (6 * scale) > Width - 8)
+                break;
+            DrawDebugGlyph(cursorX, y, ch, color, scale);
+            cursorX += 6 * scale;
+        }
+    }
+
+    private void DrawDebugGlyph(int x, int y, char ch, uint color, int scale)
+    {
+        ReadOnlySpan<byte> glyph = Glyph5x7(ch);
+        for (int gy = 0; gy < glyph.Length; gy++)
+        {
+            byte bits = glyph[gy];
+            for (int gx = 0; gx < 5; gx++)
+            {
+                if (((bits >> (4 - gx)) & 1) == 0)
+                    continue;
+
+                int px = x + gx * scale;
+                int py = y + gy * scale;
+                for (int sy = 0; sy < scale; sy++)
+                {
+                    int dy = py + sy;
+                    if ((uint)dy >= (uint)Height)
+                        continue;
+                    int row = dy * Stride;
+                    for (int sx = 0; sx < scale; sx++)
+                    {
+                        int dx = px + sx;
+                        if ((uint)dx >= (uint)Width)
+                            continue;
+                        PutPixel(row + (dx * 4), color);
+                    }
+                }
+            }
+        }
+    }
+
+    private static ReadOnlySpan<byte> Glyph5x7(char ch)
+        => ch switch
+        {
+            'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+            'B' => [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
+            'C' => [0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e],
+            'D' => [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
+            'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
+            'F' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
+            'G' => [0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0e],
+            'H' => [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+            'I' => [0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e],
+            'J' => [0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0e],
+            'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+            'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
+            'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
+            'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+            'O' => [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+            'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
+            'Q' => [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
+            'R' => [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
+            'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
+            'T' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+            'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+            'V' => [0x11, 0x11, 0x11, 0x11, 0x0a, 0x0a, 0x04],
+            'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a],
+            'X' => [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
+            'Y' => [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
+            'Z' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
+            '0' => [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
+            '1' => [0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e],
+            '2' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f],
+            '3' => [0x1e, 0x01, 0x01, 0x06, 0x01, 0x01, 0x1e],
+            '4' => [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
+            '5' => [0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e],
+            '6' => [0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e],
+            '7' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+            '8' => [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
+            '9' => [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c],
+            '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c],
+            ',' => [0x00, 0x00, 0x00, 0x00, 0x0c, 0x04, 0x08],
+            '!' => [0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04],
+            '?' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
+            '-' => [0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00],
+            '_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f],
+            '/' => [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],
+            ':' => [0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00],
+            '~' => [0x00, 0x00, 0x08, 0x15, 0x02, 0x00, 0x00],
+            ' ' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            _ => [0x1f, 0x11, 0x15, 0x15, 0x11, 0x11, 0x1f]
+        };
+
     private void DrawStatusBar(int index, int value, uint color)
     {
         int y0 = 8 + index * 8;
@@ -2480,6 +2899,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 return "kov2nl_301";
             if (names.Any(n => string.Equals(n, "kov2nl_v300fa.u7", StringComparison.OrdinalIgnoreCase)))
                 return "kov2nl_300";
+            if (names.Any(n => string.Equals(n, "ddpdoj_v201cn.u4", StringComparison.OrdinalIgnoreCase)))
+                return "ddpdojh";
         }
         catch
         {
@@ -2490,6 +2911,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     private static Pgm2AuxFileSpec GetAuxFileSpec(string driverName)
     {
+        if (driverName.StartsWith("ddpdoj", StringComparison.OrdinalIgnoreCase))
+            return new Pgm2AuxFileSpec("ddpdoj_igs036_china.rom", "ddpdojt_sram");
+
         if (driverName.EndsWith("cn", StringComparison.OrdinalIgnoreCase))
             return new Pgm2AuxFileSpec("gsyx_igs036_china.rom", "blank_gsyx_china.pg2", "ig-a3_sp.u37");
 
@@ -2508,6 +2932,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             "kov2nl_302cn" => "gsyx_v302cn.u7",
             "kov2nl_301cn" => "gsyx_v301cn.u7",
             "kov2nl_300cn" => "gsyx_v300cn.u7",
+            "ddpdojh" => "ddpdoj_v201cn.u4",
+            "ddpdojt" => "ddpdoj_v201cn.u4",
             _ => string.Empty
         };
 
@@ -2522,22 +2948,33 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             || string.Equals(name, "ig-a3_cgl.u18", StringComparison.OrdinalIgnoreCase)
             || string.Equals(name, "ig-a3_cgh.u26", StringComparison.OrdinalIgnoreCase)
             || string.Equals(name, "ig-a3_sp.u37", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_bgl.u23", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_bgh.u24", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_mapl0.u13", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_maph0.u15", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_spa0.u9", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_spb0.u18", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_wave0.u12", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdojt_sram", StringComparison.OrdinalIgnoreCase)
             || IsMemoryCardName(name);
 
     private static bool IsMainProgramName(string name)
-        => name.EndsWith(".u7", StringComparison.OrdinalIgnoreCase)
-            && (name.StartsWith("gsyx_", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("kov2nl_", StringComparison.OrdinalIgnoreCase));
+        => (name.EndsWith(".u7", StringComparison.OrdinalIgnoreCase)
+                && (name.StartsWith("gsyx_", StringComparison.OrdinalIgnoreCase)
+                    || name.StartsWith("kov2nl_", StringComparison.OrdinalIgnoreCase)))
+            || string.Equals(name, "ddpdoj_v201cn.u4", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsInternalRomName(string name)
         => name.EndsWith("_igs036_china.rom", StringComparison.OrdinalIgnoreCase)
             || name.EndsWith("_igs036_oversea.rom", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsTextRomName(string name)
-        => string.Equals(name, "ig-a3_text.u4", StringComparison.OrdinalIgnoreCase);
+        => string.Equals(name, "ig-a3_text.u4", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_text.u1", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSoundRomName(string name)
-        => string.Equals(name, "ig-a3_sp.u37", StringComparison.OrdinalIgnoreCase);
+        => string.Equals(name, "ig-a3_sp.u37", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "ddpdoj_wave0.u12", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsMemoryCardName(string name)
         => name.EndsWith(".pg2", StringComparison.OrdinalIgnoreCase);

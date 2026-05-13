@@ -11,6 +11,12 @@ public partial class PgmArm7Core
 		Cycles += 1 + Memory.WaitstatesSeq32[(Gprs[15] >> 24) & 0xF];
 
 		uint cond = opcode >> 28;
+		if ( cond == 0xF && ((opcode >> 25) & 7) == 5 )
+		{
+			ArmBranchExchangeImmediate( opcode );
+			return;
+		}
+
 		if ( cond != 0xE && !CheckCondition( cond ) )
 		{
 			Gprs[15] += 4;
@@ -195,6 +201,7 @@ public partial class PgmArm7Core
 			Gprs[rd] = result;
 			if ( rd == 15 )
 			{
+				SetPcInterworking( result );
 				if ( setFlags && PrivilegeMode != PrivilegeMode.User && PrivilegeMode != PrivilegeMode.System )
 				{
 					uint spsr = GetSpsr();
@@ -487,12 +494,14 @@ public partial class PgmArm7Core
 
 		if ( isLoad )
 		{
-			if ( byteTransfer )
-				Gprs[rd] = Memory.Load8( addr );
-			else
-				Gprs[rd] = ReadWordRotated( addr );
+			uint value = byteTransfer ? Memory.Load8( addr ) : ReadWordRotated( addr );
+			Gprs[rd] = value;
 
-			if ( rd == 15 ) _prefetchFlushed = true;
+			if ( rd == 15 )
+			{
+				SetPcInterworking( value );
+				_prefetchFlushed = true;
+			}
 		}
 		else
 		{
@@ -542,7 +551,7 @@ public partial class PgmArm7Core
 			uint origAddr = Gprs[rn];
 			if ( isLoad )
 			{
-				Gprs[15] = Memory.Load32( Gprs[rn] );
+				SetPcInterworking( Memory.Load32( Gprs[rn] ) );
 				_prefetchFlushed = true;
 			}
 			else
@@ -590,6 +599,7 @@ public partial class PgmArm7Core
 					Gprs[i] = value;
 				if ( i == 15 )
 				{
+					SetPcInterworking( value );
 					_prefetchFlushed = true;
 					if ( psr && PrivilegeMode != PrivilegeMode.User && PrivilegeMode != PrivilegeMode.System )
 					{
@@ -648,13 +658,32 @@ public partial class PgmArm7Core
 		_prefetchFlushed = true;
 	}
 
+	private void ArmBranchExchangeImmediate( uint opcode )
+	{
+		int offset = (int)(opcode & 0x00FFFFFF);
+		if ( (offset & 0x800000) != 0 )
+			offset |= unchecked((int)0xFF000000);
+		offset <<= 2;
+		offset |= (int)((opcode >> 23) & 2);
+
+		Gprs[14] = Gprs[15] - 4;
+		Gprs[15] = (uint)(Gprs[15] + offset);
+		ThumbMode = true;
+		_prefetchFlushed = true;
+	}
+
 	private void ArmBx( uint opcode )
 	{
 		uint rm = opcode & 0xF;
 		uint addr = Gprs[rm];
+		SetPcInterworking( addr );
+		_prefetchFlushed = true;
+	}
+
+	private void SetPcInterworking( uint addr )
+	{
 		ThumbMode = (addr & 1) != 0;
 		Gprs[15] = addr & ~1u;
-		_prefetchFlushed = true;
 	}
 
 	private void ArmSwi( uint opcode )
