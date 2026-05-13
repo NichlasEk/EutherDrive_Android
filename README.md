@@ -56,7 +56,7 @@ Sega 32X support is also improving and now boots and runs more titles than earli
 - SNES support includes multiple enhancement-chip paths and newer audio work
 - PC Engine CD requires a BIOS and remains an active compatibility area
 - PSX is integrated and working well in current testing, including support for `.sbi` data used by protected discs
-- N64 is wired into the frontend, but still needs significantly more work before it should be treated as usable
+- N64 is wired into the frontend through the Ryu64 integration. It is still early, but recent memory/core work is far enough for The Legend of Zelda: Ocarina of Time to begin booting rather than failing immediately
 
 ## Arcade Game Status
 Arcade support is currently driven by per-board adapters and known-good ROM set names rather than broad automatic MAME compatibility.
@@ -66,11 +66,16 @@ Arcade support is currently driven by per-board adapters and known-good ROM set 
 | CPS1 | `dino.zip` | Boots and plays through the dedicated CPS1 adapter path |
 | CPS2 | `ddsom.zip` | Boots through the dedicated CPS2 adapter path |
 | MAME-backed Technos | `xsleena.zip`, `xsleenaj.zip`, `solrwarr.zip`, `xsleenab.zip` | Xain'd Sleena boots through the MCS/MAME-backed arcade adapter with video, audio, savestates, and current headless performance work |
+| IGS PGM2 | `kov2nl.zip`, `kov2nl_301.zip`, `kov2nl_300.zip`, `kov2nl_302cn.zip`, `kov2nl_301cn.zip`, `kov2nl_300cn.zip` | Knights of Valour 2 New Legend boots and plays through the native PGM2 adapter path with decrypted program loading, graphics, input, memory-card support, and savestates |
 | Sega System 32 | `darkedge.zip` | Boots and plays with the current System 32 adapter; some game-specific video behavior remains imperfect |
 | Konami TMNT | `tmnt.zip`, `tmntu.zip`, `tmntj.zip`, `tmhta.zip`, `tmnt2p.zip`, `tmht2p.zip` | Boots and plays through the Konami TMNT adapter |
 | Konami TMNT2 | `tmnt2.zip` | Boots and plays with graphics, controls, savestates, and K053260/YM2151 audio wired up |
 | Konami Sunset Riders | `ssriders.zip` | Boots and renders through the TMNT2-style Konami hardware path; gameplay/savestate validation is still in progress |
 | Konami Mystic Warriors | `mystwarr.zip` | Boots and plays through the Konami GX/Pre-GX path with controls, corrected 5bpp tile colors, sprite rendering, K054539 music/voice audio, savestates, and recent tile-render performance work; remaining work is compatibility polish rather than initial bring-up |
+| Konami Metamorphic Force | `metamrph.zip` | Boots and plays through the Mystic Warriors-family Konami path with dedicated tile/sprite layout handling, controls, audio, and savestates |
+| Konami Violent Storm | `viostorm.zip` | Boots and plays through the Konami Pre-GX path with game-specific tile/sprite callbacks and priority handling |
+| Konami Wild West C.O.W.-Boys of Moo Mesa | `moomesa.zip` | Boots and plays through the Moo Mesa/Bucky hardware path with tilemaps, sprite DMA, priority mixing, protection, audio, and savestates wired up |
+| Konami Bucky O'Hare | `bucky.zip` | Boots and plays through the Moo Mesa/Bucky hardware path with card-select sprite priority handling, corrected layer/sprite ordering, audio, and savestates |
 
 ## Savestates
 Savestates are now a first-class feature in the project rather than a one-off debug path.
