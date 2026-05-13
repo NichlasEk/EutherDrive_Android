@@ -5666,6 +5666,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private int _lastMinY;
         [NonSerialized] private int _lastMaxX;
         [NonSerialized] private int _lastMaxY;
+        [NonSerialized] private bool _buckyCardSelectPriorityBypass;
         [NonSerialized] private bool _tmnt2CoordinateMode;
         [NonSerialized] private bool _mystwarrSpriteLayout;
         [NonSerialized] private bool _metamrphSpriteLayout;
@@ -5749,6 +5750,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _lastMinY = 0;
             _lastMaxX = 0;
             _lastMaxY = 0;
+            _buckyCardSelectPriorityBypass = false;
             SpriteColorBase = 0;
             PaletteMask = 0x07ff;
             _tmnt2CoordinateMode = false;
@@ -6185,13 +6187,49 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             ushort[] spriteRam = (_mystwarrSpriteLayout || _metamrphSpriteLayout) ? _ram : _buffer;
             Span<int> sorted = stackalloc int[SpriteCount];
             int sortedCount = BuildSortedSpriteList(sorted, spriteRam);
+            bool oldBuckyCardSelectPriorityBypass = _buckyCardSelectPriorityBypass;
+            _buckyCardSelectPriorityBypass = IsBuckyCardSelectSpriteList(spriteRam, sortedCount);
 
-            for (int sortedIndex = sortedCount - 1; sortedIndex >= 0; sortedIndex--)
+            try
             {
-                int offs = sorted[sortedIndex];
-                RenderSpriteObject(frameBuffer, palette, spriteRam, offs, sortedLayerPriorities, band, outputHeight, priorityBuffer,
-                    mystwarrPriority, k054338, -1, 0, -1, -1, startY, endY);
+                for (int sortedIndex = sortedCount - 1; sortedIndex >= 0; sortedIndex--)
+                {
+                    int offs = sorted[sortedIndex];
+                    RenderSpriteObject(frameBuffer, palette, spriteRam, offs, sortedLayerPriorities, band, outputHeight, priorityBuffer,
+                        mystwarrPriority, k054338, -1, 0, -1, -1, startY, endY);
+                }
             }
+            finally
+            {
+                _buckyCardSelectPriorityBypass = oldBuckyCardSelectPriorityBypass;
+            }
+        }
+
+        private bool IsBuckyCardSelectSpriteList(ushort[] spriteRam, int sortedCount)
+        {
+            if (!_buckySpriteLayout || sortedCount < 10 || sortedCount > 20 || spriteRam.Length < 4 * 8)
+                return false;
+
+            int cardY = spriteRam[2] & 0x03ff;
+            for (int i = 0; i < 4; i++)
+            {
+                int offs = i * 8;
+                int flags = spriteRam[offs];
+                if ((flags & 0x8000) == 0 || (flags & 0x0f00) != 0x0f00)
+                    return false;
+                if ((flags & 0x00ff) != i + 1)
+                    return false;
+                if ((spriteRam[offs + 2] & 0x03ff) != cardY)
+                    return false;
+                if (spriteRam[offs + 4] != 0x0040 || spriteRam[offs + 5] != 0x0040)
+                    return false;
+            }
+
+            int x0 = spriteRam[3] & 0x03ff;
+            int x1 = spriteRam[11] & 0x03ff;
+            int x2 = spriteRam[19] & 0x03ff;
+            int x3 = spriteRam[27] & 0x03ff;
+            return x1 - x0 == 0x60 && x2 - x1 == 0x60 && x3 - x2 == 0x60;
         }
 
         private void RenderSpriteObject(byte[] frameBuffer, ReadOnlySpan<ushort> palette, ushort[] spriteRam, int offs,
@@ -6676,7 +6714,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     {
                         byte priorityData = priorityBuffer[priorityOffset];
                         int priority = priorityData & 0x1f;
-                        bool masked = priority == 31 || (((1 << priority) & priorityMask) != 0);
+                        bool spriteOccupancyMasks = !_buckyCardSelectPriorityBypass;
+                        bool masked = (spriteOccupancyMasks && priority == 31) || (((1 << priority) & priorityMask) != 0);
                         if (nonGxShadowPen)
                         {
                             if ((priorityData & 0x80) == 0 && !masked)
@@ -6692,7 +6731,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                             priorityBuffer[priorityOffset] = 31;
                             continue;
                         }
-                        priorityBuffer[priorityOffset] = 31;
+                        if (spriteOccupancyMasks)
+                            priorityBuffer[priorityOffset] = 31;
                     }
                     else if (nonGxShadowPen)
                     {
