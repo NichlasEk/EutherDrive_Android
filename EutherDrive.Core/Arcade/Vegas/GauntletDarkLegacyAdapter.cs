@@ -351,9 +351,17 @@ internal sealed class MipsR5000Core
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU") == "1";
     private readonly ulong? _tracePcMin = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN");
     private readonly ulong? _tracePcMax = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX");
+    private readonly ulong? _traceRa = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_RA");
     private readonly int _traceInstructionLimit = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", int.MaxValue);
     private readonly int _stepBudget = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", 2048);
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
+    private readonly bool _enableFdSlotHandleFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE") == "1";
+    private readonly bool _enableRd0AsyncCallbackKick = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK") == "1";
+    private readonly bool _enableRd0SyncReadComplete = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RD0_SYNC_READ_COMPLETE") == "1";
+    private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
+    private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
+    private int _rd0AsyncCallbackKickCount;
+    private int _rd0SyncReadCompleteCount;
     private const ulong Cp0StatusWriteMask = 0xfffffffffe57ffffUL;
     private const ulong Cp0CauseSoftwareInterruptMask = 0x00000300UL;
     private const ulong Cp0StatusIe = 0x00000001UL;
@@ -425,9 +433,12 @@ internal sealed class MipsR5000Core
     private void Step()
     {
         ulong pc = Pc;
+        _memory.SetTraceCpuPc(pc);
         UpdateInterruptPendingBits();
         if (!_hasPendingBranch && TryEnterPendingInterrupt(pc))
             return;
+        TraceKnownRd0HomePc(pc);
+        ApplyKnownRd0SyncReadCompletion(pc);
         NormalizeKnownGlideFifoState(pc);
         if (TryFastPathKnownBootLoop(pc))
             return;
@@ -497,6 +508,11 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeEventPollWrapper(pc))
             return;
+        if (TryFastPathKnownRuntimeFdSlotToHandle(pc))
+            return;
+        if (TryKickKnownRd0AsyncCallback(pc))
+            return;
+        ApplyKnownRd0OpenStatusProbe(pc);
         if (TryFastPathKnownRuntimeReadDelayHelper(pc))
             return;
         if (TryFastPathKnownRuntimeEventStatusNoCallback(pc))
@@ -1700,6 +1716,321 @@ internal sealed class MipsR5000Core
         returnValue = 1;
         skippedInstructions += 20UL;
         return true;
+    }
+
+    private bool TryFastPathKnownRuntimeFdSlotToHandle(ulong pc)
+    {
+        const ulong entry = 0xffffffff80020b54UL;
+        const uint slotBase = 0x800a6170U;
+        const uint slotLimit = slotBase + 0xc00U;
+        const uint slotSize = 0x30U;
+
+        if (!_enableFdSlotHandleFastPath)
+            return false;
+        if (pc != entry)
+            return false;
+        if (_gpr[31] != 0xffffffff80021850UL || _gpr[18] != 0xffffffff800e7810UL)
+            return false;
+        if (!MatchesKnownRuntimeFdSlotToHandleSignature(entry))
+            return false;
+
+        uint slot = (uint)_gpr[4];
+        if (slot < slotBase || slot >= slotLimit)
+        {
+            _gpr[2] = SignExtend32(uint.MaxValue);
+        }
+        else
+        {
+            uint index = (slot - slotBase) / slotSize;
+            uint generation = _memory.Read32(SignExtend32(slot) + 0x14UL);
+            _gpr[2] = SignExtend32(index | generation);
+        }
+
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 12UL);
+        _instructionCounter += 12UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool MatchesKnownRuntimeFdSlotToHandleSignature(ulong entry)
+        => _memory.Read32(entry) == 0x10800008U &&
+           _memory.Read32(entry + 0x04) == 0x3c02800aU &&
+           _memory.Read32(entry + 0x08) == 0x24456170U &&
+           _memory.Read32(entry + 0x0c) == 0x0085102bU &&
+           _memory.Read32(entry + 0x10) == 0x14400004U &&
+           _memory.Read32(entry + 0x14) == 0x24a20c00U &&
+           _memory.Read32(entry + 0x18) == 0x0082102bU &&
+           _memory.Read32(entry + 0x1c) == 0x14400003U &&
+           _memory.Read32(entry + 0x20) == 0x3c03aaaaU &&
+           _memory.Read32(entry + 0x24) == 0x03e00008U &&
+           _memory.Read32(entry + 0x28) == 0x2402ffffU &&
+           _memory.Read32(entry + 0x2c) == 0x3463aaabU &&
+           _memory.Read32(entry + 0x30) == 0x00851023U &&
+           _memory.Read32(entry + 0x34) == 0x00430018U &&
+           _memory.Read32(entry + 0x38) == 0x8c830014U &&
+           _memory.Read32(entry + 0x3c) == 0x00003012U &&
+           _memory.Read32(entry + 0x40) == 0x00061103U &&
+           _memory.Read32(entry + 0x44) == 0x03e00008U &&
+           _memory.Read32(entry + 0x48) == 0x00431025U;
+
+    private void ApplyKnownRd0OpenStatusProbe(ulong pc)
+    {
+        if (!_forceRd0OpenStatus.HasValue)
+            return;
+        bool isFirstOpenPoll = pc == 0xffffffff80015a2cUL && _gpr[22] == 0xffffffff800e7810UL;
+        bool isFollowupOpenPoll = pc == 0xffffffff80022b88UL && _gpr[16] == 0xffffffff800e7810UL;
+        if (!isFirstOpenPoll && !isFollowupOpenPoll)
+            return;
+
+        const ulong rd0Object = 0xffffffff800e7810UL;
+        if (_memory.Read32(rd0Object + 0x0cUL) != 4 ||
+            _memory.Read32(rd0Object + 0x14UL) != 0)
+        {
+            return;
+        }
+
+        _memory.Write32(rd0Object + 0x14UL, (uint)_forceRd0OpenStatus.Value);
+    }
+
+    private bool TryKickKnownRd0AsyncCallback(ulong pc)
+    {
+        if (!_enableRd0AsyncCallbackKick)
+            return false;
+        if (_rd0AsyncCallbackKickCount >= 8)
+            return false;
+        if (!TryGetKnownRuntimeQioPollObject(pc, out ulong objectAddress, out ulong returnPc))
+            return false;
+
+        if (_memory.Read32(objectAddress + 0x0cUL) != 4 ||
+            _memory.Read32(objectAddress + 0x14UL) != 0)
+            return false;
+
+        uint objectPointer = (uint)objectAddress;
+        TraceKnownRuntimeQioCandidates(pc, objectAddress);
+        if (!TryFindKnownRuntimeQioCallback(objectAddress, objectPointer, out ulong qio, out ulong callback))
+            return false;
+
+        if (_traceRd0Home)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] kick pc={pc:x16} object={objectAddress:x16} qio={qio:x16} " +
+                $"cb={callback:x16} stage={_memory.Read32(qio + 0x24UL):x8} status={_memory.Read32(qio + 0x0cUL):x8} " +
+                $"buf={_memory.Read32(qio + 0x2cUL):x8} arg={_memory.Read32(qio + 0x30UL):x8}");
+        }
+
+        _rd0AsyncCallbackKickCount++;
+        _gpr[4] = qio;
+        _gpr[31] = returnPc;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = callback;
+        return true;
+    }
+
+    private bool TryGetKnownRuntimeQioPollObject(ulong pc, out ulong objectAddress, out ulong returnPc)
+    {
+        objectAddress = 0;
+        returnPc = 0;
+
+        if ((pc == 0xffffffff80015a2cUL || pc == 0xffffffff80015a30UL) &&
+            _gpr[22] != 0)
+        {
+            objectAddress = _gpr[22];
+            returnPc = 0xffffffff80015a2cUL;
+            return IsMainRamRange(objectAddress, 0x300);
+        }
+
+        if ((pc == 0xffffffff80022b88UL || pc == 0xffffffff80022b8cUL) &&
+            _gpr[16] != 0)
+        {
+            objectAddress = _gpr[16];
+            returnPc = 0xffffffff80022b88UL;
+            return IsMainRamRange(objectAddress, 0x300);
+        }
+
+        return false;
+    }
+
+    private void TraceKnownRd0HomePc(ulong pc)
+    {
+        if (!_traceRd0Home)
+            return;
+
+        string? label = pc switch
+        {
+            0xffffffff80015708UL => "fatal-print",
+            0xffffffff800157c8UL => "first-open-error",
+            0xffffffff80015804UL => "first-getioq-error",
+            0xffffffff80015858UL => "first-no-valid-home-blocks",
+            0xffffffff800159b8UL => "second-open-error",
+            0xffffffff800159f8UL => "second-getioq-error",
+            0xffffffff80015a48UL => "second-unable-get-home-blocks",
+            0xffffffff80015aacUL => "home-block-version-mismatch",
+            0xffffffff80015cb0UL => "no-boot-file",
+            0xffffffff80015eacUL => "boot-open-error",
+            _ => null
+        };
+        if (label is null)
+            return;
+
+        string detail = pc == 0xffffffff80015708UL
+            ? $" msg=\"{ReadAsciiTraceString(_gpr[5], 96)}\""
+            : "";
+        Console.WriteLine(
+            $"[GAUNTDL:RD0] panic-site {label} pc={pc:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
+            $"a2={_gpr[6]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} " +
+            $"s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s4={_gpr[20]:x16} " +
+            $"s6={_gpr[22]:x16} ra={_gpr[31]:x16}{detail}");
+    }
+
+    private string ReadAsciiTraceString(ulong address, int maxLength)
+    {
+        if (!IsMainRamRange(address, 1) && (address & 0xffffffffe0000000UL) != 0xffffffff80000000UL)
+            return "";
+
+        Span<char> buffer = maxLength <= 256 ? stackalloc char[maxLength] : new char[maxLength];
+        int length = 0;
+        for (; length < buffer.Length; length++)
+        {
+            byte value = _memory.Read8(address + (uint)length);
+            if (value == 0)
+                break;
+            buffer[length] = value is >= 0x20 and <= 0x7e ? (char)value : '.';
+        }
+
+        return new string(buffer[..length]);
+    }
+
+    private void TraceKnownRuntimeQioCandidates(ulong pc, ulong objectAddress)
+    {
+        if (!_traceRd0Home)
+            return;
+
+        Console.WriteLine(
+            $"[GAUNTDL:RD0] poll pc={pc:x16} object={objectAddress:x16} " +
+            $"obj0c={_memory.Read32(objectAddress + 0x0cUL):x8} obj14={_memory.Read32(objectAddress + 0x14UL):x8}");
+
+        for (ulong offset = 0x70; offset < 0x300; offset += 0x70)
+        {
+            ulong candidate = objectAddress + offset;
+            if (!IsMainRamRange(candidate, 0x40))
+                continue;
+
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] qio+{offset:x3} cb={_memory.Read32(candidate + 0x1cUL):x8} " +
+                $"owner={_memory.Read32(candidate + 0x20UL):x8} stage={_memory.Read32(candidate + 0x24UL):x8} " +
+                $"status={_memory.Read32(candidate + 0x0cUL):x8} next={_memory.Read32(candidate + 0x08UL):x8} " +
+                $"buf={_memory.Read32(candidate + 0x2cUL):x8} arg={_memory.Read32(candidate + 0x30UL):x8}");
+        }
+    }
+
+    private bool TryFindKnownRuntimeQioCallback(
+        ulong objectAddress,
+        uint objectPointer,
+        out ulong qio,
+        out ulong callback)
+    {
+        qio = 0;
+        callback = 0;
+
+        for (ulong offset = 0x70; offset < 0x300; offset += 0x70)
+        {
+            ulong candidate = objectAddress + offset;
+            if (!IsMainRamRange(candidate, 0x40))
+                continue;
+            uint stage = _memory.Read32(candidate + 0x24UL);
+            if (_memory.Read32(candidate + 0x20UL) != objectPointer ||
+                stage is 0 or >= 4)
+            {
+                continue;
+            }
+
+            uint callbackPointer = _memory.Read32(candidate + 0x1cUL);
+            ulong callbackAddress = SignExtend32(callbackPointer);
+            if (callbackPointer == 0x80029230U && MatchesKnownRd0OpenCallbackSignature(callbackAddress))
+            {
+                qio = candidate;
+                callback = callbackAddress;
+                return true;
+            }
+        }
+
+        for (ulong offset = 0x70; offset < 0x300; offset += 0x70)
+        {
+            ulong candidate = objectAddress + offset;
+            if (!IsMainRamRange(candidate, 0x40))
+                continue;
+            if (_memory.Read32(candidate + 0x20UL) != objectPointer)
+                continue;
+
+            uint callbackPointer = _memory.Read32(candidate + 0x1cUL);
+            ulong callbackAddress = SignExtend32(callbackPointer);
+            if (callbackPointer == 0x800325a0U && MatchesKnownRd0FinalCallbackSignature(callbackAddress))
+            {
+                qio = candidate;
+                callback = callbackAddress;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool MatchesKnownRd0OpenCallbackSignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdffc8U &&
+           _memory.Read32(entry + 0x04) == 0xafb10014U &&
+           _memory.Read32(entry + 0x08) == 0x0080882dU &&
+           _memory.Read32(entry + 0x0c) == 0x3c028009U &&
+           _memory.Read32(entry + 0x48) == 0xafb00010U &&
+           _memory.Read32(entry + 0x4c) == 0x8e320020U &&
+           _memory.Read32(entry + 0x60) == 0xae200014U &&
+           _memory.Read32(entry + 0xf0) == 0x0800a4a5U &&
+           _memory.Read32(entry + 0xf8) == 0x24020002U &&
+           _memory.Read32(entry + 0x100) == 0xae220024U;
+
+    private bool MatchesKnownRd0FinalCallbackSignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdffe8U &&
+           _memory.Read32(entry + 0x04) == 0xafbf0014U &&
+           _memory.Read32(entry + 0x08) == 0xafb00010U &&
+           _memory.Read32(entry + 0x0c) == 0x8c900020U &&
+           _memory.Read32(entry + 0x10) == 0x8c820018U &&
+           _memory.Read32(entry + 0x20) == 0x0c0082bfU &&
+           _memory.Read32(entry + 0x28) == 0x10400005U &&
+           _memory.Read32(entry + 0x40) == 0x2402ffffU &&
+           _memory.Read32(entry + 0x44) == 0xac82000cU &&
+           _memory.Read32(entry + 0x48) == 0x24023500U &&
+           _memory.Read32(entry + 0x4c) == 0xac820014U;
+
+    private void ApplyKnownRd0SyncReadCompletion(ulong pc)
+    {
+        const ulong readReturnPc = 0xffffffff80029350UL;
+        const ulong rd0Object = 0xffffffff800e7810UL;
+        const ulong rd0Child = 0xffffffff800e7880UL;
+        const ulong homeSectorBuffer = 0xffffffff800f41e0UL;
+        const uint successStatus = 0x3500U;
+
+        if (!_enableRd0SyncReadComplete || _rd0SyncReadCompleteCount != 0 || pc != readReturnPc)
+            return;
+        if (_gpr[2] != 0 ||
+            _gpr[17] != rd0Child ||
+            _gpr[18] != rd0Object ||
+            _gpr[31] != readReturnPc)
+        {
+            return;
+        }
+        if (_memory.Read32(rd0Object + 0x14UL) != 0 ||
+            _memory.Read32(rd0Child + 0x24UL) != 2 ||
+            _memory.Read32(homeSectorBuffer) != 0xfeedf00dU)
+        {
+            return;
+        }
+
+        _rd0SyncReadCompleteCount++;
+        _gpr[2] = SignExtend32(successStatus);
     }
 
     private bool MatchesKnownRuntimeEventPollWrapperSignature(ulong entry)
@@ -3256,6 +3587,8 @@ internal sealed class MipsR5000Core
             return false;
         if (_tracePcMax.HasValue && pc > _tracePcMax.Value)
             return false;
+        if (_traceRa.HasValue && _gpr[31] != _traceRa.Value)
+            return false;
         return true;
     }
 
@@ -3405,8 +3738,12 @@ internal sealed class VegasMemoryMap
     private readonly VegasIdePciDevice _idePci = new();
     private readonly VegasVoodooPciDevice _voodooPci = new();
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM") == "1";
+    private readonly bool _traceWritesOnly = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_WRITES_ONLY") == "1";
     private readonly string? _traceTargetFilter = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET");
-    private readonly ulong? _traceAddressFilter = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS"));
+    private readonly TraceAddressFilter[] _traceAddressFilters = ParseTraceAddressFilters(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS"));
+    private readonly bool _enableRd0DmaQioComplete = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE") == "1";
+    private readonly int _nileCpuIrqShift = ParseNileCpuIrqShift();
+    private ulong _traceCpuPc;
     private byte[] _mainBootRom = Array.Empty<byte>();
     private byte[] _securityPic = Array.Empty<byte>();
     private VegasSioDevice? _sio;
@@ -3463,6 +3800,30 @@ internal sealed class VegasMemoryMap
 
     public void LoadSecurityPic(byte[] securityPic) => _securityPic = securityPic.ToArray();
 
+    public void SetTraceCpuPc(ulong pc) => _traceCpuPc = pc;
+
+    public void TryCompleteKnownRd0DmaQio()
+    {
+        const ulong rd0Object = 0xffffffff800e7810UL;
+        const ulong rd0Child = 0xffffffff800e7880UL;
+        const ulong homeSectorBuffer = 0xffffffff800f41e0UL;
+
+        if (!_enableRd0DmaQioComplete)
+            return;
+        if (Read32(rd0Object + 0x0cUL) != 4 ||
+            Read32(rd0Object + 0x14UL) != 0 ||
+            Read32(rd0Child + 0x1cUL) != 0x80029230U ||
+            Read32(rd0Child + 0x20UL) != 0x800e7810U ||
+            Read32(rd0Child + 0x24UL) != 2 ||
+            Read32(homeSectorBuffer) != 0xfeedf00dU)
+        {
+            return;
+        }
+
+        Write32(rd0Object + 0x14UL, 0x3500U);
+        Write32(rd0Child + 0x24UL, 3);
+    }
+
     public void MarkIoasicUnlocked()
     {
         _ioasicShuffleActive = true;
@@ -3496,7 +3857,7 @@ internal sealed class VegasMemoryMap
     public ulong GetCpuInterruptPendingMask()
     {
         UpdateNileInterrupts();
-        return (ulong)_nileIrqPins << 10;
+        return (ulong)_nileIrqPins << _nileCpuIrqShift;
     }
 
     public void AdvanceNileClock(ulong ticks)
@@ -3875,7 +4236,7 @@ internal sealed class VegasMemoryMap
         switch (type)
         {
             case PciTypeIo:
-                _idePci.WriteIo8(pciAddress, value);
+                _idePci.WriteIo8(pciAddress, value, this);
                 break;
             case PciTypeMemory:
                 WritePciMemory8(pciAddress, value);
@@ -3896,7 +4257,7 @@ internal sealed class VegasMemoryMap
         switch (type)
         {
             case PciTypeIo:
-                _idePci.WriteIo16(pciAddress, value);
+                _idePci.WriteIo16(pciAddress, value, this);
                 break;
             case PciTypeMemory:
                 WritePciMemory8(pciAddress, (byte)value);
@@ -4816,26 +5177,28 @@ internal sealed class VegasMemoryMap
     {
         if (!_traceEnabled)
             return;
+        if (_traceWritesOnly && op.StartsWith("read", StringComparison.Ordinal))
+            return;
         if (!TraceAddressMatches(address))
             return;
         if (!TraceTargetMatches(target))
             return;
 
-        Console.WriteLine($"[GAUNTDL:MEM] {op} {address:x16} {value:x8} {target}");
+        Console.WriteLine($"[GAUNTDL:MEM] pc={_traceCpuPc:x16} {op} {address:x16} {value:x8} {target}");
     }
 
     private bool TraceAddressMatches(ulong address)
     {
-        if (!_traceAddressFilter.HasValue)
+        if (_traceAddressFilters.Length == 0)
             return true;
 
-        ulong filter = _traceAddressFilter.Value;
-        if (address == filter)
-            return true;
+        foreach (TraceAddressFilter filter in _traceAddressFilters)
+        {
+            if (filter.Matches(address))
+                return true;
+        }
 
-        return TryTranslatePhysical(address, out uint addressPhysical) &&
-            TryTranslatePhysical(filter, out uint filterPhysical) &&
-            addressPhysical == filterPhysical;
+        return false;
     }
 
     private bool TraceTargetMatches(string target)
@@ -4861,6 +5224,67 @@ internal sealed class VegasMemoryMap
         return ulong.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out ulong parsed)
             ? parsed
             : null;
+    }
+
+    private static TraceAddressFilter[] ParseTraceAddressFilters(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(ParseTraceAddressFilter)
+            .Where(filter => filter.HasValue)
+            .Select(filter => filter.Value)
+            .ToArray();
+    }
+
+    private static TraceAddressFilter? ParseTraceAddressFilter(string raw)
+    {
+        string[] parts = raw.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0 || !TryParseTraceHexUlong(parts[0], out ulong address))
+            return null;
+
+        ulong byteLength = 1;
+        if (parts.Length > 1 && ulong.TryParse(parts[1], out ulong parsedLength) && parsedLength > 0)
+            byteLength = parsedLength;
+
+        return new TraceAddressFilter(address, byteLength);
+    }
+
+    private static bool TryParseTraceHexUlong(string raw, out ulong parsed)
+    {
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw[2..];
+
+        return ulong.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out parsed);
+    }
+
+    private readonly record struct TraceAddressFilter(ulong Address, ulong ByteLength)
+    {
+        public bool HasValue => ByteLength != 0;
+
+        public bool Matches(ulong address)
+        {
+            if (!TryTranslatePhysical(address, out uint addressPhysical) ||
+                !TryTranslatePhysical(Address, out uint filterPhysical))
+            {
+                return address == Address;
+            }
+
+            ulong start = filterPhysical;
+            ulong end = start + ByteLength;
+            return addressPhysical >= start && addressPhysical < end;
+        }
+    }
+
+    private static int ParseNileCpuIrqShift()
+    {
+        string? rawShift = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_NILE_IRQ_SHIFT");
+        if (int.TryParse(rawShift, out int parsedShift) && parsedShift is >= 8 and <= 12)
+            return parsedShift;
+
+        return Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_NILE_IRQ_SHIFT8") == "1" ? 8 : 10;
     }
 }
 
@@ -5080,6 +5504,7 @@ internal sealed class VegasIdePciDevice
     private readonly byte[] _config = new byte[0x100];
     private readonly byte[] _busMaster = new byte[0x10];
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IDE") == "1";
+    private readonly bool _dmaSwap32 = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IDE_DMA_SWAP32") == "1";
     private IdeDiskDevice? _disk;
 
     public bool InterruptLine
@@ -5198,12 +5623,16 @@ internal sealed class VegasIdePciDevice
             (ReadIo8(address + 3) << 24));
     }
 
-    public void WriteIo8(uint address, byte value)
+    public void WriteIo8(uint address, byte value, VegasMemoryMap memory)
     {
         if (TryGetIdeRegister(address, out byte register))
         {
             if (register != 0)
+            {
                 _disk?.WriteRegister8(register, value);
+                if (register == 7)
+                    TryRunPrimaryReadDma(memory);
+            }
             return;
         }
 
@@ -5214,10 +5643,10 @@ internal sealed class VegasIdePciDevice
         }
 
         if (TryGetBusMasterOffset(address, out uint bmOffset))
-            _busMaster[bmOffset] = value;
+            WriteBusMaster8(bmOffset, value, memory);
     }
 
-    public void WriteIo16(uint address, ushort value)
+    public void WriteIo16(uint address, ushort value, VegasMemoryMap memory)
     {
         if (TryGetIdeRegister(address, out byte register) && register == 0)
         {
@@ -5225,8 +5654,8 @@ internal sealed class VegasIdePciDevice
             return;
         }
 
-        WriteIo8(address, (byte)value);
-        WriteIo8(address + 1, (byte)(value >> 8));
+        WriteIo8(address, (byte)value, memory);
+        WriteIo8(address + 1, (byte)(value >> 8), memory);
     }
 
     public void WriteIo32(uint address, uint value, VegasMemoryMap memory)
@@ -5244,10 +5673,30 @@ internal sealed class VegasIdePciDevice
             return;
         }
 
-        WriteIo8(address, (byte)value);
-        WriteIo8(address + 1, (byte)(value >> 8));
-        WriteIo8(address + 2, (byte)(value >> 16));
-        WriteIo8(address + 3, (byte)(value >> 24));
+        WriteIo8(address, (byte)value, memory);
+        WriteIo8(address + 1, (byte)(value >> 8), memory);
+        WriteIo8(address + 2, (byte)(value >> 16), memory);
+        WriteIo8(address + 3, (byte)(value >> 24), memory);
+    }
+
+    private void WriteBusMaster8(uint offset, byte value, VegasMemoryMap memory)
+    {
+        if (offset >= _busMaster.Length)
+            return;
+
+        if ((offset & 7) == 2)
+        {
+            byte keep = (byte)(BusMasterStatusInterrupt | 0x02);
+            _busMaster[offset] = (byte)((_busMaster[offset] & ~(value & keep)) | BusMasterStatusSimplex);
+        }
+        else
+        {
+            _busMaster[offset] = value;
+        }
+
+        Trace($"bmdma write8 off={offset:x2} value={value:x2}");
+        if ((offset & 7) == 0)
+            TryRunPrimaryReadDma(memory);
     }
 
     private void WriteBusMaster(uint offset, uint value, VegasMemoryMap memory)
@@ -5257,8 +5706,19 @@ internal sealed class VegasIdePciDevice
 
         BinaryPrimitives.WriteUInt32LittleEndian(_busMaster.AsSpan((int)offset, 4), value);
         Trace($"bmdma write off={offset:x2} value={value:x8}");
-        if ((offset & 7) == 0 && (value & BusMasterCommandStart) != 0 && (value & BusMasterCommandRead) != 0)
-            RunPrimaryReadDma(memory);
+        if ((offset & 7) == 0)
+            TryRunPrimaryReadDma(memory);
+    }
+
+    private void TryRunPrimaryReadDma(VegasMemoryMap memory)
+    {
+        byte command = _busMaster[0];
+        if ((command & BusMasterCommandStart) == 0 || (command & BusMasterCommandRead) == 0)
+            return;
+        if (_disk?.DmaTransferReady != true)
+            return;
+
+        RunPrimaryReadDma(memory);
     }
 
     private void RunPrimaryReadDma(VegasMemoryMap memory)
@@ -5277,6 +5737,8 @@ internal sealed class VegasIdePciDevice
                 byteCount = 0x10000;
 
             byte[] buffer = _disk.ReadTransferBytes(byteCount);
+            if (_dmaSwap32)
+                Swap32InPlace(buffer);
             memory.WritePciMemoryFromDevice(destination, buffer);
             copied += buffer.Length;
             if ((descriptor & 0x80000000u) != 0)
@@ -5286,11 +5748,18 @@ internal sealed class VegasIdePciDevice
         _busMaster[0] &= unchecked((byte)~BusMasterCommandStart);
         _busMaster[2] |= BusMasterStatusInterrupt;
         _disk.SignalInterrupt();
+        memory.TryCompleteKnownRd0DmaQio();
         Trace($"bmdma primary read copied={copied}");
     }
 
     private static uint ReadMainMemory32(VegasMemoryMap memory, uint address)
         => memory.ReadPciMemoryFromDevice32(address);
+
+    private static void Swap32InPlace(byte[] buffer)
+    {
+        for (int i = 0; i + 3 < buffer.Length; i += 4)
+            (buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3]) = (buffer[i + 3], buffer[i + 2], buffer[i + 1], buffer[i]);
+    }
 
     private void WriteBusMasterConfigWindow(uint offset, uint value)
     {
@@ -5380,6 +5849,7 @@ internal sealed class IdeDiskDevice
     public DiskGeometry Geometry => _image?.Geometry ?? DiskGeometry.Empty;
     public bool Attached => _image is not null;
     public bool InterruptLine => _interruptPending && (_deviceControl & 0x02) == 0;
+    public bool DmaTransferReady => (_status & StatusDrq) != 0 && _transferOffset < _transferBuffer.Length;
 
     public void Attach(string? imagePath)
     {

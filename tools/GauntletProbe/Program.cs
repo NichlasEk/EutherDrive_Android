@@ -108,6 +108,7 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CODE") == "1")
     DumpCode(GetProperty(machine, "MemoryMap"));
 DumpRequestedCodeRanges(GetProperty(machine, "MemoryMap"));
 DumpRequestedByteRanges(GetProperty(machine, "MemoryMap"));
+ScanRequestedPointers(GetProperty(machine, "MemoryMap"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
     ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
 
@@ -944,6 +945,43 @@ static void DumpRequestedByteRanges(object memory)
             bytes = parsedBytes;
         DumpBytes(memory, address, bytes);
     }
+}
+
+static void ScanRequestedPointers(object memory)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_POINTERS");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    uint[] needles = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(item => TryParseHexUlong(item, out ulong parsed) ? (uint)parsed : 0u)
+        .Where(item => item != 0)
+        .Distinct()
+        .ToArray();
+    if (needles.Length == 0)
+        return;
+
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    var lookup = needles.ToHashSet();
+    Console.WriteLine("pointerScan needles=" + string.Join(",", needles.Select(item => $"0x{item:x8}")));
+
+    int matches = 0;
+    for (int offset = 0; offset + 3 < mainRam.Length; offset += 4)
+    {
+        uint value = BitConverter.ToUInt32(mainRam, offset);
+        if (!lookup.Contains(value))
+            continue;
+
+        Console.WriteLine($" pointer 0xffffffff{0x80000000u + (uint)offset:x8} -> 0x{value:x8}");
+        matches++;
+        if (matches >= 256)
+        {
+            Console.WriteLine(" pointerScan truncated=256");
+            break;
+        }
+    }
+
+    Console.WriteLine($"pointerScan matches={matches}");
 }
 
 static bool TryParseHexUlong(string value, out ulong parsed)

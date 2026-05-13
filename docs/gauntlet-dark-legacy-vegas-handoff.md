@@ -1823,3 +1823,264 @@ Next useful implementation target:
 1. Trace who consumes the QIO free list before `/rd0` and why those entries are not returned.
 2. Inspect the completion paths around `0x800146c0..0x80014814` and the queue nodes rooted at `0x800b2dd8/0x800b2dcc`.
 3. Only after `/rd0` gets a valid handle should disk-sector/home-block parsing be expected to run.
+
+## 2026-05-12 QIO Trace Correction
+
+Added faster probe/trace support:
+
+- Memory trace lines now include the current CPU PC.
+- `EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS` accepts comma-separated addresses and `address:length` ranges.
+- `GauntletProbe` can scan main RAM pointers with `EUTHERDRIVE_GAUNTDL_SCAN_POINTERS`.
+
+Important correction to the previous QIO hypothesis:
+
+- `0x800b2dd8` is not the QIO free list. It is the temporary "current QIO" global used while callback dispatch runs.
+- Dispatch at `0x80014698..0x800146c8` loads the current-QIO field pointer from the event record, saves the old value, writes the event's current-QIO value, calls the callback, then restores the saved value.
+- For the failing `/rd0` callback, event record `0x800e7840` has callback `0x80032504`, argument `0x800e7810`, but its current-QIO field is zero. Therefore `qio_getioq` correctly reports no current IOQ for that callback rather than showing a consumed freelist.
+
+The failing path is now pinned down:
+
+```text
+0x800e7810 = /rd0 object
+  +0x0c = 0xffffffff
+  +0x14 = 0x0000300b
+  +0x64 = 0x80089618 -> "/rd0"
+
+0x80032504 callback:
+  calls fd lookup with +0x0c == -1
+  writes status 0x3500
+
+0x80029470 path:
+  reads +0x0c == -1
+  writes final status 0x300b at pc=0x800294b4
+```
+
+Pointer scan result at frame 500:
+
+```text
+pointerScan needles=0x80089618,0x80089634,0x800a6da4,0x800e7810,0x800e7880,0xa40001f0
+pointer 0xffffffff800e7864 -> 0x80089618
+pointer 0xffffffff800a6da4 -> 0x800e7880
+pointer 0xffffffff800a6df8 -> 0xa40001f0
+pointerScan matches=44
+```
+
+No pointer to the literal `/d0` string (`0x80089634`) appears in RAM at the fatal state. IDE tracing from cold boot still shows only IDENTIFY and SET FEATURES, with no sector reads or DMA before the failure. The next target is the raw-disk/open plumbing that should give `/rd0` a valid lower handle before `0x80032504`, not ATA sector transfer yet.
+
+## 2026-05-12 FD Slot Helper Finding
+
+The actual bad write to the `/rd0` object's handle is now narrower:
+
+```text
+generic open 0x80021774..0x80021868
+  0x800217bc writes object +0x0c = -1 as an initial value
+  0x8002182c calls fd-slot allocator 0x80020f0c
+  0x80021848 calls fd-slot-to-handle helper 0x80020b54
+  0x80021854 stores helper return into object +0x0c
+```
+
+Trace with `EUTHERDRIVE_GAUNTDL_TRACE_CPU_RA=0xffffffff80021850` showed valid slot pointers such as `0xffffffff800a6170`, `0xffffffff800a61a0`, and `0xffffffff800a61d0` entering `0x80020b54`, but the helper returned `-1`. The helper builds its range constants as zero-extended `0x00000000800a6170..0x00000000800a6d70`, while the allocator returns sign-extended pointers, so its two `sltu` checks reject valid slots.
+
+Global CPU changes were tested and rejected:
+
+- Sign-extending `lui` broke cold boot in the boot ROM.
+- Making all `slt/sltu/slti/sltiu` word-sized broke early runtime init at `0x80022f24`.
+- Sign-extending `addi/addiu` results broke cold boot at `0xffffffff81000000`.
+
+Current code therefore includes an experimental, signature-checked fast path for just `0x80020b54`, returning `(slot - 0x800a6170) / 0x30 | *(slot + 0x14)` for valid slots and `-1` outside the fd table. It is gated behind `EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1`.
+
+## 2026-05-12 FD Slot Validation and QIO Completion Blocker
+
+The fd-slot helper fast path was narrowed to the `/rd0` generic-open call site:
+
+```text
+pc=0xffffffff80020b54
+ra=0xffffffff80021850
+s2=0xffffffff800e7810
+slotSize=0x30
+```
+
+This keeps early init stable. With `EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000`, a cold 500-frame run has Voodoo init alive both with and without the flag:
+
+```text
+default:
+  pc=0xffffffff80015788
+  voodoo regs=14086 fifoPackets=4464 fastFills=284 swaps=568
+  /rd0 +0x0c = 0xffffffff
+  /rd0 +0x14 = 0x0000300b
+
+EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1:
+  pc=0xffffffff80015a30
+  voodoo regs=14049 fifoPackets=4448 fastFills=283 swaps=566
+  /rd0 +0x0c = 0x00000004
+  /rd0 +0x14 = 0x00000000
+```
+
+With the raw sidecar enabled, the fd fix reaches real IDE DMA for the first time in this path:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw
+EUTHERDRIVE_GAUNTDL_TRACE_IDE=1
+
+[GAUNTDL:IDE] write r7=c8
+[GAUNTDL:IDE] read sectors lba=1 count=1
+```
+
+Without the raw sidecar the same command fails at the existing CHD limitation:
+
+```text
+command c8 failed: Compressed CHD sector reads are not ported yet.
+```
+
+The new blocker is QIO/asynchronous completion rather than ATA command issue. After the DMA, the guest waits at:
+
+```text
+0x80015a2c: lw a2,0x14(s6)
+0x80015a30: beqz a2,0x80015a2c
+s6=0xffffffff800e7810
+```
+
+Trace shows the status field being written and then cleared:
+
+```text
+pc=0xffffffff80032544 write32 0xffffffff800e7824 0x00003500
+pc=0xffffffff8002953c write32 0xffffffff800e7824 0x00000000
+```
+
+`0x8002953c` builds a child QIO object and installs callback `0x80029230`; the child and follow-up objects remain pending:
+
+```text
+0x800e7880:
+  +0x1c = 0x80029230
+  +0x20 = 0x800e7810
+  +0x24 = 0x00000002
+
+0x800e7960:
+  +0x1c = 0x80029230
+  +0x20 = 0x800e7810
+  +0x24 = 0x00000002
+```
+
+An experimental probe-only status override was added:
+
+```text
+EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS=0x3500
+```
+
+It only writes `/rd0 +0x14` at the known `/rd0` poll PCs (`0x80015a2c` and `0x80022b88`). This is not a real fix. It confirms the missing completion diagnosis:
+
+```text
+fd fix + raw disk:
+  frame=600 pc=0xffffffff80015a2c
+
+fd fix + raw disk + forced /rd0 status:
+  frame=900 pc=0xffffffff80015788
+  frame=1800 pc=0xffffffff80015788
+```
+
+The forced status gets past the two `/rd0` wait loops but does not rejoin the previous large FIFO path; Voodoo remains at the small init counters (`fifoPackets=4464`, `drawPackets=0`). Next useful target is therefore a real QIO completion model for the `0x80029230` / `0x800322c0` async chain, not another scalar status poke.
+
+Also tested `EUTHERDRIVE_GAUNTDL_NILE_IRQ_SHIFT8=1`, which maps NILE vectors from CP0 IP bit 8 instead of bit 10. It changes pending Cause from `0xa000` to `0x8800` in this state but does not complete the QIO chain, so it remains an experiment and should not be enabled by default.
+
+## 2026-05-12 BMDMA Byte Start and Callback Chain
+
+The IDE blocker after the fd-slot fix was not ATA command issue; the guest programmed the bus-master command register one byte at a time:
+
+```text
+bmdma write8 off=00 value=08
+bmdma write off=04 value=000a6e30
+bmdma write8 off=00 value=09
+write r7=c8
+read sectors lba=1 count=1
+```
+
+`VegasIdePciDevice` now routes 8/16-bit PCI I/O writes through the bus-master register logic and attempts DMA both when the command byte starts and when ATA command `0xc8` creates DRQ. With:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw
+```
+
+the first sector now copies into the guest buffer:
+
+```text
+[GAUNTDL:IDE] read sectors lba=1 count=1
+[GAUNTDL:IDE] dma transfer bytes=512
+[GAUNTDL:IDEPCI] bmdma primary read copied=512
+
+bytes[0xffffffff800f41e0]:
+  0d f0 ed fe 05 00 01 00 ...
+```
+
+A gated `EUTHERDRIVE_GAUNTDL_IDE_DMA_SWAP32=1` experiment proves the byte order can be changed to `fe ed f0 0d`, but that is not the correct path for the current emulated MIPS memory reads: it prevents the existing QIO completion probe from recognizing the sector. Leave it off.
+
+The remaining blocker is the async completion path from IDE interrupt to QIO callbacks. Two gated probes document the missing chain:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1
+  after DMA, marks the first /rd0 child QIO complete enough to leave 0x80015a2c
+
+EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1
+  kicks the follow-up callbacks at 0x80029230 / 0x800325a0 under signature checks
+```
+
+With both probes enabled, `/rd0` reaches the same final state as the old scalar status poke, but through guest callbacks:
+
+```text
+frame=1800
+pc=0xffffffff80015784
+/rd0 +0x0c = 0xffffffff
+/rd0 +0x14 = 0x00003500
+voodoo fifoPackets=4464 drawPackets=0
+```
+
+This proves:
+
+- BMDMA sector transfer is now real.
+- The first and second `/rd0` wait loops can be crossed without `EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS`.
+- Still no further IDE commands are issued after the home-sector open completes, and Voodoo remains in the init/fill-only state.
+
+Re-testing `EUTHERDRIVE_GAUNTDL_NILE_IRQ_SHIFT=8`, `9`, and `11` after the BMDMA fix still leaves the guest at `0x80015a2c`; the IRQ bit position is not sufficient. The next real implementation target is a generalized IDE interrupt / event dispatch model that runs the queued QIO callback chain instead of the current `/rd0`-specific kicks.
+
+## 2026-05-13 `/rd0` Callback Ordering Pass
+
+The `/rd0` async probe was choosing the final callback (`0x800325a0`) before the active open/read callback (`0x80029230`). A new env-gated trace was added:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME=1
+```
+
+It logs `/rd0` poll candidates, callback kicks, and the fatal print message at `0x80015708`.
+
+The trace showed this candidate set at the second `/rd0` poll:
+
+```text
+qio+0e0 cb=800325a0 owner=800e7810 stage=0
+qio+150 cb=80029230 owner=800e7810 stage=3 buf=80104008
+```
+
+The `0x80029230` signature offsets were corrected, and callback selection now runs that active stage-3 QIO first, then lets finalization run after it reaches stage 4. This removes the premature final-callback ordering bug.
+
+Verified build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj --no-restore /clp:ErrorsOnly
+Build succeeded. 383 Warning(s), 0 Error(s)
+```
+
+Current probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1
+EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1
+EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1
+EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME=1
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw
+
+frame=500
+pc=0xffffffff80015784
+msg="No boot file on volume"
+```
+
+This is forward progress in diagnosis: the home-block failure is gone, and the fatal text is now the next filesystem phase. IDE trace still shows only one physical read (`READ DMA`, LBA 1, count 1). The raw disk does contain game/boot file strings such as `worlds.rom`, so the next implementation target is still the real post-home-block QIO/IDE read dispatch, not Voodoo and not byte-swapping.
