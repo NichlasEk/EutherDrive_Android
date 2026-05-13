@@ -1758,6 +1758,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     WriteK053251((int)((address - 0x0cc000) >> 1), value);
                 return;
             }
+            if (address >= 0x0ce000 && address <= 0x0ce01f)
+            {
+                int offset = (int)((address - 0x0ce000) >> 1) & 0x0f;
+                ushort protWord = _moomesaProtRam[offset];
+                WriteWordByte(ref protWord, address, value);
+                WriteMoomesaProtection(offset, protWord);
+                return;
+            }
             if (address >= 0x0d0000 && address <= 0x0d001f)
             {
                 if ((address & 1) != 0)
@@ -1921,6 +1929,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             {
                 if ((address & 1) != 0)
                     WriteK053251((int)((address - 0x0cc000) >> 1), value);
+                return;
+            }
+            if (address >= 0x0ce000 && address <= 0x0ce01f)
+            {
+                int offset = (int)((address - 0x0ce000) >> 1) & 0x0f;
+                ushort protWord = _moomesaProtRam[offset];
+                WriteWordByte(ref protWord, address, value);
+                WriteMoomesaProtection(offset, protWord);
                 return;
             }
             if (address >= 0x0d0000 && address <= 0x0d001f)
@@ -2145,39 +2161,20 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         private void BuckyObjectDma()
         {
             int destination = 0;
-            for (int source = 0; source <= _moomesaSpriteRam.Length - 16 && destination < 256 * 8; source += 0x10)
+            for (int i = 0; i < 256 && destination < 256 * 8; i++)
             {
+                int source = i * 0x100;
                 ushort flags = ReadBigEndianWord(_moomesaSpriteRam, source);
                 if ((flags & 0x8000) == 0 || (flags & 0x00ff) == 0 || IsAllOnesSpriteEntry(_moomesaSpriteRam, source))
                     continue;
 
-                _k053245.WriteHardwareWord(destination, flags);
-                bool swapPayloadBytes = ShouldSwapBuckySpritePayload(source);
-                for (int word = 1; word < 8; word++)
-                {
-                    ushort value = ReadBigEndianWord(_moomesaSpriteRam, source + word * 2);
-                    if (swapPayloadBytes)
-                        value = (ushort)((value << 8) | (value >> 8));
-                    _k053245.WriteHardwareWord(destination + word, value);
-                }
+                for (int word = 0; word < 8; word++)
+                    _k053245.WriteHardwareWord(destination + word, ReadBigEndianWord(_moomesaSpriteRam, source + word * 2));
                 destination += 8;
             }
             for (; destination < 256 * 8; destination++)
                 _k053245.WriteHardwareWord(destination, 0);
             _k053245.BufferSprites();
-        }
-
-        private bool ShouldSwapBuckySpritePayload(int source)
-        {
-            ushort zoomY = ReadBigEndianWord(_moomesaSpriteRam, source + 8);
-            ushort zoomX = ReadBigEndianWord(_moomesaSpriteRam, source + 10);
-            if ((zoomY > 1 && zoomX > 1) || zoomY == 0 || zoomX == 0)
-                return false;
-
-            ushort swappedZoomY = (ushort)((zoomY << 8) | (zoomY >> 8));
-            ushort swappedZoomX = (ushort)((zoomX << 8) | (zoomX >> 8));
-            return swappedZoomY is >= 0x20 and <= 0x400
-                && swappedZoomX is >= 0x20 and <= 0x400;
         }
 
         private static bool IsAllOnesSpriteEntry(byte[] spriteRam, int source)
@@ -4711,7 +4708,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (int page = 0; page < pageBelongsToLayer.Length; page++)
                 pageBelongsToLayer[page] = LayerAssociationEnabled()
                     ? AssociatedLayerForPage(page) == layer
-                    : PageMappedByAnyLayer(page);
+                    : PageMappedByLayer(page, layer);
 
             for (int py = 0; py < FrameHeight; py++)
             {
@@ -5156,22 +5153,19 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             return true;
         }
 
-        private bool PageMappedByAnyLayer(int page)
+        private bool PageMappedByLayer(int page, int layer)
         {
-            for (int layer = 0; layer < 4; layer++)
+            int rowStart = (_regs[0x08 + layer] >> 3) & 3;
+            int rowSpan = (_regs[0x08 + layer] & 3) + 1;
+            int colStart = (_regs[0x0c + layer] >> 3) & 3;
+            int colSpan = (_regs[0x0c + layer] & 3) + 1;
+            for (int row = 0; row < rowSpan; row++)
             {
-                int rowStart = (_regs[0x08 + layer] >> 3) & 3;
-                int rowSpan = (_regs[0x08 + layer] & 3) + 1;
-                int colStart = (_regs[0x0c + layer] >> 3) & 3;
-                int colSpan = (_regs[0x0c + layer] & 3) + 1;
-                for (int row = 0; row < rowSpan; row++)
+                for (int col = 0; col < colSpan; col++)
                 {
-                    for (int col = 0; col < colSpan; col++)
-                    {
-                        int candidate = (((rowStart + row) & 3) << 2) | ((colStart + col) & 3);
-                        if (candidate == page)
-                            return true;
-                    }
+                    int candidate = (((rowStart + row) & 3) << 2) | ((colStart + col) & 3);
+                    if (candidate == page)
+                        return true;
                 }
             }
             return false;
@@ -5728,6 +5722,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public bool ObjectIrqEnabled => (_regs[5] & 0x10) != 0;
 
+        private int K053247OpSet => _objRegs[6];
+
         public void Load(byte[] rom)
         {
             Array.Clear(_rom);
@@ -5763,7 +5759,14 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             _normalPlaneSpriteDecode = false;
         }
 
-        private int ActiveSpriteCount => (_mystwarrSpriteLayout || _metamrphSpriteLayout || _normalPlaneSpriteDecode) ? SpriteCount : LegacySpriteCount;
+        private bool UsesK053247SpriteLayout
+            => _mystwarrSpriteLayout
+               || _metamrphSpriteLayout
+               || _viostormSpriteLayout
+               || _buckySpriteLayout
+               || _normalPlaneSpriteDecode;
+
+        private int ActiveSpriteCount => UsesK053247SpriteLayout ? SpriteCount : LegacySpriteCount;
 
         public void BufferSprites() => Array.Copy(_ram, _buffer, _ram.Length);
 
@@ -6153,7 +6156,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
 
         public void RenderMystwarrObject(byte[] frameBuffer, ReadOnlySpan<ushort> palette, int spriteOffset, int drawMode, int shadowMode, int zcode, int priority, K054338 k054338)
         {
-            RenderSpriteObject(frameBuffer, palette, _ram, spriteOffset, default, -1, FrameHeight, null, -1, k054338, drawMode, shadowMode, zcode, priority);
+            RenderSpriteObject(frameBuffer, palette, _ram, spriteOffset, default, -1, FrameHeight, null,
+                -1, k054338, drawMode, shadowMode, zcode, priority);
         }
 
         public void FinishMystwarrRenderFrameStats() => FinishRenderFrameStats();
@@ -6185,7 +6189,8 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             for (int sortedIndex = sortedCount - 1; sortedIndex >= 0; sortedIndex--)
             {
                 int offs = sorted[sortedIndex];
-                RenderSpriteObject(frameBuffer, palette, spriteRam, offs, sortedLayerPriorities, band, outputHeight, priorityBuffer, mystwarrPriority, k054338, -1, 0, -1, -1, startY, endY);
+                RenderSpriteObject(frameBuffer, palette, spriteRam, offs, sortedLayerPriorities, band, outputHeight, priorityBuffer,
+                    mystwarrPriority, k054338, -1, 0, -1, -1, startY, endY);
             }
         }
 
@@ -6197,10 +6202,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 return;
 
             int code = spriteRam[offs + 1];
-            if (!_mystwarrSpriteLayout && !_metamrphSpriteLayout)
+            bool k053247Layout = UsesK053247SpriteLayout;
+            if (!k053247Layout)
                 code = (code & 0xffe1) + ((code & 0x0010) >> 2) + ((code & 0x0008) << 1) + ((code & 0x0004) >> 1) + ((code & 0x0002) << 2);
             int rawColorWord = spriteRam[offs + 6];
-            int rawColor = (_mystwarrSpriteLayout || _metamrphSpriteLayout) ? rawColorWord : rawColorWord & 0xff;
+            int rawColor = (_mystwarrSpriteLayout || _metamrphSpriteLayout || _normalPlaneSpriteDecode) ? rawColorWord : rawColorWord & 0xff;
             int callbackPriority = _metamrphSpriteLayout ? ((rawColor & 0xe0) >> 2) : (rawColor & 0xe0);
             if (mystwarrPriority >= 0 && callbackPriority != mystwarrPriority)
                 return;
@@ -6220,10 +6226,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int oy = bounds.Y;
             bool flipX = (spriteRam[offs] & 0x1000) != 0;
             bool flipY = (spriteRam[offs] & 0x2000) != 0;
-            bool gxLayout = _mystwarrSpriteLayout || _metamrphSpriteLayout;
-            bool mirrorX = (spriteRam[offs + 6] & (gxLayout ? 0x4000 : 0x0100)) != 0;
-            bool mirrorY = (spriteRam[offs + 6] & (gxLayout ? 0x8000 : 0x0200)) != 0;
-            bool shadow = !gxLayout && (spriteRam[offs + 6] & 0x0080) != 0;
+            bool gxMixerLayout = _mystwarrSpriteLayout || _metamrphSpriteLayout;
+            bool mirrorX = (spriteRam[offs + 6] & (k053247Layout ? 0x4000 : 0x0100)) != 0;
+            bool mirrorY = (spriteRam[offs + 6] & (k053247Layout ? 0x8000 : 0x0200)) != 0;
+            bool shadow = !gxMixerLayout && (_buckySpriteLayout
+                ? (spriteRam[offs + 6] & 0x0c00) != 0
+                : (spriteRam[offs + 6] & 0x0080) != 0);
             if (mirrorX)
                 flipX = false;
             if ((_regs[5] & 0x01) != 0 && !mirrorX) flipX = !flipX;
@@ -6250,8 +6258,9 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 {
                     int sx = ox + ((zoomX * x + (1 << 11)) >> 12);
                     int zw = Math.Max(1, ox + ((zoomX * (x + 1) + (1 << 11)) >> 12) - sx);
-                    int tile = SpriteTileCode(code, x, y, w, h, flipX, flipY, mirrorX, mirrorY, gxLayout, out bool tileFlipX, out bool tileFlipY);
-                    _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight, priorityBuffer, priorityMask, shadow, alpha, gxDrawMode, gxShadowMode, gxZCode, gxPriority, k054338, startY, endY);
+                    int tile = SpriteTileCode(code, x, y, w, h, flipX, flipY, mirrorX, mirrorY, k053247Layout, out bool tileFlipX, out bool tileFlipY);
+                    _lastDrawnPixels += DrawSpriteTile(frameBuffer, palette, tile, color, sx, sy, zw, zh, tileFlipX, tileFlipY, outputHeight,
+                        priorityBuffer, priorityMask, shadow, alpha, gxDrawMode, gxShadowMode, gxZCode, gxPriority, k054338, startY, endY);
                 }
             }
         }
@@ -6272,7 +6281,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
         {
             sorted.Fill(-1);
 
-            if (!_mystwarrSpriteLayout && !_metamrphSpriteLayout)
+            if (!UsesK053247SpriteLayout)
             {
                 int limit = Math.Min(spriteRam.Length, ActiveSpriteCount * 8);
                 for (int offs = 0; offs < limit; offs += 8)
@@ -6300,7 +6309,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                     sorted[count++] = offs;
             }
 
-            bool ascending = (_objRegs[6] & 0x0010) != 0;
+            bool ascending = (K053247OpSet & 0x0010) != 0;
             for (int y = 0; y < count - 1; y++)
             {
                 int offs = sorted[y];
@@ -6373,11 +6382,12 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int size = (spriteRam[offs] & 0x0f00) >> 8;
             int w = 1 << (size & 0x03);
             int h = 1 << ((size >> 2) & 0x03);
-            bool gxLayout = _mystwarrSpriteLayout || _metamrphSpriteLayout;
-            int rawZoomY = gxLayout ? spriteRam[offs + 4] & 0x03ff : spriteRam[offs + 4];
-            int rawZoomX = gxLayout ? spriteRam[offs + 5] & 0x03ff : spriteRam[offs + 5];
-            int zoomY = SpriteZoom((ushort)rawZoomY, cullZero: gxLayout);
-            int zoomX = (spriteRam[offs] & 0x4000) == 0 ? SpriteZoom((ushort)rawZoomX, cullZero: gxLayout) : zoomY;
+            bool k053247Layout = UsesK053247SpriteLayout;
+            bool cullZeroZoom = _mystwarrSpriteLayout || _metamrphSpriteLayout || _viostormSpriteLayout;
+            int rawZoomY = k053247Layout ? spriteRam[offs + 4] & 0x03ff : spriteRam[offs + 4];
+            int rawZoomX = k053247Layout ? spriteRam[offs + 5] & 0x03ff : spriteRam[offs + 5];
+            int zoomY = SpriteZoom((ushort)rawZoomY, cullZero: cullZeroZoom);
+            int zoomX = (spriteRam[offs] & 0x4000) == 0 ? SpriteZoom((ushort)rawZoomX, cullZero: cullZeroZoom) : zoomY;
             if (zoomX < 0 || zoomY < 0)
             {
                 bounds = default;
@@ -6388,11 +6398,11 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
             int spriteoffsY = (_regs[2] << 8) | _regs[3];
             bool flipScreenX = (_regs[5] & 0x01) != 0;
             bool flipScreenY = !Tmnt2CoordinateMode && (_regs[5] & 0x02) != 0;
-            bool mirrorX = (spriteRam[offs + 6] & (gxLayout ? 0x4000 : 0x0100)) != 0;
-            bool mirrorY = (spriteRam[offs + 6] & (gxLayout ? 0x8000 : 0x0200)) != 0;
+            bool mirrorX = (spriteRam[offs + 6] & (k053247Layout ? 0x4000 : 0x0100)) != 0;
+            bool mirrorY = (spriteRam[offs + 6] & (k053247Layout ? 0x8000 : 0x0200)) != 0;
 
             int rawY = spriteRam[offs + 2] & 0x03ff;
-            if (gxLayout)
+            if (k053247Layout)
             {
                 int offx = (short)((_regs[0] << 8) | _regs[1]);
                 int offy = (short)((_regs[2] << 8) | _regs[3]);
@@ -6401,7 +6411,7 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                 int wrapSize;
                 int xWrapLimit;
                 int yWrapLimit;
-                if ((_objRegs[6] & 0x0040) != 0)
+                if ((K053247OpSet & 0x0040) != 0)
                 {
                     wrapSize = 512;
                     xWrapLimit = 512 - 64;
@@ -6660,18 +6670,31 @@ public sealed class TmntAdapter : IEmulatorCore, ISavestateCapable
                             continue;
                         _mystwarrObjZBuffer[zOffset] = (byte)gxZCode;
                     }
+                    bool nonGxShadowPen = shadow && pen == 0x0f;
+                    int priorityOffset = py * FrameWidth + px;
                     if (priorityBuffer != null)
                     {
-                        int priorityOffset = py * FrameWidth + px;
-                        int priority = priorityBuffer[priorityOffset] & 0x1f;
-                        if (priority == 31 || (((1 << priority) & priorityMask) != 0))
+                        byte priorityData = priorityBuffer[priorityOffset];
+                        int priority = priorityData & 0x1f;
+                        bool masked = priority == 31 || (((1 << priority) & priorityMask) != 0);
+                        if (nonGxShadowPen)
+                        {
+                            if ((priorityData & 0x80) == 0 && !masked)
+                            {
+                                ApplyShadow(frameBuffer, px, py);
+                                priorityBuffer[priorityOffset] = (byte)(priorityData | 0x80);
+                                drawn++;
+                            }
+                            continue;
+                        }
+                        if (masked)
                         {
                             priorityBuffer[priorityOffset] = 31;
                             continue;
                         }
                         priorityBuffer[priorityOffset] = 31;
                     }
-                    if (shadow && pen == 0x0f)
+                    else if (nonGxShadowPen)
                     {
                         ApplyShadow(frameBuffer, px, py);
                         drawn++;
