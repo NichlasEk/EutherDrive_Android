@@ -44,6 +44,8 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_EXTENTS"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRdpPerspectiveTexture =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RDP_PERSPECTIVE_TEXTURE"), "0", StringComparison.Ordinal);
+        private static readonly bool EnableTexRectSolidFallback =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_TEXRECT_SOLID_FALLBACK"), "1", StringComparison.Ordinal);
         private static readonly bool EnableN64Perf =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PERF"), "1", StringComparison.Ordinal);
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
@@ -3442,7 +3444,8 @@ namespace Ryu64.MIPS
                 _traceRdpTexRectCount++;
             }
 
-            if (!DrawRdpTexturedRectangle(x0, y0, x1, y1, (int)((w1 >> 24) & 0x7u), w2, w3, command == 0x25, bytesPerPixel))
+            bool wrote = DrawRdpTexturedRectangle(x0, y0, x1, y1, (int)((w1 >> 24) & 0x7u), w2, w3, command == 0x25, bytesPerPixel);
+            if (!wrote && EnableTexRectSolidFallback)
                 DrawRdpSolidRectangle(x0, y0, x1, y1, SelectRdpSolidColor(), bytesPerPixel);
         }
 
