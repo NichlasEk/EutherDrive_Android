@@ -64,7 +64,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     private readonly mame.PgmArm7Core _cpu;
     private readonly byte[] _frameBuffer = new byte[Height * Stride];
-    private readonly short[] _audioSilence = new short[(int)(AudioRate / RefreshHz) * AudioChannels];
+    private readonly short[] _audioBuffer = new short[(int)(AudioRate / RefreshHz) * AudioChannels];
+    private readonly short[] _scaledAudioBuffer = new short[(int)(AudioRate / RefreshHz) * AudioChannels];
     private readonly byte[] _internalRom = new byte[0x4000];
     private readonly byte[] _mainRom = new byte[0x1000000];
     private readonly byte[] _mainRomEncrypted = new byte[0x1000000];
@@ -72,6 +73,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private readonly byte[] _bgTileRom = new byte[0x1000000];
     private readonly byte[] _spriteMaskRom = new byte[0x2000000];
     private readonly byte[] _spriteColorRom = new byte[0x4000000];
+    private readonly byte[] _ymzRom = new byte[0x2000000];
     private readonly byte[] _sram = new byte[0x10000];
     private readonly byte[] _mainRam = new byte[0x80000];
     private readonly byte[] _spriteVideoRam = new byte[0x2000];
@@ -88,7 +90,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private readonly bool[] _memoryCardAuthenticated = new bool[MemoryCardCount];
     private readonly byte[] _gpuRegs = new byte[0x40];
     private readonly byte[] _encryptionTable = new byte[0x100];
-    private readonly byte[] _ymzRegs = new byte[4];
+    private readonly Pgm2Ymz774 _ymz = new();
     private readonly uint[] _mcuRegs = new uint[8];
     private readonly uint[] _aicSourceModes = new uint[32];
     private readonly uint[] _aicSourceVectors = new uint[32];
@@ -127,6 +129,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private int _bgTileRomBytes;
     private int _spriteMaskRomBytes;
     private int _spriteColorRomBytes;
+    private int _ymzRomBytes;
+    private int _masterVolumePercent = 100;
     private int _mainRamWrites;
     private int _videoWrites;
     private int _paletteWrites;
@@ -184,7 +188,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     public string DebugSummary
         => !_loaded
             ? "not loaded"
-            : $"drv={_driverName} frame={_frameCounter} pc=0x{CurrentPc:X8} cpsr=0x{_cpu.GetCpsrRaw():X8} thumb={(_cpu.ThumbMode ? 1 : 0)} crash={(_cpu.CrashDetected ? 1 : 0)} crashPc=0x{_cpu.CrashPc:X8} cyc={_cpu.Cycles}/{_targetCycles} r0=0x{_cpu.Registers[0]:X8} r1=0x{_cpu.Registers[1]:X8} r2=0x{_cpu.Registers[2]:X8} r3=0x{_cpu.Registers[3]:X8} r4=0x{_cpu.Registers[4]:X8} r5=0x{_cpu.Registers[5]:X8} r6=0x{_cpu.Registers[6]:X8} r7=0x{_cpu.Registers[7]:X8} r8=0x{_cpu.Registers[8]:X8} sp=0x{_cpu.Registers[13]:X8} lr=0x{_cpu.Registers[14]:X8} rom={_romBytes:X} int={_internalRomBytes:X} gfx={_textRomBytes:X}/{_bgTileRomBytes:X}/{_spriteMaskRomBytes:X}/{_spriteColorRomBytes:X} rd=0x{_lastReadAddress:X8} wr=0x{_lastWriteAddress:X8}:0x{_lastWriteValue:X8} ramW={_mainRamWrites} vidW={_videoWrites} palW={_paletteWrites} pix={_renderedBgPixels}/{_renderedSpritePixels}/{_renderedFgPixels} fg={_fgTileEntries}:{_fgFirstColumn}-{_fgLastColumn} bg={_bgTileEntries}:{_bgFirstColumn}-{_bgLastColumn} gpu={ReadGpu16(0):X4}/{ReadGpu16(2):X4}/{ReadGpu16(8):X4}/{ReadGpu16(0x0a):X4}/{ReadGpu16(0x0e):X4}/{ReadGpu16(0x14):X4}/{ReadGpu16(0x16):X4} vw={CurrentVisibleWidth()} sk=0x{CurrentSpriteMaskKey():X8} smo={SpriteMaskOrder} skm={SpriteKeyMode} mcuW={_mcuWrites} ymz={_ymzReads}/{_ymzWrites}:0x{_ymzRegs[0]:X2}:0x{_ymzRegs[1]:X2} aic={_aicPending:X8}/{_aicMask:X8}/{_aicActiveSource:X2} aic3=0x{_aicSourceModes[AicMcuSource]:X8}:0x{_aicSourceVectors[AicMcuSource]:X8} aic12=0x{_aicSourceModes[AicVblankSource]:X8}:0x{_aicSourceVectors[AicVblankSource]:X8} irq={_irqAsserts}/{_vblankIrqs}/{_mcuIrqs} aicRW={_aicReads}/{_aicWrites} encW={_encryptionWrites}/{_encryptionTriggers} dec={(_hasDecrypted ? 1 : 0)} extF={_externalFetches}:0x{_lastExternalFetchAddress:X8} unk={_unknownReads}/{_unknownWrites}{(_cpu.CrashDetected ? $" trace={CrashTraceSummary}" : string.Empty)}";
+            : $"drv={_driverName} frame={_frameCounter} pc=0x{CurrentPc:X8} cpsr=0x{_cpu.GetCpsrRaw():X8} thumb={(_cpu.ThumbMode ? 1 : 0)} crash={(_cpu.CrashDetected ? 1 : 0)} crashPc=0x{_cpu.CrashPc:X8} cyc={_cpu.Cycles}/{_targetCycles} r0=0x{_cpu.Registers[0]:X8} r1=0x{_cpu.Registers[1]:X8} r2=0x{_cpu.Registers[2]:X8} r3=0x{_cpu.Registers[3]:X8} r4=0x{_cpu.Registers[4]:X8} r5=0x{_cpu.Registers[5]:X8} r6=0x{_cpu.Registers[6]:X8} r7=0x{_cpu.Registers[7]:X8} r8=0x{_cpu.Registers[8]:X8} sp=0x{_cpu.Registers[13]:X8} lr=0x{_cpu.Registers[14]:X8} rom={_romBytes:X} int={_internalRomBytes:X} gfx={_textRomBytes:X}/{_bgTileRomBytes:X}/{_spriteMaskRomBytes:X}/{_spriteColorRomBytes:X} rd=0x{_lastReadAddress:X8} wr=0x{_lastWriteAddress:X8}:0x{_lastWriteValue:X8} ramW={_mainRamWrites} vidW={_videoWrites} palW={_paletteWrites} pix={_renderedBgPixels}/{_renderedSpritePixels}/{_renderedFgPixels} fg={_fgTileEntries}:{_fgFirstColumn}-{_fgLastColumn} bg={_bgTileEntries}:{_bgFirstColumn}-{_bgLastColumn} gpu={ReadGpu16(0):X4}/{ReadGpu16(2):X4}/{ReadGpu16(8):X4}/{ReadGpu16(0x0a):X4}/{ReadGpu16(0x0e):X4}/{ReadGpu16(0x14):X4}/{ReadGpu16(0x16):X4} vw={CurrentVisibleWidth()} sk=0x{CurrentSpriteMaskKey():X8} smo={SpriteMaskOrder} skm={SpriteKeyMode} mcuW={_mcuWrites} ymz={_ymzReads}/{_ymzWrites}:{_ymz.DebugSummary} aic={_aicPending:X8}/{_aicMask:X8}/{_aicActiveSource:X2} aic3=0x{_aicSourceModes[AicMcuSource]:X8}:0x{_aicSourceVectors[AicMcuSource]:X8} aic12=0x{_aicSourceModes[AicVblankSource]:X8}:0x{_aicSourceVectors[AicVblankSource]:X8} irq={_irqAsserts}/{_vblankIrqs}/{_mcuIrqs} aicRW={_aicReads}/{_aicWrites} encW={_encryptionWrites}/{_encryptionTriggers} dec={(_hasDecrypted ? 1 : 0)} extF={_externalFetches}:0x{_lastExternalFetchAddress:X8} unk={_unknownReads}/{_unknownWrites}{(_cpu.CrashDetected ? $" trace={CrashTraceSummary}" : string.Empty)}";
 
     public string CrashTraceSummary => BuildCrashTraceSummary();
 
@@ -262,6 +266,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         Array.Clear(_bgTileRom);
         Array.Clear(_spriteMaskRom);
         Array.Clear(_spriteColorRom);
+        Array.Clear(_ymzRom);
         Array.Clear(_sram);
         Array.Clear(_mainRam);
         Array.Clear(_spriteVideoRam);
@@ -276,7 +281,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         ClearMemoryCards();
         Array.Clear(_gpuRegs);
         Array.Clear(_encryptionTable);
-        Array.Clear(_ymzRegs);
+        _ymz.Reset();
         Array.Clear(_mcuRegs);
         ResetAic();
 
@@ -291,6 +296,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _bgTileRomBytes = 0;
         _spriteMaskRomBytes = 0;
         _spriteColorRomBytes = 0;
+        _ymzRomBytes = 0;
         _hasDecrypted = false;
         _shareBank = 0;
         _spriteKey = 0;
@@ -309,6 +315,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             LoadRegions(archive);
 
         LoadSidecarAuxFiles(path);
+        _ymz.LoadRom(_ymzRom, _ymzRomBytes);
         Array.Copy(_mainRom, _mainRomEncrypted, _mainRom.Length);
 
         using (FileStream fs = File.OpenRead(path))
@@ -332,7 +339,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         Array.Clear(_shareRam);
         Array.Clear(_memoryCardAuthenticated);
         Array.Clear(_gpuRegs);
-        Array.Clear(_ymzRegs);
+        _ymz.Reset();
         Array.Clear(_mcuRegs);
         ResetAic();
         _hasDecrypted = false;
@@ -360,6 +367,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         SetAicLine(AicVblankSource, true);
         _targetCycles += CyclesPerFrame;
         _cpu.Run(_targetCycles);
+        _ymz.Render(_audioBuffer);
 
         if (Trace)
             Console.WriteLine($"[PGM2] {DebugSummary}");
@@ -429,11 +437,17 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     {
         sampleRate = AudioRate;
         channels = AudioChannels;
-        return _audioSilence;
+        if (_masterVolumePercent == 100)
+            return _audioBuffer;
+
+        for (int i = 0; i < _audioBuffer.Length; i++)
+            _scaledAudioBuffer[i] = (short)Math.Clamp((_audioBuffer[i] * _masterVolumePercent) / 100, short.MinValue, short.MaxValue);
+        return _scaledAudioBuffer;
     }
 
     public void SetMasterVolumePercent(int percent)
     {
+        _masterVolumePercent = Math.Clamp(percent, 0, 200);
     }
 
     public void SetInputState(
@@ -854,6 +868,11 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 LoadInterleavedWordRegion(data, _spriteColorRom, 2);
                 _spriteColorRomBytes = Math.Max(_spriteColorRomBytes, Math.Min(_spriteColorRom.Length, data.Length * 2));
             }
+            else if (string.Equals(name, "ig-a3_sp.u37", StringComparison.OrdinalIgnoreCase))
+            {
+                LoadWordSwappedRegion(data, _ymzRom);
+                _ymzRomBytes = Math.Max(_ymzRomBytes, Math.Min(_ymzRom.Length, data.Length));
+            }
             else if (string.Equals(name, "gsyx_nvram", StringComparison.OrdinalIgnoreCase))
             {
                 Buffer.BlockCopy(data, 0, _sram, 0, Math.Min(data.Length, _sram.Length));
@@ -896,6 +915,11 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             {
                 LoadDefaultMemoryCard(data, fileName);
             }
+            else if (IsSoundRomName(fileName))
+            {
+                LoadWordSwappedRegion(data, _ymzRom);
+                _ymzRomBytes = Math.Max(_ymzRomBytes, Math.Min(_ymzRom.Length, data.Length));
+            }
         }
     }
 
@@ -910,6 +934,21 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             sourceOffset += 2;
             destinationOffset += 4;
         }
+    }
+
+    private static void LoadWordSwappedRegion(byte[] source, byte[] destination)
+    {
+        int length = Math.Min(source.Length, destination.Length);
+        int i = 0;
+        while (i + 1 < length)
+        {
+            destination[i] = source[i + 1];
+            destination[i + 1] = source[i];
+            i += 2;
+        }
+
+        if (i < length)
+            destination[i] = source[i];
     }
 
     private static byte[][] CreateMemoryCards()
@@ -1107,14 +1146,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private byte ReadYmz774Byte(uint address)
     {
         _ymzReads++;
-        int offset = (int)(address & 3);
-
-        // Enough of the YMZ774 command/status port for program bringup. Bit 7 clear
-        // means ready/not busy to the PGM2 games; sample playback is handled later.
-        if (offset == 1)
-            return 0;
-
-        return _ymzRegs[offset];
+        return _ymz.Read((int)(address & 3));
     }
 
     private static bool IsShareRamAddress(uint address)
@@ -1137,7 +1169,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private void WriteYmz774Byte(uint address, byte value)
     {
         _ymzWrites++;
-        _ymzRegs[(int)(address & 3)] = value;
+        _ymz.Write((int)(address & 3), value);
     }
 
     private void HandleWriteSideEffects(uint address, uint value, uint mask)
@@ -2409,10 +2441,10 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private static Pgm2AuxFileSpec GetAuxFileSpec(string driverName)
     {
         if (driverName.EndsWith("cn", StringComparison.OrdinalIgnoreCase))
-            return new Pgm2AuxFileSpec("gsyx_igs036_china.rom", "blank_gsyx_china.pg2");
+            return new Pgm2AuxFileSpec("gsyx_igs036_china.rom", "blank_gsyx_china.pg2", "ig-a3_sp.u37");
 
         if (driverName.StartsWith("kov2nl", StringComparison.OrdinalIgnoreCase))
-            return new Pgm2AuxFileSpec("kov2nl_igs036_oversea.rom", "blank_kov2nl_overseas_card.pg2");
+            return new Pgm2AuxFileSpec("kov2nl_igs036_oversea.rom", "blank_kov2nl_overseas_card.pg2", "ig-a3_sp.u37");
 
         return Pgm2AuxFileSpec.Empty;
     }
@@ -2453,6 +2485,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     private static bool IsTextRomName(string name)
         => string.Equals(name, "ig-a3_text.u4", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSoundRomName(string name)
+        => string.Equals(name, "ig-a3_sp.u37", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsMemoryCardName(string name)
         => name.EndsWith(".pg2", StringComparison.OrdinalIgnoreCase);

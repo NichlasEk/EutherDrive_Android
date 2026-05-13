@@ -704,6 +704,9 @@ class Program
                 Console.WriteLine($"[HEADLESS] PGM2 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
                 Console.WriteLine($"[HEADLESS] PGM2 debug {pgm2.DebugSummary}");
                 DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+                using var pgm2AudioDump = OpenOptionalRawAudioDump(dumpDir, "headless_pgm2_audio_s16le.raw");
+                long pgm2NonZeroAudioSamples = 0;
+                int pgm2PeakAudio = 0;
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
@@ -716,6 +719,10 @@ class Program
                         input.Select,
                         PadType.SixButton);
                     pgm2.RunFrame();
+                    ReadOnlySpan<short> audio = pgm2.GetAudioBuffer(out int pgm2AudioRate, out int pgm2AudioChannels);
+                    WriteRawAudio(pgm2AudioDump, audio);
+                    pgm2NonZeroAudioSamples += CountNonZeroAudioSamples(audio);
+                    pgm2PeakAudio = Math.Max(pgm2PeakAudio, AudioPeak(audio));
 
                     ReadOnlySpan<byte> fb = pgm2.GetFrameBuffer(out int w, out int h, out int s);
                     var stats = GetFrameStats(fb, w, h, s);
@@ -724,7 +731,7 @@ class Program
                     lastFingerprint = fingerprint;
 
                     if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
-                        Console.WriteLine($"[HEADLESS] Frame {frame}: pgm2_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} debug={pgm2.DebugSummary}");
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: pgm2_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} audio={pgm2AudioRate}Hz/{pgm2AudioChannels}ch peak={AudioPeak(audio)} debug={pgm2.DebugSummary}");
 
                     if (frame == 0 || frame == 5 || frame == 10 || pgm2DumpFrames.Contains(frame))
                         DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
@@ -734,6 +741,7 @@ class Program
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] PGM2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] PGM2 audio nonzero_samples={pgm2NonZeroAudioSamples} max_abs={pgm2PeakAudio}");
                 Console.WriteLine($"[HEADLESS] PGM2 debug {pgm2.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_DUMP_LAYERS") == "1")
