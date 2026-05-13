@@ -1870,6 +1870,7 @@ internal sealed class MipsR5000Core
             0xffffffff800159f8UL => "second-getioq-error",
             0xffffffff80015a48UL => "second-unable-get-home-blocks",
             0xffffffff80015aacUL => "home-block-version-mismatch",
+            0xffffffff80015b38UL => "boot-slot-check",
             0xffffffff80015cb0UL => "no-boot-file",
             0xffffffff80015eacUL => "boot-open-error",
             _ => null
@@ -1879,6 +1880,17 @@ internal sealed class MipsR5000Core
 
         string detail = pc == 0xffffffff80015708UL
             ? $" msg=\"{ReadAsciiTraceString(_gpr[5], 96)}\""
+            : pc == 0xffffffff80015b38UL
+                ? $" selected={_gpr[3]:x16}:{_memory.Read32(_gpr[3]):x8}" +
+                  $" f00={_memory.Read32(_gpr[16]):x8}" +
+                  $" f04={_memory.Read32(_gpr[16] + 0x04UL):x8}" +
+                  $" f40={_memory.Read32(_gpr[16] + 0x40UL):x8}" +
+                  $" f44={_memory.Read32(_gpr[16] + 0x44UL):x8}" +
+                  $" f64={_memory.Read32(_gpr[16] + 0x64UL):x8}" +
+                  $" slot0={_memory.Read32(_gpr[16] + 0x50UL):x8}" +
+                  $" slot1={_memory.Read32(_gpr[16] + 0x68UL):x8}" +
+                  $" slot2={_memory.Read32(_gpr[16] + 0x74UL):x8}" +
+                  $" slot3={_memory.Read32(_gpr[16] + 0x80UL):x8}"
             : "";
         Console.WriteLine(
             $"[GAUNTDL:RD0] panic-site {label} pc={pc:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
@@ -3742,6 +3754,8 @@ internal sealed class VegasMemoryMap
     private readonly string? _traceTargetFilter = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET");
     private readonly TraceAddressFilter[] _traceAddressFilters = ParseTraceAddressFilters(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS"));
     private readonly bool _enableRd0DmaQioComplete = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE") == "1";
+    private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
+    private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
     private readonly int _nileCpuIrqShift = ParseNileCpuIrqShift();
     private ulong _traceCpuPc;
     private byte[] _mainBootRom = Array.Empty<byte>();
@@ -3764,6 +3778,7 @@ internal sealed class VegasMemoryMap
     private bool _fpgaConfigSeenLow;
     private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
+    private bool _ioasicPort0TraceLogged;
 
     public VegasMemoryMap()
     {
@@ -4801,12 +4816,25 @@ internal sealed class VegasMemoryMap
     {
         return port switch
         {
-            0 => 0xffff,
+            0 => BuildIoasicInputPort0(),
             1 => BuildSystemInputPort(),
             2 => BuildPlayerInputPort12(),
             3 => 0xffff,
             _ => 0xffff
         };
+    }
+
+    private ushort BuildIoasicInputPort0()
+    {
+        ushort value = _ioasicPort0Override ?? 0xffff;
+        if (_traceIoasicInputs && !_ioasicPort0TraceLogged)
+        {
+            int bootSlot = (((value >> 4) & 3) ^ 3);
+            Console.WriteLine($"[GAUNTDL:IOASIC] port0={value:x4} bootSlot={bootSlot} pc={_traceCpuPc:x16}");
+            _ioasicPort0TraceLogged = true;
+        }
+
+        return value;
     }
 
     private ushort BuildSystemInputPort()
@@ -5224,6 +5252,12 @@ internal sealed class VegasMemoryMap
         return ulong.TryParse(raw, System.Globalization.NumberStyles.HexNumber, null, out ulong parsed)
             ? parsed
             : null;
+    }
+
+    private static ushort? ParseOptionalHexUshort(string? raw)
+    {
+        ulong? parsed = ParseOptionalHexUlong(raw);
+        return parsed.HasValue && parsed.Value <= ushort.MaxValue ? (ushort)parsed.Value : null;
     }
 
     private static TraceAddressFilter[] ParseTraceAddressFilters(string? raw)

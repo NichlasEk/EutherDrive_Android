@@ -2084,3 +2084,24 @@ msg="No boot file on volume"
 ```
 
 This is forward progress in diagnosis: the home-block failure is gone, and the fatal text is now the next filesystem phase. IDE trace still shows only one physical read (`READ DMA`, LBA 1, count 1). The raw disk does contain game/boot file strings such as `worlds.rom`, so the next implementation target is still the real post-home-block QIO/IDE read dispatch, not Voodoo and not byte-swapping.
+
+## 2026-05-13 Boot Slot / Stage-4 Probe
+
+Added a `boot-slot-check` trace at `0x80015b38` and an optional IOASIC port-0 override:
+
+```text
+EUTHERDRIVE_GAUNTDL_IOASIC_PORT0=0xffef
+EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS=1
+```
+
+The boot code computes the selected boot slot from `(((port0 >> 4) & 3) ^ 3)`. Testing slots 0..3 still ends at `No boot file on volume`, so DIP slot selection is not the current blocker.
+
+At the slot check the parsed home/boot table remains zero:
+
+```text
+selected=ffffffff807ffd08:00000000
+f00=00000000 f04=00000000 f40=00000000 f44=00000000 f64=00000000
+slot0=00000000 slot1=00000000 slot2=00000000 slot3=00000000
+```
+
+Tracing callback dispatch showed stage 3 jumps to `0x800293e4`, stores stage 4, then calls `0x80020ed8` and `0x80020914`. Allowing stage 4 to be kicked repeatedly does not populate the parsed table; it loops idempotently and still reaches the same empty slot state. The useful next target is still event/IRQ-driven QIO completion or the parser/copy path that should turn the valid raw home sector at `0x800f41e0` into the stack table at `s0=0x807ffcb8`.
