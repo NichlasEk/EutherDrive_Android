@@ -33,6 +33,7 @@ using EutherDrive.Core.Arcade.Igs;
 using EutherDrive.Core.Arcade.Konami;
 using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.Arcade.System32;
+using EutherDrive.Core.Arcade.Taito;
 using EutherDrive.Platforms.DataEast.Deco32;
 using EutherDrive.Audio;
 using EutherDrive.Core.Cpu.M68000Emu;
@@ -376,6 +377,11 @@ class Program
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
+            bool useTaitoF2 = string.Equals(coreOverride, "taitof2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "taito-f2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "thundfox", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "thunderfox", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(romPath));
             bool useNeoGeo = string.Equals(coreOverride, "neogeo", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "neo-geo", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && NeoGeoAdapter.IsSupportedArchive(romPath));
@@ -386,7 +392,7 @@ class Program
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useTaitoF2 && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -405,6 +411,7 @@ class Program
                 useDeco32 = false;
                 useHshavoc = false;
                 useTmnt = false;
+                useTaitoF2 = false;
                 useNeoGeo = false;
                 usePgm2 = false;
                 useMcsArcade = false;
@@ -523,6 +530,66 @@ class Program
                 Console.WriteLine($"[HEADLESS] TMNT debug {tmnt.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 PrintHeadlessPerf("TMNT", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useTaitoF2)
+            {
+                Console.WriteLine("[HEADLESS] Using Taito F2 Thunder Fox core");
+                var taito = new TaitoF2ThunderFoxAdapter();
+                taito.LoadRom(romPath);
+                var taitoInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_TAITO_HEADLESS_INPUT_SCRIPT"));
+                ReadOnlySpan<byte> fbIn = taito.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+                Console.WriteLine($"[HEADLESS] TAITO-F2 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY})");
+                DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+                using var taitoAudioDump = OpenOptionalRawAudioDump(dumpDir, "headless_taitof2_audio_s16le.raw");
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, taitoInputScript);
+                    taito.SetInputState(
+                        input.Up,
+                        input.Down,
+                        input.Left,
+                        input.Right,
+                        input.A,
+                        input.B,
+                        input.X,
+                        input.Start,
+                        input.Y,
+                        input.L,
+                        input.R,
+                        input.Select,
+                        PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
+                    taito.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+                    ReadOnlySpan<short> audio = taito.GetAudioBuffer(out int audioRate, out int taitoAudioChannels);
+                    WriteRawAudio(taitoAudioDump, audio);
+                    if (frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        ReadOnlySpan<byte> fb = taito.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        int peak = AudioPeak(audio);
+                        taito.TryGetFramePerfSummary(out var taitoSummary);
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: taitof2_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) audio={audioRate}Hz/{taitoAudioChannels}ch peak={peak} debug={taitoSummary}");
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = taito.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] TAITO-F2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                PrintHeadlessPerf("TAITO-F2", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -3668,6 +3735,11 @@ class Program
                 || string.Equals(coreOverride, "konami-tmnt", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "konami-tmnt2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TmntAdapter.IsSupportedArchive(romPath));
+            bool useTaitoF2 = string.Equals(coreOverride, "taitof2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "taito-f2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "thundfox", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "thunderfox", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(romPath));
             bool useDeco32 = string.Equals(coreOverride, "deco32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
@@ -3682,7 +3754,7 @@ class Program
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useTaitoF2 && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
@@ -3898,6 +3970,83 @@ class Program
                 Console.WriteLine($"[HEADLESS] TMNT final debug {tmnt.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_tmnt_state_output.ppm"));
                 PrintHeadlessPerf("TMNT", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useTaitoF2)
+            {
+                var taito = new TaitoF2ThunderFoxAdapter();
+                taito.LoadRom(romPath);
+                var taitoInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_TAITO_HEADLESS_INPUT_SCRIPT"));
+
+                int? slotOverrideTaito = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadTaito = TryLoadSavestatePayload(savestatePath, taito.RomIdentity, slotOverrideTaito, out var taitoError);
+                if (payloadTaito == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {taitoError}");
+                    return 1;
+                }
+
+                using (var taitoStateStream = new MemoryStream(payloadTaito, writable: false))
+                using (var taitoStateReader = new BinaryReader(taitoStateStream))
+                    taito.LoadState(taitoStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (Taito F2)");
+                ReadOnlySpan<byte> fbBefore = taito.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong fingerprintBefore = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine($"[HEADLESS] TAITO-F2 state before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) fp=0x{fingerprintBefore:X16}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_taitof2_state_before.ppm"));
+
+                using var audioDump = OpenOptionalRawAudioDump(dumpDir, "headless_taitof2_state_audio_s16le.raw");
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, taitoInputScript);
+                    taito.SetInputState(
+                        input.Up,
+                        input.Down,
+                        input.Left,
+                        input.Right,
+                        input.A,
+                        input.B,
+                        input.X,
+                        input.Start,
+                        input.Y,
+                        input.L,
+                        input.R,
+                        input.Select,
+                        PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
+                    taito.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+                    ReadOnlySpan<short> audio = taito.GetAudioBuffer(out int sampleRate, out int channels);
+                    WriteRawAudio(audioDump, audio);
+
+                    if (frame == 0 || frame == 1 || frame == 2 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        ReadOnlySpan<byte> fb = taito.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                        int peak = AudioPeak(audio);
+                        taito.TryGetFramePerfSummary(out var taitoSummary);
+                        Console.WriteLine($"[HEADLESS] TAITO-F2 state frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} audio={sampleRate}Hz/{channels}ch peak={peak} debug={taitoSummary}");
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_taitof2_state_frame{frame}.ppm"));
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = taito.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] TAITO-F2 state final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_taitof2_state_output.ppm"));
+                PrintHeadlessPerf("TAITO-F2", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

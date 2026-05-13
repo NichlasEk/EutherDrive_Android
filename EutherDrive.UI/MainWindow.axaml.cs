@@ -28,6 +28,7 @@ using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.DataEast.Hshavoc;
 using EutherDrive.Core.Arcade.Igs;
 using EutherDrive.Core.Arcade.Snk;
+using EutherDrive.Core.Arcade.Taito;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Platforms.DataEast.Deco32;
@@ -825,6 +826,8 @@ public partial class MainWindow : Window
         }
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Konami.TmntAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(path))
+            return new TaitoF2ThunderFoxAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Technos.XainSleenaAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Technos.XainSleenaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && NeoGeoAdapter.IsSupportedArchive(path))
@@ -1831,6 +1834,7 @@ public partial class MainWindow : Window
             NeoGeoAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             Pgm2Adapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             KovPgmAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
+            TaitoF2ThunderFoxAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             McsArcadeAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
             GbaAdapter => new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons),
@@ -2979,7 +2983,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        Interlocked.Exchange(ref _coinPulseFrames, 30);
+        Interlocked.Exchange(ref _coinPulseFrames, 8);
         StatusText.Text = "Coin inserted";
     }
 
@@ -3952,6 +3956,8 @@ public partial class MainWindow : Window
             cps1.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2)
             cps2.SetMasterVolumePercent(effectiveVolumePercent);
+        else if (_core is EutherDrive.Core.Arcade.Taito.TaitoF2ThunderFoxAdapter thundfox)
+            thundfox.SetMasterVolumePercent(effectiveVolumePercent);
     }
 
     private int GetEffectiveMasterVolumePercent()
@@ -4401,6 +4407,7 @@ public partial class MainWindow : Window
             NeoGeoAdapter => "Neo Geo",
             Pgm2Adapter => "IGS PGM2",
             KovPgmAdapter => "IGS PGM",
+            TaitoF2ThunderFoxAdapter => "Taito F2",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
         };
@@ -8556,6 +8563,7 @@ public partial class MainWindow : Window
             or EutherDrive.Core.Arcade.System32.System32Adapter
             or Deco32Adapter
             or EutherDrive.Core.Arcade.Konami.TmntAdapter
+            or TaitoF2ThunderFoxAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             or HshavocAdapter;
     }
@@ -8829,6 +8837,8 @@ public partial class MainWindow : Window
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
         if (core is MdTracerAdapter adapter)
             adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
+        else if (core is Pgm2Adapter pgm2Adapter)
+            pgm2Adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
         else if (core is SnesAdapter snesAdapter)
             snesAdapter.SetInputState2(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2);
         if (TracePadMapping)
@@ -9123,7 +9133,7 @@ public partial class MainWindow : Window
             _lastPresentedHeight = h;
         }
 
-        SetPresentationTargetSize(w, h);
+        // Presentation size is decided after core-specific aspect handling in RenderFrame.
     }
 
     private void EnsureDesktopRenderViewAttached()
@@ -9269,6 +9279,7 @@ public partial class MainWindow : Window
             or Pgm2Adapter
             or KovPgmAdapter
             or NeoGeoAdapter
+            or TaitoF2ThunderFoxAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(core, forceOpaque);
@@ -9340,7 +9351,8 @@ public partial class MainWindow : Window
         if (_renderSurface == null)
             return;
 
-        ApplyCoreAspectIfNeeded(core, presentWidth, presentHeight);
+        if (!ApplyCoreAspectIfNeeded(core, presentWidth, presentHeight))
+            SetPresentationTargetSize(presentWidth, presentHeight);
 
         if (FrameBufferTraceEnabled)
         {
@@ -9577,6 +9589,7 @@ public partial class MainWindow : Window
             || core is Pgm2Adapter
             || core is KovPgmAdapter
             || core is NeoGeoAdapter
+            || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter
@@ -9607,6 +9620,12 @@ public partial class MainWindow : Window
     {
         if (targetWidth <= 0 || targetHeight <= 0)
             return;
+
+        if (Math.Abs(_presentationTargetWidth - targetWidth) <= 0.5
+            && Math.Abs(_presentationTargetHeight - targetHeight) <= 0.5)
+        {
+            return;
+        }
 
         _presentationTargetWidth = targetWidth;
         _presentationTargetHeight = targetHeight;
@@ -9642,6 +9661,8 @@ public partial class MainWindow : Window
 
         ApplyPresentationLayoutSize(targetWidth, targetHeight);
         UpdateDetachedNativeOverlayBounds();
+        if (UsesDetachedNativeOverlayHost())
+            Dispatcher.UIThread.Post(UpdateDetachedNativeOverlayBounds, DispatcherPriority.Loaded);
         UpdateBackdropDecorLayout();
     }
 
@@ -10153,13 +10174,13 @@ public partial class MainWindow : Window
     private bool UsesDetachedNativeOverlayHost()
         => UsesNativeDesktopPresentationLayout() && NativeScreenOverlayHost != null;
 
-    private void ApplyCoreAspectIfNeeded(IEmulatorCore core, int width, int height)
+    private bool ApplyCoreAspectIfNeeded(IEmulatorCore core, int width, int height)
     {
         if (ScreenGrid == null)
-            return;
+            return false;
 
         if (height <= 0)
-            return;
+            return false;
 
         if (core is PsxAdapter psx)
         {
@@ -10171,10 +10192,12 @@ public partial class MainWindow : Window
                 targetHeight = adapterHeight;
             }
             ApplyPresentationSize(targetWidth, targetHeight);
+            return true;
         }
         else if (UsesFourThreeArcadePhysicalAspectPresentation(core, width, height))
         {
             ApplyFourThreeArcadePhysicalPresentation(width, height);
+            return true;
         }
         else if (core is Cps1DinoAdapter)
         {
@@ -10182,12 +10205,16 @@ public partial class MainWindow : Window
                 ApplyPresentationSize(Math.Round(height * (4.0 / 3.0)), height);
             else
                 ApplyPresentationSize(width, Math.Round(width * (4.0 / 3.0)));
+            return true;
         }
+
+        return false;
     }
 
     private static bool UsesFourThreeArcadePhysicalAspectPresentation(IEmulatorCore core, int width, int height)
         => core is KovPgmAdapter ||
            core is Pgm2Adapter ||
+           core is TaitoF2ThunderFoxAdapter ||
            core is NeoGeoAdapter ||
            (core is McsArcadeAdapter && ((width == 448 && height == 224) || (width == 224 && height == 448)));
 
@@ -10227,11 +10254,13 @@ public partial class MainWindow : Window
 
     private bool ShouldUsePostedFramePresenter(IEmulatorCore? core)
         => core is Pgm2Adapter
+            || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || ShouldUsePostedPsxAcceleratedPresenter(core);
 
     private static bool ShouldSnapshotFrameBufferForPresentation(IEmulatorCore core)
         => core is Pgm2Adapter
+            || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
 
     private static bool ShouldUseNativeDesktopPsxPresenter(IEmulatorCore? core)
@@ -10536,7 +10565,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is TaitoF2ThunderFoxAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10548,6 +10577,8 @@ public partial class MainWindow : Window
                                     || core is Pgm2Adapter
                                     || core is KovPgmAdapter
                                     || core is NeoGeoAdapter
+                                    || core is TaitoF2ThunderFoxAdapter
+                                    || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
                                     || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
                                     || core is Deco32Adapter)
                                 {
@@ -10902,6 +10933,7 @@ public partial class MainWindow : Window
             || _core is Pgm2Adapter
             || _core is KovPgmAdapter
             || _core is NeoGeoAdapter
+            || _core is TaitoF2ThunderFoxAdapter
             || _core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
             || _core is Cps1DinoAdapter
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
