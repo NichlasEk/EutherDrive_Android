@@ -812,6 +812,10 @@ namespace Ryu64.MIPS
             public uint MaskT;
             public uint ShiftS;
             public uint ShiftT;
+            public bool ClampS;
+            public bool ClampT;
+            public bool MirrorS;
+            public bool MirrorT;
             public uint Uls;
             public uint Ult;
             public uint Lrs;
@@ -1528,7 +1532,7 @@ namespace Ryu64.MIPS
                     $"firstS={firstSampleS} firstT={firstSampleT} firstRgba=0x{firstSampleRgba:x8} " +
                     $"tex=s{tex.S}:t{tex.T}:w{tex.W}:dsdx{tex.DsDx}:dtdx{tex.DtDx}:dwdx{tex.DwDx}:dsde{tex.DsDe}:dtde{tex.DtDe}:dwde{tex.DwDe}:dsdy{tex.DsDy}:dtdy{tex.DtDy}:dwdy{tex.DwDy} " +
                     $"raw={tex.Raw0:x16},{tex.Raw1:x16},{tex.Raw2:x16},{tex.Raw3:x16},{tex.Raw4:x16},{tex.Raw5:x16},{tex.Raw6:x16},{tex.Raw7:x16} " +
-                    $"tile=fmt{tile.Format}:sz{tile.Size}:line{tile.Line}:tmem0x{tile.Tmem:x}:mask{tile.MaskS}/{tile.MaskT}:shift{tile.ShiftS}/{tile.ShiftT}:uls{tile.Uls}:ult{tile.Ult}:lrs{tile.Lrs}:lrt{tile.Lrt}");
+                    $"tile=fmt{tile.Format}:sz{tile.Size}:line{tile.Line}:tmem0x{tile.Tmem:x}:mask{tile.MaskS}/{tile.MaskT}:shift{tile.ShiftS}/{tile.ShiftT}:clamp{tile.ClampS}/{tile.ClampT}:mirror{tile.MirrorS}/{tile.MirrorT}:uls{tile.Uls}:ult{tile.Ult}:lrs{tile.Lrs}:lrt{tile.Lrt}");
                 _traceRdpTriangleWriteCount++;
             }
 
@@ -2385,8 +2389,12 @@ namespace Ryu64.MIPS
             _rdpTiles[tileIndex].Line = (w0 >> 9) & 0x1FFu;
             _rdpTiles[tileIndex].Tmem = w0 & 0x1FFu;
             _rdpTiles[tileIndex].Palette = (w1 >> 20) & 0xFu;
+            _rdpTiles[tileIndex].ClampT = ((w1 >> 19) & 1u) != 0;
+            _rdpTiles[tileIndex].MirrorT = ((w1 >> 18) & 1u) != 0;
             _rdpTiles[tileIndex].MaskT = (w1 >> 14) & 0xFu;
             _rdpTiles[tileIndex].ShiftT = (w1 >> 10) & 0xFu;
+            _rdpTiles[tileIndex].ClampS = ((w1 >> 9) & 1u) != 0;
+            _rdpTiles[tileIndex].MirrorS = ((w1 >> 8) & 1u) != 0;
             _rdpTiles[tileIndex].MaskS = (w1 >> 4) & 0xFu;
             _rdpTiles[tileIndex].ShiftS = w1 & 0xFu;
         }
@@ -2847,22 +2855,42 @@ namespace Ryu64.MIPS
             if (height == 0)
                 return false;
 
-            int u = ApplyRdpTextureCoordinate(s, width, tile.MaskS, tile.ShiftS);
-            int v = ApplyRdpTextureCoordinate(t, height, tile.MaskT, tile.ShiftT);
+            int u = ApplyRdpTextureCoordinate(s, width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
+            int v = ApplyRdpTextureCoordinate(t, height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
             if (u < 0 || v < 0)
                 return false;
 
             return DecodeRdpTextureColor(tile, u, v, out rgba);
         }
 
-        private static int ApplyRdpTextureCoordinate(int value, uint extent, uint mask, uint shift)
+        private static int ApplyRdpTextureCoordinate(int value, uint extent, uint mask, uint shift, bool clamp, bool mirror)
         {
             if (extent == 0)
                 return -1;
             if (shift != 0)
                 value = shift < 11u ? value >> (int)shift : value << (int)(16u - shift);
+
+            if (clamp)
+            {
+                if (value < 0)
+                    return 0;
+                if ((uint)value >= extent)
+                    return (int)extent - 1;
+                return value;
+            }
+
             if (mask != 0 && mask < 31)
-                return value & ((1 << (int)mask) - 1);
+            {
+                int maskValue = (1 << (int)mask) - 1;
+                if (!mirror)
+                    return value & maskValue;
+
+                int mirrored = value & ((1 << ((int)mask + 1)) - 1);
+                return (mirrored & (maskValue + 1)) == 0
+                    ? mirrored & maskValue
+                    : (~mirrored) & maskValue;
+            }
+
             if (value < 0)
                 return 0;
             if ((uint)value >= extent)
