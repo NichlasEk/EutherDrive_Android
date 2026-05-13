@@ -1474,8 +1474,13 @@ class Program
             {
                 Console.WriteLine("[HEADLESS] Using N64 core");
                 SetEnvDefault("EUTHERDRIVE_N64_SKIP_AUDIO", "1");
+                bool n64Perf = IsEnvEnabled("EUTHERDRIVE_N64_HEADLESS_PERF");
                 var n64 = new N64Adapter();
+                var n64LoadWatch = Stopwatch.StartNew();
                 n64.LoadRom(romPath);
+                n64LoadWatch.Stop();
+                if (n64Perf)
+                    Console.WriteLine($"[HEADLESS] N64 load_ms={n64LoadWatch.Elapsed.TotalMilliseconds:0.###}");
 
                 HeadlessAudioSink? n64AudioSink = null;
                 bool enableN64Audio = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_AUDIO") == "1";
@@ -1499,6 +1504,7 @@ class Program
                 bool traceN64Frames = IsEnvEnabled("EUTHERDRIVE_N64_HEADLESS_TRACE_FRAMES");
                 int framebufferStableCount = 0;
                 int completedFrames = 0;
+                var n64FrameWatch = n64Perf ? Stopwatch.StartNew() : null;
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
@@ -1546,11 +1552,19 @@ class Program
                 }
 
                 Console.WriteLine("[HEADLESS] Framebuffer AFTER running:");
+                n64FrameWatch?.Stop();
                 ReadOnlySpan<byte> fbOut = n64.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] N64 fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                if (n64Perf && n64FrameWatch != null)
+                {
+                    double totalMs = n64FrameWatch.Elapsed.TotalMilliseconds;
+                    double avgMs = completedFrames > 0 ? totalMs / completedFrames : 0.0;
+                    Console.WriteLine($"[HEADLESS] N64 run_ms={totalMs:0.###} avg_frame_ms={avgMs:0.###} avg_fps={(avgMs > 0 ? 1000.0 / avgMs : 0.0):0.###}");
+                    Console.WriteLine($"[HEADLESS] N64 perf {n64.GetPerformanceStatus()}");
+                }
                 n64AudioSink?.Dispose();
                 // Stop R4300 thread before exit to avoid background runaway logs after frame loop.
                 n64.Reset();

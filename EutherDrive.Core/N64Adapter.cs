@@ -108,6 +108,8 @@ public sealed class N64Adapter : IEmulatorCore
         return _audioBuffer;
     }
 
+    public string GetPerformanceStatus() => _core.LastPerformanceStatus;
+
     public void SetMasterVolumePercent(int percent)
     {
         if (percent < 0)

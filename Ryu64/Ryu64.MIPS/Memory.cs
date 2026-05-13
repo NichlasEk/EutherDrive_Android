@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -42,6 +43,8 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_EXTENTS"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRdpPerspectiveTexture =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RDP_PERSPECTIVE_TEXTURE"), "0", StringComparison.Ordinal);
+        private static readonly bool EnableN64Perf =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PERF"), "1", StringComparison.Ordinal);
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
         private static readonly uint? TraceWatchRangeStart = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_START");
         private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
@@ -804,6 +807,18 @@ namespace Ryu64.MIPS
         private long _rdpFillRectangleCommandCount;
         private long _rdpPixelWriteCount;
         private long _rdpNonZeroPixelWriteCount;
+        private long _perfRdpDisplayListTicks;
+        private long _perfRdpDisplayListCalls;
+        private long _perfRdpTexturedTriangleTicks;
+        private long _perfRdpTexturedTriangleCalls;
+        private long _perfRdpTexturedRectangleTicks;
+        private long _perfRdpTexturedRectangleCalls;
+        private long _perfRdpSnapshotTicks;
+        private long _perfRdpSnapshotCalls;
+        private long _perfRdpSnapshotBytes;
+        private long _perfRdpVisibleScanTicks;
+        private long _perfRdpVisibleScanCalls;
+        private long _perfRdpVisibleScanPixels;
 
         private struct RdpTileState
         {
@@ -887,6 +902,58 @@ namespace Ryu64.MIPS
         public long RdpFillRectangleCommandCount => Volatile.Read(ref _rdpFillRectangleCommandCount);
         public long RdpPixelWriteCount => Volatile.Read(ref _rdpPixelWriteCount);
         public long RdpNonZeroPixelWriteCount => Volatile.Read(ref _rdpNonZeroPixelWriteCount);
+        public string PerformanceSummary
+        {
+            get
+            {
+                if (!EnableN64Perf)
+                    return "perf=off";
+
+                long displayListTicks = Volatile.Read(ref _perfRdpDisplayListTicks);
+                long displayListCalls = Volatile.Read(ref _perfRdpDisplayListCalls);
+                long triTicks = Volatile.Read(ref _perfRdpTexturedTriangleTicks);
+                long triCalls = Volatile.Read(ref _perfRdpTexturedTriangleCalls);
+                long rectTicks = Volatile.Read(ref _perfRdpTexturedRectangleTicks);
+                long rectCalls = Volatile.Read(ref _perfRdpTexturedRectangleCalls);
+                long snapshotTicks = Volatile.Read(ref _perfRdpSnapshotTicks);
+                long snapshotCalls = Volatile.Read(ref _perfRdpSnapshotCalls);
+                long snapshotBytes = Volatile.Read(ref _perfRdpSnapshotBytes);
+                long scanTicks = Volatile.Read(ref _perfRdpVisibleScanTicks);
+                long scanCalls = Volatile.Read(ref _perfRdpVisibleScanCalls);
+                long scanPixels = Volatile.Read(ref _perfRdpVisibleScanPixels);
+
+                return
+                    $"rdpList={displayListCalls}/{TicksToMs(displayListTicks):0.###}ms avg={AvgTicksMs(displayListTicks, displayListCalls):0.###}ms " +
+                    $"triTex={triCalls}/{TicksToMs(triTicks):0.###}ms avg={AvgTicksMs(triTicks, triCalls):0.###}ms " +
+                    $"texRect={rectCalls}/{TicksToMs(rectTicks):0.###}ms avg={AvgTicksMs(rectTicks, rectCalls):0.###}ms " +
+                    $"fbScan={scanCalls}/{TicksToMs(scanTicks):0.###}ms avg={AvgTicksMs(scanTicks, scanCalls):0.###}ms px={scanPixels} " +
+                    $"fbSnap={snapshotCalls}/{TicksToMs(snapshotTicks):0.###}ms avg={AvgTicksMs(snapshotTicks, snapshotCalls):0.###}ms bytes={snapshotBytes}";
+            }
+        }
+
+        private static long StartPerfTimer()
+        {
+            return EnableN64Perf ? Stopwatch.GetTimestamp() : 0;
+        }
+
+        private static void AddPerfTicks(ref long ticksField, ref long callsField, long start)
+        {
+            if (start == 0)
+                return;
+
+            Interlocked.Add(ref ticksField, Stopwatch.GetTimestamp() - start);
+            Interlocked.Increment(ref callsField);
+        }
+
+        private static double TicksToMs(long ticks)
+        {
+            return ticks <= 0 ? 0.0 : ticks * 1000.0 / Stopwatch.Frequency;
+        }
+
+        private static double AvgTicksMs(long ticks, long calls)
+        {
+            return calls <= 0 ? 0.0 : TicksToMs(ticks) / calls;
+        }
 
         private void NoteRdramWriteRange(uint physicalAddress, uint size)
         {
@@ -1109,6 +1176,7 @@ namespace Ryu64.MIPS
             if (endAddress <= current)
                 return current;
 
+            long perfStart = StartPerfTimer();
             uint maxEnd = current + Math.Min(endAddress - current, 0x20000u);
             bool xbusDmem = (ReadBigEndianWord(DPC_STATUS_REG_R) & DpcStatusXbusDmemDma) != 0;
             int[] commandCounts = TraceRdpCommands && _traceRdpSummaryCount < TraceRdpSummaryLimit ? new int[64] : null;
@@ -1262,6 +1330,7 @@ namespace Ryu64.MIPS
                 _traceRdpSummaryCount++;
             }
 
+            AddPerfTicks(ref _perfRdpDisplayListTicks, ref _perfRdpDisplayListCalls, perfStart);
             return current;
         }
 
@@ -1402,6 +1471,9 @@ namespace Ryu64.MIPS
             bool flip,
             uint bytesPerPixel)
         {
+            long perfStart = StartPerfTimer();
+            try
+            {
             if ((uint)tileIndex >= _rdpTiles.Length || yl <= yh)
                 return false;
 
@@ -1554,6 +1626,11 @@ namespace Ryu64.MIPS
                     CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
             }
             return wroteAny;
+            }
+            finally
+            {
+                AddPerfTicks(ref _perfRdpTexturedTriangleTicks, ref _perfRdpTexturedTriangleCalls, perfStart);
+            }
         }
 
         private struct RdpTriangleTextureCoefficients
@@ -2709,6 +2786,9 @@ namespace Ryu64.MIPS
 
         private bool DrawRdpTexturedRectangle(uint x0, uint y0, uint x1, uint y1, int tileIndex, uint w2, uint w3, bool flip, uint bytesPerPixel)
         {
+            long perfStart = StartPerfTimer();
+            try
+            {
             uint textureOriginX = x0;
             uint textureOriginY = y0;
             if (!ClampRdpRectangleToScissor(ref x0, ref y0, ref x1, ref y1))
@@ -2827,6 +2907,11 @@ namespace Ryu64.MIPS
                     CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
             }
             return wroteAny;
+            }
+            finally
+            {
+                AddPerfTicks(ref _perfRdpTexturedRectangleTicks, ref _perfRdpTexturedRectangleCalls, perfStart);
+            }
         }
 
         private bool ClampRdpRectangleToScissor(ref uint x0, ref uint y0, ref uint x1, ref uint y1)
@@ -3223,6 +3308,9 @@ namespace Ryu64.MIPS
 
         private void CaptureVisibleRdpFramebufferSnapshot(uint bytesPerPixel)
         {
+            long perfStart = StartPerfTimer();
+            try
+            {
             if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
                 || _rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
@@ -3252,10 +3340,21 @@ namespace Ryu64.MIPS
                 _lastVisibleRdpFramebufferBytesPerPixel = bytesPerPixel;
                 _lastVisibleRdpFramebufferEpoch = _rdramWriteEpoch;
             }
+            if (EnableN64Perf)
+                Interlocked.Add(ref _perfRdpSnapshotBytes, snapshot.Length);
+            }
+            finally
+            {
+                AddPerfTicks(ref _perfRdpSnapshotTicks, ref _perfRdpSnapshotCalls, perfStart);
+            }
         }
 
         private uint CountRdpVisibleFramebufferContent(uint bytesPerPixel, uint height)
         {
+            long perfStart = StartPerfTimer();
+            ulong perfPixels = 0;
+            try
+            {
             if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
                 || _rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
@@ -3268,6 +3367,7 @@ namespace Ryu64.MIPS
             if (pixels64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
                 return 0;
 
+            perfPixels = pixels64;
             uint visible = 0;
             uint address = _rdpColorImageAddress;
             for (ulong i = 0; i < pixels64; i++, address += bytesPerPixel)
@@ -3292,10 +3392,21 @@ namespace Ryu64.MIPS
             }
 
             return visible;
+            }
+            finally
+            {
+                if (EnableN64Perf && perfPixels > 0)
+                    Interlocked.Add(ref _perfRdpVisibleScanPixels, perfPixels > long.MaxValue ? long.MaxValue : (long)perfPixels);
+                AddPerfTicks(ref _perfRdpVisibleScanTicks, ref _perfRdpVisibleScanCalls, perfStart);
+            }
         }
 
         private bool HasRdpVisibleFramebufferContent(uint bytesPerPixel, uint minVisiblePixels)
         {
+            long perfStart = StartPerfTimer();
+            ulong perfPixels = 0;
+            try
+            {
             if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
                 || _rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
@@ -3311,6 +3422,7 @@ namespace Ryu64.MIPS
             if (pixels64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
                 return false;
 
+            perfPixels = pixels64;
             uint visible = 0;
             uint address = _rdpColorImageAddress;
             for (ulong i = 0; i < pixels64; i++, address += bytesPerPixel)
@@ -3335,6 +3447,13 @@ namespace Ryu64.MIPS
             }
 
             return false;
+            }
+            finally
+            {
+                if (EnableN64Perf && perfPixels > 0)
+                    Interlocked.Add(ref _perfRdpVisibleScanPixels, perfPixels > long.MaxValue ? long.MaxValue : (long)perfPixels);
+                AddPerfTicks(ref _perfRdpVisibleScanTicks, ref _perfRdpVisibleScanCalls, perfStart);
+            }
         }
 
         public bool TryCopyLastVisibleRdpFramebufferSnapshot(

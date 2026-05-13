@@ -325,15 +325,21 @@ namespace Ryu64.MIPS
 
             InstInfo[][] lookup = FastLookup;
             int idx = ToFastLookupIndex((int)Opcode);
-            IEnumerable<InstInfo> list = lookup[idx] ?? Array.Empty<InstInfo>();
+            InstInfo[] list = lookup[idx];
+            if (list == null)
+                throw new NotImplementedException($"Instruction \"{Convert.ToString(Opcode, 2).PadLeft(32, '0')}\" isn't a implemented MIPS instruction.  PC: 0x{Registers.R4300.PC:x8}");
+
             return GetOpcodeInfoFromList(list, Opcode);
         }
 
-        public static InstInfo GetOpcodeInfoFromList(IEnumerable<InstInfo> InstList, uint Opcode)
+        public static InstInfo GetOpcodeInfoFromList(InstInfo[] InstList, uint Opcode)
         {
-            foreach (InstInfo info in InstList)
+            for (int i = 0; i < InstList.Length; i++)
+            {
+                InstInfo info = InstList[i];
                 if ((Opcode & info.Mask) == info.Value)
                     return info;
+            }
 
             throw new NotImplementedException($"Instruction \"{Convert.ToString(Opcode, 2).PadLeft(32, '0')}\" isn't a implemented MIPS instruction.  PC: 0x{Registers.R4300.PC:x8}");
         }

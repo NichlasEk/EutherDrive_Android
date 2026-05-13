@@ -1124,7 +1124,8 @@ namespace Ryu64.MIPS
         public static void InterpretOpcode(uint Opcode)
         {
             if (Registers.R4300.Reg[0] != 0) Registers.R4300.Reg[0] = 0;
-            TrackHotPcSample(Registers.R4300.PC);
+            if (TraceHotPcSamples)
+                TrackHotPcSample(Registers.R4300.PC);
 
             if (Registers.COP0.Reg[Registers.COP0.COUNT_REG] >= 0xFFFFFFFF)
             {
