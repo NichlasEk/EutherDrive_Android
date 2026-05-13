@@ -767,6 +767,7 @@ namespace Ryu64.MIPS
         private bool _rdpOtherModesZUpdate;
         private bool _rdpOtherModesZCompare;
         private bool _rdpOtherModesZSourceSel;
+        private bool _rdpOtherModesAlphaCompare;
         private bool _rdpCombineModeSet;
         private RdpCombineMode _rdpCombine;
         private uint _rdpTextureImageAddress;
@@ -1494,6 +1495,12 @@ namespace Ryu64.MIPS
                     }
 
                     sampleHits++;
+                    if (ShouldRejectRdpAlpha(rgba))
+                    {
+                        zeroSampleHits++;
+                        continue;
+                    }
+
                     if (!hasFirstSample)
                     {
                         firstSampleS = sampleS;
@@ -2410,6 +2417,7 @@ namespace Ryu64.MIPS
             _rdpOtherModesZUpdate = ((mode >> 5) & 1UL) != 0;
             _rdpOtherModesZCompare = ((mode >> 4) & 1UL) != 0;
             _rdpOtherModesZSourceSel = ((mode >> 2) & 1UL) != 0;
+            _rdpOtherModesAlphaCompare = (mode & 1UL) != 0;
         }
 
         private void ExecuteRdpSetScissor(uint w0, uint w1)
@@ -2756,6 +2764,11 @@ namespace Ryu64.MIPS
                     if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
                     {
                         sampleMisses++;
+                        continue;
+                    }
+                    if (ShouldRejectRdpAlpha(rgba))
+                    {
+                        sampleHits++;
                         continue;
                     }
 
@@ -3164,6 +3177,11 @@ namespace Ryu64.MIPS
         private static bool IsRgbaNonZero(uint rgba)
         {
             return (rgba & 0xFFFFFF00u) != 0;
+        }
+
+        private bool ShouldRejectRdpAlpha(uint rgba)
+        {
+            return _rdpOtherModesAlphaCompare && (rgba & 0xFFu) == 0u;
         }
 
         private bool IsRdpFillColorRgbNonZero(uint bytesPerPixel)
