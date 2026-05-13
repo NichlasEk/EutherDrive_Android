@@ -203,6 +203,7 @@ public partial class MainWindow : Window
     private IEmulatorCore? _pendingPresentCore;
     private int _pendingPresentQueued;
     private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
+    private byte[] _presentSnapshotBuffer = Array.Empty<byte>();
     private TateRotation _tateRotation = TateRotation.Off;
     private byte[] _tateFrameBuffer = Array.Empty<byte>();
 
@@ -825,6 +826,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Technos.XainSleenaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && NeoGeoAdapter.IsSupportedArchive(path))
             return new NeoGeoAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && Pgm2Adapter.IsSupportedArchive(path))
+            return new Pgm2Adapter();
         if (!string.IsNullOrWhiteSpace(path) && KovPgmAdapter.IsSupportedArchive(path))
             return new KovPgmAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
@@ -1022,6 +1025,8 @@ public partial class MainWindow : Window
             target = deco32.GetTargetFps();
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             target = tmnt.GetTargetFps();
+        else if (_core is Pgm2Adapter pgm2)
+            target = pgm2.GetTargetFps();
         else if (_core is NeoGeoAdapter neoGeo)
             target = neoGeo.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
@@ -1815,6 +1820,7 @@ public partial class MainWindow : Window
         {
             PsxAdapter => new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons),
             NeoGeoAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
+            Pgm2Adapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             KovPgmAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             McsArcadeAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
@@ -3628,7 +3634,7 @@ public partial class MainWindow : Window
             StatusText.Text = "ROM selected (recent)";
             AddRecentRom(_romPath);
             RefreshAutoFireUi();
-            if (KovPgmAdapter.IsSupportedArchive(_romPath))
+            if (Pgm2Adapter.IsSupportedArchive(_romPath) || KovPgmAdapter.IsSupportedArchive(_romPath))
             {
                 StatusText.Text = "Starting recent arcade ROM";
                 OnStart(null, null);
@@ -3921,6 +3927,8 @@ public partial class MainWindow : Window
             n64.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is McsArcadeAdapter mcs)
             mcs.SetMasterVolumePercent(effectiveVolumePercent);
+        else if (_core is Pgm2Adapter pgm2)
+            pgm2.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is KovPgmAdapter kov)
             kov.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is NeoGeoAdapter neoGeo)
@@ -4382,6 +4390,7 @@ public partial class MainWindow : Window
             Deco32Adapter => "Data East Deco32",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             NeoGeoAdapter => "Neo Geo",
+            Pgm2Adapter => "IGS PGM2",
             KovPgmAdapter => "IGS PGM",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
@@ -8529,6 +8538,7 @@ public partial class MainWindow : Window
     private static bool IsArcadeInputCore(IEmulatorCore core)
     {
         return core is McsArcadeAdapter
+            or Pgm2Adapter
             or KovPgmAdapter
             or NeoGeoAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
@@ -9184,6 +9194,7 @@ public partial class MainWindow : Window
         _pendingPresentCore = null;
         _pendingPresentQueued = 0;
         _glSwapPresentBuffer = Array.Empty<byte>();
+        _presentSnapshotBuffer = Array.Empty<byte>();
         _tateFrameBuffer = Array.Empty<byte>();
         _psxInterlaceReconstructor.Reset();
         _lastCoreFrameId = -1;
@@ -9246,6 +9257,7 @@ public partial class MainWindow : Window
 
         bool forceOpaque = ForceOpaqueCheck?.IsChecked == true;
         forceOpaque |= core is McsArcadeAdapter
+            or Pgm2Adapter
             or KovPgmAdapter
             or NeoGeoAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
@@ -9258,7 +9270,27 @@ public partial class MainWindow : Window
             return;
         }
 
-        var src = core.GetFrameBuffer(out var w, out var h, out var srcStride);
+        ReadOnlySpan<byte> src;
+        int w;
+        int h;
+        int srcStride;
+        if (ShouldSnapshotFrameBufferForPresentation(core))
+        {
+            lock (_coreAudioLock)
+            {
+                src = core.GetFrameBuffer(out w, out h, out srcStride);
+                int byteCount = Math.Min(src.Length, Math.Max(0, srcStride) * Math.Max(0, h));
+                if (_presentSnapshotBuffer.Length < byteCount)
+                    _presentSnapshotBuffer = new byte[byteCount];
+                src.Slice(0, byteCount).CopyTo(_presentSnapshotBuffer);
+                src = _presentSnapshotBuffer.AsSpan(0, byteCount);
+            }
+        }
+        else
+        {
+            src = core.GetFrameBuffer(out w, out h, out srcStride);
+        }
+
         if (src.IsEmpty || srcStride <= 0 || w <= 0 || h <= 0)
         {
             if (TraceUiPresent)
@@ -9532,6 +9564,7 @@ public partial class MainWindow : Window
         bool applyScanlines = _crtScanlinesEnabled;
         bool useSafeRgbaUpload =
             core is McsArcadeAdapter
+            || core is Pgm2Adapter
             || core is KovPgmAdapter
             || core is NeoGeoAdapter
             || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
@@ -10143,6 +10176,7 @@ public partial class MainWindow : Window
 
     private static bool UsesFourThreeArcadePhysicalAspectPresentation(IEmulatorCore core, int width, int height)
         => core is KovPgmAdapter ||
+           core is Pgm2Adapter ||
            core is NeoGeoAdapter ||
            (core is McsArcadeAdapter && ((width == 448 && height == 224) || (width == 224 && height == 448)));
 
@@ -10179,6 +10213,9 @@ public partial class MainWindow : Window
     private bool ShouldUsePostedPsxAcceleratedPresenter(IEmulatorCore? core)
         => _renderSurface is IAcceleratedRenderSurface
             && core is PsxAdapter;
+
+    private static bool ShouldSnapshotFrameBufferForPresentation(IEmulatorCore core)
+        => core is Pgm2Adapter;
 
     private static bool ShouldUseNativeDesktopPsxPresenter(IEmulatorCore? core)
     {
@@ -10412,6 +10449,7 @@ public partial class MainWindow : Window
                 && _audioEngine != null
                 && core is not EutherDrive.Core.Arcade.Konami.TmntAdapter
                 && core is not McsArcadeAdapter
+                && core is not Pgm2Adapter
                 && core is not KovPgmAdapter)
             {
                 int buffered = _audioEngine.BufferedFrames;
@@ -10481,7 +10519,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10490,6 +10528,7 @@ public partial class MainWindow : Window
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
                                     || core is McsArcadeAdapter
+                                    || core is Pgm2Adapter
                                     || core is KovPgmAdapter
                                     || core is NeoGeoAdapter
                                     || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
@@ -10843,6 +10882,7 @@ public partial class MainWindow : Window
             || _core is N64Adapter
             || _core is SegaCdAdapter
             || _core is McsArcadeAdapter
+            || _core is Pgm2Adapter
             || _core is KovPgmAdapter
             || _core is NeoGeoAdapter
             || _core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
@@ -11411,6 +11451,8 @@ public partial class MainWindow : Window
             return deco32.GetTargetFps() * _speedScale;
         if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             return tmnt.GetTargetFps() * _speedScale;
+        if (_core is Pgm2Adapter pgm2)
+            return pgm2.GetTargetFps() * _speedScale;
         if (_core is NeoGeoAdapter neoGeo)
             return neoGeo.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
@@ -11419,8 +11461,11 @@ public partial class MainWindow : Window
     private void UpdateUiPresentTimerCadence()
     {
         double targetFps = 60.0;
-        if (!ShouldUsePostedPsxAcceleratedPresenter(_core) && _renderBackendMode == RenderBackendMode.OpenGl && _core is PsxAdapter)
+        if (!ShouldUsePostedPsxAcceleratedPresenter(_core)
+            && (_core is PsxAdapter or Pgm2Adapter))
+        {
             targetFps = GetLiveTargetFps();
+        }
 
         if (!double.IsFinite(targetFps) || targetFps < 1.0)
             targetFps = 60.0;

@@ -695,6 +695,10 @@ class Program
                 ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
                 int unchangedFrames = 0;
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                HashSet<int> pgm2DumpFrames = ParseFrameSetEnv("EUTHERDRIVE_PGM2_HEADLESS_DUMP_FRAMES", "EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                int? pgm2DumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_PGM2_HEADLESS_DUMP_FRAME") ?? ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (pgm2DumpFrameSingle.HasValue)
+                    pgm2DumpFrames.Add(pgm2DumpFrameSingle.Value);
                 var pgm2InputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_HEADLESS_INPUT_SCRIPT"));
 
                 Console.WriteLine($"[HEADLESS] PGM2 fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
@@ -722,7 +726,7 @@ class Program
                     if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
                         Console.WriteLine($"[HEADLESS] Frame {frame}: pgm2_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} debug={pgm2.DebugSummary}");
 
-                    if (frame == 0 || frame == 5 || frame == 10)
+                    if (frame == 0 || frame == 5 || frame == 10 || pgm2DumpFrames.Contains(frame))
                         DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
                 }
 

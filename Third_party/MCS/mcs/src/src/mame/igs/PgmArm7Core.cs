@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 
 namespace mame
@@ -54,7 +55,7 @@ public partial class PgmArm7Core
 	public uint OpenBusPrefetch;
 
 	public uint[] PcTrace = new uint[128];
-	public bool[] PcTraceThumb = new bool[64];
+	public bool[] PcTraceThumb = new bool[128];
 	public int PcTraceIndex;
 
 	public bool CrashDetected;
@@ -70,6 +71,29 @@ public partial class PgmArm7Core
 	private bool _prefetchFlushed = true;
 
 	private readonly IPgmArm7Bus Memory;
+	private static readonly bool TracePcRangeEnabled;
+	private static readonly uint TracePcRangeStart;
+	private static readonly uint TracePcRangeEnd;
+	private int _tracePcRangeLines;
+
+	static PgmArm7Core()
+	{
+		string spec = Environment.GetEnvironmentVariable("EUTHERDRIVE_ARM7_TRACE_PC_RANGE");
+		if (string.IsNullOrWhiteSpace(spec))
+			return;
+
+		string[] parts = spec.Split('-', StringSplitOptions.RemoveEmptyEntries);
+		if (parts.Length != 2)
+			return;
+
+		if (uint.TryParse(parts[0].Trim(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint start) &&
+			uint.TryParse(parts[1].Trim(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint end))
+		{
+			TracePcRangeEnabled = true;
+			TracePcRangeStart = Math.Min(start, end);
+			TracePcRangeEnd = Math.Max(start, end);
+		}
+	}
 
 	public PgmArm7Core( IPgmArm7Bus bus )
 	{
@@ -134,6 +158,10 @@ public partial class PgmArm7Core
 
 			uint instrAddr = ThumbMode ? Gprs[15] - 4 : Gprs[15] - 8;
 			CurrentInstructionAddress = instrAddr;
+			int traceSlot = PcTraceIndex & (PcTrace.Length - 1);
+			PcTrace[traceSlot] = instrAddr;
+			PcTraceThumb[traceSlot & (PcTraceThumb.Length - 1)] = ThumbMode;
+			PcTraceIndex++;
 			if ( !Memory.IsExecutableAddress( instrAddr ) )
 			{
 				if ( !CrashDetected )
@@ -150,11 +178,21 @@ public partial class PgmArm7Core
 			}
 
 			InstructionStartCycles = Cycles;
+			uint traceOpcode = ThumbMode ? (_prefetch0 & 0xFFFF) : _prefetch0;
+			uint traceSp = Gprs[13];
+			uint traceLr = Gprs[14];
+			bool traceRange = TracePcRangeEnabled && instrAddr >= TracePcRangeStart && instrAddr <= TracePcRangeEnd && _tracePcRangeLines < 12000;
 
 			if ( ThumbMode )
 				ExecuteThumb();
 			else
 				ExecuteArm();
+
+			if ( traceRange )
+			{
+				_tracePcRangeLines++;
+				Console.WriteLine($"[ARM7:TRACE] pc=0x{instrAddr:X8} mode={(PcTraceThumb[(PcTraceIndex - 1) & (PcTraceThumb.Length - 1)] ? "T" : "A")} op=0x{traceOpcode:X8} sp=0x{traceSp:X8}->0x{Gprs[13]:X8} lr=0x{traceLr:X8}->0x{Gprs[14]:X8} cpsr=0x{GetCpsrRaw():X8}");
+			}
 
 			if ( Halted || CrashDetected )
 				return;

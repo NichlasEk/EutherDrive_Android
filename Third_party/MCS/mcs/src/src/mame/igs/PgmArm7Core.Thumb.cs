@@ -79,7 +79,10 @@ public partial class PgmArm7Core
 					ThumbCondBranch( opcode );
 				break;
 			case 14:
-				ThumbBranch( opcode );
+				if ( (opcode & 0xF800) == 0xE800 )
+					ThumbBranchLinkExchangeSecond( opcode );
+				else
+					ThumbBranch( opcode );
 				break;
 			case 15:
 				ThumbBranchLink( opcode );
@@ -274,8 +277,9 @@ public partial class PgmArm7Core
 				if ( rd == 15 ) _prefetchFlushed = true;
 				break;
 			case 3:
-				ThumbMode = (Gprs[rm] & 1) != 0;
-				Gprs[15] = Gprs[rm] & ~1u;
+				if ( (opcode & 0x0080) != 0 )
+					Gprs[14] = (Gprs[15] - 2) | 1;
+				SetPcInterworking( Gprs[rm] );
 				_prefetchFlushed = true;
 				break;
 		}
@@ -286,7 +290,8 @@ public partial class PgmArm7Core
 		uint rd = (opcode >> 8) & 7;
 		uint offset = (opcode & 0xFF) << 2;
 		uint addr = (Gprs[15] & ~3u) + offset;
-		Gprs[rd] = Memory.Load32( addr );
+		uint value = Memory.Load32( addr );
+		Gprs[rd] = value;
 
 		int dr = (int)((addr >> 24) & 0xF);
 		int wait = Memory.WaitstatesNonseq32[dr] + 2;
@@ -501,7 +506,7 @@ public partial class PgmArm7Core
 			}
 			if ( extraReg )
 			{
-				Gprs[15] = Memory.Load32( addr );
+				SetPcInterworking( Memory.Load32( addr ) );
 				addr += 4;
 				_prefetchFlushed = true;
 			}
@@ -550,7 +555,7 @@ public partial class PgmArm7Core
 		{
 			if ( isLoad )
 			{
-				Gprs[15] = Memory.Load32( addr );
+				SetPcInterworking( Memory.Load32( addr ) );
 				_prefetchFlushed = true;
 			}
 			else
@@ -637,6 +642,15 @@ public partial class PgmArm7Core
 			Gprs[15] = temp;
 			_prefetchFlushed = true;
 		}
+	}
+
+	private void ThumbBranchLinkExchangeSecond( uint opcode )
+	{
+		uint temp = Gprs[14] + ((opcode & 0x7FF) << 1);
+		Gprs[14] = (Gprs[15] - 2) | 1;
+		Gprs[15] = temp & ~3u;
+		ThumbMode = false;
+		_prefetchFlushed = true;
 	}
 
 	private void ThumbSwi( uint opcode )
