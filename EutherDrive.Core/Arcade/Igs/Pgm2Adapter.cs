@@ -437,7 +437,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
         try
         {
+            WriteBgTileDump(Path.Combine(directory, $"{prefix}_bg_tiles.txt"));
             WriteFgTileDump(Path.Combine(directory, $"{prefix}_fg_tiles.txt"));
+            WritePaletteDump(Path.Combine(directory, $"{prefix}_palettes.txt"));
             WriteSpriteListDump(Path.Combine(directory, $"{prefix}_sprites.txt"));
 
             ClearFrame(0xff000000);
@@ -1965,6 +1967,55 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                     $"row={y:D2} col={x:D2} entry=0x{entry:X8} tile=0x{entry & 0x0003ffff:X5} pal={(entry >> 18) & 0x1f:D2} flip={(entry >> 23) & 3}");
             }
         }
+    }
+
+    private void WriteBgTileDump(string path)
+    {
+        const int BgColumns = 64;
+        const int BgRows = 32;
+        using var writer = new StreamWriter(path);
+        writer.WriteLine($"scrollX={ReadGpu16(0)} scrollY={ReadGpu16(2)} visibleWidth={CurrentVisibleWidth()}");
+        for (int y = 0; y < BgRows; y++)
+        {
+            for (int x = 0; x < BgColumns; x++)
+            {
+                uint entry = ReadLe32(_bgVideoRam, ((y * BgColumns) + x) * 4);
+                if (entry == 0)
+                    continue;
+
+                writer.WriteLine(
+                    $"row={y:D2} col={x:D2} entry=0x{entry:X8} tile=0x{entry & 0x0003ffff:X5} pal={(entry >> 18) & 0x0f:D2} flip={(entry >> 23) & 3}");
+            }
+        }
+    }
+
+    private void WritePaletteDump(string path)
+    {
+        using var writer = new StreamWriter(path);
+        WritePaletteDumpSection(writer, "sprite", _spritePaletteRam, 0x40);
+        WritePaletteDumpSection(writer, "bg", _bgPaletteRam, 0x80);
+        WritePaletteDumpSection(writer, "fg", _textPaletteRam, 0x10);
+    }
+
+    private static void WritePaletteDumpSection(StreamWriter writer, string name, byte[] palette, int bankSize)
+    {
+        writer.WriteLine($"[{name}] entries={palette.Length / 4} bankSize={bankSize}");
+        for (int i = 0; i + 3 < palette.Length; i += 4)
+        {
+            uint raw = (uint)(palette[i + 0] | (palette[i + 1] << 8) | (palette[i + 2] << 16) | (palette[i + 3] << 24));
+            if ((raw & 0x00ffffffu) == 0 && i != 0)
+                continue;
+
+            int index = i / 4;
+            int bank = bankSize > 0 ? index / bankSize : 0;
+            int pen = bankSize > 0 ? index % bankSize : index;
+            byte r = (byte)(raw >> 16);
+            byte g = (byte)(raw >> 8);
+            byte b = (byte)raw;
+            writer.WriteLine($"index=0x{index:X03} bank={bank:D3} pen={pen:D3} raw=0x{raw:X8} rgb=({r:D3},{g:D3},{b:D3})");
+        }
+
+        writer.WriteLine();
     }
 
     private void WriteSpriteListDump(string path)

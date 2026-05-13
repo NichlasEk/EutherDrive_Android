@@ -120,7 +120,6 @@
             <StackPanel Spacing="6" VerticalAlignment="Top">
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Button Classes="action compact" Content="Start" Click="OnStart"/>
-              <Button Classes="compact" Content="Coin" Click="OnInsertCoin"/>
               <Button Classes="compact" Content="Stop" Click="OnStop"/>
               <Button Classes="ghost compact" Content="About" Click="OnAbout"/>
               <Button Classes="compact" Content="Input Settings" Click="OnInputSettings"/>
