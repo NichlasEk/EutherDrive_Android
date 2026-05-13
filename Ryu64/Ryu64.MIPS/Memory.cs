@@ -2214,7 +2214,6 @@ namespace Ryu64.MIPS
             RdpTileState tile = _rdpTiles[tileIndex];
             if (!TryReadRdpTextureCoefficients(command, commandAddress, xbusDmem, out RdpTriangleTextureCoefficients tex))
                 return false;
-            useDepth = useDepth && tile.Format != 4u;
 
             uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
             if (maxRows == 0)
@@ -3577,8 +3576,8 @@ namespace Ryu64.MIPS
                     int sampleT;
                     if (flip && UseReferenceTexRectFlip)
                     {
-                        long s1024 = (long)sFixed * 32L + (long)dy * dsdxFixed;
-                        long t1024 = (long)tFixed * 32L + (long)dx * dtdyFixed;
+                        long s1024 = (long)sFixed * 32L + (long)dy * dtdyFixed;
+                        long t1024 = (long)tFixed * 32L + (long)dx * dsdxFixed;
                         sampleS = RdpTexRectFixedToTexel(s1024);
                         sampleT = RdpTexRectFixedToTexel(t1024);
                     }
