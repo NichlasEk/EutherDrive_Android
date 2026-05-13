@@ -770,6 +770,7 @@ namespace Ryu64.MIPS
         private bool _rdpOtherModesAlphaCompare;
         private bool _rdpOtherModesForceBlend;
         private bool _rdpOtherModesImageRead;
+        private uint _rdpOtherModesCvgDest;
         private bool _rdpCombineModeSet;
         private RdpCombineMode _rdpCombine;
         private uint _rdpTextureImageAddress;
@@ -2417,6 +2418,7 @@ namespace Ryu64.MIPS
             _rdpOtherModesPerspectiveTexture = ((mode >> 51) & 1UL) != 0;
             _rdpOtherModesForceBlend = ((mode >> 14) & 1UL) != 0;
             _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
+            _rdpOtherModesCvgDest = (uint)((mode >> 8) & 0x3UL);
             _rdpOtherModesImageRead = ((mode >> 6) & 1UL) != 0;
             _rdpOtherModesZUpdate = ((mode >> 5) & 1UL) != 0;
             _rdpOtherModesZCompare = ((mode >> 4) & 1UL) != 0;
@@ -3438,9 +3440,10 @@ namespace Ryu64.MIPS
                 case 2u:
                     if (address + 1u >= RDRAM.Length)
                         return;
-                    ushort color16 = Rgba8888ToRgba5551(rgba);
+                    ushort color16 = ApplyRdpColorCoverage(Rgba8888ToRgba5551(rgba));
                     RDRAM[address] = (byte)(color16 >> 8);
                     RDRAM[address + 1u] = (byte)color16;
+                    StoreRdpColorCoverage(address, color16);
                     break;
                 case 4u:
                     if (address + 3u >= RDRAM.Length)
@@ -3451,6 +3454,23 @@ namespace Ryu64.MIPS
                     RDRAM[address + 3u] = (byte)rgba;
                     break;
             }
+        }
+
+        private ushort ApplyRdpColorCoverage(ushort color16)
+        {
+            return _rdpOtherModesCvgDest == 3u ? color16 : (ushort)(color16 | 1u);
+        }
+
+        private void StoreRdpColorCoverage(uint address, ushort color16)
+        {
+            uint hiddenIndex = address >> 1;
+            if (hiddenIndex >= _rdpHiddenBits.Length)
+                return;
+
+            if (_rdpOtherModesCvgDest == 3u)
+                return;
+
+            _rdpHiddenBits[hiddenIndex] = (byte)((color16 & 1u) != 0 ? 3u : 0u);
         }
 
         private bool ShouldBlendRdpPixel(uint rgba)
