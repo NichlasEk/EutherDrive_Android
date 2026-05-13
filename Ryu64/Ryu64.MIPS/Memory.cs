@@ -34,6 +34,10 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_COMMANDS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRdpTextureRectangles =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_TEXRECT"), "1", StringComparison.Ordinal);
+        private static readonly bool UseReferenceTexRectFlip =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_FLIP"), "1", StringComparison.Ordinal);
+        private static readonly bool UseReferenceTexRectExtents =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_EXTENTS"), "1", StringComparison.Ordinal);
         private static readonly uint? TraceWatchAddress = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_ADDR");
         private static readonly uint? TraceWatchRangeStart = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_START");
         private static readonly uint? TraceWatchRangeEnd = ParseOptionalHexEnv("EUTHERDRIVE_TRACE_N64_WATCH_RANGE_END");
@@ -81,6 +85,7 @@ namespace Ryu64.MIPS
         private static int _traceRdpTexRectWriteCount;
         private static int _traceRdpTextureLoadCount;
         private static int _traceRdpTriangleCount;
+        private static int _traceRdpTriangleWriteCount;
         private static int _traceRdpFillRectCount;
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
@@ -92,6 +97,7 @@ namespace Ryu64.MIPS
         private const int TraceRdpTexRectWriteLimit = 64;
         private const int TraceRdpTextureLoadLimit = 128;
         private const int TraceRdpTriangleLimit = 128;
+        private const int TraceRdpTriangleWriteLimit = 64;
         private const int TraceRdpFillRectLimit = 64;
         private static bool _warnedRspTaskStub;
         private const uint SpStatusHalt = 0x00000001u;
@@ -647,6 +653,10 @@ namespace Ryu64.MIPS
         private uint _rdpPrimColor = 0xFFFFFFFFu;
         private uint _rdpEnvColor = 0xFFFFFFFFu;
         private uint _rdpBlendColor = 0xFFFFFFFFu;
+        private uint _rdpFogColor = 0x000000FFu;
+        private uint _rdpOtherModesCycleType;
+        private bool _rdpOtherModesEnableTlut;
+        private bool _rdpOtherModesTlutType;
         private uint _rdpTextureImageAddress;
         private uint _rdpTextureImageWidth;
         private uint _rdpTextureImageSize;
@@ -997,16 +1007,18 @@ namespace Ryu64.MIPS
                     case 0x24: // TextureRectangle
                     case 0x25: // TextureRectangleFlip
                         Interlocked.Increment(ref _rdpTextureRectangleCommandCount);
-                        ExecuteRdpTextureRectangle(w0, w1, ReadRdpCommandWord(current + 8u, xbusDmem), ReadRdpCommandWord(current + 12u, xbusDmem));
+                        ExecuteRdpTextureRectangle(command, w0, w1, ReadRdpCommandWord(current + 8u, xbusDmem), ReadRdpCommandWord(current + 12u, xbusDmem));
                         break;
                     case 0x26: // SyncLoad
                     case 0x27: // SyncPipe
                     case 0x28: // SyncTile
                     case 0x29: // SyncFull
                     case 0x2D: // SetScissor
-                    case 0x2F: // SetOtherModes
                     case 0x3C: // SetCombineMode
                     case 0x3E: // SetMaskImage
+                        break;
+                    case 0x2F: // SetOtherModes
+                        ExecuteRdpSetOtherModes(w0, w1);
                         break;
                     case 0x30: // LoadTLut
                         ExecuteRdpLoadTlut(w0, w1);
@@ -1029,6 +1041,9 @@ namespace Ryu64.MIPS
                         break;
                     case 0x37: // SetFillColor
                         _rdpFillColor = w1;
+                        break;
+                    case 0x38: // SetFogColor
+                        _rdpFogColor = w1;
                         break;
                     case 0x39: // SetBlendColor
                         _rdpBlendColor = w1;
@@ -1110,6 +1125,12 @@ namespace Ryu64.MIPS
             return ReadUInt32Physical(physical);
         }
 
+        private ulong ReadRdpCommandDoubleWord(uint address, bool xbusDmem)
+        {
+            return ((ulong)ReadRdpCommandWord(address, xbusDmem) << 32) |
+                   ReadRdpCommandWord(address + 4u, xbusDmem);
+        }
+
         private static int GetRdpCommandWordLength(int command)
         {
             if (command >= 0x08 && command <= 0x0F)
@@ -1158,18 +1179,256 @@ namespace Ryu64.MIPS
             double xm = RdpTriangleXToScreen(w6);
             double dxmdy = RdpTriangleDeltaXToScreen(w7);
             bool flip = (w0 & 0x00800000u) != 0;
+            int tileIndex = (int)((w0 >> 16) & 0x7u);
 
             uint rgba = SelectRdpTriangleColor(command, commandAddress, xbusDmem);
-            bool wrote = DrawRdpTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, rgba, bytesPerPixel);
+            bool wrote = false;
+            if ((command & 0x02) != 0)
+            {
+                wrote = DrawRdpTexturedTriangle(
+                    command,
+                    commandAddress,
+                    xbusDmem,
+                    tileIndex,
+                    xh,
+                    dxhdy,
+                    xm,
+                    dxmdy,
+                    xl,
+                    dxldy,
+                    yh,
+                    ym,
+                    yl,
+                    flip,
+                    bytesPerPixel);
+            }
+            if (!wrote)
+            {
+                if ((command & 0x04) != 0 && TryReadRdpShadeCoefficients(commandAddress, xbusDmem, out RdpTriangleShadeCoefficients shade))
+                    wrote = DrawRdpShadedTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, shade, bytesPerPixel);
+                else
+                    wrote = DrawRdpTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, rgba, bytesPerPixel);
+            }
 
             if (TraceRdpCommands && _traceRdpTriangleCount < TraceRdpTriangleLimit)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64RDP] triangle cmd=0x{command:x2} ci=0x{_rdpColorImageAddress:x8} size={_rdpColorImageSize} width={_rdpColorImageWidth} " +
-                    $"yh={yh:0.##} ym={ym:0.##} yl={yl:0.##} xh={xh:0.##}/{dxhdy:0.####} xm={xm:0.##}/{dxmdy:0.####} xl={xl:0.##}/{dxldy:0.####} flip={flip} " +
+                    $"yh={yh:0.##} ym={ym:0.##} yl={yl:0.##} xh={xh:0.##}/{dxhdy:0.####} xm={xm:0.##}/{dxmdy:0.####} xl={xl:0.##}/{dxldy:0.####} flip={flip} tile={tileIndex} " +
                     $"rgba=0x{rgba:x8} wrote={wrote}");
                 _traceRdpTriangleCount++;
             }
+        }
+
+        private bool DrawRdpTexturedTriangle(
+            int command,
+            uint commandAddress,
+            bool xbusDmem,
+            int tileIndex,
+            double xh,
+            double dxhdy,
+            double xm,
+            double dxmdy,
+            double xl,
+            double dxldy,
+            double yh,
+            double ym,
+            double yl,
+            bool flip,
+            uint bytesPerPixel)
+        {
+            if ((uint)tileIndex >= _rdpTiles.Length || yl <= yh)
+                return false;
+
+            RdpTileState tile = _rdpTiles[tileIndex];
+            if (!TryReadRdpTextureCoefficients(command, commandAddress, xbusDmem, out RdpTriangleTextureCoefficients tex))
+                return false;
+
+            uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
+            if (maxRows == 0)
+                return false;
+
+            int firstY = Math.Max(0, (int)Math.Floor(yh));
+            int lastY = Math.Min((int)maxRows - 1, (int)Math.Ceiling(yl) - 1);
+            if (lastY < firstY)
+                return false;
+
+            bool wroteAny = false;
+            long sampleHits = 0;
+            long nonZeroSampleHits = 0;
+            long sampleMisses = 0;
+            long zeroSampleHits = 0;
+            int firstSampleS = 0;
+            int firstSampleT = 0;
+            uint firstSampleRgba = 0;
+            bool hasFirstSample = false;
+            for (int y = firstY; y <= lastY; y++)
+            {
+                double sampleY = y + 0.5;
+                if (sampleY < yh || sampleY >= yl)
+                    continue;
+
+                double majorX = xh + (sampleY - yh) * dxhdy;
+                double minorX = sampleY < ym
+                    ? xm + (sampleY - yh) * dxmdy
+                    : xl + (sampleY - ym) * dxldy;
+                double left = flip ? majorX : minorX;
+                double right = flip ? minorX : majorX;
+                if (right < left)
+                {
+                    double tmp = left;
+                    left = right;
+                    right = tmp;
+                }
+
+                int firstX = Math.Max(0, (int)Math.Floor(left));
+                int lastX = Math.Min((int)_rdpColorImageWidth - 1, (int)Math.Ceiling(right) - 1);
+                if (lastX < firstX)
+                    continue;
+
+                long yStep = (long)Math.Round(sampleY - yh);
+                long rowS = tex.S + yStep * tex.DsDe;
+                long rowT = tex.T + yStep * tex.DtDe;
+                uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
+                bool rowWrote = false;
+                for (int x = firstX; x <= lastX; x++)
+                {
+                    long xStep = (long)Math.Round(x + 0.5 - left);
+                    int sampleS = RdpTriangleTextureFixedToTexel(rowS + xStep * tex.DsDx);
+                    int sampleT = RdpTriangleTextureFixedToTexel(rowT + xStep * tex.DtDx);
+                    if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
+                    {
+                        sampleMisses++;
+                        continue;
+                    }
+
+                    sampleHits++;
+                    if (!hasFirstSample)
+                    {
+                        firstSampleS = sampleS;
+                        firstSampleT = sampleT;
+                        firstSampleRgba = rgba;
+                        hasFirstSample = true;
+                    }
+
+                    if (!IsRgbaNonZero(rgba))
+                    {
+                        zeroSampleHits++;
+                        continue;
+                    }
+
+                    uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
+                    WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
+                    nonZeroSampleHits++;
+                    rowWrote = true;
+                    wroteAny = true;
+                }
+
+                if (rowWrote)
+                    NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
+            }
+
+            if (TraceRdpCommands && _traceRdpTriangleWriteCount < TraceRdpTriangleWriteLimit)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64RDP] tritex-write ci=0x{_rdpColorImageAddress:x8} tile={tileIndex} hits={sampleHits} nz={nonZeroSampleHits} zero={zeroSampleHits} miss={sampleMisses} " +
+                    $"firstS={firstSampleS} firstT={firstSampleT} firstRgba=0x{firstSampleRgba:x8} " +
+                    $"tex=s{tex.S}:t{tex.T}:w{tex.W}:dsdx{tex.DsDx}:dtdx{tex.DtDx}:dwdx{tex.DwDx}:dsde{tex.DsDe}:dtde{tex.DtDe}:dwde{tex.DwDe}:dsdy{tex.DsDy}:dtdy{tex.DtDy}:dwdy{tex.DwDy} " +
+                    $"raw={tex.Raw0:x16},{tex.Raw1:x16},{tex.Raw2:x16},{tex.Raw3:x16},{tex.Raw4:x16},{tex.Raw5:x16},{tex.Raw6:x16},{tex.Raw7:x16} " +
+                    $"tile=fmt{tile.Format}:sz{tile.Size}:line{tile.Line}:tmem0x{tile.Tmem:x}:mask{tile.MaskS}/{tile.MaskT}:shift{tile.ShiftS}/{tile.ShiftT}:uls{tile.Uls}:ult{tile.Ult}:lrs{tile.Lrs}:lrt{tile.Lrt}");
+                _traceRdpTriangleWriteCount++;
+            }
+
+            NoteRdpPixelWrites(sampleHits, nonZeroSampleHits);
+            if (wroteAny)
+            {
+                MarkRdpColorImageWritten(bytesPerPixel);
+                if (nonZeroSampleHits >= 256 || HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+            }
+            return nonZeroSampleHits >= 256;
+        }
+
+        private struct RdpTriangleTextureCoefficients
+        {
+            public int S;
+            public int T;
+            public int W;
+            public int DsDx;
+            public int DtDx;
+            public int DwDx;
+            public int DsDe;
+            public int DtDe;
+            public int DwDe;
+            public int DsDy;
+            public int DtDy;
+            public int DwDy;
+            public ulong Raw0;
+            public ulong Raw1;
+            public ulong Raw2;
+            public ulong Raw3;
+            public ulong Raw4;
+            public ulong Raw5;
+            public ulong Raw6;
+            public ulong Raw7;
+        }
+
+        private bool TryReadRdpTextureCoefficients(int command, uint commandAddress, bool xbusDmem, out RdpTriangleTextureCoefficients coefficients)
+        {
+            coefficients = default;
+            if ((command & 0x02) == 0)
+                return false;
+
+            int textureBase = 4;
+            if ((command & 0x04) != 0)
+                textureBase += 8;
+            uint textureAddress = commandAddress + (uint)(textureBase * 8);
+
+            ulong texture0 = ReadRdpCommandDoubleWord(textureAddress, xbusDmem);
+            ulong texture1 = ReadRdpCommandDoubleWord(textureAddress + 8u, xbusDmem);
+            ulong texture2 = ReadRdpCommandDoubleWord(textureAddress + 16u, xbusDmem);
+            ulong texture3 = ReadRdpCommandDoubleWord(textureAddress + 24u, xbusDmem);
+            ulong texture4 = ReadRdpCommandDoubleWord(textureAddress + 32u, xbusDmem);
+            ulong texture5 = ReadRdpCommandDoubleWord(textureAddress + 40u, xbusDmem);
+            ulong texture6 = ReadRdpCommandDoubleWord(textureAddress + 48u, xbusDmem);
+            ulong texture7 = ReadRdpCommandDoubleWord(textureAddress + 56u, xbusDmem);
+
+            coefficients.S = RdpPackedTextureComponent(texture0, texture2, 32, 48);
+            coefficients.T = RdpPackedTextureComponent(texture0, texture2, 16, 32);
+            coefficients.W = RdpPackedTextureComponent(texture0, texture2, 0, 16);
+            coefficients.DsDx = RdpPackedTextureComponent(texture1, texture3, 32, 48);
+            coefficients.DtDx = RdpPackedTextureComponent(texture1, texture3, 16, 32);
+            coefficients.DwDx = RdpPackedTextureComponent(texture1, texture3, 0, 16);
+            coefficients.DsDe = RdpPackedTextureComponent(texture4, texture6, 32, 48);
+            coefficients.DtDe = RdpPackedTextureComponent(texture4, texture6, 16, 32);
+            coefficients.DwDe = RdpPackedTextureComponent(texture4, texture6, 0, 16);
+            coefficients.DsDy = RdpPackedTextureComponent(texture5, texture7, 32, 48);
+            coefficients.DtDy = RdpPackedTextureComponent(texture5, texture7, 16, 32);
+            coefficients.DwDy = RdpPackedTextureComponent(texture5, texture7, 0, 16);
+            coefficients.Raw0 = texture0;
+            coefficients.Raw1 = texture1;
+            coefficients.Raw2 = texture2;
+            coefficients.Raw3 = texture3;
+            coefficients.Raw4 = texture4;
+            coefficients.Raw5 = texture5;
+            coefficients.Raw6 = texture6;
+            coefficients.Raw7 = texture7;
+            return true;
+        }
+
+        private static int RdpPackedTextureComponent(ulong highWord, ulong lowWord, int highShift, int lowShift)
+        {
+            return unchecked((int)(((highWord >> highShift) & 0xFFFF0000UL) | ((lowWord >> lowShift) & 0x0000FFFFUL)));
+        }
+
+        private static int RdpTriangleTextureFixedToTexel(long value)
+        {
+            long texel = value >> 19;
+            if (texel > int.MaxValue)
+                return int.MaxValue;
+            if (texel < int.MinValue)
+                return int.MinValue;
+            return (int)texel;
         }
 
         private bool DrawRdpTriangle(
@@ -1246,6 +1505,107 @@ namespace Ryu64.MIPS
             return wroteAny;
         }
 
+        private struct RdpTriangleShadeCoefficients
+        {
+            public int R;
+            public int G;
+            public int B;
+            public int A;
+            public int DrDx;
+            public int DgDx;
+            public int DbDx;
+            public int DaDx;
+            public int DrDe;
+            public int DgDe;
+            public int DbDe;
+            public int DaDe;
+        }
+
+        private bool DrawRdpShadedTriangle(
+            double xh,
+            double dxhdy,
+            double xm,
+            double dxmdy,
+            double xl,
+            double dxldy,
+            double yh,
+            double ym,
+            double yl,
+            bool flip,
+            RdpTriangleShadeCoefficients shade,
+            uint bytesPerPixel)
+        {
+            if (yl <= yh)
+                return false;
+
+            uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
+            if (maxRows == 0)
+                return false;
+
+            int firstY = Math.Max(0, (int)Math.Floor(yh));
+            int lastY = Math.Min((int)maxRows - 1, (int)Math.Ceiling(yl) - 1);
+            if (lastY < firstY)
+                return false;
+
+            bool wroteAny = false;
+            long writtenPixels = 0;
+            for (int y = firstY; y <= lastY; y++)
+            {
+                double sampleY = y + 0.5;
+                if (sampleY < yh || sampleY >= yl)
+                    continue;
+
+                double majorX = xh + (sampleY - yh) * dxhdy;
+                double minorX = sampleY < ym
+                    ? xm + (sampleY - yh) * dxmdy
+                    : xl + (sampleY - ym) * dxldy;
+                double left = flip ? majorX : minorX;
+                double right = flip ? minorX : majorX;
+                if (right < left)
+                {
+                    double tmp = left;
+                    left = right;
+                    right = tmp;
+                }
+
+                int firstX = Math.Max(0, (int)Math.Floor(left));
+                int lastX = Math.Min((int)_rdpColorImageWidth - 1, (int)Math.Ceiling(right) - 1);
+                if (lastX < firstX)
+                    continue;
+
+                long yStep = (long)Math.Round(sampleY - yh);
+                long rowR = shade.R + yStep * (long)shade.DrDe;
+                long rowG = shade.G + yStep * (long)shade.DgDe;
+                long rowB = shade.B + yStep * (long)shade.DbDe;
+                long rowA = shade.A + yStep * (long)shade.DaDe;
+                for (int x = firstX; x <= lastX; x++)
+                {
+                    long xStep = (long)Math.Round(x + 0.5 - left);
+                    uint rgba = RdpShadeToRgba(
+                        rowR + xStep * (long)shade.DrDx,
+                        rowG + xStep * (long)shade.DgDx,
+                        rowB + xStep * (long)shade.DbDx,
+                        rowA + xStep * (long)shade.DaDx);
+                    uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
+                    WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
+                    wroteAny = true;
+                }
+
+                writtenPixels += lastX - firstX + 1;
+                uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
+                NoteRdramWriteRange(rowStart, (uint)(lastX - firstX + 1) * bytesPerPixel);
+            }
+
+            NoteRdpPixelWrites(writtenPixels, writtenPixels);
+            if (wroteAny)
+            {
+                MarkRdpColorImageWritten(bytesPerPixel);
+                if (writtenPixels >= 256 || (writtenPixels >= 32 && HasRdpVisibleFramebufferContent(bytesPerPixel, 512u)))
+                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
+            }
+            return wroteAny;
+        }
+
         private uint SelectRdpTriangleColor(int command, uint commandAddress, bool xbusDmem)
         {
             if ((command & 0x04) != 0 && TryReadRdpShadeColor(commandAddress, xbusDmem, out uint shade))
@@ -1259,24 +1619,63 @@ namespace Ryu64.MIPS
 
         private bool TryReadRdpShadeColor(uint commandAddress, bool xbusDmem, out uint rgba)
         {
-            uint w8 = ReadRdpCommandWord(commandAddress + 32u, xbusDmem);
-            uint w9 = ReadRdpCommandWord(commandAddress + 36u, xbusDmem);
-            uint r = RdpShadeComponentTo8(w8 >> 16);
-            uint g = RdpShadeComponentTo8(w8);
-            uint b = RdpShadeComponentTo8(w9 >> 16);
-            uint a = RdpShadeComponentTo8(w9);
-            rgba = (r << 24) | (g << 16) | (b << 8) | (a == 0 ? 0xFFu : a);
+            if (!TryReadRdpShadeCoefficients(commandAddress, xbusDmem, out RdpTriangleShadeCoefficients shade))
+            {
+                rgba = 0;
+                return false;
+            }
+
+            rgba = RdpShadeToRgba(shade.R, shade.G, shade.B, shade.A);
             return (rgba & 0xFFFFFF00u) != 0;
         }
 
-        private static uint RdpShadeComponentTo8(uint value)
+        private bool TryReadRdpShadeCoefficients(uint commandAddress, bool xbusDmem, out RdpTriangleShadeCoefficients coefficients)
         {
-            value &= 0xFFFFu;
-            if ((value & 0x8000u) != 0)
+            ulong shade0 = ReadRdpCommandDoubleWord(commandAddress + 32u, xbusDmem);
+            ulong shade1 = ReadRdpCommandDoubleWord(commandAddress + 40u, xbusDmem);
+            ulong shade2 = ReadRdpCommandDoubleWord(commandAddress + 48u, xbusDmem);
+            ulong shade3 = ReadRdpCommandDoubleWord(commandAddress + 56u, xbusDmem);
+            ulong shade4 = ReadRdpCommandDoubleWord(commandAddress + 64u, xbusDmem);
+            ulong shade6 = ReadRdpCommandDoubleWord(commandAddress + 80u, xbusDmem);
+
+            coefficients = new RdpTriangleShadeCoefficients
+            {
+                R = RdpPackedTextureComponent(shade0, shade2, 32, 48),
+                G = RdpPackedTextureComponent(shade0, shade2, 16, 32),
+                B = RdpPackedTextureComponent(shade0, shade2, 0, 16),
+                A = RdpPackedAlphaComponent(shade0, shade2),
+                DrDx = RdpPackedTextureComponent(shade1, shade3, 32, 48),
+                DgDx = RdpPackedTextureComponent(shade1, shade3, 16, 32),
+                DbDx = RdpPackedTextureComponent(shade1, shade3, 0, 16),
+                DaDx = RdpPackedAlphaComponent(shade1, shade3),
+                DrDe = RdpPackedTextureComponent(shade4, shade6, 32, 48),
+                DgDe = RdpPackedTextureComponent(shade4, shade6, 16, 32),
+                DbDe = RdpPackedTextureComponent(shade4, shade6, 0, 16),
+                DaDe = RdpPackedAlphaComponent(shade4, shade6)
+            };
+            return true;
+        }
+
+        private static int RdpPackedAlphaComponent(ulong highWord, ulong lowWord)
+        {
+            return unchecked((int)(((highWord << 16) & 0xFFFF0000UL) | (lowWord & 0x0000FFFFUL)));
+        }
+
+        private static uint RdpShadeToRgba(long rFixed, long gFixed, long bFixed, long aFixed)
+        {
+            uint r = RdpShadeFixedComponentTo8(rFixed);
+            uint g = RdpShadeFixedComponentTo8(gFixed);
+            uint b = RdpShadeFixedComponentTo8(bFixed);
+            uint a = RdpShadeFixedComponentTo8(aFixed);
+            return (r << 24) | (g << 16) | (b << 8) | (a == 0 ? 0xFFu : a);
+        }
+
+        private static uint RdpShadeFixedComponentTo8(long value)
+        {
+            long component = value >> 16;
+            if (component <= 0)
                 return 0;
-            if (value > 0xFFu)
-                value >>= 8;
-            return Math.Min(0xFFu, value);
+            return (uint)Math.Min(0xFFL, component);
         }
 
         private static double RdpTriangleYToScreen(uint value)
@@ -1346,8 +1745,17 @@ namespace Ryu64.MIPS
         private void ExecuteRdpSetTile(uint w0, uint w1)
         {
             int tileIndex = (int)((w1 >> 24) & 0x7u);
-            _rdpTiles[tileIndex].Format = (w0 >> 21) & 0x7u;
-            _rdpTiles[tileIndex].Size = (w0 >> 19) & 0x3u;
+            uint format = (w0 >> 21) & 0x7u;
+            uint size = (w0 >> 19) & 0x3u;
+            if (format == 4u && size > 1u)
+                format = 0u;
+            if (format == 2u && size > 1u)
+                format = 0u;
+            if (format == 0u && size < 2u)
+                format = 2u;
+
+            _rdpTiles[tileIndex].Format = format;
+            _rdpTiles[tileIndex].Size = size;
             _rdpTiles[tileIndex].Line = (w0 >> 9) & 0x1FFu;
             _rdpTiles[tileIndex].Tmem = w0 & 0x1FFu;
             _rdpTiles[tileIndex].Palette = (w1 >> 20) & 0xFu;
@@ -1355,6 +1763,14 @@ namespace Ryu64.MIPS
             _rdpTiles[tileIndex].ShiftT = (w1 >> 10) & 0xFu;
             _rdpTiles[tileIndex].MaskS = (w1 >> 4) & 0xFu;
             _rdpTiles[tileIndex].ShiftS = w1 & 0xFu;
+        }
+
+        private void ExecuteRdpSetOtherModes(uint w0, uint w1)
+        {
+            ulong mode = ((ulong)w0 << 32) | w1;
+            _rdpOtherModesCycleType = (uint)((mode >> 52) & 0x3UL);
+            _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
+            _rdpOtherModesTlutType = ((mode >> 46) & 1UL) != 0;
         }
 
         private void ExecuteRdpSetTileSize(uint w0, uint w1)
@@ -1373,12 +1789,32 @@ namespace Ryu64.MIPS
                 return;
 
             int tileIndex = (int)((w1 >> 24) & 0x7u);
+            uint sl = ((w0 >> 12) & 0x0FFFu) >> 2;
+            uint tl = (w0 & 0x0FFFu) >> 2;
+            uint sh = ((w1 >> 12) & 0x0FFFu) >> 2;
+            if (sh < sl)
+                return;
+
+            uint entries = Math.Min(256u, sh - sl + 1u);
+            uint sourceRowBytes = RdpPackedBytesForTexels(_rdpTextureImageWidth == 0 ? 1u : _rdpTextureImageWidth, _rdpTextureImageSize);
+            uint sourceAddress = _rdpTextureImageAddress + tl * sourceRowBytes + sl * 2u;
             uint paletteOffset = Math.Min(255u, _rdpTiles[tileIndex].Palette * 16u);
-            uint entries = Math.Min(256u - paletteOffset, Math.Min(256u, (uint)((RDRAM.Length - _rdpTextureImageAddress) / 2u)));
             for (uint i = 0; i < entries; i++)
             {
-                uint address = _rdpTextureImageAddress + i * 2u;
-                _rdpTlut[paletteOffset + i] = (ushort)((RDRAM[address] << 8) | RDRAM[address + 1u]);
+                uint address = sourceAddress + i * 2u;
+                if (address + 1u >= RDRAM.Length || paletteOffset + i >= _rdpTlut.Length)
+                    break;
+
+                ushort color = (ushort)((RDRAM[address] << 8) | RDRAM[address + 1u]);
+                _rdpTlut[paletteOffset + i] = color;
+
+                uint tmemWord = (_rdpTiles[tileIndex].Tmem << 2) + i * 4u;
+                uint tmemAddress = tmemWord * 2u;
+                for (uint replicate = 0; replicate < 4u && tmemAddress + 1u < _rdpTmem.Length; replicate++, tmemAddress += 2u)
+                {
+                    _rdpTmem[tmemAddress] = (byte)(color >> 8);
+                    _rdpTmem[tmemAddress + 1u] = (byte)color;
+                }
             }
         }
 
@@ -1457,7 +1893,7 @@ namespace Ryu64.MIPS
             _traceRdpTextureLoadCount++;
         }
 
-        private void ExecuteRdpTextureRectangle(uint w0, uint w1, uint w2, uint w3)
+        private void ExecuteRdpTextureRectangle(int command, uint w0, uint w1, uint w2, uint w3)
         {
             uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
             if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
@@ -1466,8 +1902,13 @@ namespace Ryu64.MIPS
                 || bytesPerPixel == 0)
                 return;
 
-            uint x1 = ((w0 >> 12) & 0x0FFFu) >> 2;
-            uint y1 = (w0 & 0x0FFFu) >> 2;
+            uint rawX1 = (w0 >> 12) & 0x0FFFu;
+            uint rawY1 = w0 & 0x0FFFu;
+            if (UseReferenceTexRectExtents && (_rdpOtherModesCycleType == 2u || _rdpOtherModesCycleType == 3u))
+                rawY1 |= 3u;
+
+            uint x1 = rawX1 >> 2;
+            uint y1 = rawY1 >> 2;
             uint x0 = ((w1 >> 12) & 0x0FFFu) >> 2;
             uint y0 = (w1 & 0x0FFFu) >> 2;
             if (x1 < x0)
@@ -1487,14 +1928,14 @@ namespace Ryu64.MIPS
             {
                 int tileIndex = (int)((w1 >> 24) & 0x7u);
                 Common.Logger.PrintWarningLine(
-                    $"[N64RDP] texrect ci=0x{_rdpColorImageAddress:x8} size={_rdpColorImageSize} width={_rdpColorImageWidth} " +
+                    $"[N64RDP] texrect cmd=0x{command:x2} ci=0x{_rdpColorImageAddress:x8} size={_rdpColorImageSize} width={_rdpColorImageWidth} " +
                     $"rect=({x0},{y0})-({x1},{y1}) tile={tileIndex} ti=0x{_rdpTextureImageAddress:x8}/{_rdpTextureImageFormat}:{_rdpTextureImageSize}x{_rdpTextureImageWidth} " +
                     $"tmem=0x{_rdpTiles[tileIndex].Tmem:x} line={_rdpTiles[tileIndex].Line} fmt={_rdpTiles[tileIndex].Format}:{_rdpTiles[tileIndex].Size} " +
                     $"w0=0x{w0:x8} w1=0x{w1:x8} w2=0x{w2:x8} w3=0x{w3:x8}");
                 _traceRdpTexRectCount++;
             }
 
-            if (!DrawRdpTexturedRectangle(x0, y0, x1, y1, (int)((w1 >> 24) & 0x7u), w2, w3, bytesPerPixel))
+            if (!DrawRdpTexturedRectangle(x0, y0, x1, y1, (int)((w1 >> 24) & 0x7u), w2, w3, command == 0x25, bytesPerPixel))
                 DrawRdpSolidRectangle(x0, y0, x1, y1, SelectRdpSolidColor(), bytesPerPixel);
         }
 
@@ -1565,9 +2006,13 @@ namespace Ryu64.MIPS
             bool visibleFill = IsRdpFillColorRgbNonZero(bytesPerPixel);
             NoteRdpPixelWrites(pixels, visibleFill ? pixels : 0);
             MarkRdpColorImageWritten(bytesPerPixel);
+            if (visibleFill
+                && _rdpColorImageAddress >= 0x00300000u
+                && (pixels >= 256 || HasRdpVisibleFramebufferContent(bytesPerPixel, 512u)))
+                CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
         }
 
-        private bool DrawRdpTexturedRectangle(uint x0, uint y0, uint x1, uint y1, int tileIndex, uint w2, uint w3, uint bytesPerPixel)
+        private bool DrawRdpTexturedRectangle(uint x0, uint y0, uint x1, uint y1, int tileIndex, uint w2, uint w3, bool flip, uint bytesPerPixel)
         {
             if ((uint)tileIndex >= _rdpTiles.Length || x0 >= _rdpColorImageWidth)
                 return false;
@@ -1602,10 +2047,25 @@ namespace Ryu64.MIPS
             {
                 uint rowStart = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0) * bytesPerPixel);
                 uint rowPixels = x1 - x0 + 1u;
+                bool rowWrote = false;
                 for (uint x = 0; x < rowPixels; x++)
                 {
-                    int sampleS = (int)Math.Floor(startS + x * stepS);
-                    int sampleT = (int)Math.Floor(startT + (y - y0) * stepT);
+                    uint dy = y - y0;
+                    int sampleS;
+                    int sampleT;
+                    if (flip && UseReferenceTexRectFlip)
+                    {
+                        long s1024 = (long)sFixed * 32L + (long)dy * dsdxFixed;
+                        long t1024 = (long)tFixed * 32L + (long)x * dtdyFixed;
+                        sampleS = RdpTexRectFixedToTexel(s1024);
+                        sampleT = RdpTexRectFixedToTexel(t1024);
+                    }
+                    else
+                    {
+                        sampleS = (int)Math.Floor(startS + x * stepS);
+                        sampleT = (int)Math.Floor(startT + dy * stepT);
+                    }
+
                     if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
                     {
                         sampleMisses++;
@@ -1620,6 +2080,7 @@ namespace Ryu64.MIPS
                     }
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     sampleHits++;
+                    rowWrote = true;
                     if (IsRgbaNonZero(rgba))
                     {
                         if (firstNonZeroAddress == 0)
@@ -1632,7 +2093,7 @@ namespace Ryu64.MIPS
                     wroteAny = true;
                 }
 
-                if (wroteAny)
+                if (rowWrote)
                     NoteRdramWriteRange(rowStart, rowPixels * bytesPerPixel);
             }
 
@@ -1646,7 +2107,7 @@ namespace Ryu64.MIPS
                     : 0u;
                 Common.Logger.PrintWarningLine(
                     $"[N64RDP] texrect-write ci=0x{_rdpColorImageAddress:x8} rect=({x0},{y0})-({x1},{y1}) tile={tileIndex} " +
-                    $"hits={sampleHits} nz={nonZeroSampleHits} misses={sampleMisses} firstAddr=0x{firstAddress:x8} firstRgba=0x{firstRgba:x8} firstStored=0x{firstStored:x4} " +
+                    $"flip={flip} hits={sampleHits} nz={nonZeroSampleHits} misses={sampleMisses} firstAddr=0x{firstAddress:x8} firstRgba=0x{firstRgba:x8} firstStored=0x{firstStored:x4} " +
                     $"firstNzAddr=0x{firstNonZeroAddress:x8} firstNzRgba=0x{firstNonZeroRgba:x8} firstNzStored=0x{firstNonZeroStored:x4} " +
                     $"tileSizeSet={tile.TileSizeSet} tile=fmt{tile.Format}:sz{tile.Size}:line{tile.Line}:tmem0x{tile.Tmem:x}:uls{tile.Uls}:ult{tile.Ult}:lrs{tile.Lrs}:lrt{tile.Lrt}");
                 _traceRdpTexRectWriteCount++;
@@ -1656,10 +2117,18 @@ namespace Ryu64.MIPS
             if (wroteAny)
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
-                if (nonZeroSampleHits > 0)
+                if (nonZeroSampleHits >= 256 || HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
                     CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
             }
             return wroteAny;
+        }
+
+        private static int RdpTexRectFixedToTexel(long value1024)
+        {
+            if (value1024 >= 0)
+                return (int)(value1024 >> 10);
+
+            return -(int)((-value1024 + 1023L) >> 10);
         }
 
         private bool SampleRdpTexture(RdpTileState tile, int s, int t, out uint rgba)
@@ -1669,29 +2138,26 @@ namespace Ryu64.MIPS
             if (width == 0)
                 return false;
 
-            uint baseOffset = Math.Min(4095u, tile.Tmem * 8u);
             uint stride = GetTileStrideBytes(tile, width);
+            uint baseOffset = Math.Min(4095u, tile.Tmem * 8u);
             uint height = GetTileHeight(tile, baseOffset, stride);
             if (height == 0)
                 return false;
 
-            int u = ApplyRdpTextureCoordinate(s, width, tile.MaskS);
-            int v = ApplyRdpTextureCoordinate(t, height, tile.MaskT);
+            int u = ApplyRdpTextureCoordinate(s, width, tile.MaskS, tile.ShiftS);
+            int v = ApplyRdpTextureCoordinate(t, height, tile.MaskT, tile.ShiftT);
             if (u < 0 || v < 0)
                 return false;
 
-            uint pixelOffset = GetPackedTexelOffset((uint)u, (uint)v, tile.Size, stride);
-            uint tmemOffset = baseOffset + pixelOffset;
-            if (tmemOffset >= _rdpTmem.Length)
-                return false;
-
-            return DecodeRdpTextureColor(tile, tmemOffset, (uint)u, out rgba);
+            return DecodeRdpTextureColor(tile, u, v, out rgba);
         }
 
-        private static int ApplyRdpTextureCoordinate(int value, uint extent, uint mask)
+        private static int ApplyRdpTextureCoordinate(int value, uint extent, uint mask, uint shift)
         {
             if (extent == 0)
                 return -1;
+            if (shift != 0)
+                value = shift < 11u ? value >> (int)shift : value << (int)(16u - shift);
             if (mask != 0 && mask < 31)
                 return value & ((1 << (int)mask) - 1);
             if (value < 0)
@@ -1766,21 +2232,27 @@ namespace Ryu64.MIPS
             }
         }
 
-        private bool DecodeRdpTextureColor(RdpTileState tile, uint tmemOffset, uint x, out uint rgba)
+        private bool DecodeRdpTextureColor(RdpTileState tile, int s, int t, out uint rgba)
         {
             rgba = 0;
+            uint tbase = (tile.Tmem + ((tile.Line * (uint)Math.Max(0, t)) & 0x1FFu)) & 0x1FFu;
             switch (tile.Format & 0x7u)
             {
                 case 0u: // RGBA
                     if ((tile.Size & 0x3u) == 2u)
                     {
+                        uint tmemOffset = ((tbase << 3) + (uint)Math.Max(0, s) * 2u) & 0xFFFu;
                         if (tmemOffset + 1u >= _rdpTmem.Length)
                             return false;
-                        rgba = Rgba5551ToRgba8888((ushort)((_rdpTmem[tmemOffset] << 8) | _rdpTmem[tmemOffset + 1u]));
+                        ushort color = ReadRdpTmemWord(tmemOffset);
+                        if (_rdpOtherModesEnableTlut)
+                            color = LookupRdpTlut((uint)(color >> 8));
+                        rgba = _rdpOtherModesEnableTlut ? RdpTlutColorToRgba(color) : Rgba5551ToRgba8888(color);
                         return true;
                     }
                     if ((tile.Size & 0x3u) == 3u)
                     {
+                        uint tmemOffset = ((tbase << 3) + (uint)Math.Max(0, s) * 4u) & 0xFFFu;
                         if (tmemOffset + 3u >= _rdpTmem.Length)
                             return false;
                         rgba = ((uint)_rdpTmem[tmemOffset] << 24)
@@ -1792,42 +2264,79 @@ namespace Ryu64.MIPS
                     return false;
                 case 2u: // CI
                 {
+                    uint sUnsigned = (uint)Math.Max(0, s);
                     uint index;
                     if ((tile.Size & 0x3u) == 0u)
                     {
+                        uint tmemOffset = ((tbase << 3) + (sUnsigned >> 1)) & 0xFFFu;
                         byte packed = _rdpTmem[tmemOffset];
-                        index = (x & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
+                        index = (sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
                         index += tile.Palette * 16u;
                     }
                     else
                     {
+                        uint tmemOffset = ((tbase << 3) + sUnsigned) & 0xFFFu;
                         index = _rdpTmem[tmemOffset];
                     }
 
-                    if (index < _rdpTlut.Length && _rdpTlut[index] != 0)
+                    if (_rdpOtherModesEnableTlut)
+                        rgba = RdpTlutColorToRgba(LookupRdpTlut(index));
+                    else if (index < _rdpTlut.Length && _rdpTlut[index] != 0)
                         rgba = Rgba5551ToRgba8888(_rdpTlut[index]);
                     else
                         rgba = (index << 24) | (index << 16) | (index << 8) | 0xFFu;
                     return true;
                 }
                 case 3u: // IA
-                    return DecodeRdpIaTexture(tile, tmemOffset, x, out rgba);
+                    return DecodeRdpIaTexture(tile, tbase, s, out rgba);
                 case 4u: // I
-                    return DecodeRdpIntensityTexture(tile, tmemOffset, x, out rgba);
+                    return DecodeRdpIntensityTexture(tile, tbase, s, out rgba);
                 default:
                     return false;
             }
         }
 
-        private bool DecodeRdpIaTexture(RdpTileState tile, uint tmemOffset, uint x, out uint rgba)
+        private ushort LookupRdpTlut(uint index)
+        {
+            if (index < _rdpTlut.Length && _rdpTlut[index] != 0)
+                return _rdpTlut[index];
+
+            uint tmemAddress = 0x800u + (index & 0xFFu) * 8u;
+            if (tmemAddress + 1u < _rdpTmem.Length)
+                return ReadRdpTmemWord(tmemAddress);
+
+            return 0;
+        }
+
+        private uint RdpTlutColorToRgba(ushort color)
+        {
+            if (!_rdpOtherModesTlutType)
+                return Rgba5551ToRgba8888(color);
+
+            uint k = ((uint)color >> 8) & 0xFFu;
+            uint alpha = (uint)color & 0xFFu;
+            return (k << 24) | (k << 16) | (k << 8) | alpha;
+        }
+
+        private ushort ReadRdpTmemWord(uint address)
+        {
+            address &= 0xFFFu;
+            if (address + 1u >= _rdpTmem.Length)
+                return 0;
+            return (ushort)((_rdpTmem[address] << 8) | _rdpTmem[address + 1u]);
+        }
+
+        private bool DecodeRdpIaTexture(RdpTileState tile, uint tbase, int s, out uint rgba)
         {
             rgba = 0;
+            uint sUnsigned = (uint)Math.Max(0, s);
             switch (tile.Size & 0x3u)
             {
                 case 0u:
                 {
+                    uint tmemOffset = ((tbase << 3) + (sUnsigned >> 1)) & 0xFFFu;
                     byte packed = _rdpTmem[tmemOffset];
-                    uint value = (x & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
+                    uint value = (sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
                     uint intensity = ((value >> 1) & 0x7u) * 255u / 7u;
                     uint alpha = (value & 1u) != 0 ? 0xFFu : 0u;
                     rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | alpha;
@@ -1835,6 +2344,7 @@ namespace Ryu64.MIPS
                 }
                 case 1u:
                 {
+                    uint tmemOffset = ((tbase << 3) + sUnsigned) & 0xFFFu;
                     uint value = _rdpTmem[tmemOffset];
                     uint intensity = ((value >> 4) & 0xFu) * 17u;
                     uint alpha = (value & 0xFu) * 17u;
@@ -1842,6 +2352,8 @@ namespace Ryu64.MIPS
                     return true;
                 }
                 case 2u:
+                {
+                    uint tmemOffset = ((tbase << 3) + sUnsigned * 2u) & 0xFFFu;
                     if (tmemOffset + 1u >= _rdpTmem.Length)
                         return false;
                     rgba = ((uint)_rdpTmem[tmemOffset] << 24)
@@ -1849,22 +2361,26 @@ namespace Ryu64.MIPS
                         | ((uint)_rdpTmem[tmemOffset] << 8)
                         | _rdpTmem[tmemOffset + 1u];
                     return true;
+                }
                 default:
                     return false;
             }
         }
 
-        private bool DecodeRdpIntensityTexture(RdpTileState tile, uint tmemOffset, uint x, out uint rgba)
+        private bool DecodeRdpIntensityTexture(RdpTileState tile, uint tbase, int s, out uint rgba)
         {
             rgba = 0;
+            uint sUnsigned = (uint)Math.Max(0, s);
             uint intensity;
             if ((tile.Size & 0x3u) == 0u)
             {
+                uint tmemOffset = ((tbase << 3) + (sUnsigned >> 1)) & 0xFFFu;
                 byte packed = _rdpTmem[tmemOffset];
-                intensity = ((x & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F)) * 17u;
+                intensity = ((sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F)) * 17u;
             }
             else
             {
+                uint tmemOffset = ((tbase << 3) + sUnsigned) & 0xFFFu;
                 intensity = _rdpTmem[tmemOffset];
             }
 
@@ -1963,6 +2479,9 @@ namespace Ryu64.MIPS
             if (length64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
                 return;
 
+            if (CountRdpVisibleFramebufferContent(bytesPerPixel, height) < 512u)
+                return;
+
             byte[] snapshot = new byte[(int)length64];
             Buffer.BlockCopy(RDRAM, (int)_rdpColorImageAddress, snapshot, 0, snapshot.Length);
 
@@ -1975,6 +2494,89 @@ namespace Ryu64.MIPS
                 _lastVisibleRdpFramebufferBytesPerPixel = bytesPerPixel;
                 _lastVisibleRdpFramebufferEpoch = _rdramWriteEpoch;
             }
+        }
+
+        private uint CountRdpVisibleFramebufferContent(uint bytesPerPixel, uint height)
+        {
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0
+                || height == 0)
+                return 0;
+
+            ulong pixels64 = (ulong)_rdpColorImageWidth * height;
+            ulong length64 = pixels64 * bytesPerPixel;
+            if (pixels64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
+                return 0;
+
+            uint visible = 0;
+            uint address = _rdpColorImageAddress;
+            for (ulong i = 0; i < pixels64; i++, address += bytesPerPixel)
+            {
+                bool rgbNonZero;
+                if (bytesPerPixel == 2u)
+                {
+                    ushort value = (ushort)((RDRAM[address] << 8) | RDRAM[address + 1u]);
+                    rgbNonZero = (value & 0xFFFEu) != 0;
+                }
+                else if (bytesPerPixel == 4u)
+                {
+                    rgbNonZero = RDRAM[address] != 0 || RDRAM[address + 1u] != 0 || RDRAM[address + 2u] != 0;
+                }
+                else
+                {
+                    rgbNonZero = RDRAM[address] != 0;
+                }
+
+                if (rgbNonZero)
+                    visible++;
+            }
+
+            return visible;
+        }
+
+        private bool HasRdpVisibleFramebufferContent(uint bytesPerPixel, uint minVisiblePixels)
+        {
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0)
+                return false;
+
+            uint height = GetFramebufferHeightHint();
+            if (height == 0)
+                height = 240u;
+
+            ulong pixels64 = (ulong)_rdpColorImageWidth * height;
+            ulong length64 = pixels64 * bytesPerPixel;
+            if (pixels64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
+                return false;
+
+            uint visible = 0;
+            uint address = _rdpColorImageAddress;
+            for (ulong i = 0; i < pixels64; i++, address += bytesPerPixel)
+            {
+                bool rgbNonZero;
+                if (bytesPerPixel == 2u)
+                {
+                    ushort value = (ushort)((RDRAM[address] << 8) | RDRAM[address + 1u]);
+                    rgbNonZero = (value & 0xFFFEu) != 0;
+                }
+                else if (bytesPerPixel == 4u)
+                {
+                    rgbNonZero = RDRAM[address] != 0 || RDRAM[address + 1u] != 0 || RDRAM[address + 2u] != 0;
+                }
+                else
+                {
+                    rgbNonZero = RDRAM[address] != 0;
+                }
+
+                if (rgbNonZero && ++visible >= minVisiblePixels)
+                    return true;
+            }
+
+            return false;
         }
 
         public bool TryCopyLastVisibleRdpFramebufferSnapshot(

@@ -167,6 +167,8 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_CHECKSUM"), "0", StringComparison.Ordinal);
         private static readonly bool FastBootClearLoop =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_CLEAR"), "0", StringComparison.Ordinal);
+        private static readonly bool FastBootAssetDecode =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_ASSET_DECODE"), "0", StringComparison.Ordinal);
         private static readonly bool FastIdleLoop =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_IDLE_LOOP"), "0", StringComparison.Ordinal);
         private static readonly uint IdleLoopFastForwardCycles =
@@ -724,6 +726,154 @@ namespace Ryu64.MIPS
             return true;
         }
 
+        private static bool TryFastForwardBootAssetDecode(uint pc)
+        {
+            if (!FastBootAssetDecode || pc != 0x800012C4u)
+                return false;
+
+            if (memory.ReadUInt32PhysicalFast(0x000012C0u) != 0x01D0A021u
+                || memory.ReadUInt32PhysicalFast(0x000012C4u) != 0x54C0000Fu
+                || memory.ReadUInt32PhysicalFast(0x000012FCu) != 0x24060008u
+                || memory.ReadUInt32PhysicalFast(0x00001300u) != 0x30F90080u
+                || memory.ReadUInt32PhysicalFast(0x00001304u) != 0x13200006u
+                || memory.ReadUInt32PhysicalFast(0x00001320u) != 0x92230000u
+                || memory.ReadUInt32PhysicalFast(0x00001324u) != 0x92290001u
+                || memory.ReadUInt32PhysicalFast(0x00001338u) != 0x012B2025u
+                || memory.ReadUInt32PhysicalFast(0x0000133Cu) != 0x14A00005u
+                || memory.ReadUInt32PhysicalFast(0x000013B8u) != 0x1614FFC2u)
+            {
+                return false;
+            }
+
+            uint dst = Reg32(16);
+            uint src = Reg32(17);
+            uint end = Reg32(20);
+            uint chunkLimitPointer = Reg32(18);
+            if ((dst & 0xE0000000u) != 0x80000000u
+                || (src & 0xE0000000u) != 0x80000000u
+                || (end & 0xE0000000u) != 0x80000000u
+                || (chunkLimitPointer & 0xE0000000u) != 0x80000000u
+                || end <= dst
+                || end - dst > 0x400000u)
+            {
+                return false;
+            }
+
+            uint dstPhys = dst & 0x1FFFFFFFu;
+            uint srcPhys = src & 0x1FFFFFFFu;
+            uint endPhys = end & 0x1FFFFFFFu;
+            if (dstPhys >= memory.RDRAM.Length
+                || endPhys > memory.RDRAM.Length
+                || srcPhys >= memory.RDRAM.Length
+                || endPhys <= dstPhys)
+            {
+                return false;
+            }
+
+            uint flags = Reg32(7) & 0xFFu;
+            uint bitsRemaining = Reg32(6) & 0xFFu;
+            uint initialDstPhys = dstPhys;
+            uint tokens = 0;
+            byte[] rdram = memory.RDRAM;
+            bool completed = false;
+
+            while (dstPhys < endPhys)
+            {
+                if (bitsRemaining == 0)
+                {
+                    uint chunkLimit;
+                    try
+                    {
+                        chunkLimit = memory.ReadUInt32(chunkLimitPointer);
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+
+                    if (chunkLimit < (0x80000000u | srcPhys))
+                        break;
+
+                    if (srcPhys >= rdram.Length)
+                        return false;
+
+                    flags = rdram[srcPhys++];
+                    bitsRemaining = 8;
+                }
+
+                bool literal = (flags & 0x80u) != 0;
+                flags = (flags << 1) & 0xFFu;
+
+                if (literal)
+                {
+                    if (srcPhys >= rdram.Length)
+                        return false;
+
+                    rdram[dstPhys++] = rdram[srcPhys++];
+                }
+                else
+                {
+                    if (srcPhys + 1u >= rdram.Length)
+                        return false;
+
+                    uint b0 = rdram[srcPhys++];
+                    uint b1 = rdram[srcPhys++];
+                    uint displacement = ((b0 & 0x0Fu) << 8) | b1;
+                    uint length = b0 >> 4;
+                    if (length == 0)
+                    {
+                        if (srcPhys >= rdram.Length)
+                            return false;
+
+                        length = (uint)rdram[srcPhys++] + 0x12u;
+                    }
+                    else
+                    {
+                        length += 2u;
+                    }
+
+                    if (displacement + 1u > dstPhys)
+                        return false;
+
+                    uint copyPhys = dstPhys - displacement - 1u;
+                    for (uint i = 0; i < length && dstPhys < endPhys; i++)
+                    {
+                        if (copyPhys >= rdram.Length)
+                            return false;
+
+                        rdram[dstPhys++] = rdram[copyPhys++];
+                    }
+                }
+
+                bitsRemaining--;
+                tokens++;
+            }
+
+            if (dstPhys >= endPhys)
+                completed = true;
+
+            if (!completed && dstPhys == initialDstPhys)
+                return false;
+
+            SetReg32(6, bitsRemaining);
+            SetReg32(7, flags);
+            SetReg32(16, completed ? end : (0x80000000u | dstPhys));
+            SetReg32(17, 0x80000000u | srcPhys);
+
+            if (completed)
+            {
+                uint stack = Reg32(29);
+                if ((stack & 0xE0000000u) == 0x80000000u || (stack & 0xE0000000u) == 0xA0000000u)
+                    memory.WriteUInt32(stack + 0x30u, flags);
+            }
+
+            Registers.R4300.PC = completed ? 0x800013C0u : 0x800012C4u;
+            uint produced = dstPhys - initialDstPhys;
+            AddSyntheticCycles(Math.Max(1u, produced * 4u));
+            Common.Measure.InstructionCount += Math.Max(tokens * 8UL, produced);
+            return true;
+        }
+
         private static bool TryFastForwardIdleLoop(uint pc)
         {
             if (!FastIdleLoop || (pc != 0x80000810u && pc != 0x80000814u))
@@ -1149,6 +1299,8 @@ namespace Ryu64.MIPS
                         if (TryFastForwardBootChecksumLoop(pc))
                             continue;
                         if (TryFastForwardBootClearLoop(pc))
+                            continue;
+                        if (TryFastForwardBootAssetDecode(pc))
                             continue;
                         if (TryFastForwardIdleLoop(pc))
                             continue;
