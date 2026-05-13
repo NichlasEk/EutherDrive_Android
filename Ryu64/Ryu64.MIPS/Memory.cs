@@ -4301,6 +4301,84 @@ namespace Ryu64.MIPS
             }
         }
 
+        public bool TryCopyLastVisibleRdpFramebufferSnapshot(
+            uint requestedAddress,
+            uint width,
+            uint height,
+            uint bytesPerPixel,
+            byte[] destination,
+            out uint address,
+            out uint epoch)
+        {
+            address = 0;
+            epoch = 0;
+
+            if (width == 0 || height == 0 || bytesPerPixel == 0 || destination == null)
+                return false;
+
+            ulong requested64 = (ulong)width * height * bytesPerPixel;
+            if (requested64 == 0 || requested64 > int.MaxValue || destination.Length < (int)requested64)
+                return false;
+
+            int requested = (int)requested64;
+            ulong rowBytes = (ulong)width * bytesPerPixel;
+            lock (_lastVisibleRdpFramebufferLock)
+            {
+                int bestSlot = -1;
+                uint bestEpoch = 0;
+                ulong bestOffset = 0;
+                for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
+                {
+                    byte[] candidate = _visibleRdpFramebufferSnapshots[i];
+                    uint candidateAddress = _visibleRdpFramebufferAddresses[i];
+                    ulong offsetBytes = 0;
+                    if (candidateAddress == requestedAddress)
+                    {
+                        offsetBytes = 0;
+                    }
+                    else if (requestedAddress > candidateAddress)
+                    {
+                        offsetBytes = requestedAddress - candidateAddress;
+                        if (rowBytes == 0
+                            || offsetBytes > rowBytes * 8UL
+                            || offsetBytes % bytesPerPixel != 0)
+                        {
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        continue;
+                    }
+
+                    if (candidate == null
+                        || (ulong)candidate.Length < offsetBytes + requested64
+                        || _visibleRdpFramebufferWidths[i] != width
+                        || _visibleRdpFramebufferHeights[i] < height
+                        || _visibleRdpFramebufferBytesPerPixels[i] != bytesPerPixel
+                        || _visibleRdpFramebufferEpochs[i] == 0)
+                    {
+                        continue;
+                    }
+
+                    if (bestSlot < 0 || IsEpochNewer(_visibleRdpFramebufferEpochs[i], bestEpoch))
+                    {
+                        bestSlot = i;
+                        bestEpoch = _visibleRdpFramebufferEpochs[i];
+                        bestOffset = offsetBytes;
+                    }
+                }
+
+                if (bestSlot < 0)
+                    return false;
+
+                Buffer.BlockCopy(_visibleRdpFramebufferSnapshots[bestSlot], (int)bestOffset, destination, 0, requested);
+                address = requestedAddress;
+                epoch = _visibleRdpFramebufferEpochs[bestSlot];
+                return true;
+            }
+        }
+
         public bool TryCopyBestVisibleRdpFramebufferSnapshot(
             uint width,
             uint height,
@@ -4350,6 +4428,59 @@ namespace Ryu64.MIPS
 
                 snapshot = new byte[requested];
                 Buffer.BlockCopy(_visibleRdpFramebufferSnapshots[bestSlot], 0, snapshot, 0, requested);
+                address = _visibleRdpFramebufferAddresses[bestSlot];
+                epoch = _visibleRdpFramebufferEpochs[bestSlot];
+                return true;
+            }
+        }
+
+        public bool TryCopyBestVisibleRdpFramebufferSnapshot(
+            uint width,
+            uint height,
+            uint bytesPerPixel,
+            byte[] destination,
+            out uint address,
+            out uint epoch)
+        {
+            address = 0;
+            epoch = 0;
+
+            if (width == 0 || height == 0 || bytesPerPixel == 0 || destination == null)
+                return false;
+
+            ulong requested64 = (ulong)width * height * bytesPerPixel;
+            if (requested64 == 0 || requested64 > int.MaxValue || destination.Length < (int)requested64)
+                return false;
+
+            int requested = (int)requested64;
+            lock (_lastVisibleRdpFramebufferLock)
+            {
+                int bestSlot = -1;
+                uint bestEpoch = 0;
+                for (int i = 0; i < RdpVisibleFramebufferSnapshotSlots; i++)
+                {
+                    byte[] candidate = _visibleRdpFramebufferSnapshots[i];
+                    if (candidate == null
+                        || candidate.Length < requested
+                        || _visibleRdpFramebufferWidths[i] != width
+                        || _visibleRdpFramebufferHeights[i] < height
+                        || _visibleRdpFramebufferBytesPerPixels[i] != bytesPerPixel
+                        || _visibleRdpFramebufferEpochs[i] == 0)
+                    {
+                        continue;
+                    }
+
+                    if (bestSlot < 0 || IsEpochNewer(_visibleRdpFramebufferEpochs[i], bestEpoch))
+                    {
+                        bestSlot = i;
+                        bestEpoch = _visibleRdpFramebufferEpochs[i];
+                    }
+                }
+
+                if (bestSlot < 0)
+                    return false;
+
+                Buffer.BlockCopy(_visibleRdpFramebufferSnapshots[bestSlot], 0, destination, 0, requested);
                 address = _visibleRdpFramebufferAddresses[bestSlot];
                 epoch = _visibleRdpFramebufferEpochs[bestSlot];
                 return true;

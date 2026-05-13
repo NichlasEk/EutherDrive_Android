@@ -51,6 +51,7 @@ namespace Ryu64Core
         private string _lastFramebufferStatus = "Not started";
         private uint _lastFallbackFramebufferOrigin;
         private uint _lastTrackedFramebufferOrigin;
+        private byte[] _framebufferScratch = Array.Empty<byte>();
 
         public event EventHandler<FramebufferUpdatedEventArgs> FramebufferUpdated;
         public event EventHandler<AudioBufferEventArgs> AudioBufferReady;
@@ -182,6 +183,7 @@ namespace Ryu64Core
             _lastAudioLength = 0;
             _lastAudioDacrate = 0;
             _lastFramebufferStatus = "ROM loaded";
+            _framebufferScratch = Array.Empty<byte>();
         }
 
         public void Start()
@@ -315,6 +317,8 @@ namespace Ryu64Core
                 }
 
                 bool producerBackedFramebufferSelected = false;
+                int selectedVisiblePixels = 0;
+                bool selectedVisiblePixelsKnown = false;
 
                 // Prefer a previously written plausible VI origin over arbitrary RDRAM scans.
                 uint lastPlausibleOrigin = R4300.memory.LastPlausibleViOriginWriteValue;
@@ -363,6 +367,8 @@ namespace Ryu64Core
 
                     origin = rdpCandidate;
                     _lastTrackedFramebufferOrigin = origin;
+                    selectedVisiblePixels = rdpCandidate == rdpColorImage ? rdpVisiblePixels : viVisiblePixels;
+                    selectedVisiblePixelsKnown = true;
                     rdpColorImageSelected = true;
                     preferRdpVisibleSnapshot = rdpCandidate == rdpColorImage && rdpVisiblePixels > 0;
                     producerBackedFramebufferSelected = true;
@@ -385,6 +391,7 @@ namespace Ryu64Core
                             origin = tracked;
                             _lastTrackedFramebufferOrigin = tracked;
                             producerBackedFramebufferSelected = true;
+                            selectedVisiblePixelsKnown = false;
                             _lastFramebufferStatus =
                                 $"Tracked framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, trackedScore={trackedScore}, dirtyPages={trackedDirtyPages}, visualScore={trackedVisualScore})";
                         }
@@ -434,6 +441,7 @@ namespace Ryu64Core
                                 _lastTrackedFramebufferOrigin = origin;
                             else
                                 _lastFallbackFramebufferOrigin = origin;
+                            selectedVisiblePixelsKnown = false;
                             recentFramebufferSelected = true;
                             recentFramebufferOrigin = origin;
                             recentFramebufferRecencyScore = recentBestScore;
@@ -467,6 +475,7 @@ namespace Ryu64Core
                         _lastFallbackFramebufferOrigin = best;
                         origin = best;
                         producerBackedFramebufferSelected = false;
+                        selectedVisiblePixelsKnown = false;
                         _lastFramebufferStatus =
                             $"Visual framebuffer override used (vi=0x{rawOrigin:x8}, recent=0x{recentFramebufferOrigin:x8} -> fb=0x{origin:x8}, " +
                             $"scanScore={bestScore}, recentVisual={currentScore}, recentScore={recentFramebufferRecencyScore}, viScore={recentFramebufferViRecencyScore})";
@@ -488,6 +497,7 @@ namespace Ryu64Core
                         _lastFallbackFramebufferOrigin = best;
                         origin = best;
                         producerBackedFramebufferSelected = false;
+                        selectedVisiblePixelsKnown = false;
                         _lastFramebufferStatus =
                             $"Fallback VI origin used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, score={bestScore}, viScore={viScore})";
                     }
@@ -514,11 +524,13 @@ namespace Ryu64Core
                     return false;
                 }
 
-                int selectedVisiblePixels = producerBackedFramebufferSelected
-                    ? CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel)
-                    : 0;
+                if (producerBackedFramebufferSelected && !selectedVisiblePixelsKnown)
+                {
+                    selectedVisiblePixels = CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel);
+                    selectedVisiblePixelsKnown = true;
+                }
+                byte[] framebufferScratch = GetFramebufferScratch(bufferSize);
                 bool copiedVisibleSnapshot = false;
-                byte[] visibleSnapshot = Array.Empty<byte>();
                 uint visibleSnapshotOrigin = 0;
                 uint visibleSnapshotEpoch = 0;
                 if (producerBackedFramebufferSelected
@@ -529,7 +541,7 @@ namespace Ryu64Core
                         (uint)width,
                         (uint)height,
                         (uint)bytesPerPixel,
-                        out visibleSnapshot,
+                        framebufferScratch,
                         out visibleSnapshotOrigin,
                         out visibleSnapshotEpoch)
                         && visibleSnapshotOrigin == origin;
@@ -540,7 +552,7 @@ namespace Ryu64Core
                             (uint)width,
                             (uint)height,
                             (uint)bytesPerPixel,
-                            out visibleSnapshot,
+                            framebufferScratch,
                             out visibleSnapshotOrigin,
                             out visibleSnapshotEpoch);
                     }
@@ -548,7 +560,7 @@ namespace Ryu64Core
 
                 if (copiedVisibleSnapshot)
                 {
-                    framebuffer = visibleSnapshot;
+                    framebuffer = framebufferScratch;
                     _lastTrackedFramebufferOrigin = visibleSnapshotOrigin;
                     R4300.memory.NotifyFramebufferConsumerRead(visibleSnapshotOrigin, (uint)bufferSize);
                     FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
@@ -557,7 +569,7 @@ namespace Ryu64Core
                     return true;
                 }
 
-                framebuffer = new byte[bufferSize];
+                framebuffer = framebufferScratch;
                 for (int i = 0; i < bufferSize; i++)
                 {
                     framebuffer[i] = R4300.memory.ReadUInt8PhysicalUncached(origin + (uint)i);
@@ -586,6 +598,17 @@ namespace Ryu64Core
                 _lastFramebufferStatus = $"Exception while reading framebuffer: {ex.Message}";
                 return false;
             }
+        }
+
+        private byte[] GetFramebufferScratch(int bufferSize)
+        {
+            if (bufferSize <= 0)
+                return Array.Empty<byte>();
+
+            if (_framebufferScratch.Length != bufferSize)
+                _framebufferScratch = new byte[bufferSize];
+
+            return _framebufferScratch;
         }
 
         public short[] GetAudioSamples(out uint sampleRate, out uint channels)
