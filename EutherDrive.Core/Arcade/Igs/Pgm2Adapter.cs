@@ -64,6 +64,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     private readonly mame.PgmArm7Core _cpu;
     private readonly byte[] _frameBuffer = new byte[Height * Stride];
+    private readonly ushort[] _spriteBitmap = new ushort[Width * Height];
     private readonly short[] _audioBuffer = new short[(int)(AudioRate / RefreshHz) * AudioChannels];
     private readonly short[] _scaledAudioBuffer = new short[(int)(AudioRate / RefreshHz) * AudioChannels];
     private readonly byte[] _internalRom = new byte[0x4000];
@@ -404,8 +405,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             ClearFrame(0xff000000);
             if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
             {
-                DrawSprites(1);
-                DrawSprites(0);
+                BuildSpriteBitmap();
+                CopySpritesFromBitmap(1);
+                CopySpritesFromBitmap(0);
             }
             WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_sprites.ppm"));
 
@@ -416,12 +418,18 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
             ClearFrame(ReadPaletteColor(_bgPaletteRam, 0));
             if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
-                DrawSprites(1);
+            {
+                BuildSpriteBitmap();
+                CopySpritesFromBitmap(1);
+            }
             WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_sprite_pri1.ppm"));
 
             ClearFrame(0xff000000);
             if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
-                DrawSprites(0);
+            {
+                BuildSpriteBitmap();
+                CopySpritesFromBitmap(0);
+            }
             WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_sprite_pri0.ppm"));
         }
         finally
@@ -1642,11 +1650,13 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _renderedFgPixels = 0;
         UpdateTilemapDebugStats();
         if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
-            _renderedSpritePixels += DrawSprites(1);
+            BuildSpriteBitmap();
+        if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
+            _renderedSpritePixels += CopySpritesFromBitmap(1);
         if (_bgTileRomBytes > 0)
             _renderedBgPixels = DrawBgTilemap();
         if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
-            _renderedSpritePixels += DrawSprites(0);
+            _renderedSpritePixels += CopySpritesFromBitmap(0);
         if (_textRomBytes > 0)
             _renderedFgPixels = DrawTextTilemap();
 
@@ -1810,8 +1820,6 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
                 int palette = (int)((entry >> 18) & 0x0f);
                 uint color = ReadPaletteColor(_bgPaletteRam, (palette * 0x80) + colorIndex);
-                if ((color & 0x00ffffff) == 0)
-                    continue;
 
                 PutPixel(row + (x * 4), color);
                 drawn++;
@@ -1873,8 +1881,6 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
                 int palette = (int)((entry >> 18) & 0x1f);
                 uint color = ReadPaletteColor(_textPaletteRam, (palette * 0x10) + colorIndex);
-                if ((color & 0x00ffffff) == 0)
-                    continue;
 
                 PutPixel(row + (x * 4), color);
                 drawn++;
@@ -1893,8 +1899,10 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         return (_bgTileRom[offset] >> 1) & 0x7f;
     }
 
-    private int DrawSprites(int priority)
+    private int BuildSpriteBitmap()
     {
+        Array.Fill(_spriteBitmap, (ushort)0x8000);
+
         int maskLength = Math.Min(_spriteMaskRomBytes, _spriteMaskRom.Length);
         int colorLength = Math.Min(_spriteColorRomBytes, _spriteColorRom.Length);
         if (maskLength == 0 || colorLength == 0)
@@ -1928,8 +1936,6 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 continue;
 
             int spritePriority = (int)((spr0 >> 31) & 1);
-            if (spritePriority != priority)
-                continue;
 
             int x = (int)(spr0 & 0x000007ff);
             int y = (int)((spr0 >> 11) & 0x7ff);
@@ -1939,6 +1945,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 y -= 0x800;
 
             int palette = (int)((spr0 >> 22) & 0x3f);
+            palette |= spritePriority << 6;
             int sizeX = (int)(spr1 & 0x3f);
             int sizeY = (int)((spr1 >> 6) & 0x1ff);
             if (sizeX == 0 || sizeY == 0)
@@ -1993,6 +2000,30 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                         realY++;
                     yDraw++;
                 }
+            }
+        }
+
+        return drawn;
+    }
+
+    private int CopySpritesFromBitmap(int priority)
+    {
+        int visibleWidth = CurrentVisibleWidth();
+        int priorityMask = priority << 12;
+        int drawn = 0;
+        for (int y = 0; y < Height; y++)
+        {
+            int sourceRow = y * Width;
+            int frameRow = y * Stride;
+            for (int x = 0; x < visibleWidth; x++)
+            {
+                ushort pixel = _spriteBitmap[sourceRow + x];
+                if (pixel == 0x8000 || (pixel & 0x1000) != priorityMask)
+                    continue;
+
+                uint color = ReadPaletteColor(_spritePaletteRam, pixel & 0x0fff);
+                PutPixel(frameRow + (x * 4), color);
+                drawn++;
             }
         }
 
@@ -2092,8 +2123,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             return 0;
 
         int pixel = _spriteColorRom[paletteOffset & colorWrap] & 0x3f;
-        uint color = ReadPaletteColor(_spritePaletteRam, (palette * 0x40) + pixel);
-        PutPixel((y * Stride) + (x * 4), color);
+        _spriteBitmap[(y * Width) + x] = (ushort)((palette * 0x40) + pixel);
         return 1;
     }
 
