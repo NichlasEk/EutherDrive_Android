@@ -1463,6 +1463,7 @@ public partial class MainView : UserControl
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
             || _core is EutherDrive.Core.Arcade.System32.System32Adapter
             || _core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
+            || _core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || _core is EutherDrive.Core.Arcade.Igs.KovPgmAdapter
             || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
@@ -4061,6 +4062,7 @@ public partial class MainView : UserControl
 
         if (EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsSupportedPath(path))
         {
+            ConfigureGauntletDarkLegacyUiBringup();
             return new EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter();
         }
 
@@ -4100,6 +4102,12 @@ public partial class MainView : UserControl
         }
 
         return new MdTracerAdapter();
+    }
+
+    private static void ConfigureGauntletDarkLegacyUiBringup()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
     }
 
     private static (IEmulatorCore Core, string ConsoleLabel) LoadCoreForRom(string romPath)

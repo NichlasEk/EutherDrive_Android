@@ -48,6 +48,96 @@ Core builds:
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
 ```
 
+## 2026-05-13 UI/ROM + A420 Bring-Up Pass
+
+The UI can now launch Gauntlet from the real ROM archive instead of a temporary file path.
+
+Use this ROM in the UI:
+
+```text
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z
+```
+
+The same directory now also has the raw CHD sidecar:
+
+```text
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw
+```
+
+The adapter still accepts the directory path, but the UI should be pointed at `gauntdl24.7z` for normal ROM selection. `DiskImageFactory.ResolveRawSidecar()` also has a `/tmp/{name}.raw` fallback for development, but the preferred path is the sibling `.raw` beside the archive.
+
+UI/default bring-up changes:
+
+- Desktop and Android Gauntlet creation set `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1` if it is not already set.
+- The individual bring-up fix flags now fall back to that master flag.
+- Desktop UI accepts a Gauntlet ROM directory as well as the archive.
+- Gauntlet is included in the force-opaque/safe-RGBA/post-frame presentation paths, which is why the current diagnostic bars are visible in UI.
+
+Important: the current UI image is not real game graphics yet. It is still the diagnostic/bring-up framebuffer plus Voodoo fast fills/swaps. Current Voodoo status still shows:
+
+```text
+drawPackets=0 directTriangles=0 setupTriangles=0
+```
+
+New boot fixes from this pass:
+
+- Added a loaded boot A420 handshake fastpath for `0x80010d54..0x80010d98`.
+- The actual helper entry is `0x80010d54`; `0x80010d50` is the caller-side prelude.
+- The caller treats non-zero `v0` as the failure path, so the fastpath returns `v0=0` for bring-up.
+- The helper is now matched at both `0x80010d54` and `0x80010d58`, plus the loop PCs.
+- Corrected the loaded cache-loop variant around `0xa00cc2bc..0xa00cc2cc`; the old match started four words too early at the preamble.
+
+Current preferred headless command:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=500 \
+    EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=1000,10000,50000,200000,1000000 \
+    EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 2500 200000
+```
+
+Last verified result:
+
+```text
+Build succeeded.
+331-332 warnings, 0 errors.
+
+frame=2500
+pc=0xffffffffa00ccae4
+ra=0xffffffff80011868
+voodoo regs=14049 fifoWords=13323 fifoPackets=4448
+voodoo drawPackets=0 directTriangles=0 setupTriangles=0
+framebuffer=640x480 nonBlack=147730 colored=17682
+```
+
+Interpretation:
+
+- `/rd0` boot-file loading is still good.
+- The old A420 loop no longer blocks; trace confirms:
+
+```text
+[GAUNTDL:BOOT] boot-a420-handshake pc=ffffffff80010d88 return=ffffffff80010210
+```
+
+- The current blocker is still loaded boot serial/reset flow around `0x8001068c` and caller `0x80011868`.
+- The recurring state has `s0/s1` around `0x8001013c..0x80010237`, `s2=0xa4800000`, and no new Voodoo draw commands.
+- Next likely target: identify which loaded boot condition routes to the serial/reset block, rather than blindly skipping `0x8001068c` since that routine eventually branches back to `0x80010000`.
+
+Useful dumps:
+
+```text
+mem[0xffffffff800101e0]:
+  +0x030: 10020009 00000000 24040007 24050000
+  +0x040: 24060000 24070001 0411011a 00000000
+```
+
+`10020009` branches past the reset/serial block only when `v0 == 0`, which is why the A420 fastpath must return zero.
+
 Last known committed result before the 2026-05-07 pass:
 
 - Build succeeded.
@@ -2105,3 +2195,439 @@ slot0=00000000 slot1=00000000 slot2=00000000 slot3=00000000
 ```
 
 Tracing callback dispatch showed stage 3 jumps to `0x800293e4`, stores stage 4, then calls `0x80020ed8` and `0x80020914`. Allowing stage 4 to be kicked repeatedly does not populate the parsed table; it loops idempotently and still reaches the same empty slot state. The useful next target is still event/IRQ-driven QIO completion or the parser/copy path that should turn the valid raw home sector at `0x800f41e0` into the stack table at `s0=0x807ffcb8`.
+
+## 2026-05-13 Pause Handoff: Home Table Crossed, Stage-4 Read Wait Next
+
+Paused intentionally at the user's request. No Gauntlet probe should be left running.
+
+Current uncommitted Gauntlet-local changes are in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`. Unrelated dirty files still exist in the worktree and should not be reverted as part of Gauntlet work.
+
+What changed in this pause window:
+
+- Added `EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE`.
+- Added a narrow `ApplyKnownRd0HomeTableParse()` hook.
+- The hook runs at the boot-slot check (`0xffffffff80015b38`) after the home sector has been DMA-read to `0xffffffff800f41e0`.
+- It verifies home-sector magics `0xfeedf00d` at `0x800f41e0` and `0xfe1dfaed` at `0x800f4218`.
+- It copies the three boot candidates from home-sector offsets `0x48..0x50` into the runtime boot table: `0x00197901`, `0x0032f201`, `0x000000a6`.
+- Added the new wait helper PCs to `TryGetKnownRuntimeQioPollObject()`: `0xffffffff80022f18`, `0xffffffff80022f20`, `0xffffffff80022f24`.
+
+Verified build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj --no-restore /clp:ErrorsOnly
+Build succeeded. 383 Warning(s), 0 Error(s)
+```
+
+Most useful reproduction command:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME=1 \
+    EUTHERDRIVE_GAUNTDL_TRACE_IDE=1 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 1000 200000
+```
+
+Key trace from the good run:
+
+```text
+[GAUNTDL:RD0] home-table pc=ffffffff80015b38 table=ffffffff807ffcb8 bootCandidates=00197901,0032f201,000000a6
+[GAUNTDL:RD0] panic-site boot-slot-check ... selected=ffffffff807ffd08:00197901 ... f04=00010002 f64=00000001 slot0=00197901 slot1=00197901 slot2=00197901 slot3=00197901
+[GAUNTDL:RD0] kick pc=ffffffff80022f18 object=ffffffff800e7810 qio=ffffffff800e7880 cb=ffffffff80029230 stage=00000003 status=00000004 buf=80104008 arg=00000000
+```
+
+Current state after the hook:
+
+```text
+frame=800
+pc=0xffffffff80022f18
+lastOp=0x00a0102d
+voodoo regs=14049 fifoWords=13323 fifoPackets=4448 drawPackets=0
+voodoo fastFills=283 swaps=566 framebuffer nonBlack=147730 colored=17682
+```
+
+This is real progress: the old `No boot file on volume` fatal path is crossed, and Voodoo still has visible/fill activity. The new blocker is the wait helper at `0x80022f08..0x80022f2c`.
+
+Decoded wait helper:
+
+```text
+0x80022f08: 14a00008 0000182d
+0x80022f10: 8c850014 8c820018
+0x80022f18: 10620002 00000000
+0x80022f20: 8c830018 10a0fffa
+0x80022f28: 00000000 03e00008
+0x80022f30: 00a0102d
+```
+
+At the stop:
+
+- `a0/s0 = 0xffffffff800e7810` (`/rd0` object)
+- `object+0x14 = 0`
+- `object+0x18 = 0`
+- `object+0x2c = 0x80104048`
+- child QIO at `object+0x70` has callback `0x80029230`, owner `0x800e7810`, stage `4`, buffer `0x80104008`
+
+Important raw-sector facts:
+
+```text
+raw LBA 0x00197901: ce fa 0d f0 70 86 00 00 64 00 00 00 01 04 00 00
+raw LBA 0x0032f201: ce fa 0d f0 70 86 00 00 64 00 00 00 01 04 00 00
+raw LBA 0x000000a6: be ba ed c0 d4 5d 16 00 2f 0b 00 00 01 04 00 00
+```
+
+The next implementation target should not be graphics yet. The hook made the boot table valid, and the code now enters the boot-sector read path, but stage 4 does not complete the async read state. The most direct next step is a narrow env-gated completion for this exact stage-4 `/rd0` read:
+
+- Recognize `/rd0` object at `0x800e7810`.
+- Recognize child QIO at `0x800e7880`, callback `0x80029230`, owner `0x800e7810`, stage `4`.
+- Confirm current PC is the wait helper (`0x80022f18`, `0x80022f20`, or `0x80022f24`).
+- Confirm the boot table already contains candidates from the home-sector hook.
+- Fill the expected read buffer from the raw disk candidate sector, or better route through the existing IDE DMA/QIO path if there is enough context.
+- Set the completion field that makes `object+0x14` or `object+0x18` change so `0x80022f08` returns naturally.
+
+Do not just keep kicking `0x80029230`: the trace already proved one kick moves stage 3 to stage 4, then repeated polls stay at stage 4 with `object+0x14 == 0` and `object+0x18 == 0`.
+
+Useful dump command if resuming:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    EUTHERDRIVE_GAUNTDL_DUMP_CODE_RANGES=0xffffffff80029200:192,0xffffffff80022ee0:128,0xffffffff80023000:128 \
+    EUTHERDRIVE_GAUNTDL_DUMP_BYTES_RANGES=0xffffffff800e7810:768,0xffffffff80104000:1024 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 800 200000
+```
+
+## 2026-05-13 Speed Pass: Release Probe + Render Skip
+
+The slow debug loop was dominated by two avoidable costs:
+
+- Running `tools/GauntletProbe` as a Debug build.
+- Rendering the 640x480 Voodoo bring-up framebuffer every emulated frame even when the probe only needs CPU/device state.
+
+Added:
+
+- `EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1`
+  - `GauntletDarkLegacyAdapter.RunFrame()` now runs CPU/SIO/Voodoo state without drawing each frame.
+  - `GetFrameBuffer()` still forces one render when the probe asks for a final dump.
+- `EUTHERDRIVE_GAUNTDL_STOP_PC`
+  - `tools/GauntletProbe` can stop after a frame if the CPU is at a requested PC.
+- `EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL`
+  - lets long probe runs reduce progress spam.
+- Release probe path is now the preferred bring-up path.
+
+Preferred fast build:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+```
+
+Preferred fast run:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=250 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 1000 200000
+```
+
+Observed speed:
+
+- Debug/noisy runs were taking several minutes and could flood output.
+- Release + render-skip reached frame 1000 in about 2.5 minutes on this machine.
+- A frame 850 run completed in about 1m48s.
+
+Also fixed the stage-4 boot-sector hook:
+
+- The first attempt read LBA from the child QIO buffer at `0x80104008`, which stays zero for this stage.
+- The selected boot-sector descriptor is the `/rd0` object buffer at `object+0x2c == 0x80104048`.
+- The boot LBA is at descriptor offset `+0x20`, matching the earlier dump value `0x00197901`.
+- The hook now reads that sector directly from the raw disk image and copies it into the descriptor buffer.
+
+Current fast-run state:
+
+```text
+frame=1000
+pc=0xffffffff80022f2c
+lastOp=0x00000000
+voodoo regs=14049 fifoWords=13323 fifoPackets=4448 drawPackets=0
+framebuffer=640x480 nonBlack=147730 colored=17682
+```
+
+With 20,000 extra CPU steps after frame 1000:
+
+```text
+pc=0xffffffff80022f30
+lastOp=0x03e00008
+```
+
+So the stage-4 wait condition is crossed far enough to reach the helper return sequence, but execution is still not cleanly back into the caller. The next target is likely the R5000 branch-delay/return path around `jr ra` at `0x80022f2c` and its delay slot `0x80022f30`, or a drain helper that recognizes this return pair correctly.
+
+Do not enable full `EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME=1` for long runs unless needed. Candidate logging is now capped, but it still adds noise and cost.
+
+## 2026-05-13 Late Pass: `/rd0` Boot Header Progress
+
+The previous speed-pass note is partially stale. The stage-4 wait no longer stops at the helper return pair.
+
+Additional fixes added:
+
+- `TryKickKnownRd0AsyncCallback()` now preserves the original `ra` when it trampolines through callback `0x80029230` and restores it at `0x80022f18`.
+- `EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ=1` now reads the selected boot-sector LBA from descriptor offset `+0x24`, not `+0x20`.
+- `EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_HEADER_READ=1` fast-paths the boot-header read call at `0x80022fb0` when the parser returns to `0x80015ba4`.
+- The boot-header fastpath also normalizes the local `c0edbabe` compare value for this parser path only. Do not globally change `lui` sign-extension in this adapter yet; doing so regressed BIOS bring-up back to `0x9fc02464`.
+
+Current fast command:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+
+env EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_HEADER_READ=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=500 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 2000 200000
+```
+
+Verified trace milestones:
+
+```text
+[GAUNTDL:RD0] stage4-boot-read pc=ffffffff80022f18 lba=00197901 dest=ffffffff80104048 first=f00dface
+[GAUNTDL:RD0] boot-header-read pc=ffffffff80022fb0 lba=00197901 dest=ffffffff807ffa68 first=f00dface
+[GAUNTDL:RD0] boot-header-read pc=ffffffff80022fb0 lba=0032f201 dest=ffffffff807ffa68 first=f00dface
+[GAUNTDL:RD0] boot-header-read pc=ffffffff80022fb0 lba=000000a6 dest=ffffffff807ffa68 first=c0edbabe
+[GAUNTDL:RD0] stage4-boot-read pc=ffffffff80022f18 lba=000000a7 dest=ffffffff80104048 first=464c457f
+```
+
+The old blocker `Found no valid boot file headers:` is cleared. The current blocker is:
+
+```text
+pc=0xffffffff80015784
+msg="Unable to read the boot file"
+```
+
+Interpretation:
+
+- The parser now finds a valid `c0edbabe` boot-file header at LBA `0x000000a6`.
+- The selected boot file starts at LBA `0x000000a7`; the first sector is ELF (`0x464c457f`).
+- The current stage-4 completion only copies one sector into the old descriptor buffer, then reports success.
+- The next fix should implement the actual boot-file read length/destination from the QIO/read arguments instead of treating this as another one-sector descriptor read.
+
+Last verified fast run:
+
+```text
+frame=2000
+pc=0xffffffff80015784
+voodoo regs=14086 fifoWords=13371 fifoPackets=4464
+framebuffer=640x480 nonBlack=147738 colored=17690
+```
+
+Build status:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+331 Warning(s)
+0 Error(s)
+```
+
+## 2026-05-13 Later Pass: Full `/rd0` Boot File Read
+
+The previous blocker `Unable to read the boot file` is now cleared.
+
+Additional fixes added:
+
+- `EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_FILE_READ=1` fast-paths the boot-file read call at `0x80022fb0` when the parser returns to `0x80015cbc`.
+- `VegasMemoryMap.TryReadDiskBytesToMemory(...)` can copy a multi-sector raw disk range directly into main RAM.
+- This keeps bring-up fast by avoiding the incomplete guest IDE/QIO path for the large boot ELF transfer.
+
+Current fast command:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+
+env EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_HEADER_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_FILE_READ=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=500 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 2500 200000
+```
+
+Verified trace milestone:
+
+```text
+[GAUNTDL:RD0] boot-file-read pc=ffffffff80022fb0 lba=000000a7 dest=ffffffff802e73b0 bytes=00165e00 first=464c457f
+```
+
+The loaded ELF buffer starts at `0xffffffff802e73b0`:
+
+```text
+bytes[0xffffffff802e73b0]:
+  +0x000: 7f 45 4c 46 01 01 01 00 ...
+  +0x020: 5c 5d 16 00 00 00 00 20 34 00 20 00 01 00 28 00
+```
+
+The loader copies/decompresses enough to place Atari boot content at `0xffffffff80000000`:
+
+```text
+bytes[0xffffffff80000000]:
+  +0x000: e9 44 00 08 00 00 00 00 ...
+  +0x040: 00 43 6f 70 79 72 69 67 68 74 20 28 63 29 20 31
+```
+
+Current blocker:
+
+```text
+pc=0xffffffff800162ac
+op=080058ab   # j 0x800162ac
+msg="File is not bootable"
+```
+
+Useful narrow repro for the new blocker:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_HEADER_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_FILE_READ=1 \
+    EUTHERDRIVE_GAUNTDL_STOP_PC=0xffffffff800162ac \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    EUTHERDRIVE_GAUNTDL_DUMP_BYTES_RANGES=0xffffffff800897c0:160,0xffffffff802e73b0:128,0xffffffff80000000:128 \
+    EUTHERDRIVE_GAUNTDL_DUMP_CODE_RANGES=0xffffffff80016260:32 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 370 200000
+```
+
+Last verified fast run:
+
+```text
+frame=2500
+pc=0xffffffff800162ac
+voodoo regs=14138 fifoWords=13439 fifoPackets=4487 lfbWrites=18808832 fastFills=287 swaps=574
+framebuffer=640x480 nonBlack=147752 colored=17704
+```
+
+Build status:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+## 2026-05-13 Night Pass: Loaded Boot Code Progress
+
+The previous blocker `File is not bootable` is now cleared.
+
+Additional fixes added:
+
+- `EUTHERDRIVE_GAUNTDL_FIX_BOOTABLE_ADDRESS_CHECK=1`
+  - Fast-paths the loaded-ELF bootability address probe at `0x80016188` for the `/rd0` ELF buffer.
+- `EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE=1`
+  - Normalizes the loader's local `s4=0xa0000000` compare base to `0xffffffffa0000000`.
+  - This is intentionally narrow. Do not globally sign-extend all `lui 0xa000` cases; that regressed BIOS bring-up.
+- `EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP=1`
+  - Skips the known serial/FPGA byte-copy loop at `0x80012140`.
+  - Also returns success from the follow-up serial handshake at `0x800121c0..0x80012218`.
+- `EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY=1`
+  - Fast-paths the loaded boot CP0 Count delay helper at `0x80010f40`, including KSEG1 aliases.
+- The existing cache-loop fastpath now also covers the loaded boot cache helper around `0xa00cc294..0xa00cc328`.
+- Boot trace spam for the serial loop and count-delay helper is capped.
+
+Current fast command:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+
+env EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_HEADER_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_FILE_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOTABLE_ADDRESS_CHECK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=500 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 2500 200000
+```
+
+Verified milestones:
+
+```text
+[GAUNTDL:BOOT] bootable-address-check pc=ffffffff80016188 addr=ffffffff802e73e4 result=1
+[GAUNTDL:BOOT] boot-loader-address-base pc=ffffffff8001665c s4=ffffffffa0000000
+[GAUNTDL:BOOT] boot-serial-copy-loop pc=ffffffff80012140 from=000000008013d9e8 to=0000000080145869 bytes=7e81
+```
+
+Last verified fast run:
+
+```text
+frame=2500
+pc=0xffffffffa00ccac8
+ra=0xffffffff80011868
+cp0 status=0x34400000
+voodoo regs=14049 fifoWords=13323 fifoPackets=4448
+framebuffer=640x480 nonBlack=147730 colored=17682
+```
+
+Interpretation:
+
+- The game is now executing loaded boot code beyond the old fatal paths.
+- The current stop is no longer `/rd0`, `File is not bootable`, CP0 delay, or the first serial handoff.
+- The next target is the loaded boot helper around `0xffffffffa00ccac8`, called from `0xffffffff80011868`.
+
+Useful narrow repro for the next blocker:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_HEADER_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_FILE_READ=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOTABLE_ADDRESS_CHECK=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP=1 \
+    EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY=1 \
+    EUTHERDRIVE_GAUNTDL_STOP_PC=0xffffffffa00ccac8 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/tmp/gauntd24.raw \
+    EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+    EUTHERDRIVE_GAUNTDL_DUMP_CODE_RANGES=0xffffffffa00cca80:128,0xffffffff80011820:128 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 650 200000
+```

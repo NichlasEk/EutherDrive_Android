@@ -19,12 +19,29 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly GauntletDarkLegacyMachine _machine = new();
+    private readonly bool _skipProbeFrameRender = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER") == "1";
     private RomIdentity? _romIdentity;
     private long _frameCounter;
     private bool _loaded;
 
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _loaded ? _frameCounter : null;
+
+    internal static bool IsBringupFixEnabled(string name)
+    {
+        string? specific = Environment.GetEnvironmentVariable(name);
+        if (!string.IsNullOrWhiteSpace(specific))
+            return IsTruthy(specific);
+
+        return IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST"));
+    }
+
+    private static bool IsTruthy(string? value)
+        => value is not null &&
+           (value == "1" ||
+            value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("on", StringComparison.OrdinalIgnoreCase));
 
     public static bool IsSupportedPath(string path)
     {
@@ -64,14 +81,20 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
         if (!_loaded)
             return;
 
-        _machine.RunFrame(new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride));
+        EutherFrameTarget target = _skipProbeFrameRender
+            ? new EutherFrameTarget(Array.Empty<byte>(), 0, 0, 0)
+            : new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride);
+        _machine.RunFrame(target);
         _frameCounter++;
-        if (!_machine.Voodoo.HasVideoActivity)
+        if (!_skipProbeFrameRender && !_machine.Voodoo.HasVideoActivity)
             DrawDiagnosticFrame();
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
+        if (_skipProbeFrameRender && _machine.Voodoo.HasVideoActivity)
+            _machine.RenderFrame(new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride));
+
         width = FrameWidth;
         height = FrameHeight;
         stride = FrameStride;
@@ -183,8 +206,10 @@ internal sealed class GauntletDarkLegacyMachine
         Sio.PulseVblank(state: true);
         Cpu.RunProbeFrame();
         Sio.PulseVblank(state: false);
-        Voodoo.RenderFrame(target);
+        RenderFrame(target);
     }
+
+    public void RenderFrame(EutherFrameTarget target) => Voodoo.RenderFrame(target);
 }
 
 internal sealed class GauntletRomSet
@@ -355,13 +380,35 @@ internal sealed class MipsR5000Core
     private readonly int _traceInstructionLimit = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", int.MaxValue);
     private readonly int _stepBudget = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", 2048);
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
-    private readonly bool _enableFdSlotHandleFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE") == "1";
-    private readonly bool _enableRd0AsyncCallbackKick = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK") == "1";
-    private readonly bool _enableRd0SyncReadComplete = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RD0_SYNC_READ_COMPLETE") == "1";
+    private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
+    private readonly bool _enableRd0AsyncCallbackKick = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK");
+    private readonly bool _enableRd0SyncReadComplete = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_SYNC_READ_COMPLETE");
+    private readonly bool _enableRd0HomeTableParse = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_HOME_TABLE");
+    private readonly bool _enableRd0Stage4BootRead = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_STAGE4_BOOT_READ");
+    private readonly bool _enableRd0BootHeaderRead = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_HEADER_READ");
+    private readonly bool _enableRd0BootFileRead = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_BOOT_FILE_READ");
+    private readonly bool _enableBootableAddressCheck = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOTABLE_ADDRESS_CHECK");
+    private readonly bool _enableBootLoaderAddressBase = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE");
+    private readonly bool _enableBootSerialCopyLoop = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP");
+    private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
     private int _rd0SyncReadCompleteCount;
+    private int _rd0HomeTableParseCount;
+    private int _rd0Stage4BootReadCount;
+    private int _rd0Stage4BootReadTraceCount;
+    private int _rd0BootHeaderReadCount;
+    private int _rd0BootFileReadCount;
+    private int _rd0QioCandidateTraceCount;
+    private int _loadedBootCacheLoopTraceCount;
+    private int _loadedBootCacheLoopSkipTraceCount;
+    private int _bootSerialCopyLoopTraceCount;
+    private int _bootA420HandshakeTraceCount;
+    private int _bootCountDelayTraceCount;
+    private bool _hasRd0CallbackRaRestore;
+    private ulong _rd0CallbackRestorePc;
+    private ulong _rd0CallbackRestoreRa;
     private const ulong Cp0StatusWriteMask = 0xfffffffffe57ffffUL;
     private const ulong Cp0CauseSoftwareInterruptMask = 0x00000300UL;
     private const ulong Cp0StatusIe = 0x00000001UL;
@@ -434,11 +481,31 @@ internal sealed class MipsR5000Core
     {
         ulong pc = Pc;
         _memory.SetTraceCpuPc(pc);
+        if (TryFastPathKnownBootA420Handshake(pc))
+            return;
         UpdateInterruptPendingBits();
         if (!_hasPendingBranch && TryEnterPendingInterrupt(pc))
             return;
-        TraceKnownRd0HomePc(pc);
         ApplyKnownRd0SyncReadCompletion(pc);
+        ApplyKnownRd0HomeTableParse(pc);
+        ApplyKnownRd0Stage4BootReadCompletion(pc);
+        ApplyKnownRd0CallbackRaRestore(pc);
+        TraceKnownRd0HomePc(pc);
+        if (TryFastPathKnownRd0BootHeaderRead(pc))
+            return;
+        if (TryFastPathKnownRd0BootFileRead(pc))
+            return;
+        ApplyKnownBootLoaderAddressBase(pc);
+        if (TryFastPathKnownBootableAddressCheck(pc))
+            return;
+        if (TryFastPathKnownBootSerialCopyLoop(pc))
+            return;
+        if (TryFastPathKnownBootSerialHandshake(pc))
+            return;
+        if (TryFastPathKnownBootA420Handshake(pc))
+            return;
+        if (TryFastPathKnownBootCountDelay(pc))
+            return;
         NormalizeKnownGlideFifoState(pc);
         if (TryFastPathKnownBootLoop(pc))
             return;
@@ -586,6 +653,9 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownCacheLoop(ulong pc)
     {
         ulong offset = pc & 0x1fffffffUL;
+        if (TryFastPathKnownLoadedBootCacheLoop(pc, offset))
+            return true;
+
         if (offset == 0x1fc03980UL)
         {
             ulong returnAddress = _gpr[2];
@@ -624,6 +694,117 @@ internal sealed class MipsR5000Core
         AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
         Pc = (pc & 0xffffffffe0000000UL) | exitOffset;
+        return true;
+    }
+
+    private bool TryFastPathKnownLoadedBootCacheLoop(ulong pc, ulong offset)
+    {
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x000cc2ecUL, 0x000cc2f0UL, 0x000cc2f4UL),
+                loopBaseOffset: 0x000cc2e4UL,
+                exitOffset: 0x000cc2f8UL,
+                expectedOps: (0xbc8b0000U, 0x008f2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x000cc29cUL, 0x000cc2a0UL, 0x000cc2a4UL),
+                loopBaseOffset: 0x000cc294UL,
+                exitOffset: 0x000cc2a8UL,
+                expectedOps: (0xbc880000U, 0x008c2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x000cc2c4UL, 0x000cc2c8UL, 0x000cc2ccUL),
+                loopBaseOffset: 0x000cc2bcUL,
+                exitOffset: 0x000cc2d0UL,
+                expectedOps: (0xbc890000U, 0x008d2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x000cc2e4UL, 0x000cc2e8UL, 0x000cc2ecUL),
+                loopBaseOffset: 0x000cc2dcUL,
+                exitOffset: 0x000cc2f0UL,
+                expectedOps: (0xbc8b0000U, 0x008f2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
+        return TryFastPathKnownLoadedBootCacheLoop(
+            pc,
+            offset,
+            loopOffsets: (0x000cc318UL, 0x000cc31cUL, 0x000cc324UL),
+            loopBaseOffset: 0x000cc314UL,
+            exitOffset: 0x000cc328UL,
+            expectedOps: (0xbc900000U, 0x008c2021U, 0x0085082bU, 0x1420fffaU));
+    }
+
+    private bool TryFastPathKnownLoadedBootCacheLoop(
+        ulong pc,
+        ulong offset,
+        (ulong Compare, ulong Branch, ulong DelaySlot) loopOffsets,
+        ulong loopBaseOffset,
+        ulong exitOffset,
+        (uint Cache, uint Add, uint Compare, uint Branch) expectedOps)
+    {
+        if (offset != loopBaseOffset &&
+            offset != loopBaseOffset + 0x04UL &&
+            offset != loopOffsets.Compare &&
+            offset != loopOffsets.Branch &&
+            offset != loopOffsets.DelaySlot)
+        {
+            return false;
+        }
+
+        ulong prefix = pc & 0xffffffffe0000000UL;
+        ulong loopBase = prefix | loopBaseOffset;
+        uint op0 = _memory.Read32(loopBase);
+        uint op4 = _memory.Read32(loopBase + 0x04UL);
+        uint op8 = _memory.Read32(loopBase + 0x08UL);
+        uint op12 = _memory.Read32(loopBase + 0x0cUL);
+        if (op0 != expectedOps.Cache ||
+            op4 != expectedOps.Add ||
+            op8 != expectedOps.Compare ||
+            op12 != expectedOps.Branch)
+        {
+            if (_traceRd0Home && _loadedBootCacheLoopSkipTraceCount++ < 4)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:BOOT] loaded-cache-loop-skip pc={pc:x16} " +
+                    $"base={loopBase:x16} sig={op0:x8},{op4:x8},{op8:x8},{op12:x8}");
+            }
+            return false;
+        }
+
+        ulong cursor = _gpr[4];
+        ulong end = _gpr[5];
+        if (cursor >= end || end - cursor > 0x00400000UL)
+            return false;
+
+        _gpr[1] = 0;
+        _gpr[4] = end;
+        _gpr[0] = 0;
+        Pc = prefix | exitOffset;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _loadedBootCacheLoopTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] loaded-cache-loop pc={pc:x16} " +
+                $"from={cursor:x16} to={end:x16} exit={Pc:x16} return={_gpr[31]:x16}");
+        }
         return true;
     }
 
@@ -940,7 +1121,7 @@ internal sealed class MipsR5000Core
             return false;
 
         _gpr[16] = 0;
-        _gpr[2] = 1;
+        _gpr[2] = 0;
         Pc = 0x000000008000469cUL;
         CompleteFastPathStep();
         return true;
@@ -1823,12 +2004,29 @@ internal sealed class MipsR5000Core
 
         _rd0AsyncCallbackKickCount++;
         _gpr[4] = qio;
+        if (returnPc == 0xffffffff80022f18UL)
+        {
+            _hasRd0CallbackRaRestore = true;
+            _rd0CallbackRestorePc = returnPc;
+            _rd0CallbackRestoreRa = _gpr[31];
+        }
         _gpr[31] = returnPc;
         _gpr[0] = 0;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = callback;
         return true;
+    }
+
+    private void ApplyKnownRd0CallbackRaRestore(ulong pc)
+    {
+        if (!_hasRd0CallbackRaRestore || pc != _rd0CallbackRestorePc || _gpr[31] != _rd0CallbackRestorePc)
+            return;
+
+        _gpr[31] = _rd0CallbackRestoreRa;
+        _hasRd0CallbackRaRestore = false;
+        if (_traceRd0Home)
+            Console.WriteLine($"[GAUNTDL:RD0] restore-ra pc={pc:x16} ra={_gpr[31]:x16}");
     }
 
     private bool TryGetKnownRuntimeQioPollObject(ulong pc, out ulong objectAddress, out ulong returnPc)
@@ -1849,6 +2047,16 @@ internal sealed class MipsR5000Core
         {
             objectAddress = _gpr[16];
             returnPc = 0xffffffff80022b88UL;
+            return IsMainRamRange(objectAddress, 0x300);
+        }
+
+        if ((pc == 0xffffffff80022f18UL ||
+             pc == 0xffffffff80022f20UL ||
+             pc == 0xffffffff80022f24UL) &&
+            _gpr[16] != 0)
+        {
+            objectAddress = _gpr[16];
+            returnPc = 0xffffffff80022f18UL;
             return IsMainRamRange(objectAddress, 0x300);
         }
 
@@ -1920,6 +2128,8 @@ internal sealed class MipsR5000Core
     private void TraceKnownRuntimeQioCandidates(ulong pc, ulong objectAddress)
     {
         if (!_traceRd0Home)
+            return;
+        if (_rd0QioCandidateTraceCount++ >= 8)
             return;
 
         Console.WriteLine(
@@ -2043,6 +2253,410 @@ internal sealed class MipsR5000Core
 
         _rd0SyncReadCompleteCount++;
         _gpr[2] = SignExtend32(successStatus);
+    }
+
+    private void ApplyKnownRd0HomeTableParse(ulong pc)
+    {
+        const ulong tableCheckPc = 0xffffffff80015a5cUL;
+        const ulong bootSlotCheckPc = 0xffffffff80015b38UL;
+        const ulong homeSectorBuffer = 0xffffffff800f41e0UL;
+
+        if (!_enableRd0HomeTableParse || _rd0HomeTableParseCount != 0 ||
+            (pc != tableCheckPc && pc != bootSlotCheckPc))
+        {
+            return;
+        }
+
+        ulong table = _gpr[16];
+        if (!IsMainRamRange(table, 0x90) ||
+            _memory.Read32(homeSectorBuffer) != 0xfeedf00dU ||
+            _memory.Read32(homeSectorBuffer + 0x38UL) != 0xfe1dfaedU)
+        {
+            return;
+        }
+
+        uint candidate0 = _memory.Read32(homeSectorBuffer + 0x48UL);
+        uint candidate1 = _memory.Read32(homeSectorBuffer + 0x4cUL);
+        uint candidate2 = _memory.Read32(homeSectorBuffer + 0x50UL);
+        if ((candidate0 | candidate1 | candidate2) == 0)
+            return;
+
+        _memory.Write16(table + 0x04UL, 2);
+        _memory.Write16(table + 0x06UL, 1);
+        _memory.Write32(table + 0x64UL, 1);
+        foreach (ulong slotOffset in new[] { 0x50UL, 0x68UL, 0x74UL, 0x80UL })
+        {
+            _memory.Write32(table + slotOffset, candidate0);
+            _memory.Write32(table + slotOffset + 4UL, candidate1);
+            _memory.Write32(table + slotOffset + 8UL, candidate2);
+        }
+
+        _rd0HomeTableParseCount++;
+        if (_traceRd0Home)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] home-table pc={pc:x16} table={table:x16} " +
+                $"bootCandidates={candidate0:x8},{candidate1:x8},{candidate2:x8}");
+        }
+    }
+
+    private void ApplyKnownRd0Stage4BootReadCompletion(ulong pc)
+    {
+        const ulong waitPc0 = 0xffffffff80022f18UL;
+        const ulong waitPc1 = 0xffffffff80022f20UL;
+        const ulong waitPc2 = 0xffffffff80022f24UL;
+
+        if (!_enableRd0Stage4BootRead || _rd0Stage4BootReadCount != 0 ||
+            (pc != waitPc0 && pc != waitPc1 && pc != waitPc2))
+        {
+            return;
+        }
+
+        if (_gpr[16] != 0xffffffff800e7810UL)
+            return;
+
+        if (_memory.TryCompleteKnownRd0Stage4BootRead(
+                out uint lba,
+                out ulong destination,
+                out uint firstWord,
+                out string stage4Reason))
+        {
+            _rd0Stage4BootReadCount++;
+            if (_traceRd0Home)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:RD0] stage4-boot-read pc={pc:x16} " +
+                $"lba={lba:x8} dest={destination:x16} first={firstWord:x8}");
+            }
+        }
+        else if (_traceRd0Home && _rd0Stage4BootReadTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] stage4-boot-read-skip pc={pc:x16} " +
+                $"reason={stage4Reason}");
+        }
+    }
+
+    private bool TryFastPathKnownRd0BootHeaderRead(ulong pc)
+    {
+        const ulong entry = 0xffffffff80022fb0UL;
+        const ulong parserReturnPc = 0xffffffff80015ba4UL;
+        const ulong rd0Object = 0xffffffff800e7810UL;
+
+        if (!_enableRd0BootHeaderRead || pc != entry || _gpr[31] != parserReturnPc)
+            return false;
+        if (_gpr[4] != rd0Object || _gpr[7] != 0x200UL)
+            return false;
+
+        uint lba = (uint)_gpr[5];
+        ulong destination = _gpr[6];
+        if (!_memory.TryReadDiskSectorToMemory(lba, destination, (uint)_gpr[7], out uint firstWord, out string reason))
+        {
+            if (_traceRd0Home && _rd0BootHeaderReadCount < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:RD0] boot-header-read-skip pc={pc:x16} " +
+                    $"lba={lba:x8} dest={destination:x16} reason={reason}");
+            }
+            return false;
+        }
+
+        _rd0BootHeaderReadCount++;
+        if (_gpr[17] == 0x00000000c0edbabeUL)
+            _gpr[17] = 0xffffffffc0edbabeUL;
+        _gpr[2] = 0;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        if (_traceRd0Home)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] boot-header-read pc={pc:x16} " +
+                $"lba={lba:x8} dest={destination:x16} first={firstWord:x8}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownRd0BootFileRead(ulong pc)
+    {
+        const ulong entry = 0xffffffff80022fb0UL;
+        const ulong parserReturnPc = 0xffffffff80015cbcUL;
+        const ulong rd0Object = 0xffffffff800e7810UL;
+
+        if (!_enableRd0BootFileRead || pc != entry || _gpr[31] != parserReturnPc)
+            return false;
+        if (_gpr[4] != rd0Object || _gpr[5] == 0 || _gpr[7] == 0 || _gpr[7] > uint.MaxValue)
+            return false;
+
+        uint lba = (uint)_gpr[5];
+        ulong destination = _gpr[6];
+        uint byteCount = (uint)_gpr[7];
+        if (!_memory.TryReadDiskBytesToMemory(lba, destination, byteCount, out uint firstWord, out string reason))
+        {
+            if (_traceRd0Home && _rd0BootFileReadCount < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:RD0] boot-file-read-skip pc={pc:x16} " +
+                    $"lba={lba:x8} dest={destination:x16} bytes={byteCount:x8} reason={reason}");
+            }
+            return false;
+        }
+
+        _rd0BootFileReadCount++;
+        _gpr[2] = 0;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        if (_traceRd0Home)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] boot-file-read pc={pc:x16} " +
+                $"lba={lba:x8} dest={destination:x16} bytes={byteCount:x8} first={firstWord:x8}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownBootableAddressCheck(ulong pc)
+    {
+        const ulong entry = 0xffffffff80016188UL;
+        const ulong callerReturnPc = 0xffffffff80016688UL;
+
+        if (!_enableBootableAddressCheck || pc != entry || _gpr[31] != callerReturnPc)
+            return false;
+        if (_gpr[4] != 0 || _gpr[5] is < 0xffffffff802e73b0UL or > 0xffffffff802e7fffUL)
+            return false;
+
+        _gpr[2] = 1;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        if (_traceRd0Home)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] bootable-address-check pc={pc:x16} " +
+                $"addr={_gpr[5]:x16} result=1");
+        }
+        return true;
+    }
+
+    private void ApplyKnownBootLoaderAddressBase(ulong pc)
+    {
+        if (!_enableBootLoaderAddressBase)
+            return;
+        if (pc is not (0xffffffff8001665cUL or 0xffffffff800166a8UL))
+            return;
+        if (_gpr[20] != 0x00000000a0000000UL)
+            return;
+
+        _gpr[20] = 0xffffffffa0000000UL;
+        if (_traceRd0Home)
+            Console.WriteLine($"[GAUNTDL:BOOT] boot-loader-address-base pc={pc:x16} s4={_gpr[20]:x16}");
+    }
+
+    private bool TryFastPathKnownBootSerialCopyLoop(ulong pc)
+    {
+        const ulong loopPc = 0xffffffff80012140UL;
+        const ulong loopExitPc = 0xffffffff800121a0UL;
+
+        if (!_enableBootSerialCopyLoop || pc != loopPc)
+            return false;
+        if (_memory.Read32(loopPc) != 0x3c04a480U ||
+            _memory.Read32(loopPc + 0x04UL) != 0x34840002U ||
+            _memory.Read32(loopPc + 0x08UL) != 0x80820000U ||
+            _memory.Read32(loopPc + 0x0cUL) != 0x30420002U ||
+            _memory.Read32(loopPc + 0x10UL) != 0x14400003U ||
+            _memory.Read32(loopPc + 0x50UL) != 0x20a50001U ||
+            _memory.Read32(loopPc + 0x54UL) != 0x00a6102bU ||
+            _memory.Read32(loopPc + 0x58UL) != 0x1440ffe7U)
+        {
+            return false;
+        }
+
+        ulong cursor = _gpr[5];
+        ulong end = _gpr[6];
+        if (cursor >= end || end - cursor > 0x00100000UL)
+            return false;
+
+        _gpr[5] = end;
+        _gpr[10] = 8;
+        _gpr[15] = 0;
+        _gpr[24] = 0;
+        _gpr[2] = 0;
+        Pc = loopExitPc;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootSerialCopyLoopTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] boot-serial-copy-loop pc={pc:x16} " +
+                $"from={cursor:x16} to={end:x16} bytes={end - cursor:x}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownBootSerialHandshake(ulong pc)
+    {
+        const ulong entry = 0xffffffff800121c0UL;
+
+        if (!_enableBootSerialCopyLoop ||
+            pc is not (0xffffffff800121c0UL or 0xffffffff800121c4UL or 0xffffffff800121c8UL or
+                       0xffffffff800121d0UL or 0xffffffff800121dcUL))
+        {
+            return false;
+        }
+
+        if (_memory.Read32(entry) != 0x3c04a480U ||
+            _memory.Read32(entry + 0x04UL) != 0x34840002U ||
+            _memory.Read32(entry + 0x08UL) != 0x80820000U ||
+            _memory.Read32(entry + 0x0cUL) != 0x30420001U ||
+            _memory.Read32(entry + 0x10UL) != 0x14400007U ||
+            _memory.Read32(entry + 0x18UL) != 0x214affffU ||
+            _memory.Read32(entry + 0x1cUL) != 0x1540fff6U ||
+            _memory.Read32(entry + 0x48UL) != 0x0000102dU ||
+            _memory.Read32(entry + 0x50UL) != 0x0360f82dU ||
+            _memory.Read32(entry + 0x58UL) != 0x03e00008U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[27];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x01000000UL)
+            return false;
+
+        _gpr[2] = 0;
+        _gpr[10] = 0;
+        _gpr[31] = returnAddress;
+        _gpr[27] = _gpr[26];
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootSerialCopyLoopTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] boot-serial-handshake pc={pc:x16} " +
+                $"return={returnAddress:x16}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownBootA420Handshake(ulong pc)
+    {
+        const ulong entry = 0xffffffff80010d54UL;
+
+        if (!_enableBootSerialCopyLoop ||
+            pc is not (0xffffffff80010d54UL or 0xffffffff80010d58UL or 0xffffffff80010d88UL or
+                       0xffffffff80010d8cUL or 0xffffffff80010d90UL or 0xffffffff80010d98UL))
+        {
+            return false;
+        }
+
+        if (!MatchesKnownBootA420Handshake(entry, pc))
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[7];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x01000000UL)
+        {
+            if (_traceRd0Home && _bootA420HandshakeTraceCount++ < 8)
+                Console.WriteLine($"[GAUNTDL:BOOT] boot-a420-skip pc={pc:x16} reason=return return={returnAddress:x16}");
+            return false;
+        }
+
+        _gpr[2] = 1;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootSerialCopyLoopTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] boot-a420-handshake pc={pc:x16} " +
+                $"return={returnAddress:x16}");
+        }
+        return true;
+    }
+
+    private bool MatchesKnownBootA420Handshake(ulong entry, ulong pc)
+    {
+        ReadOnlySpan<(ulong Offset, uint Expected)> signature =
+        [
+            (0x00UL, 0x03e0382dU),
+            (0x04UL, 0x3c08a420U),
+            (0x08UL, 0x81090000U),
+            (0x0cUL, 0x2401fffeU),
+            (0x10UL, 0x01214824U),
+            (0x14UL, 0xa1090000U),
+            (0x18UL, 0x04110074U),
+            (0x1cUL, 0x240403e8U),
+            (0x20UL, 0x35290001U),
+            (0x24UL, 0xa1090000U),
+            (0x34UL, 0x0411feabU),
+            (0x38UL, 0x00000000U),
+            (0x3cUL, 0x1c400006U),
+            (0x44UL, 0x256bffffU),
+            (0x48UL, 0x1d60fff8U),
+            (0x50UL, 0x00e00008U),
+            (0x54UL, 0x24020001U),
+        ];
+
+        foreach ((ulong offset, uint expected) in signature)
+        {
+            uint actual = _memory.Read32(entry + offset);
+            if (actual == expected)
+                continue;
+
+            if (_traceRd0Home && _bootA420HandshakeTraceCount++ < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:BOOT] boot-a420-skip pc={pc:x16} " +
+                    $"reason=signature off={offset:x2} actual={actual:x8} expected={expected:x8}");
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownBootCountDelay(ulong pc)
+    {
+        const ulong entry = 0xffffffff80010f40UL;
+        const ulong loopPc = 0xffffffff80010fa8UL;
+        const ulong loopDelayPc = 0xffffffff80010facUL;
+        const ulong uncachedEntry = 0xffffffffa0010f40UL;
+        const ulong uncachedLoopPc = 0xffffffffa0010fa8UL;
+        const ulong uncachedLoopDelayPc = 0xffffffffa0010facUL;
+
+        if (!_enableBootCountDelay || pc is not (entry or loopPc or loopDelayPc or uncachedEntry or uncachedLoopPc or uncachedLoopDelayPc))
+            return false;
+        if (_memory.Read32(entry) != 0x40037800U ||
+            _memory.Read32(entry + 0x04UL) != 0x40028000U ||
+            _memory.Read32(entry + 0x50UL) != 0x40024800U ||
+            _memory.Read32(entry + 0x54UL) != 0x00640019U ||
+            _memory.Read32(entry + 0x68UL) != 0x0064082bU ||
+            _memory.Read32(entry + 0x6cUL) != 0x5420fffcU ||
+            _memory.Read32(entry + 0x74UL) != 0x03e00008U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x01000000UL)
+            return false;
+
+        ulong delay = _gpr[4] & 0xffffffffUL;
+        ulong ticks = Math.Max(_cp0CountStep, Math.Min(delay * 125UL, 0x01000000UL));
+        _gpr[2] = _cp0[9];
+        _gpr[3] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(ticks);
+        _instructionCounter++;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 32)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] boot-count-delay pc={pc:x16} " +
+                $"delay={delay:x} return={returnAddress:x16}");
+        }
+        return true;
     }
 
     private bool MatchesKnownRuntimeEventPollWrapperSignature(ulong entry)
@@ -3753,7 +4367,7 @@ internal sealed class VegasMemoryMap
     private readonly bool _traceWritesOnly = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_WRITES_ONLY") == "1";
     private readonly string? _traceTargetFilter = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET");
     private readonly TraceAddressFilter[] _traceAddressFilters = ParseTraceAddressFilters(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS"));
-    private readonly bool _enableRd0DmaQioComplete = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE") == "1";
+    private readonly bool _enableRd0DmaQioComplete = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE");
     private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
     private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
     private readonly int _nileCpuIrqShift = ParseNileCpuIrqShift();
@@ -3837,6 +4451,175 @@ internal sealed class VegasMemoryMap
 
         Write32(rd0Object + 0x14UL, 0x3500U);
         Write32(rd0Child + 0x24UL, 3);
+    }
+
+    public bool TryCompleteKnownRd0Stage4BootRead(
+        out uint lba,
+        out ulong destination,
+        out uint firstWord,
+        out string reason)
+    {
+        const ulong rd0Object = 0xffffffff800e7810UL;
+        const ulong rd0Child = 0xffffffff800e7880UL;
+        const ulong homeSectorBuffer = 0xffffffff800f41e0UL;
+        const uint successStatus = 0x3500U;
+
+        lba = 0;
+        destination = 0;
+        firstWord = 0;
+        reason = "";
+
+        if (_disk is null)
+        {
+            reason = "no-disk";
+            return false;
+        }
+
+        uint obj0c = Read32(rd0Object + 0x0cUL);
+        uint obj14 = Read32(rd0Object + 0x14UL);
+        uint obj18 = Read32(rd0Object + 0x18UL);
+        uint cb = Read32(rd0Child + 0x1cUL);
+        uint owner = Read32(rd0Child + 0x20UL);
+        uint stage = Read32(rd0Child + 0x24UL);
+        uint homeMagic0 = Read32(homeSectorBuffer);
+        uint homeMagic1 = Read32(homeSectorBuffer + 0x38UL);
+        if (obj0c != 4 || obj14 != 0 || obj18 != 0 ||
+            cb != 0x80029230U || owner != 0x800e7810U || stage != 4 ||
+            homeMagic0 != 0xfeedf00dU || homeMagic1 != 0xfe1dfaedU)
+        {
+            reason =
+                $"state obj0c={obj0c:x8} obj14={obj14:x8} obj18={obj18:x8} " +
+                $"cb={cb:x8} owner={owner:x8} stage={stage:x8} " +
+                $"home={homeMagic0:x8},{homeMagic1:x8}";
+            return false;
+        }
+
+        ulong qioBuffer = SignExtend32(Read32(rd0Child + 0x2cUL));
+        destination = SignExtend32(Read32(rd0Object + 0x2cUL));
+        if (!IsMainRamRange(qioBuffer, 0x40) ||
+            !IsMainRamRange(destination, (uint)_disk.Geometry.BytesPerSector))
+        {
+            reason = $"range qioBuffer={qioBuffer:x16} dest={destination:x16}";
+            return false;
+        }
+
+        lba = Read32(destination + 0x24UL);
+        if (lba == 0 || !_disk.TryReadSector(lba, out byte[] sector))
+        {
+            reason = $"sector dest={destination:x16} lba={lba:x8}";
+            return false;
+        }
+
+        firstWord = BinaryPrimitives.ReadUInt32LittleEndian(sector);
+        if (firstWord != 0xf00dfaceU && firstWord != 0xc0edbabeU && firstWord != 0x464c457fU)
+        {
+            reason = $"magic lba={lba:x8} first={firstWord:x8}";
+            return false;
+        }
+
+        for (int i = 0; i < sector.Length; i++)
+            Write8(destination + (uint)i, sector[i]);
+
+        Write32(rd0Object + 0x14UL, successStatus);
+        Write32(rd0Child + 0x0cUL, successStatus);
+        reason = "completed";
+        return true;
+    }
+
+    public bool TryReadDiskSectorToMemory(
+        uint lba,
+        ulong destination,
+        uint byteCount,
+        out uint firstWord,
+        out string reason)
+    {
+        firstWord = 0;
+        reason = "";
+
+        if (_disk is null)
+        {
+            reason = "no-disk";
+            return false;
+        }
+        if (byteCount != _disk.Geometry.BytesPerSector)
+        {
+            reason = $"byte-count {byteCount:x8}";
+            return false;
+        }
+        if (!IsMainRamRange(destination, byteCount))
+        {
+            reason = $"range dest={destination:x16}";
+            return false;
+        }
+        if (!_disk.TryReadSector(lba, out byte[] sector))
+        {
+            reason = $"sector lba={lba:x8}";
+            return false;
+        }
+
+        firstWord = BinaryPrimitives.ReadUInt32LittleEndian(sector);
+        for (int i = 0; i < sector.Length; i++)
+            Write8(destination + (uint)i, sector[i]);
+        return true;
+    }
+
+    public bool TryReadDiskBytesToMemory(
+        uint lba,
+        ulong destination,
+        uint byteCount,
+        out uint firstWord,
+        out string reason)
+    {
+        firstWord = 0;
+        reason = "";
+
+        if (_disk is null)
+        {
+            reason = "no-disk";
+            return false;
+        }
+        if (byteCount == 0)
+        {
+            reason = "byte-count 00000000";
+            return false;
+        }
+        if (!TryTranslatePhysical(destination, out uint physical) ||
+            byteCount > _mainRam.Length ||
+            physical > _mainRam.Length - byteCount)
+        {
+            reason = $"range dest={destination:x16} bytes={byteCount:x8}";
+            return false;
+        }
+
+        uint sectorSize = (uint)_disk.Geometry.BytesPerSector;
+        ulong sectorCount = ((ulong)byteCount + sectorSize - 1UL) / sectorSize;
+        if ((ulong)lba + sectorCount > _disk.Geometry.TotalSectors)
+        {
+            reason = $"sector-range lba={lba:x8} sectors={sectorCount:x}";
+            return false;
+        }
+
+        uint remaining = byteCount;
+        uint cursor = physical;
+        for (ulong i = 0; i < sectorCount; i++)
+        {
+            ulong sectorLba = (ulong)lba + i;
+            if (!_disk.TryReadSector(sectorLba, out byte[] sector))
+            {
+                reason = $"sector lba={sectorLba:x8}";
+                return false;
+            }
+
+            if (i == 0)
+                firstWord = BinaryPrimitives.ReadUInt32LittleEndian(sector);
+
+            int count = (int)Math.Min(sectorSize, remaining);
+            sector.AsSpan(0, count).CopyTo(_mainRam.AsSpan((int)cursor, count));
+            cursor += (uint)count;
+            remaining -= (uint)count;
+        }
+
+        return true;
     }
 
     public void MarkIoasicUnlocked()
@@ -4380,6 +5163,16 @@ internal sealed class VegasMemoryMap
 
     internal uint ReadPciMemoryFromDevice32(uint pciAddress)
         => ReadPciMemory32(pciAddress);
+
+    private bool IsMainRamRange(ulong address, uint length)
+    {
+        if (!TryTranslatePhysical(address, out uint physical))
+            return false;
+        return length <= _mainRam.Length && physical <= _mainRam.Length - length;
+    }
+
+    private static ulong SignExtend32(uint value)
+        => (ulong)(long)(int)value;
 
     private uint ReadNileRegister32(uint offset)
         => BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
@@ -6009,6 +6802,18 @@ internal sealed class IdeDiskDevice
         return data;
     }
 
+    public bool TryReadSector(ulong lba, out byte[] sector)
+    {
+        sector = Array.Empty<byte>();
+        if (_image is null || lba >= _image.Geometry.TotalSectors)
+            return false;
+
+        sector = new byte[_image.Geometry.BytesPerSector];
+        _image.ReadSector(lba, sector);
+        Trace($"direct sector read lba={lba}");
+        return true;
+    }
+
     public void WriteData16(ushort value)
     {
         Trace($"ignored data write {value:x4}");
@@ -6201,7 +7006,8 @@ internal static class DiskImageFactory
         {
             System.IO.Path.Combine(directory, $"{name}.raw"),
             System.IO.Path.Combine(directory, $"{name}.img"),
-            System.IO.Path.Combine(directory, $"{name}.bin")
+            System.IO.Path.Combine(directory, $"{name}.bin"),
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"{name}.raw")
         };
 
         return candidates.FirstOrDefault(candidate => IsUsableRaw(candidate, geometry));

@@ -728,7 +728,7 @@ public partial class MainWindow : Window
         UpdateAudioDebugTimer();
 
         // Load ROM from command line if provided
-        if (!string.IsNullOrEmpty(romPath) && File.Exists(romPath))
+        if (!string.IsNullOrEmpty(romPath) && (File.Exists(romPath) || Directory.Exists(romPath)))
         {
             StatusText.Text = $"Loading from CLI: {romPath}";
             _romPath = romPath;
@@ -819,7 +819,10 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(path) && Deco32Adapter.IsSupportedArchive(path))
             return new Deco32Adapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsSupportedPath(path))
+        {
+            ConfigureGauntletDarkLegacyUiBringup();
             return new EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter();
+        }
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Konami.TmntAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Technos.XainSleenaAdapter.IsSupportedArchive(path))
@@ -837,6 +840,12 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(path) && IsNesRom(path))
             return new NesAdapter();
         return new MdTracerAdapter();
+    }
+
+    private static void ConfigureGauntletDarkLegacyUiBringup()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
     }
 
     private static bool IsPsxRom(string path)
@@ -9260,6 +9269,7 @@ public partial class MainWindow : Window
             or Pgm2Adapter
             or KovPgmAdapter
             or NeoGeoAdapter
+            or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(core, forceOpaque);
 
@@ -9567,6 +9577,7 @@ public partial class MainWindow : Window
             || core is Pgm2Adapter
             || core is KovPgmAdapter
             || core is NeoGeoAdapter
+            || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter
             || core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
@@ -10216,10 +10227,12 @@ public partial class MainWindow : Window
 
     private bool ShouldUsePostedFramePresenter(IEmulatorCore? core)
         => core is Pgm2Adapter
+            || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || ShouldUsePostedPsxAcceleratedPresenter(core);
 
     private static bool ShouldSnapshotFrameBufferForPresentation(IEmulatorCore core)
-        => core is Pgm2Adapter;
+        => core is Pgm2Adapter
+            || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
 
     private static bool ShouldUseNativeDesktopPsxPresenter(IEmulatorCore? core)
     {

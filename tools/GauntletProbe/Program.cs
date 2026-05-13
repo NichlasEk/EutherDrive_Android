@@ -24,6 +24,7 @@ if (args.Length > 7 && args[7] == "dumpcode")
 var adapter = new GauntletDarkLegacyAdapter();
 adapter.LoadRom(romPath);
 
+ulong? stopPc = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_STOP_PC"));
 string? warmupSnapshotPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_WARMUP_STATE");
 int warmupFrames = ParseWarmupFrames(frames);
 warmupSnapshotPath = ResolveWarmupSnapshotPath(warmupSnapshotPath, adapter, warmupFrames, cpuStepsPerFrameConfig);
@@ -42,7 +43,7 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
 
 if (!loadedWarmupSnapshot)
 {
-    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames);
+    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames, stopPc);
 
     if (!string.IsNullOrWhiteSpace(warmupSnapshotPath))
     {
@@ -51,7 +52,7 @@ if (!loadedWarmupSnapshot)
     }
 }
 
-RunUntilFrame(adapter, frames);
+RunUntilFrame(adapter, frames, stopPc);
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
     ? parsedExtraSteps
@@ -62,14 +63,14 @@ if (extraSeries.Length > 0)
     object probeMachine = GetField(adapter, "_machine");
     object probeCpu = GetProperty(probeMachine, "Cpu");
     object probeVoodoo = GetProperty(probeMachine, "Voodoo");
-    MethodInfo step = GetStepMethod(probeCpu);
+    Action step = GetStepAction(probeCpu);
     int currentExtra = 0;
     foreach (int targetExtra in extraSeries)
     {
         if (targetExtra < currentExtra)
             continue;
 
-        int stepped = StepCpu(probeCpu, step, targetExtra - currentExtra);
+        int stepped = StepCpu(step, targetExtra - currentExtra);
         currentExtra += stepped;
         int drained = DrainHelperPcs(probeCpu, step, 4096);
         PrintCheckpoint(currentExtra, drained, probeCpu, probeVoodoo);
@@ -79,8 +80,8 @@ else if (extraSteps > 0)
 {
     object probeMachine = GetField(adapter, "_machine");
     object probeCpu = GetProperty(probeMachine, "Cpu");
-    MethodInfo step = GetStepMethod(probeCpu);
-    StepCpu(probeCpu, step, extraSteps);
+    Action step = GetStepAction(probeCpu);
+    StepCpu(step, extraSteps);
     int drained = DrainHelperPcs(probeCpu, step, 4096);
     Console.WriteLine($"extraCpuSteps={extraSteps}");
     if (drained > 0)
@@ -143,24 +144,27 @@ static FieldInfo? FindField(Type type, string name)
     return null;
 }
 
-static MethodInfo GetStepMethod(object cpu)
-    => cpu.GetType().GetMethod("Step", BindingFlags.Instance | BindingFlags.NonPublic)
+static Action GetStepAction(object cpu)
+{
+    MethodInfo method = cpu.GetType().GetMethod("Step", BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new MissingMethodException(cpu.GetType().FullName, "Step");
+    return (Action)method.CreateDelegate(typeof(Action), cpu);
+}
 
-static int StepCpu(object cpu, MethodInfo step, int count)
+static int StepCpu(Action step, int count)
 {
     int stepped = 0;
     for (; stepped < count; stepped++)
-        step.Invoke(cpu, null);
+        step();
     return stepped;
 }
 
-static int DrainHelperPcs(object cpu, MethodInfo step, int limit)
+static int DrainHelperPcs(object cpu, Action step, int limit)
 {
     int drained = 0;
     while (drained < limit && IsDrainableHelperPc((ulong)GetProperty(cpu, "Pc")))
     {
-        step.Invoke(cpu, null);
+        step();
         drained++;
     }
 
@@ -180,6 +184,19 @@ static int[] ParseExtraSeries(string? value)
         .ToArray();
 }
 
+static ulong? ParseOptionalHexUlong(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+        return null;
+
+    string trimmed = value.Trim();
+    if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        trimmed = trimmed[2..];
+    return ulong.TryParse(trimmed, System.Globalization.NumberStyles.HexNumber, null, out ulong parsed)
+        ? parsed
+        : null;
+}
+
 static int ParseWarmupFrames(int targetFrames)
 {
     string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES");
@@ -188,15 +205,42 @@ static int ParseWarmupFrames(int targetFrames)
     return Math.Min(parsed, targetFrames);
 }
 
-static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames)
+static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, ulong? stopPc)
 {
     while (adapter.FrameCounter.GetValueOrDefault() < targetFrames)
     {
         long frame = adapter.FrameCounter.GetValueOrDefault();
         adapter.RunFrame();
-        if (frame > 0 && frame % 100 == 0)
+        if (stopPc.HasValue && TryGetCpuPc(adapter, out ulong pc) && pc == stopPc.Value)
+        {
+            Console.Error.WriteLine($"stopPc=0x{pc:x16} frame={adapter.FrameCounter.GetValueOrDefault()}");
+            return;
+        }
+        if (frame > 0 && frame % ParseProgressInterval() == 0)
             Console.Error.WriteLine($"progress frame={frame}");
     }
+}
+
+static bool TryGetCpuPc(GauntletDarkLegacyAdapter adapter, out ulong pc)
+{
+    pc = 0;
+    try
+    {
+        object machine = GetField(adapter, "_machine");
+        object cpu = GetProperty(machine, "Cpu");
+        pc = (ulong)GetProperty(cpu, "Pc");
+        return true;
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+static int ParseProgressInterval()
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL");
+    return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : 100;
 }
 
 static string? ResolveWarmupSnapshotPath(string? configuredPath, GauntletDarkLegacyAdapter adapter, int frames, int cpuStepsPerFrame)
