@@ -1849,6 +1849,7 @@ namespace Ryu64.MIPS
             int de = vs & 7;
             int srcLane = element & 7;
             ushort vtValue = ReadVectorLane16(vt, srcLane);
+            LoadVectorShuffledIntoAccumulatorLow(vt, element);
             _divIn = vtValue;
             _dpFlag = 1;
             WriteVectorLane16(vd, de, _divOut);
@@ -1860,8 +1861,7 @@ namespace Ryu64.MIPS
             int srcLane = element & 7;
             ushort vtValue = ReadVectorLane16(vt, srcLane);
 
-            for (int lane = 0; lane < 8; lane++)
-                _accLo[lane] = ReadVectorLane16(vt, lane);
+            LoadVectorShuffledIntoAccumulatorLow(vt, element);
 
             int input = low && (_dpFlag & 1) != 0
                 ? (int)(((uint)_divIn << 16) | vtValue)
@@ -1871,6 +1871,14 @@ namespace Ryu64.MIPS
             int result = ComputeRspReciprocal(rsq, input);
             _divOut = (ushort)(result >> 16);
             WriteVectorLane16(vd, de, (ushort)result);
+        }
+
+        private void LoadVectorShuffledIntoAccumulatorLow(int vt, int element)
+        {
+            ushort[] operand = new ushort[8];
+            LoadVectorShuffled(vt, element, operand);
+            for (int lane = 0; lane < 8; lane++)
+                _accLo[lane] = operand[lane];
         }
 
         private static int ComputeRspReciprocal(bool rsq, int input)
