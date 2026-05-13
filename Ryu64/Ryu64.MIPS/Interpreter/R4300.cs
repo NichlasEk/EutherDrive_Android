@@ -169,6 +169,8 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_CLEAR"), "0", StringComparison.Ordinal);
         private static readonly bool FastBootAssetDecode =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_ASSET_DECODE"), "0", StringComparison.Ordinal);
+        private static readonly bool FastRdramInstructionFetch =
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_RDRAM_FETCH"), "0", StringComparison.Ordinal);
         private static readonly bool FastIdleLoop =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_IDLE_LOOP"), "0", StringComparison.Ordinal);
         private static readonly uint IdleLoopFastForwardCycles =
@@ -1426,6 +1428,8 @@ namespace Ryu64.MIPS
                             }
 
                             uint fetchAddress = pc;
+                            uint fetchPhysical = 0;
+                            bool haveFetchPhysical = false;
                             uint segment = pc & 0xE0000000u;
                             // TLB-translate all virtual segments except direct-mapped kseg0/kseg1.
                             if (segment != 0x80000000u && segment != 0xA0000000u)
@@ -1449,10 +1453,23 @@ namespace Ryu64.MIPS
                                         throw;
                                     }
                                 }
+                                fetchPhysical = translated;
+                                haveFetchPhysical = true;
                                 fetchAddress = 0xA0000000u | translated;
                             }
+                            else
+                            {
+                                fetchPhysical = pc & 0x1FFFFFFFu;
+                                haveFetchPhysical = true;
+                            }
 
-                            uint Opcode = memory.ReadUInt32(fetchAddress);
+                            uint Opcode;
+                            if (!FastRdramInstructionFetch
+                                || !haveFetchPhysical
+                                || !memory.TryReadRdramUInt32PhysicalFast(fetchPhysical, out Opcode))
+                            {
+                                Opcode = memory.ReadUInt32(fetchAddress);
+                            }
                             _recentInst[_recentInstPos] = new RecentInst { Pc = pc, Op = Opcode };
                             _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
                             if (TraceBootWindow

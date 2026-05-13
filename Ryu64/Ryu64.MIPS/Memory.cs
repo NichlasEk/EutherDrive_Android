@@ -8737,6 +8737,22 @@ namespace Ryu64.MIPS
             return ReadUInt32(0xA0000000u | physical);
         }
 
+        internal bool TryReadRdramUInt32PhysicalFast(uint physical, out uint value)
+        {
+            physical &= 0x1FFFFFFFu;
+            if (physical + 3u >= RDRAM.Length)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = ((uint)RDRAM[physical] << 24)
+                | ((uint)RDRAM[physical + 1u] << 16)
+                | ((uint)RDRAM[physical + 2u] << 8)
+                | RDRAM[physical + 3u];
+            return true;
+        }
+
         public void WriteUInt32(uint index, uint value)
         {
             uint physical = 0;
