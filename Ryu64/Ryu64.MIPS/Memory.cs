@@ -34,6 +34,8 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_COMMANDS"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRdpTextureRectangles =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_TEXRECT"), "1", StringComparison.Ordinal);
+        private static readonly bool EnableRdpDepth =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RDP_DEPTH"), "1", StringComparison.Ordinal);
         private static readonly bool UseReferenceTexRectFlip =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_REFERENCE_TEXRECT_FLIP"), "1", StringComparison.Ordinal);
         private static readonly bool UseReferenceTexRectExtents =
@@ -87,6 +89,8 @@ namespace Ryu64.MIPS
         private static int _traceRdpTriangleCount;
         private static int _traceRdpTriangleWriteCount;
         private static int _traceRdpFillRectCount;
+        private static readonly ushort[] RdpZCompressTable = BuildRdpZCompressTable();
+        private static readonly uint[] RdpZDecompressTable = BuildRdpZDecompressTable();
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
         private const int TraceLowRamMutationWriteLimit = 1024;
@@ -141,6 +145,51 @@ namespace Ryu64.MIPS
                 return parsed;
 
             return null;
+        }
+
+        private static ushort[] BuildRdpZCompressTable()
+        {
+            ushort[] table = new ushort[0x40000];
+            for (int z = 0; z < table.Length; z++)
+            {
+                int bucket = (z >> 11) & 0x7F;
+                ushort encoded;
+                if (bucket <= 0x3F)
+                    encoded = (ushort)((z >> 4) & 0x1FFC);
+                else if (bucket <= 0x5F)
+                    encoded = (ushort)(((z >> 3) & 0x1FFC) | 0x2000);
+                else if (bucket <= 0x6F)
+                    encoded = (ushort)(((z >> 2) & 0x1FFC) | 0x4000);
+                else if (bucket <= 0x77)
+                    encoded = (ushort)(((z >> 1) & 0x1FFC) | 0x6000);
+                else if (bucket <= 0x7B)
+                    encoded = (ushort)((z & 0x1FFC) | 0x8000);
+                else if (bucket <= 0x7D)
+                    encoded = (ushort)(((z << 1) & 0x1FFC) | 0xA000);
+                else if (bucket == 0x7E)
+                    encoded = (ushort)(((z << 2) & 0x1FFC) | 0xC000);
+                else
+                    encoded = (ushort)(((z << 2) & 0x1FFC) | 0xE000);
+
+                table[z] = encoded;
+            }
+
+            return table;
+        }
+
+        private static uint[] BuildRdpZDecompressTable()
+        {
+            uint[] table = new uint[0x4000];
+            int[] shifts = { 6, 5, 4, 3, 2, 1, 0, 0 };
+            uint[] adds = { 0x00000u, 0x20000u, 0x30000u, 0x38000u, 0x3C000u, 0x3E000u, 0x3F000u, 0x3F800u };
+            for (int i = 0; i < table.Length; i++)
+            {
+                int exponent = (i >> 11) & 7;
+                uint mantissa = (uint)(i & 0x7FF);
+                table[i] = ((mantissa << shifts[exponent]) + adds[exponent]) & 0x3FFFFu;
+            }
+
+            return table;
         }
 
         private static sbyte ParseSByteEnvironment(string name)
@@ -654,9 +703,20 @@ namespace Ryu64.MIPS
         private uint _rdpEnvColor = 0xFFFFFFFFu;
         private uint _rdpBlendColor = 0xFFFFFFFFu;
         private uint _rdpFogColor = 0x000000FFu;
+        private uint _rdpMaskImageAddress;
+        private uint _rdpPrimitiveDepth = 0x3FFFFu;
+        private uint _rdpPrimitiveDeltaZ = 1u;
+        private int _rdpScissorX0;
+        private int _rdpScissorY0;
+        private int _rdpScissorX1 = int.MaxValue;
+        private int _rdpScissorY1 = int.MaxValue;
         private uint _rdpOtherModesCycleType;
         private bool _rdpOtherModesEnableTlut;
         private bool _rdpOtherModesTlutType;
+        private uint _rdpOtherModesZMode;
+        private bool _rdpOtherModesZUpdate;
+        private bool _rdpOtherModesZCompare;
+        private bool _rdpOtherModesZSourceSel;
         private bool _rdpCombineModeSet;
         private RdpCombineMode _rdpCombine;
         private uint _rdpTextureImageAddress;
@@ -666,6 +726,7 @@ namespace Ryu64.MIPS
         private readonly RdpTileState[] _rdpTiles = new RdpTileState[8];
         private readonly byte[] _rdpTmem = new byte[4096];
         private readonly ushort[] _rdpTlut = new ushort[256];
+        private readonly byte[] _rdpHiddenBits = new byte[8388608 / 2];
         private uint _lastRdpColorImageAddress;
         private uint _lastRdpColorImageWidth;
         private uint _lastRdpColorImageBytesPerPixel;
@@ -1035,8 +1096,13 @@ namespace Ryu64.MIPS
                     case 0x27: // SyncPipe
                     case 0x28: // SyncTile
                     case 0x29: // SyncFull
+                        break;
                     case 0x2D: // SetScissor
-                    case 0x3E: // SetMaskImage
+                        ExecuteRdpSetScissor(w0, w1);
+                        break;
+                    case 0x2E: // SetPrimDepth
+                        _rdpPrimitiveDepth = (w1 >> 16) & 0x7FFFu;
+                        _rdpPrimitiveDeltaZ = w1 & 0xFFFFu;
                         break;
                     case 0x2F: // SetOtherModes
                         ExecuteRdpSetOtherModes(w0, w1);
@@ -1083,6 +1149,9 @@ namespace Ryu64.MIPS
                         _rdpTextureImageSize = (w0 >> 19) & 0x3u;
                         _rdpTextureImageWidth = (w0 & 0x03FFu) + 1u;
                         _rdpTextureImageAddress = w1 & 0x00FFFFFFu;
+                        break;
+                    case 0x3E: // SetMaskImage
+                        _rdpMaskImageAddress = w1 & 0x00FFFFFFu;
                         break;
                     case 0x3F: // SetColorImage
                         Interlocked.Increment(ref _rdpSetColorImageCommandCount);
@@ -1212,12 +1281,17 @@ namespace Ryu64.MIPS
                 RdpTriangleShadeCoefficients textureShade = default;
                 bool hasShade = (command & 0x04) != 0
                     && TryReadRdpShadeCoefficients(commandAddress, xbusDmem, out textureShade);
+                RdpTriangleDepthCoefficients textureDepth = default;
+                bool useDepth = ShouldUseRdpDepth(command)
+                    && TryReadRdpDepthCoefficients(command, commandAddress, xbusDmem, out textureDepth);
                 wrote = DrawRdpTexturedTriangle(
                     command,
                     commandAddress,
                     xbusDmem,
                     hasShade ? textureShade : default,
                     hasShade,
+                    useDepth ? textureDepth : default,
+                    useDepth,
                     tileIndex,
                     xh,
                     dxhdy,
@@ -1255,6 +1329,8 @@ namespace Ryu64.MIPS
             bool xbusDmem,
             RdpTriangleShadeCoefficients shade,
             bool modulateShade,
+            RdpTriangleDepthCoefficients depth,
+            bool useDepth,
             int tileIndex,
             double xh,
             double dxhdy,
@@ -1274,13 +1350,14 @@ namespace Ryu64.MIPS
             RdpTileState tile = _rdpTiles[tileIndex];
             if (!TryReadRdpTextureCoefficients(command, commandAddress, xbusDmem, out RdpTriangleTextureCoefficients tex))
                 return false;
+            useDepth = useDepth && tile.Format != 4u;
 
             uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
             if (maxRows == 0)
                 return false;
 
-            int firstY = Math.Max(0, (int)Math.Floor(yh));
-            int lastY = Math.Min((int)maxRows - 1, (int)Math.Ceiling(yl) - 1);
+            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)Math.Floor(yh));
+            int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
                 return false;
 
@@ -1289,6 +1366,7 @@ namespace Ryu64.MIPS
             long nonZeroSampleHits = 0;
             long sampleMisses = 0;
             long zeroSampleHits = 0;
+            long depthRejects = 0;
             int firstSampleS = 0;
             int firstSampleT = 0;
             uint firstSampleRgba = 0;
@@ -1312,14 +1390,15 @@ namespace Ryu64.MIPS
                     right = tmp;
                 }
 
-                int firstX = Math.Max(0, (int)Math.Floor(left));
-                int lastX = Math.Min((int)_rdpColorImageWidth - 1, (int)Math.Ceiling(right) - 1);
+                int firstX = Math.Max(Math.Max(0, _rdpScissorX0), (int)Math.Floor(left));
+                int lastX = Math.Min(Math.Min((int)_rdpColorImageWidth - 1, _rdpScissorX1), (int)Math.Ceiling(right) - 1);
                 if (lastX < firstX)
                     continue;
 
                 long yStep = (long)Math.Round(sampleY - yh);
                 long rowS = tex.S + yStep * tex.DsDe;
                 long rowT = tex.T + yStep * tex.DtDe;
+                long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
                 long rowR = modulateShade ? shade.R + yStep * (long)shade.DrDe : 0;
                 long rowG = modulateShade ? shade.G + yStep * (long)shade.DgDe : 0;
                 long rowB = modulateShade ? shade.B + yStep * (long)shade.DbDe : 0;
@@ -1369,6 +1448,12 @@ namespace Ryu64.MIPS
                     }
 
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
+                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
+                    {
+                        depthRejects++;
+                        continue;
+                    }
+
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     nonZeroSampleHits++;
                     rowWrote = true;
@@ -1382,7 +1467,7 @@ namespace Ryu64.MIPS
             if (TraceRdpCommands && _traceRdpTriangleWriteCount < TraceRdpTriangleWriteLimit)
             {
                 Common.Logger.PrintWarningLine(
-                    $"[N64RDP] tritex-write ci=0x{_rdpColorImageAddress:x8} tile={tileIndex} hits={sampleHits} nz={nonZeroSampleHits} zero={zeroSampleHits} miss={sampleMisses} " +
+                    $"[N64RDP] tritex-write ci=0x{_rdpColorImageAddress:x8} tile={tileIndex} hits={sampleHits} nz={nonZeroSampleHits} zero={zeroSampleHits} zrej={depthRejects} miss={sampleMisses} " +
                     $"firstS={firstSampleS} firstT={firstSampleT} firstRgba=0x{firstSampleRgba:x8} " +
                     $"tex=s{tex.S}:t{tex.T}:w{tex.W}:dsdx{tex.DsDx}:dtdx{tex.DtDx}:dwdx{tex.DwDx}:dsde{tex.DsDe}:dtde{tex.DtDe}:dwde{tex.DwDe}:dsdy{tex.DsDy}:dtdy{tex.DtDy}:dwdy{tex.DwDy} " +
                     $"raw={tex.Raw0:x16},{tex.Raw1:x16},{tex.Raw2:x16},{tex.Raw3:x16},{tex.Raw4:x16},{tex.Raw5:x16},{tex.Raw6:x16},{tex.Raw7:x16} " +
@@ -1422,6 +1507,15 @@ namespace Ryu64.MIPS
             public ulong Raw5;
             public ulong Raw6;
             public ulong Raw7;
+        }
+
+        private struct RdpTriangleDepthCoefficients
+        {
+            public int Z;
+            public int DzDx;
+            public int DzDe;
+            public int DzDy;
+            public uint DzPix;
         }
 
         private bool TryReadRdpTextureCoefficients(int command, uint commandAddress, bool xbusDmem, out RdpTriangleTextureCoefficients coefficients)
@@ -1467,6 +1561,168 @@ namespace Ryu64.MIPS
             return true;
         }
 
+        private bool TryReadRdpDepthCoefficients(int command, uint commandAddress, bool xbusDmem, out RdpTriangleDepthCoefficients coefficients)
+        {
+            coefficients = default;
+            if ((command & 0x01) == 0)
+                return false;
+
+            int depthBase = 4;
+            if ((command & 0x04) != 0)
+                depthBase += 8;
+            if ((command & 0x02) != 0)
+                depthBase += 8;
+
+            ulong depth0 = ReadRdpCommandDoubleWord(commandAddress + (uint)(depthBase * 8), xbusDmem);
+            ulong depth1 = ReadRdpCommandDoubleWord(commandAddress + (uint)((depthBase + 1) * 8), xbusDmem);
+            int dzDx = unchecked((int)depth0);
+            int dzDy = unchecked((int)depth1);
+            uint dzPix = NormalizeRdpDzPix(
+                (uint)((dzDx >> 16) & 0xFFFF),
+                (uint)((dzDy >> 16) & 0xFFFF));
+
+            coefficients = new RdpTriangleDepthCoefficients
+            {
+                Z = unchecked((int)(depth0 >> 32)),
+                DzDx = dzDx,
+                DzDe = unchecked((int)(depth1 >> 32)),
+                DzDy = dzDy,
+                DzPix = dzPix
+            };
+            return true;
+        }
+
+        private bool ShouldUseRdpDepth(int command)
+        {
+            return EnableRdpDepth
+                && (command & 0x01) != 0
+                && _rdpMaskImageAddress >= PlausibleFramebufferOriginFloor
+                && (_rdpOtherModesZCompare || _rdpOtherModesZUpdate);
+        }
+
+        private long RdpDepthRowStart(RdpTriangleDepthCoefficients depth, long yStep)
+        {
+            if (_rdpOtherModesZSourceSel)
+                return (long)_rdpPrimitiveDepth << 16;
+
+            return depth.Z + yStep * (long)depth.DzDe;
+        }
+
+        private bool PassRdpDepthTest(uint pixelIndex, long zFixed, uint dzPix)
+        {
+            uint sz = RdpDepthFixedToComparator(zFixed);
+            uint zIndex = (_rdpMaskImageAddress >> 1) + pixelIndex;
+            uint zAddress = zIndex << 1;
+            if (zAddress + 1u >= RDRAM.Length || zIndex >= _rdpHiddenBits.Length)
+                return true;
+
+            ushort zVal = (ushort)((RDRAM[zAddress] << 8) | RDRAM[zAddress + 1u]);
+            uint rawDzMem = (uint)(((zVal & 3) << 2) | (_rdpHiddenBits[zIndex] & 3));
+            uint oldZ = RdpZDecompressTable[(zVal >> 2) & 0x3FFFu];
+            uint dzMem = 1u << (int)Math.Min(rawDzMem, 31u);
+            if (dzMem == 0x8000u)
+                dzMem = 0xFFFFu;
+            else
+            {
+                int precisionFactor = (zVal >> 13) & 0xF;
+                if (precisionFactor < 3)
+                {
+                    uint modifier = 16u >> precisionFactor;
+                    dzMem <<= 1;
+                    if (dzMem < modifier)
+                        dzMem = modifier;
+                }
+            }
+
+            uint dzNew = Math.Max(dzMem, dzPix == 0 ? 1u : dzPix) << 3;
+            bool inFront = sz < oldZ;
+            bool farther = sz + dzNew >= oldZ;
+            int diff = unchecked((int)sz - (int)dzNew);
+            bool nearer = diff <= (int)oldZ;
+            bool max = oldZ == 0x3FFFFu || zVal == 0u;
+
+            bool pass;
+            if (!_rdpOtherModesZCompare)
+                pass = true;
+            else
+            {
+                switch (_rdpOtherModesZMode & 0x3u)
+                {
+                    case 2u:
+                        pass = inFront || max;
+                        break;
+                    case 3u:
+                        pass = farther && nearer && !max;
+                        break;
+                    default:
+                        pass = max || nearer;
+                        break;
+                }
+            }
+
+            if (pass && _rdpOtherModesZUpdate)
+                StoreRdpDepth(zIndex, sz, CompressRdpDz(dzPix == 0 ? 1u : dzPix));
+
+            return pass;
+        }
+
+        private void StoreRdpDepth(uint zIndex, uint z, uint dzPixEncoded)
+        {
+            uint zAddress = zIndex << 1;
+            if (zAddress + 1u >= RDRAM.Length || zIndex >= _rdpHiddenBits.Length)
+                return;
+
+            ushort zVal = (ushort)(RdpZCompressTable[z & 0x3FFFFu] | (ushort)(dzPixEncoded >> 2));
+            RDRAM[zAddress] = (byte)(zVal >> 8);
+            RDRAM[zAddress + 1u] = (byte)zVal;
+            _rdpHiddenBits[zIndex] = (byte)(dzPixEncoded & 3u);
+        }
+
+        private static uint RdpDepthFixedToComparator(long zFixed)
+        {
+            long sz = (zFixed >> 10) & 0x3FFFFFL;
+            if (sz > 0x3FFFFL)
+                return 0x3FFFFu;
+            return (uint)sz;
+        }
+
+        private static uint NormalizeRdpDzPix(uint dzDxHigh, uint dzDyHigh)
+        {
+            uint sum = AbsRdpDzComponent(dzDxHigh) + AbsRdpDzComponent(dzDyHigh);
+            if ((sum & 0xC000u) != 0)
+                return 0x8000u;
+            if ((sum & 0xFFFFu) == 0)
+                return 1u;
+
+            for (uint count = 0x2000u; count > 0; count >>= 1)
+            {
+                if ((sum & count) != 0)
+                    return count << 1;
+            }
+
+            return 1u;
+        }
+
+        private static uint AbsRdpDzComponent(uint value)
+        {
+            value &= 0xFFFFu;
+            return (value & 0x8000u) != 0 ? (~value) & 0x7FFFu : value;
+        }
+
+        private static uint CompressRdpDz(uint value)
+        {
+            uint j = 0;
+            if ((value & 0xFF00u) != 0)
+                j |= 8u;
+            if ((value & 0xF0F0u) != 0)
+                j |= 4u;
+            if ((value & 0xCCCCu) != 0)
+                j |= 2u;
+            if ((value & 0xAAAAu) != 0)
+                j |= 1u;
+            return j;
+        }
+
         private static int RdpPackedTextureComponent(ulong highWord, ulong lowWord, int highShift, int lowShift)
         {
             return unchecked((int)(((highWord >> highShift) & 0xFFFF0000UL) | ((lowWord >> lowShift) & 0x0000FFFFUL)));
@@ -1503,8 +1759,8 @@ namespace Ryu64.MIPS
             if (maxRows == 0)
                 return false;
 
-            int firstY = Math.Max(0, (int)Math.Floor(yh));
-            int lastY = Math.Min((int)maxRows - 1, (int)Math.Ceiling(yl) - 1);
+            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)Math.Floor(yh));
+            int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
                 return false;
 
@@ -1529,8 +1785,8 @@ namespace Ryu64.MIPS
                     right = tmp;
                 }
 
-                int firstX = Math.Max(0, (int)Math.Floor(left));
-                int lastX = Math.Min((int)_rdpColorImageWidth - 1, (int)Math.Ceiling(right) - 1);
+                int firstX = Math.Max(Math.Max(0, _rdpScissorX0), (int)Math.Floor(left));
+                int lastX = Math.Min(Math.Min((int)_rdpColorImageWidth - 1, _rdpScissorX1), (int)Math.Ceiling(right) - 1);
                 if (lastX < firstX)
                     continue;
 
@@ -1593,8 +1849,8 @@ namespace Ryu64.MIPS
             if (maxRows == 0)
                 return false;
 
-            int firstY = Math.Max(0, (int)Math.Floor(yh));
-            int lastY = Math.Min((int)maxRows - 1, (int)Math.Ceiling(yl) - 1);
+            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)Math.Floor(yh));
+            int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
                 return false;
 
@@ -1619,8 +1875,8 @@ namespace Ryu64.MIPS
                     right = tmp;
                 }
 
-                int firstX = Math.Max(0, (int)Math.Floor(left));
-                int lastX = Math.Min((int)_rdpColorImageWidth - 1, (int)Math.Ceiling(right) - 1);
+                int firstX = Math.Max(Math.Max(0, _rdpScissorX0), (int)Math.Floor(left));
+                int lastX = Math.Min(Math.Min((int)_rdpColorImageWidth - 1, _rdpScissorX1), (int)Math.Ceiling(right) - 1);
                 if (lastX < firstX)
                     continue;
 
@@ -2040,6 +2296,28 @@ namespace Ryu64.MIPS
             _rdpOtherModesCycleType = (uint)((mode >> 52) & 0x3UL);
             _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
             _rdpOtherModesTlutType = ((mode >> 46) & 1UL) != 0;
+            _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
+            _rdpOtherModesZUpdate = ((mode >> 5) & 1UL) != 0;
+            _rdpOtherModesZCompare = ((mode >> 4) & 1UL) != 0;
+            _rdpOtherModesZSourceSel = ((mode >> 2) & 1UL) != 0;
+        }
+
+        private void ExecuteRdpSetScissor(uint w0, uint w1)
+        {
+            _rdpScissorX0 = (int)(((w0 >> 12) & 0x0FFFu) >> 2);
+            _rdpScissorY0 = (int)((w0 & 0x0FFFu) >> 2);
+            _rdpScissorX1 = RdpScissorMaxToInclusive((w1 >> 12) & 0x0FFFu);
+            _rdpScissorY1 = RdpScissorMaxToInclusive(w1 & 0x0FFFu);
+
+            if (_rdpScissorX1 < _rdpScissorX0)
+                _rdpScissorX1 = _rdpScissorX0 - 1;
+            if (_rdpScissorY1 < _rdpScissorY0)
+                _rdpScissorY1 = _rdpScissorY0 - 1;
+        }
+
+        private static int RdpScissorMaxToInclusive(uint raw)
+        {
+            return (int)((raw + 3u) >> 2) - 1;
         }
 
         private void ExecuteRdpSetCombine(uint w0, uint w1)
@@ -2261,6 +2539,8 @@ namespace Ryu64.MIPS
 
         private void DrawRdpFillRectangle(uint x0, uint y0, uint x1, uint y1, uint bytesPerPixel)
         {
+            if (!ClampRdpRectangleToScissor(ref x0, ref y0, ref x1, ref y1))
+                return;
             if (x0 >= _rdpColorImageWidth)
                 return;
             if (x1 >= _rdpColorImageWidth)
@@ -2305,6 +2585,8 @@ namespace Ryu64.MIPS
 
         private bool DrawRdpTexturedRectangle(uint x0, uint y0, uint x1, uint y1, int tileIndex, uint w2, uint w3, bool flip, uint bytesPerPixel)
         {
+            if (!ClampRdpRectangleToScissor(ref x0, ref y0, ref x1, ref y1))
+                return false;
             if ((uint)tileIndex >= _rdpTiles.Length || x0 >= _rdpColorImageWidth)
                 return false;
             if (x1 >= _rdpColorImageWidth)
@@ -2412,6 +2694,30 @@ namespace Ryu64.MIPS
                     CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel);
             }
             return wroteAny;
+        }
+
+        private bool ClampRdpRectangleToScissor(ref uint x0, ref uint y0, ref uint x1, ref uint y1)
+        {
+            if (_rdpScissorX1 < _rdpScissorX0 || _rdpScissorY1 < _rdpScissorY0)
+                return false;
+
+            uint sx0 = (uint)Math.Max(0, _rdpScissorX0);
+            uint sy0 = (uint)Math.Max(0, _rdpScissorY0);
+            uint sx1 = (uint)_rdpScissorX1;
+            uint sy1 = (uint)_rdpScissorY1;
+            if (x1 < sx0 || y1 < sy0 || x0 > sx1 || y0 > sy1)
+                return false;
+
+            if (x0 < sx0)
+                x0 = sx0;
+            if (y0 < sy0)
+                y0 = sy0;
+            if (x1 > sx1)
+                x1 = sx1;
+            if (y1 > sy1)
+                y1 = sy1;
+
+            return x1 >= x0 && y1 >= y0;
         }
 
         private static int RdpTexRectFixedToTexel(long value1024)
@@ -2681,6 +2987,8 @@ namespace Ryu64.MIPS
 
         private void DrawRdpSolidRectangle(uint x0, uint y0, uint x1, uint y1, uint rgba, uint bytesPerPixel)
         {
+            if (!ClampRdpRectangleToScissor(ref x0, ref y0, ref x1, ref y1))
+                return;
             if (x0 >= _rdpColorImageWidth)
                 return;
             if (x1 >= _rdpColorImageWidth)
@@ -2922,6 +3230,12 @@ namespace Ryu64.MIPS
             {
                 case 1u:
                     RDRAM[address] = (byte)((_rdpFillColor >> (int)((3u - (address & 3u)) * 8u)) & 0xFFu);
+                    if ((address & 1u) != 0)
+                    {
+                        uint hiddenIndex8 = address >> 1;
+                        if (hiddenIndex8 < _rdpHiddenBits.Length)
+                            _rdpHiddenBits[hiddenIndex8] = (byte)(((RDRAM[address] & 1u) << 1) | (RDRAM[address] & 1u));
+                    }
                     break;
                 case 2u:
                     if (address + 1u >= RDRAM.Length)
@@ -2931,6 +3245,9 @@ namespace Ryu64.MIPS
                         : (ushort)_rdpFillColor;
                     RDRAM[address] = (byte)(color16 >> 8);
                     RDRAM[address + 1u] = (byte)color16;
+                    uint hiddenIndex16 = address >> 1;
+                    if (hiddenIndex16 < _rdpHiddenBits.Length)
+                        _rdpHiddenBits[hiddenIndex16] = (byte)(((color16 & 1u) << 1) | (color16 & 1u));
                     break;
                 case 4u:
                     if (address + 3u >= RDRAM.Length)
@@ -2939,6 +3256,12 @@ namespace Ryu64.MIPS
                     RDRAM[address + 1u] = (byte)(_rdpFillColor >> 16);
                     RDRAM[address + 2u] = (byte)(_rdpFillColor >> 8);
                     RDRAM[address + 3u] = (byte)_rdpFillColor;
+                    uint hiddenIndex32 = address >> 1;
+                    if (hiddenIndex32 + 1u < _rdpHiddenBits.Length)
+                    {
+                        _rdpHiddenBits[hiddenIndex32] = (_rdpFillColor & 0x10000u) != 0 ? (byte)3 : (byte)0;
+                        _rdpHiddenBits[hiddenIndex32 + 1u] = (_rdpFillColor & 1u) != 0 ? (byte)3 : (byte)0;
+                    }
                     break;
             }
         }
@@ -3251,6 +3574,8 @@ namespace Ryu64.MIPS
         {
             _rom = Rom;
             _rspInterpreter = new RspInterpreter(this);
+            for (int i = 0; i < _rdpHiddenBits.Length; i++)
+                _rdpHiddenBits[i] = 3;
 
             // RDRAM (base + expansion/mirror window).
             // Keep backing array at 8 MiB for now; accesses beyond that window mirror via ResolveArrayOffset().
