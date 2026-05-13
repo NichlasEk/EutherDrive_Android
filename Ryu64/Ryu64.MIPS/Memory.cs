@@ -657,6 +657,8 @@ namespace Ryu64.MIPS
         private uint _rdpOtherModesCycleType;
         private bool _rdpOtherModesEnableTlut;
         private bool _rdpOtherModesTlutType;
+        private bool _rdpCombineModeSet;
+        private RdpCombineMode _rdpCombine;
         private uint _rdpTextureImageAddress;
         private uint _rdpTextureImageWidth;
         private uint _rdpTextureImageSize;
@@ -704,6 +706,26 @@ namespace Ryu64.MIPS
             public uint Lrs;
             public uint Lrt;
             public bool TileSizeSet;
+        }
+
+        private struct RdpCombineMode
+        {
+            public int SubARgb0;
+            public int SubBRgb0;
+            public int MulRgb0;
+            public int AddRgb0;
+            public int SubAA0;
+            public int SubBA0;
+            public int MulA0;
+            public int AddA0;
+            public int SubARgb1;
+            public int SubBRgb1;
+            public int MulRgb1;
+            public int AddRgb1;
+            public int SubAA1;
+            public int SubBA1;
+            public int MulA1;
+            public int AddA1;
         }
 
         private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
@@ -1014,11 +1036,13 @@ namespace Ryu64.MIPS
                     case 0x28: // SyncTile
                     case 0x29: // SyncFull
                     case 0x2D: // SetScissor
-                    case 0x3C: // SetCombineMode
                     case 0x3E: // SetMaskImage
                         break;
                     case 0x2F: // SetOtherModes
                         ExecuteRdpSetOtherModes(w0, w1);
+                        break;
+                    case 0x3C: // SetCombineMode
+                        ExecuteRdpSetCombine(w0, w1);
                         break;
                     case 0x30: // LoadTLut
                         ExecuteRdpLoadTlut(w0, w1);
@@ -1320,7 +1344,13 @@ namespace Ryu64.MIPS
                             rowG + xStep * (long)shade.DgDx,
                             rowB + xStep * (long)shade.DbDx,
                             rowA + xStep * (long)shade.DaDx);
-                        rgba = ModulateRdpRgba(rgba, shadeRgba);
+                        rgba = _rdpCombineModeSet
+                            ? ApplyRdpColorCombiner(rgba, shadeRgba)
+                            : ModulateRdpRgba(rgba, shadeRgba);
+                    }
+                    else if (_rdpCombineModeSet)
+                    {
+                        rgba = ApplyRdpColorCombiner(rgba, 0xFFFFFFFFu);
                     }
 
                     sampleHits++;
@@ -1708,6 +1738,215 @@ namespace Ryu64.MIPS
             return (r << 24) | (g << 16) | (b << 8) | (a == 0 ? (texel & 0xFFu) : a);
         }
 
+        private uint ApplyRdpColorCombiner(uint texel0, uint shade)
+        {
+            uint combined = EvaluateRdpCombineCycle(
+                _rdpCombine.SubARgb0,
+                _rdpCombine.SubBRgb0,
+                _rdpCombine.MulRgb0,
+                _rdpCombine.AddRgb0,
+                _rdpCombine.SubAA0,
+                _rdpCombine.SubBA0,
+                _rdpCombine.MulA0,
+                _rdpCombine.AddA0,
+                0u,
+                texel0,
+                0u,
+                shade);
+
+            if (_rdpOtherModesCycleType == 1u)
+            {
+                combined = EvaluateRdpCombineCycle(
+                    _rdpCombine.SubARgb1,
+                    _rdpCombine.SubBRgb1,
+                    _rdpCombine.MulRgb1,
+                    _rdpCombine.AddRgb1,
+                    _rdpCombine.SubAA1,
+                    _rdpCombine.SubBA1,
+                    _rdpCombine.MulA1,
+                    _rdpCombine.AddA1,
+                    combined,
+                    texel0,
+                    0u,
+                    shade);
+            }
+
+            if ((combined & 0xFFFFFF00u) == 0u && (texel0 & 0xFFFFFF00u) != 0u)
+                return shade == 0xFFFFFFFFu ? texel0 : ModulateRdpRgba(texel0, shade);
+
+            return combined;
+        }
+
+        private uint EvaluateRdpCombineCycle(
+            int subRgbA,
+            int subRgbB,
+            int mulRgb,
+            int addRgb,
+            int subAlphaA,
+            int subAlphaB,
+            int mulAlpha,
+            int addAlpha,
+            uint combined,
+            uint texel0,
+            uint texel1,
+            uint shade)
+        {
+            uint a = RdpRgbSubAInput(subRgbA, combined, texel0, texel1, shade);
+            uint b = RdpRgbSubBInput(subRgbB, combined, texel0, texel1, shade);
+            uint c = RdpRgbMulInput(mulRgb, combined, texel0, texel1, shade);
+            uint d = RdpRgbAddInput(addRgb, combined, texel0, texel1, shade);
+
+            uint r = RdpCombineChannel((a >> 24) & 0xFFu, (b >> 24) & 0xFFu, (c >> 24) & 0xFFu, (d >> 24) & 0xFFu);
+            uint g = RdpCombineChannel((a >> 16) & 0xFFu, (b >> 16) & 0xFFu, (c >> 16) & 0xFFu, (d >> 16) & 0xFFu);
+            uint bch = RdpCombineChannel((a >> 8) & 0xFFu, (b >> 8) & 0xFFu, (c >> 8) & 0xFFu, (d >> 8) & 0xFFu);
+            uint alpha = RdpCombineChannel(
+                RdpAlphaInput(subAlphaA, combined, texel0, texel1, shade),
+                RdpAlphaInput(subAlphaB, combined, texel0, texel1, shade),
+                RdpAlphaInput(mulAlpha, combined, texel0, texel1, shade),
+                RdpAlphaInput(addAlpha, combined, texel0, texel1, shade));
+
+            return (r << 24) | (g << 16) | (bch << 8) | (alpha == 0u ? (texel0 & 0xFFu) : alpha);
+        }
+
+        private uint RdpRgbSubAInput(int source, uint combined, uint texel0, uint texel1, uint shade)
+        {
+            switch (source & 0xF)
+            {
+                case 0:
+                    return combined;
+                case 1:
+                    return texel0;
+                case 2:
+                    return texel1;
+                case 3:
+                    return _rdpPrimColor;
+                case 4:
+                    return shade;
+                case 5:
+                    return _rdpEnvColor;
+                case 6:
+                    return 0xFFFFFFFFu;
+                default:
+                    return 0u;
+            }
+        }
+
+        private uint RdpRgbSubBInput(int source, uint combined, uint texel0, uint texel1, uint shade)
+        {
+            switch (source & 0xF)
+            {
+                case 0:
+                    return combined;
+                case 1:
+                    return texel0;
+                case 2:
+                    return texel1;
+                case 3:
+                    return _rdpPrimColor;
+                case 4:
+                    return shade;
+                case 5:
+                    return _rdpEnvColor;
+                default:
+                    return 0u;
+            }
+        }
+
+        private uint RdpRgbMulInput(int source, uint combined, uint texel0, uint texel1, uint shade)
+        {
+            switch (source & 0x1F)
+            {
+                case 0:
+                    return combined;
+                case 1:
+                    return texel0;
+                case 2:
+                    return texel1;
+                case 3:
+                    return _rdpPrimColor;
+                case 4:
+                    return shade;
+                case 5:
+                    return _rdpEnvColor;
+                case 7:
+                    return RdpAlphaAsRgb(combined);
+                case 8:
+                    return RdpAlphaAsRgb(texel0);
+                case 9:
+                    return RdpAlphaAsRgb(texel1);
+                case 10:
+                    return RdpAlphaAsRgb(_rdpPrimColor);
+                case 11:
+                    return RdpAlphaAsRgb(shade);
+                case 12:
+                    return RdpAlphaAsRgb(_rdpEnvColor);
+                default:
+                    return 0u;
+            }
+        }
+
+        private uint RdpRgbAddInput(int source, uint combined, uint texel0, uint texel1, uint shade)
+        {
+            switch (source & 0x7)
+            {
+                case 0:
+                    return combined;
+                case 1:
+                    return texel0;
+                case 2:
+                    return texel1;
+                case 3:
+                    return _rdpPrimColor;
+                case 4:
+                    return shade;
+                case 5:
+                    return _rdpEnvColor;
+                case 6:
+                    return 0xFFFFFFFFu;
+                default:
+                    return 0u;
+            }
+        }
+
+        private uint RdpAlphaInput(int source, uint combined, uint texel0, uint texel1, uint shade)
+        {
+            switch (source & 0x7)
+            {
+                case 0:
+                    return combined & 0xFFu;
+                case 1:
+                    return texel0 & 0xFFu;
+                case 2:
+                    return texel1 & 0xFFu;
+                case 3:
+                    return _rdpPrimColor & 0xFFu;
+                case 4:
+                    return shade & 0xFFu;
+                case 5:
+                    return _rdpEnvColor & 0xFFu;
+                case 6:
+                    return 0xFFu;
+                default:
+                    return 0u;
+            }
+        }
+
+        private static uint RdpAlphaAsRgb(uint rgba)
+        {
+            uint a = rgba & 0xFFu;
+            return (a << 24) | (a << 16) | (a << 8) | a;
+        }
+
+        private static uint RdpCombineChannel(uint a, uint b, uint c, uint d)
+        {
+            int value = ((((int)a - (int)b) * (int)c) + ((int)d << 8) + 0x80) >> 8;
+            if (value <= 0)
+                return 0u;
+            if (value >= 0xFF)
+                return 0xFFu;
+            return (uint)value;
+        }
+
         private static double RdpTriangleYToScreen(uint value)
         {
             return SignExtend14(value) / 4.0;
@@ -1801,6 +2040,28 @@ namespace Ryu64.MIPS
             _rdpOtherModesCycleType = (uint)((mode >> 52) & 0x3UL);
             _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
             _rdpOtherModesTlutType = ((mode >> 46) & 1UL) != 0;
+        }
+
+        private void ExecuteRdpSetCombine(uint w0, uint w1)
+        {
+            ulong mode = ((ulong)w0 << 32) | w1;
+            _rdpCombine.SubARgb0 = (int)((mode >> 52) & 0xFu);
+            _rdpCombine.MulRgb0 = (int)((mode >> 47) & 0x1Fu);
+            _rdpCombine.SubAA0 = (int)((mode >> 44) & 0x7u);
+            _rdpCombine.MulA0 = (int)((mode >> 41) & 0x7u);
+            _rdpCombine.SubARgb1 = (int)((mode >> 37) & 0xFu);
+            _rdpCombine.MulRgb1 = (int)((mode >> 32) & 0x1Fu);
+            _rdpCombine.SubBRgb0 = (int)((mode >> 28) & 0xFu);
+            _rdpCombine.SubBRgb1 = (int)((mode >> 24) & 0xFu);
+            _rdpCombine.SubAA1 = (int)((mode >> 21) & 0x7u);
+            _rdpCombine.MulA1 = (int)((mode >> 18) & 0x7u);
+            _rdpCombine.AddRgb0 = (int)((mode >> 15) & 0x7u);
+            _rdpCombine.SubBA0 = (int)((mode >> 12) & 0x7u);
+            _rdpCombine.AddA0 = (int)((mode >> 9) & 0x7u);
+            _rdpCombine.AddRgb1 = (int)((mode >> 6) & 0x7u);
+            _rdpCombine.SubBA1 = (int)((mode >> 3) & 0x7u);
+            _rdpCombine.AddA1 = (int)(mode & 0x7u);
+            _rdpCombineModeSet = true;
         }
 
         private void ExecuteRdpSetTileSize(uint w0, uint w1)
