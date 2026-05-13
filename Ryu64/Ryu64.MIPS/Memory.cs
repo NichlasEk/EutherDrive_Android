@@ -2874,20 +2874,21 @@ namespace Ryu64.MIPS
             if (height == 0)
                 return false;
 
-            int u = ApplyRdpTextureCoordinate(s, width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
-            int v = ApplyRdpTextureCoordinate(t, height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
+            int u = ApplyRdpTextureCoordinate(s, tile.Uls >> 2, width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
+            int v = ApplyRdpTextureCoordinate(t, tile.Ult >> 2, height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
             if (u < 0 || v < 0)
                 return false;
 
             return DecodeRdpTextureColor(tile, u, v, out rgba);
         }
 
-        private static int ApplyRdpTextureCoordinate(int value, uint extent, uint mask, uint shift, bool clamp, bool mirror)
+        private static int ApplyRdpTextureCoordinate(int value, uint origin, uint extent, uint mask, uint shift, bool clamp, bool mirror)
         {
             if (extent == 0)
                 return -1;
             if (shift != 0)
                 value = shift < 11u ? value >> (int)shift : value << (int)(16u - shift);
+            value -= (int)origin;
 
             if (clamp)
             {
