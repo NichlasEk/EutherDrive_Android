@@ -768,6 +768,8 @@ namespace Ryu64.MIPS
         private bool _rdpOtherModesZCompare;
         private bool _rdpOtherModesZSourceSel;
         private bool _rdpOtherModesAlphaCompare;
+        private bool _rdpOtherModesForceBlend;
+        private bool _rdpOtherModesImageRead;
         private bool _rdpCombineModeSet;
         private RdpCombineMode _rdpCombine;
         private uint _rdpTextureImageAddress;
@@ -2095,7 +2097,7 @@ namespace Ryu64.MIPS
             uint g = (((texel >> 16) & 0xFFu) * ((shade >> 16) & 0xFFu) + 0x80u) / 0xFFu;
             uint b = (((texel >> 8) & 0xFFu) * ((shade >> 8) & 0xFFu) + 0x80u) / 0xFFu;
             uint a = ((texel & 0xFFu) * (shade & 0xFFu) + 0x80u) / 0xFFu;
-            return (r << 24) | (g << 16) | (b << 8) | (a == 0 ? (texel & 0xFFu) : a);
+            return (r << 24) | (g << 16) | (b << 8) | a;
         }
 
         private uint ApplyRdpColorCombiner(uint texel0, uint shade)
@@ -2165,7 +2167,7 @@ namespace Ryu64.MIPS
                 RdpAlphaInput(mulAlpha, combined, texel0, texel1, shade),
                 RdpAlphaInput(addAlpha, combined, texel0, texel1, shade));
 
-            return (r << 24) | (g << 16) | (bch << 8) | (alpha == 0u ? (texel0 & 0xFFu) : alpha);
+            return (r << 24) | (g << 16) | (bch << 8) | alpha;
         }
 
         private uint RdpRgbSubAInput(int source, uint combined, uint texel0, uint texel1, uint shade)
@@ -2413,7 +2415,9 @@ namespace Ryu64.MIPS
             _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
             _rdpOtherModesTlutType = ((mode >> 46) & 1UL) != 0;
             _rdpOtherModesPerspectiveTexture = ((mode >> 51) & 1UL) != 0;
+            _rdpOtherModesForceBlend = ((mode >> 14) & 1UL) != 0;
             _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
+            _rdpOtherModesImageRead = ((mode >> 6) & 1UL) != 0;
             _rdpOtherModesZUpdate = ((mode >> 5) & 1UL) != 0;
             _rdpOtherModesZCompare = ((mode >> 4) & 1UL) != 0;
             _rdpOtherModesZSourceSel = ((mode >> 2) & 1UL) != 0;
@@ -3423,6 +3427,9 @@ namespace Ryu64.MIPS
             if (address >= RDRAM.Length)
                 return;
 
+            if (ShouldBlendRdpPixel(rgba) && !TryBlendRdpPixel(address, ref rgba, bytesPerPixel))
+                return;
+
             switch (bytesPerPixel)
             {
                 case 1u:
@@ -3444,6 +3451,68 @@ namespace Ryu64.MIPS
                     RDRAM[address + 3u] = (byte)rgba;
                     break;
             }
+        }
+
+        private bool ShouldBlendRdpPixel(uint rgba)
+        {
+            return _rdpOtherModesForceBlend && (_rdpOtherModesImageRead || (rgba & 0xFFu) < 0xFFu);
+        }
+
+        private bool TryBlendRdpPixel(uint address, ref uint rgba, uint bytesPerPixel)
+        {
+            uint alpha = rgba & 0xFFu;
+            if (alpha == 0u)
+                return false;
+            if (alpha >= 0xFFu)
+                return true;
+
+            uint dst;
+            switch (bytesPerPixel)
+            {
+                case 1u:
+                    {
+                        uint y = RDRAM[address];
+                        dst = (y << 24) | (y << 16) | (y << 8) | 0xFFu;
+                        break;
+                    }
+                case 2u:
+                    {
+                        if (address + 1u >= RDRAM.Length)
+                            return false;
+                        ushort color16 = (ushort)((RDRAM[address] << 8) | RDRAM[address + 1u]);
+                        dst = Rgba5551ToRgba8888(color16) | 0xFFu;
+                        break;
+                    }
+                case 4u:
+                    {
+                        if (address + 3u >= RDRAM.Length)
+                            return false;
+                        dst = ((uint)RDRAM[address] << 24)
+                            | ((uint)RDRAM[address + 1u] << 16)
+                            | ((uint)RDRAM[address + 2u] << 8)
+                            | 0xFFu;
+                        break;
+                    }
+                default:
+                    return false;
+            }
+
+            rgba = AlphaBlendRdpRgba(rgba, dst, alpha);
+            return true;
+        }
+
+        private static uint AlphaBlendRdpRgba(uint src, uint dst, uint alpha)
+        {
+            uint invAlpha = 0xFFu - alpha;
+            uint r = BlendRdpChannel((src >> 24) & 0xFFu, (dst >> 24) & 0xFFu, alpha, invAlpha);
+            uint g = BlendRdpChannel((src >> 16) & 0xFFu, (dst >> 16) & 0xFFu, alpha, invAlpha);
+            uint b = BlendRdpChannel((src >> 8) & 0xFFu, (dst >> 8) & 0xFFu, alpha, invAlpha);
+            return (r << 24) | (g << 16) | (b << 8) | 0xFFu;
+        }
+
+        private static uint BlendRdpChannel(uint src, uint dst, uint alpha, uint invAlpha)
+        {
+            return ((src * alpha) + (dst * invAlpha) + 0x7Fu) / 0xFFu;
         }
 
         private static ushort Rgba8888ToRgba5551(uint rgba)
