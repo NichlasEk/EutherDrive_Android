@@ -6,10 +6,13 @@ using EutherDrive.Core.Savestates;
 public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable, mame.IPgmArm7Bus
 {
     private const string SavestateMagic = "PGM2NAT";
-    private const int SavestateVersion = 5;
+    private const int SavestateVersion = 6;
     private const int Width = 448;
     private const int Height = 224;
     private const int Stride = Width * 4;
+    private const int MemoryCardCount = 4;
+    private const int MemoryCardDataBytes = 0x100;
+    private const int MemoryCardImageBytes = 0x108;
     private const int CpuClockHz = 100_000_000;
     private const double RefreshHz = 59.08;
     private const int CyclesPerFrame = (int)(CpuClockHz / RefreshHz);
@@ -49,6 +52,13 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private static readonly bool Trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_TRACE") == "1";
     private static readonly bool TraceUnknown = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_TRACE_UNKNOWN") == "1";
     private static readonly bool TraceStack = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_TRACE_STACK") == "1";
+    private static readonly bool TraceHudWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_TRACE_HUD_WRITES") == "1";
+    private static readonly long TraceHudStartFrame = ParseLongEnv("EUTHERDRIVE_PGM2_TRACE_HUD_START_FRAME");
+    private static readonly bool TraceGpuReads = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_TRACE_GPU_READS") == "1";
+    private static readonly bool TraceGpuWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_TRACE_GPU_WRITES") == "1";
+    private static readonly long ConfiguredOverlayClipWidth = ParseLongEnv("EUTHERDRIVE_PGM2_OVERLAY_CLIP_WIDTH");
+    private static readonly long ConfiguredTextLayerWidth = ParseLongEnv("EUTHERDRIVE_PGM2_TEXT_LAYER_WIDTH");
+    private static readonly bool InsertDefaultMemoryCards = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_INSERT_DEFAULT_CARDS") == "1";
     private static readonly string SpriteMaskOrder = (Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_SPRITE_MASK_ORDER") ?? "be").Trim().ToLowerInvariant();
     private static readonly string SpriteKeyMode = (Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_SPRITE_KEY_MODE") ?? "reverse-xor").Trim().ToLowerInvariant();
 
@@ -73,6 +83,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private readonly byte[] _spriteZoomRam = new byte[0x200];
     private readonly byte[] _lineRam = new byte[0x400];
     private readonly byte[] _shareRam = new byte[0x100];
+    private readonly byte[][] _memoryCards = CreateMemoryCards();
+    private readonly bool[] _memoryCardPresent = new bool[MemoryCardCount];
+    private readonly bool[] _memoryCardAuthenticated = new bool[MemoryCardCount];
     private readonly byte[] _gpuRegs = new byte[0x40];
     private readonly byte[] _encryptionTable = new byte[0x100];
     private readonly byte[] _ymzRegs = new byte[4];
@@ -109,6 +122,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private int _internalRomBytes;
     private string _loadedMainProgramName = string.Empty;
     private string _loadedInternalRomName = string.Empty;
+    private string _loadedMemoryCardName = string.Empty;
     private int _textRomBytes;
     private int _bgTileRomBytes;
     private int _spriteMaskRomBytes;
@@ -139,6 +153,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     private int _unknownReads;
     private int _unknownWrites;
     private int _stackTraceLines;
+    private int _hudTraceLines;
     private uint _lastExternalFetchAddress;
     private uint _aicMask;
     private uint _aicPending;
@@ -174,6 +189,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     public string CrashTraceSummary => BuildCrashTraceSummary();
 
     private uint CurrentPc => _cpu.ThumbMode ? _cpu.Registers[15] - 4u : _cpu.Registers[15] - 8u;
+
+    private static long ParseLongEnv(string name)
+        => long.TryParse(Environment.GetEnvironmentVariable(name), out long value) ? value : 0;
 
     private string BuildCrashTraceSummary()
     {
@@ -255,6 +273,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         Array.Clear(_spriteZoomRam);
         Array.Clear(_lineRam);
         Array.Clear(_shareRam);
+        ClearMemoryCards();
         Array.Clear(_gpuRegs);
         Array.Clear(_encryptionTable);
         Array.Clear(_ymzRegs);
@@ -267,6 +286,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _internalRomBytes = 0;
         _loadedMainProgramName = string.Empty;
         _loadedInternalRomName = string.Empty;
+        _loadedMemoryCardName = string.Empty;
         _textRomBytes = 0;
         _bgTileRomBytes = 0;
         _spriteMaskRomBytes = 0;
@@ -283,6 +303,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _mainRamWrites = _videoWrites = _paletteWrites = _renderedBgPixels = _renderedFgPixels = _mcuWrites = _aicReads = _aicWrites = _irqAsserts = _vblankIrqs = _mcuIrqs = _encryptionWrites = _encryptionTriggers = _externalFetches = _ymzReads = _ymzWrites = 0;
         _lastExternalFetchAddress = 0;
         _unknownReads = _unknownWrites = 0;
+        _hudTraceLines = 0;
 
         using (ZipArchive archive = ZipFile.OpenRead(path))
             LoadRegions(archive);
@@ -298,7 +319,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         UpdateInputPorts();
         DrawFrame();
 
-        Console.WriteLine($"[PGM2] Loaded {_driverName}: internal={_loadedInternalRomName}:0x{_internalRomBytes:X} main={_loadedMainProgramName}:0x{_romBytes:X} missing=[{string.Join(",", InspectAuxFiles(path).MissingFiles)}]");
+        Console.WriteLine($"[PGM2] Loaded {_driverName}: internal={_loadedInternalRomName}:0x{_internalRomBytes:X} main={_loadedMainProgramName}:0x{_romBytes:X} card={_loadedMemoryCardName} missing=[{string.Join(",", InspectAuxFiles(path).MissingFiles)}]");
     }
 
     public void Reset()
@@ -309,6 +330,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         Array.Copy(_mainRomEncrypted, _mainRom, _mainRom.Length);
         Array.Clear(_mainRam);
         Array.Clear(_shareRam);
+        Array.Clear(_memoryCardAuthenticated);
         Array.Clear(_gpuRegs);
         Array.Clear(_ymzRegs);
         Array.Clear(_mcuRegs);
@@ -456,6 +478,12 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         writer.Write(_mcuResult1);
         writer.Write(_mcuLastCommand);
         writer.Write(_hasDecrypted);
+        for (int i = 0; i < MemoryCardCount; i++)
+        {
+            writer.Write(_memoryCardPresent[i]);
+            writer.Write(_memoryCardAuthenticated[i]);
+            writer.Write(_memoryCards[i]);
+        }
         for (int i = 0; i < _aicSourceModes.Length; i++)
             writer.Write(_aicSourceModes[i]);
         for (int i = 0; i < _aicSourceVectors.Length; i++)
@@ -530,6 +558,15 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             _mcuLastCommand = 0;
         }
         _hasDecrypted = reader.ReadBoolean();
+        if (version >= 6)
+        {
+            for (int i = 0; i < MemoryCardCount; i++)
+            {
+                _memoryCardPresent[i] = reader.ReadBoolean();
+                _memoryCardAuthenticated[i] = reader.ReadBoolean();
+                ReadExact(reader, _memoryCards[i]);
+            }
+        }
         if (version >= 2)
         {
             for (int i = 0; i < _aicSourceModes.Length; i++)
@@ -684,6 +721,41 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         Console.WriteLine($"[PGM2:STACK] frame={_frameCounter} pc=0x{pc:X8} {op} addr=0x{address:X8} val=0x{value:X8} sp=0x{_cpu.Registers[13]:X8} lr=0x{_cpu.Registers[14]:X8}");
     }
 
+    private void TraceHudWrite(uint address, byte value)
+    {
+        if (!TraceHudWrites || _frameCounter < TraceHudStartFrame || _hudTraceLines >= 2048)
+            return;
+
+        if (address >= 0x30000000 && address <= 0x3000003f)
+        {
+            _hudTraceLines++;
+            Console.WriteLine($"[PGM2:HUD-W] frame={_frameCounter} pc=0x{CurrentPc:X8} sprite+0x{address - 0x30000000:X3}=0x{value:X2} lr=0x{_cpu.Registers[14]:X8}");
+            return;
+        }
+
+        if (address < 0x30040000 || address > 0x30045fff)
+            return;
+
+        uint offset = address - 0x30040000;
+        int tile = (int)(offset >> 2);
+        int row = tile / 96;
+        int col = tile % 96;
+        if (!((row <= 4 && col >= 32) || (row >= 24 && row <= 30 && col >= 32)))
+            return;
+
+        _hudTraceLines++;
+        Console.WriteLine($"[PGM2:HUD-W] frame={_frameCounter} pc=0x{CurrentPc:X8} fg[{row:D2},{col:D2}]+{offset & 3}=0x{value:X2} lr=0x{_cpu.Registers[14]:X8}");
+    }
+
+    private void DumpDecryptedMainRomIfRequested()
+    {
+        string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_DUMP_DECRYPTED_ROM");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        File.WriteAllBytes(path, _mainRom.AsSpan(0, _romBytes).ToArray());
+    }
+
     private bool TryReadSpeedup(uint address, out uint value)
     {
         value = 0;
@@ -712,6 +784,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         string mainProgramName = GetMainProgramName(_driverName);
         Pgm2AuxFileSpec auxSpec = GetAuxFileSpec(_driverName);
         string internalRomName = auxSpec.RequiredFiles.FirstOrDefault(IsInternalRomName) ?? string.Empty;
+        string memoryCardName = auxSpec.RequiredFiles.FirstOrDefault(IsMemoryCardName) ?? string.Empty;
         byte[]? fallbackMainProgram = null;
         string fallbackMainProgramName = string.Empty;
 
@@ -740,6 +813,11 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 Buffer.BlockCopy(data, 0, _internalRom, 0, Math.Min(data.Length, _internalRom.Length));
                 _internalRomBytes = Math.Max(_internalRomBytes, Math.Min(data.Length, _internalRom.Length));
                 _loadedInternalRomName = name;
+            }
+            else if (string.Equals(name, memoryCardName, StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(memoryCardName) && IsMemoryCardName(name)))
+            {
+                LoadDefaultMemoryCard(data, name);
             }
             else if (IsTextRomName(name))
             {
@@ -814,6 +892,10 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 _internalRomBytes = Math.Max(_internalRomBytes, Math.Min(data.Length, _internalRom.Length));
                 _loadedInternalRomName = fileName;
             }
+            else if (IsMemoryCardName(fileName))
+            {
+                LoadDefaultMemoryCard(data, fileName);
+            }
         }
     }
 
@@ -828,6 +910,39 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             sourceOffset += 2;
             destinationOffset += 4;
         }
+    }
+
+    private static byte[][] CreateMemoryCards()
+    {
+        var cards = new byte[MemoryCardCount][];
+        for (int i = 0; i < cards.Length; i++)
+            cards[i] = new byte[MemoryCardImageBytes];
+        return cards;
+    }
+
+    private void ClearMemoryCards()
+    {
+        for (int i = 0; i < MemoryCardCount; i++)
+        {
+            Array.Clear(_memoryCards[i]);
+            _memoryCardPresent[i] = false;
+            _memoryCardAuthenticated[i] = false;
+        }
+    }
+
+    private void LoadDefaultMemoryCard(byte[] data, string name)
+    {
+        if (data.Length < MemoryCardImageBytes)
+            return;
+
+        for (int i = 0; i < MemoryCardCount; i++)
+        {
+            Buffer.BlockCopy(data, 0, _memoryCards[i], 0, MemoryCardImageBytes);
+            _memoryCardPresent[i] = InsertDefaultMemoryCards;
+            _memoryCardAuthenticated[i] = false;
+        }
+
+        _loadedMemoryCardName = name;
     }
 
     private byte Read8(uint address)
@@ -867,7 +982,11 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 ? _shareRam[shareOffset]
                 : (byte)(_openBus >> (int)((address & 3) * 8));
         if (address >= 0x30120000 && address <= 0x3012003f)
+        {
+            if (TraceGpuReads)
+                Console.WriteLine($"[PGM2:GPU-R] frame={_frameCounter} pc=0x{CurrentPc:X8} addr=0x{address:X8} val=0x{_gpuRegs[address - 0x30120000]:X2}");
             return _gpuRegs[address - 0x30120000];
+        }
         if (address >= 0x40000000 && address <= 0x40000003)
             return ReadYmz774Byte(address);
         if (address >= 0xfffffc00 && address <= 0xfffffcff)
@@ -908,6 +1027,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         if (address >= 0x30000000 && address <= 0x30001fff)
         {
             _spriteVideoRam[address - 0x30000000] = value;
+            TraceHudWrite(address, value);
             _videoWrites++;
             return;
         }
@@ -920,6 +1040,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         if (address >= 0x30040000 && address <= 0x30045fff)
         {
             _fgVideoRam[address - 0x30040000] = value;
+            TraceHudWrite(address, value);
             _videoWrites++;
             return;
         }
@@ -960,6 +1081,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         if (address >= 0x30120000 && address <= 0x3012003f)
         {
             _gpuRegs[address - 0x30120000] = value;
+            if (TraceGpuWrites)
+                Console.WriteLine($"[PGM2:GPU-W] frame={_frameCounter} pc=0x{CurrentPc:X8} addr=0x{address:X8} val=0x{value:X2} regs={ReadGpu16(0):X4}/{ReadGpu16(2):X4}/{ReadGpu16(8):X4}/{ReadGpu16(0x0a):X4}/{ReadGpu16(0x0c):X4}/{ReadGpu16(0x0e):X4}/{ReadGpu16(0x14):X4}/{ReadGpu16(0x16):X4}");
             return;
         }
         if (address >= 0x40000000 && address <= 0x40000003)
@@ -1025,6 +1148,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             Array.Copy(_mainRomEncrypted, _mainRom, _mainRom.Length);
             Pgm2Igs036Decryptor.DecryptRom(_mainRom, _romBytes, 0, _encryptionTable);
             _hasDecrypted = true;
+            DumpDecryptedMainRomIfRequested();
             Console.WriteLine($"[PGM2] encryption trigger value=0x{value:X8}; decrypted 0x{_romBytes:X} bytes");
             return;
         }
@@ -1152,9 +1276,7 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
                 break;
             }
             case >= 0xc0 and <= 0xc9:
-                status = 0xf4;
-                _mcuResult0 = cmd;
-                _mcuResult1 = 0;
+                status = ExecuteMemoryCardCommand(cmd, arg1, arg2, arg3);
                 break;
             default:
                 status = 0xf4;
@@ -1164,6 +1286,119 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         }
 
         _mcuRegs[3] = (_mcuRegs[3] & 0xff00ffffu) | ((uint)status << 16);
+    }
+
+    private byte ExecuteMemoryCardCommand(byte cmd, byte arg1, byte arg2, byte arg3)
+    {
+        int card = arg1 & 3;
+        byte status = 0xf7;
+        _mcuResult0 = cmd;
+        _mcuResult1 = 0;
+
+        if (!_memoryCardPresent[card])
+        {
+            _memoryCardAuthenticated[card] = false;
+            return 0xf4;
+        }
+
+        switch (cmd)
+        {
+            case 0xc0:
+            case 0xc1:
+                break;
+            case 0xc2:
+            {
+                int bankOffset = (((int)~_shareBank) & 1) * 0x80;
+                int count = Math.Min((int)arg3, 0x80);
+                for (int i = 0; i < count; i++)
+                    _shareRam[bankOffset + i] = MemoryCardRead(card, (arg2 + i) & 0xff);
+                break;
+            }
+            case 0xc3:
+            {
+                int bankOffset = (((int)~_shareBank) & 1) * 0x80;
+                int count = Math.Min((int)arg3, 0x80);
+                for (int i = 0; i < count; i++)
+                    MemoryCardWrite(card, (arg2 + i) & 0xff, _shareRam[bankOffset + i]);
+                break;
+            }
+            case 0xc4:
+                _mcuResult1 = (uint)(MemoryCardReadSecurity(card, 1)
+                    | (MemoryCardReadSecurity(card, 2) << 8)
+                    | (MemoryCardReadSecurity(card, 3) << 16));
+                break;
+            case 0xc5:
+                MemoryCardWriteSecurity(card, arg2 & 3, arg3);
+                break;
+            case 0xc6:
+                MemoryCardWriteProtection(card, arg2 & 3, arg3);
+                break;
+            case 0xc7:
+                _mcuResult1 = (uint)(MemoryCardReadProtection(card, 0)
+                    | (MemoryCardReadProtection(card, 1) << 8)
+                    | (MemoryCardReadProtection(card, 2) << 16)
+                    | (MemoryCardReadProtection(card, 3) << 24));
+                break;
+            case 0xc8:
+                MemoryCardWrite(card, arg2, arg3);
+                break;
+            case 0xc9:
+                MemoryCardAuthenticate(card, arg2, arg3, (byte)(_mcuRegs[1] & 0xff));
+                break;
+        }
+
+        return status;
+    }
+
+    private byte MemoryCardRead(int card, int offset)
+        => _memoryCards[card][offset & 0xff];
+
+    private void MemoryCardWrite(int card, int offset, byte value)
+    {
+        offset &= 0xff;
+        if (!_memoryCardAuthenticated[card])
+            return;
+
+        if (offset < 0x20 && (_memoryCards[card][MemoryCardDataBytes + (offset >> 3)] & (1 << (offset & 7))) == 0)
+            return;
+
+        _memoryCards[card][offset] = value;
+    }
+
+    private byte MemoryCardReadProtection(int card, int offset)
+        => _memoryCards[card][MemoryCardDataBytes + (offset & 3)];
+
+    private void MemoryCardWriteProtection(int card, int offset, byte value)
+    {
+        if (_memoryCardAuthenticated[card])
+            _memoryCards[card][MemoryCardDataBytes + (offset & 3)] &= value;
+    }
+
+    private byte MemoryCardReadSecurity(int card, int offset)
+        => _memoryCardAuthenticated[card] ? _memoryCards[card][MemoryCardDataBytes + 4 + (offset & 3)] : (byte)0xff;
+
+    private void MemoryCardWriteSecurity(int card, int offset, byte value)
+    {
+        if (_memoryCardAuthenticated[card])
+            _memoryCards[card][MemoryCardDataBytes + 4 + (offset & 3)] = value;
+    }
+
+    private void MemoryCardAuthenticate(int card, byte p1, byte p2, byte p3)
+    {
+        Span<byte> security = _memoryCards[card].AsSpan(MemoryCardDataBytes + 4, 4);
+        if ((security[0] & 7) == 0)
+            return;
+
+        if (security[1] == p1 && security[2] == p2 && security[3] == p3)
+        {
+            _memoryCardAuthenticated[card] = true;
+            security[0] = 7;
+        }
+        else
+        {
+            _memoryCardAuthenticated[card] = false;
+            security[0] >>= 1;
+        }
     }
 
     private void ResetAic()
@@ -1576,10 +1811,13 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             int row = y * Stride;
             for (int x = 0; x < visibleWidth; x++)
             {
-                int srcX = (x + scrollX) % (TxColumns * TileSize);
+                int layerX = MapTextLayerX(x, visibleWidth);
+                int srcX = (layerX + scrollX) % (TxColumns * TileSize);
                 if (srcX < 0)
                     srcX += TxColumns * TileSize;
-                int tileX = (srcX >> 3) & (TxColumns - 1);
+                if (ShouldClipTextOverlaySource(srcX))
+                    continue;
+                int tileX = srcX >> 3;
                 int tileIndex = (tileY * TxColumns) + tileX;
                 uint entry = ReadLe32(_fgVideoRam, tileIndex * 4);
                 if (entry == 0)
@@ -1818,11 +2056,46 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
     {
         if ((uint)x >= CurrentVisibleWidth() || (uint)y >= Height)
             return 0;
+        if (ShouldClipHudSpritePixel(x, y))
+            return 0;
 
         int pixel = _spriteColorRom[paletteOffset & colorWrap] & 0x3f;
         uint color = ReadPaletteColor(_spritePaletteRam, (palette * 0x40) + pixel);
         PutPixel((y * Stride) + (x * 4), color);
         return 1;
+    }
+
+    private bool ShouldClipTextOverlaySource(int sourceX)
+    {
+        int clipWidth = OverlayClipWidth();
+        return clipWidth > 0 && sourceX >= clipWidth;
+    }
+
+    private bool ShouldClipHudSpritePixel(int x, int y)
+    {
+        int clipWidth = OverlayClipWidth();
+        if (clipWidth <= 0 || x < clipWidth)
+            return false;
+
+        return y < 64 || y >= Height - 48;
+    }
+
+    private int OverlayClipWidth()
+    {
+        if (ConfiguredOverlayClipWidth < 0)
+            return 0;
+        if (ConfiguredOverlayClipWidth > 0)
+            return (int)Math.Min(ConfiguredOverlayClipWidth, Width);
+
+        return 0;
+    }
+
+    private static int MapTextLayerX(int screenX, int visibleWidth)
+    {
+        if (ConfiguredTextLayerWidth <= 0 || ConfiguredTextLayerWidth == visibleWidth)
+            return screenX;
+
+        return (int)((long)screenX * ConfiguredTextLayerWidth / visibleWidth);
     }
 
     private static void SkipSpriteChunk(int colorWrap, ref int paletteOffset, uint maskData, bool reverse)
@@ -2166,7 +2439,8 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
             || string.Equals(name, "ig-a3_bmh.u16", StringComparison.OrdinalIgnoreCase)
             || string.Equals(name, "ig-a3_cgl.u18", StringComparison.OrdinalIgnoreCase)
             || string.Equals(name, "ig-a3_cgh.u26", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(name, "ig-a3_sp.u37", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(name, "ig-a3_sp.u37", StringComparison.OrdinalIgnoreCase)
+            || IsMemoryCardName(name);
 
     private static bool IsMainProgramName(string name)
         => name.EndsWith(".u7", StringComparison.OrdinalIgnoreCase)
@@ -2179,6 +2453,9 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
 
     private static bool IsTextRomName(string name)
         => string.Equals(name, "ig-a3_text.u4", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMemoryCardName(string name)
+        => name.EndsWith(".pg2", StringComparison.OrdinalIgnoreCase);
 
     private static bool ContainsArchiveEntry(string archivePath, string fileName)
     {
