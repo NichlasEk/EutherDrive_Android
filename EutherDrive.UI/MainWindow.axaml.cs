@@ -2970,7 +2970,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        Interlocked.Exchange(ref _coinPulseFrames, 8);
+        Interlocked.Exchange(ref _coinPulseFrames, 30);
         StatusText.Text = "Coin inserted";
     }
 
