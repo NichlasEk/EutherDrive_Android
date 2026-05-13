@@ -1454,11 +1454,12 @@ namespace Ryu64.MIPS
                 long rowG = modulateShade ? shade.G + yStep * (long)shade.DgDe : 0;
                 long rowB = modulateShade ? shade.B + yStep * (long)shade.DbDe : 0;
                 long rowA = modulateShade ? shade.A + yStep * (long)shade.DaDe : 0;
+                double spanAnchorX = flip ? left : right;
                 uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
                 bool rowWrote = false;
                 for (int x = firstX; x <= lastX; x++)
                 {
-                    long xStep = (long)Math.Round(x + 0.5 - left);
+                    long xStep = (long)Math.Round(x + 0.5 - spanAnchorX);
                     RdpTriangleTextureFixedToTexels(
                         rowS + xStep * tex.DsDx,
                         rowT + xStep * tex.DtDx,
