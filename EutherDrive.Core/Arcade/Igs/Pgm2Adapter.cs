@@ -349,6 +349,56 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         return _frameBuffer;
     }
 
+    public void DumpDebugLayers(string directory, string prefix)
+    {
+        Directory.CreateDirectory(directory);
+        byte[] savedFrame = (byte[])_frameBuffer.Clone();
+        int savedBgPixels = _renderedBgPixels;
+        int savedSpritePixels = _renderedSpritePixels;
+        int savedFgPixels = _renderedFgPixels;
+
+        try
+        {
+            WriteFgTileDump(Path.Combine(directory, $"{prefix}_fg_tiles.txt"));
+            WriteSpriteListDump(Path.Combine(directory, $"{prefix}_sprites.txt"));
+
+            ClearFrame(0xff000000);
+            if (_bgTileRomBytes > 0)
+                DrawBgTilemap();
+            WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_bg.ppm"));
+
+            ClearFrame(0xff000000);
+            if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
+            {
+                DrawSprites(1);
+                DrawSprites(0);
+            }
+            WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_sprites.ppm"));
+
+            ClearFrame(0xff000000);
+            if (_textRomBytes > 0)
+                DrawTextTilemap();
+            WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_fg.ppm"));
+
+            ClearFrame(ReadPaletteColor(_bgPaletteRam, 0));
+            if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
+                DrawSprites(1);
+            WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_sprite_pri1.ppm"));
+
+            ClearFrame(0xff000000);
+            if (_spriteMaskRomBytes > 0 && _spriteColorRomBytes > 0)
+                DrawSprites(0);
+            WriteFrameBufferPpm(Path.Combine(directory, $"{prefix}_sprite_pri0.ppm"));
+        }
+        finally
+        {
+            savedFrame.CopyTo(_frameBuffer, 0);
+            _renderedBgPixels = savedBgPixels;
+            _renderedSpritePixels = savedSpritePixels;
+            _renderedFgPixels = savedFgPixels;
+        }
+    }
+
     public ReadOnlySpan<short> GetAudioBuffer(out int sampleRate, out int channels)
     {
         sampleRate = AudioRate;
@@ -1338,6 +1388,56 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         }
     }
 
+    private void WriteFgTileDump(string path)
+    {
+        const int TxColumns = 96;
+        const int TxRows = 64;
+        using var writer = new StreamWriter(path);
+        writer.WriteLine($"scrollX={ReadGpu16(8)} scrollY={ReadGpu16(0x0a)} visibleWidth={CurrentVisibleWidth()}");
+        for (int y = 0; y < TxRows; y++)
+        {
+            for (int x = 0; x < TxColumns; x++)
+            {
+                uint entry = ReadLe32(_fgVideoRam, ((y * TxColumns) + x) * 4);
+                if (entry == 0)
+                    continue;
+
+                writer.WriteLine(
+                    $"row={y:D2} col={x:D2} entry=0x{entry:X8} tile=0x{entry & 0x0003ffff:X5} pal={(entry >> 18) & 0x1f:D2} flip={(entry >> 23) & 3}");
+            }
+        }
+    }
+
+    private void WriteSpriteListDump(string path)
+    {
+        int wordCount = _spriteVideoRam.Length / 4;
+        using var writer = new StreamWriter(path);
+        for (int i = 0; i < wordCount; i += 4)
+        {
+            uint spr0 = ReadSpriteRam32(i + 0);
+            uint spr1 = ReadSpriteRam32(i + 1);
+            uint spr2 = ReadSpriteRam32(i + 2);
+            uint spr3 = ReadSpriteRam32(i + 3);
+            if ((spr2 & 0x80000000u) != 0)
+            {
+                writer.WriteLine($"end index={i} spr0=0x{spr0:X8} spr1=0x{spr1:X8} spr2=0x{spr2:X8} spr3=0x{spr3:X8}");
+                break;
+            }
+
+            int x = (int)(spr0 & 0x000007ff);
+            int y = (int)((spr0 >> 11) & 0x7ff);
+            if ((x & 0x400) != 0)
+                x -= 0x800;
+            if ((y & 0x400) != 0)
+                y -= 0x800;
+
+            writer.WriteLine(
+                $"index={i:D4} x={x,4} y={y,4} pri={(spr0 >> 31) & 1} dis={(spr0 >> 30) & 1} pal={(spr0 >> 22) & 0x3f:D2} " +
+                $"sx={spr1 & 0x3f:D2} sy={(spr1 >> 6) & 0x1ff:D3} zx={(spr1 >> 16) & 0x7f:D3} zy={(spr1 >> 24) & 0x7f:D3} " +
+                $"flipX={((spr1 & 0x00800000u) != 0 ? 1 : 0)} rev={((spr1 & 0x80000000u) != 0 ? 1 : 0)} mask=0x{spr2:X8} color=0x{spr3:X8}");
+        }
+    }
+
     private int DrawBgTilemap()
     {
         const int TileSize = 32;
@@ -1679,6 +1779,28 @@ public sealed class Pgm2Adapter : IEmulatorCore, ISavestateCapable, IDisposable,
         _frameBuffer[offset + 1] = (byte)(color >> 8);
         _frameBuffer[offset + 2] = (byte)(color >> 16);
         _frameBuffer[offset + 3] = 0xff;
+    }
+
+    private void WriteFrameBufferPpm(string path)
+    {
+        using var stream = File.Create(path);
+        using var writer = new StreamWriter(stream, System.Text.Encoding.ASCII, bufferSize: 1024, leaveOpen: true);
+        writer.Write($"P6\n{Width} {Height}\n255\n");
+        writer.Flush();
+        byte[] rgb = new byte[Width * Height * 3];
+        int dst = 0;
+        for (int y = 0; y < Height; y++)
+        {
+            int row = y * Stride;
+            for (int x = 0; x < Width; x++)
+            {
+                int src = row + (x * 4);
+                rgb[dst++] = _frameBuffer[src + 2];
+                rgb[dst++] = _frameBuffer[src + 1];
+                rgb[dst++] = _frameBuffer[src + 0];
+            }
+        }
+        stream.Write(rgb, 0, rgb.Length);
     }
 
     private uint ReadPaletteColor(byte[] palette, int colorIndex)

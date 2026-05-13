@@ -3605,11 +3605,14 @@ class Program
             bool useNeoGeo = string.Equals(coreOverride, "neogeo", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "neo-geo", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && NeoGeoAdapter.IsSupportedArchive(romPath));
+            bool usePgm2 = string.Equals(coreOverride, "pgm2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "igs-pgm2", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && Pgm2Adapter.IsSupportedArchive(romPath));
             bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
@@ -3900,6 +3903,72 @@ class Program
                 Console.WriteLine($"[HEADLESS] NeoGeo audio samples={audioOut.Length} rate={audioRate} channels={neoGeoAudioChannels} nonzero_samples={CountNonZeroAudioSamples(audioOut)} max_abs={AudioPeak(audioOut)}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_neogeo_state_output.ppm"));
                 PrintHeadlessPerf("NeoGeo", framesToRun, runTicksTotal, runTicksMin, runTicksMax, neoGeo.GetTargetFps());
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (usePgm2)
+            {
+                Console.WriteLine("[HEADLESS] Using IGS PGM2 native bringup core");
+                using var pgm2 = new Pgm2Adapter();
+                pgm2.LoadRom(romPath);
+
+                int? slotOverridePgm2 = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadPgm2 = TryLoadSavestatePayload(savestatePath, pgm2.RomIdentity, slotOverridePgm2, out var pgm2Error);
+                if (payloadPgm2 == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {pgm2Error}");
+                    return 1;
+                }
+
+                using (var pgm2StateStream = new MemoryStream(payloadPgm2, writable: false))
+                using (var pgm2StateReader = new BinaryReader(pgm2StateStream))
+                    pgm2.LoadState(pgm2StateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (PGM2)");
+                ReadOnlySpan<byte> fbBefore = pgm2.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                Console.WriteLine($"[HEADLESS] PGM2 before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) fp=0x{lastFingerprint:X16} frameCounter={pgm2.FrameCounter ?? -1}");
+                Console.WriteLine($"[HEADLESS] PGM2 before debug {pgm2.DebugSummary}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_pgm2_state_before.ppm"));
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_DUMP_LAYERS") == "1")
+                    pgm2.DumpDebugLayers(dumpDir, "headless_pgm2_state_before");
+
+                var pgm2InputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_PGM2_HEADLESS_INPUT_SCRIPT"));
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                int unchangedFrames = 0;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, pgm2InputScript);
+                    pgm2.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X,
+                        input.Start,
+                        input.Y, input.L, input.R,
+                        input.Select,
+                        PadType.SixButton);
+                    pgm2.RunFrame();
+
+                    ReadOnlySpan<byte> fb = pgm2.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: pgm2_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} debug={pgm2.DebugSummary}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_pgm2_state_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = pgm2.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] PGM2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={pgm2.FrameCounter ?? -1}");
+                Console.WriteLine($"[HEADLESS] PGM2 final debug {pgm2.DebugSummary}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_pgm2_state_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
