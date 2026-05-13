@@ -597,6 +597,55 @@ namespace Ryu64.MIPS
             Common.Measure.CycleCounter = CycleCounter;
         }
 
+        private static uint ReadOpcode(uint pc)
+        {
+            uint fetchAddress = pc;
+            uint fetchPhysical = 0;
+            bool haveFetchPhysical = false;
+            uint segment = pc & 0xE0000000u;
+            // TLB-translate all virtual segments except direct-mapped kseg0/kseg1.
+            if (segment != 0x80000000u && segment != 0xA0000000u)
+            {
+                uint translated;
+                try
+                {
+                    translated = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1FFFFFFFu;
+                }
+                catch (Common.Exceptions.TLBMissException)
+                {
+                    // Bring-up fallback: allow low virtual instruction fetches to
+                    // behave as direct physical when ITLB state is incomplete.
+                    // Set EUTHERDRIVE_N64_STRICT_ITLB=1 to enforce strict behavior.
+                    if (AllowInstructionLowPhysicalFallbackOnTlbMiss && pc < 0x05000000u)
+                    {
+                        translated = pc & 0x1FFFFFFFu;
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+
+                fetchPhysical = translated;
+                haveFetchPhysical = true;
+                fetchAddress = 0xA0000000u | translated;
+            }
+            else
+            {
+                fetchPhysical = pc & 0x1FFFFFFFu;
+                haveFetchPhysical = true;
+            }
+
+            if (FastRdramInstructionFetch
+                && haveFetchPhysical
+                && memory.TryReadRdramUInt32PhysicalFast(fetchPhysical, out uint opcode))
+            {
+                return opcode;
+            }
+
+            return memory.ReadUInt32(fetchAddress);
+        }
+
         private static bool TryFastForwardBootChecksumLoop(uint pc)
         {
             if (!FastBootChecksumLoop || pc != 0x80000184u)
@@ -902,7 +951,7 @@ namespace Ryu64.MIPS
             _delaySlotBranchPc = delayPc - 4;
             try
             {
-                InterpretOpcode(memory.ReadUInt32(delayPc));
+                InterpretOpcode(ReadOpcode(delayPc));
             }
             catch
             {
@@ -1427,49 +1476,7 @@ namespace Ryu64.MIPS
                                 Common.Logger.PrintWarningLine(pifEntry.ToString());
                             }
 
-                            uint fetchAddress = pc;
-                            uint fetchPhysical = 0;
-                            bool haveFetchPhysical = false;
-                            uint segment = pc & 0xE0000000u;
-                            // TLB-translate all virtual segments except direct-mapped kseg0/kseg1.
-                            if (segment != 0x80000000u && segment != 0xA0000000u)
-                            {
-                                uint translated;
-                                try
-                                {
-                                    translated = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1FFFFFFFu;
-                                }
-                                catch (Common.Exceptions.TLBMissException)
-                                {
-                                    // Bring-up fallback: allow low virtual instruction fetches to
-                                    // behave as direct physical when ITLB state is incomplete.
-                                    // Set EUTHERDRIVE_N64_STRICT_ITLB=1 to enforce strict behavior.
-                                    if (AllowInstructionLowPhysicalFallbackOnTlbMiss && pc < 0x05000000u)
-                                    {
-                                        translated = pc & 0x1FFFFFFFu;
-                                    }
-                                    else
-                                    {
-                                        throw;
-                                    }
-                                }
-                                fetchPhysical = translated;
-                                haveFetchPhysical = true;
-                                fetchAddress = 0xA0000000u | translated;
-                            }
-                            else
-                            {
-                                fetchPhysical = pc & 0x1FFFFFFFu;
-                                haveFetchPhysical = true;
-                            }
-
-                            uint Opcode;
-                            if (!FastRdramInstructionFetch
-                                || !haveFetchPhysical
-                                || !memory.TryReadRdramUInt32PhysicalFast(fetchPhysical, out Opcode))
-                            {
-                                Opcode = memory.ReadUInt32(fetchAddress);
-                            }
+                            uint Opcode = ReadOpcode(pc);
                             _recentInst[_recentInstPos] = new RecentInst { Pc = pc, Op = Opcode };
                             _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
                             if (TraceBootWindow
