@@ -2,6 +2,7 @@ using Ryu64.Formats;
 using Ryu64.MIPS;
 using Ryu64.Common;
 using System;
+using System.IO;
 using System.Threading;
 
 namespace Ryu64Core
@@ -41,6 +42,7 @@ namespace Ryu64Core
 
         private Z64 rom;
         private bool isRunning = false;
+        private bool _resumeLoadedState;
 
         private uint _lastAudioAddress;
         private uint _lastAudioLength;
@@ -174,6 +176,7 @@ namespace Ryu64Core
 
             Settings.Parse($"{AppDomain.CurrentDomain.BaseDirectory}/Settings.ini");
             R4300.memory = new Memory(rom.AllData);
+            _resumeLoadedState = false;
             _lastAudioAddress = 0;
             _lastAudioLength = 0;
             _lastAudioDacrate = 0;
@@ -192,7 +195,15 @@ namespace Ryu64Core
                 return;
             }
 
-            R4300.PowerOnR4300();
+            if (_resumeLoadedState)
+            {
+                R4300.ResumeR4300();
+                _resumeLoadedState = false;
+            }
+            else
+            {
+                R4300.PowerOnR4300();
+            }
             isRunning = true;
             StateChanged?.Invoke(this, new EmulationStateChangedEventArgs(true));
         }
@@ -617,12 +628,83 @@ namespace Ryu64Core
 
         public void SaveState(string path)
         {
-            // Save emulator state to file
+            using FileStream stream = File.Create(path);
+            using BinaryWriter writer = new BinaryWriter(stream);
+            SaveState(writer);
         }
 
         public void LoadState(string path)
         {
-            // Load emulator state from file
+            using FileStream stream = File.OpenRead(path);
+            using BinaryReader reader = new BinaryReader(stream);
+            LoadState(reader);
+        }
+
+        public void SaveState(BinaryWriter writer)
+        {
+            if (writer == null)
+                throw new ArgumentNullException(nameof(writer));
+            if (rom == null || R4300.memory == null)
+                throw new InvalidOperationException("No N64 ROM loaded.");
+
+            bool restart = isRunning;
+            if (restart)
+                Stop();
+
+            try
+            {
+                const int version = 1;
+                writer.Write(version);
+                writer.Write(_lastAudioAddress);
+                writer.Write(_lastAudioLength);
+                writer.Write(_lastAudioDacrate);
+                writer.Write(_lastFramebufferStatus ?? string.Empty);
+                writer.Write(_lastFallbackFramebufferOrigin);
+                writer.Write(_lastTrackedFramebufferOrigin);
+                R4300.SaveState(writer);
+            }
+            finally
+            {
+                if (restart)
+                    ResumeLoadedExecution();
+            }
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
+            if (rom == null || R4300.memory == null)
+                throw new InvalidOperationException("No N64 ROM loaded.");
+
+            bool restart = isRunning;
+            if (restart)
+                Stop();
+
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new InvalidDataException($"Unsupported Ryu64 savestate version: {version}.");
+
+            _lastAudioAddress = reader.ReadUInt32();
+            _lastAudioLength = reader.ReadUInt32();
+            _lastAudioDacrate = reader.ReadUInt32();
+            _lastFramebufferStatus = reader.ReadString();
+            _lastFallbackFramebufferOrigin = reader.ReadUInt32();
+            _lastTrackedFramebufferOrigin = reader.ReadUInt32();
+            R4300.LoadState(reader);
+
+            if (restart)
+                ResumeLoadedExecution();
+            else
+                _resumeLoadedState = true;
+        }
+
+        private void ResumeLoadedExecution()
+        {
+            R4300.ResumeR4300();
+            isRunning = true;
+            _resumeLoadedState = false;
+            StateChanged?.Invoke(this, new EmulationStateChangedEventArgs(true));
         }
 
         private static int InferVideoHeight(uint vStart)

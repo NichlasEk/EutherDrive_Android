@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -931,6 +932,280 @@ namespace Ryu64.MIPS
             }
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            if (writer == null)
+                throw new ArgumentNullException(nameof(writer));
+
+            const int version = 1;
+            writer.Write(version);
+
+            WriteByteArrays(writer);
+            WriteBytes(writer, SI_MIRROR_RAM);
+            WriteBytes(writer, OpenBus);
+            WriteBytes(writer, _rdpTmem);
+            WriteUshortArray(writer, _rdpTlut);
+            WriteBytes(writer, _rdpHiddenBits);
+            WriteBytes(writer, _fbDirtyPage);
+            WriteUintArray(writer, _rdramPageLastWriteEpoch);
+            WriteFramebufferInfos(writer);
+
+            writer.Write(_openBusMissCount);
+            writer.Write(_piDmaBusy);
+            writer.Write(_piInterruptDelayArmed);
+            writer.Write(_piInterruptDelayRemaining);
+            writer.Write(_piIrqRaiseCount);
+            writer.Write(_piIrqClearCount);
+            writer.Write(_cartridgeBusLastWriteWord);
+            writer.Write(_siDmaActive);
+            writer.Write(_siDmaReadToDram);
+            writer.Write(_siDramAddr);
+            writer.Write(_siDirectPifWriteActive);
+            writer.Write(_siInterruptDelayArmed);
+            writer.Write(_siInterruptDelayRemaining);
+            writer.Write(_aiFifo0Address);
+            writer.Write(_aiFifo0Length);
+            writer.Write(_aiFifo0Duration);
+            writer.Write(_aiFifo1Address);
+            writer.Write(_aiFifo1Length);
+            writer.Write(_aiFifo1Duration);
+            writer.Write(_aiInterruptDelayArmed);
+            writer.Write(_aiInterruptDelayRemaining);
+            writer.Write(_aiDelayedCarry);
+            writer.Write(_viCurrentLine);
+            writer.Write(_viLineCycleAccum);
+            writer.Write(_viFrameDelayCycles);
+            writer.Write(_viInterruptCyclesRemaining);
+            writer.Write(_viField);
+            writer.Write(_fbInfoEpoch);
+            writer.Write(_rdramWriteEpoch);
+            writer.Write(_lastViOriginWriteValue);
+            writer.Write(_lastViOriginWritePc);
+            writer.Write(_lastPlausibleViOriginWriteValue);
+            writer.Write(_lastPlausibleViOriginWritePc);
+            writer.Write(_warnedRspTaskHle);
+            writer.Write(_warnedRspInterpreterFallback);
+            writer.Write(_warnedRspGraphicsFailLoud);
+            writer.Write(_spDmaBusy);
+            writer.Write(_spDmaFull);
+            writer.Write(_spDmaDelayArmed);
+            writer.Write(_spDmaDelayRemaining);
+            WriteSpDmaRequest(writer, _spQueuedDma);
+            writer.Write(_spQueuedDmaValid);
+            writer.Write(_rspTaskActive);
+            writer.Write(_rspTaskDispatching);
+            writer.Write(_rspTaskCyclesRemaining);
+            writer.Write(_rspInterruptDelayRemaining);
+            writer.Write(_rspInterruptDelayArmed);
+            writer.Write(_rspTaskLocked);
+            writer.Write(_activeRspTracePc);
+            writer.Write(_hasActiveRspTracePc);
+            writer.Write(_dpInterruptDelayRemaining);
+            writer.Write(_dpInterruptDelayArmed);
+            writer.Write(_dpCompletionPending);
+            WriteRspTask(writer, _activeRspTask);
+
+            writer.Write(_rdpColorImageAddress);
+            writer.Write(_rdpColorImageWidth);
+            writer.Write(_rdpColorImageSize);
+            writer.Write(_rdpFillColor);
+            writer.Write(_rdpPrimColor);
+            writer.Write(_rdpEnvColor);
+            writer.Write(_rdpBlendColor);
+            writer.Write(_rdpFogColor);
+            writer.Write(_rdpMaskImageAddress);
+            writer.Write(_rdpPrimitiveDepth);
+            writer.Write(_rdpPrimitiveDeltaZ);
+            writer.Write(_rdpScissorX0);
+            writer.Write(_rdpScissorY0);
+            writer.Write(_rdpScissorX1);
+            writer.Write(_rdpScissorY1);
+            writer.Write(_rdpOtherModesCycleType);
+            writer.Write(_rdpOtherModesEnableTlut);
+            writer.Write(_rdpOtherModesTlutType);
+            writer.Write(_rdpOtherModesPerspectiveTexture);
+            writer.Write(_rdpOtherModesZMode);
+            writer.Write(_rdpOtherModesZUpdate);
+            writer.Write(_rdpOtherModesZCompare);
+            writer.Write(_rdpOtherModesZSourceSel);
+            writer.Write(_rdpOtherModesAlphaCompare);
+            writer.Write(_rdpOtherModesForceBlend);
+            writer.Write(_rdpOtherModesImageRead);
+            writer.Write(_rdpOtherModesCvgDest);
+            writer.Write(_rdpCombineModeSet);
+            WriteRdpCombine(writer, _rdpCombine);
+            writer.Write(_rdpTextureImageAddress);
+            writer.Write(_rdpTextureImageWidth);
+            writer.Write(_rdpTextureImageSize);
+            writer.Write(_rdpTextureImageFormat);
+            WriteRdpTiles(writer);
+            writer.Write(_lastRdpColorImageAddress);
+            writer.Write(_lastRdpColorImageWidth);
+            writer.Write(_lastRdpColorImageBytesPerPixel);
+            writer.Write(_lastRdpColorImageWriteEpoch);
+            lock (_lastVisibleRdpFramebufferLock)
+            {
+                WriteBytes(writer, _lastVisibleRdpFramebufferSnapshot);
+                writer.Write(_lastVisibleRdpFramebufferAddress);
+                writer.Write(_lastVisibleRdpFramebufferWidth);
+                writer.Write(_lastVisibleRdpFramebufferHeight);
+                writer.Write(_lastVisibleRdpFramebufferBytesPerPixel);
+                writer.Write(_lastVisibleRdpFramebufferEpoch);
+            }
+
+            writer.Write(_rspGraphicsTaskCount);
+            writer.Write(_rspAudioTaskCount);
+            writer.Write(_rspOtherTaskCount);
+            writer.Write(_rdpDisplayListCount);
+            writer.Write(_rdpCommandCount);
+            writer.Write(_rdpHandledCommandCount);
+            writer.Write(_rdpSetColorImageCommandCount);
+            writer.Write(_rdpTriangleCommandCount);
+            writer.Write(_rdpTextureRectangleCommandCount);
+            writer.Write(_rdpFillRectangleCommandCount);
+            writer.Write(_rdpPixelWriteCount);
+            writer.Write(_rdpNonZeroPixelWriteCount);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
+
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
+
+            ReadByteArrays(reader);
+            ReadBytes(reader, SI_MIRROR_RAM);
+            ReadBytes(reader, OpenBus);
+            ReadBytes(reader, _rdpTmem);
+            ReadUshortArray(reader, _rdpTlut);
+            ReadBytes(reader, _rdpHiddenBits);
+            ReadBytes(reader, _fbDirtyPage);
+            ReadUintArray(reader, _rdramPageLastWriteEpoch);
+            ReadFramebufferInfos(reader);
+
+            _openBusMissCount = reader.ReadUInt32();
+            _piDmaBusy = reader.ReadBoolean();
+            _piInterruptDelayArmed = reader.ReadBoolean();
+            _piInterruptDelayRemaining = reader.ReadUInt32();
+            _piIrqRaiseCount = reader.ReadUInt32();
+            _piIrqClearCount = reader.ReadUInt32();
+            _cartridgeBusLastWriteWord = reader.ReadUInt32();
+            _siDmaActive = reader.ReadBoolean();
+            _siDmaReadToDram = reader.ReadBoolean();
+            _siDramAddr = reader.ReadUInt32();
+            _siDirectPifWriteActive = reader.ReadBoolean();
+            _siInterruptDelayArmed = reader.ReadBoolean();
+            _siInterruptDelayRemaining = reader.ReadUInt32();
+            _aiFifo0Address = reader.ReadUInt32();
+            _aiFifo0Length = reader.ReadUInt32();
+            _aiFifo0Duration = reader.ReadUInt32();
+            _aiFifo1Address = reader.ReadUInt32();
+            _aiFifo1Length = reader.ReadUInt32();
+            _aiFifo1Duration = reader.ReadUInt32();
+            _aiInterruptDelayArmed = reader.ReadBoolean();
+            _aiInterruptDelayRemaining = reader.ReadUInt32();
+            _aiDelayedCarry = reader.ReadBoolean();
+            _viCurrentLine = reader.ReadUInt32();
+            _viLineCycleAccum = reader.ReadUInt32();
+            _viFrameDelayCycles = reader.ReadUInt32();
+            _viInterruptCyclesRemaining = reader.ReadUInt32();
+            _viField = reader.ReadUInt32();
+            _fbInfoEpoch = reader.ReadUInt32();
+            _rdramWriteEpoch = reader.ReadUInt32();
+            _lastViOriginWriteValue = reader.ReadUInt32();
+            _lastViOriginWritePc = reader.ReadUInt32();
+            _lastPlausibleViOriginWriteValue = reader.ReadUInt32();
+            _lastPlausibleViOriginWritePc = reader.ReadUInt32();
+            _warnedRspTaskHle = reader.ReadBoolean();
+            _warnedRspInterpreterFallback = reader.ReadBoolean();
+            _warnedRspGraphicsFailLoud = reader.ReadBoolean();
+            _spDmaBusy = reader.ReadBoolean();
+            _spDmaFull = reader.ReadBoolean();
+            _spDmaDelayArmed = reader.ReadBoolean();
+            _spDmaDelayRemaining = reader.ReadUInt32();
+            _spQueuedDma = ReadSpDmaRequest(reader);
+            _spQueuedDmaValid = reader.ReadBoolean();
+            _rspTaskActive = reader.ReadBoolean();
+            _rspTaskDispatching = reader.ReadBoolean();
+            _rspTaskCyclesRemaining = reader.ReadUInt32();
+            _rspInterruptDelayRemaining = reader.ReadUInt32();
+            _rspInterruptDelayArmed = reader.ReadBoolean();
+            _rspTaskLocked = reader.ReadBoolean();
+            _activeRspTracePc = reader.ReadUInt32();
+            _hasActiveRspTracePc = reader.ReadBoolean();
+            _writeUInt8Origin = null;
+            _dpInterruptDelayRemaining = reader.ReadUInt32();
+            _dpInterruptDelayArmed = reader.ReadBoolean();
+            _dpCompletionPending = reader.ReadBoolean();
+            _activeRspTask = ReadRspTask(reader);
+
+            _rdpColorImageAddress = reader.ReadUInt32();
+            _rdpColorImageWidth = reader.ReadUInt32();
+            _rdpColorImageSize = reader.ReadUInt32();
+            _rdpFillColor = reader.ReadUInt32();
+            _rdpPrimColor = reader.ReadUInt32();
+            _rdpEnvColor = reader.ReadUInt32();
+            _rdpBlendColor = reader.ReadUInt32();
+            _rdpFogColor = reader.ReadUInt32();
+            _rdpMaskImageAddress = reader.ReadUInt32();
+            _rdpPrimitiveDepth = reader.ReadUInt32();
+            _rdpPrimitiveDeltaZ = reader.ReadUInt32();
+            _rdpScissorX0 = reader.ReadInt32();
+            _rdpScissorY0 = reader.ReadInt32();
+            _rdpScissorX1 = reader.ReadInt32();
+            _rdpScissorY1 = reader.ReadInt32();
+            _rdpOtherModesCycleType = reader.ReadUInt32();
+            _rdpOtherModesEnableTlut = reader.ReadBoolean();
+            _rdpOtherModesTlutType = reader.ReadBoolean();
+            _rdpOtherModesPerspectiveTexture = reader.ReadBoolean();
+            _rdpOtherModesZMode = reader.ReadUInt32();
+            _rdpOtherModesZUpdate = reader.ReadBoolean();
+            _rdpOtherModesZCompare = reader.ReadBoolean();
+            _rdpOtherModesZSourceSel = reader.ReadBoolean();
+            _rdpOtherModesAlphaCompare = reader.ReadBoolean();
+            _rdpOtherModesForceBlend = reader.ReadBoolean();
+            _rdpOtherModesImageRead = reader.ReadBoolean();
+            _rdpOtherModesCvgDest = reader.ReadUInt32();
+            _rdpCombineModeSet = reader.ReadBoolean();
+            _rdpCombine = ReadRdpCombine(reader);
+            _rdpTextureImageAddress = reader.ReadUInt32();
+            _rdpTextureImageWidth = reader.ReadUInt32();
+            _rdpTextureImageSize = reader.ReadUInt32();
+            _rdpTextureImageFormat = reader.ReadUInt32();
+            ReadRdpTiles(reader);
+            _lastRdpColorImageAddress = reader.ReadUInt32();
+            _lastRdpColorImageWidth = reader.ReadUInt32();
+            _lastRdpColorImageBytesPerPixel = reader.ReadUInt32();
+            _lastRdpColorImageWriteEpoch = reader.ReadUInt32();
+            lock (_lastVisibleRdpFramebufferLock)
+            {
+                _lastVisibleRdpFramebufferSnapshot = ReadNewByteArray(reader);
+                _lastVisibleRdpFramebufferAddress = reader.ReadUInt32();
+                _lastVisibleRdpFramebufferWidth = reader.ReadUInt32();
+                _lastVisibleRdpFramebufferHeight = reader.ReadUInt32();
+                _lastVisibleRdpFramebufferBytesPerPixel = reader.ReadUInt32();
+                _lastVisibleRdpFramebufferEpoch = reader.ReadUInt32();
+            }
+
+            _rspGraphicsTaskCount = reader.ReadInt64();
+            _rspAudioTaskCount = reader.ReadInt64();
+            _rspOtherTaskCount = reader.ReadInt64();
+            _rdpDisplayListCount = reader.ReadInt64();
+            _rdpCommandCount = reader.ReadInt64();
+            _rdpHandledCommandCount = reader.ReadInt64();
+            _rdpSetColorImageCommandCount = reader.ReadInt64();
+            _rdpTriangleCommandCount = reader.ReadInt64();
+            _rdpTextureRectangleCommandCount = reader.ReadInt64();
+            _rdpFillRectangleCommandCount = reader.ReadInt64();
+            _rdpPixelWriteCount = reader.ReadInt64();
+            _rdpNonZeroPixelWriteCount = reader.ReadInt64();
+
+            RefreshCpuInterruptView();
+        }
+
         private static long StartPerfTimer()
         {
             return EnableN64Perf ? Stopwatch.GetTimestamp() : 0;
@@ -943,6 +1218,444 @@ namespace Ryu64.MIPS
 
             Interlocked.Add(ref ticksField, Stopwatch.GetTimestamp() - start);
             Interlocked.Increment(ref callsField);
+        }
+
+        private void WriteByteArrays(BinaryWriter writer)
+        {
+            WriteBytes(writer, SP_MEM_RW);
+            WriteBytes(writer, SP_MEM_ADDR_REG_RW);
+            WriteBytes(writer, SP_DRAM_ADDR_REG_RW);
+            WriteBytes(writer, SP_RD_LEN_REG_RW);
+            WriteBytes(writer, SP_WR_LEN_REG_RW);
+            WriteBytes(writer, SP_STATUS_REG_R);
+            WriteBytes(writer, SP_STATUS_REG_W);
+            WriteBytes(writer, SP_DMA_FULL_REG_R);
+            WriteBytes(writer, SP_DMA_FULL_REG_W);
+            WriteBytes(writer, SP_DMA_BUSY_REG_R);
+            WriteBytes(writer, SP_DMA_BUSY_REG_W);
+            WriteBytes(writer, SP_SEMAPHORE_REG_R);
+            WriteBytes(writer, SP_SEMAPHORE_REG_W);
+            WriteBytes(writer, SP_PC_REG_RW);
+            WriteBytes(writer, SP_IBIST_REG_RW);
+            WriteBytes(writer, DPC_START_REG_RW);
+            WriteBytes(writer, DPC_END_REG_RW);
+            WriteBytes(writer, DPC_CURRENT_REG_RW);
+            WriteBytes(writer, DPC_STATUS_REG_R);
+            WriteBytes(writer, DPC_STATUS_REG_W);
+            WriteBytes(writer, DPC_CLOCK_REG_RW);
+            WriteBytes(writer, DPC_BUFBUSY_REG_RW);
+            WriteBytes(writer, DPC_PIPEBUSY_REG_RW);
+            WriteBytes(writer, DPC_TMEM_REG_RW);
+            WriteBytes(writer, DPS_TBIST_REG_RW);
+            WriteBytes(writer, DPS_TEST_MODE_REG_RW);
+            WriteBytes(writer, DPS_BUFTEST_ADDR_REG_RW);
+            WriteBytes(writer, DPS_BUFTEST_DATA_REG_RW);
+            WriteBytes(writer, MI_INIT_MODE_REG_R);
+            WriteBytes(writer, MI_INIT_MODE_REG_W);
+            WriteBytes(writer, MI_VERSION_REG_RW);
+            WriteBytes(writer, MI_INTR_REG_R);
+            WriteBytes(writer, MI_INTR_MASK_REG_R);
+            WriteBytes(writer, MI_INTR_MASK_REG_W);
+            WriteBytes(writer, VI_STATUS_REG_RW);
+            WriteBytes(writer, VI_ORIGIN_REG_RW);
+            WriteBytes(writer, VI_WIDTH_REG_RW);
+            WriteBytes(writer, VI_INTR_REG_RW);
+            WriteBytes(writer, VI_CURRENT_REG_RW);
+            WriteBytes(writer, VI_BURST_REG_RW);
+            WriteBytes(writer, VI_V_SYNC_REG_RW);
+            WriteBytes(writer, VI_H_SYNC_REG_RW);
+            WriteBytes(writer, VI_LEAP_REG_RW);
+            WriteBytes(writer, VI_H_START_REG_RW);
+            WriteBytes(writer, VI_V_START_REG_RW);
+            WriteBytes(writer, VI_V_BURST_REG_RW);
+            WriteBytes(writer, VI_X_SCALE_REG_RW);
+            WriteBytes(writer, VI_Y_SCALE_REG_RW);
+            WriteBytes(writer, AI_DRAM_ADDR_REG_W);
+            WriteBytes(writer, AI_LEN_REG_RW);
+            WriteBytes(writer, AI_CONTROL_REG_W);
+            WriteBytes(writer, AI_STATUS_REG_R);
+            WriteBytes(writer, AI_STATUS_REG_W);
+            WriteBytes(writer, AI_DACRATE_REG_W);
+            WriteBytes(writer, AI_BITRATE_REG_W);
+            WriteBytes(writer, PI_DRAM_ADDR_REG_RW);
+            WriteBytes(writer, PI_CART_ADDR_REG_RW);
+            WriteBytes(writer, PI_RD_LEN_REG_RW);
+            WriteBytes(writer, PI_WR_LEN_REG_RW);
+            WriteBytes(writer, PI_STATUS_REG_R);
+            WriteBytes(writer, PI_STATUS_REG_W);
+            WriteBytes(writer, PI_BSD_DOM1_LAT_REG_RW);
+            WriteBytes(writer, PI_BSD_DOM1_PWD_REG_RW);
+            WriteBytes(writer, PI_BSD_DOM1_PGS_REG_RW);
+            WriteBytes(writer, PI_BSD_DOM1_RLS_REG_RW);
+            WriteBytes(writer, PI_BSD_DOM2_LAT_REG_RW);
+            WriteBytes(writer, PI_BSD_DOM2_PWD_REG_RW);
+            WriteBytes(writer, PI_BSD_DOM2_PGS_REG_RW);
+            WriteBytes(writer, PI_BSD_DOM2_RLS_REG_RW);
+            WriteBytes(writer, SI_DRAM_ADDR_REG_RW);
+            WriteBytes(writer, SI_PIF_ADDR_RD64B_REG_RW);
+            WriteBytes(writer, SI_PIF_ADDR_WR64B_REG_RW);
+            WriteBytes(writer, SI_STATUS_REG_R);
+            WriteBytes(writer, SI_STATUS_REG_W);
+            WriteBytes(writer, RI_MODE_REG_RW);
+            WriteBytes(writer, RI_CONFIG_REG_RW);
+            WriteBytes(writer, RI_CURRENT_LOAD_REG_RW);
+            WriteBytes(writer, RI_SELECT_REG_RW);
+            WriteBytes(writer, RI_REFRESH_REG_RW);
+            WriteBytes(writer, RI_LATENCY_REG_RW);
+            WriteBytes(writer, RI_ERROR_REG_RW);
+            WriteBytes(writer, RI_WERROR_REG_RW);
+            WriteBytes(writer, RDRAM);
+            WriteBytes(writer, RDRAMReg);
+            WriteBytes(writer, PIFROM);
+            WriteBytes(writer, PIFRAM);
+        }
+
+        private void ReadByteArrays(BinaryReader reader)
+        {
+            ReadBytes(reader, SP_MEM_RW);
+            ReadBytes(reader, SP_MEM_ADDR_REG_RW);
+            ReadBytes(reader, SP_DRAM_ADDR_REG_RW);
+            ReadBytes(reader, SP_RD_LEN_REG_RW);
+            ReadBytes(reader, SP_WR_LEN_REG_RW);
+            ReadBytes(reader, SP_STATUS_REG_R);
+            ReadBytes(reader, SP_STATUS_REG_W);
+            ReadBytes(reader, SP_DMA_FULL_REG_R);
+            ReadBytes(reader, SP_DMA_FULL_REG_W);
+            ReadBytes(reader, SP_DMA_BUSY_REG_R);
+            ReadBytes(reader, SP_DMA_BUSY_REG_W);
+            ReadBytes(reader, SP_SEMAPHORE_REG_R);
+            ReadBytes(reader, SP_SEMAPHORE_REG_W);
+            ReadBytes(reader, SP_PC_REG_RW);
+            ReadBytes(reader, SP_IBIST_REG_RW);
+            ReadBytes(reader, DPC_START_REG_RW);
+            ReadBytes(reader, DPC_END_REG_RW);
+            ReadBytes(reader, DPC_CURRENT_REG_RW);
+            ReadBytes(reader, DPC_STATUS_REG_R);
+            ReadBytes(reader, DPC_STATUS_REG_W);
+            ReadBytes(reader, DPC_CLOCK_REG_RW);
+            ReadBytes(reader, DPC_BUFBUSY_REG_RW);
+            ReadBytes(reader, DPC_PIPEBUSY_REG_RW);
+            ReadBytes(reader, DPC_TMEM_REG_RW);
+            ReadBytes(reader, DPS_TBIST_REG_RW);
+            ReadBytes(reader, DPS_TEST_MODE_REG_RW);
+            ReadBytes(reader, DPS_BUFTEST_ADDR_REG_RW);
+            ReadBytes(reader, DPS_BUFTEST_DATA_REG_RW);
+            ReadBytes(reader, MI_INIT_MODE_REG_R);
+            ReadBytes(reader, MI_INIT_MODE_REG_W);
+            ReadBytes(reader, MI_VERSION_REG_RW);
+            ReadBytes(reader, MI_INTR_REG_R);
+            ReadBytes(reader, MI_INTR_MASK_REG_R);
+            ReadBytes(reader, MI_INTR_MASK_REG_W);
+            ReadBytes(reader, VI_STATUS_REG_RW);
+            ReadBytes(reader, VI_ORIGIN_REG_RW);
+            ReadBytes(reader, VI_WIDTH_REG_RW);
+            ReadBytes(reader, VI_INTR_REG_RW);
+            ReadBytes(reader, VI_CURRENT_REG_RW);
+            ReadBytes(reader, VI_BURST_REG_RW);
+            ReadBytes(reader, VI_V_SYNC_REG_RW);
+            ReadBytes(reader, VI_H_SYNC_REG_RW);
+            ReadBytes(reader, VI_LEAP_REG_RW);
+            ReadBytes(reader, VI_H_START_REG_RW);
+            ReadBytes(reader, VI_V_START_REG_RW);
+            ReadBytes(reader, VI_V_BURST_REG_RW);
+            ReadBytes(reader, VI_X_SCALE_REG_RW);
+            ReadBytes(reader, VI_Y_SCALE_REG_RW);
+            ReadBytes(reader, AI_DRAM_ADDR_REG_W);
+            ReadBytes(reader, AI_LEN_REG_RW);
+            ReadBytes(reader, AI_CONTROL_REG_W);
+            ReadBytes(reader, AI_STATUS_REG_R);
+            ReadBytes(reader, AI_STATUS_REG_W);
+            ReadBytes(reader, AI_DACRATE_REG_W);
+            ReadBytes(reader, AI_BITRATE_REG_W);
+            ReadBytes(reader, PI_DRAM_ADDR_REG_RW);
+            ReadBytes(reader, PI_CART_ADDR_REG_RW);
+            ReadBytes(reader, PI_RD_LEN_REG_RW);
+            ReadBytes(reader, PI_WR_LEN_REG_RW);
+            ReadBytes(reader, PI_STATUS_REG_R);
+            ReadBytes(reader, PI_STATUS_REG_W);
+            ReadBytes(reader, PI_BSD_DOM1_LAT_REG_RW);
+            ReadBytes(reader, PI_BSD_DOM1_PWD_REG_RW);
+            ReadBytes(reader, PI_BSD_DOM1_PGS_REG_RW);
+            ReadBytes(reader, PI_BSD_DOM1_RLS_REG_RW);
+            ReadBytes(reader, PI_BSD_DOM2_LAT_REG_RW);
+            ReadBytes(reader, PI_BSD_DOM2_PWD_REG_RW);
+            ReadBytes(reader, PI_BSD_DOM2_PGS_REG_RW);
+            ReadBytes(reader, PI_BSD_DOM2_RLS_REG_RW);
+            ReadBytes(reader, SI_DRAM_ADDR_REG_RW);
+            ReadBytes(reader, SI_PIF_ADDR_RD64B_REG_RW);
+            ReadBytes(reader, SI_PIF_ADDR_WR64B_REG_RW);
+            ReadBytes(reader, SI_STATUS_REG_R);
+            ReadBytes(reader, SI_STATUS_REG_W);
+            ReadBytes(reader, RI_MODE_REG_RW);
+            ReadBytes(reader, RI_CONFIG_REG_RW);
+            ReadBytes(reader, RI_CURRENT_LOAD_REG_RW);
+            ReadBytes(reader, RI_SELECT_REG_RW);
+            ReadBytes(reader, RI_REFRESH_REG_RW);
+            ReadBytes(reader, RI_LATENCY_REG_RW);
+            ReadBytes(reader, RI_ERROR_REG_RW);
+            ReadBytes(reader, RI_WERROR_REG_RW);
+            ReadBytes(reader, RDRAM);
+            ReadBytes(reader, RDRAMReg);
+            ReadBytes(reader, PIFROM);
+            ReadBytes(reader, PIFRAM);
+        }
+
+        private static void WriteBytes(BinaryWriter writer, byte[] values)
+        {
+            writer.Write(values.Length);
+            writer.Write(values);
+        }
+
+        private static void ReadBytes(BinaryReader reader, byte[] values)
+        {
+            int length = reader.ReadInt32();
+            if (length != values.Length)
+                throw new InvalidDataException($"Unsupported N64 byte array length: {length}.");
+
+            int offset = 0;
+            while (offset < values.Length)
+            {
+                int read = reader.Read(values, offset, values.Length - offset);
+                if (read == 0)
+                    throw new EndOfStreamException();
+                offset += read;
+            }
+        }
+
+        private static byte[] ReadNewByteArray(BinaryReader reader)
+        {
+            int length = reader.ReadInt32();
+            if (length < 0)
+                throw new InvalidDataException($"Unsupported N64 byte array length: {length}.");
+            byte[] values = new byte[length];
+            int offset = 0;
+            while (offset < values.Length)
+            {
+                int read = reader.Read(values, offset, values.Length - offset);
+                if (read == 0)
+                    throw new EndOfStreamException();
+                offset += read;
+            }
+            return values;
+        }
+
+        private static void WriteUshortArray(BinaryWriter writer, ushort[] values)
+        {
+            writer.Write(values.Length);
+            for (int i = 0; i < values.Length; i++)
+                writer.Write(values[i]);
+        }
+
+        private static void ReadUshortArray(BinaryReader reader, ushort[] values)
+        {
+            int length = reader.ReadInt32();
+            if (length != values.Length)
+                throw new InvalidDataException($"Unsupported N64 ushort array length: {length}.");
+            for (int i = 0; i < values.Length; i++)
+                values[i] = reader.ReadUInt16();
+        }
+
+        private static void WriteUintArray(BinaryWriter writer, uint[] values)
+        {
+            writer.Write(values.Length);
+            for (int i = 0; i < values.Length; i++)
+                writer.Write(values[i]);
+        }
+
+        private static void ReadUintArray(BinaryReader reader, uint[] values)
+        {
+            int length = reader.ReadInt32();
+            if (length != values.Length)
+                throw new InvalidDataException($"Unsupported N64 uint array length: {length}.");
+            for (int i = 0; i < values.Length; i++)
+                values[i] = reader.ReadUInt32();
+        }
+
+        private void WriteFramebufferInfos(BinaryWriter writer)
+        {
+            writer.Write(_fbInfos.Length);
+            for (int i = 0; i < _fbInfos.Length; i++)
+            {
+                TrackedFramebufferInfo info = _fbInfos[i];
+                writer.Write(info.Addr);
+                writer.Write(info.Size);
+                writer.Write(info.Width);
+                writer.Write(info.Height);
+                writer.Write(info.SetEpoch);
+                writer.Write(info.WriteEpoch);
+                writer.Write(info.LastReadEpoch);
+            }
+        }
+
+        private void ReadFramebufferInfos(BinaryReader reader)
+        {
+            int length = reader.ReadInt32();
+            if (length != _fbInfos.Length)
+                throw new InvalidDataException($"Unsupported N64 framebuffer info count: {length}.");
+            for (int i = 0; i < _fbInfos.Length; i++)
+            {
+                _fbInfos[i] = new TrackedFramebufferInfo
+                {
+                    Addr = reader.ReadUInt32(),
+                    Size = reader.ReadUInt32(),
+                    Width = reader.ReadUInt32(),
+                    Height = reader.ReadUInt32(),
+                    SetEpoch = reader.ReadUInt32(),
+                    WriteEpoch = reader.ReadUInt32(),
+                    LastReadEpoch = reader.ReadUInt32()
+                };
+            }
+        }
+
+        private static void WriteSpDmaRequest(BinaryWriter writer, SpDmaRequest request)
+        {
+            writer.Write(request.IsReadFromDram);
+            writer.Write(request.MemAddr);
+            writer.Write(request.DramAddr);
+            writer.Write(request.LengthReg);
+        }
+
+        private static SpDmaRequest ReadSpDmaRequest(BinaryReader reader)
+        {
+            return new SpDmaRequest
+            {
+                IsReadFromDram = reader.ReadBoolean(),
+                MemAddr = reader.ReadUInt32(),
+                DramAddr = reader.ReadUInt32(),
+                LengthReg = reader.ReadUInt32()
+            };
+        }
+
+        private static void WriteRspTask(BinaryWriter writer, RspTask task)
+        {
+            writer.Write(task.Type);
+            writer.Write(task.Flags);
+            writer.Write(task.Ucode);
+            writer.Write(task.UcodeSize);
+            writer.Write(task.UcodeData);
+            writer.Write(task.UcodeDataSize);
+            writer.Write(task.DataPtr);
+            writer.Write(task.DataSize);
+            writer.Write(task.YieldDataPtr);
+            writer.Write(task.YieldDataSize);
+        }
+
+        private static RspTask ReadRspTask(BinaryReader reader)
+        {
+            return new RspTask
+            {
+                Type = reader.ReadUInt32(),
+                Flags = reader.ReadUInt32(),
+                Ucode = reader.ReadUInt32(),
+                UcodeSize = reader.ReadUInt32(),
+                UcodeData = reader.ReadUInt32(),
+                UcodeDataSize = reader.ReadUInt32(),
+                DataPtr = reader.ReadUInt32(),
+                DataSize = reader.ReadUInt32(),
+                YieldDataPtr = reader.ReadUInt32(),
+                YieldDataSize = reader.ReadUInt32()
+            };
+        }
+
+        private static void WriteRdpCombine(BinaryWriter writer, RdpCombineMode combine)
+        {
+            writer.Write(combine.SubARgb0);
+            writer.Write(combine.SubBRgb0);
+            writer.Write(combine.MulRgb0);
+            writer.Write(combine.AddRgb0);
+            writer.Write(combine.SubAA0);
+            writer.Write(combine.SubBA0);
+            writer.Write(combine.MulA0);
+            writer.Write(combine.AddA0);
+            writer.Write(combine.SubARgb1);
+            writer.Write(combine.SubBRgb1);
+            writer.Write(combine.MulRgb1);
+            writer.Write(combine.AddRgb1);
+            writer.Write(combine.SubAA1);
+            writer.Write(combine.SubBA1);
+            writer.Write(combine.MulA1);
+            writer.Write(combine.AddA1);
+        }
+
+        private static RdpCombineMode ReadRdpCombine(BinaryReader reader)
+        {
+            return new RdpCombineMode
+            {
+                SubARgb0 = reader.ReadInt32(),
+                SubBRgb0 = reader.ReadInt32(),
+                MulRgb0 = reader.ReadInt32(),
+                AddRgb0 = reader.ReadInt32(),
+                SubAA0 = reader.ReadInt32(),
+                SubBA0 = reader.ReadInt32(),
+                MulA0 = reader.ReadInt32(),
+                AddA0 = reader.ReadInt32(),
+                SubARgb1 = reader.ReadInt32(),
+                SubBRgb1 = reader.ReadInt32(),
+                MulRgb1 = reader.ReadInt32(),
+                AddRgb1 = reader.ReadInt32(),
+                SubAA1 = reader.ReadInt32(),
+                SubBA1 = reader.ReadInt32(),
+                MulA1 = reader.ReadInt32(),
+                AddA1 = reader.ReadInt32()
+            };
+        }
+
+        private void WriteRdpTiles(BinaryWriter writer)
+        {
+            writer.Write(_rdpTiles.Length);
+            for (int i = 0; i < _rdpTiles.Length; i++)
+            {
+                RdpTileState tile = _rdpTiles[i];
+                writer.Write(tile.Format);
+                writer.Write(tile.Size);
+                writer.Write(tile.Line);
+                writer.Write(tile.Tmem);
+                writer.Write(tile.Palette);
+                writer.Write(tile.MaskS);
+                writer.Write(tile.MaskT);
+                writer.Write(tile.ShiftS);
+                writer.Write(tile.ShiftT);
+                writer.Write(tile.ClampS);
+                writer.Write(tile.ClampT);
+                writer.Write(tile.MirrorS);
+                writer.Write(tile.MirrorT);
+                writer.Write(tile.Uls);
+                writer.Write(tile.Ult);
+                writer.Write(tile.Lrs);
+                writer.Write(tile.Lrt);
+                writer.Write(tile.TileSizeSet);
+            }
+        }
+
+        private void ReadRdpTiles(BinaryReader reader)
+        {
+            int length = reader.ReadInt32();
+            if (length != _rdpTiles.Length)
+                throw new InvalidDataException($"Unsupported N64 RDP tile count: {length}.");
+            for (int i = 0; i < _rdpTiles.Length; i++)
+            {
+                _rdpTiles[i] = new RdpTileState
+                {
+                    Format = reader.ReadUInt32(),
+                    Size = reader.ReadUInt32(),
+                    Line = reader.ReadUInt32(),
+                    Tmem = reader.ReadUInt32(),
+                    Palette = reader.ReadUInt32(),
+                    MaskS = reader.ReadUInt32(),
+                    MaskT = reader.ReadUInt32(),
+                    ShiftS = reader.ReadUInt32(),
+                    ShiftT = reader.ReadUInt32(),
+                    ClampS = reader.ReadBoolean(),
+                    ClampT = reader.ReadBoolean(),
+                    MirrorS = reader.ReadBoolean(),
+                    MirrorT = reader.ReadBoolean(),
+                    Uls = reader.ReadUInt32(),
+                    Ult = reader.ReadUInt32(),
+                    Lrs = reader.ReadUInt32(),
+                    Lrt = reader.ReadUInt32(),
+                    TileSizeSet = reader.ReadBoolean()
+                };
+            }
         }
 
         private static double TicksToMs(long ticks)

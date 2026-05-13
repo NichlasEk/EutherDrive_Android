@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 
 namespace Ryu64.MIPS
@@ -34,6 +35,57 @@ namespace Ryu64.MIPS
         {
             for (int i = 0; i < TLBEntries.Length; i++)
                 TLBEntries[i] = default;
+        }
+
+        public static void SaveState(BinaryWriter writer)
+        {
+            writer.Write(TlbEntryCount);
+            for (int i = 0; i < TLBEntries.Length; i++)
+            {
+                TLBEntry entry = TLBEntries[i];
+                writer.Write(entry.Written);
+                writer.Write(entry.PFN0);
+                writer.Write(entry.PageCoherency0);
+                writer.Write(entry.Dirty0);
+                writer.Write(entry.Valid0);
+                writer.Write(entry.Global0);
+                writer.Write(entry.PFN1);
+                writer.Write(entry.PageCoherency1);
+                writer.Write(entry.Dirty1);
+                writer.Write(entry.Valid1);
+                writer.Write(entry.Global1);
+                writer.Write(entry.VPN2);
+                writer.Write(entry.ASID);
+                writer.Write(entry.PageMask);
+            }
+        }
+
+        public static void LoadState(BinaryReader reader)
+        {
+            int count = reader.ReadInt32();
+            if (count != TlbEntryCount)
+                throw new InvalidDataException($"Unsupported N64 TLB entry count: {count}.");
+
+            for (int i = 0; i < TLBEntries.Length; i++)
+            {
+                TLBEntries[i] = new TLBEntry
+                {
+                    Written = reader.ReadBoolean(),
+                    PFN0 = reader.ReadUInt32(),
+                    PageCoherency0 = reader.ReadByte(),
+                    Dirty0 = reader.ReadByte(),
+                    Valid0 = reader.ReadByte(),
+                    Global0 = reader.ReadByte(),
+                    PFN1 = reader.ReadUInt32(),
+                    PageCoherency1 = reader.ReadByte(),
+                    Dirty1 = reader.ReadByte(),
+                    Valid1 = reader.ReadByte(),
+                    Global1 = reader.ReadByte(),
+                    VPN2 = reader.ReadUInt32(),
+                    ASID = reader.ReadByte(),
+                    PageMask = reader.ReadUInt16()
+                };
+            }
         }
 
         public static uint TranslateAddress(uint Address)

@@ -2,10 +2,11 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
+using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core;
 
-public sealed class N64Adapter : IEmulatorCore
+public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
 {
     private const uint HeaderZ64 = 0x80371240;
     private const uint HeaderN64 = 0x40123780;
@@ -24,6 +25,7 @@ public sealed class N64Adapter : IEmulatorCore
     private string? _romPath;
     private string? _resolvedRomPath;
     private string? _tempConvertedRomPath;
+    private RomIdentity? _romIdentity;
     private bool _started;
     private float _masterVolumeScale = 1.0f;
     private uint _sampleRate = 44100;
@@ -56,6 +58,7 @@ public sealed class N64Adapter : IEmulatorCore
         _resolvedRomPath = PrepareRomPathForCore(path);
         _core.LoadROM(_resolvedRomPath);
         _romPath = path;
+        _romIdentity = CreateRomIdentity(path);
         _started = false;
         _audioBuffer = Array.Empty<short>();
         _runFrameCount = 0;
@@ -110,6 +113,10 @@ public sealed class N64Adapter : IEmulatorCore
 
     public string GetPerformanceStatus() => _core.LastPerformanceStatus;
 
+    public RomIdentity? RomIdentity => _romIdentity;
+
+    public long? FrameCounter => _runFrameCount;
+
     public void SetMasterVolumePercent(int percent)
     {
         if (percent < 0)
@@ -160,6 +167,65 @@ public sealed class N64Adapter : IEmulatorCore
         _core.SetInputState(input);
     }
 
+    public void SaveState(BinaryWriter writer)
+    {
+        if (writer == null)
+            throw new ArgumentNullException(nameof(writer));
+        if (_romIdentity == null)
+            throw new InvalidOperationException("No N64 ROM loaded.");
+
+        const int version = 1;
+        writer.Write(version);
+        writer.Write(_frameWidth);
+        writer.Write(_frameHeight);
+        writer.Write(_frameStride);
+        writer.Write(_runFrameCount);
+        writer.Write(_noFramebufferCount);
+        writer.Write(_noAudioCount);
+        writer.Write(_masterVolumeScale);
+        writer.Write(_sampleRate);
+        writer.Write(_channels);
+        writer.Write(_swap5551BytesDecision.HasValue);
+        if (_swap5551BytesDecision.HasValue)
+            writer.Write(_swap5551BytesDecision.Value);
+        writer.Write(_frameBuffer.Length);
+        writer.Write(_frameBuffer);
+        _core.SaveState(writer);
+        _started = _core.IsRunning;
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        if (reader == null)
+            throw new ArgumentNullException(nameof(reader));
+        if (_romIdentity == null)
+            throw new InvalidOperationException("No N64 ROM loaded.");
+
+        int version = reader.ReadInt32();
+        if (version != 1)
+            throw new InvalidDataException($"Unsupported N64 adapter savestate version: {version}.");
+
+        _frameWidth = reader.ReadInt32();
+        _frameHeight = reader.ReadInt32();
+        _frameStride = reader.ReadInt32();
+        _runFrameCount = reader.ReadInt64();
+        _noFramebufferCount = reader.ReadInt64();
+        _noAudioCount = reader.ReadInt64();
+        _masterVolumeScale = reader.ReadSingle();
+        _sampleRate = reader.ReadUInt32();
+        _channels = reader.ReadUInt32();
+        _swap5551BytesDecision = reader.ReadBoolean() ? reader.ReadBoolean() : null;
+        int framebufferLength = reader.ReadInt32();
+        if (framebufferLength < 0)
+            throw new InvalidDataException($"Unsupported N64 framebuffer length: {framebufferLength}.");
+        _frameBuffer = reader.ReadBytes(framebufferLength);
+        if (_frameBuffer.Length != framebufferLength)
+            throw new EndOfStreamException();
+        _audioBuffer = Array.Empty<short>();
+        _core.LoadState(reader);
+        _started = _core.IsRunning;
+    }
+
     private void EnsureStarted()
     {
         if (_started)
@@ -167,6 +233,15 @@ public sealed class N64Adapter : IEmulatorCore
 
         _core.Start();
         _started = true;
+    }
+
+    private static RomIdentity CreateRomIdentity(string path)
+    {
+        using FileStream stream = File.OpenRead(path);
+        return new RomIdentity(
+            Path.GetFileName(path),
+            RomIdentity.ComputeSha256(stream),
+            Path.GetDirectoryName(path));
     }
 
     private void PullFrame()

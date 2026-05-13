@@ -1282,6 +1282,18 @@ namespace Ryu64.MIPS
             _tracePcWindowCount = 0;
             ClearLoadLinkedReservation();
 
+            StartCpuThread();
+        }
+
+        public static void ResumeR4300()
+        {
+            StopR4300();
+            R4300_ON = true;
+            StartCpuThread();
+        }
+
+        private static void StartCpuThread()
+        {
             OpcodeTable.Init();
 
             CpuThread =
@@ -2540,6 +2552,113 @@ namespace Ryu64.MIPS
         public static long GetUnknownOpcodeCount()
         {
             return UnknownOpcodeCount;
+        }
+
+        public static void SaveState(BinaryWriter writer)
+        {
+            if (writer == null)
+                throw new ArgumentNullException(nameof(writer));
+            if (memory == null)
+                throw new InvalidOperationException("N64 memory is not initialized.");
+
+            const int version = 1;
+            writer.Write(version);
+            writer.Write(CycleCounter);
+            writer.Write(Count);
+            writer.Write(UnknownOpcodeCount);
+            writer.Write(_executingDelaySlot);
+            writer.Write(_delaySlotBranchPc);
+            writer.Write(_delaySlotExceptionPending);
+            writer.Write(_delaySlotExceptionBranchPc);
+            writer.Write(_loadLinkedActive);
+            writer.Write(Registers.R4300.PC);
+            writer.Write(Registers.R4300.HI);
+            writer.Write(Registers.R4300.LO);
+            WriteUlongArray(writer, Registers.R4300.Reg);
+            WriteUlongArray(writer, Registers.COP0.Reg);
+            WriteUlongArray(writer, Registers.COP1.Reg);
+            WriteUintArray(writer, Registers.COP1.Control);
+            writer.Write(COP0.COP0_ON);
+            writer.Write(COP1.COP1_ON);
+            TLB.SaveState(writer);
+            memory.SaveState(writer);
+        }
+
+        public static void LoadState(BinaryReader reader)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
+            if (memory == null)
+                throw new InvalidOperationException("N64 memory is not initialized.");
+
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new InvalidDataException($"Unsupported N64 CPU savestate version: {version}.");
+
+            CycleCounter = reader.ReadUInt64();
+            Count = reader.ReadUInt64();
+            UnknownOpcodeCount = reader.ReadInt64();
+            _executingDelaySlot = reader.ReadBoolean();
+            _delaySlotBranchPc = reader.ReadUInt32();
+            _delaySlotExceptionPending = reader.ReadBoolean();
+            _delaySlotExceptionBranchPc = reader.ReadUInt32();
+            _loadLinkedActive = reader.ReadBoolean();
+            Registers.R4300.PC = reader.ReadUInt32();
+            Registers.R4300.HI = reader.ReadUInt64();
+            Registers.R4300.LO = reader.ReadUInt64();
+            ReadUlongArray(reader, Registers.R4300.Reg);
+            ReadUlongArray(reader, Registers.COP0.Reg);
+            ReadUlongArray(reader, Registers.COP1.Reg);
+            ReadUintArray(reader, Registers.COP1.Control);
+            COP0.COP0_ON = reader.ReadBoolean();
+            COP1.COP1_ON = reader.ReadBoolean();
+            TLB.LoadState(reader);
+            memory.LoadState(reader);
+
+            lock (UnknownOpcodeLock)
+            {
+                UnknownOpcodeByPc.Clear();
+                UnknownOpcodeByValue.Clear();
+            }
+            lock (HotPcSamplesLock)
+            {
+                HotPcSamples.Clear();
+                _hotPcInstructionCounter = 0;
+            }
+
+            Common.Measure.CycleCounter = CycleCounter;
+        }
+
+        private static void WriteUlongArray(BinaryWriter writer, ulong[] values)
+        {
+            writer.Write(values.Length);
+            for (int i = 0; i < values.Length; i++)
+                writer.Write(values[i]);
+        }
+
+        private static void ReadUlongArray(BinaryReader reader, ulong[] values)
+        {
+            int length = reader.ReadInt32();
+            if (length != values.Length)
+                throw new InvalidDataException($"Unsupported N64 ulong array length: {length}.");
+            for (int i = 0; i < values.Length; i++)
+                values[i] = reader.ReadUInt64();
+        }
+
+        private static void WriteUintArray(BinaryWriter writer, uint[] values)
+        {
+            writer.Write(values.Length);
+            for (int i = 0; i < values.Length; i++)
+                writer.Write(values[i]);
+        }
+
+        private static void ReadUintArray(BinaryReader reader, uint[] values)
+        {
+            int length = reader.ReadInt32();
+            if (length != values.Length)
+                throw new InvalidDataException($"Unsupported N64 uint array length: {length}.");
+            for (int i = 0; i < values.Length; i++)
+                values[i] = reader.ReadUInt32();
         }
     }
 }
