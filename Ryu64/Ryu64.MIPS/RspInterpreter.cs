@@ -20,7 +20,7 @@ namespace Ryu64.MIPS
         private static readonly bool TraceRspFlow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_FLOW"), "1", StringComparison.Ordinal);
         private static readonly bool StrictHalfVectorShuffle =
-            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_STRICT_HALF_SHUFFLE"), "1", StringComparison.Ordinal);
+            !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_STRICT_HALF_SHUFFLE"), "0", StringComparison.Ordinal);
         private static readonly ushort[] ReciprocalRom =
         {
             0xFFFF, 0xFF00, 0xFE01, 0xFD04, 0xFC07, 0xFB0C, 0xFA11, 0xF918, 0xF81F, 0xF727, 0xF631, 0xF53B, 0xF446, 0xF352, 0xF25F, 0xF16D,
@@ -704,10 +704,10 @@ namespace Ryu64.MIPS
                 case 0x05: // VMUDM
                     for (int lane = 0; lane < 8; lane++)
                     {
-                        long prod = (long)(ushort)lhs[lane] * (short)rhs[lane];
+                        long prod = (long)(short)lhs[lane] * (ushort)rhs[lane];
                         _accLo[lane] = unchecked((ushort)prod);
                         _accMd[lane] = unchecked((ushort)(prod >> 16));
-                        _accHi[lane] = (ushort)(((short)_accMd[lane] < 0) ? 0xffff : 0x0000);
+                        _accHi[lane] = (ushort)(prod < 0 ? 0xffff : 0x0000);
                         result[lane] = _accMd[lane];
                     }
                     StoreVector(vd, result);
@@ -753,7 +753,7 @@ namespace Ryu64.MIPS
                     for (int lane = 0; lane < 8; lane++)
                     {
                         long acc = ReadAccumulator(lane);
-                        long prod = (long)(ushort)lhs[lane] * (short)rhs[lane];
+                        long prod = (long)(short)lhs[lane] * (ushort)rhs[lane];
                         acc += prod;
                         WriteAccumulator(lane, acc);
                         result[lane] = unchecked((ushort)SaturateAccumulatorToSignedMd(lane));
@@ -988,15 +988,13 @@ namespace Ryu64.MIPS
                             short vtLane = unchecked((short)rhs[lane]);
                             bool signBit = GetMaskBit(sign, lane);
                             short signNegVt = signBit ? unchecked((short)(-vtLane)) : vtLane;
-                            short diff = unchecked((short)(vsLane - signNegVt));
-                            bool diffZero = diff == 0;
-                            bool ncarry = unchecked((ushort)diff) == SaturatingAddUnsigned((ushort)lhs[lane], (ushort)rhs[lane]);
                             bool vceSet = GetMaskBit(vceMask, lane);
                             bool eqBit = GetMaskBit(eq, lane);
 
                             if (signBit && !eqBit)
                             {
-                                bool leEq = (!vceSet && diffZero && ncarry) || (vceSet && (diffZero || ncarry));
+                                uint sum = (uint)lhs[lane] + rhs[lane];
+                                bool leEq = vceSet ? sum <= 0x10000u : sum == 0;
                                 newLe = SetMaskBit(newLe, lane, leEq);
                             }
 
@@ -1833,12 +1831,6 @@ namespace Ryu64.MIPS
         {
             ushort bit = (ushort)(1u << lane);
             return value ? (ushort)(mask | bit) : (ushort)(mask & ~bit);
-        }
-
-        private static ushort SaturatingAddUnsigned(ushort a, ushort b)
-        {
-            uint sum = (uint)a + b;
-            return (ushort)(sum > 0xffffu ? 0xffffu : sum);
         }
 
         private static ushort SaturatingSubUnsigned(ushort a, ushort b)
