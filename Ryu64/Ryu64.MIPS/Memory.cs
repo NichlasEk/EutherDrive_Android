@@ -2900,7 +2900,7 @@ namespace Ryu64.MIPS
 
         private static uint RdpShadeFixedComponentTo8(long value)
         {
-            long component = value >> 16;
+            long component = value >> 14;
             if (component <= 0)
                 return 0;
             return (uint)Math.Min(0xFFL, component);
