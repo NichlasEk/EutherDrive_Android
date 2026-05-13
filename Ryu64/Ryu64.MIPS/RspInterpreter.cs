@@ -19,6 +19,8 @@ namespace Ryu64.MIPS
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_IO"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRspFlow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_FLOW"), "1", StringComparison.Ordinal);
+        private static readonly bool StrictHalfVectorShuffle =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_STRICT_HALF_SHUFFLE"), "1", StringComparison.Ordinal);
         private static readonly ushort[] ReciprocalRom =
         {
             0xFFFF, 0xFF00, 0xFE01, 0xFD04, 0xFC07, 0xFB0C, 0xFA11, 0xF918, 0xF81F, 0xF727, 0xF631, 0xF53B, 0xF446, 0xF352, 0xF25F, 0xF16D,
@@ -1555,7 +1557,7 @@ namespace Ryu64.MIPS
                     case 5:
                     case 6:
                     case 7:
-                        sourceLane = ((lane & 2) != 0 ? element : element - 4) & 7;
+                        sourceLane = ((lane & (StrictHalfVectorShuffle ? 4 : 2)) != 0 ? element : element - 4) & 7;
                         break;
                     default:
                         sourceLane = (element - 8) & 7;
