@@ -1073,7 +1073,7 @@ namespace Ryu64.MIPS
                             bool signBit = ((vsLane ^ vtLane) < 0);
 
                             int diffLe = (vsLane & (signBit ? -1 : 0)) + vtLane;
-                            bool leBit = diffLe < 0;
+                            bool leBit = signBit ? diffLe <= 0 : diffLe < 0;
                             int diffGe = Math.Min(signBit ? -1 : vsLane, vtLane);
                             bool geBit = diffGe == vtLane;
 
