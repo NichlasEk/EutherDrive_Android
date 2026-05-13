@@ -2396,7 +2396,7 @@ namespace Ryu64.MIPS
             _rdpOtherModesCycleType = (uint)((mode >> 52) & 0x3UL);
             _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
             _rdpOtherModesTlutType = ((mode >> 46) & 1UL) != 0;
-            _rdpOtherModesPerspectiveTexture = ((w1 >> 19) & 1u) != 0;
+            _rdpOtherModesPerspectiveTexture = ((mode >> 51) & 1UL) != 0;
             _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
             _rdpOtherModesZUpdate = ((mode >> 5) & 1UL) != 0;
             _rdpOtherModesZCompare = ((mode >> 4) & 1UL) != 0;

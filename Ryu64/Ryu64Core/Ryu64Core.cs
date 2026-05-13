@@ -323,6 +323,7 @@ namespace Ryu64Core
                 uint rdpColorImageBytesPerPixel = R4300.memory.LastRdpColorImageBytesPerPixel;
                 uint rdpColorImageWriteEpoch = R4300.memory.LastRdpColorImageWriteEpoch;
                 bool rdpColorImageSelected = false;
+                bool preferRdpVisibleSnapshot = false;
                 if (rdpColorImageWriteEpoch != 0
                     && rdpColorImage >= HeuristicFramebufferOriginFloor
                     && rdpColorImage < RdramSizeBytes
@@ -350,6 +351,7 @@ namespace Ryu64Core
                     origin = rdpCandidate;
                     _lastTrackedFramebufferOrigin = origin;
                     rdpColorImageSelected = true;
+                    preferRdpVisibleSnapshot = rdpCandidate == rdpColorImage && rdpVisiblePixels > 0;
                     producerBackedFramebufferSelected = true;
                     _lastFramebufferStatus =
                         $"RDP {rdpCandidateSource} framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, color=0x{rdpColorImage:x8}, width={rdpColorImageWidth}, writeEpoch={rdpColorImageWriteEpoch}, visualScore={rdpScore}, viVisible={viVisiblePixels}, rdpVisible={rdpVisiblePixels})";
@@ -499,15 +501,19 @@ namespace Ryu64Core
                     return false;
                 }
 
+                int selectedVisiblePixels = producerBackedFramebufferSelected
+                    ? CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel)
+                    : 0;
                 if (producerBackedFramebufferSelected
-                    && CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel) == 0
+                    && (preferRdpVisibleSnapshot || selectedVisiblePixels == 0)
                     && R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
                         (uint)width,
                         (uint)height,
                         (uint)bytesPerPixel,
                         out byte[] visibleSnapshot,
                         out uint visibleSnapshotOrigin,
-                        out uint visibleSnapshotEpoch))
+                        out uint visibleSnapshotEpoch)
+                    && (visibleSnapshotOrigin == origin || selectedVisiblePixels == 0))
                 {
                     framebuffer = visibleSnapshot;
                     _lastTrackedFramebufferOrigin = visibleSnapshotOrigin;
