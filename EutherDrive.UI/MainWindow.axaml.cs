@@ -530,6 +530,7 @@ public partial class MainWindow : Window
     private double _emuTargetFps = 60.0;
     private int _padTypeRaw = (int)PadType.ThreeButton;
     private int _coinPulseFrames;
+    private bool _arcadeCoinHeldLastFrame;
     private WindowState _prevWindowState = WindowState.Normal;
     private DispatcherTimer? _cursorHideTimer;
     private bool _cursorHidden;
@@ -832,6 +833,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(path))
             return new TaitoF2ThunderFoxAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && BatsugunAdapter.IsSupportedArchive(path))
+            return new BatsugunAdapter();
         if (!string.IsNullOrWhiteSpace(path) && OutZoneAdapter.IsSupportedArchive(path))
             return new OutZoneAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Technos.XainSleenaAdapter.IsSupportedArchive(path))
@@ -1860,6 +1863,7 @@ public partial class MainWindow : Window
             Pgm2Adapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             KovPgmAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             TaitoF2ThunderFoxAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
+            BatsugunAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             McsArcadeAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
             GbaAdapter => new AutoFireProfile("gba", _inputMappings.Snes, s_autoFireSnesButtons),
@@ -3008,7 +3012,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        Interlocked.Exchange(ref _coinPulseFrames, 8);
+        Interlocked.Exchange(ref _coinPulseFrames, 2);
         StatusText.Text = "Coin inserted";
     }
 
@@ -8612,6 +8616,7 @@ public partial class MainWindow : Window
             or BoogwingAdapter
             or EutherDrive.Core.Arcade.Konami.TmntAdapter
             or TaitoF2ThunderFoxAdapter
+            or BatsugunAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             or HshavocAdapter;
     }
@@ -8824,8 +8829,18 @@ public partial class MainWindow : Window
                 mode |= IsGamepadButtonPressed(gpSel);
         }
 
-        if (isMcsArcadeLike && ConsumeCoinPulseFrame())
-            mode = true;
+        if (isMcsArcadeLike)
+        {
+            bool coinHeld = mode;
+            if (coinHeld && !_arcadeCoinHeldLastFrame)
+                Interlocked.Exchange(ref _coinPulseFrames, 2);
+            _arcadeCoinHeldLastFrame = coinHeld;
+            mode = ConsumeCoinPulseFrame();
+        }
+        else
+        {
+            _arcadeCoinHeldLastFrame = false;
+        }
 
         autoMask = Volatile.Read(ref _autoFireMask);
         autoRate = Volatile.Read(ref _autoFireRateHz);

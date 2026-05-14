@@ -391,6 +391,10 @@ class Program
             bool useOutZone = string.Equals(coreOverride, "outzone", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "toaplan-outzone", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && OutZoneAdapter.IsSupportedArchive(romPath));
+            bool useBatsugun = string.Equals(coreOverride, "batsugun", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "batsugunsp", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "toaplan-batsugun", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && BatsugunAdapter.IsSupportedArchive(romPath));
             bool useNeoGeo = string.Equals(coreOverride, "neogeo", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "neo-geo", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && NeoGeoAdapter.IsSupportedArchive(romPath));
@@ -401,7 +405,7 @@ class Program
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !useOutZone && !usePgm2 && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !useBatsugun && !useOutZone && !usePgm2 && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -670,6 +674,35 @@ class Program
                 Console.WriteLine($"[HEADLESS] OutZone audio samples={audioOut.Length} rate={audioRate} channels={outZoneAudioChannels} nonzero_samples={CountNonZeroAudioSamples(audioOut)} max_abs={AudioPeak(audioOut)}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 PrintHeadlessPerf("OutZone", framesToRun, runTicksTotal, runTicksMin, runTicksMax, outZone.GetTargetFps());
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useBatsugun)
+            {
+                Console.WriteLine("[HEADLESS] Using Toaplan Batsugun core");
+                using var batsugun = new BatsugunAdapter();
+                batsugun.LoadRom(romPath);
+
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    long runStart = Stopwatch.GetTimestamp();
+                    batsugun.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+                }
+
+                ReadOnlySpan<byte> fbOut = batsugun.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] Batsugun final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={batsugun.FrameCounter ?? -1}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                PrintHeadlessPerf("Batsugun", framesToRun, runTicksTotal, runTicksMin, runTicksMax, batsugun.GetTargetFps());
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

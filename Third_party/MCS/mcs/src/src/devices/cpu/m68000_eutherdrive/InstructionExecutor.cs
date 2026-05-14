@@ -61,6 +61,8 @@ internal sealed partial class InstructionExecutor
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
     private static readonly string? TraceExceptionsFile =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX_FILE");
+    private static readonly int TraceExceptionsLimit = ParseTraceLimit("EUTHERDRIVE_M68K_TRACE_EX_LIMIT", 256);
+    private static int _traceExceptionsRemaining = TraceExceptions ? TraceExceptionsLimit : 0;
     private static readonly uint? TracePcMin = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MIN");
     private static readonly uint? TracePcMax = ReadHexEnv("EUTHERDRIVE_M68K_TRACE_PC_MAX");
     private static readonly string? TracePcFile =
@@ -129,13 +131,26 @@ internal sealed partial class InstructionExecutor
         if (_registers.PendingInterruptLevel.HasValue)
         {
             byte level = _registers.PendingInterruptLevel.Value;
-            ushort srBefore = _registers.StatusRegister();
-            _registers.PendingInterruptLevel = null;
-            _bus.AcknowledgeInterrupt(level);
-            _registers.Stopped = false;
-            MaybeTraceInterrupt("take", level, srBefore, _registers.InterruptPriorityMask, pending: level);
-            var interrupt = HandleAutoVectoredInterrupt(level);
-            return interrupt.IsOk ? interrupt.Value : HandleException(interrupt.Error!.Value);
+            byte currentLevel = (byte)(_bus.InterruptLevel() & 0x07);
+            byte currentMask = (byte)(_registers.InterruptPriorityMask & 0x07);
+            if (currentLevel < level)
+            {
+                _registers.PendingInterruptLevel = null;
+            }
+            else if (level <= currentMask)
+            {
+                MaybeTraceInterrupt("masked-pending", level, _registers.StatusRegister(), currentMask, pending: level);
+            }
+            else
+            {
+                ushort srBefore = _registers.StatusRegister();
+                _registers.PendingInterruptLevel = null;
+                _bus.AcknowledgeInterrupt(level);
+                _registers.Stopped = false;
+                MaybeTraceInterrupt("take", level, srBefore, _registers.InterruptPriorityMask, pending: level);
+                var interrupt = HandleAutoVectoredInterrupt(level);
+                return interrupt.IsOk ? interrupt.Value : HandleException(interrupt.Error!.Value);
+            }
         }
 
         byte interruptLevel = (byte)(_bus.InterruptLevel() & 0x07);
@@ -228,6 +243,9 @@ internal sealed partial class InstructionExecutor
 
             case 0x20C0:
                 return TryConsumeMoveLongFillDbfLoop(cycleBudget, out cycles);
+
+            case 0x1218:
+                return TryConsumeMoveByteToWordPostincrementDbfLoop(cycleBudget, out cycles);
 
             case 0x4A39:
                 return TryConsumeTstBneIdleLoop(cycleBudget, out cycles);
@@ -1222,6 +1240,64 @@ internal sealed partial class InstructionExecutor
             cycles += 4;
             _registers.Pc = (pc + 6u) & 0x00ff_ffff;
             _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        }
+
+        return true;
+    }
+
+    private bool TryConsumeMoveByteToWordPostincrementDbfLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        uint pc = _registers.Pc;
+        if (_registers.Prefetch != 0x1218
+            || _bus.ReadWord(pc + 2) != 0x32C1
+            || _bus.ReadWord(pc + 4) != 0x51C8)
+        {
+            return false;
+        }
+
+        short displacement = (short)_bus.ReadWord(pc + 6);
+        if (displacement != -6)
+            return false;
+
+        ushort d0 = (ushort)_registers.Data[0];
+        uint remainingIterations = (uint)d0 + 1u;
+        uint maxIterations = Math.Max(1u, (uint)cycleBudget / 26u);
+        uint iterations = Math.Min(remainingIterations, maxIterations);
+        if (iterations == 0)
+            return false;
+
+        uint a0 = _registers.Address[0];
+        uint a1 = _registers.Address[1];
+        uint d1 = _registers.Data[1];
+        ushort written = (ushort)d1;
+        for (uint i = 0; i < iterations; i++)
+        {
+            byte value = _bus.ReadByte(a0);
+            d1 = (d1 & 0xffff_ff00u) | value;
+            written = (ushort)d1;
+            _bus.WriteWord(a1, written);
+            a0 = (a0 + 1u) & 0x00ff_ffff;
+            a1 = (a1 + 2u) & 0x00ff_ffff;
+        }
+
+        _registers.Address[0] = a0;
+        _registers.Address[1] = a1;
+        _registers.Data[0] = (_registers.Data[0] & 0xffff_0000u) | (ushort)(d0 - iterations);
+        _registers.Data[1] = d1;
+        SetMoveWordFlags(written);
+
+        cycles = Math.Max(26u, iterations * 26u);
+        if (iterations == remainingIterations)
+        {
+            cycles += 4;
+            _registers.Pc = (pc + 8u) & 0x00ff_ffff;
+            _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        }
+        else
+        {
+            _registers.Pc = pc;
+            _registers.Prefetch = _bus.ReadWord(pc);
         }
 
         return true;
@@ -4397,8 +4473,9 @@ internal sealed partial class InstructionExecutor
 
     private uint HandleException(M68kException ex)
     {
-        if (TraceExceptions)
+        if (TraceExceptions && _traceExceptionsRemaining > 0)
         {
+            _traceExceptionsRemaining--;
             string detail = ex.Kind == M68kExceptionKind.AddressError
                 ? $" addr=0x{ex.Address:X8} op={ex.BusOp} A0=0x{_registers.Address[0]:X8} SP=0x{_registers.StackPointer():X8}"
                 : string.Empty;

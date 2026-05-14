@@ -22,6 +22,7 @@ namespace mame
                 atarisy2.driver_720,
                 atarisy2.driver_paperboy,
                 //berzerk.driver_berzerk,
+                batsugun.driver_batsugunsp,
                 btime.driver_btime,
                 bzone.driver_bzone,
                 cclimber.driver_cclimber,
