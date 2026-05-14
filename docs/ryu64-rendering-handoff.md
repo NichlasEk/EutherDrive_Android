@@ -8,6 +8,7 @@ Ryu64 now reaches real N64 framebuffer output in Zelda, Mario, Perfect Dark, and
 
 Recent relevant commits:
 
+- local WIP 2026-05-14: broaden TLUT fetch semantics for RGBA32/IA/I
 - local WIP 2026-05-14: specialized fast `LoadBlock` loops while preserving DXT row stepping
 - `61e5c7a Add Ryu64 LoadBlock row stepping`
 - `8425791 Improve Ryu64 TMEM texture layout`
@@ -38,6 +39,15 @@ The follow-up DXT `LoadBlock` WIP makes block loading respect `sl`, `tl`, `sh`, 
 2026-05-14 local WIP then optimized `LoadBlock` without removing that behavior. The hot path is split into sequential 16-bit, sequential 32-bit, DXT 16-bit, and DXT 32-bit loops. Sequential blocks now skip DXT bookkeeping entirely, 32-bit blocks avoid a per-group size branch, and the per-word TMEM stores are local direct byte copies over cached `RDRAM`/TMEM references. The DXT paths still keep the MAME-like accumulator, XOR flip, tile-line row advance, and 32-bit high/low TMEM plane split.
 
 Performance note: preserve semantics first, then specialize the loop. Do not "optimize" by reverting DXT, source coordinate handling, row XOR, or 32-bit plane splitting. This pass moved cost out of the common path instead. No per-pixel allocations, dictionaries, LINQ, or generalized format objects were added. The 4-bit `LoadTile` path remains on the previous linear copy fallback because MAME's `LoadTile` switch only covers 8/16/32-bit texture image sizes; CI4 fetch addressing now uses the MAME-style packed nibble address. DXT row stepping adds a branch in `LoadBlock`, not in the pixel fetch loop.
+
+The next TLUT fetch WIP extends palette lookup beyond CI/RGBA16. MAME's fetch table applies TLUT to RGBA32, IA4/8/16, and I4/8 as well. Ryu64 now routes those modes through the existing TLUT conversion when `other_modes.tlut_en` is set:
+
+- RGBA32 uses the first TMEM byte as the palette index, matching MAME's `c >> 24`.
+- IA4/I4 use `tile.palette << 4 | nibble`.
+- IA8/I8 use the fetched byte.
+- IA16 uses the high byte of the fetched word.
+
+This is intentionally a narrow semantic expansion. It keeps the raw fast path unchanged when TLUT is disabled.
 
 ## Verification
 
@@ -100,6 +110,7 @@ env EUTHERDRIVE_HEADLESS_CORE=n64 EUTHERDRIVE_N64_HEADLESS_PERF=1 EUTHERDRIVE_N6
 - Follow-up 60-frame run after adding matching sequential `LoadBlock` swizzle stayed visible: `rdpList=241/146.929ms avg=0.610ms`, `triTex=292/118.250ms avg=0.405ms`, `fbSnap=260/3.670ms avg=0.014ms`.
 - Follow-up 60-frame run after DXT `LoadBlock` stayed visible: `rdpList=241/193.643ms avg=0.803ms`, `triTex=292/153.876ms avg=0.527ms`, `fbSnap=260/4.763ms avg=0.018ms`. This is slower in the same short smoke window, so keep watching perf while improving correctness.
 - Follow-up 60-frame run after specialized `LoadBlock` loops stayed visible: `rdpList=329/172.833ms avg=0.525ms`, `triTex=427/143.844ms avg=0.337ms`, `fbSnap=390/5.662ms avg=0.015ms`. The command mix changed in this short savestate window, but average RDP/texture cost is back below the previous DXT regression while keeping DXT semantics.
+- Follow-up 60-frame run after broadening TLUT fetches stayed visible: `rdpList=241/154.354ms avg=0.640ms`, `triTex=292/125.235ms avg=0.429ms`, `fbSnap=260/3.897ms avg=0.015ms`. The raw non-TLUT path remains close to the specialized `LoadBlock` baseline.
 
 Earthworm Jim Europe cold smoke after DXT:
 
@@ -110,6 +121,12 @@ Earthworm Jim Europe cold smoke after DXT:
 Earthworm Jim Europe cold smoke after specialized `LoadBlock` loops:
 
 - framebuffer recovered at runFrame 65
+- steady at runFrame 180
+- no region/unit regression
+
+Earthworm Jim Europe cold smoke after broader TLUT fetches:
+
+- framebuffer recovered at runFrame 72
 - steady at runFrame 180
 - no region/unit regression
 
@@ -132,7 +149,7 @@ Earthworm Jim Europe cold smoke after specialized `LoadBlock` loops:
 2. Improve texture load semantics:
    - `LoadBlock`
    - 4-bit `LoadTile` edge cases if real ROM traces show them
-   - TLUT addressing
+   - TLUT load edge cases and palette-cache invalidation if traces expose stale colors
 
 3. Continue texture fetch semantics:
    - bilinear filtering

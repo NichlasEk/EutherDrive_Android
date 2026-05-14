@@ -4144,6 +4144,11 @@ namespace Ryu64.MIPS
                         uint low = high + 0x800u;
                         if (high + 1u >= _rdpTmem.Length || low + 1u >= _rdpTmem.Length)
                             return false;
+                        if (_rdpOtherModesEnableTlut)
+                        {
+                            rgba = RdpTlutColorToRgba(LookupRdpTlut(_rdpTmem[high]));
+                            return true;
+                        }
                         rgba = ((uint)_rdpTmem[high] << 24)
                             | ((uint)_rdpTmem[high + 1u] << 16)
                             | ((uint)_rdpTmem[low] << 8)
@@ -4176,9 +4181,9 @@ namespace Ryu64.MIPS
                     return true;
                 }
                 case 3u: // IA
-                    return DecodeRdpIaTexture(tbase, sUnsigned, tUnsigned, tile.Size, out rgba);
+                    return DecodeRdpIaTexture(tbase, sUnsigned, tUnsigned, tile.Size, tile.Palette, out rgba);
                 case 4u: // I
-                    return DecodeRdpIntensityTexture(tbase, sUnsigned, tUnsigned, tile.Size, out rgba);
+                    return DecodeRdpIntensityTexture(tbase, sUnsigned, tUnsigned, tile.Size, tile.Palette, out rgba);
                 default:
                     return false;
             }
@@ -4214,7 +4219,7 @@ namespace Ryu64.MIPS
             return (ushort)((_rdpTmem[address] << 8) | _rdpTmem[address + 1u]);
         }
 
-        private bool DecodeRdpIaTexture(uint tbase, uint sUnsigned, uint tUnsigned, uint size, out uint rgba)
+        private bool DecodeRdpIaTexture(uint tbase, uint sUnsigned, uint tUnsigned, uint size, uint palette, out uint rgba)
         {
             rgba = 0;
             switch (size & 0x3u)
@@ -4224,6 +4229,11 @@ namespace Ryu64.MIPS
                     uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true);
                     byte packed = _rdpTmem[tmemOffset];
                     uint value = (sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
+                    if (_rdpOtherModesEnableTlut)
+                    {
+                        rgba = RdpTlutColorToRgba(LookupRdpTlut((palette << 4) | value));
+                        return true;
+                    }
                     uint intensity = ((value >> 1) & 0x7u) * 255u / 7u;
                     uint alpha = (value & 1u) != 0 ? 0xFFu : 0u;
                     rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | alpha;
@@ -4233,6 +4243,11 @@ namespace Ryu64.MIPS
                 {
                     uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false);
                     uint value = _rdpTmem[tmemOffset];
+                    if (_rdpOtherModesEnableTlut)
+                    {
+                        rgba = RdpTlutColorToRgba(LookupRdpTlut(value));
+                        return true;
+                    }
                     uint intensity = ((value >> 4) & 0xFu) * 17u;
                     uint alpha = (value & 0xFu) * 17u;
                     rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | alpha;
@@ -4243,6 +4258,11 @@ namespace Ryu64.MIPS
                     uint tmemOffset = RdpTmem16Address(tbase, sUnsigned, tUnsigned, 0x7FFu);
                     if (tmemOffset + 1u >= _rdpTmem.Length)
                         return false;
+                    if (_rdpOtherModesEnableTlut)
+                    {
+                        rgba = RdpTlutColorToRgba(LookupRdpTlut(_rdpTmem[tmemOffset]));
+                        return true;
+                    }
                     rgba = ((uint)_rdpTmem[tmemOffset] << 24)
                         | ((uint)_rdpTmem[tmemOffset] << 16)
                         | ((uint)_rdpTmem[tmemOffset] << 8)
@@ -4254,7 +4274,7 @@ namespace Ryu64.MIPS
             }
         }
 
-        private bool DecodeRdpIntensityTexture(uint tbase, uint sUnsigned, uint tUnsigned, uint size, out uint rgba)
+        private bool DecodeRdpIntensityTexture(uint tbase, uint sUnsigned, uint tUnsigned, uint size, uint palette, out uint rgba)
         {
             rgba = 0;
             uint intensity;
@@ -4262,12 +4282,23 @@ namespace Ryu64.MIPS
             {
                 uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true);
                 byte packed = _rdpTmem[tmemOffset];
-                intensity = ((sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F)) * 17u;
+                uint value = (sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
+                if (_rdpOtherModesEnableTlut)
+                {
+                    rgba = RdpTlutColorToRgba(LookupRdpTlut((palette << 4) | value));
+                    return true;
+                }
+                intensity = value * 17u;
             }
             else
             {
                 uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false);
                 intensity = _rdpTmem[tmemOffset];
+                if (_rdpOtherModesEnableTlut)
+                {
+                    rgba = RdpTlutColorToRgba(LookupRdpTlut(intensity));
+                    return true;
+                }
             }
 
             rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | 0xFFu;
