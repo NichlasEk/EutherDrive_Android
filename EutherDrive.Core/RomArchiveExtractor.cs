@@ -64,7 +64,7 @@ public static class RomArchiveExtractor
         return LooksLikeZip(header) || LooksLike7z(header);
     }
 
-    internal static bool TryExtractRom(string archivePath, out byte[] data, out string entryName, out bool isSms, out string? error)
+    public static bool TryExtractRom(string archivePath, out byte[] data, out string entryName, out bool isSms, out string? error)
     {
         data = Array.Empty<byte>();
         entryName = string.Empty;

@@ -1550,7 +1550,12 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 EutherDrive.Core.MdTracerCore.md_bus.Current = _bus;
                 if (md_main.g_md_bus != null)
                 {
-                    if (md_main.g_md_cartridge?.g_mapper_is_svp == true)
+                    if (md_main.g_md_cartridge?.g_mapper_is_paprium == true)
+                    {
+                        md_main.g_md_bus.OverrideBus = new PapriumBusOverride(md_main.g_md_cartridge.g_file, path);
+                        Console.WriteLine("[MdTracerAdapter] Mapper: Paprium override enabled.");
+                    }
+                    else if (md_main.g_md_cartridge?.g_mapper_is_svp == true)
                     {
                         md_main.g_md_bus.OverrideBus = new SvpBusOverride(md_main.g_md_cartridge.g_file);
                         Console.WriteLine("[MdTracerAdapter] Mapper: SVP override enabled.");
@@ -2252,6 +2257,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         _sega32XCore?.Reset();
         _sega32XCore?.SetRegionOverride(GetEffectiveRegion());
         md_main.g_md_bus?.Reset();
+        if (md_main.g_md_bus?.OverrideBus is PapriumBusOverride paprium)
+            paprium.Reset();
         md_main.ResetZ80WaitState();
         _vdp.reset();
         _lastAppliedFrameRateMode = GetEffectiveFrameRateMode();

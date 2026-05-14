@@ -842,6 +842,8 @@ public partial class MainWindow : Window
             return new Pgm2Adapter();
         if (!string.IsNullOrWhiteSpace(path) && KovPgmAdapter.IsSupportedArchive(path))
             return new KovPgmAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && IsMegaDriveArchive(path))
+            return new MdTracerAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
         if (!string.IsNullOrWhiteSpace(path) && IsSnesRom(path))
@@ -970,6 +972,16 @@ public partial class MainWindow : Window
         {
             return false;
         }
+    }
+
+    private static bool IsMegaDriveArchive(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not ".zip" and not ".7z")
+            return false;
+
+        return RomArchiveExtractor.TryExtractRom(path, out byte[] data, out _, out _, out _)
+            && LooksLikeMegaDriveHeader(data);
     }
 
     private static bool LooksLikeMegaDriveHeader(byte[] data)

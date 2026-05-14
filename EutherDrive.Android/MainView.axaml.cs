@@ -4166,6 +4166,11 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.Igs.KovPgmAdapter();
         }
 
+        if (IsMegaDriveArchive(path))
+        {
+            return new MdTracerAdapter();
+        }
+
         if (EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(path))
         {
             return new EutherDrive.Core.Arcade.McsArcadeAdapter();
@@ -4241,6 +4246,27 @@ public partial class MainView : UserControl
             return archiveExt.ToLowerInvariant();
 
         return ext;
+    }
+
+    private static bool IsMegaDriveArchive(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not ".zip" and not ".7z")
+            return false;
+
+        return RomArchiveExtractor.TryExtractRom(path, out byte[] data, out _, out _, out _)
+            && LooksLikeMegaDriveHeader(data);
+    }
+
+    private static bool LooksLikeMegaDriveHeader(byte[] data)
+    {
+        if (data.Length < 0x110)
+            return false;
+
+        ReadOnlySpan<byte> header = data.AsSpan(0x100, 0x20);
+        ReadOnlySpan<byte> mdMagic1 = "SEGA MEGA DRIVE"u8;
+        ReadOnlySpan<byte> mdMagic2 = "SEGA GENESIS"u8;
+        return header.IndexOf(mdMagic1) >= 0 || header.IndexOf(mdMagic2) >= 0;
     }
 
     private static void SetDefaultCoreVolume(IEmulatorCore core)

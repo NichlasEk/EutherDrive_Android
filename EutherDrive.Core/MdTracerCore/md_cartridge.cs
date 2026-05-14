@@ -48,6 +48,7 @@ namespace EutherDrive.Core.MdTracerCore
         public bool g_smd_deinterleaved;
         public bool g_mapper_is_ssf;
         public bool g_mapper_is_svp;
+        public bool g_mapper_is_paprium;
         public byte[] g_mapper_banks = new byte[8];
 
         public bool load_from_bytes(byte[] data, string sourceName)
@@ -298,6 +299,7 @@ namespace EutherDrive.Core.MdTracerCore
         {
             g_mapper_is_ssf = ShouldUseSsfMapper();
             g_mapper_is_svp = ShouldUseSvpMapper();
+            g_mapper_is_paprium = ShouldUsePapriumMapper();
             if (g_mapper_banks.Length != 8)
                 g_mapper_banks = new byte[8];
             for (int i = 0; i < g_mapper_banks.Length; i++)
@@ -325,6 +327,12 @@ namespace EutherDrive.Core.MdTracerCore
             string serial = g_serial_number.Trim();
             return serial.Contains("MK-1229", StringComparison.OrdinalIgnoreCase)
                 || serial.Contains("G-7001", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool ShouldUsePapriumMapper()
+        {
+            string serial = g_serial_number.Trim();
+            return serial.Contains("T-574120-00", StringComparison.OrdinalIgnoreCase);
         }
 
         public uint MapRomAddress(uint address)
