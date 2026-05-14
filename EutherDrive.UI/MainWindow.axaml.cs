@@ -3964,6 +3964,8 @@ public partial class MainWindow : Window
             xain.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is Deco32Adapter deco32)
             deco32.SetMasterVolumePercent(effectiveVolumePercent);
+        else if (_core is BoogwingAdapter boogwing)
+            boogwing.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             tmnt.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1)

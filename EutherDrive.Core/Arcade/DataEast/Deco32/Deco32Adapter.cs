@@ -2972,11 +2972,12 @@ public sealed class YM2151
         LastPeak = 0;
     }
 
-    public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
+    public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames, bool measurePeak = true)
     {
         int before = sampleFrameIndex;
         _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: 0.40f);
-        LastPeak = Math.Max(LastPeak, Deco32AudioUtil.Peak(destination, before, sampleFrameIndex));
+        if (measurePeak)
+            LastPeak = Math.Max(LastPeak, Deco32AudioUtil.Peak(destination, before, sampleFrameIndex));
     }
 }
 
@@ -3044,11 +3045,12 @@ public sealed class OKI6295
         LastPeak = 0;
     }
 
-    public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames)
+    public void RenderStereo(short[] destination, ref int sampleFrameIndex, int targetSampleFrames, bool measurePeak = true)
     {
         int before = sampleFrameIndex;
         _core.RenderStereo(destination, ref sampleFrameIndex, targetSampleFrames, gain: _gain);
-        LastPeak = Math.Max(LastPeak, Deco32AudioUtil.Peak(destination, before, sampleFrameIndex));
+        if (measurePeak)
+            LastPeak = Math.Max(LastPeak, Deco32AudioUtil.Peak(destination, before, sampleFrameIndex));
     }
 
     private void LoadBank(int bank, bool reset)

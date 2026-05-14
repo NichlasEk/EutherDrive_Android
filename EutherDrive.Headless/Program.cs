@@ -724,6 +724,9 @@ class Program
                 var boogwingInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOGWING_HEADLESS_INPUT_SCRIPT"));
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 int unchangedFrames = 0;
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
                     var input = ResolveSnesInputForFrame(frame, boogwingInputScript);
@@ -734,7 +737,12 @@ class Program
                         input.Y, input.L, input.R,
                         input.Select,
                         PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
                     boogwing.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
 
                     ReadOnlySpan<byte> fb = boogwing.GetFrameBuffer(out int w, out int h, out int s);
                     var stats = GetFrameStats(fb, w, h, s);
@@ -4266,6 +4274,9 @@ class Program
                 var boogwingInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOGWING_HEADLESS_INPUT_SCRIPT"));
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 int unchangedFrames = 0;
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
                     var input = ResolveSnesInputForFrame(frame, boogwingInputScript);
@@ -4276,7 +4287,12 @@ class Program
                         input.Y, input.L, input.R,
                         input.Select,
                         PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
                     boogwing.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
 
                     ReadOnlySpan<byte> fb = boogwing.GetFrameBuffer(out int w, out int h, out int s);
                     var stats = GetFrameStats(fb, w, h, s);
@@ -4296,6 +4312,7 @@ class Program
                 Console.WriteLine($"[HEADLESS] Boogwing final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) frameCounter={boogwing.FrameCounter ?? -1}");
                 Console.WriteLine($"[HEADLESS] Boogwing final debug {boogwing.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_boogwing_state_output.ppm"));
+                PrintHeadlessPerf("Boogwing-State", framesToRun, runTicksTotal, runTicksMin, runTicksMax, boogwing.GetTargetFps());
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

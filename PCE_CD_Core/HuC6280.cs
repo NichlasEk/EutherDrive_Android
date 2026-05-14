@@ -693,6 +693,20 @@ namespace ePceCD
 
         private bool TestIRQs()
         {
+            if (ExternalTimerWaiting != null || ExternalIrq1Waiting != null || ExternalIrq2Waiting != null)
+            {
+                if (TimerWaiting())
+                    DoIRQ(IRQVector.VECTOR_TIMER);
+                else if (IRQ1Waiting())
+                    DoIRQ(IRQVector.VECTOR_IRQ1);
+                else if (IRQ2Waiting())
+                    DoIRQ(IRQVector.VECTOR_IRQ2);
+                else
+                    return false;
+
+                return true;
+            }
+
             if (IRQ2Waiting())
                 DoIRQ(IRQVector.VECTOR_IRQ2);
             else if (IRQ1Waiting())
