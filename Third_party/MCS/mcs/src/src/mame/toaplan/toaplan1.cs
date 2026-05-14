@@ -79,6 +79,7 @@ namespace mame
         readonly byte [] m_priority_bitmap = new byte[ScreenWidth * ScreenHeight];
         readonly byte [] m_bcu_bitmap_cache = new byte[ScreenWidth * ScreenHeight * 4];
         readonly byte [] m_bcu_priority_cache = new byte[ScreenWidth * ScreenHeight];
+        readonly byte [] m_frame_bitmap_cache = new byte[ScreenWidth * ScreenHeight * 4];
         byte [] [] m_decoded_bcu_tiles;
         byte [] [] m_decoded_fcu_tiles;
         int m_bcu_tile_count;
@@ -103,6 +104,7 @@ namespace mame
         bool m_bcu_dirty = true;
         bool m_fcu_dirty = true;
         bool m_bcu_cache_valid;
+        bool m_frame_cache_valid;
 
 
         public toaplan1_state(machine_config mconfig, device_type type, string tag)
@@ -540,18 +542,29 @@ namespace mame
 
                 if (m_fcu_dirty)
                     RenderFcu(bitmap, cliprect);
+                SaveFrameCache(bitmap);
                 m_fcu_dirty = false;
                 m_video_dirty = false;
             }
-            else if (!m_bcu_cache_valid)
+            else if (!RestoreFrameCache(bitmap))
             {
                 EnsureGraphicsDecoded();
-                if (m_bcu_tile_count == 0)
+                bool redrawBcu = m_bcu_dirty || !m_bcu_cache_valid;
+                if (redrawBcu)
                 {
-                    bitmap.fill(0xff000000U, cliprect);
+                    if (m_bcu_tile_count == 0)
+                        bitmap.fill(0xff000000U, cliprect);
                     Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
+                    RenderBcu(bitmap, cliprect);
                     SaveBcuCache(bitmap);
+                    m_bcu_dirty = false;
                 }
+                else
+                {
+                    RestoreBcuCache(bitmap);
+                }
+                RenderFcu(bitmap, cliprect);
+                SaveFrameCache(bitmap);
             }
             TraceVideoState();
             if (m_external_start_frames > 0)
@@ -571,6 +584,7 @@ namespace mame
             m_bcu_dirty = true;
             m_fcu_dirty = true;
             m_bcu_cache_valid = false;
+            m_frame_cache_valid = false;
         }
 
 
@@ -579,6 +593,7 @@ namespace mame
             m_video_dirty = true;
             m_bcu_dirty = true;
             m_fcu_dirty = true;
+            m_frame_cache_valid = false;
         }
 
 
@@ -586,6 +601,7 @@ namespace mame
         {
             m_video_dirty = true;
             m_fcu_dirty = true;
+            m_frame_cache_valid = false;
         }
 
 
@@ -876,6 +892,41 @@ namespace mame
             for (int y = 0; y < ScreenHeight; y++)
                 Buffer.BlockCopy(m_bcu_bitmap_cache, y * cacheRowBytes, bitmapData, bitmapOffset + y * destinationRowBytes, cacheRowBytes);
             Array.Copy(m_bcu_priority_cache, m_priority_bitmap, m_priority_bitmap.Length);
+            return true;
+        }
+
+
+        void SaveFrameCache(bitmap_rgb32 bitmap)
+        {
+            if (bitmap.width() < ScreenWidth || bitmap.height() < ScreenHeight)
+            {
+                m_frame_cache_valid = false;
+                return;
+            }
+
+            PointerU32 firstRow = bitmap.pix(0);
+            byte [] bitmapData = firstRow.Buffer.data_raw;
+            int bitmapOffset = firstRow.Offset;
+            int sourceRowBytes = bitmap.rowpixels() * 4;
+            int cacheRowBytes = ScreenWidth * 4;
+            for (int y = 0; y < ScreenHeight; y++)
+                Buffer.BlockCopy(bitmapData, bitmapOffset + y * sourceRowBytes, m_frame_bitmap_cache, y * cacheRowBytes, cacheRowBytes);
+            m_frame_cache_valid = true;
+        }
+
+
+        bool RestoreFrameCache(bitmap_rgb32 bitmap)
+        {
+            if (bitmap.width() < ScreenWidth || bitmap.height() < ScreenHeight || !m_frame_cache_valid)
+                return false;
+
+            PointerU32 firstRow = bitmap.pix(0);
+            byte [] bitmapData = firstRow.Buffer.data_raw;
+            int bitmapOffset = firstRow.Offset;
+            int destinationRowBytes = bitmap.rowpixels() * 4;
+            int cacheRowBytes = ScreenWidth * 4;
+            for (int y = 0; y < ScreenHeight; y++)
+                Buffer.BlockCopy(m_frame_bitmap_cache, y * cacheRowBytes, bitmapData, bitmapOffset + y * destinationRowBytes, cacheRowBytes);
             return true;
         }
 
