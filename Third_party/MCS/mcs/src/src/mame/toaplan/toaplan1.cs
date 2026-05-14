@@ -74,7 +74,9 @@ namespace mame
         readonly u16 [] m_spriteram = new u16[SpriteRamWords];
         readonly u16 [] m_spritesizeram = new u16[SpriteSizeRamWords];
         readonly u16 [,] m_paletteram = new u16[2, PaletteWords];
+        readonly u32 [] [] m_palette_colors = { new u32[PaletteWords], new u32[PaletteWords] };
         readonly u16 [] m_tile_offsets = new u16[TileOffsetWords];
+        readonly byte [] m_priority_bitmap = new byte[ScreenWidth * ScreenHeight];
         byte [] [] m_decoded_bcu_tiles;
         byte [] [] m_decoded_fcu_tiles;
         int m_bcu_tile_count;
@@ -364,6 +366,7 @@ namespace mame
             {
                 int index = (byteOffset - 0x4000) >> 1;
                 m_paletteram[0, index] = CombineWord(m_paletteram[0, index], data, mem_mask);
+                UpdatePaletteColor(0, index);
                 return;
             }
 
@@ -371,6 +374,7 @@ namespace mame
             {
                 int index = (byteOffset - 0x6000) >> 1;
                 m_paletteram[1, index] = CombineWord(m_paletteram[1, index], data, mem_mask);
+                UpdatePaletteColor(1, index);
             }
         }
 
@@ -469,6 +473,7 @@ namespace mame
         {
             LatchLiveSystemInput();
             bitmap.fill(0xff000000U, cliprect);
+            Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
             EnsureGraphicsDecoded();
             RenderBcu(bitmap, cliprect);
             RenderFcu(bitmap, cliprect);
@@ -537,6 +542,8 @@ namespace mame
             Array.Clear(m_spriteram, 0, m_spriteram.Length);
             Array.Clear(m_spritesizeram, 0, m_spritesizeram.Length);
             Array.Clear(m_paletteram, 0, m_paletteram.Length);
+            Array.Clear(m_palette_colors[0], 0, m_palette_colors[0].Length);
+            Array.Clear(m_palette_colors[1], 0, m_palette_colors[1].Length);
             Array.Clear(m_tile_offsets, 0, m_tile_offsets.Length);
             m_decoded_bcu_tiles = null;
             m_decoded_fcu_tiles = null;
@@ -560,6 +567,11 @@ namespace mame
             m_external_coin_frames = 0;
             Array.Clear(m_mainram, 0, m_mainram.Length);
             reset_sound();
+        }
+
+        protected override void device_post_load()
+        {
+            RebuildPaletteColors();
         }
 
         void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
@@ -701,15 +713,16 @@ namespace mame
             if (m_bcu_tile_count == 0)
                 return;
 
-            for (int priority = 0; priority < 16; priority++)
+            RenderBcuLayer(bitmap, cliprect, 0, -1, true, 0);
+            for (int priority = 1; priority < 16; priority++)
             {
                 for (int layer = BcuLayerCount - 1; layer >= 0; layer--)
-                    RenderBcuLayer(bitmap, cliprect, layer, priority, priority == 0 && layer == 0);
+                    RenderBcuLayer(bitmap, cliprect, layer, priority, false, (byte)priority);
             }
         }
 
 
-        void RenderBcuLayer(bitmap_rgb32 bitmap, rectangle cliprect, int layer, int priority, bool opaque)
+        void RenderBcuLayer(bitmap_rgb32 bitmap, rectangle cliprect, int layer, int priority, bool opaque, byte priorityValue)
         {
             int layerDx = layer switch { 0 => 6, 1 => 4, 2 => 2, _ => 0 };
             int scrollX = ((m_bcu_scrollx[layer] >> 7) - m_bcu_offsetx - BcuOffsetX + layerDx) & 0x1ff;
@@ -733,12 +746,12 @@ namespace mame
                     u32 entry = m_bcu_vram[layer, tileIndex];
                     int tilePriority = (int)((entry >> 28) & 0x0f);
                     bool invisible = (entry & 0x8000U) != 0;
-                    if (invisible || tilePriority != priority)
+                    if (!opaque && (invisible || tilePriority != priority))
                         continue;
 
                     int code = (int)(entry & 0x7fff) % m_bcu_tile_count;
                     int color = (int)((entry >> 16) & 0x3f);
-                    DrawTile(bitmap, cliprect, m_decoded_bcu_tiles[code], screenX, screenY, color, 0, opaque);
+                    DrawTile(bitmap, cliprect, m_decoded_bcu_tiles[code], screenX, screenY, color, 0, opaque, priorityValue);
                 }
             }
         }
@@ -755,6 +768,8 @@ namespace mame
                     continue;
 
                 u16 attrib = m_spriteram[offs + 1];
+                int spritePriority = (attrib >> 12) & 0x0f;
+                uint priorityMask = spritePriority >= 15 ? 0U : uint.MaxValue << (spritePriority + 1);
                 int code = m_spriteram[offs] & 0x7fff;
                 int color = attrib & 0x3f;
                 int sizeIndex = (attrib >> 6) & 0x3f;
@@ -773,14 +788,14 @@ namespace mame
                     for (int dx = 0; dx < width; dx += 8)
                     {
                         int tileCode = code++ % m_fcu_tile_count;
-                        DrawTile(bitmap, cliprect, m_decoded_fcu_tiles[tileCode], sxBase + dx, syBase + dy, color, 1, false);
+                        DrawSpriteTile(bitmap, cliprect, m_decoded_fcu_tiles[tileCode], sxBase + dx, syBase + dy, color, priorityMask);
                     }
                 }
             }
         }
 
 
-        void DrawTile(bitmap_rgb32 bitmap, rectangle cliprect, byte [] pixels, int dstX, int dstY, int color, int paletteLayer, bool opaque)
+        void DrawTile(bitmap_rgb32 bitmap, rectangle cliprect, byte [] pixels, int dstX, int dstY, int color, int paletteLayer, bool opaque, byte priorityValue)
         {
             int minX = Math.Max(dstX, cliprect.min_x);
             int minY = Math.Max(dstY, cliprect.min_y);
@@ -789,22 +804,73 @@ namespace mame
             if (minX > maxX || minY > maxY)
                 return;
 
+            u32[] palette = m_palette_colors[paletteLayer & 1];
+            int paletteBase = color << 4;
+
             for (int y = minY; y <= maxY; y++)
             {
                 int py = y - dstY;
+                int priorityRow = y * ScreenWidth;
                 for (int x = minX; x <= maxX; x++)
                 {
                     int pen = pixels[(py << 3) | (x - dstX)];
                     if (pen == 0 && !opaque)
                         continue;
 
-                    bitmap.pix(y, x)[0] = PaletteColor(paletteLayer, (color << 4) | pen);
+                    bitmap.pix(y, x)[0] = palette[(paletteBase | pen) & 0x3ff];
+                    if (!opaque)
+                        m_priority_bitmap[priorityRow + x] = priorityValue;
+                }
+            }
+        }
+
+
+        void DrawSpriteTile(bitmap_rgb32 bitmap, rectangle cliprect, byte [] pixels, int dstX, int dstY, int color, uint priorityMask)
+        {
+            int minX = Math.Max(dstX, cliprect.min_x);
+            int minY = Math.Max(dstY, cliprect.min_y);
+            int maxX = Math.Min(dstX + 7, cliprect.max_x);
+            int maxY = Math.Min(dstY + 7, cliprect.max_y);
+            if (minX > maxX || minY > maxY)
+                return;
+
+            u32[] palette = m_palette_colors[1];
+            int paletteBase = color << 4;
+
+            for (int y = minY; y <= maxY; y++)
+            {
+                int py = y - dstY;
+                int priorityRow = y * ScreenWidth;
+                for (int x = minX; x <= maxX; x++)
+                {
+                    int pen = pixels[(py << 3) | (x - dstX)];
+                    if (pen == 0)
+                        continue;
+
+                    int priorityIndex = priorityRow + x;
+                    if (((1U << (m_priority_bitmap[priorityIndex] & 0x1f)) & priorityMask) == 0)
+                        bitmap.pix(y, x)[0] = palette[(paletteBase | pen) & 0x3ff];
+                    m_priority_bitmap[priorityIndex] = 31;
                 }
             }
         }
 
 
         u32 PaletteColor(int layer, int index)
+        {
+            return m_palette_colors[layer & 1][index & 0x3ff];
+        }
+
+
+        void RebuildPaletteColors()
+        {
+            for (int layer = 0; layer < 2; layer++)
+                for (int index = 0; index < PaletteWords; index++)
+                    UpdatePaletteColor(layer, index);
+        }
+
+
+        void UpdatePaletteColor(int layer, int index)
         {
             u16 raw = m_paletteram[layer & 1, index & 0x3ff];
             int r = (raw & 0x001f) << 3;
@@ -813,7 +879,7 @@ namespace mame
             r |= r >> 5;
             g |= g >> 5;
             b |= b >> 5;
-            return 0xff000000U | (u32)(r << 16) | (u32)(g << 8) | (u32)b;
+            m_palette_colors[layer & 1][index & 0x3ff] = 0xff000000U | (u32)(r << 16) | (u32)(g << 8) | (u32)b;
         }
 
 
