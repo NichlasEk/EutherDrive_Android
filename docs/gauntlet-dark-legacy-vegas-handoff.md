@@ -3332,3 +3332,63 @@ Next target:
    if the budget artifact keeps dominating measurements.
 2. More importantly, identify why the runtime remains in state/update traffic
    and never emits Voodoo setup/triangle packets.
+
+## 2026-05-14 Follow-up: Runtime Copy and Mid-packet Fastpaths
+
+This pass added two narrow fastpaths in
+`EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs` to speed warm
+bringup probes from the existing 300-frame snapshot.
+
+New code:
+
+- Added `TryFastPathKnownRuntimeAlignedQwordCopy`.
+  - Catches the aligned qword copy path at `0xffffffff800d1370`.
+  - Signature-gated against the exact helper body.
+  - Only fires when source, destination, and byte count are 8-byte aligned, the
+    copy is in main RAM, and `a3` still matches the original destination.
+- Extended `TryFastPathKnownGauntletGlideTwoWordStatePacket`.
+  - Now also catches the mid-body state-word point at `0xffffffff80102554`.
+  - This avoids repeatedly stopping inside the same two-word type-1 Glide
+    packet writer after the state word has already been computed.
+
+Clean verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+333 Warning(s)
+0 Error(s)
+```
+
+Warmup-series after these fastpaths:
+
+```text
+checkpoint extra=151000010 pc=0xffffffff800e3e4c regs=4326988 fifoWords=8631762 fifoPackets=4313667
+checkpoint extra=151000100 pc=0xffffffff80102704 regs=4326988 fifoWords=8631762 fifoPackets=4313667
+checkpoint extra=151001000 pc=0xffffffff80104358 regs=4326996 fifoWords=8631778 fifoPackets=4313675
+checkpoint extra=152000000 pc=0xffffffff800eb090 regs=4335141 fifoWords=8648068 fifoPackets=4321820
+checkpoint extra=160000000 pc=0xffffffff800111d4 regs=4400381 fifoWords=8778548 fifoPackets=4387060
+checkpoint extra=200000000 pc=0xffffffff80104388 regs=4726580 fifoWords=9430946 fifoPackets=4713259
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:4711864,2:0,3:0,4:1395,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=151456 colored=21408
+```
+
+Interpretation:
+
+- The previous warm endpoints around `0xffffffff800d1370` and
+  `0xffffffff80102554` are no longer dominating the focused series.
+- The renderer still receives only Voodoo type-1 state packets plus type-4
+  clear/fill packets. There are still no type-3/type-5 draw/setup packets, so
+  the UI image is still not real game geometry.
+- `nonBlack`/`colored` confirms the placeholder/clear path still produces
+  pixels, but the missing geometry is upstream of rasterization.
+
+Next target:
+
+1. Trace the now-hot loaded-runtime area around `0xffffffff80104358` /
+   `0xffffffff80104388`.
+2. Keep using the warmup snapshot and `EUTHERDRIVE_GAUNTDL_EXTRA_SERIES`; it is
+   the fastest route to the no-geometry blocker.
+3. Do not spend time on Voodoo triangle decode until a probe first shows
+   non-zero setup/draw packet counters.

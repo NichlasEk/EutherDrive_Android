@@ -516,6 +516,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeFrameStateCallback(pc))
             return;
+        if (TryFastPathKnownRuntimeAlignedQwordCopy(pc))
+            return;
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
             return;
         if (TryFastPathKnownRuntimeBitfieldUpdate(pc))
@@ -3313,6 +3315,66 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRuntimeAlignedQwordCopy(ulong pc)
+    {
+        const ulong entry = 0xffffffff800d1370UL;
+        if (pc != entry)
+            return false;
+
+        if (_memory.Read32(entry) != 0x000640c2U ||
+            _memory.Read32(entry + 0x04UL) != 0x000848c0U ||
+            _memory.Read32(entry + 0x08UL) != 0x00c93022U ||
+            _memory.Read32(entry + 0x0cUL) != 0x1900ffdaU ||
+            _memory.Read32(entry + 0x10UL) != 0x2508ffffU ||
+            _memory.Read32(entry + 0x14UL) != 0xdca90000U ||
+            _memory.Read32(entry + 0x18UL) != 0x24a50008U ||
+            _memory.Read32(entry + 0x1cUL) != 0xfc890000U ||
+            _memory.Read32(entry + 0x20UL) != 0x1d00fffbU ||
+            _memory.Read32(entry + 0x24UL) != 0x24840008U ||
+            _memory.Read32(entry + 0x28UL) != 0x1000ffd3U ||
+            _memory.Read32(entry + 0x2cUL) != 0x00000000U)
+        {
+            return false;
+        }
+
+        ulong destination = _gpr[4];
+        ulong source = _gpr[5];
+        ulong byteCount = _gpr[6];
+        ulong originalDestination = _gpr[7];
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if ((destination | source | byteCount) == 0 ||
+            (destination & 7UL) != 0 ||
+            (source & 7UL) != 0 ||
+            (byteCount & 7UL) != 0 ||
+            byteCount > 0x00400000UL ||
+            originalDestination != destination ||
+            returnOffset is < 0x000d0000UL or > 0x00110000UL ||
+            !IsMainRamRange(source, byteCount) ||
+            !IsMainRamRange(destination, byteCount))
+        {
+            return false;
+        }
+
+        ulong lastValue = 0;
+        for (ulong offset = 0; offset < byteCount; offset += 8UL)
+        {
+            lastValue = _memory.Read64(source + offset);
+            _memory.Write64(destination + offset, lastValue);
+        }
+
+        _gpr[2] = originalDestination;
+        _gpr[4] = destination + byteCount;
+        _gpr[5] = source + byteCount;
+        _gpr[6] = 0;
+        _gpr[7] = originalDestination;
+        _gpr[8] = 0;
+        _gpr[9] = lastValue;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
     private bool TryFastPathKnownGauntletGlideRuntimeStateInitTail(ulong pc)
     {
         const ulong entry = 0xffffffff80108fe0UL;
@@ -4132,7 +4194,8 @@ internal sealed class MipsR5000Core
     {
         bool afterStackAdjust = pc == 0xffffffff80102520UL;
         bool afterPrologue = pc == 0xffffffff8010253cUL;
-        if (!afterStackAdjust && !afterPrologue)
+        bool afterStateWord = pc == 0xffffffff80102554UL;
+        if (!afterStackAdjust && !afterPrologue && !afterStateWord)
             return false;
         const ulong entry = 0xffffffff8010251cUL;
         if (_memory.Read32(entry) != 0x27bdffe0U ||
@@ -4147,6 +4210,7 @@ internal sealed class MipsR5000Core
             _memory.Read32(entry + 0x24UL) != 0x24020007U ||
             _memory.Read32(entry + 0x28UL) != 0x10820003U ||
             _memory.Read32(entry + 0x2cUL) != 0x36230001U ||
+            _memory.Read32(entry + 0x38UL) != 0xae110268U ||
             _memory.Read32(entry + 0x5cUL) != 0x3c030001U ||
             _memory.Read32(entry + 0x60UL) != 0x8e020374U ||
             _memory.Read32(entry + 0x64UL) != 0x34630219U ||
@@ -4182,8 +4246,11 @@ internal sealed class MipsR5000Core
             return false;
 
         uint selector = (uint)_gpr[4] & 0xffffu;
-        uint stateWord = (afterStackAdjust ? _memory.Read32(state + 0x268UL) : (uint)_gpr[17]) & 0xfffffff0u;
-        stateWord = selector == 7u ? stateWord | 1u : stateWord | 1u | (selector << 1);
+        uint stateWord = afterStateWord
+            ? (uint)_gpr[17]
+            : (afterStackAdjust ? _memory.Read32(state + 0x268UL) : (uint)_gpr[17]) & 0xfffffff0u;
+        if (!afterStateWord)
+            stateWord = selector == 7u ? stateWord | 1u : stateWord | 1u | (selector << 1);
 
         uint nextFifo = fifo + 8u;
         uint nextRoom = room - 8u;
@@ -4196,7 +4263,7 @@ internal sealed class MipsR5000Core
         ulong sp = _gpr[29];
         _gpr[2] = SignExtend32(nextFifo);
         _gpr[3] = SignExtend32(nextRoom);
-        if (afterPrologue && IsMainRamRange(sp + 0x10UL, 12))
+        if ((afterPrologue || afterStateWord) && IsMainRamRange(sp + 0x10UL, 12))
         {
             _gpr[31] = SignExtend32(_memory.Read32(sp + 0x18UL));
             _gpr[17] = SignExtend32(_memory.Read32(sp + 0x14UL));
