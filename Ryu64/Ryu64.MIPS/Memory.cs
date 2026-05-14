@@ -4206,12 +4206,12 @@ namespace Ryu64.MIPS
                 return false;
 
             if (_rdpOtherModesSampleType && _rdpOtherModesBiLerp0 && (fracS != 0 || fracT != 0))
-                return DecodeRdpTextureColorBilinear(ref sampler, s, t, fracS, fracT, out rgba);
+                return DecodeRdpTextureColorLinearLerp(ref sampler, s, t, fracS, fracT, out rgba);
 
             return DecodeRdpTextureColor(tile, u, v, out rgba);
         }
 
-        private bool DecodeRdpTextureColorBilinear(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
+        private bool DecodeRdpTextureColorLinearLerp(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
         {
             rgba = 0;
             RdpTileState tile = sampler.Tile;
@@ -4228,21 +4228,42 @@ namespace Ryu64.MIPS
                 || !DecodeRdpTextureColor(tile, s1, t1, out uint c11))
                 return false;
 
-            uint w00 = (uint)((32 - fracS) * (32 - fracT));
-            uint w10 = (uint)(fracS * (32 - fracT));
-            uint w01 = (uint)((32 - fracS) * fracT);
-            uint w11 = (uint)(fracS * fracT);
-            rgba = BlendRdpTexels(c00, c10, c01, c11, w00, w10, w01, w11);
+            rgba = (fracS + fracT) >= 32
+                ? BlendRdpTexelsTriangleUpper(c10, c01, c11, fracS, fracT)
+                : BlendRdpTexelsTriangleLower(c00, c10, c01, fracS, fracT);
+            if ((rgba & 0xFFu) < 0x80u)
+                rgba &= 0xFFFFFF00u;
             return true;
         }
 
-        private static uint BlendRdpTexels(uint c00, uint c10, uint c01, uint c11, uint w00, uint w10, uint w01, uint w11)
+        private static uint BlendRdpTexelsTriangleLower(uint c00, uint c10, uint c01, int fracS, int fracT)
         {
-            uint r = ((((c00 >> 24) & 0xFFu) * w00) + (((c10 >> 24) & 0xFFu) * w10) + (((c01 >> 24) & 0xFFu) * w01) + (((c11 >> 24) & 0xFFu) * w11) + 512u) >> 10;
-            uint g = ((((c00 >> 16) & 0xFFu) * w00) + (((c10 >> 16) & 0xFFu) * w10) + (((c01 >> 16) & 0xFFu) * w01) + (((c11 >> 16) & 0xFFu) * w11) + 512u) >> 10;
-            uint b = ((((c00 >> 8) & 0xFFu) * w00) + (((c10 >> 8) & 0xFFu) * w10) + (((c01 >> 8) & 0xFFu) * w01) + (((c11 >> 8) & 0xFFu) * w11) + 512u) >> 10;
-            uint a = (((c00 & 0xFFu) * w00) + ((c10 & 0xFFu) * w10) + ((c01 & 0xFFu) * w01) + ((c11 & 0xFFu) * w11) + 512u) >> 10;
-            return (r << 24) | (g << 16) | (b << 8) | a;
+            int r = BlendRdpTexelTriangleChannel((int)((c00 >> 24) & 0xFFu), (int)((c10 >> 24) & 0xFFu), (int)((c01 >> 24) & 0xFFu), fracS, fracT);
+            int g = BlendRdpTexelTriangleChannel((int)((c00 >> 16) & 0xFFu), (int)((c10 >> 16) & 0xFFu), (int)((c01 >> 16) & 0xFFu), fracS, fracT);
+            int b = BlendRdpTexelTriangleChannel((int)((c00 >> 8) & 0xFFu), (int)((c10 >> 8) & 0xFFu), (int)((c01 >> 8) & 0xFFu), fracS, fracT);
+            int a = BlendRdpTexelTriangleChannel((int)(c00 & 0xFFu), (int)(c10 & 0xFFu), (int)(c01 & 0xFFu), fracS, fracT);
+            return ((uint)r << 24) | ((uint)g << 16) | ((uint)b << 8) | (uint)a;
+        }
+
+        private static uint BlendRdpTexelsTriangleUpper(uint c10, uint c01, uint c11, int fracS, int fracT)
+        {
+            int invS = 32 - fracS;
+            int invT = 32 - fracT;
+            int r = BlendRdpTexelTriangleChannel((int)((c11 >> 24) & 0xFFu), (int)((c01 >> 24) & 0xFFu), (int)((c10 >> 24) & 0xFFu), invS, invT);
+            int g = BlendRdpTexelTriangleChannel((int)((c11 >> 16) & 0xFFu), (int)((c01 >> 16) & 0xFFu), (int)((c10 >> 16) & 0xFFu), invS, invT);
+            int b = BlendRdpTexelTriangleChannel((int)((c11 >> 8) & 0xFFu), (int)((c01 >> 8) & 0xFFu), (int)((c10 >> 8) & 0xFFu), invS, invT);
+            int a = BlendRdpTexelTriangleChannel((int)(c11 & 0xFFu), (int)(c01 & 0xFFu), (int)(c10 & 0xFFu), invS, invT);
+            return ((uint)r << 24) | ((uint)g << 16) | ((uint)b << 8) | (uint)a;
+        }
+
+        private static int BlendRdpTexelTriangleChannel(int baseChannel, int sChannel, int tChannel, int fracS, int fracT)
+        {
+            int value = baseChannel + (((sChannel - baseChannel) * (fracS << 3) + (tChannel - baseChannel) * (fracT << 3) + 0x80) >> 8);
+            if (value < 0)
+                return 0;
+            if (value > 0xFF)
+                return 0xFF;
+            return value;
         }
 
         private static int ApplyRdpTextureCoordinate(int value, uint origin, uint extent, uint mask, uint shift, bool clamp, bool mirror)
