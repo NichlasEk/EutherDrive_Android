@@ -30,9 +30,12 @@ namespace mame
     class toaplan1_state : driver_device
     {
         const int SharedRamSize = 0x800;
-        const int BcuHostWords = 0x10;
-        const int VctrlWords = 0x4000;
         const int TileOffsetWords = 0x4;
+        const int BcuLayerCount = 4;
+        const int BcuLayerWords = 0x1000;
+        const int SpriteRamWords = 0x800;
+        const int SpriteSizeRamWords = 0x80;
+        const int PaletteWords = 0x1000;
         const int ScreenWidth = 320;
         const int ScreenHeight = 240;
         static readonly XTAL MasterClock = new XTAL(28_000_000);
@@ -47,9 +50,18 @@ namespace mame
         readonly required_device<m68000_device> m_maincpu;
         readonly required_device<z80_device> m_audiocpu;
         readonly u8 [] m_sharedram = new u8[SharedRamSize];
-        readonly u16 [] m_bcu = new u16[BcuHostWords];
-        readonly u16 [] m_vctrl = new u16[VctrlWords];
+        readonly u32 [,] m_bcu_vram = new u32[BcuLayerCount, BcuLayerWords];
+        readonly u16 [] m_bcu_scrollx = new u16[BcuLayerCount];
+        readonly u16 [] m_bcu_scrolly = new u16[BcuLayerCount];
+        readonly u16 [] m_spriteram = new u16[SpriteRamWords];
+        readonly u16 [] m_spritesizeram = new u16[SpriteSizeRamWords];
+        readonly u16 [,] m_paletteram = new u16[2, PaletteWords];
         readonly u16 [] m_tile_offsets = new u16[TileOffsetWords];
+        u16 m_bcu_ram_offs;
+        u16 m_spriteram_offs;
+        u8 m_fcu_flipscreen;
+        u8 m_bcu_flipscreen;
+        u8 m_vctrl_intenable;
         int m_frame_counter;
 
 
@@ -114,12 +126,38 @@ namespace mame
 
         u16 fcu_host_r(address_space space, offs_t offset, u16 mem_mask)
         {
-            return 0;
+            switch ((offset << 1) & 0x6)
+            {
+                case 0x0:
+                    return 1;
+                case 0x2:
+                    return m_spriteram_offs;
+                case 0x4:
+                    return m_spriteram[m_spriteram_offs & (SpriteRamWords - 1)];
+                case 0x6:
+                    return m_spritesizeram[m_spriteram_offs & (SpriteSizeRamWords - 1)];
+                default:
+                    return 0;
+            }
         }
 
 
         void fcu_host_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
         {
+            switch ((offset << 1) & 0x6)
+            {
+                case 0x2:
+                    m_spriteram_offs = CombineWord(m_spriteram_offs, data, mem_mask);
+                    break;
+                case 0x4:
+                    m_spriteram[m_spriteram_offs & (SpriteRamWords - 1)] = CombineWord(m_spriteram[m_spriteram_offs & (SpriteRamWords - 1)], data, mem_mask);
+                    m_spriteram_offs++;
+                    break;
+                case 0x6:
+                    m_spritesizeram[m_spriteram_offs & (SpriteSizeRamWords - 1)] = CombineWord(m_spritesizeram[m_spriteram_offs & (SpriteSizeRamWords - 1)], data, mem_mask);
+                    m_spriteram_offs++;
+                    break;
+            }
         }
 
 
@@ -142,25 +180,80 @@ namespace mame
 
         u16 bcu_host_r(address_space space, offs_t offset, u16 mem_mask)
         {
-            return m_bcu[offset & (BcuHostWords - 1)];
+            int reg = (int)(offset << 1);
+            if (reg == 0x02)
+                return m_bcu_ram_offs;
+
+            if (reg == 0x04 || reg == 0x06)
+                return bcu_tileram_r(reg);
+
+            if (reg >= 0x10 && reg <= 0x1f)
+                return bcu_scroll_r((reg - 0x10) >> 1);
+
+            return 0;
         }
 
 
         void bcu_host_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
         {
-            CombineWord(m_bcu, (int)(offset & (BcuHostWords - 1)), data, mem_mask);
+            int reg = (int)(offset << 1);
+            if (reg == 0x00)
+                return;
+
+            if (reg == 0x02)
+            {
+                m_bcu_ram_offs = CombineWord(m_bcu_ram_offs, data, mem_mask);
+                return;
+            }
+
+            if (reg == 0x04 || reg == 0x06)
+            {
+                bcu_tileram_w(reg, data, mem_mask);
+                return;
+            }
+
+            if (reg >= 0x10 && reg <= 0x1f)
+                bcu_scroll_w((reg - 0x10) >> 1, data, mem_mask);
         }
 
 
         u16 vctrl_r(address_space space, offs_t offset, u16 mem_mask)
         {
-            return m_vctrl[offset & (VctrlWords - 1)];
+            int byteOffset = (int)(offset << 1);
+            if (byteOffset == 0)
+                return 1;
+
+            if (byteOffset >= 0x4000 && byteOffset < 0x6000)
+                return m_paletteram[0, (byteOffset - 0x4000) >> 1];
+
+            if (byteOffset >= 0x6000 && byteOffset < 0x8000)
+                return m_paletteram[1, (byteOffset - 0x6000) >> 1];
+
+            return 0;
         }
 
 
         void vctrl_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
         {
-            CombineWord(m_vctrl, (int)(offset & (VctrlWords - 1)), data, mem_mask);
+            int byteOffset = (int)(offset << 1);
+            if (byteOffset == 0x0002)
+            {
+                m_vctrl_intenable = (u8)(data & 0xff);
+                return;
+            }
+
+            if (byteOffset >= 0x4000 && byteOffset < 0x6000)
+            {
+                int index = (byteOffset - 0x4000) >> 1;
+                m_paletteram[0, index] = CombineWord(m_paletteram[0, index], data, mem_mask);
+                return;
+            }
+
+            if (byteOffset >= 0x6000 && byteOffset < 0x8000)
+            {
+                int index = (byteOffset - 0x6000) >> 1;
+                m_paletteram[1, index] = CombineWord(m_paletteram[1, index], data, mem_mask);
+            }
         }
 
 
@@ -172,7 +265,11 @@ namespace mame
 
         void tile_offset_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
         {
-            CombineWord(m_tile_offsets, (int)(offset & (TileOffsetWords - 1)), data, mem_mask);
+            int index = (int)(offset & (TileOffsetWords - 1));
+            m_tile_offsets[index] = CombineWord(m_tile_offsets[index], data, mem_mask);
+
+            if (index == 3)
+                m_fcu_flipscreen = (u8)(data & 0xff);
         }
 
 
@@ -201,7 +298,7 @@ namespace mame
 
         void screen_vblank(int state)
         {
-            if (state != 0)
+            if (state != 0 && m_vctrl_intenable != 0)
                 m_maincpu.op0.set_input_line(4, HOLD_LINE);
         }
 
@@ -225,21 +322,65 @@ namespace mame
         protected override void machine_reset()
         {
             Array.Clear(m_sharedram, 0, m_sharedram.Length);
-            Array.Clear(m_bcu, 0, m_bcu.Length);
-            Array.Clear(m_vctrl, 0, m_vctrl.Length);
+            Array.Clear(m_bcu_vram, 0, m_bcu_vram.Length);
+            Array.Clear(m_bcu_scrollx, 0, m_bcu_scrollx.Length);
+            Array.Clear(m_bcu_scrolly, 0, m_bcu_scrolly.Length);
+            Array.Clear(m_spriteram, 0, m_spriteram.Length);
+            Array.Clear(m_spritesizeram, 0, m_spritesizeram.Length);
+            Array.Clear(m_paletteram, 0, m_paletteram.Length);
             Array.Clear(m_tile_offsets, 0, m_tile_offsets.Length);
+            m_bcu_ram_offs = 0;
+            m_spriteram_offs = 0;
+            m_fcu_flipscreen = 0;
+            m_bcu_flipscreen = 0;
+            m_vctrl_intenable = 0;
             m_frame_counter = 0;
         }
 
 
-        static void CombineWord(u16 [] target, int index, u16 data, u16 mem_mask)
+        u16 bcu_tileram_r(int reg)
         {
-            u16 value = target[index];
+            int layer = (m_bcu_ram_offs >> 12) & 3;
+            int index = m_bcu_ram_offs & (BcuLayerWords - 1);
+            int shift = (reg == 0x04) ? 16 : 0;
+            return (u16)((m_bcu_vram[layer, index] >> shift) & 0xffff);
+        }
+
+
+        void bcu_tileram_w(int reg, u16 data, u16 mem_mask)
+        {
+            int layer = (m_bcu_ram_offs >> 12) & 3;
+            int index = m_bcu_ram_offs & (BcuLayerWords - 1);
+            int shift = (reg == 0x04) ? 16 : 0;
+            u32 mask = (u32)mem_mask << shift;
+            m_bcu_vram[layer, index] = (m_bcu_vram[layer, index] & ~mask) | ((u32)(data & mem_mask) << shift);
+        }
+
+
+        u16 bcu_scroll_r(int scrollIndex)
+        {
+            int layer = scrollIndex >> 1;
+            return (scrollIndex & 1) == 0 ? m_bcu_scrollx[layer] : m_bcu_scrolly[layer];
+        }
+
+
+        void bcu_scroll_w(int scrollIndex, u16 data, u16 mem_mask)
+        {
+            int layer = scrollIndex >> 1;
+            if ((scrollIndex & 1) == 0)
+                m_bcu_scrollx[layer] = CombineWord(m_bcu_scrollx[layer], data, mem_mask);
+            else
+                m_bcu_scrolly[layer] = CombineWord(m_bcu_scrolly[layer], data, mem_mask);
+        }
+
+
+        static u16 CombineWord(u16 value, u16 data, u16 mem_mask)
+        {
             if ((mem_mask & 0xff00) != 0)
                 value = (u16)((value & 0x00ff) | (data & 0xff00));
             if ((mem_mask & 0x00ff) != 0)
                 value = (u16)((value & 0xff00) | (data & 0x00ff));
-            target[index] = value;
+            return value;
         }
 
 
