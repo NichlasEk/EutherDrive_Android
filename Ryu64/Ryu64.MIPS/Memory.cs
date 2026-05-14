@@ -4199,14 +4199,14 @@ namespace Ryu64.MIPS
             if (!sampler.Valid)
                 return false;
 
+            if (_rdpOtherModesSampleType && _rdpOtherModesBiLerp0 && (fracS != 0 || fracT != 0))
+                return DecodeRdpTextureColorLinearLerp(ref sampler, s, t, fracS, fracT, out rgba);
+
             RdpTileState tile = sampler.Tile;
             int u = ApplyRdpTextureCoordinate(s, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
             int v = ApplyRdpTextureCoordinate(t, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
             if (u < 0 || v < 0)
                 return false;
-
-            if (_rdpOtherModesSampleType && _rdpOtherModesBiLerp0 && (fracS != 0 || fracT != 0))
-                return DecodeRdpTextureColorLinearLerp(ref sampler, s, t, fracS, fracT, out rgba);
 
             return DecodeRdpTextureColor(tile, u, v, out rgba);
         }
