@@ -13,6 +13,7 @@ using u32 = System.UInt32;
 using uint32_t = System.UInt32;
 
 using static mame.diexec_global;
+using static mame.disound_global;
 using static mame.emucore_global;
 using static mame.emumem_global;
 using static mame.gamedrv_global;
@@ -23,6 +24,8 @@ using static mame.ioport_ioport_type_helper;
 using static mame.m68000_global;
 using static mame.romentry_global;
 using static mame.screen_global;
+using static mame.speaker_global;
+using static mame.ymopl_global;
 using static mame.z80_global;
 
 
@@ -62,6 +65,7 @@ namespace mame
 
         readonly required_device<m68000_device> m_maincpu;
         readonly required_device<z80_device> m_audiocpu;
+        readonly required_device<ym3812_device> m_ymsnd;
         readonly u8 [] m_sharedram = new u8[SharedRamSize];
         readonly u16 [] m_mainram = new u16[MainRamWords];
         readonly u32 [,] m_bcu_vram = new u32[BcuLayerCount, BcuLayerWords];
@@ -91,8 +95,6 @@ namespace mame
         int m_mainram_trace_count;
         int m_external_start_frames;
         int m_external_coin_frames;
-        u8 m_ym3812_address;
-        u8 m_ym3812_status;
 
 
         public toaplan1_state(machine_config mconfig, device_type type, string tag)
@@ -100,6 +102,7 @@ namespace mame
         {
             m_maincpu = new required_device<m68000_device>(this, "maincpu");
             m_audiocpu = new required_device<z80_device>(this, "audiocpu");
+            m_ymsnd = new required_device<ym3812_device>(this, "ymsnd");
         }
 
 
@@ -134,6 +137,11 @@ namespace mame
             screen.set_screen_update(screen_update);
             screen.set_raw(PixelClock, HTotal, HBEnd, HBStart, VTotal55, VBEnd, VBStart);
             screen.screen_vblank().set((write_line_delegate)screen_vblank).reg();
+
+            SPEAKER(config, "mono").front_center();
+            YM3812(config, m_ymsnd, MasterClock / 8);
+            m_ymsnd.op0.set_irq_handler(state => m_audiocpu.op0.set_input_line(0, state));
+            m_ymsnd.op0.disound.add_route(ALL_OUTPUTS, "mono", 0.75);
         }
 
 
@@ -159,7 +167,7 @@ namespace mame
         void outzone_sound_io_map(address_map map, device_t device)
         {
             map.global_mask(0xff);
-            map.op(0x00, 0x01).rw((read8sm_delegate)ym3812_stub_r, (write8sm_delegate)ym3812_stub_w);
+            map.op(0x00, 0x01).rw((read8sm_delegate)ym3812_r, (write8sm_delegate)ym3812_w);
             map.op(0x04, 0x04).w((write8sm_delegate)coin_w);
             map.op(0x08, 0x08).r((read8sm_delegate)dswa_r);
             map.op(0x0c, 0x0c).r((read8sm_delegate)dswb_r);
@@ -413,25 +421,8 @@ namespace mame
         }
 
 
-        u8 ym3812_stub_r(offs_t offset) => (offset & 1) == 0 ? m_ym3812_status : (u8)0x00;
-
-        void ym3812_stub_w(offs_t offset, u8 data)
-        {
-            if ((offset & 1) == 0)
-            {
-                m_ym3812_address = data;
-                return;
-            }
-
-            if (m_ym3812_address == 0x04 && (data & 0x80) != 0)
-                m_ym3812_status = 0;
-        }
-
-        void ym3812_frame_irq()
-        {
-            m_ym3812_status |= 0x40;
-            m_audiocpu.op0.set_input_line(0, HOLD_LINE);
-        }
+        u8 ym3812_r(offs_t offset) => m_ymsnd.op0.read(offset);
+        void ym3812_w(offs_t offset, u8 data) => m_ymsnd.op0.write(offset, data);
         void coin_w(offs_t offset, u8 data)
         {
             machine().bookkeeping().coin_counter_w(0, data & 0x01);
@@ -464,14 +455,12 @@ namespace mame
             if (state != 0 && m_vctrl_intenable != 0)
                 m_maincpu.op0.set_input_line(4, HOLD_LINE);
             if (state != 0)
-                ym3812_frame_irq();
+                m_ymsnd.op0.frame_irq();
         }
 
 
         void reset_sound()
         {
-            m_ym3812_address = 0;
-            m_ym3812_status = 0;
             m_audiocpu.op0.pulse_input_line(INPUT_LINE_RESET, attotime.zero);
         }
 
@@ -545,8 +534,6 @@ namespace mame
             m_mainram_trace_count = 0;
             m_external_start_frames = 0;
             m_external_coin_frames = 0;
-            m_ym3812_address = 0;
-            m_ym3812_status = 0;
             Array.Clear(m_mainram, 0, m_mainram.Length);
             reset_sound();
         }

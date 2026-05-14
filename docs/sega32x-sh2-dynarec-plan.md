@@ -226,6 +226,71 @@ The next code patch should not emit native code yet. It should add:
 
 After that, the next patch can add the amber interpreter for only one or two measured traces. That gives us a stable platform for real dynarec work without gambling on the whole SH-2 ISA at once.
 
+## Handoff: Growing Toward 60 FPS
+
+This is the hopeful path forward from the current state. The useful work is no longer to add one more title-specific turbo switch. The useful work is to turn the measured hot paths into a repeatable trace system that can make After Burner, Chaotix, Doom, Kolibri, and later titles faster for the same reason.
+
+Current position:
+
+- The interpreter is still the reference implementation and should remain the fallback.
+- Several narrow SH-2 fusions already prove the approach works when the shape is measured first.
+- The perf summary can now report existing fusion families, so the next measurements can show whether a game is helped by an old fusion, missed by it, or needs a new trace shape.
+- The cast catalog below contains the first stable loop shapes. Treat these as seed crystals, not as the whole dynarec.
+
+Near-term goal:
+
+- Reach a real 60 fps capacity path by removing SH-2 dispatch and scheduler overhead from the hottest repeated loops first.
+- Preserve emulated speed. The monitor can show more headroom, but gameplay and audio must not run fast.
+- Make every speedup visible in perf output before it becomes default.
+
+Recommended next patch order:
+
+1. Add `Sh2TraceProbe` behind `EUTHERDRIVE_S32X_TRACE_PATHS=1`.
+2. Use the existing PC histogram to start traces only from hot PCs.
+3. Record exact opcode paths, branch decisions, exit PCs, cycle count, and executable version.
+4. Emit a compact candidate report after each headless run.
+5. Promote only repeated paths into `AmberTrace` objects.
+6. Execute promoted traces with an amber interpreter before any native/IL backend exists.
+
+The amber interpreter is the key bridge. It should feel almost boring:
+
+- Predecoded ops in a tight array.
+- No opcode lookup during the hot path.
+- Bus reads and writes still call the existing bus.
+- Branch route is guarded rather than re-decided generically.
+- Bailout restores PC/NPC/delay-slot state and returns to the interpreter.
+- Cycle accounting remains explicit.
+
+Expected first wins:
+
+- After Burner should mostly confirm the linked idle-ring work and show whether more master-side paths remain.
+- Doom should benefit from clean self-branch/idling treatment on the slave.
+- Chaotix should expose whether the PC-relative polling loop is hitting the right fast path or only appearing in the histogram.
+- Kolibri should identify the slave-side `0207416A` path, which is likely the next interesting cast.
+
+60 fps strategy:
+
+- First remove wasted cycles from wait loops and polling loops.
+- Then remove decode/dispatch from stable gameplay traces.
+- Then compile only the top 5-10 amber traces if the amber interpreter still cannot reach target.
+- Avoid broad opcode coverage until the measured traces demand it.
+
+Do not do this next:
+
+- Do not resurrect the broad Expression block compiler as the main path.
+- Do not make SH-2 clocks run faster globally.
+- Do not special-case individual ROM names except as temporary trace probes.
+- Do not compile through interrupts, DMA-sensitive bus traffic, unknown delay-slot behavior, or executable SDRAM writes.
+
+Success criteria for each step:
+
+- Fingerprint matches baseline for the verification matrix.
+- Perf output shows trace hits, bailouts, and invalidations.
+- UI fps/capacity improves without audio or gameplay running too fast.
+- A disabled dynarec path still leaves the interpreter behavior unchanged.
+
+If the amber interpreter gives a measurable win, the first compiled backend should be tiny and template-driven. Compile register math, compares, literal loads, and guarded direct branches first. Keep bus access as calls. That gives most of the dispatch win without pretending the entire SH-2 is solved.
+
 ## Current Cast Catalog
 
 These are the first measured "amber" shapes from the current 32X verification set. They should stay generic even when discovered from one title.

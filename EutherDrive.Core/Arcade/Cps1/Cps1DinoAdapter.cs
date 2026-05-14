@@ -16,7 +16,7 @@ namespace EutherDrive.Core.Arcade.Cps1;
 // BSD-3-Clause Capcom CPS1 driver by Paul Leaman.
 public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 {
-    private const int SavestateVersion = 1;
+    private const int SavestateVersion = 2;
     private const string SavestateMagic = "CPS1DINO";
     private const int OutputSampleRate = 44_100;
     private const int OutputChannels = 2;
@@ -46,6 +46,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
     private int _audioSampleFramesThisFrame;
     private double _audioSampleAccumulator;
     private int _audioCpuCyclesPerFrame = GetQSoundAudioCpuCyclesPerFrame();
+    private int _audioCpuCycleCarry;
     private ArcadeInputState _input;
     private bool _loaded;
     private long _frameCounter;
@@ -98,6 +99,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         _audioBuffer = Array.Empty<short>();
         _audioSampleFramesThisFrame = 0;
         _audioSampleAccumulator = 0;
+        _audioCpuCycleCarry = 0;
         _frameCounter = 0;
         _romIdentity = new RomIdentity(
             Path.GetFileName(path),
@@ -115,6 +117,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         _audioCpu.ApplyResetLine();
         _audioSampleFramesThisFrame = 0;
         _audioSampleAccumulator = 0;
+        _audioCpuCycleCarry = 0;
         _frameCounter = 0;
     }
 
@@ -137,7 +140,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         _bus.AssertVBlankInterrupt();
 
         int mainCycles = 0;
-        int audioCycles = 0;
+        int audioCycles = Math.Clamp(_audioCpuCycleCarry, 0, AudioCpuCyclesPerFrame);
+        _audioCpuCycleCarry = 0;
         while (mainCycles < CpuCyclesPerFrame)
         {
             mainCycles += checked((int)_mainCpu.ExecuteInstruction(_bus));
@@ -154,7 +158,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
 
         _bus.ClearInterrupt();
         if (audioCycles < AudioCpuCyclesPerFrame)
-            _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - audioCycles);
+            audioCycles += _bus.RunAudioCpu(_audioCpu, _audioBus, AudioCpuCyclesPerFrame - audioCycles);
+        _audioCpuCycleCarry = Math.Max(0, audioCycles - AudioCpuCyclesPerFrame);
         _bus.EndAudioFrame();
         _video!.Render(_frameBuffer);
         _bus.LatchSprites();
@@ -174,7 +179,8 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         long setupTicks = Stopwatch.GetTimestamp() - setupStart;
 
         int mainCycles = 0;
-        int audioCycles = 0;
+        int audioCycles = Math.Clamp(_audioCpuCycleCarry, 0, AudioCpuCyclesPerFrame);
+        _audioCpuCycleCarry = 0;
         int mainInstructions = 0;
         int audioCalls = 0;
         long mainLoopTicks;
@@ -227,6 +233,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             audioCycles += drainCycles;
             audioDrainTicks = Stopwatch.GetTimestamp() - audioDrainStart;
         }
+        _audioCpuCycleCarry = Math.Max(0, audioCycles - AudioCpuCyclesPerFrame);
 
         long audioEndStart = Stopwatch.GetTimestamp();
         _bus.EndAudioFrame();
@@ -374,6 +381,7 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
         writer.Write(_frameCounter);
         writer.Write(_audioSampleAccumulator);
         writer.Write(_audioCpuCyclesPerFrame);
+        writer.Write(_audioCpuCycleCarry);
         WriteInputState(writer, _input);
         StateBinarySerializer.WriteInto(writer, _mainCpu);
         StateBinarySerializer.WriteInto(writer, _audioCpu);
@@ -391,12 +399,13 @@ public sealed class Cps1DinoAdapter : IEmulatorCore, ISavestateCapable
             throw new InvalidDataException("CPS1 savestate magic mismatch.");
 
         int version = reader.ReadInt32();
-        if (version != SavestateVersion)
+        if (version is not (1 or 2))
             throw new InvalidDataException($"Unsupported CPS1 savestate version: {version}.");
 
         _frameCounter = reader.ReadInt64();
         _audioSampleAccumulator = reader.ReadDouble();
         _audioCpuCyclesPerFrame = reader.ReadInt32();
+        _audioCpuCycleCarry = version >= 2 ? reader.ReadInt32() : 0;
         _input = ReadInputState(reader);
         StateBinarySerializer.ReadInto(reader, _mainCpu);
         StateBinarySerializer.ReadInto(reader, _audioCpu);
