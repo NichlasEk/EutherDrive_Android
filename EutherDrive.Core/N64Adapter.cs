@@ -163,8 +163,8 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
             CUp = y,
             CRight = false,
             CDown = false,
-            StickX = 0,
-            StickY = 0
+            StickX = right == left ? (sbyte)0 : (right ? (sbyte)80 : (sbyte)-80),
+            StickY = up == down ? (sbyte)0 : (up ? (sbyte)80 : (sbyte)-80)
         };
 
         _core.SetInputState(input);

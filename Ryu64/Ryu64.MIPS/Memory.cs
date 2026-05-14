@@ -71,9 +71,9 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_MUPEN_DPC_STATUS"), "0", StringComparison.Ordinal);
         private static readonly bool TraceSm64SlotWrites =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SM64_SLOT_WRITES"), "1", StringComparison.Ordinal);
-        private static readonly ushort N64ControllerButtons = ParseN64ControllerButtons();
-        private static readonly sbyte N64ControllerAnalogX = ParseSByteEnvironment("EUTHERDRIVE_N64_ANALOG_X");
-        private static readonly sbyte N64ControllerAnalogY = ParseSByteEnvironment("EUTHERDRIVE_N64_ANALOG_Y");
+        private static readonly ushort InitialN64ControllerButtons = ParseN64ControllerButtons();
+        private static readonly sbyte InitialN64ControllerAnalogX = ParseSByteEnvironment("EUTHERDRIVE_N64_ANALOG_X");
+        private static readonly sbyte InitialN64ControllerAnalogY = ParseSByteEnvironment("EUTHERDRIVE_N64_ANALOG_Y");
         private static readonly bool AutoCompleteRspTaskOnHaltClear =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_SP_AUTOCOMPLETE"), "1", StringComparison.Ordinal);
         private static readonly bool EnableRspTaskHleDispatcher =
@@ -692,8 +692,13 @@ namespace Ryu64.MIPS
         public readonly byte[] RDRAMReg  = new byte[1048576];
         public readonly byte[] PIFROM    = new byte[1984];
         public readonly byte[] PIFRAM    = new byte[64];
+        private readonly byte[] _joybusEeprom = new byte[2048];
+        private readonly byte[] _controllerPak = new byte[32 * 1024];
         private readonly byte[] OpenBus  = new byte[4];
         private readonly byte[] _rom;
+        private ushort _controllerButtons = InitialN64ControllerButtons;
+        private sbyte _controllerAnalogX = InitialN64ControllerAnalogX;
+        private sbyte _controllerAnalogY = InitialN64ControllerAnalogY;
         public byte RomCountryCode => _rom != null && _rom.Length > 0x3Eu ? _rom[0x3E] : (byte)0;
         private uint _openBusMissCount;
         private bool _piDmaBusy;
@@ -811,6 +816,11 @@ namespace Ryu64.MIPS
         private readonly uint[] _visibleRdpFramebufferBytesPerPixels = new uint[RdpVisibleFramebufferSnapshotSlots];
         private readonly uint[] _visibleRdpFramebufferEpochs = new uint[RdpVisibleFramebufferSnapshotSlots];
         private int _visibleRdpFramebufferSnapshotCursor;
+        private bool _pendingVisibleRdpFramebufferSnapshot;
+        private uint _pendingVisibleRdpFramebufferAddress;
+        private uint _pendingVisibleRdpFramebufferWidth;
+        private uint _pendingVisibleRdpFramebufferBytesPerPixel;
+        private long _pendingVisibleRdpFramebufferKnownPixels;
         private long _rspGraphicsTaskCount;
         private long _rspAudioTaskCount;
         private long _rspOtherTaskCount;
@@ -962,10 +972,12 @@ namespace Ryu64.MIPS
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
 
-            const int version = 1;
+            const int version = 2;
             writer.Write(version);
 
             WriteByteArrays(writer);
+            WriteBytes(writer, _joybusEeprom);
+            WriteBytes(writer, _controllerPak);
             WriteBytes(writer, SI_MIRROR_RAM);
             WriteBytes(writer, OpenBus);
             WriteBytes(writer, _rdpTmem);
@@ -1090,6 +1102,9 @@ namespace Ryu64.MIPS
             writer.Write(_rdpFillRectangleCommandCount);
             writer.Write(_rdpPixelWriteCount);
             writer.Write(_rdpNonZeroPixelWriteCount);
+            writer.Write(_controllerButtons);
+            writer.Write(_controllerAnalogX);
+            writer.Write(_controllerAnalogY);
         }
 
         public void LoadState(BinaryReader reader)
@@ -1098,10 +1113,19 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(reader));
 
             int version = reader.ReadInt32();
-            if (version != 1)
+            if (version < 1 || version > 2)
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
 
             ReadByteArrays(reader);
+            if (version >= 2)
+            {
+                ReadBytes(reader, _joybusEeprom);
+                ReadBytes(reader, _controllerPak);
+                if (IsAllZero(_joybusEeprom))
+                    FillBytes(_joybusEeprom, 0xFF);
+                if (!IsControllerPakFormatted())
+                    FormatControllerPak();
+            }
             ReadBytes(reader, SI_MIRROR_RAM);
             ReadBytes(reader, OpenBus);
             ReadBytes(reader, _rdpTmem);
@@ -1240,8 +1264,21 @@ namespace Ryu64.MIPS
             _rdpFillRectangleCommandCount = reader.ReadInt64();
             _rdpPixelWriteCount = reader.ReadInt64();
             _rdpNonZeroPixelWriteCount = reader.ReadInt64();
+            if (version >= 2)
+            {
+                _controllerButtons = reader.ReadUInt16();
+                _controllerAnalogX = reader.ReadSByte();
+                _controllerAnalogY = reader.ReadSByte();
+            }
 
             RefreshCpuInterruptView();
+        }
+
+        public void SetControllerState(ushort buttons, sbyte analogX, sbyte analogY)
+        {
+            _controllerButtons = buttons;
+            _controllerAnalogX = analogX;
+            _controllerAnalogY = analogY;
         }
 
         private static long StartPerfTimer()
@@ -1458,6 +1495,23 @@ namespace Ryu64.MIPS
                     throw new EndOfStreamException();
                 offset += read;
             }
+        }
+
+        private static void FillBytes(byte[] values, byte value)
+        {
+            for (int i = 0; i < values.Length; i++)
+                values[i] = value;
+        }
+
+        private static bool IsAllZero(byte[] values)
+        {
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] != 0)
+                    return false;
+            }
+
+            return true;
         }
 
         private static byte[] ReadNewByteArray(BinaryReader reader)
@@ -2032,6 +2086,7 @@ namespace Ryu64.MIPS
                         break;
                     case 0x3F: // SetColorImage
                         Interlocked.Increment(ref _rdpSetColorImageCommandCount);
+                        FlushVisibleRdpFramebufferSnapshot();
                         _rdpColorImageSize = (w0 >> 19) & 0x3u;
                         _rdpColorImageWidth = (w0 & 0x03FFu) + 1u;
                         _rdpColorImageAddress = w1 & 0x00FFFFFFu;
@@ -2081,6 +2136,7 @@ namespace Ryu64.MIPS
                 _traceRdpSummaryCount++;
             }
 
+            FlushVisibleRdpFramebufferSnapshot();
             AddPerfTicks(ref _perfRdpDisplayListTicks, ref _perfRdpDisplayListCalls, perfStart);
             return current;
         }
@@ -2298,7 +2354,8 @@ namespace Ryu64.MIPS
                 long currentB = modulateShade ? rowB + firstXStep * (long)shade.DbDx : 0;
                 long currentA = modulateShade ? rowA + firstXStep * (long)shade.DaDx : 0;
                 bool usePerspective = EnableRdpPerspectiveTexture && _rdpOtherModesPerspectiveTexture;
-                uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
+                uint rowPixelIndex = (uint)y * _rdpColorImageWidth;
+                uint rowStart = _rdpColorImageAddress + ((rowPixelIndex + (uint)firstX) * bytesPerPixel);
                 bool rowWrote = false;
                 for (int x = firstX; x <= lastX; x++)
                 {
@@ -2388,8 +2445,9 @@ namespace Ryu64.MIPS
                         continue;
                     }
 
-                    uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
-                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, currentZ, depth.DzPix))
+                    uint pixelIndex = rowPixelIndex + (uint)x;
+                    uint address = rowStart + ((uint)(x - firstX) * bytesPerPixel);
+                    if (useDepth && !PassRdpDepthTest(pixelIndex, currentZ, depth.DzPix))
                     {
                         depthRejects++;
                         currentS += tex.DsDx;
@@ -2406,7 +2464,10 @@ namespace Ryu64.MIPS
                         continue;
                     }
 
-                    WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
+                    if (bytesPerPixel == 2u && !_rdpOtherModesForceBlend)
+                        WriteRdpRgba5551PixelNoBlend(address, rgba);
+                    else
+                        WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     nonZeroSampleHits++;
                     rowWrote = true;
                     wroteAny = true;
@@ -2444,9 +2505,9 @@ namespace Ryu64.MIPS
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
                 if (nonZeroSampleHits >= 256)
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, nonZeroSampleHits);
-                else if (HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, nonZeroSampleHits);
+                else
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, 0);
             }
             return wroteAny;
             }
@@ -2830,7 +2891,7 @@ namespace Ryu64.MIPS
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
                 if (writtenPixels >= 256 && IsRgbaNonZero(rgba))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, writtenPixels);
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, writtenPixels);
             }
             return wroteAny;
         }
@@ -2942,9 +3003,9 @@ namespace Ryu64.MIPS
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
                 if (writtenPixels >= 256)
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, writtenPixels);
-                else if (writtenPixels >= 32 && HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, writtenPixels);
+                else if (writtenPixels >= 32)
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, 0);
             }
             return wroteAny;
         }
@@ -3898,9 +3959,9 @@ namespace Ryu64.MIPS
             if (visibleFill && _rdpColorImageAddress >= 0x00300000u)
             {
                 if (pixels >= 256)
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, pixels);
-                else if (HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, pixels);
+                else
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, 0);
             }
         }
 
@@ -4029,9 +4090,9 @@ namespace Ryu64.MIPS
             {
                 MarkRdpColorImageWritten(bytesPerPixel);
                 if (nonZeroSampleHits >= 256)
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, nonZeroSampleHits);
-                else if (HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
-                    CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, 512);
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, nonZeroSampleHits);
+                else
+                    QueueVisibleRdpFramebufferSnapshot(bytesPerPixel, 0);
             }
             return wroteAny;
             }
@@ -4501,6 +4562,57 @@ namespace Ryu64.MIPS
             Volatile.Write(ref _lastRdpColorImageWidth, _rdpColorImageWidth);
             Volatile.Write(ref _lastRdpColorImageBytesPerPixel, bytesPerPixel);
             Volatile.Write(ref _lastRdpColorImageWriteEpoch, _rdramWriteEpoch);
+        }
+
+        private void QueueVisibleRdpFramebufferSnapshot(uint bytesPerPixel, long knownVisiblePixels)
+        {
+            uint address = _rdpColorImageAddress;
+            uint width = _rdpColorImageWidth;
+            if (address < PlausibleFramebufferOriginFloor
+                || address >= RDRAM.Length
+                || width == 0
+                || bytesPerPixel == 0)
+            {
+                return;
+            }
+
+            if (_pendingVisibleRdpFramebufferSnapshot
+                && (_pendingVisibleRdpFramebufferAddress != address
+                    || _pendingVisibleRdpFramebufferWidth != width
+                    || _pendingVisibleRdpFramebufferBytesPerPixel != bytesPerPixel))
+            {
+                FlushVisibleRdpFramebufferSnapshot();
+            }
+
+            if (!_pendingVisibleRdpFramebufferSnapshot
+                || knownVisiblePixels > _pendingVisibleRdpFramebufferKnownPixels)
+            {
+                _pendingVisibleRdpFramebufferAddress = address;
+                _pendingVisibleRdpFramebufferWidth = width;
+                _pendingVisibleRdpFramebufferBytesPerPixel = bytesPerPixel;
+                _pendingVisibleRdpFramebufferKnownPixels = knownVisiblePixels;
+            }
+
+            _pendingVisibleRdpFramebufferSnapshot = true;
+        }
+
+        private void FlushVisibleRdpFramebufferSnapshot()
+        {
+            if (!_pendingVisibleRdpFramebufferSnapshot)
+                return;
+
+            uint bytesPerPixel = _pendingVisibleRdpFramebufferBytesPerPixel;
+            long knownVisiblePixels = _pendingVisibleRdpFramebufferKnownPixels;
+            bool targetStillCurrent = _rdpColorImageAddress == _pendingVisibleRdpFramebufferAddress
+                && _rdpColorImageWidth == _pendingVisibleRdpFramebufferWidth;
+            _pendingVisibleRdpFramebufferSnapshot = false;
+            _pendingVisibleRdpFramebufferAddress = 0;
+            _pendingVisibleRdpFramebufferWidth = 0;
+            _pendingVisibleRdpFramebufferBytesPerPixel = 0;
+            _pendingVisibleRdpFramebufferKnownPixels = 0;
+
+            if (targetStillCurrent)
+                CaptureVisibleRdpFramebufferSnapshot(bytesPerPixel, knownVisiblePixels);
         }
 
         private void CaptureVisibleRdpFramebufferSnapshot(uint bytesPerPixel, long knownVisiblePixels = 0)
@@ -5096,6 +5208,26 @@ namespace Ryu64.MIPS
             }
         }
 
+        private void WriteRdpRgba5551PixelNoBlend(uint address, uint rgba)
+        {
+            if (address + 1u >= RDRAM.Length)
+                return;
+
+            ushort color16 = Rgba8888ToRgba5551(rgba);
+            if (_rdpOtherModesCvgDest != 3u)
+                color16 = (ushort)(color16 | 1u);
+
+            RDRAM[address] = (byte)(color16 >> 8);
+            RDRAM[address + 1u] = (byte)color16;
+
+            if (_rdpOtherModesCvgDest != 3u)
+            {
+                uint hiddenIndex = address >> 1;
+                if (hiddenIndex < _rdpHiddenBits.Length)
+                    _rdpHiddenBits[hiddenIndex] = (byte)((color16 & 1u) != 0 ? 3u : 0u);
+            }
+        }
+
         private ushort ApplyRdpColorCoverage(ushort color16)
         {
             return _rdpOtherModesCvgDest == 3u ? color16 : (ushort)(color16 | 1u);
@@ -5457,6 +5589,8 @@ namespace Ryu64.MIPS
             _rspInterpreter = new RspInterpreter(this);
             for (int i = 0; i < _rdpHiddenBits.Length; i++)
                 _rdpHiddenBits[i] = 3;
+            FillBytes(_joybusEeprom, 0xFF);
+            FormatControllerPak();
 
             // RDRAM (base + expansion/mirror window).
             // Keep backing array at 8 MiB for now; accesses beyond that window mirror via ResolveArrayOffset().
@@ -5615,6 +5749,7 @@ namespace Ryu64.MIPS
             // MI Registers
             WriteBigEndianWord(MI_INIT_MODE_REG_R, 0x00000080); // MI_INIT_MODE_REG
             WriteUInt32Physical(0x04300004, 0x02020102); // MI_VERSION_REG
+            WriteUInt32Physical(0x00000318, 0x00800000); // osMemSize: Expansion Pak / 8 MiB RDRAM
 
             // VI Registers
             WriteUInt32Physical(0x0440000C, 1023); // VI_INTR_REG
@@ -8552,10 +8687,9 @@ namespace Ryu64.MIPS
 
         private void ProcessPifJoybusCommands()
         {
-            // Minimal Joybus handling for bring-up:
-            // enough to satisfy common controller probe/read loops.
             byte pifControl = PIFRAM[63];
             int i = 0;
+            int channel = 0;
             while (i < 63)
             {
                 byte tx = PIFRAM[i];
@@ -8571,6 +8705,7 @@ namespace Ryu64.MIPS
                 if (tx == 0x00)
                 {
                     i++;
+                    channel++;
                     continue;
                 }
 
@@ -8590,8 +8725,11 @@ namespace Ryu64.MIPS
                 {
                     case 0x00: // INFO
                     case 0xFF: // RESET/INFO
-                        // Standard controller signature.
-                        if (rxLen >= 3 && rxIndex + 2 < 64)
+                        if (channel == 4)
+                        {
+                            WriteEepromStatus(rxIndex, rxLen);
+                        }
+                        else if (rxLen >= 3 && rxIndex + 2 < 64)
                         {
                             PIFRAM[rxIndex + 0] = 0x05;
                             PIFRAM[rxIndex + 1] = 0x00;
@@ -8601,11 +8739,23 @@ namespace Ryu64.MIPS
                     case 0x01: // READ BUTTONS
                         if (rxLen >= 4 && rxIndex + 3 < 64)
                         {
-                            PIFRAM[rxIndex + 0] = (byte)(N64ControllerButtons >> 8);
-                            PIFRAM[rxIndex + 1] = (byte)N64ControllerButtons;
-                            PIFRAM[rxIndex + 2] = unchecked((byte)N64ControllerAnalogX);
-                            PIFRAM[rxIndex + 3] = unchecked((byte)N64ControllerAnalogY);
+                            PIFRAM[rxIndex + 0] = (byte)(_controllerButtons >> 8);
+                            PIFRAM[rxIndex + 1] = (byte)_controllerButtons;
+                            PIFRAM[rxIndex + 2] = unchecked((byte)_controllerAnalogX);
+                            PIFRAM[rxIndex + 3] = unchecked((byte)_controllerAnalogY);
                         }
+                        break;
+                    case 0x02: // CONTROLLER PAK READ
+                        ReadControllerPak(cmdIndex, txLen, rxIndex, rxLen);
+                        break;
+                    case 0x03: // CONTROLLER PAK WRITE
+                        WriteControllerPak(cmdIndex, txLen, rxIndex, rxLen);
+                        break;
+                    case 0x04: // EEPROM READ
+                        ReadEeprom(cmdIndex, txLen, rxIndex, rxLen);
+                        break;
+                    case 0x05: // EEPROM WRITE
+                        WriteEeprom(cmdIndex, txLen, rxIndex, rxLen);
                         break;
                     default:
                         // Unknown command: leave response bytes as-is/open.
@@ -8613,10 +8763,151 @@ namespace Ryu64.MIPS
                 }
 
                 i = rxIndex + rxLen;
+                channel++;
             }
 
             if (pifControl != 0)
                 ProcessPifControlFlags();
+        }
+
+        private void WriteEepromStatus(int rxIndex, int rxLen)
+        {
+            if (rxLen < 3 || rxIndex + 2 >= 64)
+                return;
+
+            PIFRAM[rxIndex + 0] = 0x00;
+            PIFRAM[rxIndex + 1] = 0xC0; // 16K EEPROM present.
+            PIFRAM[rxIndex + 2] = 0x00;
+        }
+
+        private void ReadEeprom(int cmdIndex, int txLen, int rxIndex, int rxLen)
+        {
+            if (txLen < 2 || rxLen < 8 || cmdIndex + 1 >= 64)
+                return;
+
+            int block = PIFRAM[cmdIndex + 1] & 0xFF;
+            int offset = (block * 8) % _joybusEeprom.Length;
+            int count = Math.Min(8, Math.Min(rxLen, 64 - rxIndex));
+            Array.Copy(_joybusEeprom, offset, PIFRAM, rxIndex, count);
+        }
+
+        private void WriteEeprom(int cmdIndex, int txLen, int rxIndex, int rxLen)
+        {
+            if (txLen < 10 || cmdIndex + 9 >= 64)
+                return;
+
+            int block = PIFRAM[cmdIndex + 1] & 0xFF;
+            int offset = (block * 8) % _joybusEeprom.Length;
+            Array.Copy(PIFRAM, cmdIndex + 2, _joybusEeprom, offset, 8);
+            if (rxLen >= 1 && rxIndex < 64)
+                PIFRAM[rxIndex] = 0x00;
+        }
+
+        private void ReadControllerPak(int cmdIndex, int txLen, int rxIndex, int rxLen)
+        {
+            if (txLen < 3 || rxLen < 33 || cmdIndex + 2 >= 64 || rxIndex + 32 >= 64)
+                return;
+
+            int address = ControllerPakAddress(cmdIndex);
+            Array.Copy(_controllerPak, address, PIFRAM, rxIndex, 32);
+            PIFRAM[rxIndex + 32] = JoybusDataCrc(PIFRAM, rxIndex);
+        }
+
+        private void WriteControllerPak(int cmdIndex, int txLen, int rxIndex, int rxLen)
+        {
+            if (txLen < 35 || rxLen < 1 || cmdIndex + 34 >= 64 || rxIndex >= 64)
+                return;
+
+            int address = ControllerPakAddress(cmdIndex);
+            Array.Copy(PIFRAM, cmdIndex + 3, _controllerPak, address, 32);
+            PIFRAM[rxIndex] = JoybusDataCrc(PIFRAM, cmdIndex + 3);
+        }
+
+        private void FormatControllerPak()
+        {
+            Array.Clear(_controllerPak, 0, _controllerPak.Length);
+
+            byte[] idBlock = new byte[32];
+            for (int i = 0; i < 24; i++)
+                idBlock[i] = (byte)(0x10 + i);
+            idBlock[0x19] = 0x01;
+            idBlock[0x1A] = 0x01;
+            ushort checksum = ControllerPakIdChecksum(idBlock, 0);
+            WriteControllerPakWord(idBlock, 0x1C, checksum);
+            WriteControllerPakWord(idBlock, 0x1E, (ushort)(0xFFF2u - checksum));
+
+            Array.Copy(idBlock, 0, _controllerPak, 0x20, 32);
+            Array.Copy(idBlock, 0, _controllerPak, 0x60, 32);
+            Array.Copy(idBlock, 0, _controllerPak, 0x80, 32);
+            Array.Copy(idBlock, 0, _controllerPak, 0xC0, 32);
+
+            FormatControllerPakFatPage(_controllerPak, 0x100);
+            Array.Copy(_controllerPak, 0x100, _controllerPak, 0x200, 0x100);
+        }
+
+        private bool IsControllerPakFormatted()
+        {
+            if (_controllerPak[0x39] != 0x01 || _controllerPak[0x3A] == 0)
+                return false;
+
+            ushort checksum = ControllerPakIdChecksum(_controllerPak, 0x20);
+            ushort storedChecksum = (ushort)((_controllerPak[0x3C] << 8) | _controllerPak[0x3D]);
+            ushort storedInverse = (ushort)((_controllerPak[0x3E] << 8) | _controllerPak[0x3F]);
+            return storedChecksum == checksum && storedInverse == (ushort)(0xFFF2u - checksum);
+        }
+
+        private static void FormatControllerPakFatPage(byte[] data, int offset)
+        {
+            Array.Clear(data, offset, 256);
+            for (int pakPage = 1; pakPage < 128; pakPage++)
+            {
+                ushort value = pakPage < 5 ? (ushort)0 : (ushort)3;
+                WriteControllerPakWord(data, offset + (pakPage * 2), value);
+            }
+
+            int checksum = 0;
+            for (int i = offset + 2; i < offset + 256; i++)
+                checksum = (checksum + data[i]) & 0xFF;
+            data[offset + 1] = (byte)checksum;
+        }
+
+        private static ushort ControllerPakIdChecksum(byte[] data, int offset)
+        {
+            uint checksum = 0;
+            for (int i = 0; i < 28; i += 2)
+                checksum += (uint)((data[offset + i] << 8) | data[offset + i + 1]);
+            return (ushort)checksum;
+        }
+
+        private static void WriteControllerPakWord(byte[] data, int offset, ushort value)
+        {
+            data[offset] = (byte)(value >> 8);
+            data[offset + 1] = (byte)value;
+        }
+
+        private int ControllerPakAddress(int cmdIndex)
+        {
+            int address = ((PIFRAM[cmdIndex + 1] << 8) | PIFRAM[cmdIndex + 2]) & 0xFFE0;
+            return address % (_controllerPak.Length - 31);
+        }
+
+        private static byte JoybusDataCrc(byte[] data, int offset)
+        {
+            byte crc = 0;
+            for (int i = 0; i <= 32; i++)
+            {
+                for (int mask = 0x80; mask != 0; mask >>= 1)
+                {
+                    bool carry = (crc & 0x80) != 0;
+                    crc <<= 1;
+                    if (i < 32 && (data[offset + i] & mask) != 0)
+                        crc |= 1;
+                    if (carry)
+                        crc ^= 0x85;
+                }
+            }
+
+            return crc;
         }
 
         struct MemEntry

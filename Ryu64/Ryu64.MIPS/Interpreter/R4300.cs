@@ -2107,6 +2107,7 @@ namespace Ryu64.MIPS
                 | 0x3Fu);
             memory.WriteUInt32(0xBFC007E4u, pif24);
             memory.WriteUInt8(0xBFC007FFu, 0x00);
+            SeedExpansionPakMemorySize();
 
             TLB.Reset();
             COP0.PowerOnCOP0();
@@ -3352,6 +3353,7 @@ namespace Ryu64.MIPS
 
             memory.WriteUInt32(0xA4500000u, 0u);    // AI_DRAM_ADDR
             memory.WriteUInt32(0xA4500004u, 0u);    // AI_LEN
+            SeedExpansionPakMemorySize();
 
             uint pif24 = memory.ReadUInt32(0xBFC007E4u);
             uint s7 = (pif24 >> 18) & 0x1u;
@@ -3377,11 +3379,17 @@ namespace Ryu64.MIPS
             memory.WriteUInt32(0xA4001014u, 0x3C0DBFC0u);
             memory.WriteUInt32(0xA4001018u, 0x8DA80024u);
             memory.WriteUInt32(0xA400101Cu, 0x3C0BB000u);
+            SeedExpansionPakMemorySize();
 
             Registers.R4300.Reg[11] = 0xFFFFFFFFA4000040;
             Registers.R4300.Reg[29] = 0xFFFFFFFFA4001FF0;
             Registers.R4300.Reg[31] = 0xFFFFFFFFA4001550;
             Registers.R4300.PC = 0xA4000040;
+        }
+
+        private static void SeedExpansionPakMemorySize()
+        {
+            memory?.WriteUInt32(0x80000318u, 0x00800000u);
         }
 
         public static void StopR4300()

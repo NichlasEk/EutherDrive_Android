@@ -666,8 +666,23 @@ namespace Ryu64Core
 
         public void SetInputState(InputState input)
         {
-            // TODO: Map to PIF RAM command protocol for real controller support.
-            _ = input;
+            ushort buttons = 0;
+            if (input.A) buttons |= 0x8000;
+            if (input.B) buttons |= 0x4000;
+            if (input.Z) buttons |= 0x2000;
+            if (input.Start) buttons |= 0x1000;
+            if (input.Up) buttons |= 0x0800;
+            if (input.Down) buttons |= 0x0400;
+            if (input.Left) buttons |= 0x0200;
+            if (input.Right) buttons |= 0x0100;
+            if (input.L) buttons |= 0x0020;
+            if (input.R) buttons |= 0x0010;
+            if (input.CUp) buttons |= 0x0008;
+            if (input.CDown) buttons |= 0x0004;
+            if (input.CLeft) buttons |= 0x0002;
+            if (input.CRight) buttons |= 0x0001;
+
+            R4300.memory?.SetControllerState(buttons, input.StickX, input.StickY);
         }
 
         public void SaveState(string path)
