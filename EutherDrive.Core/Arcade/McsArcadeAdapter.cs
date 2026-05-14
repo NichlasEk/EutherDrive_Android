@@ -2237,13 +2237,46 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 uint* source32 = (uint*)(sourceBase + sourceOffset);
                 uint* destination32 = (uint*)(destinationBase + destinationOffset);
 
+                bool swapXy = (orientation & mame.emucore_global.ORIENTATION_SWAP_XY) != 0;
+                bool flipX = (orientation & mame.emucore_global.ORIENTATION_FLIP_X) != 0;
+                bool flipY = (orientation & mame.emucore_global.ORIENTATION_FLIP_Y) != 0;
+
+                if (swapXy)
+                {
+                    for (int y = 0; y < destinationHeight; y++)
+                    {
+                        uint* destinationRow = destination32 + y * destinationRowPixels;
+                        int sourceX = flipY ? sourceWidth - 1 - y : y;
+                        if (flipX)
+                        {
+                            uint* sourcePixel = source32 + (sourceHeight - 1) * sourceRowPixels + sourceX;
+                            for (int x = 0; x < destinationWidth; x++, sourcePixel -= sourceRowPixels)
+                                destinationRow[x] = *sourcePixel;
+                        }
+                        else
+                        {
+                            uint* sourcePixel = source32 + sourceX;
+                            for (int x = 0; x < destinationWidth; x++, sourcePixel += sourceRowPixels)
+                                destinationRow[x] = *sourcePixel;
+                        }
+                    }
+
+                    return;
+                }
+
                 for (int y = 0; y < destinationHeight; y++)
                 {
-                    int destinationRow = y * destinationRowPixels;
-                    for (int x = 0; x < destinationWidth; x++)
+                    int sourceY = flipY ? sourceHeight - 1 - y : y;
+                    uint* sourceRow = source32 + sourceY * sourceRowPixels;
+                    uint* destinationRow = destination32 + y * destinationRowPixels;
+                    if (flipX)
                     {
-                        GetOrientedSourceCoordinate(orientation, sourceWidth, sourceHeight, x, y, out int sourceX, out int sourceY);
-                        destination32[destinationRow + x] = source32[sourceY * sourceRowPixels + sourceX];
+                        for (int x = 0; x < destinationWidth; x++)
+                            destinationRow[x] = sourceRow[sourceWidth - 1 - x];
+                    }
+                    else
+                    {
+                        Buffer.MemoryCopy(sourceRow, destinationRow, destinationWidth * sizeof(uint), destinationWidth * sizeof(uint));
                     }
                 }
             }
