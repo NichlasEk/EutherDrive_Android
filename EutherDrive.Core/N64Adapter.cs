@@ -35,6 +35,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
     private long _noAudioCount;
     private bool _hasSeenFramebuffer;
     private bool? _swap5551BytesDecision;
+    private int _loadedStateBlankHoldFrames;
     private readonly ulong _targetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_TARGET_CYCLES_PER_RUNFRAME", 300_000);
     private readonly int _runFrameWaitMs = ReadIntEnv("EUTHERDRIVE_N64_RUNFRAME_WAIT_MS", 12);
     private readonly ulong _bringupTargetCyclesPerRunFrame = ReadUlongEnv("EUTHERDRIVE_N64_BRINGUP_TARGET_CYCLES_PER_RUNFRAME", 8_000_000);
@@ -67,6 +68,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         _noAudioCount = 0;
         _hasSeenFramebuffer = false;
         _swap5551BytesDecision = null;
+        _loadedStateBlankHoldFrames = 0;
         EnsureFrameBuffer(DefaultWidth, DefaultHeight);
         Console.WriteLine($"[N64Adapter] ROM loaded: '{Path.GetFileName(path)}' -> '{Path.GetFileName(_resolvedRomPath)}'");
     }
@@ -87,6 +89,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         _noAudioCount = 0;
         _hasSeenFramebuffer = false;
         _swap5551BytesDecision = null;
+        _loadedStateBlankHoldFrames = 0;
     }
 
     public void RunFrame()
@@ -227,7 +230,8 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         _audioBuffer = Array.Empty<short>();
         _core.LoadState(reader);
         _started = _core.IsRunning;
-        _hasSeenFramebuffer = framebufferLength > 0;
+        _hasSeenFramebuffer = framebufferLength > 0 && !IsBgraFramebufferBlank(_frameBuffer);
+        _loadedStateBlankHoldFrames = _hasSeenFramebuffer ? 12 : 0;
     }
 
     private void EnsureStarted()
@@ -276,6 +280,25 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
             return;
         }
 
+        if (_loadedStateBlankHoldFrames > 0
+            && _hasSeenFramebuffer
+            && width == _frameWidth
+            && height == _frameHeight
+            && IsRawFramebufferBlank(raw, bytesPerPixel))
+        {
+            _loadedStateBlankHoldFrames--;
+            if (_loadedStateBlankHoldFrames >= 9)
+            {
+                Console.WriteLine(
+                    $"[N64Adapter] Holding savestate framebuffer over blank startup frame " +
+                    $"(runFrame={_runFrameCount}, remaining={_loadedStateBlankHoldFrames}) status={_core.LastFramebufferStatus}");
+            }
+            return;
+        }
+
+        if (!IsRawFramebufferBlank(raw, bytesPerPixel))
+            _loadedStateBlankHoldFrames = 0;
+
         _hasSeenFramebuffer = true;
         if (_noFramebufferCount > 0)
         {
@@ -319,6 +342,57 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
 
             ConvertRgba5551ToBgra(raw, _frameBuffer, _swap5551BytesDecision.Value);
         }
+    }
+
+    private static bool IsRawFramebufferBlank(byte[] raw, int bytesPerPixel)
+    {
+        if (raw.Length == 0)
+            return true;
+
+        if (bytesPerPixel >= 4)
+        {
+            for (int i = 0; i + 2 < raw.Length; i += bytesPerPixel)
+            {
+                if (raw[i] != 0 || raw[i + 1] != 0 || raw[i + 2] != 0)
+                    return false;
+            }
+
+            return true;
+        }
+
+        if (bytesPerPixel >= 2)
+        {
+            for (int i = 0; i + 1 < raw.Length; i += bytesPerPixel)
+            {
+                int pixel = (raw[i] << 8) | raw[i + 1];
+                if ((pixel & 0xFFFE) != 0)
+                    return false;
+            }
+
+            return true;
+        }
+
+        for (int i = 0; i < raw.Length; i++)
+        {
+            if (raw[i] != 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsBgraFramebufferBlank(byte[] framebuffer)
+    {
+        if (framebuffer.Length == 0)
+            return true;
+
+        for (int i = 0; i + 2 < framebuffer.Length; i += 4)
+        {
+            if (framebuffer[i] != 0 || framebuffer[i + 1] != 0 || framebuffer[i + 2] != 0)
+                return false;
+        }
+
+        return true;
     }
 
     private void PullAudio()
