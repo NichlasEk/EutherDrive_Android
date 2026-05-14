@@ -3478,24 +3478,7 @@ namespace Ryu64.MIPS
             uint width = lrs - uls + 1u;
             uint height = lrt - ult + 1u;
             RdpTileState tile = _rdpTiles[tileIndex];
-            if ((_rdpTextureImageSize & 0x3u) == 0u)
-            {
-                uint sourceRowBytes = RdpPackedBytesForTexels(_rdpTextureImageWidth, _rdpTextureImageSize);
-                uint destinationStride = GetTileStrideBytes(tile, width);
-                uint destinationBase = Math.Min(4095u, tile.Tmem * 8u);
-                for (uint y = 0; y < height; y++)
-                {
-                    uint sourceOffset = ((ult + y) * sourceRowBytes) + RdpPackedBytesForTexels(uls, _rdpTextureImageSize);
-                    uint sourceAddress = _rdpTextureImageAddress + sourceOffset;
-                    uint rowBytes = RdpPackedBytesForTexels(width, _rdpTextureImageSize);
-                    uint destinationOffset = destinationBase + y * destinationStride;
-                    CopyRdramToTmem(sourceAddress, destinationOffset, rowBytes);
-                }
-            }
-            else
-            {
-                CopyTextureTileToTmem(tile, uls, ult, width, height);
-            }
+            CopyTextureTileToTmem(tile, uls, ult, width, height);
             TraceRdpTextureLoad("loadtile", tileIndex, w0, w1, height * RdpPackedBytesForTexels(width, _rdpTextureImageSize));
         }
 
@@ -3504,6 +3487,36 @@ namespace Ryu64.MIPS
             uint imageWidth = _rdpTextureImageWidth == 0 ? 1u : _rdpTextureImageWidth;
             switch (_rdpTextureImageSize & 0x3u)
             {
+                case 0u:
+                    {
+                        uint sourceRowBytes = RdpPackedBytesForTexels(imageWidth, 0u);
+                        uint rowBytes = RdpPackedBytesForTexels(width, 0u);
+                        for (uint y = 0; y < height; y++)
+                        {
+                            uint sourceRow = _rdpTextureImageAddress + (ult + y) * sourceRowBytes;
+                            uint rowBase = (tile.Tmem << 3) + ((tile.Line << 3) * y);
+                            uint rowXor = RdpTmemByteRowXor(y);
+                            for (uint x = 0; x < rowBytes; x++)
+                                _rdpTmem[((rowBase + x) ^ rowXor) & 0xFFFu] = 0;
+
+                            for (uint x = 0; x < width; x++)
+                            {
+                                uint sourceTexel = uls + x;
+                                uint source = sourceRow + (sourceTexel >> 1);
+                                if (source >= RDRAM.Length)
+                                    return;
+
+                                byte packed = RDRAM[source];
+                                byte value = (byte)(((sourceTexel & 1u) == 0u ? packed >> 4 : packed) & 0x0F);
+                                uint destination = ((rowBase + (x >> 1)) ^ rowXor) & 0xFFFu;
+                                int existing = _rdpTmem[destination];
+                                _rdpTmem[destination] = (byte)((x & 1u) == 0u
+                                    ? (existing & 0x0F) | (value << 4)
+                                    : (existing & 0xF0) | value);
+                            }
+                        }
+                    }
+                    break;
                 case 1u:
                     for (uint y = 0; y < height; y++)
                     {
@@ -3962,6 +3975,8 @@ namespace Ryu64.MIPS
                         sampleMisses++;
                         continue;
                     }
+                    if (_rdpCombineModeSet)
+                        rgba = ApplyRdpColorCombiner(rgba, 0xFFFFFFFFu);
                     if (ShouldRejectRdpAlpha(rgba))
                     {
                         sampleHits++;
