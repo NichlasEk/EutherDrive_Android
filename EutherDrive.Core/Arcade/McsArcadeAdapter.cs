@@ -853,6 +853,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         {
             lock (_frameSync)
                 PublishedFrames++;
+            _frameReady.Set();
         }
 
         public long PublishedFrames { get; private set; }
@@ -876,7 +877,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
             RequestFrameAdvance();
 
-            if (start == 0 || _stopped.IsSet)
+            if (_stopped.IsSet)
             {
                 AddProfileWait(waitStart);
                 return;
@@ -1874,7 +1875,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             }
 
             if (screenQuad == null)
+            {
+                TraceDirectRgb32Miss(primitives, width, height, "shape");
                 return false;
+            }
 
             uint textureOrientation = mame.render_global.PRIMFLAG_GET_TEXORIENT(screenQuad.flags);
             if (
@@ -1882,6 +1886,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 !CanDrawDirectTexture(textureOrientation, (int)screenQuad.texture.width, (int)screenQuad.texture.height, width, height) ||
                 screenQuad.texture.rowpixels < screenQuad.texture.width)
             {
+                TraceDirectRgb32Miss(primitives, width, height, "shape");
                 return false;
             }
 
@@ -1899,15 +1904,9 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 screenQuad.color.g < 1.0f ||
                 screenQuad.color.b < 1.0f ||
                 screenQuad.color.a < 1.0f ||
-                Math.Abs(screenQuad.texcoords.tl.u) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.tl.v) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.tr.u - 1.0f) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.tr.v) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.bl.u) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.bl.v - 1.0f) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.br.u - 1.0f) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.br.v - 1.0f) > 0.001f)
+                !HasDirectFullTextureCoordinates(screenQuad, textureOrientation))
             {
+                TraceDirectRgb32Miss(primitives, width, height, "flags/bounds");
                 return false;
             }
 
@@ -1918,7 +1917,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             int destWidth = destX1 - destX0;
             int destHeight = destY1 - destY0;
             if (destWidth <= 0 || destHeight <= 0)
+            {
+                TraceDirectRgb32Miss(primitives, width, height, "bounds");
                 return false;
+            }
 
             if (ShouldFillTargetFromNativeScreenTexture(screenQuad, width, height))
             {
@@ -1934,7 +1936,10 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             if (textureOrientation != 0)
             {
                 if (!CanDrawDirectTexture(textureOrientation, (int)screenQuad.texture.width, (int)screenQuad.texture.height, destWidth, destHeight))
+                {
+                    TraceDirectRgb32Miss(primitives, width, height, "orient-shape");
                     return false;
+                }
 
                 CopyRgb32ToBgraOriented(
                     screenQuad.texture.base_,
@@ -2021,14 +2026,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             uint relevantFlags = screenQuad.flags & (mame.render_global.PRIMFLAG_TEXFORMAT_MASK | mame.render_global.PRIMFLAG_BLENDMODE_MASK);
             if (relevantFlags != expectedFlags ||
                 mame.render_global.PRIMFLAG_GET_TEXWRAP(screenQuad.flags) ||
-                Math.Abs(screenQuad.texcoords.tl.u) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.tl.v) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.tr.u - 1.0f) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.tr.v) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.bl.u) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.bl.v - 1.0f) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.br.u - 1.0f) > 0.001f ||
-                Math.Abs(screenQuad.texcoords.br.v - 1.0f) > 0.001f)
+                !HasDirectFullTextureCoordinates(screenQuad, textureOrientation))
             {
                 TraceDirectPalette16Miss(primitives, width, height, "flags/bounds");
                 return false;
@@ -2109,6 +2107,21 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             => screenQuad.texture.width == width &&
                screenQuad.texture.height == height;
 
+        private static bool HasDirectFullTextureCoordinates(mame.render_primitive screenQuad, uint orientation)
+        {
+            if (orientation != 0)
+                return false;
+
+            return Math.Abs(screenQuad.texcoords.tl.u) <= 0.001f &&
+                   Math.Abs(screenQuad.texcoords.tl.v) <= 0.001f &&
+                   Math.Abs(screenQuad.texcoords.tr.u - 1.0f) <= 0.001f &&
+                   Math.Abs(screenQuad.texcoords.tr.v) <= 0.001f &&
+                   Math.Abs(screenQuad.texcoords.bl.u) <= 0.001f &&
+                   Math.Abs(screenQuad.texcoords.bl.v - 1.0f) <= 0.001f &&
+                   Math.Abs(screenQuad.texcoords.br.u - 1.0f) <= 0.001f &&
+                   Math.Abs(screenQuad.texcoords.br.v - 1.0f) <= 0.001f;
+        }
+
         private static bool CanDrawDirectTexture(uint orientation, int sourceWidth, int sourceHeight, int destinationWidth, int destinationHeight)
         {
             if (orientation == 0)
@@ -2121,6 +2134,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         }
 
         private void TraceDirectPalette16Miss(mame.render_primitive_list primitives, int width, int height, string reason)
+            => TraceDirectMiss(primitives, width, height, reason, "palette16");
+
+        private void TraceDirectRgb32Miss(mame.render_primitive_list primitives, int width, int height, string reason)
+            => TraceDirectMiss(primitives, width, height, reason, "rgb32");
+
+        private void TraceDirectMiss(mame.render_primitive_list primitives, int width, int height, string reason, string path)
         {
             if (!TraceMcsRender || _renderTraceLogged)
                 return;
@@ -2139,7 +2158,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 return;
 
             _renderTraceLogged = true;
-            Console.Error.WriteLine($"[MCS-RENDER] direct palette16 miss reason={reason} target={width}x{height}");
+            Console.Error.WriteLine($"[MCS-RENDER] direct {path} miss reason={reason} target={width}x{height}");
             int index = 0;
             for (mame.render_primitive? prim = primitives.first(); prim != null; prim = prim.next())
             {

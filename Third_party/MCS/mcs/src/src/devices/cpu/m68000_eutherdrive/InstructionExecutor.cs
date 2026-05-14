@@ -222,6 +222,9 @@ internal sealed partial class InstructionExecutor
             case 0x00101E6E:
                 return TryConsumePgmDemonFrontTileWordGatherLoop(cycleBudget, out cycles);
 
+            case 0x0003C48A:
+                return TryConsumeBatsugunRamPatternTestLoop(cycleBudget, out cycles);
+
             case 0x001028B4:
                 return TryConsumePgmDemonFrontWordFillDbfLoop(cycleBudget, out cycles);
 
@@ -271,6 +274,70 @@ internal sealed partial class InstructionExecutor
         }
 
         return false;
+    }
+
+    private bool TryConsumeBatsugunRamPatternTestLoop(int cycleBudget, out uint cycles)
+    {
+        cycles = 0;
+        const uint pc = 0x0003C48A;
+        if (_registers.Pc != pc
+            || _bus.ReadWord(pc) != 0x740F
+            || _bus.ReadWord(pc + 2) != 0x3283
+            || _bus.ReadWord(pc + 4) != 0xB651
+            || _bus.ReadWord(pc + 6) != 0x6600
+            || _bus.ReadWord(pc + 10) != 0xE35B
+            || _bus.ReadWord(pc + 12) != 0x51CA
+            || _bus.ReadWord(pc + 16) != 0x4251
+            || _bus.ReadWord(pc + 18) != 0x4A59
+            || _bus.ReadWord(pc + 20) != 0x6600
+            || _bus.ReadWord(pc + 24) != 0x51C9)
+        {
+            return false;
+        }
+
+        uint remainingWords = (ushort)_registers.Data[1] + 1u;
+        const uint cyclesPerWord = 790;
+        uint maxWords = Math.Max(1u, (uint)cycleBudget / cyclesPerWord);
+        uint words = Math.Min(remainingWords, maxWords);
+        if (words == 0)
+            return false;
+
+        uint a1 = _registers.Address[1];
+        ushort patternSeed = (ushort)_registers.Data[3];
+        for (uint word = 0; word < words; word++)
+        {
+            ushort pattern = patternSeed;
+            for (int i = 0; i < 16; i++)
+            {
+                _bus.WriteWord(a1, pattern);
+                if (_bus.ReadWord(a1) != pattern)
+                    return false;
+
+                pattern = (ushort)((pattern << 1) | (pattern >> 15));
+            }
+
+            _bus.WriteWord(a1, 0);
+            if (_bus.ReadWord(a1) != 0)
+                return false;
+
+            a1 = (a1 + 2u) & 0x00ff_ffff;
+        }
+
+        _registers.Address[1] = a1;
+        _registers.Data[2] = (_registers.Data[2] & 0xffff_0000u) | 0xffffu;
+        _registers.Data[1] = (_registers.Data[1] & 0xffff_0000u) | (ushort)((ushort)_registers.Data[1] - words);
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = true;
+        _registers.Ccr.Negative = false;
+
+        if (words == remainingWords)
+            _registers.Pc = 0x0003C4A6;
+        else
+            _registers.Pc = pc;
+        _registers.Prefetch = _bus.ReadWord(_registers.Pc);
+        cycles = Math.Max(cyclesPerWord, words * cyclesPerWord);
+        return true;
     }
 
     private bool TryConsumePgmDemonFrontZeroTableLookup(int cycleBudget, out uint cycles)
