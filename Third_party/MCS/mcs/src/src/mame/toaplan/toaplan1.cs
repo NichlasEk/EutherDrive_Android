@@ -207,15 +207,29 @@ namespace mame
                     m_spriteram_offs = CombineWord(m_spriteram_offs, data, mem_mask);
                     break;
                 case 0x4:
-                    m_spriteram[m_spriteram_offs & (SpriteRamWords - 1)] = CombineWord(m_spriteram[m_spriteram_offs & (SpriteRamWords - 1)], data, mem_mask);
+                {
+                    int index = m_spriteram_offs & (SpriteRamWords - 1);
+                    u16 value = CombineWord(m_spriteram[index], data, mem_mask);
+                    if (m_spriteram[index] != value)
+                    {
+                        m_spriteram[index] = value;
+                        m_video_dirty = true;
+                    }
                     m_spriteram_offs++;
-                    m_video_dirty = true;
                     break;
+                }
                 case 0x6:
-                    m_spritesizeram[m_spriteram_offs & (SpriteSizeRamWords - 1)] = CombineWord(m_spritesizeram[m_spriteram_offs & (SpriteSizeRamWords - 1)], data, mem_mask);
+                {
+                    int index = m_spriteram_offs & (SpriteSizeRamWords - 1);
+                    u16 value = CombineWord(m_spritesizeram[index], data, mem_mask);
+                    if (m_spritesizeram[index] != value)
+                    {
+                        m_spritesizeram[index] = value;
+                        m_video_dirty = true;
+                    }
                     m_spriteram_offs++;
-                    m_video_dirty = true;
                     break;
+                }
             }
         }
 
@@ -368,18 +382,26 @@ namespace mame
             if (byteOffset >= 0x4000 && byteOffset < 0x6000)
             {
                 int index = (byteOffset - 0x4000) >> 1;
-                m_paletteram[0, index] = CombineWord(m_paletteram[0, index], data, mem_mask);
-                UpdatePaletteColor(0, index);
-                m_video_dirty = true;
+                u16 value = CombineWord(m_paletteram[0, index], data, mem_mask);
+                if (m_paletteram[0, index] != value)
+                {
+                    m_paletteram[0, index] = value;
+                    UpdatePaletteColor(0, index);
+                    m_video_dirty = true;
+                }
                 return;
             }
 
             if (byteOffset >= 0x6000 && byteOffset < 0x8000)
             {
                 int index = (byteOffset - 0x6000) >> 1;
-                m_paletteram[1, index] = CombineWord(m_paletteram[1, index], data, mem_mask);
-                UpdatePaletteColor(1, index);
-                m_video_dirty = true;
+                u16 value = CombineWord(m_paletteram[1, index], data, mem_mask);
+                if (m_paletteram[1, index] != value)
+                {
+                    m_paletteram[1, index] = value;
+                    UpdatePaletteColor(1, index);
+                    m_video_dirty = true;
+                }
             }
         }
 
@@ -393,7 +415,11 @@ namespace mame
         void tile_offset_w(address_space space, offs_t offset, u16 data, u16 mem_mask)
         {
             int index = (int)(offset & (TileOffsetWords - 1));
-            m_tile_offsets[index] = CombineWord(m_tile_offsets[index], data, mem_mask);
+            u16 value = CombineWord(m_tile_offsets[index], data, mem_mask);
+            if (m_tile_offsets[index] == value)
+                return;
+
+            m_tile_offsets[index] = value;
 
             if (index == 0)
                 m_bcu_offsetx = m_tile_offsets[index];
@@ -607,8 +633,12 @@ namespace mame
             int index = m_bcu_ram_offs & (BcuLayerWords - 1);
             int shift = (reg == 0x04) ? 16 : 0;
             u32 mask = (u32)mem_mask << shift;
-            m_bcu_vram[layer, index] = (m_bcu_vram[layer, index] & ~mask) | ((u32)(data & mem_mask) << shift);
-            m_video_dirty = true;
+            u32 value = (m_bcu_vram[layer, index] & ~mask) | ((u32)(data & mem_mask) << shift);
+            if (m_bcu_vram[layer, index] != value)
+            {
+                m_bcu_vram[layer, index] = value;
+                m_video_dirty = true;
+            }
         }
 
 
@@ -623,9 +653,19 @@ namespace mame
         {
             int layer = scrollIndex >> 1;
             if ((scrollIndex & 1) == 0)
-                m_bcu_scrollx[layer] = CombineWord(m_bcu_scrollx[layer], data, mem_mask);
+            {
+                u16 value = CombineWord(m_bcu_scrollx[layer], data, mem_mask);
+                if (m_bcu_scrollx[layer] == value)
+                    return;
+                m_bcu_scrollx[layer] = value;
+            }
             else
-                m_bcu_scrolly[layer] = CombineWord(m_bcu_scrolly[layer], data, mem_mask);
+            {
+                u16 value = CombineWord(m_bcu_scrolly[layer], data, mem_mask);
+                if (m_bcu_scrolly[layer] == value)
+                    return;
+                m_bcu_scrolly[layer] = value;
+            }
             m_video_dirty = true;
         }
 
