@@ -467,10 +467,31 @@ namespace Ryu64Core
                             }
                         }
 
-                        if (IsRecoveredFramebufferCandidateAcceptable(refined, recentScore, refinedProducerBacked))
+                        int recentVisiblePixels = 0;
+                        bool recentVisiblePixelsKnown = false;
+                        bool strongRecentCandidate = false;
+                        bool recentCandidateAccepted = IsRecoveredFramebufferCandidateAcceptable(refined, recentScore, refinedProducerBacked);
+                        if (!recentCandidateAccepted
+                            && IsStrongRecentFramebufferCandidateAcceptable(
+                                refined,
+                                recentScore,
+                                recentBestScore,
+                                recentViScore,
+                                width,
+                                height,
+                                bytesPerPixel,
+                                out recentVisiblePixels))
+                        {
+                            recentVisiblePixelsKnown = true;
+                            strongRecentCandidate = true;
+                            recentCandidateAccepted = true;
+                        }
+
+                        if (recentCandidateAccepted)
                         {
                             origin = refined;
-                            if (refinedProducerBacked)
+                            bool recentProducerBacked = refinedProducerBacked || strongRecentCandidate;
+                            if (recentProducerBacked)
                                 _lastTrackedFramebufferOrigin = origin;
                             else
                                 _lastFallbackFramebufferOrigin = origin;
@@ -480,9 +501,11 @@ namespace Ryu64Core
                             recentFramebufferRecencyScore = recentBestScore;
                             recentFramebufferViRecencyScore = recentViScore;
                             recentFramebufferVisualScore = recentScore;
-                            producerBackedFramebufferSelected = refinedProducerBacked;
+                            producerBackedFramebufferSelected = recentProducerBacked;
+                            selectedVisiblePixels = recentVisiblePixels;
+                            selectedVisiblePixelsKnown = recentVisiblePixelsKnown;
                             _lastFramebufferStatus =
-                                $"Recent RDRAM framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, recentScore={recentBestScore}, viScore={recentViScore}, visualScore={recentScore})";
+                                $"Recent RDRAM framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, recentScore={recentBestScore}, viScore={recentViScore}, visualScore={recentScore}, visible={recentVisiblePixels})";
                         }
                         else if (!producerBackedFramebufferSelected)
                         {
@@ -1315,6 +1338,32 @@ namespace Ryu64Core
                 return false;
 
             return visualScore >= MinimumUntrackedFramebufferScore;
+        }
+
+        private bool IsStrongRecentFramebufferCandidateAcceptable(
+            uint origin,
+            int visualScore,
+            ulong recentScore,
+            ulong viScore,
+            int width,
+            int height,
+            int bytesPerPixel,
+            out int visiblePixels)
+        {
+            visiblePixels = 0;
+            if (origin < HeuristicFramebufferOriginFloor
+                || origin >= RdramSizeBytes
+                || recentScore <= viScore + 65536UL)
+            {
+                return false;
+            }
+
+            visiblePixels = CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel);
+            int minimumVisiblePixels = Math.Max(MinimumLiveFramebufferVisiblePixels, (width * height) / 64);
+            if (visiblePixels < minimumVisiblePixels)
+                return false;
+
+            return visualScore != int.MinValue || visiblePixels >= minimumVisiblePixels * 4;
         }
 
         private uint RefineFramebufferOriginNearHint(uint hint, int width, int height, int bytesPerPixel, uint radius, uint step, out int bestScore)

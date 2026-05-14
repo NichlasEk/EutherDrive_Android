@@ -1641,6 +1641,179 @@ namespace Ryu64.MIPS
             return true;
         }
 
+        private static bool TryFastForwardByteZeroUntilPointerLoop(uint pc)
+        {
+            if (!FastIdleLoop)
+                return false;
+
+            uint segment = pc & 0xE0000000u;
+            if (segment != 0x80000000u && segment != 0xA0000000u)
+                return false;
+
+            for (uint offset = 0; offset <= 0x10u; offset += 4u)
+            {
+                if (pc < offset)
+                    continue;
+
+                uint basePc = pc - offset;
+                uint physical = basePc & 0x1FFFFFFFu;
+                if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint op0)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x04u, out uint op1)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x08u, out uint op2)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x0Cu, out uint op3)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x10u, out uint op4))
+                {
+                    continue;
+                }
+
+                if (op0 != 0x8C8B0004u
+                    || op1 != 0x24A50001u
+                    || op2 != 0x00AB082Bu
+                    || op3 != 0x5420FFFCu
+                    || op4 != 0xA0A00000u)
+                {
+                    continue;
+                }
+
+                uint a0 = Reg32(4);
+                uint a1 = Reg32(5);
+                if ((a0 & 0xE0000000u) != 0x80000000u && (a0 & 0xE0000000u) != 0xA0000000u)
+                    return false;
+
+                uint end;
+                try
+                {
+                    end = memory.ReadUInt32(a0 + 4u);
+                }
+                catch
+                {
+                    return false;
+                }
+
+                uint firstStore = offset <= 0x04u ? unchecked(a1 + 1u) : a1;
+                if (end <= firstStore)
+                {
+                    Registers.R4300.Reg[1] = 0;
+                    Registers.R4300.Reg[5] = SignExtend32(end);
+                    Registers.R4300.Reg[11] = SignExtend32(end);
+                    Registers.R4300.PC = basePc + 0x14u;
+                    AddSyntheticCycles(1);
+                    Common.Measure.InstructionCount += 1UL;
+                    return true;
+                }
+
+                uint startPhysical = firstStore & 0x1FFFFFFFu;
+                uint endPhysical = end & 0x1FFFFFFFu;
+                if (((firstStore ^ end) & 0xE0000000u) != 0
+                    || ((firstStore & 0xE0000000u) != 0x80000000u && (firstStore & 0xE0000000u) != 0xA0000000u)
+                    || endPhysical <= startPhysical
+                    || endPhysical > memory.RDRAM.Length)
+                {
+                    return false;
+                }
+
+                uint bytes = endPhysical - startPhysical;
+                if (bytes > 0x400000u)
+                    return false;
+
+                Array.Clear(memory.RDRAM, (int)startPhysical, (int)bytes);
+                Registers.R4300.Reg[1] = 0;
+                Registers.R4300.Reg[5] = SignExtend32(end);
+                Registers.R4300.Reg[11] = SignExtend32(end);
+                Registers.R4300.PC = basePc + 0x14u;
+                AddSyntheticCycles(Math.Max(1u, bytes * 3u));
+                Common.Measure.InstructionCount += bytes * 3UL;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryFastForwardPairStoreUntilPointerLoop(uint pc)
+        {
+            if (!FastIdleLoop)
+                return false;
+
+            uint segment = pc & 0xE0000000u;
+            if (segment != 0x80000000u && segment != 0xA0000000u)
+                return false;
+
+            for (uint offset = 0; offset <= 0x18u; offset += 4u)
+            {
+                if (pc < offset)
+                    continue;
+
+                uint basePc = pc - offset;
+                uint physical = basePc & 0x1FFFFFFFu;
+                if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint op0)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x04u, out uint op1)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x08u, out uint op2)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x0Cu, out uint op3)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x10u, out uint op4)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x14u, out uint op5)
+                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x18u, out uint op6))
+                {
+                    continue;
+                }
+
+                if (op0 != 0x24420008u
+                    || op1 != 0x0043082Bu
+                    || op2 != 0x24080000u
+                    || op3 != 0x24090000u
+                    || op4 != 0xAC49FFFCu
+                    || op5 != 0x1420FFFAu
+                    || op6 != 0xAC48FFF8u)
+                {
+                    continue;
+                }
+
+                uint v0 = Reg32(2);
+                uint end = Reg32(3);
+                uint firstWrite = offset == 0 ? v0 : unchecked(v0 - 8u);
+
+                if (end <= firstWrite)
+                {
+                    Registers.R4300.Reg[1] = 0;
+                    Registers.R4300.Reg[2] = SignExtend32(end);
+                    Registers.R4300.Reg[8] = 0;
+                    Registers.R4300.Reg[9] = 0;
+                    Registers.R4300.PC = basePc + 0x1Cu;
+                    AddSyntheticCycles(1);
+                    Common.Measure.InstructionCount += 1UL;
+                    return true;
+                }
+
+                if (((firstWrite ^ end) & 0xE0000000u) != 0
+                    || ((firstWrite & 0xE0000000u) != 0x80000000u && (firstWrite & 0xE0000000u) != 0xA0000000u)
+                    || ((firstWrite | end) & 0x3u) != 0)
+                {
+                    return false;
+                }
+
+                uint startPhysical = firstWrite & 0x1FFFFFFFu;
+                uint endPhysical = end & 0x1FFFFFFFu;
+                if (endPhysical <= startPhysical || endPhysical > memory.RDRAM.Length)
+                    return false;
+
+                uint bytes = endPhysical - startPhysical;
+                if (bytes > 0x400000u)
+                    return false;
+
+                Array.Clear(memory.RDRAM, (int)startPhysical, (int)bytes);
+
+                Registers.R4300.Reg[1] = 0;
+                Registers.R4300.Reg[2] = SignExtend32(end);
+                Registers.R4300.Reg[8] = 0;
+                Registers.R4300.Reg[9] = 0;
+                Registers.R4300.PC = basePc + 0x1Cu;
+                AddSyntheticCycles(Math.Max(1u, (bytes >> 3) * 6u));
+                Common.Measure.InstructionCount += (bytes >> 3) * 6UL;
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool TryFastForwardIdleLoop(uint pc)
         {
             if (!FastIdleLoop)
@@ -2191,6 +2364,10 @@ namespace Ryu64.MIPS
                         if (TryFastForwardIpl3SpStoreFillLoop(pc))
                             continue;
                         if (TryFastForwardInitialZeroLoop(pc))
+                            continue;
+                        if (TryFastForwardByteZeroUntilPointerLoop(pc))
+                            continue;
+                        if (TryFastForwardPairStoreUntilPointerLoop(pc))
                             continue;
                         if (TryFastForwardCompareLoadPollingLoop(pc))
                             continue;
