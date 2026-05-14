@@ -520,6 +520,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeBitfieldUpdate(pc))
             return;
+        if (TryFastPathKnownGauntletGlideRuntimeStateInitTail(pc))
+            return;
         if (TryFastPathKnownRuntimeCommandCompleteWait(pc))
             return;
         NormalizeKnownGlideFifoState(pc);
@@ -3305,6 +3307,73 @@ internal sealed class MipsR5000Core
         _gpr[4] = destination;
         _gpr[5] = source;
         Pc = 0xffffffff800d12e8UL;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGauntletGlideRuntimeStateInitTail(ulong pc)
+    {
+        const ulong entry = 0xffffffff80108fe0UL;
+        const ulong tail = 0xffffffff80109074UL;
+        if (pc != tail)
+            return false;
+
+        if (_memory.Read32(entry) != 0x27bdffe0U ||
+            _memory.Read32(entry + 0x04UL) != 0xafbf001cU ||
+            _memory.Read32(entry + 0x08UL) != 0xafbe0018U ||
+            _memory.Read32(entry + 0x0cUL) != 0x03a0f02dU ||
+            _memory.Read32(entry + 0x10UL) != 0xafc40020U ||
+            _memory.Read32(entry + 0x94UL) != 0x8fc20010U ||
+            _memory.Read32(entry + 0x98UL) != 0x8c430008U ||
+            _memory.Read32(entry + 0x9cUL) != 0x3c018026U ||
+            _memory.Read32(entry + 0xa0UL) != 0xac232c90U ||
+            _memory.Read32(entry + 0xa4UL) != 0x3c028026U ||
+            _memory.Read32(entry + 0xa8UL) != 0x8c422c90U ||
+            _memory.Read32(entry + 0xacUL) != 0x3c030060U ||
+            _memory.Read32(entry + 0xb0UL) != 0x00431021U ||
+            _memory.Read32(entry + 0xb4UL) != 0x3c018026U ||
+            _memory.Read32(entry + 0xb8UL) != 0xac222c90U ||
+            _memory.Read32(entry + 0xbcUL) != 0x3c028026U ||
+            _memory.Read32(entry + 0xc0UL) != 0x8c422c90U ||
+            _memory.Read32(entry + 0xc4UL) != 0x3c030002U ||
+            _memory.Read32(entry + 0xc8UL) != 0x00431021U ||
+            _memory.Read32(entry + 0xccUL) != 0x3c018026U ||
+            _memory.Read32(entry + 0xd0UL) != 0xac222c90U ||
+            _memory.Read32(entry + 0xd4UL) != 0x0c040ff3U ||
+            _memory.Read32(entry + 0xd8UL) != 0x00000000U ||
+            _memory.Read32(entry + 0xdcUL) != 0x03c0e82dU ||
+            _memory.Read32(entry + 0xe0UL) != 0x8fbf001cU ||
+            _memory.Read32(entry + 0xe4UL) != 0x8fbe0018U ||
+            _memory.Read32(entry + 0xe8UL) != 0x27bd0020U ||
+            _memory.Read32(entry + 0xecUL) != 0x03e00008U)
+        {
+            return false;
+        }
+
+        ulong framePointer = _gpr[30];
+        if (!IsMainRamRange(framePointer + 0x1cUL, 4))
+            return false;
+
+        ulong state = SignExtend32(_memory.Read32(framePointer + 0x10UL));
+        if (state != 0xffffffff80262d64UL || !IsMainRamRange(state + 0x384UL, 4))
+            return false;
+
+        uint stateWord = _memory.Read32(state + 0x08UL) + 0x00620000u;
+        _memory.Write32(0xffffffff80262c90UL, stateWord);
+        NormalizeGlideFifoState(state);
+
+        ulong returnAddress = SignExtend32(_memory.Read32(framePointer + 0x1cUL));
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000e0000UL or > 0x00110000UL)
+            return false;
+
+        _gpr[2] = _memory.Read32(state + 0x37cUL);
+        _gpr[3] = state + 8UL;
+        _gpr[4] = state;
+        _gpr[31] = returnAddress;
+        _gpr[30] = SignExtend32(_memory.Read32(framePointer + 0x18UL));
+        _gpr[29] = framePointer + 0x20UL;
+        Pc = returnAddress;
         CompleteFastPathStep();
         return true;
     }

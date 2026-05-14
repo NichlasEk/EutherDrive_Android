@@ -3126,3 +3126,83 @@ Next target:
 3. If retrying that helper, derive the exact branch/body semantics from the
    trace rather than the byte dump; the byte-offset alignment was easy to get
    wrong.
+
+## 2026-05-14 Follow-up: Faster Warmup Iteration and State-init Tail
+
+This pass switched Gauntlet probing to the warmup-snapshot loop for faster
+bringup/debug iteration, then added a small fastpath for the loaded Glide
+runtime state-init tail.
+
+Fast iteration command:
+
+```text
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-f300-s2000000-bc88fcdd60ae.warm \
+    EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=1000000,2000000,5000000,10000000 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 300 2000000
+```
+
+Warmup snapshot in use:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-f300-s2000000-bc88fcdd60ae.warm
+```
+
+New code:
+
+- Added `TryFastPathKnownGauntletGlideRuntimeStateInitTail`.
+  - It catches the loaded runtime routine at `0xffffffff80109074`, after the
+    stack/local state pointer has already been written.
+  - It writes the computed `0xffffffff80262c90` value, normalizes the loaded
+    Glide FIFO state at `0xffffffff80262d64`, restores the stack frame, and
+    returns to the caller.
+  - The guard is intentionally anchored to the exact tail bytes from
+    `0xffffffff80109074` onward; earlier attempts used offsets that were too
+    broad and did not fire.
+
+Clean verification in `/tmp/eutherdrive-gauntlet-verify`:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+Before this fastpath, the warmup run stopped at the state-init tail:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff80109074 regs=3102268 fifoWords=6182322 fifoPackets=3088947
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:3087552,2:0,3:0,4:1395,5:0,6:0,7:0
+```
+
+After the fastpath:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff8010378c regs=3102547 fifoWords=6182880 fifoPackets=3089226
+checkpoint extra=2000000 pc=0xffffffff800eb764 regs=3109501 fifoWords=6196788 fifoPackets=3096180
+checkpoint extra=5000000 pc=0xffffffff800e2c0c regs=3130373 fifoWords=6238532 fifoPackets=3117052
+checkpoint extra=10000000 pc=0xffffffff800e0cf4 regs=3165156 fifoWords=6308098 fifoPackets=3151835
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:3150440,2:0,3:0,4:1395,5:0,6:0,7:0
+```
+
+Interpretation:
+
+- The new fastpath is valid and moves the 1M-extra endpoint past the repeated
+  `0xffffffff80109074` state-init tail.
+- We are still only seeing Voodoo type-1 state traffic plus type-4 clear/fill.
+  No setup/triangle packets yet, so this is still not real game graphics.
+- The fastest next workflow is to keep the warmup snapshot and run focused
+  `EUTHERDRIVE_GAUNTDL_EXTRA_SERIES` probes instead of repeating cold frame
+  bringup.
+
+Next target:
+
+1. Investigate the repeated loaded-runtime path around `0xffffffff8010378c`,
+   `0xffffffff800eb764`, and `0xffffffff800e2c0c`.
+2. Keep looking for the first transition from type-1 state packets to Voodoo
+   setup/triangle packets; that is the next meaningful "real graphics" gate.
