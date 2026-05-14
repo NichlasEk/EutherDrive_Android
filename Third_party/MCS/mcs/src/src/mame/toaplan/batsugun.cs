@@ -653,9 +653,9 @@ namespace mame
         void UpdatePalette(int index)
         {
             u16 raw = m_paletteram[index & (PaletteWords - 1)];
-            int b = (raw & 0x001f) << 3;
+            int r = (raw & 0x001f) << 3;
             int g = ((raw >> 5) & 0x001f) << 3;
-            int r = ((raw >> 10) & 0x001f) << 3;
+            int b = ((raw >> 10) & 0x001f) << 3;
             r |= r >> 5;
             g |= g >> 5;
             b |= b >> 5;
@@ -749,7 +749,7 @@ namespace mame
 
             if (op == "R")
             {
-                if (m_shared_read_trace_count >= 256)
+                if (m_shared_read_trace_count >= 256 || index >= 0x0100)
                     return;
                 m_shared_read_trace_count++;
             }

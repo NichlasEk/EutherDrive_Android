@@ -683,18 +683,50 @@ class Program
                 Console.WriteLine("[HEADLESS] Using Toaplan Batsugun core");
                 using var batsugun = new BatsugunAdapter();
                 batsugun.LoadRom(romPath);
+                var batsugunInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_HEADLESS_INPUT_SCRIPT"));
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                ReadOnlySpan<byte> fbIn = batsugun.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
 
                 long runTicksTotal = 0;
                 long runTicksMin = long.MaxValue;
                 long runTicksMax = 0;
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
+                    var input = ResolveSnesInputForFrame(frame, batsugunInputScript);
+                    batsugun.SetInputState(
+                        up: input.Up,
+                        down: input.Down,
+                        left: input.Left,
+                        right: input.Right,
+                        a: input.A,
+                        b: input.B,
+                        c: input.X,
+                        start: input.Start,
+                        x: input.Y,
+                        y: input.L,
+                        z: input.R,
+                        mode: input.Select,
+                        padType: PadType.SixButton);
                     long runStart = Stopwatch.GetTimestamp();
                     batsugun.RunFrame();
                     long runTicks = Stopwatch.GetTimestamp() - runStart;
                     runTicksTotal += runTicks;
                     runTicksMin = Math.Min(runTicksMin, runTicks);
                     runTicksMax = Math.Max(runTicksMax, runTicks);
+
+                    if (frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        ReadOnlySpan<byte> fb = batsugun.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                        unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                        lastFingerprint = fingerprint;
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: batsugun_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={batsugun.FrameCounter ?? -1}");
+                        if (traceFrames || frame == 0 || frame == 5 || frame == 10)
+                            DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_batsugun_frame{frame}.ppm"));
+                    }
                 }
 
                 ReadOnlySpan<byte> fbOut = batsugun.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
