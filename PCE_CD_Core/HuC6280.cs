@@ -426,6 +426,14 @@ namespace ePceCD
 
         [NonSerialized]
         public BUS BUS;
+        [NonSerialized]
+        public Func<byte, MemoryBank>? ExternalBankResolver;
+        [NonSerialized]
+        public Func<bool>? ExternalIrq1Waiting;
+        [NonSerialized]
+        public Func<bool>? ExternalIrq2Waiting;
+        [NonSerialized]
+        public Func<bool>? ExternalTimerWaiting;
 
         public HuC6280(BUS bus)
         {
@@ -557,22 +565,30 @@ namespace ePceCD
 
         public bool IRQ2Waiting()
         {
+            if (ExternalIrq2Waiting != null)
+                return ExternalIrq2Waiting();
             return BUS.IRQ2Waiting();
         }
 
         public bool IRQ1Waiting()
         {
+            if (ExternalIrq1Waiting != null)
+                return ExternalIrq1Waiting();
             return BUS.IRQ1Waiting();
         }
 
         public bool TimerWaiting()
         {
+            if (ExternalTimerWaiting != null)
+                return ExternalTimerWaiting();
             return BUS.TimerWaiting();
         }
 
         // BUS based Reads / Writes
         public MemoryBank GetBank(byte bank)
         {
+            if (ExternalBankResolver != null)
+                return ExternalBankResolver(bank);
             return BUS.GetBank(bank);
         }
 

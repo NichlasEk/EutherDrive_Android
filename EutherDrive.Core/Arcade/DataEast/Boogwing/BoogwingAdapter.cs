@@ -5,6 +5,7 @@ using System.IO;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.Savestates;
 using EutherDrive.Platforms.DataEast.Deco32;
+using ePceCD;
 using SharpCompress.Archives;
 
 namespace EutherDrive.Core.Arcade.DataEast.Boogwing;
@@ -14,7 +15,7 @@ namespace EutherDrive.Core.Arcade.DataEast.Boogwing;
 public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
 {
     private const string SavestateMagic = "BOOGWINGST";
-    private const int SavestateVersion = 3;
+    private const int SavestateVersion = 4;
     private const int FrameWidth = 320;
     private const int FrameHeight = 240;
     private const int FrameStride = FrameWidth * 4;
@@ -35,6 +36,10 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
         .Name("dataeast-boogwing-main")
         .Build();
     private readonly BoogwingBus _bus = new();
+    private YM2151? _ym2151;
+    private OKI6295? _oki1;
+    private OKI6295? _oki2;
+    private BoogwingSoundCpu? _soundCpu;
     private ArcadeInputState _input;
     private ArcadeInputState _input2;
     private int _masterVolumePercent = 100;
@@ -62,7 +67,7 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
             M68000.M68000State state = _mainCpu.GetState();
             return string.Create(
                 CultureInfo.InvariantCulture,
-                $"pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4} sr=0x{_mainCpu.StatusRegister:X4} d0=0x{state.Data[0]:X8} a1=0x{state.Address[1]:X8} irq={_bus.InterruptLevel()} frame={_frameCounter} {_bus.DebugSummary}{(string.IsNullOrWhiteSpace(_lastFault) ? string.Empty : " fault=" + _lastFault)}");
+                $"pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4} sr=0x{_mainCpu.StatusRegister:X4} d0=0x{state.Data[0]:X8} a1=0x{state.Address[1]:X8} irq={_bus.InterruptLevel()} frame={_frameCounter} {_bus.DebugSummary} {_soundCpu?.DebugSummary ?? "sndcpu=none"}{(string.IsNullOrWhiteSpace(_lastFault) ? string.Empty : " fault=" + _lastFault)}");
         }
     }
 
@@ -78,7 +83,13 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
             romHash = RomIdentity.ComputeSha256(stream);
 
         BoogwingRomSet roms = BoogwingRomSet.Load(path);
+        _oki1 = new OKI6295(roms.Oki1, 32_220_000 / 32, 0.56f);
+        _oki2 = new OKI6295(roms.Oki2, 32_220_000 / 16, 0.12f);
+        _ym2151 = new YM2151(SoundBankswitch);
+        _soundCpu = new BoogwingSoundCpu(roms.AudioCpu, _ym2151, _oki1, _oki2);
         _bus.Load(roms);
+        _bus.AttachSound(_soundCpu);
+        _soundCpu.ResetSound();
         _mainCpu.Reset(_bus);
         _loaded = true;
         _frameCounter = 0;
@@ -94,11 +105,18 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
         RenderFrame();
     }
 
+    private void SoundBankswitch(byte data)
+    {
+        _oki1?.SetRomBank(data & 1);
+        _oki2?.SetRomBank((data >> 1) & 1);
+    }
+
     public void Reset()
     {
         if (!_loaded)
             return;
         _bus.ResetBoard();
+        _soundCpu?.ResetSound();
         _mainCpu.Reset(_bus);
         _frameCounter = 0;
         _lastFault = null;
@@ -121,7 +139,10 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
         ExecuteMainCpu(Math.Max(1, CpuCyclesPerFrame * 34 / 274 - 768));
         _bus.EndFrame();
         RenderFrame();
-        Array.Clear(_audioBuffer);
+        if (_soundCpu is not null)
+            _soundCpu.RunFrame(_audioBuffer);
+        else
+            Array.Clear(_audioBuffer);
         _frameCounter++;
     }
 
@@ -204,6 +225,7 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
         WriteByteArray(writer, _renderFrameBuffer);
         StateBinarySerializer.WriteInto(writer, _mainCpu);
         _bus.SaveState(writer);
+        _soundCpu?.SaveState(writer);
     }
 
     public void LoadState(BinaryReader reader)
@@ -223,6 +245,10 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
         ReadByteArray(reader, _renderFrameBuffer);
         StateBinarySerializer.ReadInto(reader, _mainCpu);
         _bus.LoadState(reader);
+        if (version >= 4 && _soundCpu is not null)
+            _soundCpu.LoadState(reader);
+        else
+            _soundCpu?.ResetSound();
     }
 
     private void ExecuteMainCpu(int cycleBudget)
@@ -410,6 +436,7 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
     private int _unknownWrites;
     private byte _soundLatch;
     private int _soundWrites;
+    [NonSerialized] private BoogwingSoundCpu? _soundCpu;
     [NonSerialized] private ushort[] _tempBitmap = Array.Empty<ushort>();
     [NonSerialized] private ushort[] _alphaTilemap = Array.Empty<ushort>();
     [NonSerialized] private byte[] _priorityMap = Array.Empty<byte>();
@@ -429,6 +456,9 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         _roms = roms;
         ResetBoard();
     }
+
+    public void AttachSound(BoogwingSoundCpu soundCpu)
+        => _soundCpu = soundCpu;
 
     public void ResetBoard()
     {
@@ -657,6 +687,7 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
             {
                 _soundLatch = sound.Value;
                 _soundWrites++;
+                _soundCpu?.WriteSoundLatch(sound.Value);
             }
             return;
         }
@@ -690,41 +721,41 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         Array.Clear(_spriteRaw0);
         Array.Clear(_spriteRaw1);
 
-        RenderSpritesRaw(_spriteRaw1, width, height, _spriteBuffered[1], _roms.Sprites2, frame);
-        RenderSpritesRaw(_spriteRaw0, width, height, _spriteBuffered[0], _roms.Sprites1, frame);
+        RenderSpritesRaw(_spriteRaw1, width, height, _spriteBuffered[1], _roms.Sprites2DecodedTile16, frame);
+        RenderSpritesRaw(_spriteRaw0, width, height, _spriteBuffered[0], _roms.Sprites1DecodedTile16, frame);
 
         int priority = _priority & 0x07;
         if (priority == 0x05)
         {
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2, 0x100, tileSize: 16, fiveBpp: true, opaque: true, priorityValue: 0);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2DecodedChar8, _roms.Tiles2DecodedTile16, 0x100, tileSize: 16, fiveBpp: true, opaque: true, priorityValue: 0);
             RenderCombinedLayerIndexed(_tempBitmap, _priorityMap, width, height, opaque: false, priorityValue: 32);
         }
         else if (priority == 0x04)
         {
             RenderCombinedLayerIndexed(_tempBitmap, _priorityMap, width, height, opaque: true, priorityValue: 0);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 32);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2DecodedChar8, _roms.Tiles2DecodedTile16, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 32);
         }
         else if (priority == 0x01 || priority == 0x02)
         {
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3, 0x400, tileSize: 16, fiveBpp: false, opaque: true, priorityValue: 0);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 8);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 2, _roms.Tiles3, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 32);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3DecodedChar8, _roms.Tiles3DecodedTile16, 0x400, tileSize: 16, fiveBpp: false, opaque: true, priorityValue: 0);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2DecodedChar8, _roms.Tiles2DecodedTile16, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 8);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 2, _roms.Tiles3DecodedChar8, _roms.Tiles3DecodedTile16, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 32);
         }
         else if (priority == 0x03)
         {
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3, 0x400, tileSize: 16, fiveBpp: false, opaque: true, priorityValue: 0);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 8);
-            RenderLayerIndexed(_alphaTilemap, null, width, height, 2, _roms.Tiles3, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 0);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3DecodedChar8, _roms.Tiles3DecodedTile16, 0x400, tileSize: 16, fiveBpp: false, opaque: true, priorityValue: 0);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2DecodedChar8, _roms.Tiles2DecodedTile16, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 8);
+            RenderLayerIndexed(_alphaTilemap, null, width, height, 2, _roms.Tiles3DecodedChar8, _roms.Tiles3DecodedTile16, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 0);
         }
         else
         {
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3, 0x400, tileSize: 16, fiveBpp: false, opaque: true, priorityValue: 0);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 2, _roms.Tiles3, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 8);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 32);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3DecodedChar8, _roms.Tiles3DecodedTile16, 0x400, tileSize: 16, fiveBpp: false, opaque: true, priorityValue: 0);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 2, _roms.Tiles3DecodedChar8, _roms.Tiles3DecodedTile16, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 8);
+            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2DecodedChar8, _roms.Tiles2DecodedTile16, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 32);
         }
 
         MixSpritesAndPlayfields(fb, width, height, stride);
-        RenderLayerFrame(fb, width, height, stride, 0, _roms.Tiles1, 0x800, tileSize: 8, fiveBpp: false);
+        RenderLayerFrame(fb, width, height, stride, 0, _roms.Tiles1DecodedChar8, 0x800, tileSize: 8, fiveBpp: false);
     }
 
     private void EnsureRenderBuffers(int pixels)
@@ -738,24 +769,31 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         _spriteRaw1 = new ushort[pixels];
     }
 
-    private void RenderLayerFrame(byte[] fb, int width, int height, int stride, int layer, byte[] gfx, int colorBase, int tileSize, bool fiveBpp)
+    private void RenderLayerFrame(byte[] fb, int width, int height, int stride, int layer, byte[] charGfx, int colorBase, int tileSize, bool fiveBpp)
     {
-        RenderLayerPixels(width, height, layer, gfx, colorBase, tileSize, fiveBpp, opaque: false, (x, y, palettePixel, _) =>
-            WritePixel(fb, stride, x, y, palettePixel));
+        RenderLayerPixels(width, height, layer, charGfx, tileGfx: null, colorBase, tileSize, fiveBpp, opaque: false, fb, stride, target: null, priorityMap: null, priorityValue: 0);
     }
 
-    private void RenderLayerIndexed(ushort[] target, byte[]? priorityMap, int width, int height, int layer, byte[] gfx, int colorBase, int tileSize, bool fiveBpp, bool opaque, byte priorityValue)
+    private void RenderLayerIndexed(ushort[] target, byte[]? priorityMap, int width, int height, int layer, byte[] charGfx, byte[] tileGfx, int colorBase, int tileSize, bool fiveBpp, bool opaque, byte priorityValue)
     {
-        RenderLayerPixels(width, height, layer, gfx, colorBase, tileSize, fiveBpp, opaque, (x, y, palettePixel, pen) =>
-        {
-            int offset = y * width + x;
-            target[offset] = (ushort)palettePixel;
-            if (priorityMap is not null)
-                priorityMap[offset] = (byte)(priorityMap[offset] | priorityValue);
-        });
+        RenderLayerPixels(width, height, layer, charGfx, tileGfx, colorBase, tileSize, fiveBpp, opaque, fb: null, stride: 0, target, priorityMap, priorityValue);
     }
 
-    private void RenderLayerPixels(int width, int height, int layer, byte[] gfx, int colorBase, int tileSize, bool fiveBpp, bool opaque, Action<int, int, int, int> plot)
+    private void RenderLayerPixels(
+        int width,
+        int height,
+        int layer,
+        byte[] charGfx,
+        byte[]? tileGfx,
+        int colorBase,
+        int tileSize,
+        bool fiveBpp,
+        bool opaque,
+        byte[]? fb,
+        int stride,
+        ushort[]? target,
+        byte[]? priorityMap,
+        byte priorityValue)
     {
         ushort[] ctrl = _control[layer >> 1];
         int half = layer & 1;
@@ -786,6 +824,11 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         bool rowScroll = (control1 & 0x40) != 0;
         bool columnScroll = (control1 & 0x20) != 0;
         ushort[] rowscroll = _rowscroll[layer];
+        byte[] activeGfx = actualTileSize == 8 ? charGfx : tileGfx ?? charGfx;
+        int tilePixels = actualTileSize == 8 ? 64 : 256;
+        int decodedTiles = activeGfx.Length / tilePixels;
+        if (decodedTiles == 0)
+            return;
 
         for (int y = 0; y < height; y++)
         {
@@ -823,13 +866,30 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
                 int srcX = tileFlipX ? actualTileSize - 1 - px : px;
                 int srcY = tileFlipY ? actualTileSize - 1 - py : py;
                 int code = (tile & 0x0fff) + bank;
-                int pen = actualTileSize == 8
-                    ? Decode4BppChar(gfx, code, srcX, srcY)
-                    : fiveBpp ? Decode5BppTile(gfx, code, srcX, srcY) : Decode4BppTile(gfx, code, srcX, srcY);
+                int tileIndex = code % decodedTiles;
+                if (tileIndex < 0)
+                    tileIndex += decodedTiles;
+                int pen = activeGfx[tileIndex * tilePixels + srcY * actualTileSize + srcX];
                 if (pen == 0 && !opaque)
                     continue;
                 int colorStep = fiveBpp ? 32 : 16;
-                plot(x, y, colorBase + color * colorStep + pen, pen);
+                int palettePixel = colorBase + color * colorStep + pen;
+                if (fb is not null)
+                {
+                    uint rgb = _colors[palettePixel & 0xfff];
+                    int fbOffset = y * stride + x * 4;
+                    fb[fbOffset] = (byte)rgb;
+                    fb[fbOffset + 1] = (byte)(rgb >> 8);
+                    fb[fbOffset + 2] = (byte)(rgb >> 16);
+                    fb[fbOffset + 3] = 0xff;
+                }
+                else if (target is not null)
+                {
+                    int offset = y * width + x;
+                    target[offset] = (ushort)palettePixel;
+                    if (priorityMap is not null)
+                        priorityMap[offset] = (byte)(priorityMap[offset] | priorityValue);
+                }
             }
         }
     }
@@ -876,8 +936,8 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
                 int py = sy & (tileSize - 1);
                 int entry = Deco16ScanRows(tx, ty) & 0xfff;
 
-                int palettePixel1 = ReadLayerPalettePixel(_pf[2], _roms.Tiles3, entry, bank1, 0x300, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen1);
-                int palettePixel2 = ReadLayerPalettePixel(_pf[3], _roms.Tiles3, entry, bank2, 0x400, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen2);
+                int palettePixel1 = ReadLayerPalettePixel(_pf[2], _roms.Tiles3DecodedTile16, entry, bank1, 0x300, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen1);
+                int palettePixel2 = ReadLayerPalettePixel(_pf[3], _roms.Tiles3DecodedTile16, entry, bank2, 0x400, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen2);
                 if ((pen1 | pen2) == 0 && !opaque)
                     continue;
 
@@ -890,6 +950,13 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
 
     private static int ReadLayerPalettePixel(ushort[] ram, byte[] gfx, int entry, int tileBank, int colorBase, int px, int py, int tileSize, bool enableTileFlipX, bool enableTileFlipY, out int pen)
     {
+        int tiles = gfx.Length >> 8;
+        if (tiles == 0)
+        {
+            pen = 0;
+            return colorBase;
+        }
+
         ushort tile = ram[entry & (ram.Length - 1)];
         int color = (tile >> 12) & 0x0f;
         bool tileFlipX = false;
@@ -910,7 +977,10 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
 
         int srcX = tileFlipX ? tileSize - 1 - px : px;
         int srcY = tileFlipY ? tileSize - 1 - py : py;
-        pen = Decode4BppTile(gfx, (tile & 0x0fff) + tileBank, srcX, srcY);
+        int tileIndex = ((tile & 0x0fff) + tileBank) % tiles;
+        if (tileIndex < 0)
+            tileIndex += tiles;
+        pen = gfx[(tileIndex << 8) + srcY * tileSize + srcX];
         return colorBase + color * 16 + pen;
     }
 
@@ -957,6 +1027,14 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
 
     private static void DrawSpriteTileRaw(ushort[] raw, int width, int height, byte[] gfx, int code, int color, int sx, int sy, bool fx, bool fy)
     {
+        int tiles = gfx.Length >> 8;
+        if (tiles == 0)
+            return;
+        int tileIndex = code % tiles;
+        if (tileIndex < 0)
+            tileIndex += tiles;
+        int tileBase = tileIndex << 8;
+
         for (int y = 0; y < 16; y++)
         {
             int dy = sy + y;
@@ -969,7 +1047,7 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
                 if ((uint)dx >= (uint)width)
                     continue;
                 int px = fx ? 15 - x : x;
-                int pen = Decode4BppTile(gfx, code, px, py);
+                int pen = gfx[tileBase + py * 16 + px];
                 if (pen == 0)
                     continue;
                 raw[dy * width + dx] = (ushort)((color << 4) | pen);
@@ -1369,6 +1447,348 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
     }
 }
 
+internal sealed class BoogwingSoundCpu
+{
+    private const int AudioCpuClock = 32_220_000 / 4;
+    private const int OutputChannels = 2;
+    private const int IdleTimerSlicesPerFrame = 8;
+    private const int MaxChipLogsPerFrame = 100;
+    private static readonly bool TraceSound =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOGWING_TRACE_SOUND"), "1", StringComparison.Ordinal);
+    private static readonly bool TraceOki =
+        string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOGWING_TRACE_OKI"), "1", StringComparison.Ordinal);
+
+    [NonSerialized] private readonly byte[] _rom;
+    [NonSerialized] private readonly YM2151 _ym;
+    [NonSerialized] private readonly OKI6295 _oki1;
+    [NonSerialized] private readonly OKI6295 _oki2;
+    [NonSerialized] private MemoryBank[] _banks = Array.Empty<MemoryBank>();
+    private readonly HuC6280 _cpu = new();
+    private readonly byte[] _ram = new byte[0x2000];
+    private byte _soundLatch = 0xff;
+    private bool _latchIrqAsserted;
+    private byte _irqMask;
+    private int _frameCounter;
+    private int _chipLogsThisFrame;
+    private int _latchWrites;
+    private int _latchReads;
+    private int _ymReads;
+    private int _lastPeak;
+    private int _idleSkipFrames;
+    private int _executedStepsLastFrame;
+    private byte _lastOki1Status = 0xff;
+    private byte _lastOki2Status = 0xff;
+
+    public BoogwingSoundCpu(byte[] rom, YM2151 ym, OKI6295 oki1, OKI6295 oki2)
+    {
+        _rom = rom ?? Array.Empty<byte>();
+        _ym = ym;
+        _oki1 = oki1;
+        _oki2 = oki2;
+        ConfigureCpuHooks();
+        RebuildBanks();
+    }
+
+    public string DebugSummary
+        => $"h6280pc=0x{_cpu.PeekProgramCounter():X4} mpr={_cpu.PeekMpr(0):X2},{_cpu.PeekMpr(1):X2},{_cpu.PeekMpr(2):X2},{_cpu.PeekMpr(3):X2},{_cpu.PeekMpr(4):X2},{_cpu.PeekMpr(5):X2},{_cpu.PeekMpr(6):X2},{_cpu.PeekMpr(7):X2} sndLatch=0x{_soundLatch:X2} sndW/R={_latchWrites}/{_latchReads} irqM=0x{_irqMask:X2} sndSteps={_executedStepsLastFrame} idleSkips={_idleSkipFrames} audPeak={_lastPeak} {_ym.DebugSummary} oki1={_oki1.DebugSummary} oki2={_oki2.DebugSummary}";
+
+    public void ResetSound()
+    {
+        Array.Clear(_ram);
+        _ym.Reset();
+        _oki1.Reset();
+        _oki2.Reset();
+        _soundLatch = 0xff;
+        _latchIrqAsserted = false;
+        _irqMask = 0;
+        _frameCounter = 0;
+        _chipLogsThisFrame = 0;
+        _latchWrites = 0;
+        _latchReads = 0;
+        _ymReads = 0;
+        _lastPeak = 0;
+        _idleSkipFrames = 0;
+        _executedStepsLastFrame = 0;
+        _lastOki1Status = 0xff;
+        _lastOki2Status = 0xff;
+        ConfigureCpuHooks();
+        RebuildBanks();
+        _cpu.Reset();
+    }
+
+    public void SaveState(BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        StateBinarySerializer.WriteInto(writer, this);
+        _ym.SaveState(writer);
+        _oki1.SaveState(writer);
+        _oki2.SaveState(writer);
+    }
+
+    public void LoadState(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        StateBinarySerializer.ReadInto(reader, this);
+        _ym.LoadState(reader);
+        _oki1.LoadState(reader);
+        _oki2.LoadState(reader);
+        ConfigureCpuHooks();
+        RebuildBanks();
+        _cpu.RebindBanks();
+    }
+
+    public void WriteSoundLatch(byte value)
+    {
+        _soundLatch = value;
+        _latchIrqAsserted = true;
+        _latchWrites++;
+        if (TraceSound)
+            Console.WriteLine($"[BOOG-SND CMD] val=0x{value:X2} h6280pc=0x{_cpu.PeekProgramCounter():X4}");
+    }
+
+    public void RunFrame(short[] audioBuffer)
+    {
+        Array.Clear(audioBuffer);
+        _chipLogsThisFrame = 0;
+        _ym.BeginFrame();
+        _oki1.BeginFrame();
+        _oki2.BeginFrame();
+        _executedStepsLastFrame = 0;
+
+        int cycles = 0;
+        int budget = AudioCpuClock / 60;
+        int sampleFrames = audioBuffer.Length / OutputChannels;
+        int ymIndex = 0;
+        int oki1Index = 0;
+        int oki2Index = 0;
+
+        void RenderAudioTo(int targetSampleFrames)
+        {
+            targetSampleFrames = Math.Clamp(targetSampleFrames, 0, sampleFrames);
+            _ym.RenderStereo(audioBuffer, ref ymIndex, targetSampleFrames);
+            _oki1.RenderStereo(audioBuffer, ref oki1Index, targetSampleFrames);
+            _oki2.RenderStereo(audioBuffer, ref oki2Index, targetSampleFrames);
+        }
+
+        bool DrainIdleWait()
+        {
+            if (!IsIdleWaitLoop())
+                return false;
+
+            int sliceCycles = Math.Max(1, budget / IdleTimerSlicesPerFrame);
+            bool skipped = false;
+            while (cycles < budget && IsIdleWaitLoop())
+            {
+                int elapsedCycles = Math.Min(sliceCycles, budget - cycles);
+                cycles += elapsedCycles;
+                _ym.AdvanceTimersByCpuCycles(elapsedCycles, AudioCpuClock);
+                int targetSampleFrames = (int)Math.Min(sampleFrames, ((long)cycles * sampleFrames) / budget);
+                RenderAudioTo(targetSampleFrames);
+                skipped = true;
+            }
+
+            if (skipped)
+                _idleSkipFrames++;
+            return cycles >= budget && IsIdleWaitLoop();
+        }
+
+        if (DrainIdleWait())
+        {
+            RenderAudioTo(sampleFrames);
+            _lastPeak = Deco32AudioUtil.Peak(audioBuffer, 0, sampleFrames);
+            _frameCounter++;
+            return;
+        }
+
+        while (cycles < budget)
+        {
+            int elapsedCycles;
+            try
+            {
+                elapsedCycles = Math.Max(1, _cpu.Step());
+                _executedStepsLastFrame++;
+            }
+            catch (Exception ex)
+            {
+                if (TraceSound)
+                    Console.WriteLine($"[BOOG-SND FAULT] {ex.GetType().Name}: {ex.Message}");
+                break;
+            }
+
+            cycles += elapsedCycles;
+            _ym.AdvanceTimersByCpuCycles(elapsedCycles, AudioCpuClock);
+            int targetSampleFrames = (int)Math.Min(sampleFrames, ((long)cycles * sampleFrames) / budget);
+            RenderAudioTo(targetSampleFrames);
+            if (DrainIdleWait())
+                break;
+        }
+
+        RenderAudioTo(sampleFrames);
+        _lastPeak = Deco32AudioUtil.Peak(audioBuffer, 0, sampleFrames);
+        if (TraceSound && (_lastPeak != 0 || (_frameCounter % 60) == 0))
+            Console.WriteLine($"[BOOG-AUDIO] peak={_lastPeak} ym={_ym.LastPeak} oki1={_oki1.LastPeak} oki2={_oki2.LastPeak}");
+        _frameCounter++;
+    }
+
+    private bool IsIdleWaitLoop()
+        => _cpu.PeekProgramCounter() == 0xe0e6
+            && !_latchIrqAsserted
+            && !_ym.IrqAsserted;
+
+    private void ConfigureCpuHooks()
+    {
+        _cpu.ExternalBankResolver = ResolveBank;
+        _cpu.ExternalIrq1Waiting = () => _latchIrqAsserted && (_irqMask & 0x02) == 0;
+        _cpu.ExternalIrq2Waiting = () => _ym.IrqAsserted && (_irqMask & 0x01) == 0;
+        _cpu.ExternalTimerWaiting = () => false;
+    }
+
+    private void RebuildBanks()
+    {
+        _banks = new MemoryBank[0x100];
+        for (int i = 0; i < _banks.Length; i++)
+            _banks[i] = new BoogwingSoundBank(this, i);
+    }
+
+    private MemoryBank ResolveBank(byte bank)
+    {
+        if (_banks.Length != 0x100)
+            RebuildBanks();
+        return _banks[bank];
+    }
+
+    private byte ReadPhysical(int address)
+    {
+        address &= 0x1fffff;
+        if ((uint)address < 0x10000u)
+            return _rom.Length == 0 ? (byte)0xff : _rom[address % _rom.Length];
+        if ((uint)(address - 0x1f0000) < 0x2000u)
+            return _ram[address & 0x1fff];
+        if ((uint)(address - 0x110000) < 2u)
+        {
+            _ymReads++;
+            return _ym.Read((byte)(address & 1));
+        }
+        if ((uint)(address - 0x120000) < 2u)
+            return ReadOki(_oki1, ref _lastOki1Status, "OKI1 status", address);
+        if ((uint)(address - 0x130000) < 2u)
+            return ReadOki(_oki2, ref _lastOki2Status, "OKI2 status", address);
+        if (address == 0x140000)
+        {
+            _latchReads++;
+            _latchIrqAsserted = false;
+            if (TraceSound)
+                Console.WriteLine($"[BOOG-SND LATCH READ] pc=0x{_cpu.PeekProgramCounter():X4} val=0x{_soundLatch:X2}");
+            return _soundLatch;
+        }
+        if ((address & 0x1ffffc) == 0x1ff400)
+            return ReadIrqRegister(address & 3);
+
+        return 0xff;
+    }
+
+    private void WritePhysical(int address, byte value)
+    {
+        address &= 0x1fffff;
+        if ((uint)(address - 0x1f0000) < 0x2000u)
+        {
+            _ram[address & 0x1fff] = value;
+            return;
+        }
+        if ((uint)(address - 0x110000) < 2u)
+        {
+            LogChipWrite((address & 1) == 0 ? "YM2151 reg" : "YM2151 data", address, value);
+            _ym.Write((byte)(address & 1), value);
+            return;
+        }
+        if ((uint)(address - 0x120000) < 2u)
+        {
+            LogOki("OKI1 write", address, value);
+            _oki1.Write(value);
+            return;
+        }
+        if ((uint)(address - 0x130000) < 2u)
+        {
+            LogOki("OKI2 write", address, value);
+            _oki2.Write(value);
+            return;
+        }
+        if ((address & 0x1ffffc) == 0x1ff400)
+            WriteIrqRegister(address & 3, value);
+    }
+
+    private byte ReadOki(OKI6295 oki, ref byte lastStatus, string name, int address)
+    {
+        byte status = oki.ReadStatus();
+        if (status != lastStatus)
+        {
+            lastStatus = status;
+            LogOki(name, address, status);
+        }
+        return status;
+    }
+
+    private byte ReadIrqRegister(int offset)
+    {
+        return (offset & 3) switch
+        {
+            2 => _irqMask,
+            3 => (byte)((_ym.IrqAsserted ? 0x01 : 0) | (_latchIrqAsserted ? 0x02 : 0)),
+            _ => 0xff
+        };
+    }
+
+    private void WriteIrqRegister(int offset, byte value)
+    {
+        if ((offset & 3) == 2)
+        {
+            _irqMask = (byte)(value & 0x07);
+            if (TraceSound)
+                Console.WriteLine($"[BOOG-H6280 IRQMASK] pc=0x{_cpu.PeekProgramCounter():X4} mask=0x{_irqMask:X2}");
+        }
+    }
+
+    private void LogChipWrite(string target, int address, byte value)
+    {
+        if (_chipLogsThisFrame++ >= MaxChipLogsPerFrame)
+            return;
+        if (TraceSound)
+            Console.WriteLine($"[BOOG-H6280 WRITE] pc=0x{_cpu.PeekProgramCounter():X4} {target} addr=0x{address:X6} val=0x{value:X2}");
+    }
+
+    private void LogOki(string target, int address, byte value)
+    {
+        if (!TraceOki)
+        {
+            LogChipWrite(target, address, value);
+            return;
+        }
+
+        if (_chipLogsThisFrame++ >= MaxChipLogsPerFrame)
+            return;
+        Console.WriteLine($"[BOOG-OKI] f={_frameCounter} pc=0x{_cpu.PeekProgramCounter():X4} {target} addr=0x{address:X6} val=0x{value:X2} oki1={_oki1.DebugSummary} oki2={_oki2.DebugSummary}");
+    }
+
+    private sealed class BoogwingSoundBank : MemoryBank
+    {
+        private readonly BoogwingSoundCpu _owner;
+        private readonly int _pageBase;
+
+        public BoogwingSoundBank(BoogwingSoundCpu owner, int page)
+        {
+            _owner = owner;
+            _pageBase = (page & 0xff) << 13;
+            SetMemoryPage(page);
+        }
+
+        public override byte ReadAt(int address)
+            => _owner.ReadPhysical(_pageBase | (address & 0x1fff));
+
+        public override void WriteAt(int address, byte data)
+            => _owner.WritePhysical(_pageBase | (address & 0x1fff), data);
+    }
+}
+
 internal sealed class BoogwingRomSet
 {
     public static readonly BoogwingRomSet Empty = new()
@@ -1379,8 +1799,15 @@ internal sealed class BoogwingRomSet
         Tiles1 = Array.Empty<byte>(),
         Tiles2 = Array.Empty<byte>(),
         Tiles3 = Array.Empty<byte>(),
+        Tiles1DecodedChar8 = Array.Empty<byte>(),
+        Tiles2DecodedChar8 = Array.Empty<byte>(),
+        Tiles2DecodedTile16 = Array.Empty<byte>(),
+        Tiles3DecodedChar8 = Array.Empty<byte>(),
+        Tiles3DecodedTile16 = Array.Empty<byte>(),
         Sprites1 = Array.Empty<byte>(),
         Sprites2 = Array.Empty<byte>(),
+        Sprites1DecodedTile16 = Array.Empty<byte>(),
+        Sprites2DecodedTile16 = Array.Empty<byte>(),
         Oki1 = Array.Empty<byte>(),
         Oki2 = Array.Empty<byte>()
     };
@@ -1391,8 +1818,15 @@ internal sealed class BoogwingRomSet
     public byte[] Tiles1 { get; private init; } = Array.Empty<byte>();
     public byte[] Tiles2 { get; private init; } = Array.Empty<byte>();
     public byte[] Tiles3 { get; private init; } = Array.Empty<byte>();
+    public byte[] Tiles1DecodedChar8 { get; private init; } = Array.Empty<byte>();
+    public byte[] Tiles2DecodedChar8 { get; private init; } = Array.Empty<byte>();
+    public byte[] Tiles2DecodedTile16 { get; private init; } = Array.Empty<byte>();
+    public byte[] Tiles3DecodedChar8 { get; private init; } = Array.Empty<byte>();
+    public byte[] Tiles3DecodedTile16 { get; private init; } = Array.Empty<byte>();
     public byte[] Sprites1 { get; private init; } = Array.Empty<byte>();
     public byte[] Sprites2 { get; private init; } = Array.Empty<byte>();
+    public byte[] Sprites1DecodedTile16 { get; private init; } = Array.Empty<byte>();
+    public byte[] Sprites2DecodedTile16 { get; private init; } = Array.Empty<byte>();
     public byte[] Oki1 { get; private init; } = Array.Empty<byte>();
     public byte[] Oki2 { get; private init; } = Array.Empty<byte>();
 
@@ -1435,6 +1869,8 @@ internal sealed class BoogwingRomSet
         Copy(Required(entries, "mbd-03.13b"), tiles3, 0x000000);
         Copy(Required(entries, "mbd-04.14b"), tiles3, 0x100000);
         Deco32GfxDecryptor.Decrypt56(tiles3);
+        byte[] sprites1 = Combine(entries, ("mbd-06.17b", 0x000000), ("mbd-05.16b", 0x200000), 0x400000);
+        byte[] sprites2 = Combine(entries, ("mbd-08.19b", 0x000000), ("mbd-07.18b", 0x200000), 0x400000);
 
         return new BoogwingRomSet
         {
@@ -1444,8 +1880,15 @@ internal sealed class BoogwingRomSet
             Tiles1 = tiles1,
             Tiles2 = tiles2,
             Tiles3 = tiles3,
-            Sprites1 = Combine(entries, ("mbd-06.17b", 0x000000), ("mbd-05.16b", 0x200000), 0x400000),
-            Sprites2 = Combine(entries, ("mbd-08.19b", 0x000000), ("mbd-07.18b", 0x200000), 0x400000),
+            Tiles1DecodedChar8 = Decode4BppChars(tiles1),
+            Tiles2DecodedChar8 = Decode4BppChars(tiles2),
+            Tiles2DecodedTile16 = Decode5BppTiles(tiles2),
+            Tiles3DecodedChar8 = Decode4BppChars(tiles3),
+            Tiles3DecodedTile16 = Decode4BppTiles(tiles3),
+            Sprites1 = sprites1,
+            Sprites2 = sprites2,
+            Sprites1DecodedTile16 = Decode4BppTiles(sprites1),
+            Sprites2DecodedTile16 = Decode4BppTiles(sprites2),
             Oki1 = Required(entries, "mbd-10.17p"),
             Oki2 = Required(entries, "mbd-09.16p")
         };
@@ -1468,6 +1911,84 @@ internal sealed class BoogwingRomSet
 
     private static void Copy(byte[] src, byte[] dst, int offset)
         => Buffer.BlockCopy(src, 0, dst, offset, Math.Min(src.Length, dst.Length - offset));
+
+    private static byte[] Decode4BppChars(byte[] rom)
+    {
+        int half = rom.Length / 2;
+        int chars = Math.Max(1, half / 16);
+        byte[] decoded = new byte[chars * 64];
+        for (int code = 0; code < chars; code++)
+        for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            decoded[code * 64 + y * 8 + x] = (byte)Decode4BppChar(rom, code, x, y);
+        return decoded;
+    }
+
+    private static byte[] Decode4BppTiles(byte[] rom)
+    {
+        int half = rom.Length / 2;
+        int tiles = Math.Max(1, half / 64);
+        byte[] decoded = new byte[tiles * 256];
+        for (int code = 0; code < tiles; code++)
+        for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++)
+            decoded[code * 256 + y * 16 + x] = (byte)Decode4BppTile(rom, code, x, y);
+        return decoded;
+    }
+
+    private static byte[] Decode5BppTiles(byte[] rom)
+    {
+        int plane = rom.Length / 3;
+        int tiles = Math.Max(1, plane / 64);
+        byte[] decoded = new byte[tiles * 256];
+        for (int code = 0; code < tiles; code++)
+        for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++)
+            decoded[code * 256 + y * 16 + x] = (byte)Decode5BppTile(rom, code, x, y);
+        return decoded;
+    }
+
+    private static int Decode4BppChar(byte[] rom, int code, int x, int y)
+    {
+        int half = rom.Length / 2;
+        int chars = Math.Max(1, half / 16);
+        int baseBit = (Math.Abs(code) % chars) * 16 * 8 + y * 16 + x;
+        return (ReadBit(rom, half * 8 + baseBit + 8) << 3)
+            | (ReadBit(rom, half * 8 + baseBit) << 2)
+            | (ReadBit(rom, baseBit + 8) << 1)
+            | ReadBit(rom, baseBit);
+    }
+
+    private static int Decode4BppTile(byte[] rom, int code, int x, int y)
+    {
+        int half = rom.Length / 2;
+        int tiles = Math.Max(1, half / 64);
+        int baseBit = (Math.Abs(code) % tiles) * 64 * 8 + y * 16 + (x < 8 ? 16 * 8 * 2 : 0) + (x & 7);
+        return (ReadBit(rom, half * 8 + baseBit + 8) << 3)
+            | (ReadBit(rom, half * 8 + baseBit) << 2)
+            | (ReadBit(rom, baseBit + 8) << 1)
+            | ReadBit(rom, baseBit);
+    }
+
+    private static int Decode5BppTile(byte[] rom, int code, int x, int y)
+    {
+        int plane = rom.Length / 3;
+        int tiles = Math.Max(1, plane / 64);
+        int baseBit = (Math.Abs(code) % tiles) * 64 * 8 + y * 16 + (x < 8 ? 16 * 8 * 2 : 0) + (x & 7);
+        return (ReadBit(rom, plane * 2 * 8 + baseBit) << 4)
+            | (ReadBit(rom, plane * 8 + baseBit + 8) << 3)
+            | (ReadBit(rom, plane * 8 + baseBit) << 2)
+            | (ReadBit(rom, baseBit + 8) << 1)
+            | ReadBit(rom, baseBit);
+    }
+
+    private static int ReadBit(byte[] data, int bit)
+    {
+        int byteOffset = bit >> 3;
+        if ((uint)byteOffset >= (uint)data.Length)
+            return 0;
+        return (data[byteOffset] >> (7 - (bit & 7))) & 1;
+    }
 
     private static void Load16Byte(byte[] dest, byte[] src, int offset)
     {
