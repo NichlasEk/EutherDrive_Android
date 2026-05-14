@@ -51,6 +51,8 @@ namespace mame
         static readonly bool TraceWorkRam = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_TRACE_WORKRAM"));
 
         readonly required_device<m68000_device> m_maincpu;
+        MemoryU8 m_mainrom;
+        int m_mainrom_bytes;
         readonly u16[] m_workram = new u16[WorkRamWords];
         readonly u8[] m_sharedram = new u8[SharedRamSize];
         readonly u16[] m_paletteram = new u16[PaletteWords];
@@ -366,6 +368,21 @@ namespace mame
 
         protected override void machine_start()
         {
+            memory_region maincpu = memregion("maincpu");
+            if (maincpu != null && maincpu.base_() != null)
+            {
+                m_mainrom = maincpu.base_();
+                m_mainrom_bytes = (int)Math.Min(maincpu.bytes(), int.MaxValue);
+            }
+
+            m_maincpu.op0.set_fast_memory_handlers(
+                Fast68kReadByte,
+                Fast68kReadWord,
+                Fast68kWriteByte,
+                Fast68kWriteWord,
+                Fast68kReadLong,
+                Fast68kWriteLong);
+
             save_item(NAME(new { m_workram }));
             save_item(NAME(new { m_sharedram }));
             save_item(NAME(new { m_paletteram }));
@@ -398,6 +415,201 @@ namespace mame
             m_shared_write_trace_count = 0;
             m_workram_trace_count = 0;
             m_video_dirty = true;
+        }
+
+        bool Fast68kReadByte(u32 address, out u8 value)
+        {
+            address &= 0x00ff_ffff;
+            if (m_mainrom != null && address < m_mainrom_bytes)
+            {
+                value = m_mainrom[(int)(address ^ 1)];
+                return true;
+            }
+
+            if (address >= 0x100000 && address <= 0x10ffff)
+            {
+                u16 word = m_workram[((int)(address - 0x100000) >> 1) & (WorkRamWords - 1)];
+                value = ((address & 1) == 0) ? (u8)(word >> 8) : (u8)word;
+                return true;
+            }
+
+            if (address >= 0x210000 && address <= 0x21ffff)
+            {
+                value = ((address & 1) == 0) ? (u8)0xff : m_sharedram[((int)(address - 0x210000) >> 1) & (SharedRamSize - 1)];
+                return true;
+            }
+
+            if ((address & 1) == 0 && Fast68kReadWord(address, out u16 wordValue))
+            {
+                value = (u8)(wordValue >> 8);
+                return true;
+            }
+            if ((address & 1) != 0 && Fast68kReadWord(address - 1, out wordValue))
+            {
+                value = (u8)wordValue;
+                return true;
+            }
+
+            value = 0xff;
+            return false;
+        }
+
+        bool Fast68kReadWord(u32 address, out u16 value)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) != 0)
+            {
+                value = 0xffff;
+                return false;
+            }
+
+            if (m_mainrom != null && address + 1 < m_mainrom_bytes)
+            {
+                value = (u16)((m_mainrom[(int)(address + 1)] << 8) | m_mainrom[(int)address]);
+                return true;
+            }
+
+            if (address >= 0x100000 && address <= 0x10ffff)
+            {
+                value = m_workram[((int)(address - 0x100000) >> 1) & (WorkRamWords - 1)];
+                return true;
+            }
+
+            if (address >= 0x200010 && address <= 0x200011)
+            {
+                value = in1_r(null, 0, 0xffff);
+                return true;
+            }
+            if (address >= 0x200014 && address <= 0x200015)
+            {
+                value = in2_r(null, 0, 0xffff);
+                return true;
+            }
+            if (address >= 0x200018 && address <= 0x200019)
+            {
+                value = sys_r(null, 0, 0xffff);
+                return true;
+            }
+
+            if (address >= 0x210000 && address <= 0x21ffff)
+            {
+                value = (u16)(0xff00 | m_sharedram[((int)(address - 0x210000) >> 1) & (SharedRamSize - 1)]);
+                return true;
+            }
+
+            if (address >= 0x300000 && address <= 0x30000d)
+            {
+                value = vdp_r(0, (address - 0x300000) >> 1, 0xffff);
+                return true;
+            }
+
+            if (address >= 0x400000 && address <= 0x400fff)
+            {
+                value = m_paletteram[((int)(address - 0x400000) >> 1) & (PaletteWords - 1)];
+                return true;
+            }
+
+            if (address >= 0x500000 && address <= 0x50000d)
+            {
+                value = vdp_r(1, (address - 0x500000) >> 1, 0xffff);
+                return true;
+            }
+
+            if (address >= 0x700000 && address <= 0x700001)
+            {
+                value = vdpcount_r(null, 0, 0xffff);
+                return true;
+            }
+
+            value = 0xffff;
+            return false;
+        }
+
+        bool Fast68kReadLong(u32 address, out u32 value)
+        {
+            if ((address & 1) == 0
+                && Fast68kReadWord(address, out u16 hi)
+                && Fast68kReadWord((address + 2) & 0x00ff_ffff, out u16 lo))
+            {
+                value = ((u32)hi << 16) | lo;
+                return true;
+            }
+
+            value = 0xffff_ffff;
+            return false;
+        }
+
+        bool Fast68kWriteByte(u32 address, u8 value)
+        {
+            address &= 0x00ff_ffff;
+            u16 data = ((address & 1) == 0) ? (u16)(value << 8) : value;
+            u16 memMask = ((address & 1) == 0) ? (u16)0xff00 : (u16)0x00ff;
+            return Fast68kWriteWord(address & 0xffff_fffe, data, memMask);
+        }
+
+        bool Fast68kWriteWord(u32 address, u16 value)
+            => Fast68kWriteWord(address, value, 0xffff);
+
+        bool Fast68kWriteLong(u32 address, u32 value)
+        {
+            if ((address & 1) != 0)
+                return false;
+
+            bool hi = Fast68kWriteWord(address, (u16)(value >> 16), 0xffff);
+            bool lo = Fast68kWriteWord((address + 2) & 0x00ff_ffff, (u16)value, 0xffff);
+            return hi && lo;
+        }
+
+        bool Fast68kWriteWord(u32 address, u16 value, u16 memMask)
+        {
+            address &= 0x00ff_ffff;
+            if ((address & 1) != 0)
+                return false;
+
+            if (address >= 0x100000 && address <= 0x10ffff)
+            {
+                int index = ((int)(address - 0x100000) >> 1) & (WorkRamWords - 1);
+                m_workram[index] = CombineWord(m_workram[index], value, memMask);
+                TraceWorkRamAccess("W", index, m_workram[index], memMask);
+                return true;
+            }
+
+            if (address >= 0x20001c && address <= 0x20001d)
+            {
+                coin_sound_reset_w(null, 0, value, memMask);
+                return true;
+            }
+
+            if (address >= 0x210000 && address <= 0x21ffff)
+            {
+                if ((memMask & 0x00ff) != 0)
+                {
+                    int index = ((int)(address - 0x210000) >> 1) & (SharedRamSize - 1);
+                    m_sharedram[index] = (u8)(value & 0xff);
+                    TraceSharedAccess("W", index, m_sharedram[index]);
+                }
+                return true;
+            }
+
+            if (address >= 0x300000 && address <= 0x30000d)
+            {
+                vdp_w(0, (address - 0x300000) >> 1, value, memMask);
+                return true;
+            }
+
+            if (address >= 0x400000 && address <= 0x400fff)
+            {
+                palette_w(null, (address - 0x400000) >> 1, value, memMask);
+                return true;
+            }
+
+            if (address >= 0x500000 && address <= 0x50000d)
+            {
+                vdp_w(1, (address - 0x500000) >> 1, value, memMask);
+                return true;
+            }
+
+            return false;
         }
 
         u16 ReadInputPort(string tag)
@@ -549,8 +761,10 @@ namespace mame
                 return;
 
             u16[,] source = m_vdp_spriteram_buffer;
-            int oldX = (-(short)m_vdp_scrollx[vdp, 3]) & 0x1ff;
-            int oldY = (-(short)m_vdp_scrolly[vdp, 3]) & 0x1ff;
+            int spriteScrollX = m_vdp_scrollx[vdp, 3] & 0x1ff;
+            int spriteScrollY = m_vdp_scrolly[vdp, 3] & 0x1ff;
+            int oldX = (-spriteScrollX) & 0x1ff;
+            int oldY = (-spriteScrollY) & 0x1ff;
 
             for (int offs = 0; offs < VdpSpriteWords; offs += 4)
             {
@@ -567,8 +781,8 @@ namespace mame
                 int syBase;
                 if ((attrib & 0x4000) == 0)
                 {
-                    sxBase = ((source[vdp, offs + 2] >> 7) - m_vdp_scrollx[vdp, 3]) & 0x1ff;
-                    syBase = ((source[vdp, offs + 3] >> 7) - m_vdp_scrolly[vdp, 3]) & 0x1ff;
+                    sxBase = ((source[vdp, offs + 2] >> 7) - spriteScrollX) & 0x1ff;
+                    syBase = ((source[vdp, offs + 3] >> 7) - spriteScrollY) & 0x1ff;
                 }
                 else
                 {
@@ -577,11 +791,29 @@ namespace mame
                 }
                 oldX = sxBase;
                 oldY = syBase;
-                if (sxBase >= 0x180) sxBase -= 0x200;
-                if (syBase >= 0x180) syBase -= 0x200;
 
                 bool flipX = (attrib & 0x1000) != 0;
                 bool flipY = (attrib & 0x2000) != 0;
+                if (flipX)
+                {
+                    sxBase -= 7;
+                    if (sxBase >= 0x1c0) sxBase -= 0x200;
+                }
+                else if (sxBase >= 0x180)
+                {
+                    sxBase -= 0x200;
+                }
+
+                if (flipY)
+                {
+                    syBase -= 7;
+                    if (syBase >= 0x1c0) syBase -= 0x200;
+                }
+                else if (syBase >= 0x180)
+                {
+                    syBase -= 0x200;
+                }
+
                 for (int dy = 0; dy < height; dy += 8)
                 {
                     int sy = flipY ? syBase - dy : syBase + dy;
