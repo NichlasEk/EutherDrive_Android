@@ -22,6 +22,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     private const int PlaceholderStride = PlaceholderWidth * 4;
     private const int AudioOutputDivisor = 8;
     private const int MaxBufferedMcsFrames = 3;
+    private const int MaxBufferedPresentationSnapshots = MaxBufferedMcsFrames + 4;
     private static readonly int OutputSampleRate = ParseOutputSampleRate();
     private const int OutputChannels = 2;
     private static readonly int MaxQueuedAudioSamples = OutputSampleRate * OutputChannels * 2;
@@ -57,17 +58,28 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     private readonly object _sync = new();
 
     private byte[] _frameBuffer = new byte[PlaceholderHeight * PlaceholderStride];
+    private byte[] _presentFrameBuffer = Array.Empty<byte>();
+    private readonly BufferedFrameSnapshot?[] _publishedFrameSnapshots = new BufferedFrameSnapshot?[MaxBufferedPresentationSnapshots];
     private short[] _audioBuffer = Array.Empty<short>();
     private readonly List<short> _audioQueue = new();
     private int _frameWidth = PlaceholderWidth;
     private int _frameHeight = PlaceholderHeight;
     private int _frameStride = PlaceholderStride;
+    private int _presentFrameWidth;
+    private int _presentFrameHeight;
+    private int _presentFrameStride;
+    private long _presentFrameId;
+    private int _publishedFrameSnapshotCount;
+    private int _publishedFrameSnapshotWriteIndex;
 
     private string? _driverName;
     private string? _romPath;
     private string? _romDirectory;
     private McsRuntime? _runtime;
     private ArcadeInputState _inputState;
+    private byte[] _batsugunSharedRam = new byte[0x10000];
+    private int _batsugunSharedRamPollCountdown;
+    private bool _batsugunSharedRamActive;
     private int _masterVolumePercent = 50;
     private int _outputGainPercent = 100;
 
@@ -314,6 +326,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     }
 
     public long? FrameCounter => _runtime?.PublishedFrames;
+    internal Func<byte[], bool>? BatsugunSharedRamProcessor { get; set; }
 
     public void SaveState(BinaryWriter writer)
     {
@@ -423,6 +436,14 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     {
         lock (_sync)
         {
+            if (_presentFrameBuffer.Length > 0)
+            {
+                width = _presentFrameWidth;
+                height = _presentFrameHeight;
+                stride = _presentFrameStride;
+                return _presentFrameBuffer.AsSpan(0, Math.Min(_presentFrameBuffer.Length, height * stride));
+            }
+
             width = _frameWidth;
             height = _frameHeight;
             stride = _frameStride;
@@ -517,6 +538,80 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             foreach (mame.ym2610_device ym2610 in new mame.device_type_enumerator<mame.ym2610_device>(machine.root_device()))
                 ym2610.set_neogeo_mix_gain_percent(adpcmaPercent, musicPercent);
         });
+    }
+
+    internal bool TryAccessBatsugunSharedRam(byte[] buffer, bool writeBack)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+
+        McsRuntime? runtime = _runtime;
+        if (runtime == null)
+            return false;
+
+        bool accessed = false;
+        runtime.RunOnMachine(machine =>
+        {
+            object root = machine.root_device();
+            Type type = root.GetType();
+            if (!string.Equals(type.Name, "batsugun_state", StringComparison.Ordinal))
+                return;
+
+            MethodInfo? method = type.GetMethod(
+                writeBack ? "CopyBatsugunSharedRamFrom" : "CopyBatsugunSharedRamTo",
+                BindingFlags.Instance | BindingFlags.Public);
+            if (method == null)
+                return;
+
+            method.Invoke(root, new object[] { buffer });
+            accessed = true;
+        });
+
+        return accessed;
+    }
+
+    private void ProcessBatsugunSharedRam(mame.running_machine machine)
+    {
+        Func<byte[], bool>? processor = BatsugunSharedRamProcessor;
+        if (processor == null)
+            return;
+
+        object root = machine.root_device();
+        Type type = root.GetType();
+        if (!string.Equals(type.Name, "batsugun_state", StringComparison.Ordinal))
+            return;
+
+        if (!_batsugunSharedRamActive)
+        {
+            if (_batsugunSharedRamPollCountdown > 0)
+            {
+                _batsugunSharedRamPollCountdown--;
+                return;
+            }
+
+            _batsugunSharedRamPollCountdown = 60;
+        }
+
+        MethodInfo? copyTo = type.GetMethod("CopyBatsugunSharedRamTo", BindingFlags.Instance | BindingFlags.Public);
+        MethodInfo? copyFrom = type.GetMethod("CopyBatsugunSharedRamFrom", BindingFlags.Instance | BindingFlags.Public);
+        if (copyTo == null || copyFrom == null)
+            return;
+
+        copyTo.Invoke(root, new object[] { _batsugunSharedRam });
+        if (!_batsugunSharedRamActive)
+        {
+            _batsugunSharedRamActive =
+                (_batsugunSharedRam[0x7ff0] != 0 ||
+                 _batsugunSharedRam[0x7ff1] != 0 ||
+                 _batsugunSharedRam[0x7ff2] != 0 ||
+                 _batsugunSharedRam[0x7ff3] != 0) &&
+                _batsugunSharedRam[0x0040] == 0x06 &&
+                _batsugunSharedRam[0x0041] == 0x1e &&
+                _batsugunSharedRam[0x0042] == 0x07 &&
+                _batsugunSharedRam[0x004b] == 0xf3 &&
+                _batsugunSharedRam[0x004c] == 0xab;
+        }
+        if (processor(_batsugunSharedRam))
+            copyFrom.Invoke(root, new object[] { _batsugunSharedRam });
     }
 
     private static T? GetPrivateField<T>(object instance, Type type, string name)
@@ -717,6 +812,75 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         }
     }
 
+    private void CapturePublishedFrameSnapshot(long frameId)
+    {
+        lock (_sync)
+        {
+            int frameLength = Math.Min(_frameBuffer.Length, _frameHeight * _frameStride);
+            if (frameLength <= 0)
+                return;
+
+            BufferedFrameSnapshot? snapshot = _publishedFrameSnapshots[_publishedFrameSnapshotWriteIndex];
+            if (snapshot == null)
+            {
+                snapshot = new BufferedFrameSnapshot();
+                _publishedFrameSnapshots[_publishedFrameSnapshotWriteIndex] = snapshot;
+            }
+
+            if (snapshot.Buffer.Length != frameLength)
+                snapshot.Buffer = new byte[frameLength];
+            Buffer.BlockCopy(_frameBuffer, 0, snapshot.Buffer, 0, frameLength);
+            snapshot.FrameId = frameId;
+            snapshot.Width = _frameWidth;
+            snapshot.Height = _frameHeight;
+            snapshot.Stride = _frameStride;
+
+            _publishedFrameSnapshotWriteIndex = (_publishedFrameSnapshotWriteIndex + 1) % _publishedFrameSnapshots.Length;
+            if (_publishedFrameSnapshotCount < _publishedFrameSnapshots.Length)
+                _publishedFrameSnapshotCount++;
+        }
+    }
+
+    private void CapturePresentFrameSnapshot(long frameId)
+    {
+        lock (_sync)
+        {
+            BufferedFrameSnapshot? selected = null;
+            for (int i = 0; i < _publishedFrameSnapshotCount; i++)
+            {
+                BufferedFrameSnapshot? candidate = _publishedFrameSnapshots[i];
+                if (candidate != null
+                    && candidate.FrameId <= frameId
+                    && (selected == null || candidate.FrameId > selected.FrameId))
+                {
+                    selected = candidate;
+                }
+            }
+
+            if (selected != null)
+            {
+                _presentFrameBuffer = selected.Buffer;
+                _presentFrameWidth = selected.Width;
+                _presentFrameHeight = selected.Height;
+                _presentFrameStride = selected.Stride;
+                _presentFrameId = selected.FrameId;
+                return;
+            }
+
+            int frameLength = Math.Min(_frameBuffer.Length, _frameHeight * _frameStride);
+            if (frameLength <= 0)
+                return;
+
+            if (_presentFrameBuffer.Length != frameLength)
+                _presentFrameBuffer = new byte[frameLength];
+            Buffer.BlockCopy(_frameBuffer, 0, _presentFrameBuffer, 0, frameLength);
+            _presentFrameWidth = _frameWidth;
+            _presentFrameHeight = _frameHeight;
+            _presentFrameStride = _frameStride;
+            _presentFrameId = frameId;
+        }
+    }
+
     private void PublishAudio(mame.Pointer<short> samples, int sampleFrames)
     {
         int sampleCount = sampleFrames * OutputChannels;
@@ -755,6 +919,15 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         bool Button5,
         bool Button6,
         bool Coin);
+
+    private sealed class BufferedFrameSnapshot
+    {
+        public long FrameId;
+        public byte[] Buffer = Array.Empty<byte>();
+        public int Width;
+        public int Height;
+        public int Stride;
+    }
 
     private sealed class McsRuntime : IDisposable
     {
@@ -851,8 +1024,13 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         public void MarkFrameReady()
         {
+            long frameId;
             lock (_frameSync)
-                PublishedFrames++;
+            {
+                frameId = PublishedFrames + 1;
+                _owner.CapturePublishedFrameSnapshot(frameId);
+                PublishedFrames = frameId;
+            }
             _frameReady.Set();
         }
 
@@ -866,7 +1044,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
             {
                 if (PublishedFrames > _consumerFrameCursor)
                 {
-                    _consumerFrameCursor = PublishedFrames;
+                    _consumerFrameCursor++;
+                    _owner.CapturePresentFrameSnapshot(_consumerFrameCursor);
                     _frameGateChanged.Set();
                     AddProfileWait(waitStart);
                     return;
@@ -890,7 +1069,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 {
                     if (PublishedFrames != start)
                     {
-                        _consumerFrameCursor = PublishedFrames;
+                        _consumerFrameCursor++;
+                        _owner.CapturePresentFrameSnapshot(_consumerFrameCursor);
                         _frameGateChanged.Set();
                         AddProfileWait(waitStart);
                         return;
@@ -1691,6 +1871,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
             if (skipRedraw || _target == null)
             {
+                _owner.ProcessBatsugunSharedRam(_machine);
                 CompleteFrameBoundary(_machine);
                 return;
             }
@@ -1739,6 +1920,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _owner.PublishFrame(_bitmap.pix(0), publishWidth, publishHeight, _bitmap.rowpixels());
                 if (TraceMcsProfile)
                     publishTicks = Stopwatch.GetTimestamp() - publishStart;
+                _owner.ProcessBatsugunSharedRam(_machine);
                 _runtime.MarkFrameReady();
                 _runtime.ProcessFrameBoundaryStateRequest(_machine);
             }

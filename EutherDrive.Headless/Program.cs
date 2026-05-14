@@ -683,6 +683,7 @@ class Program
                 Console.WriteLine("[HEADLESS] Using Toaplan Batsugun core");
                 using var batsugun = new BatsugunAdapter();
                 batsugun.LoadRom(romPath);
+                using var batsugunAudioDump = OpenOptionalRawAudioDump(dumpDir, "headless_batsugun_audio_s16le.raw");
                 var batsugunInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_HEADLESS_INPUT_SCRIPT"));
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
                 ReadOnlySpan<byte> fbIn = batsugun.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
@@ -712,6 +713,8 @@ class Program
                     long runStart = Stopwatch.GetTimestamp();
                     batsugun.RunFrame();
                     long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    ReadOnlySpan<short> audio = batsugun.GetAudioBuffer(out _, out _);
+                    WriteRawAudio(batsugunAudioDump, audio);
                     runTicksTotal += runTicks;
                     runTicksMin = Math.Min(runTicksMin, runTicks);
                     runTicksMax = Math.Max(runTicksMax, runTicks);

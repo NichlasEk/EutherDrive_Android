@@ -49,6 +49,8 @@ namespace mame
         static readonly bool TraceVideo = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_TRACE_VIDEO"));
         static readonly bool TraceShared = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_TRACE_SHARED"));
         static readonly bool TraceWorkRam = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_TRACE_WORKRAM"));
+        static readonly bool NativeSoundBridge = Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_ENABLE_SOUND_BRIDGE") == "1"
+            || Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_TRACE_SOUND") == "1";
 
         readonly required_device<m68000_device> m_maincpu;
         MemoryU8 m_mainrom;
@@ -147,7 +149,7 @@ namespace mame
                 machine().bookkeeping().coin_counter_w(1, data & 0x02);
                 machine().bookkeeping().coin_lockout_w(0, (data & 0x04) == 0 ? 1 : 0);
                 machine().bookkeeping().coin_lockout_w(1, (data & 0x08) == 0 ? 1 : 0);
-                if ((data & 0x20) != 0)
+                if (!NativeSoundBridge && (data & 0x20) != 0)
                     ReleaseSoundCpuShim();
             }
         }
@@ -311,15 +313,14 @@ namespace mame
 
         u16 vdpcount_r(address_space space, offs_t offset, u16 mem_mask)
         {
-            int readPhase = m_vdpcount_reads++;
-            int hpos = (readPhase * 37) % 432;
-            int rawVpos = (readPhase >> 2) % 262;
-            int vpos = (rawVpos + 15) % 262;
+            m_vdpcount_reads++;
+            screen_device screen = subdevice<screen_device>("screen");
+            int hpos = screen?.hpos() ?? 0;
+            int vpos = screen?.vpos() ?? 0;
             u16 videoStatus = 0xff00;
             if (hpos > 325 && hpos < 380)
                 videoStatus &= unchecked((u16)~0x8000);
-            bool syntheticBlankPulse = (readPhase & 0x1f) == 0x10;
-            if ((rawVpos >= 232 && rawVpos <= 245) || syntheticBlankPulse)
+            if ((screen?.vblank() ?? 0) != 0 || (vpos >= 232 && vpos <= 245))
             {
                 videoStatus &= unchecked((u16)~0x4000);
                 videoStatus &= unchecked((u16)~0x0100);
@@ -331,12 +332,9 @@ namespace mame
             return videoStatus;
         }
 
-        int CurrentSyntheticVpos()
-            => ((m_vdpcount_reads >> 2) + 15) % 262;
-
         uint32_t screen_update(screen_device screen, bitmap_rgb32 bitmap, rectangle cliprect)
         {
-            if (m_sharedram[0x7800] == 0xff)
+            if (!NativeSoundBridge && m_sharedram[0x7800] == 0xff)
                 UpdateSoundCpuShimInputs();
             EnsureGraphicsDecoded();
             if (m_video_dirty)
@@ -415,6 +413,24 @@ namespace mame
             m_shared_write_trace_count = 0;
             m_workram_trace_count = 0;
             m_video_dirty = true;
+        }
+
+        public int BatsugunSharedRamLength => m_sharedram.Length;
+
+        public void CopyBatsugunSharedRamTo(byte[] destination)
+        {
+            if (destination == null)
+                return;
+
+            Buffer.BlockCopy(m_sharedram, 0, destination, 0, Math.Min(destination.Length, m_sharedram.Length));
+        }
+
+        public void CopyBatsugunSharedRamFrom(byte[] source)
+        {
+            if (source == null)
+                return;
+
+            Buffer.BlockCopy(source, 0, m_sharedram, 0, Math.Min(source.Length, m_sharedram.Length));
         }
 
         bool Fast68kReadByte(u32 address, out u8 value)
@@ -981,13 +997,13 @@ namespace mame
 
             if (op == "R")
             {
-                if (m_shared_read_trace_count >= 256 || index >= 0x0100)
+                if (m_shared_read_trace_count >= 256 || (index >= 0x0100 && index < 0x7800))
                     return;
                 m_shared_read_trace_count++;
             }
             else
             {
-                if (m_shared_write_trace_count >= 96 || index >= 0x0100)
+                if (m_shared_write_trace_count >= 640 || (index >= 0x0100 && index < 0x7800))
                     return;
                 m_shared_write_trace_count++;
             }

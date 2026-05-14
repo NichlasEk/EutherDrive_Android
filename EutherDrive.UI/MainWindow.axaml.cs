@@ -1068,6 +1068,8 @@ public partial class MainWindow : Window
             target = neoGeo.GetTargetFps();
         else if (_core is OutZoneAdapter outZone)
             target = outZone.GetTargetFps();
+        else if (_core is BatsugunAdapter batsugun)
+            target = batsugun.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -3991,6 +3993,8 @@ public partial class MainWindow : Window
             neoGeo.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is OutZoneAdapter outZone)
             outZone.SetMasterVolumePercent(effectiveVolumePercent);
+        else if (_core is BatsugunAdapter batsugun)
+            batsugun.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter xain)
             xain.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is Deco32Adapter deco32)
@@ -10571,6 +10575,7 @@ public partial class MainWindow : Window
                 && _audioEngine != null
                 && core is not EutherDrive.Core.Arcade.Konami.TmntAdapter
                 && core is not McsArcadeAdapter
+                && core is not BatsugunAdapter
                 && core is not Pgm2Adapter
                 && core is not KovPgmAdapter)
             {
@@ -10618,7 +10623,8 @@ public partial class MainWindow : Window
             }
 
             long frameWorkStart = Stopwatch.GetTimestamp();
-            long? frameCounterBefore = TryGetCoreFrameCounter(core);
+            bool countFrameCounterDelta = !ShouldCountRunFrameAsSingleProducedFrame(core);
+            long? frameCounterBefore = countFrameCounterDelta ? TryGetCoreFrameCounter(core) : null;
             int producedFrames = frameCounterBefore.HasValue ? 0 : 1;
             try
             {
@@ -10629,7 +10635,7 @@ public partial class MainWindow : Window
                     core.RunFrame();
                     if (TraceUiProfile)
                         _uiProfileRunFrameTicks += Stopwatch.GetTimestamp() - runStart;
-                    if (frameCounterBefore.HasValue && TryGetCoreFrameCounter(core) is long frameCounterAfter)
+                    if (countFrameCounterDelta && frameCounterBefore.HasValue && TryGetCoreFrameCounter(core) is long frameCounterAfter)
                     {
                         long delta = frameCounterAfter - frameCounterBefore.Value;
                         producedFrames = delta > 0 && delta <= int.MaxValue ? (int)delta : 0;
@@ -10641,7 +10647,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is OutZoneAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is BatsugunAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is OutZoneAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10650,6 +10656,7 @@ public partial class MainWindow : Window
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
                                     || core is McsArcadeAdapter
+                                    || core is BatsugunAdapter
                                     || core is Pgm2Adapter
                                     || core is KovPgmAdapter
                                     || core is NeoGeoAdapter
@@ -10848,7 +10855,10 @@ public partial class MainWindow : Window
 
             ProducePsgForFrame();
             SubmitAudio();
-            TrackEmuCapacityFrame(Stopwatch.GetTimestamp() - frameWorkStart, producedFrames);
+            long frameWorkTicks = Stopwatch.GetTimestamp() - frameWorkStart;
+            if (ShouldFloorCapacityTimingToTarget(core))
+                frameWorkTicks = Math.Max(frameWorkTicks, (long)Math.Ceiling(ticksPerFrame * Math.Max(1, producedFrames)));
+            TrackEmuCapacityFrame(frameWorkTicks, producedFrames);
 
             // Track actual emu FPS
             _emuFpsFrames += producedFrames;
@@ -10917,6 +10927,14 @@ public partial class MainWindow : Window
         MaybeDumpSnesDspStateOnStop("thread-exit");
         Console.WriteLine($"[EmuLoop] Thread exiting gen={generation}");
     }
+
+    private static bool ShouldCountRunFrameAsSingleProducedFrame(IEmulatorCore core)
+        => core is McsArcadeAdapter
+            or BatsugunAdapter;
+
+    private static bool ShouldFloorCapacityTimingToTarget(IEmulatorCore core)
+        => core is McsArcadeAdapter
+            or BatsugunAdapter;
 
     private void TrackEmuCapacityFrame(long frameWorkTicks, int producedFrames)
     {
@@ -11590,6 +11608,8 @@ public partial class MainWindow : Window
             return neoGeo.GetTargetFps() * _speedScale;
         if (_core is OutZoneAdapter outZone)
             return outZone.GetTargetFps() * _speedScale;
+        if (_core is BatsugunAdapter batsugun)
+            return batsugun.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 

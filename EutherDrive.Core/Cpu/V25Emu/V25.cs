@@ -53,6 +53,8 @@ public sealed class V25
     private byte _zero = 1;
     private byte _sign;
     private byte _overflow;
+    private bool _direction;
+    private bool _rep;
 
     public uint Pc => ((uint)_sregs[Ps] << 4) + _ip;
     public uint PreviousPc { get; private set; }
@@ -69,6 +71,8 @@ public sealed class V25
         _sregs[Ps] = 0xffff;
         _zero = 1;
         _carry = _sign = _overflow = 0;
+        _direction = false;
+        _rep = false;
         _prefixBase = 0;
         _segmentPrefix = false;
         Halted = false;
@@ -105,6 +109,26 @@ public sealed class V25
         {
             case 0xfa:
                 return; // CLI
+            case 0xfb:
+                return; // STI
+            case 0xfc:
+                _direction = false;
+                return;
+            case 0xfd:
+                _direction = true;
+                return;
+            case 0xf3:
+                ExecuteWithRepPrefix(bus);
+                return;
+            case 0x06:
+                Push(bus, _sregs[Ds1]);
+                return;
+            case 0x07:
+                _sregs[Ds1] = Pop(bus);
+                return;
+            case 0x1e:
+                Push(bus, _sregs[Ds0]);
+                return;
             case 0x26:
                 ExecuteWithSegmentPrefix(bus, Ds1);
                 return;
@@ -123,6 +147,9 @@ public sealed class V25
             case 0x03:
                 ExecuteAddR16Rm16(bus);
                 return;
+            case 0x0a:
+                ExecuteOrR8Rm8(bus);
+                return;
             case 0x15:
                 {
                     ushort source = FetchWord(bus);
@@ -133,16 +160,19 @@ public sealed class V25
                     _regs[Ax] = result;
                     return;
                 }
+            case 0x33:
+                ExecuteXorR16Rm16(bus);
+                return;
             case 0x3a:
                 ExecuteCmpR8Rm8(bus);
                 return;
-            case 0x43:
-                _regs[Bx]++;
-                SetIncDecFlags16(_regs[Bx]);
+            case >= 0x40 and <= 0x47:
+                _regs[opcode - 0x40]++;
+                SetIncDecFlags16(_regs[opcode - 0x40]);
                 return;
-            case 0x49:
-                _regs[Cx]--;
-                SetIncDecFlags16(_regs[Cx]);
+            case >= 0x48 and <= 0x4f:
+                _regs[opcode - 0x48]--;
+                SetIncDecFlags16(_regs[opcode - 0x48]);
                 return;
             case >= 0x50 and <= 0x57:
                 Push(bus, _regs[opcode - 0x50]);
@@ -174,6 +204,9 @@ public sealed class V25
             case 0x88:
                 ExecuteMovRm8R8(bus);
                 return;
+            case 0x8c:
+                ExecuteMovRm16Sreg(bus);
+                return;
             case 0x8a:
                 ExecuteMovR8Rm8(bus);
                 return;
@@ -192,6 +225,27 @@ public sealed class V25
             case >= 0xb8 and <= 0xbf:
                 _regs[opcode - 0xb8] = FetchWord(bus);
                 return;
+            case 0xa0:
+                SetReg8(0, Read8(bus, GetDirectAddress(Ds0, FetchWord(bus))));
+                return;
+            case 0xa2:
+                Write8(bus, GetDirectAddress(Ds0, FetchWord(bus)), GetReg8(0));
+                return;
+            case 0xa4:
+                ExecuteMovsb(bus);
+                return;
+            case 0xab:
+                ExecuteStosw(bus);
+                return;
+            case 0xc0:
+                ExecuteGroupC0(bus);
+                return;
+            case 0xc6:
+                ExecuteMovRm8Imm8(bus);
+                return;
+            case 0xc7:
+                ExecuteMovRm16Imm16(bus);
+                return;
             case 0xc3:
                 _ip = Pop(bus);
                 return;
@@ -199,6 +253,20 @@ public sealed class V25
                 {
                     short displacement = (short)FetchWord(bus);
                     Push(bus, _ip);
+                    _ip = unchecked((ushort)(_ip + displacement));
+                    return;
+                }
+            case 0xe2:
+                {
+                    sbyte displacement = (sbyte)Fetch(bus);
+                    _regs[Cx]--;
+                    if (_regs[Cx] != 0)
+                        _ip = unchecked((ushort)(_ip + displacement));
+                    return;
+                }
+            case 0xe9:
+                {
+                    short displacement = (short)FetchWord(bus);
                     _ip = unchecked((ushort)(_ip + displacement));
                     return;
                 }
@@ -212,6 +280,12 @@ public sealed class V25
                 }
             case 0xeb:
                 Branch8(bus, true);
+                return;
+            case 0xf6:
+                ExecuteGroupF6(bus);
+                return;
+            case 0xfe:
+                ExecuteGroupFE(bus);
                 return;
             default:
                 Halted = true;
@@ -238,6 +312,19 @@ public sealed class V25
         _segmentPrefix = oldPrefix;
     }
 
+    private void ExecuteWithRepPrefix(IV25Bus bus)
+    {
+        bool oldRep = _rep;
+        _rep = true;
+        byte encrypted = Fetch(bus);
+        byte opcode = _opcodeTable[encrypted];
+        if (opcode == 0)
+            opcode = encrypted;
+        LastOpcode = opcode;
+        ExecuteOpcode(bus, opcode);
+        _rep = oldRep;
+    }
+
     private void ExecuteMovSregRm16(IV25Bus bus)
     {
         byte modrm = Fetch(bus);
@@ -257,6 +344,19 @@ public sealed class V25
                 _sregs[Ds0] = value;
                 break;
         }
+    }
+
+    private void ExecuteMovRm16Sreg(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        ushort value = (modrm & 0x38) switch
+        {
+            0x00 => _sregs[Ds1],
+            0x08 => _sregs[Ps],
+            0x10 => _sregs[Ss],
+            _ => _sregs[Ds0]
+        };
+        WriteRm16(bus, modrm, value);
     }
 
     private void ExecuteLea(IV25Bus bus)
@@ -285,6 +385,34 @@ public sealed class V25
         WriteRm8(bus, modrm, GetReg8((modrm >> 3) & 7));
     }
 
+    private void ExecuteMovRm8Imm8(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        int op = (modrm >> 3) & 7;
+        byte value = Fetch(bus);
+        if (op != 0)
+        {
+            StopUnsupportedGroup(0xc6, op);
+            return;
+        }
+
+        WriteRm8(bus, modrm, value);
+    }
+
+    private void ExecuteMovRm16Imm16(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        int op = (modrm >> 3) & 7;
+        ushort value = FetchWord(bus);
+        if (op != 0)
+        {
+            StopUnsupportedGroup(0xc7, op);
+            return;
+        }
+
+        WriteRm16(bus, modrm, value);
+    }
+
     private void ExecuteAddR8Rm8(IV25Bus bus)
     {
         byte modrm = Fetch(bus);
@@ -304,6 +432,24 @@ public sealed class V25
         ushort dest = _regs[reg];
         ushort result = (ushort)(dest + source);
         SetAddFlags16(dest, source, result);
+        _regs[reg] = result;
+    }
+
+    private void ExecuteOrR8Rm8(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        int reg = (modrm >> 3) & 7;
+        byte result = (byte)(GetReg8(reg) | ReadRm8(bus, modrm));
+        SetLogicalFlags8(result);
+        SetReg8(reg, result);
+    }
+
+    private void ExecuteXorR16Rm16(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        int reg = (modrm >> 3) & 7;
+        ushort result = (ushort)(_regs[reg] ^ ReadRm16(bus, modrm));
+        SetLogicalFlags16(result);
         _regs[reg] = result;
     }
 
@@ -330,6 +476,13 @@ public sealed class V25
                     WriteRm8Resolved(bus, isRegister, register, address, result);
                     break;
                 }
+            case 4:
+                {
+                    byte result = (byte)(dest & immediate);
+                    SetLogicalFlags8(result);
+                    WriteRm8Resolved(bus, isRegister, register, address, result);
+                    break;
+                }
             case 7:
                 SetSubFlags8(dest, immediate, (byte)(dest - immediate));
                 break;
@@ -337,6 +490,98 @@ public sealed class V25
                 StopUnsupportedGroup(0x80, op);
                 break;
         }
+    }
+
+    private void ExecuteGroupC0(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        int op = (modrm >> 3) & 7;
+        byte dest = ReadRm8Resolved(bus, modrm, out bool isRegister, out int register, out uint address);
+        int count = Fetch(bus) & 0x1f;
+        byte result = dest;
+        switch (op)
+        {
+            case 1:
+                for (int i = 0; i < count; i++)
+                    result = (byte)((result >> 1) | (result << 7));
+                SetLogicalFlags8(result);
+                WriteRm8Resolved(bus, isRegister, register, address, result);
+                break;
+            default:
+                StopUnsupportedGroup(0xc0, op);
+                break;
+        }
+    }
+
+    private void ExecuteGroupF6(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        int op = (modrm >> 3) & 7;
+        byte dest = ReadRm8Resolved(bus, modrm, out bool isRegister, out int register, out uint address);
+        switch (op)
+        {
+            case 0:
+                {
+                    byte immediate = Fetch(bus);
+                    SetLogicalFlags8((byte)(dest & immediate));
+                    break;
+                }
+            case 2:
+                WriteRm8Resolved(bus, isRegister, register, address, (byte)~dest);
+                break;
+            default:
+                StopUnsupportedGroup(0xf6, op);
+                break;
+        }
+    }
+
+    private void ExecuteGroupFE(IV25Bus bus)
+    {
+        byte modrm = Fetch(bus);
+        int op = (modrm >> 3) & 7;
+        byte dest = ReadRm8Resolved(bus, modrm, out bool isRegister, out int register, out uint address);
+        switch (op)
+        {
+            case 1:
+                {
+                    byte result = (byte)(dest - 1);
+                    SetIncDecFlags8(result);
+                    WriteRm8Resolved(bus, isRegister, register, address, result);
+                    break;
+                }
+            default:
+                StopUnsupportedGroup(0xfe, op);
+                break;
+        }
+    }
+
+    private void ExecuteStosw(IV25Bus bus)
+    {
+        int count = _rep ? _regs[Cx] : 1;
+        while (count-- > 0)
+        {
+            Write16(bus, ((uint)_sregs[Ds1] << 4) + _regs[Di], _regs[Ax]);
+            _regs[Di] = unchecked((ushort)(_regs[Di] + (_direction ? -2 : 2)));
+        }
+
+        if (_rep)
+            _regs[Cx] = 0;
+    }
+
+    private void ExecuteMovsb(IV25Bus bus)
+    {
+        int count = _rep ? _regs[Cx] : 1;
+        while (count-- > 0)
+        {
+            byte value = Read8(bus, GetDirectAddress(Ds0, _regs[Si]));
+            Write8(bus, ((uint)_sregs[Ds1] << 4) + _regs[Di], value);
+            int step = _direction ? -1 : 1;
+            _regs[Si] = unchecked((ushort)(_regs[Si] + step));
+            _regs[Di] = unchecked((ushort)(_regs[Di] + step));
+        }
+
+        if (_rep)
+            _regs[Cx] = 0;
     }
 
     private void ExecuteGroup81(IV25Bus bus)
@@ -551,7 +796,15 @@ public sealed class V25
             displacement = (short)FetchWord(bus);
 
         offset = (ushort)(baseValue + displacement);
-        uint segmentBase = _segmentPrefix && defaultSegment is Ds0 or Ss
+        uint segmentBase = _segmentPrefix
+            ? _prefixBase
+            : (uint)_sregs[defaultSegment] << 4;
+        return segmentBase + offset;
+    }
+
+    private uint GetDirectAddress(int defaultSegment, ushort offset)
+    {
+        uint segmentBase = _segmentPrefix
             ? _prefixBase
             : (uint)_sregs[defaultSegment] << 4;
         return segmentBase + offset;
@@ -632,6 +885,12 @@ public sealed class V25
         _sign = (byte)((result & 0x8000) != 0 ? 1 : 0);
     }
 
+    private void SetIncDecFlags8(byte result)
+    {
+        _zero = (byte)(result == 0 ? 1 : 0);
+        _sign = (byte)((result & 0x80) != 0 ? 1 : 0);
+    }
+
     private void SetAddFlags8(byte left, byte right, byte result)
     {
         _carry = (byte)(left + right > 0xff ? 1 : 0);
@@ -662,6 +921,14 @@ public sealed class V25
         _overflow = 0;
         _zero = (byte)(result == 0 ? 1 : 0);
         _sign = (byte)((result & 0x8000) != 0 ? 1 : 0);
+    }
+
+    private void SetLogicalFlags8(byte result)
+    {
+        _carry = 0;
+        _overflow = 0;
+        _zero = (byte)(result == 0 ? 1 : 0);
+        _sign = (byte)((result & 0x80) != 0 ? 1 : 0);
     }
 
     private void SetSubFlags8(byte left, byte right, byte result)

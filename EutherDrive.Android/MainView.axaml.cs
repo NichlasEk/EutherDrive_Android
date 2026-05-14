@@ -1453,6 +1453,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.System32.System32Adapter system32 => system32.GetTargetFps(),
             EutherDrive.Core.Arcade.Snk.NeoGeoAdapter neoGeo => neoGeo.GetTargetFps(),
             EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter outZone => outZone.GetTargetFps(),
+            EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter batsugun => batsugun.GetTargetFps(),
             EutherDrive.Core.Arcade.Igs.Pgm2Adapter pgm2 => pgm2.GetTargetFps(),
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => DefaultTargetFrameRate,
             _ => DefaultTargetFrameRate
@@ -4305,6 +4306,9 @@ public partial class MainView : UserControl
                 break;
             case EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter outZone:
                 outZone.SetMasterVolumePercent(100);
+                break;
+            case EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter batsugun:
+                batsugun.SetMasterVolumePercent(100);
                 break;
             case EutherDrive.Core.Arcade.DataEast.Boogwing.BoogwingAdapter boogwing:
                 boogwing.SetMasterVolumePercent(100);
