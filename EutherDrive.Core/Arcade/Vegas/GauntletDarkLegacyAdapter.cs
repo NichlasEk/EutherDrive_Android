@@ -514,6 +514,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeTickWaitLoop(pc))
             return;
+        if (TryFastPathKnownRuntimeFrameStateCallback(pc))
+            return;
         if (TryFastPathKnownRuntimeCommandCompleteWait(pc))
             return;
         NormalizeKnownGlideFifoState(pc);
@@ -3031,6 +3033,78 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:BOOT] runtime-tick-wait-loop pc={pc:x16} " +
                 $"counter={baseline:x8}->{next:x8}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeFrameStateCallback(ulong pc)
+    {
+        const ulong entry = 0xffffffff800e0cf4UL;
+        const ulong state = 0xffffffff8021af10UL;
+
+        bool atEntry = pc == entry;
+        bool afterStatusLoad = pc == 0xffffffff800e0d08UL;
+        if (!_enableBootCountDelay || (!atEntry && !afterStatusLoad))
+            return false;
+
+        if (_memory.Read32(entry) != 0x27bdffe8U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c028022U ||
+            _memory.Read32(entry + 0x08UL) != 0x2443af10U ||
+            _memory.Read32(entry + 0x0cUL) != 0xafbf0010U ||
+            _memory.Read32(entry + 0x10UL) != 0x8c620018U ||
+            _memory.Read32(entry + 0x14UL) != 0x04400006U ||
+            _memory.Read32(entry + 0x18UL) != 0x00000000U ||
+            _memory.Read32(entry + 0x1cUL) != 0x8c620020U ||
+            _memory.Read32(entry + 0x20UL) != 0x24420001U ||
+            _memory.Read32(entry + 0x24UL) != 0xac620020U ||
+            _memory.Read32(entry + 0x28UL) != 0x0c040a81U ||
+            _memory.Read32(entry + 0x2cUL) != 0x8c640018U ||
+            _memory.Read32(entry + 0x30UL) != 0x8fbf0010U ||
+            _memory.Read32(entry + 0x34UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x38UL) != 0x27bd0018U)
+        {
+            return false;
+        }
+
+        ulong sp = _gpr[29];
+        ulong returnAddress = _gpr[31];
+        if (afterStatusLoad)
+        {
+            if (!IsMainRamRange(sp + 0x10UL, 4))
+                return false;
+            returnAddress = SignExtend32(_memory.Read32(sp + 0x10UL));
+        }
+
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000e0000UL or > 0x000e3000UL)
+            return false;
+
+        uint status = atEntry ? _memory.Read32(state + 0x18UL) : (uint)_gpr[2];
+        if ((status & 0x80000000u) == 0)
+        {
+            uint counter = _memory.Read32(state + 0x20UL) + 1u;
+            _memory.Write32(state + 0x20UL, counter);
+            _gpr[2] = SignExtend32(counter);
+            _gpr[4] = SignExtend32(status);
+        }
+        else
+        {
+            _gpr[2] = SignExtend32(status);
+        }
+
+        if (afterStatusLoad)
+        {
+            _gpr[31] = returnAddress;
+            _gpr[29] = sp + 0x18UL;
+        }
+        _gpr[3] = state;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] runtime-frame-state-callback pc={pc:x16} " +
+                $"status={status:x8} return={returnAddress:x16}");
         }
         return true;
     }

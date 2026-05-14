@@ -2916,3 +2916,81 @@ Next recommended target:
 3. A useful next probe is a CPU trace around
    `0xffffffff800e0cd0..0xffffffff800e0d60` plus stack dump at
    `0xffffffff807ffdd0`.
+
+## 2026-05-14 Follow-up: Runtime Frame-State Callback
+
+This pass added one verified fastpath after
+`5bc2a38 Fast path loaded Gauntlet Glide state helpers`.
+
+New code:
+
+- Added `TryFastPathKnownRuntimeFrameStateCallback` for the wrapper at
+  `0xffffffff800e0cf4`.
+  - The wrapper reads status from `0xffffffff8021af28`, increments
+    `0xffffffff8021af30`, and calls `0xffffffff80102a04`.
+  - `0xffffffff80102a04` was dumped and still emits Glide type-1 state packet
+    traffic, including `0x00030251`; it is not producing triangle/setup
+    packets.
+  - The fastpath matches both function entry `0xffffffff800e0cf4` and the
+    post-status-load budget endpoint `0xffffffff800e0d08`.
+
+Clean verification was done in `/tmp/eutherdrive-gauntlet-verify` because the
+main worktree build is currently blocked by unrelated dirty Boogwing errors.
+
+Clean build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+Probe:
+
+```text
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=100 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw \
+    EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 300 2000000
+```
+
+New endpoint:
+
+```text
+frame=300
+pc=0xffffffff80104068
+lastOp=0x30e20002
+ra=0xffffffff801090bc
+sp=0xffffffff807ffdc0
+voodoo regs=1904456 fifoWords=3794132 fifoPackets=1894852
+drawPackets=0 directTriangles=0 setupTriangles=0
+lfbWrites=18546688 texWrites=1 fastFills=283 swaps=566
+packetTypes=0:0,1:1893457,2:0,3:0,4:1395,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=151456 colored=21408
+```
+
+Interpretation:
+
+- Endpoint moved from `0xffffffff800e0d08` to `0xffffffff80104068`.
+- Swap spam dropped sharply from `450872` to `566`.
+- The framebuffer is still diagnostic/clear-bars only.
+- No real render packets yet: `drawPackets`, `directTriangles`, and
+  `setupTriangles` remain `0`.
+
+Attempted but not kept:
+
+- A speculative fastpath for the larger loaded state emitter around
+  `0xffffffff80103fc8` / `0xffffffff80104068` built cleanly but did not move
+  the endpoint or stats, so it was removed before commit.
+
+Next target:
+
+1. Continue from `0xffffffff80104068` inside the loaded Glide state-emitter
+   body.
+2. Dump/trace around `0xffffffff80103fc8..0xffffffff80104140` with stack
+   around `0xffffffff807ffdc0`.
+3. Keep treating type-1-only traffic as bring-up/state noise until the guest
+   emits setup/triangle packet types.
