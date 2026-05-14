@@ -504,6 +504,30 @@ namespace mame
             return value;
         }
 
+        protected override void machine_start()
+        {
+            save_item(NAME(new { m_sharedram }));
+            save_item(NAME(new { m_mainram }));
+            save_item(NAME(new { m_bcu_vram }));
+            save_item(NAME(new { m_bcu_scrollx }));
+            save_item(NAME(new { m_bcu_scrolly }));
+            save_item(NAME(new { m_spriteram }));
+            save_item(NAME(new { m_spritesizeram }));
+            save_item(NAME(new { m_paletteram }));
+            save_item(NAME(new { m_tile_offsets }));
+            SaveStateRef(nameof(m_bcu_ram_offs), () => m_bcu_ram_offs, value => m_bcu_ram_offs = value);
+            SaveStateRef(nameof(m_spriteram_offs), () => m_spriteram_offs, value => m_spriteram_offs = value);
+            SaveStateRef(nameof(m_fcu_flipscreen), () => m_fcu_flipscreen, value => m_fcu_flipscreen = value);
+            SaveStateRef(nameof(m_bcu_flipscreen), () => m_bcu_flipscreen, value => m_bcu_flipscreen = value);
+            SaveStateRef(nameof(m_vctrl_intenable), () => m_vctrl_intenable, value => m_vctrl_intenable = value);
+            SaveStateRef(nameof(m_vblank_state), () => m_vblank_state, value => m_vblank_state = value);
+            SaveStateRef(nameof(m_bcu_offsetx), () => m_bcu_offsetx, value => m_bcu_offsetx = value);
+            SaveStateRef(nameof(m_bcu_offsety), () => m_bcu_offsety, value => m_bcu_offsety = value);
+            SaveStateRef(nameof(m_frame_counter), () => m_frame_counter, value => m_frame_counter = value);
+            SaveStateRef(nameof(m_external_start_frames), () => m_external_start_frames, value => m_external_start_frames = value);
+            SaveStateRef(nameof(m_external_coin_frames), () => m_external_coin_frames, value => m_external_coin_frames = value);
+        }
+
         protected override void machine_reset()
         {
             Array.Clear(m_sharedram, 0, m_sharedram.Length);
@@ -536,6 +560,11 @@ namespace mame
             m_external_coin_frames = 0;
             Array.Clear(m_mainram, 0, m_mainram.Length);
             reset_sound();
+        }
+
+        void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
+        {
+            machine().save().save_item_ref(this, name(), tag(), 0, itemName, getter, setter);
         }
 
 

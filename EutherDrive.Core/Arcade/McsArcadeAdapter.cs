@@ -957,7 +957,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _hasPendingStateRequest = true;
             }
 
-            _frameGateChanged.Set();
+            RequestFrameAdvance();
 
             while (!request.Done.Wait(TimeSpan.FromMilliseconds(50)))
             {
@@ -1102,7 +1102,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         private bool RequiresStrictFrameGate()
             => EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_driverName)
-                || EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedDriverName(_driverName);
+                || EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedDriverName(_driverName)
+                || EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter.IsSupportedDriverName(_driverName);
 
         private void WaitForFrameAdvance(mame.running_machine machine, bool processStateRequests)
         {

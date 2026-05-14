@@ -617,6 +617,13 @@ class Program
                 using var outZone = new OutZoneAdapter();
                 outZone.LoadRom(romPath);
                 var outZoneInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_OUTZONE_HEADLESS_INPUT_SCRIPT"));
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                int unchangedFrames = 0;
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                ReadOnlySpan<byte> fbIn = outZone.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
@@ -635,15 +642,34 @@ class Program
                         z: input.R,
                         mode: input.Select,
                         padType: PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
                     outZone.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        ReadOnlySpan<byte> fb = outZone.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                        unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                        lastFingerprint = fingerprint;
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: outzone_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={outZone.FrameCounter ?? -1}");
+                        if (frame == 0 || frame == 5 || frame == 10)
+                            DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_outzone_frame{frame}.ppm"));
+                    }
                 }
 
                 ReadOnlySpan<byte> fbOut = outZone.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
                 ReadOnlySpan<short> audioOut = outZone.GetAudioBuffer(out int audioRate, out int outZoneAudioChannels);
-                Console.WriteLine($"[HEADLESS] OutZone final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                Console.WriteLine($"[HEADLESS] OutZone final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={outZone.FrameCounter ?? -1}");
                 Console.WriteLine($"[HEADLESS] OutZone audio samples={audioOut.Length} rate={audioRate} channels={outZoneAudioChannels} nonzero_samples={CountNonZeroAudioSamples(audioOut)} max_abs={AudioPeak(audioOut)}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                PrintHeadlessPerf("OutZone", framesToRun, runTicksTotal, runTicksMin, runTicksMax, outZone.GetTargetFps());
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -3043,14 +3069,15 @@ class Program
             || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
             || (string.IsNullOrEmpty(coreOverride) && Deco32Adapter.IsSupportedArchive(romPath));
+        bool useOutZone = string.Equals(coreOverride, "outzone", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "toaplan-outzone", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(coreOverride, "toaplan1", StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(coreOverride) && OutZoneAdapter.IsSupportedArchive(romPath));
         bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(coreOverride, "outzone", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(coreOverride, "toaplan-outzone", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(coreOverride, "toaplan1", StringComparison.OrdinalIgnoreCase)
-            || (string.IsNullOrEmpty(coreOverride) && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+            || (string.IsNullOrEmpty(coreOverride) && !useOutZone && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
         bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
             || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
@@ -3226,6 +3253,54 @@ class Program
             ReadOnlySpan<byte> fb = deco32.GetFrameBuffer(out int w, out int h, out int s);
             ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
             Console.WriteLine($"[HEADLESS] Deco32 savestate roundtrip ok. payload_bytes={snapshotDeco32.Length} next_frame=0x{fingerprint:X16}");
+            return 0;
+        }
+
+        if (useOutZone)
+        {
+            using var outZone = new OutZoneAdapter();
+            outZone.LoadRom(romPath);
+
+            int warmupFrames = ReadPositiveIntEnv("EUTHERDRIVE_HEADLESS_SAVESTATE_WARMUP_FRAMES", 2);
+            for (int i = 0; i < warmupFrames; i++)
+                outZone.RunFrame();
+
+            byte[] snapshotOutZone;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                outZone.SaveState(writer);
+                writer.Flush();
+                snapshotOutZone = ms.ToArray();
+            }
+
+            using (var ms = new MemoryStream(snapshotOutZone))
+            using (var reader = new BinaryReader(ms))
+            {
+                outZone.LoadState(reader);
+            }
+
+            byte[] snapshotImmediateOutZone;
+            using (var ms = new MemoryStream())
+            using (var writer = new BinaryWriter(ms))
+            {
+                outZone.SaveState(writer);
+                writer.Flush();
+                snapshotImmediateOutZone = ms.ToArray();
+            }
+
+            if (!snapshotOutZone.SequenceEqual(snapshotImmediateOutZone))
+            {
+                Console.Error.WriteLine("[HEADLESS] OutZone savestate roundtrip failed: immediate payload mismatch.");
+                foreach (string mismatch in DescribeMcsStateMismatches(snapshotOutZone, snapshotImmediateOutZone).Take(20))
+                    Console.Error.WriteLine($"[HEADLESS]   {mismatch}");
+                return 1;
+            }
+
+            outZone.RunFrame();
+            ReadOnlySpan<byte> fb = outZone.GetFrameBuffer(out int w, out int h, out int s);
+            ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+            Console.WriteLine($"[HEADLESS] OutZone savestate roundtrip ok. payload_bytes={snapshotOutZone.Length} next_frame=0x{fingerprint:X16} frameCounter={outZone.FrameCounter ?? -1}");
             return 0;
         }
 
@@ -3927,11 +4002,15 @@ class Program
             bool usePgm2 = string.Equals(coreOverride, "pgm2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "igs-pgm2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Pgm2Adapter.IsSupportedArchive(romPath));
+            bool useOutZone = string.Equals(coreOverride, "outzone", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "toaplan-outzone", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "toaplan1", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && OutZoneAdapter.IsSupportedArchive(romPath));
             bool useMcsArcade = string.Equals(coreOverride, "arcade", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useOutZone && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
@@ -4501,6 +4580,87 @@ class Program
                 Console.WriteLine($"[HEADLESS] PGM2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={pgm2.FrameCounter ?? -1}");
                 Console.WriteLine($"[HEADLESS] PGM2 final debug {pgm2.DebugSummary}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_pgm2_state_output.ppm"));
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useOutZone)
+            {
+                Console.WriteLine("[HEADLESS] Using Toaplan Out Zone core");
+                using var outZone = new OutZoneAdapter();
+                outZone.LoadRom(romPath);
+
+                int? slotOverrideOutZone = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadOutZone = TryLoadSavestatePayload(savestatePath, outZone.RomIdentity, slotOverrideOutZone, out var outZoneError);
+                if (payloadOutZone == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {outZoneError}");
+                    return 1;
+                }
+
+                using (var outZoneStateStream = new MemoryStream(payloadOutZone, writable: false))
+                using (var outZoneStateReader = new BinaryReader(outZoneStateStream))
+                    outZone.LoadState(outZoneStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (OutZone)");
+                ReadOnlySpan<byte> fbBefore = outZone.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                int unchangedFrames = 0;
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                Console.WriteLine($"[HEADLESS] OutZone before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) fp=0x{lastFingerprint:X16} frameCounter={outZone.FrameCounter ?? -1}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_outzone_state_before.ppm"));
+
+                var outZoneInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_OUTZONE_HEADLESS_INPUT_SCRIPT"));
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, outZoneInputScript);
+                    outZone.SetInputState(
+                        up: input.Up,
+                        down: input.Down,
+                        left: input.Left,
+                        right: input.Right,
+                        a: input.A,
+                        b: input.B,
+                        c: input.X,
+                        start: input.Start,
+                        x: input.Y,
+                        y: input.L,
+                        z: input.R,
+                        mode: input.Select,
+                        padType: PadType.SixButton);
+
+                    long runStart = Stopwatch.GetTimestamp();
+                    outZone.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+
+                    ReadOnlySpan<byte> fb = outZone.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: outzone_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={outZone.FrameCounter ?? -1}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_outzone_state_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = outZone.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                ReadOnlySpan<short> audioOut = outZone.GetAudioBuffer(out int audioRate, out int outZoneAudioChannels);
+                Console.WriteLine($"[HEADLESS] OutZone final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={outZone.FrameCounter ?? -1}");
+                Console.WriteLine($"[HEADLESS] OutZone audio samples={audioOut.Length} rate={audioRate} channels={outZoneAudioChannels} nonzero_samples={CountNonZeroAudioSamples(audioOut)} max_abs={AudioPeak(audioOut)}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_outzone_state_output.ppm"));
+                PrintHeadlessPerf("OutZone-State", framesToRun, runTicksTotal, runTicksMin, runTicksMax, outZone.GetTargetFps());
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
