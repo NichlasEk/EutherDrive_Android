@@ -378,6 +378,8 @@ public sealed class BoogwingAdapter : IEmulatorCore, ISavestateCapable
 
 internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
 {
+    private const int VisibleOriginY = 8;
+
     private readonly byte[] _workRam = new byte[0x10000];
     private readonly ushort[][] _pf = { new ushort[0x1000], new ushort[0x1000], new ushort[0x1000], new ushort[0x1000] };
     private readonly ushort[][] _rowscroll = { new ushort[0x800], new ushort[0x800], new ushort[0x800], new ushort[0x800] };
@@ -417,7 +419,7 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
     public string DebugSummary
         => string.Create(
             CultureInfo.InvariantCulture,
-            $"ramW={_ramWrites} palW/D={_paletteWrites}/{_paletteDmas} {PaletteDebugSummary()} tileW={_tileWrites} sprW={_spriteWrites} pri=0x{_priority:X4} prot={_protReads}/{_protWrites} snd=0x{_soundLatch:X2}/{_soundWrites} unk={_unknownReads}/{_unknownWrites} {_prot.DebugSummary}");
+            $"ramW={_ramWrites} palW/D={_paletteWrites}/{_paletteDmas} {PaletteDebugSummary()} tileW={_tileWrites} sprW={_spriteWrites} pri=0x{_priority:X4} c0={FormatControl(0)} c1={FormatControl(1)} rs3={FormatRowscroll(3)} prot={_protReads}/{_protWrites} snd=0x{_soundLatch:X2}/{_soundWrites} unk={_unknownReads}/{_unknownWrites} {_prot.DebugSummary}");
 
     public BusSignals Signals => new(false);
     public ushort CurrentOpcode { get; private set; }
@@ -695,13 +697,11 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         if (priority == 0x05)
         {
             RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2, 0x100, tileSize: 16, fiveBpp: true, opaque: true, priorityValue: 0);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3, 0x400, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 32);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 2, _roms.Tiles3, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 32);
+            RenderCombinedLayerIndexed(_tempBitmap, _priorityMap, width, height, opaque: false, priorityValue: 32);
         }
         else if (priority == 0x04)
         {
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 3, _roms.Tiles3, 0x400, tileSize: 16, fiveBpp: false, opaque: true, priorityValue: 0);
-            RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 2, _roms.Tiles3, 0x300, tileSize: 16, fiveBpp: false, opaque: false, priorityValue: 0);
+            RenderCombinedLayerIndexed(_tempBitmap, _priorityMap, width, height, opaque: true, priorityValue: 0);
             RenderLayerIndexed(_tempBitmap, _priorityMap, width, height, 1, _roms.Tiles2, 0x100, tileSize: 16, fiveBpp: true, opaque: false, priorityValue: 32);
         }
         else if (priority == 0x01 || priority == 0x02)
@@ -751,7 +751,7 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
             int offset = y * width + x;
             target[offset] = (ushort)palettePixel;
             if (priorityMap is not null)
-                priorityMap[offset] = priorityValue;
+                priorityMap[offset] = (byte)(priorityMap[offset] | priorityValue);
         });
     }
 
@@ -781,13 +781,23 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         };
         bool enableTileFlipX = (control1 & 0x01) != 0;
         bool enableTileFlipY = (control1 & 0x02) != 0;
+        int rowType = 1 << ((control0 >> 3) & 0x0f);
+        int colType = 8 << (control0 & 0x07);
+        bool rowScroll = (control1 & 0x40) != 0;
+        bool columnScroll = (control1 & 0x20) != 0;
+        ushort[] rowscroll = _rowscroll[layer];
 
         for (int y = 0; y < height; y++)
         {
-            int sy = (y + scrollY) & heightMask;
+            int screenY = y + VisibleOriginY;
+            int baseSy = (screenY + scrollY) & heightMask;
+            int rowScrollIndex = columnScroll ? baseSy / rowType : screenY / rowType;
+            int sourceX = rowScroll ? scrollX + rowscroll[rowScrollIndex & 0x7ff] : scrollX;
             for (int x = 0; x < width; x++)
             {
-                int sx = (x + scrollX) & widthMask;
+                int sx = (x + sourceX) & widthMask;
+                int columnOffset = columnScroll ? rowscroll[0x200 + (((sx & 0x1ff) / colType) & 0x1ff)] : 0;
+                int sy = (baseSy + columnOffset) & heightMask;
                 int tx = sx / actualTileSize;
                 int ty = sy / actualTileSize;
                 int px = sx & (actualTileSize - 1);
@@ -823,6 +833,86 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         }
     }
 
+    private void RenderCombinedLayerIndexed(ushort[] target, byte[] priorityMap, int width, int height, bool opaque, byte priorityValue)
+    {
+        ushort[] ctrl = _control[1];
+        int control0 = ctrl[5] & 0xff;
+        int control1 = ctrl[6] & 0xff;
+        if ((control0 & 0x80) == 0 || (control1 & 0x80) != 0)
+            return;
+
+        const int tileSize = 16;
+        const int mapCols = 64;
+        const int mapRows = 32;
+        int widthMask = mapCols * tileSize - 1;
+        int heightMask = mapRows * tileSize - 1;
+        int scrollX = ctrl[1] & 0x3ff;
+        int scrollY = ctrl[2] & 0x1ff;
+        int bank1 = BankCallback2(ctrl[7] & 0xff);
+        int bank2 = BankCallback2(ctrl[7] >> 8);
+        bool enableTileFlipX = (control1 & 0x01) != 0;
+        bool enableTileFlipY = (control1 & 0x02) != 0;
+        int rowType = 1 << ((control0 >> 3) & 0x0f);
+        int colType = 8 << (control0 & 0x07);
+        bool rowScroll = (control1 & 0x40) != 0;
+        bool columnScroll = (control1 & 0x20) != 0;
+        ushort[] rowscroll = _rowscroll[2];
+
+        for (int y = 0; y < height; y++)
+        {
+            int screenY = y + VisibleOriginY;
+            int baseSy = (screenY + scrollY) & heightMask;
+            int rowScrollIndex = columnScroll ? baseSy / rowType : screenY / rowType;
+            int sourceX = rowScroll ? scrollX + rowscroll[rowScrollIndex & 0x7ff] : scrollX;
+            for (int x = 0; x < width; x++)
+            {
+                int sx = (x + sourceX) & widthMask;
+                int columnOffset = columnScroll ? rowscroll[0x200 + (((sx & 0x1ff) / colType) & 0x1ff)] : 0;
+                int sy = (baseSy + columnOffset) & heightMask;
+                int tx = sx / tileSize;
+                int ty = sy / tileSize;
+                int px = sx & (tileSize - 1);
+                int py = sy & (tileSize - 1);
+                int entry = Deco16ScanRows(tx, ty) & 0xfff;
+
+                int palettePixel1 = ReadLayerPalettePixel(_pf[2], _roms.Tiles3, entry, bank1, 0x300, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen1);
+                int palettePixel2 = ReadLayerPalettePixel(_pf[3], _roms.Tiles3, entry, bank2, 0x400, px, py, tileSize, enableTileFlipX, enableTileFlipY, out int pen2);
+                if ((pen1 | pen2) == 0 && !opaque)
+                    continue;
+
+                target[y * width + x] = (ushort)(palettePixel1 | ((palettePixel2 & 0x0f) << 4));
+                int offset = y * width + x;
+                priorityMap[offset] = (byte)(priorityMap[offset] | priorityValue);
+            }
+        }
+    }
+
+    private static int ReadLayerPalettePixel(ushort[] ram, byte[] gfx, int entry, int tileBank, int colorBase, int px, int py, int tileSize, bool enableTileFlipX, bool enableTileFlipY, out int pen)
+    {
+        ushort tile = ram[entry & (ram.Length - 1)];
+        int color = (tile >> 12) & 0x0f;
+        bool tileFlipX = false;
+        bool tileFlipY = false;
+        if ((tile & 0x8000) != 0)
+        {
+            if (enableTileFlipX)
+            {
+                tileFlipX = true;
+                color &= 0x07;
+            }
+            if (enableTileFlipY)
+            {
+                tileFlipY = true;
+                color &= 0x07;
+            }
+        }
+
+        int srcX = tileFlipX ? tileSize - 1 - px : px;
+        int srcY = tileFlipY ? tileSize - 1 - py : py;
+        pen = Decode4BppTile(gfx, (tile & 0x0fff) + tileBank, srcX, srcY);
+        return (colorBase + color) * 16 + pen;
+    }
+
     private void RenderSpritesRaw(ushort[] raw, int width, int height, ushort[] spr, byte[] gfx, long frame)
     {
         for (int offs = 0; offs + 3 < spr.Length; offs += 4)
@@ -856,7 +946,7 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
             for (int m = multi; m >= 0; m--)
             {
                 int tile = sprite - m * inc;
-                int dy = y + 16 * m;
+                int dy = y + 16 * m - VisibleOriginY;
                 DrawSpriteTileRaw(raw, width, height, gfx, tile, color, x, dy, fx, fy);
                 if (wide)
                     DrawSpriteTileRaw(raw, width, height, gfx, tile - mult2, color, x + 16, dy, fx, fy);
@@ -1104,6 +1194,16 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         return string.Create(CultureInfo.InvariantCulture, $"palnz={staged}/{buffered}/{visible}/first{first}:0x{firstRaw:X8}");
     }
 
+    private string FormatControl(int chip)
+        => string.Create(
+            CultureInfo.InvariantCulture,
+            $"[{_control[chip][0]:X4},{_control[chip][1]:X4},{_control[chip][2]:X4},{_control[chip][3]:X4},{_control[chip][4]:X4},{_control[chip][5]:X4},{_control[chip][6]:X4},{_control[chip][7]:X4}]");
+
+    private string FormatRowscroll(int layer)
+        => string.Create(
+            CultureInfo.InvariantCulture,
+            $"[{_rowscroll[layer][0]:X4},{_rowscroll[layer][1]:X4},{_rowscroll[layer][8]:X4},{_rowscroll[layer][16]:X4},{_rowscroll[layer][24]:X4},{_rowscroll[layer][32]:X4},{_rowscroll[layer][40]:X4},{_rowscroll[layer][48]:X4},{_rowscroll[layer][56]:X4},{_rowscroll[layer][63]:X4}]");
+
     private int GetAceAlpha(int index)
     {
         int alpha = _ace[index & 0x1f] & 0xff;
@@ -1332,11 +1432,11 @@ internal sealed class BoogwingRomSet
         byte[] tiles2 = new byte[0x300000];
         Copy(Required(entries, "mbd-01.9b"), tiles2, 0x000000);
         Copy(Required(entries, "mbd-00.8b"), tiles2, 0x100000);
+        Deco32GfxDecryptor.Decrypt56(tiles2);
         byte[] tiles2Hi = new byte[0x100000];
         Load16Byte(tiles2Hi, Required(entries, "mbd-02.10e"), 0x000000);
-        Deco56RemapGfx(tiles2Hi);
+        Deco32GfxDecryptor.Remap56(tiles2Hi);
         Copy(tiles2Hi, tiles2, 0x200000);
-        Deco32GfxDecryptor.Decrypt56(tiles2);
 
         byte[] tiles3 = new byte[0x200000];
         Copy(Required(entries, "mbd-03.13b"), tiles3, 0x000000);
@@ -1450,21 +1550,6 @@ internal sealed class BoogwingRomSet
         ushort result = 0;
         for (int i = 0; i < bits.Length; i++)
             result = (ushort)((result << 1) | ((value >> bits[i]) & 1));
-        return result;
-    }
-
-    private static void Deco56RemapGfx(byte[] data)
-    {
-        byte[] copy = (byte[])data.Clone();
-        for (int i = 0; i < data.Length; i++)
-            data[i] = copy[Bitswap24((uint)i, 23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,0,1,2) & (copy.Length - 1)];
-    }
-
-    private static int Bitswap24(uint value, params int[] bits)
-    {
-        int result = 0;
-        for (int i = 0; i < bits.Length; i++)
-            result = (result << 1) | (int)((value >> bits[i]) & 1);
         return result;
     }
 

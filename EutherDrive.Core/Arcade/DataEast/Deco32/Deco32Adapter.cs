@@ -695,6 +695,26 @@ internal static class Deco32GfxDecryptor
             Deco32GfxDecryptTables.Deco74AddressTable,
             Deco32GfxDecryptTables.Deco74SwapTable);
 
+    public static void Remap56(byte[] data)
+        => Remap(data, Deco32GfxDecryptTables.Deco56AddressTable);
+
+    private static void Remap(byte[] data, ushort[] addressTable)
+    {
+        int words = data.Length >> 1;
+        ushort[] source = new ushort[words];
+        for (int i = 0; i < words; i++)
+            source[i] = ReadBig16(data, i << 1);
+
+        for (int i = 0; i < words; i++)
+        {
+            int sourceWord = (i & ~0x7ff) | addressTable[i & 0x7ff];
+            if ((uint)sourceWord >= (uint)source.Length)
+                continue;
+
+            WriteBig16(data, i << 1, source[sourceWord]);
+        }
+    }
+
     private static void Decrypt(byte[] data, byte[] xorTable, ushort[] addressTable, byte[] swapTable)
     {
         int words = data.Length >> 1;
