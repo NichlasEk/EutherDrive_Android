@@ -2334,25 +2334,27 @@ namespace Ryu64.MIPS
                 if (lastX < firstX)
                     continue;
 
-                long yStep = (long)Math.Round(sampleY - yh);
-                long rowS = tex.S + yStep * tex.DsDe;
-                long rowT = tex.T + yStep * tex.DtDe;
-                long rowW = tex.W + yStep * tex.DwDe;
+                double yDelta = sampleY - yh;
+                long yStep = (long)Math.Round(yDelta);
+                long rowS = tex.S + (long)Math.Round(yDelta * tex.DsDe);
+                long rowT = tex.T + (long)Math.Round(yDelta * tex.DtDe);
+                long rowW = tex.W + (long)Math.Round(yDelta * tex.DwDe);
                 long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
-                long rowR = modulateShade ? shade.R + yStep * (long)shade.DrDe : 0;
-                long rowG = modulateShade ? shade.G + yStep * (long)shade.DgDe : 0;
-                long rowB = modulateShade ? shade.B + yStep * (long)shade.DbDe : 0;
-                long rowA = modulateShade ? shade.A + yStep * (long)shade.DaDe : 0;
+                long rowR = modulateShade ? shade.R + (long)Math.Round(yDelta * shade.DrDe) : 0;
+                long rowG = modulateShade ? shade.G + (long)Math.Round(yDelta * shade.DgDe) : 0;
+                long rowB = modulateShade ? shade.B + (long)Math.Round(yDelta * shade.DbDe) : 0;
+                long rowA = modulateShade ? shade.A + (long)Math.Round(yDelta * shade.DaDe) : 0;
                 double spanAnchorX = flip ? left : right;
-                long firstXStep = (long)Math.Round(firstX + 0.5 - spanAnchorX);
-                long currentS = rowS + firstXStep * tex.DsDx;
-                long currentT = rowT + firstXStep * tex.DtDx;
-                long currentW = rowW + firstXStep * tex.DwDx;
+                double xDelta = firstX + 0.5 - spanAnchorX;
+                long firstXStep = (long)Math.Round(xDelta);
+                long currentS = rowS + (long)Math.Round(xDelta * tex.DsDx);
+                long currentT = rowT + (long)Math.Round(xDelta * tex.DtDx);
+                long currentW = rowW + (long)Math.Round(xDelta * tex.DwDx);
                 long currentZ = useDepth ? rowZ + firstXStep * (long)depth.DzDx : 0;
-                long currentR = modulateShade ? rowR + firstXStep * (long)shade.DrDx : 0;
-                long currentG = modulateShade ? rowG + firstXStep * (long)shade.DgDx : 0;
-                long currentB = modulateShade ? rowB + firstXStep * (long)shade.DbDx : 0;
-                long currentA = modulateShade ? rowA + firstXStep * (long)shade.DaDx : 0;
+                long currentR = modulateShade ? rowR + (long)Math.Round(xDelta * shade.DrDx) : 0;
+                long currentG = modulateShade ? rowG + (long)Math.Round(xDelta * shade.DgDx) : 0;
+                long currentB = modulateShade ? rowB + (long)Math.Round(xDelta * shade.DbDx) : 0;
+                long currentA = modulateShade ? rowA + (long)Math.Round(xDelta * shade.DaDx) : 0;
                 bool usePerspective = EnableRdpPerspectiveTexture && _rdpOtherModesPerspectiveTexture;
                 uint rowPixelIndex = (uint)y * _rdpColorImageWidth;
                 uint rowStart = _rdpColorImageAddress + ((rowPixelIndex + (uint)firstX) * bytesPerPixel);
@@ -4283,10 +4285,10 @@ namespace Ryu64.MIPS
             return (row & 1u) == 0u ? RdpTmemWordAddrXor : RdpTmemWordDwordSwapXor;
         }
 
-        private static uint RdpTmem8Address(uint tbase, uint s, uint t, bool fourBit)
+        private static uint RdpTmem8Address(uint tbase, uint s, uint t, bool fourBit, bool tlut)
         {
             uint address = fourBit ? (((tbase << 4) + s) >> 1) : ((tbase << 3) + s);
-            return (address ^ RdpTmemByteRowXor(t)) & 0xFFFu;
+            return (address ^ RdpTmemByteRowXor(t)) & (tlut ? 0x7FFu : 0xFFFu);
         }
 
         private static uint RdpTmem16Address(uint tbase, uint s, uint t, uint wordMask)
@@ -4338,14 +4340,14 @@ namespace Ryu64.MIPS
                     uint index;
                     if ((tile.Size & 0x3u) == 0u)
                     {
-                        uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true);
+                        uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true, tlut: _rdpOtherModesEnableTlut);
                         byte packed = _rdpTmem[tmemOffset];
                         index = (sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
                         index += tile.Palette * 16u;
                     }
                     else
                     {
-                        uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false);
+                        uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false, tlut: _rdpOtherModesEnableTlut);
                         index = _rdpTmem[tmemOffset];
                     }
 
@@ -4403,7 +4405,7 @@ namespace Ryu64.MIPS
             {
                 case 0u:
                 {
-                    uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true);
+                    uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true, tlut: _rdpOtherModesEnableTlut);
                     byte packed = _rdpTmem[tmemOffset];
                     uint value = (sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
                     if (_rdpOtherModesEnableTlut)
@@ -4418,7 +4420,7 @@ namespace Ryu64.MIPS
                 }
                 case 1u:
                 {
-                    uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false);
+                    uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false, tlut: _rdpOtherModesEnableTlut);
                     uint value = _rdpTmem[tmemOffset];
                     if (_rdpOtherModesEnableTlut)
                     {
@@ -4457,7 +4459,7 @@ namespace Ryu64.MIPS
             uint intensity;
             if ((size & 0x3u) == 0u)
             {
-                uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true);
+                uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: true, tlut: _rdpOtherModesEnableTlut);
                 byte packed = _rdpTmem[tmemOffset];
                 uint value = (sUnsigned & 1u) == 0u ? (uint)(packed >> 4) : (uint)(packed & 0x0F);
                 if (_rdpOtherModesEnableTlut)
@@ -4469,7 +4471,7 @@ namespace Ryu64.MIPS
             }
             else
             {
-                uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false);
+                uint tmemOffset = RdpTmem8Address(tbase, sUnsigned, tUnsigned, fourBit: false, tlut: _rdpOtherModesEnableTlut);
                 intensity = _rdpTmem[tmemOffset];
                 if (_rdpOtherModesEnableTlut)
                 {
