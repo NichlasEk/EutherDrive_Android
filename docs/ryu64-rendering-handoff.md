@@ -1,6 +1,112 @@
 # Ryu64 Rendering Handoff
 
-Date: 2026-05-14
+Date: 2026-05-15
+
+## 2026-05-15 Update
+
+Latest committed Ryu64 work:
+
+- `77378ad Reject weak Ryu64 framebuffer candidates`
+- `d1b0854 Restore Ryu64 Mario framebuffer selection`
+- `ef505b3 Stabilize Ryu64 savestate framebuffers`
+
+### MAME Comparison
+
+MAME does not scan RDRAM for a likely framebuffer candidate. The Nintendo 64 video path uses VI state directly:
+
+- `/home/nichlas/mame/src/mame/nintendo/n64_m.cpp`: `VI_ORIGIN` writes set `vi_origin = data & 0xffffff`.
+- `/home/nichlas/mame/src/mame/nintendo/n64_v.cpp`: `video_update16/32` reads from `m_rdram[(vi_origin & 0xffffff) >> 2]` using VI width/start/scale registers.
+
+This means Ryu64 should not let a weak "recent RDRAM" candidate override a bogus VI origin unless there is a real producer hint. The previous recent-candidate path could select noisy buffers like `0x00055800`/`0x00370000` in Mario, producing the ugly static framebuffer. `77378ad` removes that weak acceptance path and restores stricter candidate rejection.
+
+### Current Mario State
+
+After `77378ad`, Mario no longer locks onto the noisy framebuffer candidate. Headless cold boot now correctly reports no credible framebuffer instead of showing RDRAM noise.
+
+Observed in headless runs:
+
+- `VI_ORIGIN` repeatedly written as `0x0000027f`.
+- VI width becomes `0x140`, VI status reaches `0x00013016`.
+- RSP task counts show audio tasks only, for example `rsp[g=0,a=1244,o=0]`.
+- RDP never receives display lists: `rdp[lists=0,cmds=0/0]`.
+- `EUTHERDRIVE_TRACE_N64_RSP_TASK_DMEM=1` shows repeated `OSTask type=2` dispatches from PC `0x802f5268`.
+- No `OSTask type=1` graphics dispatch was seen in the traced cold boot window.
+
+Important VI trace point:
+
+- `VI_ORIGIN` write at CPU PC `0x802f55e8`
+- caller return around `0x802f53ec`
+- call target from trace looked like `jal 0x802f51e0`
+- origin value comes through stack/local state as `0x27f`
+
+The next bug is therefore not framebuffer selection. It is that Mario is not reaching or scheduling a graphics RSP/RDP task in this path, while audio RSP tasks are running.
+
+### Commands Run
+
+Build:
+
+```sh
+dotnet build EutherDrive.Headless/EutherDrive.Headless.csproj -c Release --no-restore
+```
+
+Result: build succeeded. Existing `SharpCompress` NU1902 warning remains.
+
+Mario no-noise verification:
+
+```sh
+rm -rf /tmp/mario_mame_style && mkdir -p /tmp/mario_mame_style && timeout 90s env EUTHERDRIVE_HEADLESS_CORE=n64 EUTHERDRIVE_HEADLESS_DUMP_DIR=/tmp/mario_mame_style EUTHERDRIVE_N64_HEADLESS_PERF=1 EUTHERDRIVE_N64_PERF=1 dotnet run --project EutherDrive.Headless/EutherDrive.Headless.csproj -c Release --no-build -- "/home/nichlas/roms/N64/Super Mario 64 (Europe) (En,Fr,De).z64" 300
+```
+
+Relevant result:
+
+- `fb_has_content=False`
+- no noisy framebuffer selected
+- `avg_fps=3.999`
+- `rsp[g=0,a=1244,o=0]`
+- `rdp[lists=0,cmds=0/0]`
+
+Task/VI trace:
+
+```sh
+timeout 90s env EUTHERDRIVE_HEADLESS_CORE=n64 EUTHERDRIVE_TRACE_N64_RSP_TASK_DMEM=1 EUTHERDRIVE_TRACE_N64_VI_REGS=1 dotnet run --project EutherDrive.Headless/EutherDrive.Headless.csproj -c Release --no-build -- "/home/nichlas/roms/N64/Super Mario 64 (Europe) (En,Fr,De).z64" 220
+```
+
+Relevant result:
+
+- repeated `RSP interpreter dispatch type=2`
+- repeated `VI_ORIGIN=0x27f`
+- no graphics task dispatch in captured output
+
+### Next Best Debug Path
+
+1. Trace the code around the Mario task submission routine at `0x802f5268`.
+   - It is dispatching audio OSTasks.
+   - Need determine why graphics OSTasks are not being queued or not being kicked.
+
+2. Trace the VI setup routine around `0x802f51e0` through `0x802f55e8`.
+   - Find where the stack/local origin field becomes `0x27f`.
+   - Confirm whether this is intentional blank/boot VI state or corrupted framebuffer pointer state.
+
+3. Do not add more broad RDRAM framebuffer scanning for Mario.
+   - MAME does not do this.
+   - It masks the real RSP/RDP scheduling problem and can show random memory as video.
+
+4. Keep producer-backed framebuffer hints only.
+   - RDP color image and tracked actual writes are still useful.
+   - Weak recent-write heuristics should stay rejected unless a new trace proves a safe producer relationship.
+
+### Working Tree Note
+
+At this handoff, only the Ryu64 candidate fix was committed. The worktree still has unrelated dirty files outside Ryu64:
+
+- `EutherDrive.Core/Arcade/McsArcadeAdapter.cs`
+- `EutherDrive.Core/Arcade/Toaplan/BatsugunAdapter.cs`
+- `EutherDrive.Core/Cpu/V25Emu/IV25Bus.cs`
+- `EutherDrive.Core/Cpu/V25Emu/V25.cs`
+- `Third_party/MCS/mcs/src/src/mame/toaplan/batsugun.cs`
+- `snap/`
+
+Do not include those in Ryu64 commits unless explicitly requested.
 
 ## Current State
 
