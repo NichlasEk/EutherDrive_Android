@@ -3365,9 +3365,19 @@ namespace Ryu64.MIPS
                 return;
 
             int tileIndex = (int)((w1 >> 24) & 0x7u);
-            uint texels = ((w1 >> 12) & 0x0FFFu) + 1u;
-            uint byteCount = RdpPackedBytesForTexels(texels, _rdpTextureImageSize);
-            CopyTextureImageToTmem(tileIndex, 0u, byteCount);
+            uint sl = (w0 >> 12) & 0x0FFFu;
+            uint tl = w0 & 0x0FFFu;
+            uint sh = (w1 >> 12) & 0x0FFFu;
+            uint dxt = w1 & 0x0FFFu;
+            if (sh < sl)
+                return;
+
+            _rdpTiles[tileIndex].Uls = sl;
+            _rdpTiles[tileIndex].Ult = tl;
+            _rdpTiles[tileIndex].Lrs = sh;
+            _rdpTiles[tileIndex].Lrt = dxt;
+
+            uint byteCount = CopyTextureBlockToTmem(_rdpTiles[tileIndex], sl, tl, sh, dxt);
             TraceRdpTextureLoad("loadblock", tileIndex, w0, w1, byteCount);
         }
 
@@ -3472,47 +3482,86 @@ namespace Ryu64.MIPS
             }
         }
 
-        private void CopyTextureImageToTmem(int tileIndex, uint sourceOffset, uint byteCount)
+        private uint CopyTextureBlockToTmem(RdpTileState tile, uint sl, uint tl, uint sh, uint dxt)
         {
-            uint sourceAddress = _rdpTextureImageAddress + sourceOffset;
-            if (sourceAddress >= RDRAM.Length || byteCount == 0)
-                return;
+            uint texels = sh - sl + 1u;
+            uint size = _rdpTextureImageSize & 0x3u;
+            uint groups = ((texels << (int)size) >> 1) + 7u;
+            groups = (groups & ~7u) >> 3;
+            if (groups == 0)
+                return 0;
 
-            RdpTileState tile = _rdpTiles[tileIndex];
-            uint count = Math.Min(byteCount, (uint)RDRAM.Length - sourceAddress);
-            if ((_rdpTextureImageSize & 0x3u) == 3u)
+            uint imageWidth = _rdpTextureImageWidth == 0 ? 1u : _rdpTextureImageWidth;
+            uint sourceRowBytes = RdpPackedBytesForTexels(imageWidth, size);
+            uint sourceAddress = _rdpTextureImageAddress
+                + tl * sourceRowBytes
+                + RdpPackedBytesForTexels(sl, size);
+            if (sourceAddress >= RDRAM.Length)
+                return 0;
+
+            uint copiedBytes = 0;
+            uint group = 0;
+            uint dxtAccumulator = 0;
+            uint currentXor = RdpTmemWordAddrXor;
+            while (group < groups)
             {
-                uint words = count >> 2;
-                uint baseWord = tile.Tmem << 2;
-                for (uint i = 0; i < words; i++)
+                if (dxt != 0)
                 {
-                    uint source = sourceAddress + i * 4u;
-                    uint word = ((baseWord + i) ^ RdpTmemWordAddrXor) & 0x3FFu;
-                    uint high = word << 1;
-                    uint low = (word | 0x400u) << 1;
-                    _rdpTmem[high] = RDRAM[source];
-                    _rdpTmem[high + 1u] = RDRAM[source + 1u];
-                    _rdpTmem[low] = RDRAM[source + 2u];
-                    _rdpTmem[low + 1u] = RDRAM[source + 3u];
+                    uint nextXor = ((dxtAccumulator >> 11) & 1u) != 0u
+                        ? RdpTmemWordDwordSwapXor
+                        : RdpTmemWordAddrXor;
+                    if (nextXor != currentXor)
+                    {
+                        group += tile.Line;
+                        if (group >= groups)
+                            break;
+                        currentXor = nextXor;
+                    }
                 }
-                return;
+
+                uint source = sourceAddress + group * 8u;
+                if (source + 7u >= RDRAM.Length)
+                    break;
+
+                if (size == 3u)
+                    CopyRdpLoadBlock32Group(tile, group, source, currentXor);
+                else
+                    CopyRdpLoadBlock16Group(tile, group, source, currentXor);
+
+                copiedBytes += 8u;
+                if (dxt != 0)
+                    dxtAccumulator += dxt;
+                group++;
             }
 
-            uint halfWords = count >> 1;
-            uint destinationWord = tile.Tmem << 2;
-            for (uint i = 0; i < halfWords; i++)
-            {
-                uint source = sourceAddress + i * 2u;
-                uint destination = (((destinationWord + i) ^ RdpTmemWordAddrXor) & 0x7FFu) << 1;
-                _rdpTmem[destination] = RDRAM[source];
-                _rdpTmem[destination + 1u] = RDRAM[source + 1u];
-            }
+            return copiedBytes;
+        }
 
-            if ((count & 1u) != 0u)
-            {
-                uint destination = (((tile.Tmem << 3) + count - 1u) ^ RdpTmemByteAddrXor) & 0xFFFu;
-                _rdpTmem[destination] = RDRAM[sourceAddress + count - 1u];
-            }
+        private void CopyRdpLoadBlock16Group(RdpTileState tile, uint group, uint source, uint wordXor)
+        {
+            uint baseWord = (tile.Tmem << 2) + (group << 2);
+            WriteRdpTmemWord(((baseWord + 0u) ^ wordXor) & 0x7FFu, source + 0u);
+            WriteRdpTmemWord(((baseWord + 1u) ^ wordXor) & 0x7FFu, source + 2u);
+            WriteRdpTmemWord(((baseWord + 2u) ^ wordXor) & 0x7FFu, source + 4u);
+            WriteRdpTmemWord(((baseWord + 3u) ^ wordXor) & 0x7FFu, source + 6u);
+        }
+
+        private void CopyRdpLoadBlock32Group(RdpTileState tile, uint group, uint source, uint wordXor)
+        {
+            uint baseWord = tile.Tmem << 2;
+            uint word0 = ((baseWord + (group << 1)) ^ wordXor) & 0x3FFu;
+            uint word1 = ((baseWord + (group << 1) + 1u) ^ wordXor) & 0x3FFu;
+            WriteRdpTmemWord(word0, source + 0u);
+            WriteRdpTmemWord(word0 | 0x400u, source + 2u);
+            WriteRdpTmemWord(word1, source + 4u);
+            WriteRdpTmemWord(word1 | 0x400u, source + 6u);
+        }
+
+        private void WriteRdpTmemWord(uint wordAddress, uint sourceAddress)
+        {
+            uint destination = (wordAddress & 0x7FFu) << 1;
+            _rdpTmem[destination] = RDRAM[sourceAddress];
+            _rdpTmem[destination + 1u] = RDRAM[sourceAddress + 1u];
         }
 
         private void CopyRdramToTmem(uint sourceAddress, uint destinationOffset, uint byteCount)
