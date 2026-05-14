@@ -97,6 +97,7 @@ namespace mame
         int m_mainram_trace_count;
         int m_external_start_frames;
         int m_external_coin_frames;
+        bool m_video_dirty = true;
 
 
         public toaplan1_state(machine_config mconfig, device_type type, string tag)
@@ -208,10 +209,12 @@ namespace mame
                 case 0x4:
                     m_spriteram[m_spriteram_offs & (SpriteRamWords - 1)] = CombineWord(m_spriteram[m_spriteram_offs & (SpriteRamWords - 1)], data, mem_mask);
                     m_spriteram_offs++;
+                    m_video_dirty = true;
                     break;
                 case 0x6:
                     m_spritesizeram[m_spriteram_offs & (SpriteSizeRamWords - 1)] = CombineWord(m_spritesizeram[m_spriteram_offs & (SpriteSizeRamWords - 1)], data, mem_mask);
                     m_spriteram_offs++;
+                    m_video_dirty = true;
                     break;
             }
         }
@@ -367,6 +370,7 @@ namespace mame
                 int index = (byteOffset - 0x4000) >> 1;
                 m_paletteram[0, index] = CombineWord(m_paletteram[0, index], data, mem_mask);
                 UpdatePaletteColor(0, index);
+                m_video_dirty = true;
                 return;
             }
 
@@ -375,6 +379,7 @@ namespace mame
                 int index = (byteOffset - 0x6000) >> 1;
                 m_paletteram[1, index] = CombineWord(m_paletteram[1, index], data, mem_mask);
                 UpdatePaletteColor(1, index);
+                m_video_dirty = true;
             }
         }
 
@@ -397,6 +402,7 @@ namespace mame
 
             if (index == 3)
                 m_fcu_flipscreen = (u8)(data & 0xff);
+            m_video_dirty = true;
         }
 
 
@@ -472,11 +478,15 @@ namespace mame
         uint32_t screen_update(screen_device screen, bitmap_rgb32 bitmap, rectangle cliprect)
         {
             LatchLiveSystemInput();
-            bitmap.fill(0xff000000U, cliprect);
-            Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
-            EnsureGraphicsDecoded();
-            RenderBcu(bitmap, cliprect);
-            RenderFcu(bitmap, cliprect);
+            if (m_video_dirty)
+            {
+                bitmap.fill(0xff000000U, cliprect);
+                Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
+                EnsureGraphicsDecoded();
+                RenderBcu(bitmap, cliprect);
+                RenderFcu(bitmap, cliprect);
+                m_video_dirty = false;
+            }
             TraceVideoState();
             if (m_external_start_frames > 0)
                 m_external_start_frames--;
@@ -565,6 +575,7 @@ namespace mame
             m_mainram_trace_count = 0;
             m_external_start_frames = 0;
             m_external_coin_frames = 0;
+            m_video_dirty = true;
             Array.Clear(m_mainram, 0, m_mainram.Length);
             reset_sound();
         }
@@ -572,6 +583,7 @@ namespace mame
         protected override void device_post_load()
         {
             RebuildPaletteColors();
+            m_video_dirty = true;
         }
 
         void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
@@ -596,6 +608,7 @@ namespace mame
             int shift = (reg == 0x04) ? 16 : 0;
             u32 mask = (u32)mem_mask << shift;
             m_bcu_vram[layer, index] = (m_bcu_vram[layer, index] & ~mask) | ((u32)(data & mem_mask) << shift);
+            m_video_dirty = true;
         }
 
 
@@ -613,6 +626,7 @@ namespace mame
                 m_bcu_scrollx[layer] = CombineWord(m_bcu_scrollx[layer], data, mem_mask);
             else
                 m_bcu_scrolly[layer] = CombineWord(m_bcu_scrolly[layer], data, mem_mask);
+            m_video_dirty = true;
         }
 
 
