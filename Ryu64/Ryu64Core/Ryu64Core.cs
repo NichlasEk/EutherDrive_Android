@@ -349,11 +349,16 @@ namespace Ryu64Core
                 {
                     int rdpVisiblePixels = CountVisibleFramebufferPixels(rdpColorImage, width, height, bytesPerPixel);
                     int viVisiblePixels = suspiciousViOrigin ? 0 : CountVisibleFramebufferPixels(origin, width, height, bytesPerPixel);
+                    int rdpScore = ScoreFramebufferCandidate(rdpColorImage, width, height, bytesPerPixel);
+                    if (suspiciousViOrigin && !IsRecoveredFramebufferCandidateAcceptable(rdpColorImage, rdpScore, producerBacked: true))
+                    {
+                        rdpVisiblePixels = 0;
+                    }
+
                     uint rdpCandidate = suspiciousViOrigin || (rdpVisiblePixels > 0 && viVisiblePixels == 0)
                         ? rdpColorImage
                         : origin;
                     string rdpCandidateSource = rdpCandidate == rdpColorImage ? "color" : "vi";
-                    int rdpScore = ScoreFramebufferCandidate(rdpColorImage, width, height, bytesPerPixel);
                     if (!suspiciousViOrigin)
                     {
                         int viScore = ScoreFramebufferCandidate(origin, width, height, bytesPerPixel);
@@ -365,15 +370,21 @@ namespace Ryu64Core
                         }
                     }
 
-                    origin = rdpCandidate;
-                    _lastTrackedFramebufferOrigin = origin;
-                    selectedVisiblePixels = rdpCandidate == rdpColorImage ? rdpVisiblePixels : viVisiblePixels;
-                    selectedVisiblePixelsKnown = true;
-                    rdpColorImageSelected = true;
-                    preferRdpVisibleSnapshot = rdpCandidate == rdpColorImage && rdpVisiblePixels > 0;
-                    producerBackedFramebufferSelected = true;
-                    _lastFramebufferStatus =
-                        $"RDP {rdpCandidateSource} framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, color=0x{rdpColorImage:x8}, width={rdpColorImageWidth}, writeEpoch={rdpColorImageWriteEpoch}, visualScore={rdpScore}, viVisible={viVisiblePixels}, rdpVisible={rdpVisiblePixels})";
+                    int candidateScore = rdpCandidate == rdpColorImage
+                        ? rdpScore
+                        : ScoreFramebufferCandidate(rdpCandidate, width, height, bytesPerPixel);
+                    if (IsRecoveredFramebufferCandidateAcceptable(rdpCandidate, candidateScore, producerBacked: true))
+                    {
+                        origin = rdpCandidate;
+                        _lastTrackedFramebufferOrigin = origin;
+                        selectedVisiblePixels = rdpCandidate == rdpColorImage ? rdpVisiblePixels : viVisiblePixels;
+                        selectedVisiblePixelsKnown = true;
+                        rdpColorImageSelected = true;
+                        preferRdpVisibleSnapshot = rdpCandidate == rdpColorImage && rdpVisiblePixels > 0;
+                        producerBackedFramebufferSelected = true;
+                        _lastFramebufferStatus =
+                            $"RDP {rdpCandidateSource} framebuffer used (vi=0x{rawOrigin:x8} -> fb=0x{origin:x8}, color=0x{rdpColorImage:x8}, width={rdpColorImageWidth}, writeEpoch={rdpColorImageWriteEpoch}, visualScore={candidateScore}, viVisible={viVisiblePixels}, rdpVisible={rdpVisiblePixels})";
+                    }
                 }
 
                 if (suspiciousViOrigin && bytesPerPixel > 0 && !rdpColorImageSelected)
@@ -463,6 +474,7 @@ namespace Ryu64Core
                 // more image-like full scan override it when the chosen buffer still looks weak.
                 if (recentFramebufferSelected
                     && suspiciousViOrigin
+                    && EnableFramebufferOriginScanFallback
                     && recentFramebufferVisualScore < 22000)
                 {
                     uint best = FindBestFramebufferOrigin(width, height, bytesPerPixel, origin, out int bestScore, out int currentScore);
@@ -873,7 +885,7 @@ namespace Ryu64Core
                 prevRowValid = true;
             }
 
-            if (nonZero == 0 || (allSame && firstPixel == 0))
+            if (nonZero == 0 || allSame)
                 return int.MinValue;
 
             int sampleCount = sampleCols * sampleRows;

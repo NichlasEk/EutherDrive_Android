@@ -4735,7 +4735,7 @@ namespace Ryu64.MIPS
             if (length64 == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
                 return;
 
-            if (knownVisiblePixels < 512 && !HasRdpVisibleFramebufferContent(bytesPerPixel, 512u))
+            if (!HasRdpImageLikeFramebufferContent(bytesPerPixel, visibleHeight, 16u, 4u))
                 return;
 
             lock (_lastVisibleRdpFramebufferLock)
@@ -4870,6 +4870,88 @@ namespace Ryu64.MIPS
 
                 if (rgbNonZero && ++visible >= minVisiblePixels)
                     return true;
+            }
+
+            return false;
+            }
+            finally
+            {
+                if (EnableN64Perf && perfPixels > 0)
+                    Interlocked.Add(ref _perfRdpVisibleScanPixels, perfPixels > long.MaxValue ? long.MaxValue : (long)perfPixels);
+                AddPerfTicks(ref _perfRdpVisibleScanTicks, ref _perfRdpVisibleScanCalls, perfStart);
+            }
+        }
+
+        private bool HasRdpImageLikeFramebufferContent(uint bytesPerPixel, uint height, uint minVisiblePixels, uint minPixelChanges)
+        {
+            long perfStart = StartPerfTimer();
+            ulong perfPixels = 0;
+            try
+            {
+            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
+                || _rdpColorImageAddress >= RDRAM.Length
+                || _rdpColorImageWidth == 0
+                || bytesPerPixel == 0)
+                return false;
+
+            if (height == 0)
+                height = GetFramebufferHeightHint();
+            if (height == 0)
+                height = 240u;
+
+            ulong rowBytes = (ulong)_rdpColorImageWidth * bytesPerPixel;
+            ulong length64 = rowBytes * height;
+            if (rowBytes == 0 || length64 > int.MaxValue || (ulong)_rdpColorImageAddress + length64 > (ulong)RDRAM.Length)
+                return false;
+
+            uint sampleCols = Math.Min(64u, _rdpColorImageWidth);
+            uint sampleRows = Math.Min(48u, height);
+            uint stepX = Math.Max(1u, _rdpColorImageWidth / sampleCols);
+            uint stepY = Math.Max(1u, height / sampleRows);
+            perfPixels = (ulong)sampleCols * sampleRows;
+            uint visible = 0;
+            uint changes = 0;
+            uint firstVisiblePixel = 0;
+            bool haveFirstVisiblePixel = false;
+            for (uint sy = 0; sy < sampleRows; sy++)
+            {
+                uint y = Math.Min(height - 1u, sy * stepY);
+                uint rowAddress = _rdpColorImageAddress + (uint)((ulong)y * rowBytes);
+                for (uint sx = 0; sx < sampleCols; sx++)
+                {
+                    uint x = Math.Min(_rdpColorImageWidth - 1u, sx * stepX);
+                    uint address = rowAddress + x * bytesPerPixel;
+                    uint pixel;
+                    if (bytesPerPixel == 2u)
+                    {
+                        pixel = (uint)(((RDRAM[address] << 8) | RDRAM[address + 1u]) & 0xFFFE);
+                    }
+                    else if (bytesPerPixel == 4u)
+                    {
+                        pixel = (uint)((RDRAM[address] << 16) | (RDRAM[address + 1u] << 8) | RDRAM[address + 2u]);
+                    }
+                    else
+                    {
+                        pixel = RDRAM[address];
+                    }
+
+                    if (pixel == 0)
+                        continue;
+
+                    visible++;
+                    if (!haveFirstVisiblePixel)
+                    {
+                        firstVisiblePixel = pixel;
+                        haveFirstVisiblePixel = true;
+                    }
+                    else if (pixel != firstVisiblePixel)
+                    {
+                        changes++;
+                    }
+
+                    if (visible >= minVisiblePixels && changes >= minPixelChanges)
+                        return true;
+                }
             }
 
             return false;
@@ -6471,7 +6553,6 @@ namespace Ryu64.MIPS
             uint current = ReadBigEndianWord(DPC_CURRENT_REG_RW);
             if (current == 0)
                 current = start;
-            TrackFramebufferInfosFromDpcBuffer(current, end);
             uint consumed = ExecuteRdpDisplayList(current, end);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, consumed);
 
@@ -7437,7 +7518,6 @@ namespace Ryu64.MIPS
             uint current = ReadBigEndianWord(DPC_CURRENT_REG_RW);
             if (current == 0)
                 current = start;
-            TrackFramebufferInfosFromDpcBuffer(current, value);
             uint consumed = ExecuteRdpDisplayList(current, value);
             WriteBigEndianWord(DPC_CURRENT_REG_RW, consumed);
             uint status = ReadBigEndianWord(DPC_STATUS_REG_R);
