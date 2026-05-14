@@ -44,7 +44,7 @@ namespace mame
         }
 
 
-        sealed class mcs_bus : eutherdrive_m68000.IBusInterface
+        sealed class mcs_bus : eutherdrive_m68000.IBusInterface, eutherdrive_m68000.IResetInstructionObserver
         {
             readonly m68000_device m_owner;
 
@@ -105,6 +105,7 @@ namespace mame
 
             public bool Reset() => false;
             public bool Halt() => false;
+            public void OnResetInstruction() => m_owner.m_reset_instruction_handler?.Invoke();
 
             public eutherdrive_m68000.BusSignals Signals => default;
             public u16 CurrentOpcode => m_owner.CurrentOpcode;
@@ -121,6 +122,7 @@ namespace mame
         public delegate bool fast_write_word_delegate(u32 address, u16 value);
         public delegate bool fast_write_long_delegate(u32 address, u32 value);
         public delegate void idle_loop_consumed_delegate(u32 startPc, u32 cycles);
+        public delegate void reset_instruction_delegate();
         fast_read_byte_delegate m_fast_read_byte;
         fast_read_word_delegate m_fast_read_word;
         fast_read_long_delegate m_fast_read_long;
@@ -128,6 +130,7 @@ namespace mame
         fast_write_word_delegate m_fast_write_word;
         fast_write_long_delegate m_fast_write_long;
         idle_loop_consumed_delegate m_idle_loop_consumed;
+        reset_instruction_delegate m_reset_instruction_handler;
         readonly bool[] m_irq_lines = new bool[8];
         readonly u32[] m_state_d = new u32[8];
         readonly u32[] m_state_a = new u32[7];
@@ -193,6 +196,11 @@ namespace mame
         public void set_idle_loop_consumed_handler(idle_loop_consumed_delegate handler)
         {
             m_idle_loop_consumed = handler;
+        }
+
+        public void set_reset_instruction_handler(reset_instruction_delegate handler)
+        {
+            m_reset_instruction_handler = handler;
         }
 
 

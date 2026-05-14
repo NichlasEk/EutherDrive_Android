@@ -284,7 +284,13 @@ internal sealed partial class InstructionExecutor
 
     private static uint Nop() => 4;
 
-    private static uint ResetInstruction() => 132;
+    private uint ResetInstruction()
+    {
+        if (_bus is IResetInstructionObserver observer)
+            observer.OnResetInstruction();
+
+        return 132;
+    }
 
     private static ExecuteResult<uint> Trap(uint vector)
     {

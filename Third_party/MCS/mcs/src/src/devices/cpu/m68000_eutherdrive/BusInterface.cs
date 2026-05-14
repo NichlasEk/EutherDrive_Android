@@ -28,3 +28,8 @@ public interface IBusInterface
     BusSignals Signals { get; }
     ushort CurrentOpcode { get; }
 }
+
+public interface IResetInstructionObserver
+{
+    void OnResetInstruction();
+}

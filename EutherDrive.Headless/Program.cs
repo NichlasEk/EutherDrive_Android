@@ -616,9 +616,27 @@ class Program
                 Console.WriteLine("[HEADLESS] Using Toaplan Out Zone core");
                 using var outZone = new OutZoneAdapter();
                 outZone.LoadRom(romPath);
+                var outZoneInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_OUTZONE_HEADLESS_INPUT_SCRIPT"));
 
                 for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, outZoneInputScript);
+                    outZone.SetInputState(
+                        up: input.Up,
+                        down: input.Down,
+                        left: input.Left,
+                        right: input.Right,
+                        a: input.A,
+                        b: input.B,
+                        c: input.X,
+                        start: input.Start,
+                        x: input.Y,
+                        y: input.L,
+                        z: input.R,
+                        mode: input.Select,
+                        padType: PadType.SixButton);
                     outZone.RunFrame();
+                }
 
                 ReadOnlySpan<byte> fbOut = outZone.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
