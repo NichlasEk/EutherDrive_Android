@@ -3499,69 +3499,163 @@ namespace Ryu64.MIPS
             if (sourceAddress >= RDRAM.Length)
                 return 0;
 
+            uint availableGroups = ((uint)RDRAM.Length - sourceAddress) >> 3;
+            if (groups > availableGroups)
+                groups = availableGroups;
+            if (groups == 0)
+                return 0;
+
+            bool size32 = size == 3u;
+            if (dxt == 0)
+            {
+                if (size32)
+                    CopyRdpLoadBlock32Sequential(tile.Tmem, sourceAddress, groups);
+                else
+                    CopyRdpLoadBlock16Sequential(tile.Tmem, sourceAddress, groups);
+                return groups << 3;
+            }
+
+            return size32
+                ? CopyRdpLoadBlock32Dxt(tile, sourceAddress, groups, dxt)
+                : CopyRdpLoadBlock16Dxt(tile, sourceAddress, groups, dxt);
+        }
+
+        private void CopyRdpLoadBlock16Sequential(uint tileTmem, uint sourceAddress, uint groups)
+        {
+            byte[] rdram = RDRAM;
+            byte[] tmem = _rdpTmem;
+            uint baseWord = tileTmem << 2;
+            for (uint group = 0; group < groups; group++)
+            {
+                uint source = sourceAddress + (group << 3);
+                uint destinationWord = baseWord + (group << 2);
+                uint destination = (((destinationWord + 0u) ^ RdpTmemWordAddrXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 0u];
+                tmem[destination + 1u] = rdram[source + 1u];
+                destination = (((destinationWord + 1u) ^ RdpTmemWordAddrXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 2u];
+                tmem[destination + 1u] = rdram[source + 3u];
+                destination = (((destinationWord + 2u) ^ RdpTmemWordAddrXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 4u];
+                tmem[destination + 1u] = rdram[source + 5u];
+                destination = (((destinationWord + 3u) ^ RdpTmemWordAddrXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 6u];
+                tmem[destination + 1u] = rdram[source + 7u];
+            }
+        }
+
+        private void CopyRdpLoadBlock32Sequential(uint tileTmem, uint sourceAddress, uint groups)
+        {
+            byte[] rdram = RDRAM;
+            byte[] tmem = _rdpTmem;
+            uint baseWord = tileTmem << 2;
+            for (uint group = 0; group < groups; group++)
+            {
+                uint source = sourceAddress + (group << 3);
+                uint word0 = ((baseWord + (group << 1)) ^ RdpTmemWordAddrXor) & 0x3FFu;
+                uint word1 = ((baseWord + (group << 1) + 1u) ^ RdpTmemWordAddrXor) & 0x3FFu;
+                uint destination = word0 << 1;
+                tmem[destination] = rdram[source + 0u];
+                tmem[destination + 1u] = rdram[source + 1u];
+                destination = (word0 | 0x400u) << 1;
+                tmem[destination] = rdram[source + 2u];
+                tmem[destination + 1u] = rdram[source + 3u];
+                destination = word1 << 1;
+                tmem[destination] = rdram[source + 4u];
+                tmem[destination + 1u] = rdram[source + 5u];
+                destination = (word1 | 0x400u) << 1;
+                tmem[destination] = rdram[source + 6u];
+                tmem[destination + 1u] = rdram[source + 7u];
+            }
+        }
+
+        private uint CopyRdpLoadBlock16Dxt(RdpTileState tile, uint sourceAddress, uint groups, uint dxt)
+        {
+            byte[] rdram = RDRAM;
+            byte[] tmem = _rdpTmem;
+            uint baseWord = tile.Tmem << 2;
             uint copiedBytes = 0;
             uint group = 0;
             uint dxtAccumulator = 0;
             uint currentXor = RdpTmemWordAddrXor;
             while (group < groups)
             {
-                if (dxt != 0)
+                uint nextXor = ((dxtAccumulator >> 11) & 1u) != 0u
+                    ? RdpTmemWordDwordSwapXor
+                    : RdpTmemWordAddrXor;
+                if (nextXor != currentXor)
                 {
-                    uint nextXor = ((dxtAccumulator >> 11) & 1u) != 0u
-                        ? RdpTmemWordDwordSwapXor
-                        : RdpTmemWordAddrXor;
-                    if (nextXor != currentXor)
-                    {
-                        group += tile.Line;
-                        if (group >= groups)
-                            break;
-                        currentXor = nextXor;
-                    }
+                    group += tile.Line;
+                    if (group >= groups)
+                        break;
+                    currentXor = nextXor;
                 }
 
-                uint source = sourceAddress + group * 8u;
-                if (source + 7u >= RDRAM.Length)
-                    break;
-
-                if (size == 3u)
-                    CopyRdpLoadBlock32Group(tile, group, source, currentXor);
-                else
-                    CopyRdpLoadBlock16Group(tile, group, source, currentXor);
-
+                uint source = sourceAddress + (group << 3);
+                uint destinationWord = baseWord + (group << 2);
+                uint destination = (((destinationWord + 0u) ^ currentXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 0u];
+                tmem[destination + 1u] = rdram[source + 1u];
+                destination = (((destinationWord + 1u) ^ currentXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 2u];
+                tmem[destination + 1u] = rdram[source + 3u];
+                destination = (((destinationWord + 2u) ^ currentXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 4u];
+                tmem[destination + 1u] = rdram[source + 5u];
+                destination = (((destinationWord + 3u) ^ currentXor) & 0x7FFu) << 1;
+                tmem[destination] = rdram[source + 6u];
+                tmem[destination + 1u] = rdram[source + 7u];
                 copiedBytes += 8u;
-                if (dxt != 0)
-                    dxtAccumulator += dxt;
+                dxtAccumulator += dxt;
                 group++;
             }
 
             return copiedBytes;
         }
 
-        private void CopyRdpLoadBlock16Group(RdpTileState tile, uint group, uint source, uint wordXor)
+        private uint CopyRdpLoadBlock32Dxt(RdpTileState tile, uint sourceAddress, uint groups, uint dxt)
         {
-            uint baseWord = (tile.Tmem << 2) + (group << 2);
-            WriteRdpTmemWord(((baseWord + 0u) ^ wordXor) & 0x7FFu, source + 0u);
-            WriteRdpTmemWord(((baseWord + 1u) ^ wordXor) & 0x7FFu, source + 2u);
-            WriteRdpTmemWord(((baseWord + 2u) ^ wordXor) & 0x7FFu, source + 4u);
-            WriteRdpTmemWord(((baseWord + 3u) ^ wordXor) & 0x7FFu, source + 6u);
-        }
-
-        private void CopyRdpLoadBlock32Group(RdpTileState tile, uint group, uint source, uint wordXor)
-        {
+            byte[] rdram = RDRAM;
+            byte[] tmem = _rdpTmem;
             uint baseWord = tile.Tmem << 2;
-            uint word0 = ((baseWord + (group << 1)) ^ wordXor) & 0x3FFu;
-            uint word1 = ((baseWord + (group << 1) + 1u) ^ wordXor) & 0x3FFu;
-            WriteRdpTmemWord(word0, source + 0u);
-            WriteRdpTmemWord(word0 | 0x400u, source + 2u);
-            WriteRdpTmemWord(word1, source + 4u);
-            WriteRdpTmemWord(word1 | 0x400u, source + 6u);
-        }
+            uint copiedBytes = 0;
+            uint group = 0;
+            uint dxtAccumulator = 0;
+            uint currentXor = RdpTmemWordAddrXor;
+            while (group < groups)
+            {
+                uint nextXor = ((dxtAccumulator >> 11) & 1u) != 0u
+                    ? RdpTmemWordDwordSwapXor
+                    : RdpTmemWordAddrXor;
+                if (nextXor != currentXor)
+                {
+                    group += tile.Line;
+                    if (group >= groups)
+                        break;
+                    currentXor = nextXor;
+                }
 
-        private void WriteRdpTmemWord(uint wordAddress, uint sourceAddress)
-        {
-            uint destination = (wordAddress & 0x7FFu) << 1;
-            _rdpTmem[destination] = RDRAM[sourceAddress];
-            _rdpTmem[destination + 1u] = RDRAM[sourceAddress + 1u];
+                uint source = sourceAddress + (group << 3);
+                uint word0 = ((baseWord + (group << 1)) ^ currentXor) & 0x3FFu;
+                uint word1 = ((baseWord + (group << 1) + 1u) ^ currentXor) & 0x3FFu;
+                uint destination = word0 << 1;
+                tmem[destination] = rdram[source + 0u];
+                tmem[destination + 1u] = rdram[source + 1u];
+                destination = (word0 | 0x400u) << 1;
+                tmem[destination] = rdram[source + 2u];
+                tmem[destination + 1u] = rdram[source + 3u];
+                destination = word1 << 1;
+                tmem[destination] = rdram[source + 4u];
+                tmem[destination + 1u] = rdram[source + 5u];
+                destination = (word1 | 0x400u) << 1;
+                tmem[destination] = rdram[source + 6u];
+                tmem[destination + 1u] = rdram[source + 7u];
+                copiedBytes += 8u;
+                dxtAccumulator += dxt;
+                group++;
+            }
+
+            return copiedBytes;
         }
 
         private void CopyRdramToTmem(uint sourceAddress, uint destinationOffset, uint byteCount)

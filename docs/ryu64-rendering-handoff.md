@@ -8,8 +8,9 @@ Ryu64 now reaches real N64 framebuffer output in Zelda, Mario, Perfect Dark, and
 
 Recent relevant commits:
 
-- local WIP 2026-05-14: MAME-like DXT row stepping for `LoadBlock`
-- local WIP 2026-05-14: MAME-style TMEM row-swap for `LoadTile` and texture fetches
+- local WIP 2026-05-14: specialized fast `LoadBlock` loops while preserving DXT row stepping
+- `61e5c7a Add Ryu64 LoadBlock row stepping`
+- `8425791 Improve Ryu64 TMEM texture layout`
 - `6a9322b Broaden Ryu64 boot zero-loop fast path`
 - `0808d5e Improve Ryu64 boot region and fast paths`
 - `f2a7486 Ryu64: apply depth to shaded triangles`
@@ -34,7 +35,9 @@ EUTHERDRIVE_N64_TEXRECT_SOLID_FALLBACK=1
 
 The follow-up DXT `LoadBlock` WIP makes block loading respect `sl`, `tl`, `sh`, and `dxt` instead of always copying from the start of the texture image. It copies in MAME-style 8-byte groups and flips word XOR when the DXT accumulator crosses row bit 11, adding the tile line stride on row transitions. This is still intentionally narrower than full MAME because Ryu64 does not decode YUV yet.
 
-Performance note: this was kept in the hot path as fixed `uint` xor/mask helpers and row-level precomputed xor values in load loops. No per-pixel allocations, dictionaries, LINQ, or generalized format objects were added. The 4-bit `LoadTile` path remains on the previous linear copy fallback because MAME's `LoadTile` switch only covers 8/16/32-bit texture image sizes; CI4 fetch addressing now uses the MAME-style packed nibble address. DXT row stepping adds a branch in `LoadBlock`, not in the pixel fetch loop.
+2026-05-14 local WIP then optimized `LoadBlock` without removing that behavior. The hot path is split into sequential 16-bit, sequential 32-bit, DXT 16-bit, and DXT 32-bit loops. Sequential blocks now skip DXT bookkeeping entirely, 32-bit blocks avoid a per-group size branch, and the per-word TMEM stores are local direct byte copies over cached `RDRAM`/TMEM references. The DXT paths still keep the MAME-like accumulator, XOR flip, tile-line row advance, and 32-bit high/low TMEM plane split.
+
+Performance note: preserve semantics first, then specialize the loop. Do not "optimize" by reverting DXT, source coordinate handling, row XOR, or 32-bit plane splitting. This pass moved cost out of the common path instead. No per-pixel allocations, dictionaries, LINQ, or generalized format objects were added. The 4-bit `LoadTile` path remains on the previous linear copy fallback because MAME's `LoadTile` switch only covers 8/16/32-bit texture image sizes; CI4 fetch addressing now uses the MAME-style packed nibble address. DXT row stepping adds a branch in `LoadBlock`, not in the pixel fetch loop.
 
 ## Verification
 
@@ -96,10 +99,17 @@ env EUTHERDRIVE_HEADLESS_CORE=n64 EUTHERDRIVE_N64_HEADLESS_PERF=1 EUTHERDRIVE_N6
 - Initial 120-frame run after `LoadTile`/fetch swizzle: `rdpList=604/223.867ms avg=0.371ms`, `triTex=730/192.231ms avg=0.263ms`, `fbSnap=650/7.822ms avg=0.012ms`.
 - Follow-up 60-frame run after adding matching sequential `LoadBlock` swizzle stayed visible: `rdpList=241/146.929ms avg=0.610ms`, `triTex=292/118.250ms avg=0.405ms`, `fbSnap=260/3.670ms avg=0.014ms`.
 - Follow-up 60-frame run after DXT `LoadBlock` stayed visible: `rdpList=241/193.643ms avg=0.803ms`, `triTex=292/153.876ms avg=0.527ms`, `fbSnap=260/4.763ms avg=0.018ms`. This is slower in the same short smoke window, so keep watching perf while improving correctness.
+- Follow-up 60-frame run after specialized `LoadBlock` loops stayed visible: `rdpList=329/172.833ms avg=0.525ms`, `triTex=427/143.844ms avg=0.337ms`, `fbSnap=390/5.662ms avg=0.015ms`. The command mix changed in this short savestate window, but average RDP/texture cost is back below the previous DXT regression while keeping DXT semantics.
 
 Earthworm Jim Europe cold smoke after DXT:
 
 - framebuffer recovered at runFrame 88
+- steady at runFrame 180
+- no region/unit regression
+
+Earthworm Jim Europe cold smoke after specialized `LoadBlock` loops:
+
+- framebuffer recovered at runFrame 65
 - steady at runFrame 180
 - no region/unit regression
 
@@ -109,14 +119,14 @@ Earthworm Jim Europe cold smoke after DXT:
 - Zelda terrain is recognizable but still has warping, missing/incorrect texture details, and likely TMEM address issues.
 - Some UI/browser testing uses copied Ryu64 DLLs in `EutherDrive.Headless/bin/Release/net8.0/` because full project build is blocked by unrelated Taito code.
 - Performance varies run-to-run; use headless savestates for comparisons.
-- `LoadBlock` now has DXT-driven row stepping, but it is a pragmatic subset. YUV-specific packing is not implemented. Perf also needs more samples because the short Zelda smoke got slower after DXT.
+- `LoadBlock` now has DXT-driven row stepping, but it is a pragmatic subset. YUV-specific packing is not implemented. Perf recovered after loop specialization, but still needs more samples because RDP command mix varies across short savestate windows.
 
 ## Next Best Targets
 
-1. Audit and tune `LoadBlock` perf:
-   - compare DXT and non-DXT command traces
-   - skip DXT bookkeeping when `dxt == 0`
-   - consider specialized loops per texture size if profiling confirms this path is hot
+1. Continue RDP semantic work with performance-aware implementation:
+   - keep specialized loops for hot `LoadBlock`/fetch paths
+   - compare DXT and non-DXT command traces when touching texture loads
+   - prefer local cached arrays, fixed-size loops, and early branch splitting over removing correctness behavior
    MAME reference: `/home/nichlas/mame/src/mame/nintendo/n64_v.cpp`, especially `cmd_load_block`.
 
 2. Improve texture load semantics:
