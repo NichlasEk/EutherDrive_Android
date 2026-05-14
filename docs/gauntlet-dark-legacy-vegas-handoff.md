@@ -3280,3 +3280,55 @@ Next target:
 3. Keep using `EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-f300-s2000000-bc88fcdd60ae.warm`
    and focused `EUTHERDRIVE_GAUNTDL_EXTRA_SERIES`; cold 300-frame probes are no
    longer the fastest workflow.
+
+## 2026-05-14 Follow-up: Runtime State-init Entry
+
+This pass extended the loaded Glide state-init fastpath to catch the function
+entry at `0xffffffff80108fe0` when it is called with `a0=0`.
+
+Context:
+
+- The earlier fastpath only caught the same routine at tail
+  `0xffffffff80109074`.
+- Tracing from the 100M warmup endpoint showed the frame/event path repeatedly
+  reaches `0xffffffff80108fe0` before the tail, so taking the entry is cheaper
+  and still uses the same loaded state at `0xffffffff80262d64`.
+- The entry fastpath is deliberately limited to `a0=0`; other selectors are
+  not skipped until their state base and side effects are traced.
+
+Clean verification in `/tmp/eutherdrive-gauntlet-verify`:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+Warmup-series after the entry fastpath:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff800eb668 regs=3103669 fifoWords=6185124 fifoPackets=3090348
+checkpoint extra=10000000 pc=0xffffffff800eb50c regs=3176397 fifoWords=6330580 fifoPackets=3163076
+checkpoint extra=100000000 pc=0xffffffff800eb668 regs=3903669 fifoWords=7785124 fifoPackets=3890348
+checkpoint extra=150000000 pc=0xffffffff800eb764 regs=4307709 fifoWords=8593204 fifoPackets=4294388
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:4292993,2:0,3:0,4:1395,5:0,6:0,7:0
+```
+
+Interpretation:
+
+- The fastpath fires and moves the long-run endpoints away from the previous
+  `0xffffffff800e13e0` frame/event callback area.
+- It still does not reach real geometry. The run remains type-1 state traffic
+  plus type-4 clear/fill.
+- The 150M endpoint at `0xffffffff800eb764` is the callsite into the bitfield
+  helper at `0xffffffff800eafdc`; that helper already has an entry fastpath, so
+  this endpoint is partly a checkpoint-budget artifact.
+
+Next target:
+
+1. Run slightly past `0xffffffff800eb764` or add a narrow callsite fastpath only
+   if the budget artifact keeps dominating measurements.
+2. More importantly, identify why the runtime remains in state/update traffic
+   and never emits Voodoo setup/triangle packets.

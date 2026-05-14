@@ -3317,7 +3317,9 @@ internal sealed class MipsR5000Core
     {
         const ulong entry = 0xffffffff80108fe0UL;
         const ulong tail = 0xffffffff80109074UL;
-        if (pc != tail)
+        bool atEntry = pc == entry;
+        bool atTail = pc == tail;
+        if (!atEntry && !atTail)
             return false;
 
         if (_memory.Read32(entry) != 0x27bdffe0U ||
@@ -3350,6 +3352,39 @@ internal sealed class MipsR5000Core
             _memory.Read32(entry + 0xecUL) != 0x03e00008U)
         {
             return false;
+        }
+
+        if (atEntry)
+        {
+            if (_gpr[4] != 0)
+                return false;
+
+            ulong entryReturnAddress = _gpr[31];
+            ulong entryReturnOffset = entryReturnAddress & 0x1fffffffUL;
+            if (entryReturnOffset is < 0x000e0000UL or > 0x00110000UL)
+                return false;
+
+            const ulong entryState = 0xffffffff80262d64UL;
+            if (!IsMainRamRange(entryState + 0x384UL, 4))
+                return false;
+
+            _memory.Write32(0xffffffff80262c84UL, 0);
+            _memory.Write32(0xffffffff80262c8cUL, unchecked((uint)entryState));
+            uint entryStateWord = _memory.Read32(entryState + 0x08UL) + 0x00620000u;
+            _memory.Write32(0xffffffff80262c90UL, entryStateWord);
+            NormalizeGlideFifoState(entryState);
+
+            _gpr[2] = _memory.Read32(entryState + 0x37cUL);
+            _gpr[3] = entryState + 8UL;
+            _gpr[4] = entryState;
+            _gpr[31] = entryReturnAddress;
+            _gpr[0] = 0;
+            AdvanceCp0Count(_cp0CountStep * 64UL);
+            _instructionCounter += 64UL;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+            Pc = entryReturnAddress;
+            return true;
         }
 
         ulong framePointer = _gpr[30];
