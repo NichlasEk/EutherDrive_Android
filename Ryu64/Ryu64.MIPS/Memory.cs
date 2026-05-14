@@ -858,6 +858,16 @@ namespace Ryu64.MIPS
             public bool TileSizeSet;
         }
 
+        private struct RdpPreparedTextureSampler
+        {
+            public RdpTileState Tile;
+            public uint Width;
+            public uint Height;
+            public uint OriginS;
+            public uint OriginT;
+            public bool Valid;
+        }
+
         private struct RdpCombineMode
         {
             public int SubARgb0;
@@ -2219,6 +2229,9 @@ namespace Ryu64.MIPS
                 return false;
 
             RdpTileState tile = _rdpTiles[tileIndex];
+            RdpPreparedTextureSampler sampler = PrepareRdpTextureSampler(tile);
+            if (!sampler.Valid)
+                return false;
             if (!TryReadRdpTextureCoefficients(command, commandAddress, xbusDmem, out RdpTriangleTextureCoefficients tex))
                 return false;
 
@@ -2275,31 +2288,52 @@ namespace Ryu64.MIPS
                 long rowB = modulateShade ? shade.B + yStep * (long)shade.DbDe : 0;
                 long rowA = modulateShade ? shade.A + yStep * (long)shade.DaDe : 0;
                 double spanAnchorX = flip ? left : right;
+                long firstXStep = (long)Math.Round(firstX + 0.5 - spanAnchorX);
+                long currentS = rowS + firstXStep * tex.DsDx;
+                long currentT = rowT + firstXStep * tex.DtDx;
+                long currentW = rowW + firstXStep * tex.DwDx;
+                long currentZ = useDepth ? rowZ + firstXStep * (long)depth.DzDx : 0;
+                long currentR = modulateShade ? rowR + firstXStep * (long)shade.DrDx : 0;
+                long currentG = modulateShade ? rowG + firstXStep * (long)shade.DgDx : 0;
+                long currentB = modulateShade ? rowB + firstXStep * (long)shade.DbDx : 0;
+                long currentA = modulateShade ? rowA + firstXStep * (long)shade.DaDx : 0;
+                bool usePerspective = EnableRdpPerspectiveTexture && _rdpOtherModesPerspectiveTexture;
                 uint rowStart = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)firstX) * bytesPerPixel);
                 bool rowWrote = false;
                 for (int x = firstX; x <= lastX; x++)
                 {
-                    long xStep = (long)Math.Round(x + 0.5 - spanAnchorX);
                     RdpTriangleTextureFixedToTexels(
-                        rowS + xStep * tex.DsDx,
-                        rowT + xStep * tex.DtDx,
-                        rowW + xStep * tex.DwDx,
-                        EnableRdpPerspectiveTexture && _rdpOtherModesPerspectiveTexture,
+                        currentS,
+                        currentT,
+                        currentW,
+                        usePerspective,
                         out int sampleS,
                         out int sampleT);
-                    if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
+                    if (!SampleRdpTexture(ref sampler, sampleS, sampleT, out uint rgba))
                     {
                         sampleMisses++;
+                        currentS += tex.DsDx;
+                        currentT += tex.DtDx;
+                        currentW += tex.DwDx;
+                        if (useDepth)
+                            currentZ += depth.DzDx;
+                        if (modulateShade)
+                        {
+                            currentR += shade.DrDx;
+                            currentG += shade.DgDx;
+                            currentB += shade.DbDx;
+                            currentA += shade.DaDx;
+                        }
                         continue;
                     }
 
                     if (modulateShade)
                     {
                         uint shadeRgba = RdpShadeToRgba(
-                            rowR + xStep * (long)shade.DrDx,
-                            rowG + xStep * (long)shade.DgDx,
-                            rowB + xStep * (long)shade.DbDx,
-                            rowA + xStep * (long)shade.DaDx);
+                            currentR,
+                            currentG,
+                            currentB,
+                            currentA);
                         rgba = _rdpCombineModeSet
                             ? ApplyRdpColorCombiner(rgba, shadeRgba)
                             : ModulateRdpRgba(rgba, shadeRgba);
@@ -2313,6 +2347,18 @@ namespace Ryu64.MIPS
                     if (ShouldRejectRdpAlpha(rgba))
                     {
                         zeroSampleHits++;
+                        currentS += tex.DsDx;
+                        currentT += tex.DtDx;
+                        currentW += tex.DwDx;
+                        if (useDepth)
+                            currentZ += depth.DzDx;
+                        if (modulateShade)
+                        {
+                            currentR += shade.DrDx;
+                            currentG += shade.DgDx;
+                            currentB += shade.DbDx;
+                            currentA += shade.DaDx;
+                        }
                         continue;
                     }
 
@@ -2327,13 +2373,36 @@ namespace Ryu64.MIPS
                     if (!IsRgbaNonZero(rgba))
                     {
                         zeroSampleHits++;
+                        currentS += tex.DsDx;
+                        currentT += tex.DtDx;
+                        currentW += tex.DwDx;
+                        if (useDepth)
+                            currentZ += depth.DzDx;
+                        if (modulateShade)
+                        {
+                            currentR += shade.DrDx;
+                            currentG += shade.DgDx;
+                            currentB += shade.DbDx;
+                            currentA += shade.DaDx;
+                        }
                         continue;
                     }
 
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
-                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
+                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, currentZ, depth.DzPix))
                     {
                         depthRejects++;
+                        currentS += tex.DsDx;
+                        currentT += tex.DtDx;
+                        currentW += tex.DwDx;
+                        currentZ += depth.DzDx;
+                        if (modulateShade)
+                        {
+                            currentR += shade.DrDx;
+                            currentG += shade.DgDx;
+                            currentB += shade.DbDx;
+                            currentA += shade.DaDx;
+                        }
                         continue;
                     }
 
@@ -2341,6 +2410,18 @@ namespace Ryu64.MIPS
                     nonZeroSampleHits++;
                     rowWrote = true;
                     wroteAny = true;
+                    currentS += tex.DsDx;
+                    currentT += tex.DtDx;
+                    currentW += tex.DwDx;
+                    if (useDepth)
+                        currentZ += depth.DzDx;
+                    if (modulateShade)
+                    {
+                        currentR += shade.DrDx;
+                        currentG += shade.DgDx;
+                        currentB += shade.DbDx;
+                        currentA += shade.DaDx;
+                    }
                 }
 
                 if (rowWrote)
@@ -3831,6 +3912,9 @@ namespace Ryu64.MIPS
                 y1 = maxRows - 1u;
 
             RdpTileState tile = _rdpTiles[tileIndex];
+            RdpPreparedTextureSampler sampler = PrepareRdpTextureSampler(tile);
+            if (!sampler.Valid)
+                return false;
             int sFixed = (short)(w2 >> 16);
             int tFixed = (short)w2;
             int dsdxFixed = (short)(w3 >> 16);
@@ -3873,7 +3957,7 @@ namespace Ryu64.MIPS
                         sampleT = (int)Math.Floor(startT + dy * stepT);
                     }
 
-                    if (!SampleRdpTexture(tile, sampleS, sampleT, out uint rgba))
+                    if (!SampleRdpTexture(ref sampler, sampleS, sampleT, out uint rgba))
                     {
                         sampleMisses++;
                         continue;
@@ -3974,21 +4058,38 @@ namespace Ryu64.MIPS
             return -(int)((-value1024 + 1023L) >> 10);
         }
 
-        private bool SampleRdpTexture(RdpTileState tile, int s, int t, out uint rgba)
+        private RdpPreparedTextureSampler PrepareRdpTextureSampler(RdpTileState tile)
         {
-            rgba = 0;
             uint width = GetTileWidth(tile);
             if (width == 0)
-                return false;
+                return default;
 
             uint stride = GetTileStrideBytes(tile, width);
             uint baseOffset = Math.Min(4095u, tile.Tmem * 8u);
             uint height = GetTileHeight(tile, baseOffset, stride);
             if (height == 0)
+                return default;
+
+            return new RdpPreparedTextureSampler
+            {
+                Tile = tile,
+                Width = width,
+                Height = height,
+                OriginS = tile.Uls >> 2,
+                OriginT = tile.Ult >> 2,
+                Valid = true
+            };
+        }
+
+        private bool SampleRdpTexture(ref RdpPreparedTextureSampler sampler, int s, int t, out uint rgba)
+        {
+            rgba = 0;
+            if (!sampler.Valid)
                 return false;
 
-            int u = ApplyRdpTextureCoordinate(s, tile.Uls >> 2, width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
-            int v = ApplyRdpTextureCoordinate(t, tile.Ult >> 2, height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
+            RdpTileState tile = sampler.Tile;
+            int u = ApplyRdpTextureCoordinate(s, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
+            int v = ApplyRdpTextureCoordinate(t, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
             if (u < 0 || v < 0)
                 return false;
 

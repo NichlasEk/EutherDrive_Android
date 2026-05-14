@@ -8,6 +8,7 @@ Ryu64 now reaches real N64 framebuffer output in Zelda, Mario, Perfect Dark, and
 
 Recent relevant commits:
 
+- local WIP 2026-05-14: optimize textured triangle hot path
 - local WIP 2026-05-14: broaden TLUT fetch semantics for RGBA32/IA/I
 - local WIP 2026-05-14: specialized fast `LoadBlock` loops while preserving DXT row stepping
 - `61e5c7a Add Ryu64 LoadBlock row stepping`
@@ -48,6 +49,12 @@ The next TLUT fetch WIP extends palette lookup beyond CI/RGBA16. MAME's fetch ta
 - IA16 uses the high byte of the fetched word.
 
 This is intentionally a narrow semantic expansion. It keeps the raw fast path unchanged when TLUT is disabled.
+
+The latest perf WIP reduces per-pixel work in textured triangles and rectangles without changing visible RDP behavior:
+
+- Texture sampler dimensions/origin are prepared once per draw call instead of recomputed for every sampled pixel.
+- Textured triangle spans now use incremental S/T/W, shade, and depth values across the row instead of doing `Math.Round` and repeated `xStep * delta` multiplications per pixel.
+- A trial direct 16-bit framebuffer writer was rejected because the Zelda smoke got slower; keep measuring before committing inner-loop rewrites.
 
 ## Verification
 
@@ -111,6 +118,7 @@ env EUTHERDRIVE_HEADLESS_CORE=n64 EUTHERDRIVE_N64_HEADLESS_PERF=1 EUTHERDRIVE_N6
 - Follow-up 60-frame run after DXT `LoadBlock` stayed visible: `rdpList=241/193.643ms avg=0.803ms`, `triTex=292/153.876ms avg=0.527ms`, `fbSnap=260/4.763ms avg=0.018ms`. This is slower in the same short smoke window, so keep watching perf while improving correctness.
 - Follow-up 60-frame run after specialized `LoadBlock` loops stayed visible: `rdpList=329/172.833ms avg=0.525ms`, `triTex=427/143.844ms avg=0.337ms`, `fbSnap=390/5.662ms avg=0.015ms`. The command mix changed in this short savestate window, but average RDP/texture cost is back below the previous DXT regression while keeping DXT semantics.
 - Follow-up 60-frame run after broadening TLUT fetches stayed visible: `rdpList=241/154.354ms avg=0.640ms`, `triTex=292/125.235ms avg=0.429ms`, `fbSnap=260/3.897ms avg=0.015ms`. The raw non-TLUT path remains close to the specialized `LoadBlock` baseline.
+- Follow-up 60-frame run after textured triangle hot-path optimization stayed visible: best run `rdpList=241/140.065ms avg=0.581ms`, `triTex=292/113.615ms avg=0.389ms`, `fbSnap=260/3.598ms avg=0.014ms`; confirm run after removing the rejected direct writer stayed visible at `rdpList=241/142.911ms avg=0.593ms`, `triTex=292/117.584ms avg=0.403ms`.
 
 Earthworm Jim Europe cold smoke after DXT:
 
@@ -127,6 +135,12 @@ Earthworm Jim Europe cold smoke after specialized `LoadBlock` loops:
 Earthworm Jim Europe cold smoke after broader TLUT fetches:
 
 - framebuffer recovered at runFrame 72
+- steady at runFrame 180
+- no region/unit regression
+
+Earthworm Jim Europe cold smoke after textured triangle hot-path optimization:
+
+- framebuffer recovered at runFrame 62
 - steady at runFrame 180
 - no region/unit regression
 
@@ -156,12 +170,17 @@ Earthworm Jim Europe cold smoke after broader TLUT fetches:
    - copy-cycle texrect behavior
    - tile LOD / second texture tile
 
-4. Continue depth/coverage work:
+4. Continue performance work with measurements:
+   - avoid per-pixel `Math.*` and repeated invariant calculations in triangle/texrect paths
+   - specialize only when a before/after smoke shows a win
+   - use Zelda savestate `triTex` and `rdpList` as the quick regression guard
+
+5. Continue depth/coverage work:
    - coverage hidden bits
    - image-read blending
    - Z mode edge cases
 
-5. Use Zelda slot 1/2 and a PAL game like Earthworm Jim as smoke tests after each RDP change. Use Mario only after the cold boot regression is understood, because it currently does not reach VI in this local headless run.
+6. Use Zelda slot 1/2 and a PAL game like Earthworm Jim as smoke tests after each RDP change. Use Mario only after the cold boot regression is understood, because it currently does not reach VI in this local headless run.
 
 ## Working Tree Note
 
