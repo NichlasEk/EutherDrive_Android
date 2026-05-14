@@ -1093,12 +1093,16 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         private bool HasBufferedFrameCapacity()
         {
-            if (EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_driverName))
+            if (RequiresStrictFrameGate())
                 return false;
 
             lock (_frameSync)
                 return PublishedFrames - _consumerFrameCursor < MaxBufferedMcsFrames;
         }
+
+        private bool RequiresStrictFrameGate()
+            => EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_driverName)
+                || EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedDriverName(_driverName);
 
         private void WaitForFrameAdvance(mame.running_machine machine, bool processStateRequests)
         {
