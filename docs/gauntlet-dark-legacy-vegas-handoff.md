@@ -48,6 +48,62 @@ Core builds:
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
 ```
 
+## 2026-05-14 Loaded Runtime Fastpath Pass
+
+This pass focused on moving the loaded Gauntlet runtime forward after the UI-visible diagnostic framebuffer. The current target is still real Voodoo draw traffic; the UI image is visible, but it is not game graphics yet.
+
+Verified ROM/disk inputs:
+
+```text
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw
+```
+
+New verified fastpaths:
+
+- `TryFastPathKnownRuntimeBitfieldUpdate()` for the loaded runtime helper at `0xffffffff800eafdc`, including the observed mid-body stop at `0xffffffff800eb020`.
+- `TryFastPathKnownRuntimeDwordCopyTail()` for the 64-bit copy tail at `0xffffffff800d1380`, including the observed mid-store stop at `0xffffffff800d138c`.
+
+Probe command used from the clean verifier worktree `/tmp/eutherdrive-gauntlet-verify`:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=100 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw \
+    EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 300 2000000
+```
+
+Progression from this pass:
+
+```text
+before bitfield fastpath: pc=0xffffffff800eb020
+after bitfield fastpath:  pc=0xffffffff800d138c
+after dword copy tail:    pc=0xffffffff800eb1a0
+```
+
+Latest verified result:
+
+```text
+frame=300
+pc=0xffffffff800eb1a0
+ra=0xffffffff800e1358
+voodoo regs=3095589 fifoWords=6168964 fifoPackets=3082268
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:3080873,2:0,3:0,4:1395,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=151456 colored=21408
+```
+
+Interpretation:
+
+- The runtime now advances beyond the bitfield helper and the `0x800d1380` dword copy loop.
+- Voodoo traffic increased, but remains type-1 state packets plus type-4 clear/fill packets. No setup or triangle packets yet.
+- The current repeated stop is around `0xffffffff800eb1a0`, a branch-delay point in an input/status polling path reading `A4205001/5003/5005/5007`.
+- A narrow delay-slot fastpath for `0x800eb1a0` was tested and removed because it did not move endpoint or Voodoo stats.
+
 ## 2026-05-13 UI/ROM + A420 Bring-Up Pass
 
 The UI can now launch Gauntlet from the real ROM archive instead of a temporary file path.

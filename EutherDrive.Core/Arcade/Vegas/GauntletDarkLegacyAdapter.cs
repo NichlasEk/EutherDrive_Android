@@ -516,6 +516,10 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeFrameStateCallback(pc))
             return;
+        if (TryFastPathKnownRuntimeDwordCopyTail(pc))
+            return;
+        if (TryFastPathKnownRuntimeBitfieldUpdate(pc))
+            return;
         if (TryFastPathKnownRuntimeCommandCompleteWait(pc))
             return;
         NormalizeKnownGlideFifoState(pc);
@@ -3106,6 +3110,202 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:BOOT] runtime-frame-state-callback pc={pc:x16} " +
                 $"status={status:x8} return={returnAddress:x16}");
         }
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBitfieldUpdate(ulong pc)
+    {
+        const ulong entry = 0xffffffff800eafdcUL;
+        const ulong midBody = 0xffffffff800eb020UL;
+
+        bool atEntry = pc == entry;
+        bool atMidBody = pc == midBody;
+        if (!atEntry && !atMidBody)
+            return false;
+
+        if (_memory.Read32(entry) != 0x0080302dU ||
+            _memory.Read32(entry + 0x04UL) != 0x8cc20000U ||
+            _memory.Read32(entry + 0x08UL) != 0x8cc40008U ||
+            _memory.Read32(entry + 0x0cUL) != 0x8cc3000cU ||
+            _memory.Read32(entry + 0x10UL) != 0xacc50000U ||
+            _memory.Read32(entry + 0x14UL) != 0x00833826U ||
+            _memory.Read32(entry + 0x18UL) != 0x00451026U ||
+            _memory.Read32(entry + 0x1cUL) != 0x00022027U ||
+            _memory.Read32(entry + 0x20UL) != 0x00a42824U ||
+            _memory.Read32(entry + 0x24UL) != 0x8cc30004U ||
+            _memory.Read32(entry + 0x28UL) != 0x8cc40010U ||
+            _memory.Read32(entry + 0x2cUL) != 0x00431024U ||
+            _memory.Read32(entry + 0x30UL) != 0x00451825U ||
+            _memory.Read32(entry + 0x34UL) != 0x00e33824U ||
+            _memory.Read32(entry + 0x38UL) != 0x00441024U ||
+            _memory.Read32(entry + 0x3cUL) != 0x1440000fU ||
+            _memory.Read32(entry + 0x40UL) != 0xacc30004U ||
+            _memory.Read32(entry + 0x44UL) != 0x00641024U ||
+            _memory.Read32(entry + 0x48UL) != 0x1040000cU ||
+            _memory.Read32(entry + 0x7cUL) != 0x94c20016U ||
+            _memory.Read32(entry + 0x80UL) != 0xa4c20014U ||
+            _memory.Read32(entry + 0x84UL) != 0x8cc2000cU ||
+            _memory.Read32(entry + 0x88UL) != 0x00471026U ||
+            _memory.Read32(entry + 0x8cUL) != 0xacc20008U ||
+            _memory.Read32(entry + 0x90UL) != 0x8cc20004U ||
+            _memory.Read32(entry + 0x94UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x98UL) != 0x00000000U)
+        {
+            return false;
+        }
+
+        ulong record = atEntry ? _gpr[4] : _gpr[6];
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (!IsMainRamRange(record, 0x1cUL) ||
+            returnOffset is < 0x000e0000UL or > 0x000ec000UL)
+        {
+            return false;
+        }
+
+        uint a0;
+        uint v1;
+        uint a3;
+        if (atEntry)
+        {
+            uint newValue = (uint)_gpr[5];
+            uint oldValue = _memory.Read32(record);
+            uint oldBits = _memory.Read32(record + 0x08UL);
+            uint sourceBits = _memory.Read32(record + 0x0cUL);
+            _memory.Write32(record, newValue);
+
+            a3 = oldBits ^ sourceBits;
+            uint toggled = oldValue ^ newValue;
+            a0 = ~toggled;
+            uint unchangedNewBits = newValue & a0;
+            uint maskedToggle = toggled & _memory.Read32(record + 0x04UL);
+            v1 = maskedToggle | unchangedNewBits;
+            a3 &= v1;
+            uint delayedBits = maskedToggle & _memory.Read32(record + 0x10UL);
+            _memory.Write32(record + 0x04UL, v1);
+            if (delayedBits != 0)
+                return false;
+        }
+        else
+        {
+            a0 = (uint)_gpr[4];
+            v1 = (uint)_gpr[3];
+            a3 = (uint)_gpr[7];
+        }
+
+        uint activeBits = v1 + a0;
+        if (activeBits != 0)
+        {
+            ushort countdown = (ushort)(_memory.Read16(record + 0x14UL) - 1);
+            _memory.Write16(record + 0x14UL, countdown);
+            if (countdown == 0)
+            {
+                a3 &= ~a0;
+                _memory.Write16(record + 0x14UL, _memory.Read16(record + 0x18UL));
+            }
+        }
+        else
+        {
+            _memory.Write16(record + 0x14UL, _memory.Read16(record + 0x16UL));
+        }
+
+        uint nextBits = _memory.Read32(record + 0x0cUL) ^ a3;
+        _memory.Write32(record + 0x08UL, nextBits);
+        uint result = _memory.Read32(record + 0x04UL);
+
+        _gpr[2] = result;
+        _gpr[3] = v1;
+        _gpr[4] = a0;
+        _gpr[6] = record;
+        _gpr[7] = a3;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeDwordCopyTail(ulong pc)
+    {
+        const ulong loop = 0xffffffff800d1380UL;
+        const ulong store = 0xffffffff800d138cUL;
+        if (pc != loop && pc != store)
+            return false;
+
+        if (_memory.Read32(loop) != 0x2508ffffU ||
+            _memory.Read32(loop + 0x04UL) != 0xdca90000U ||
+            _memory.Read32(loop + 0x08UL) != 0x24a50008U ||
+            _memory.Read32(loop + 0x0cUL) != 0xfc890000U ||
+            _memory.Read32(loop + 0x10UL) != 0x1d00fffbU ||
+            _memory.Read32(loop + 0x14UL) != 0x24840008U ||
+            _memory.Read32(loop + 0x18UL) != 0x1000ffd3U ||
+            _memory.Read32(loop + 0x1cUL) != 0x00000000U)
+        {
+            return false;
+        }
+
+        long counter = unchecked((long)_gpr[8]);
+        ulong destination = _gpr[4];
+        ulong source = _gpr[5];
+        ulong copied = 0;
+        ulong lastValue;
+
+        if (pc == store)
+        {
+            long extraCopies = Math.Max(counter, 0);
+            if (extraCopies > 0x80000)
+                return false;
+            ulong extraBytes = (ulong)extraCopies * 8UL;
+            ulong totalBytes = extraBytes + 8UL;
+            if (totalBytes > 0x00400000UL ||
+                !IsMainRamRange(destination, totalBytes) ||
+                (extraBytes != 0 && !IsMainRamRange(source, extraBytes)))
+            {
+                return false;
+            }
+
+            lastValue = _gpr[9];
+            _memory.Write64(destination, lastValue);
+            destination += 8UL;
+            copied += 8UL;
+            for (ulong offset = 0; offset < extraBytes; offset += 8UL)
+            {
+                lastValue = _memory.Read64(source + offset);
+                _memory.Write64(destination + offset, lastValue);
+            }
+            source += extraBytes;
+            destination += extraBytes;
+            _gpr[8] = counter > 0 ? 0UL : unchecked((ulong)counter);
+        }
+        else
+        {
+            if (counter <= 0 || counter > 0x80000)
+                return false;
+
+            ulong bytes = (ulong)counter * 8UL;
+            if (bytes > 0x00400000UL ||
+                !IsMainRamRange(source, bytes) ||
+                !IsMainRamRange(destination, bytes))
+            {
+                return false;
+            }
+
+            lastValue = 0;
+            for (ulong offset = 0; offset < bytes; offset += 8UL)
+            {
+                lastValue = _memory.Read64(source + offset);
+                _memory.Write64(destination + offset, lastValue);
+            }
+            source += bytes;
+            destination += bytes;
+            copied = bytes;
+            _gpr[8] = 0;
+        }
+
+        if (copied != 0)
+            _gpr[9] = lastValue;
+        _gpr[4] = destination;
+        _gpr[5] = source;
+        Pc = 0xffffffff800d12e8UL;
+        CompleteFastPathStep();
         return true;
     }
 
