@@ -1552,7 +1552,7 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
                 {
                     if (md_main.g_md_cartridge?.g_mapper_is_paprium == true)
                     {
-                        md_main.g_md_bus.OverrideBus = new PapriumBusOverride(md_main.g_md_cartridge.g_file, path);
+                        md_main.g_md_bus.OverrideBus = new PapriumBusOverride(md_main.g_md_cartridge.g_file, path, OutputSampleRate);
                         Console.WriteLine("[MdTracerAdapter] Mapper: Paprium override enabled.");
                     }
                     else if (md_main.g_md_cartridge?.g_mapper_is_svp == true)
@@ -4647,7 +4647,8 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
         {
             Console.Error.WriteLine($"[AUDIO-PATH] GetAudioBufferForFrames enter frames={frames} wantPsg={(wantPsg ? 1 : 0)} wantYm={(wantYm ? 1 : 0)} ymEnabled={(_ymEnabled ? 1 : 0)}");
         }
-        if (!wantPsg && !wantYm && !want32XPwm)
+        bool wantPapriumAudio = md_main.g_md_bus?.OverrideBus is PapriumBusOverride;
+        if (!wantPsg && !wantYm && !want32XPwm && !wantPapriumAudio)
         {
             if (!_audioAllSourcesDisabledLogged)
             {
@@ -4984,6 +4985,9 @@ public sealed class MdTracerAdapter : IEmulatorCore, ISavestateCapable, IDisposa
 
         if (want32XPwm)
             _sega32XCore!.Bus.Pwm.MixAudioInto(_psgFrameBuffer.AsSpan(0, samples));
+
+        if (md_main.g_md_bus?.OverrideBus is PapriumBusOverride paprium)
+            paprium.MixMusicInto(_psgFrameBuffer.AsSpan(0, samples), frames);
 
         ApplyMasterVolume(_psgFrameBuffer, samples);
         _mixLowPass?.Apply(_psgFrameBuffer, samples);

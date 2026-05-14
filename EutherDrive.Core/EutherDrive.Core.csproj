@@ -45,6 +45,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="NLayer" Version="1.16.0" />
     <PackageReference Include="SharpCompress" Version="0.36.0" />
     <PackageReference Include="Serilog" Version="4.3.0" />
   </ItemGroup>

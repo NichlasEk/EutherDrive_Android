@@ -1,6 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
+using NLayer;
+using SharpCompress.Archives;
 
 namespace EutherDrive.Core.MdTracerCore;
 
@@ -39,6 +43,7 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
     private readonly ushort[] _nvram = new ushort[NvramWords];
     private readonly VramSlot[] _vramSlots = new VramSlot[MaxVramSlots];
     private readonly ObjectHandle[] _objectHandles = new ObjectHandle[ObjectsCount];
+    private readonly SfxVoice[] _sfxVoices = new SfxVoice[8];
     private readonly byte[] _drawList = new byte[ObjectsCount];
     private int _drawListCount;
     private int _sdramPointerWord;
@@ -54,14 +59,24 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
     private ushort _audioBgmVolume;
     private ushort _audioSfxVolume;
     private ushort _audioConfig;
+    private readonly object _musicLock = new();
+    private readonly string? _sourcePath;
+    private readonly int _outputSampleRate;
+    private short[] _musicPcm = Array.Empty<short>();
+    private int _musicSampleIndex;
+    private int _requestedMusicTrack;
+    private int _musicDecodeGeneration;
+    private bool _musicLoading;
     private bool _decoded;
     private readonly string? _savePath;
     private static readonly bool TracePaprium =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_PAPRIUM"), "1", StringComparison.Ordinal);
 
-    public PapriumBusOverride(byte[] romBytes, string? sourcePath)
+    public PapriumBusOverride(byte[] romBytes, string? sourcePath, int outputSampleRate)
     {
         _romWords = ToWords(romBytes);
+        _sourcePath = sourcePath;
+        _outputSampleRate = outputSampleRate > 0 ? outputSampleRate : 44100;
         _savePath = BuildSavePath(sourcePath);
         LoadNvram();
         Reset();
@@ -81,6 +96,18 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
         _sdramPointerWord = 0;
         _sdramWindowEnabled = false;
         _vramMaxSlot = 0;
+        lock (_musicLock)
+        {
+            _musicPcm = Array.Empty<short>();
+            _musicSampleIndex = 0;
+            _requestedMusicTrack = 0;
+            _musicLoading = false;
+            _musicDecodeGeneration++;
+            _audioBgmVolume = 0x100;
+            _audioSfxVolume = 0x100;
+            _audioConfig = 0;
+            Array.Clear(_sfxVoices);
+        }
         SetWord(RegCommandOffset, 0);
         SetWord(RegStatus1Offset, 0);
         SetWord(RegStatus2Offset, 7);
@@ -271,11 +298,13 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
                 _sdramWindowEnabled = false;
                 break;
             case 0x88:
-                _audioConfig = (ushort)arg;
+                lock (_musicLock)
+                    _audioConfig = (ushort)arg;
                 break;
             case 0x8C:
                 if (_bgmTracksBaseAddr != 0)
                     Unpack(BgmAddr(arg & 0x7F), _bgmUnpackAddr);
+                RequestMusicTrack(arg & 0x7F);
                 break;
             case 0xA4:
                 break;
@@ -302,13 +331,22 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
                     SwapShorts(GetCommandArgLong(6)));
                 break;
             case 0xC9:
-                _audioBgmVolume = (ushort)arg;
+                lock (_musicLock)
+                    _audioBgmVolume = (ushort)arg;
                 break;
             case 0xCA:
-                _audioSfxVolume = (ushort)arg;
+                lock (_musicLock)
+                    _audioSfxVolume = (ushort)arg;
                 break;
             case 0xD1:
+                PlaySfx(arg);
+                break;
             case 0xD2:
+                StopSfx(arg);
+                break;
+            case 0xD3:
+                LoopSfx(arg);
+                break;
             case 0xD6:
                 break;
             case 0xDA:
@@ -358,6 +396,536 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
         }
 
         SetWord(RegCommandOffset, 0);
+    }
+
+    public void MixMusicInto(Span<short> destination, int frames)
+    {
+        if (frames <= 0 || destination.Length < frames * 2)
+            return;
+
+        short[] pcm;
+        int sampleIndex;
+        int volume;
+        lock (_musicLock)
+        {
+            if (_musicPcm.Length < 2 || _requestedMusicTrack == 0)
+            {
+                MixSfxInto(destination, frames);
+                return;
+            }
+
+            pcm = _musicPcm;
+            sampleIndex = _musicSampleIndex;
+            volume = _audioBgmVolume;
+        }
+
+        if (volume <= 0)
+        {
+            MixSfxInto(destination, frames);
+            return;
+        }
+
+        for (int frame = 0; frame < frames; frame++)
+        {
+            int dst = frame * 2;
+            int left = destination[dst] + (pcm[sampleIndex] * volume / 256);
+            int right = destination[dst + 1] + (pcm[sampleIndex + 1] * volume / 256);
+            destination[dst] = Clamp16(left);
+            destination[dst + 1] = Clamp16(right);
+
+            sampleIndex += 2;
+            if (sampleIndex >= pcm.Length)
+                sampleIndex = 0;
+        }
+
+        lock (_musicLock)
+        {
+            if (ReferenceEquals(pcm, _musicPcm))
+                _musicSampleIndex = sampleIndex;
+        }
+
+        MixSfxInto(destination, frames);
+    }
+
+    private void MixSfxInto(Span<short> destination, int frames)
+    {
+        if (frames <= 0 || destination.Length < frames * 2 || _sfxBaseAddr == 0)
+            return;
+
+        lock (_musicLock)
+        {
+            int globalVolume = _audioSfxVolume;
+            if (globalVolume <= 0)
+                return;
+
+            for (int frame = 0; frame < frames; frame++)
+            {
+                int mixL = 0;
+                int mixR = 0;
+
+                for (int ch = 0; ch < _sfxVoices.Length; ch++)
+                {
+                    ref SfxVoice voice = ref _sfxVoices[ch];
+                    if (voice.Size <= 0)
+                        continue;
+
+                    int depth = voice.Type & 0x03;
+                    if (depth is not 1 and not 2)
+                    {
+                        voice.Size = 0;
+                        continue;
+                    }
+
+                    int sample = RomRawByte(_sfxBaseAddr + (uint)(voice.Ptr ^ 1));
+                    if (depth == 1)
+                    {
+                        sample = (sample * 65536 / 256) - 32768;
+                    }
+                    else
+                    {
+                        if (voice.Count == 0)
+                            sample >>= 4;
+                        sample = ((sample & 0x0F) * 65536 / 16) - 32768;
+                    }
+
+                    sample = sample * voice.Volume / 0x400;
+                    int pan = voice.Panning;
+                    int sampleL = sample * (pan <= 0x80 ? 0x80 : 0x100 - pan) / 0x80;
+                    int sampleR = sample * (pan >= 0x80 ? 0x80 : pan) / 0x80;
+                    mixL += sampleL;
+                    mixR += sampleR;
+
+                    if ((voice.Flags & 0x100) != 0)
+                    {
+                        mixL = mixL * 125 / 100;
+                        mixR = mixR * 125 / 100;
+                    }
+
+                    voice.Time++;
+                    voice.Tick += 0x10000;
+                    if ((voice.Flags & 0x8000) != 0)
+                        voice.Tick -= 0x800;
+                    if ((voice.Flags & 0x2000) != 0)
+                        voice.Tick -= 0x8000;
+
+                    int rate = SfxRateStep(voice.Type);
+                    if (voice.Tick >= rate)
+                    {
+                        voice.Tick -= rate;
+                        voice.Count++;
+                        voice.Size--;
+
+                        if (voice.Count >= depth)
+                        {
+                            voice.Ptr++;
+                            voice.Count = 0;
+                        }
+                    }
+
+                    if (voice.Size <= 0)
+                    {
+                        voice.Count = 0;
+                        if (voice.Loop)
+                            RestartLoopingSfx(ref voice);
+                    }
+                }
+
+                if ((_audioConfig & 0x08) != 0)
+                {
+                    mixL *= 2;
+                    mixR *= 2;
+                }
+
+                mixL = mixL * globalVolume / 0x100;
+                mixR = mixR * globalVolume / 0x100;
+
+                int dst = frame * 2;
+                destination[dst] = Clamp16(destination[dst] + mixL);
+                destination[dst + 1] = Clamp16(destination[dst + 1] + mixR);
+            }
+        }
+    }
+
+    private void PlaySfx(int sfx)
+    {
+        if (_sfxBaseAddr == 0)
+            return;
+
+        int channelMask = GetCommandArg(0);
+        int volume = GetCommandArg(1);
+        int panning = GetCommandArg(2);
+        int flags = GetCommandArg(3);
+
+        uint entry = _sfxBaseAddr + (uint)(sfx * 8);
+        int ptr = (ReadRomU16Raw(entry) << 16) | ReadRomU16Raw(entry + 2);
+        int size = (RomRawByte(entry + 4) << 16) | ReadRomU16Raw(entry + 6);
+        int type = RomRawByte(entry + 5);
+        if (TracePaprium)
+        {
+            Console.WriteLine(
+                $"[Paprium] SFX play id=0x{sfx:X2} mask=0x{channelMask:X4} vol=0x{volume:X4} pan=0x{panning:X4} flags=0x{flags:X4} ptr=0x{ptr:X6} size=0x{size:X5} type=0x{type:X2}");
+        }
+        if (size <= 0 || ptr < 0)
+            return;
+
+        lock (_musicLock)
+        {
+            int newChannel = 0;
+            int maxTime = -1;
+            int mask = channelMask;
+            for (int ch = 0; ch < _sfxVoices.Length; ch++, mask >>= 1)
+            {
+                if ((mask & 1) == 0)
+                    continue;
+
+                if (_sfxVoices[ch].Size > 0)
+                {
+                    if (_sfxVoices[ch].Time > maxTime)
+                    {
+                        maxTime = _sfxVoices[ch].Time;
+                        newChannel = ch;
+                    }
+                    continue;
+                }
+
+                newChannel = ch;
+                break;
+            }
+
+            if (channelMask == 0)
+            {
+                for (int ch = 0; ch < _sfxVoices.Length; ch++)
+                {
+                    if (_sfxVoices[ch].Size == 0)
+                    {
+                        newChannel = ch;
+                        break;
+                    }
+                    if (_sfxVoices[ch].Time > maxTime)
+                    {
+                        maxTime = _sfxVoices[ch].Time;
+                        newChannel = ch;
+                    }
+                }
+            }
+
+            _sfxVoices[newChannel] = new SfxVoice
+            {
+                Num = sfx,
+                Ptr = ptr,
+                Start = ptr,
+                Size = size,
+                Type = type,
+                Volume = volume,
+                Panning = panning,
+                Flags = flags
+            };
+        }
+    }
+
+    private void LoopSfx(int channelMask)
+    {
+        int volume = GetCommandArg(0);
+        int panning = GetCommandArg(1);
+        int decay = GetCommandArg(2);
+
+        lock (_musicLock)
+        {
+            for (int ch = 0; ch < _sfxVoices.Length; ch++, channelMask >>= 1)
+            {
+                if ((channelMask & 1) == 0)
+                    continue;
+
+                _sfxVoices[ch].Volume = volume;
+                _sfxVoices[ch].Panning = panning;
+                _sfxVoices[ch].Decay = decay;
+                _sfxVoices[ch].Loop = true;
+                break;
+            }
+        }
+    }
+
+    private void StopSfx(int channelMask)
+    {
+        int flags = GetCommandArg(0);
+        lock (_musicLock)
+        {
+            for (int ch = 0; ch < _sfxVoices.Length; ch++)
+            {
+                if ((channelMask & (1 << ch)) == 0)
+                    continue;
+
+                if (flags == 0)
+                    _sfxVoices[ch].Size = 0;
+
+                _sfxVoices[ch].Decay = flags;
+                _sfxVoices[ch].Loop = false;
+                break;
+            }
+        }
+    }
+
+    private void RestartLoopingSfx(ref SfxVoice voice)
+    {
+        uint entry = _sfxBaseAddr + (uint)(voice.Num * 8);
+        voice.Ptr = (ReadRomU16Raw(entry) << 16) | ReadRomU16Raw(entry + 2);
+        voice.Size = (RomRawByte(entry + 4) << 16) | ReadRomU16Raw(entry + 6);
+    }
+
+    private static int SfxRateStep(int type)
+    {
+        ReadOnlySpan<int> rates = [1, 2, 4, 5, 8, 9];
+        int index = (type >> 4) & 0x0F;
+        if ((uint)index >= rates.Length)
+            index = rates.Length - 1;
+        return rates[index] << 16;
+    }
+
+    private void RequestMusicTrack(int track)
+    {
+        track &= 0x7F;
+        if (track == 0 || !TryGetMusicFileName(track, out string fileName))
+        {
+            lock (_musicLock)
+            {
+                _requestedMusicTrack = 0;
+                _musicPcm = Array.Empty<short>();
+                _musicSampleIndex = 0;
+                _musicLoading = false;
+                _musicDecodeGeneration++;
+            }
+            return;
+        }
+
+        int generation;
+        lock (_musicLock)
+        {
+            if (_requestedMusicTrack == track && (_musicPcm.Length > 0 || _musicLoading))
+                return;
+
+            _requestedMusicTrack = track;
+            _musicPcm = Array.Empty<short>();
+            _musicSampleIndex = 0;
+            _musicLoading = true;
+            generation = ++_musicDecodeGeneration;
+        }
+
+        string? sourcePath = _sourcePath;
+        int outputSampleRate = _outputSampleRate;
+        Task.Run(() =>
+        {
+            short[] decoded = Array.Empty<short>();
+            try
+            {
+                if (TryLoadMusicBytes(sourcePath, fileName, out byte[] mp3Data))
+                    decoded = DecodeMp3ToStereoPcm(mp3Data, outputSampleRate);
+            }
+            catch (Exception ex)
+            {
+                if (TracePaprium)
+                    Console.WriteLine($"[Paprium] MP3 decode failed track={track:X2} file='{fileName}': {ex.Message}");
+            }
+
+            lock (_musicLock)
+            {
+                if (generation != _musicDecodeGeneration)
+                    return;
+
+                _musicPcm = decoded;
+                _musicSampleIndex = 0;
+                _musicLoading = false;
+                if (decoded.Length == 0)
+                    _requestedMusicTrack = 0;
+            }
+        });
+    }
+
+    private static bool TryLoadMusicBytes(string? sourcePath, string fileName, out byte[] data)
+    {
+        data = Array.Empty<byte>();
+        if (string.IsNullOrWhiteSpace(sourcePath))
+            return false;
+
+        string? baseDirectory = Path.GetDirectoryName(sourcePath);
+        if (!string.IsNullOrWhiteSpace(baseDirectory))
+        {
+            string[] candidates =
+            [
+                Path.Combine(baseDirectory, "paprium", fileName),
+                Path.Combine(baseDirectory, "PAPRIUM", "paprium", fileName),
+                Path.Combine(baseDirectory, fileName)
+            ];
+
+            foreach (string candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    data = File.ReadAllBytes(candidate);
+                    return data.Length > 0;
+                }
+            }
+        }
+
+        string ext = Path.GetExtension(sourcePath).ToLowerInvariant();
+        if (ext is not ".zip" and not ".7z" || !File.Exists(sourcePath))
+            return false;
+
+        using IArchive archive = ArchiveFactory.Open(sourcePath);
+        foreach (IArchiveEntry entry in archive.Entries)
+        {
+            if (entry.IsDirectory || string.IsNullOrWhiteSpace(entry.Key))
+                continue;
+
+            if (!string.Equals(Path.GetFileName(entry.Key), fileName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            using Stream stream = entry.OpenEntryStream();
+            using var memory = new MemoryStream();
+            stream.CopyTo(memory);
+            data = memory.ToArray();
+            return data.Length > 0;
+        }
+
+        return false;
+    }
+
+    private static short[] DecodeMp3ToStereoPcm(byte[] data, int targetSampleRate)
+    {
+        using var stream = new MemoryStream(data, writable: false);
+        using var mpegFile = new MpegFile(stream);
+
+        int sourceChannels = Math.Max(1, mpegFile.Channels);
+        int sourceSampleRate = Math.Max(1, mpegFile.SampleRate);
+        var samples = new List<float>(131072);
+        float[] readBuffer = new float[8192];
+
+        while (true)
+        {
+            int read = mpegFile.ReadSamples(readBuffer, 0, readBuffer.Length);
+            if (read <= 0)
+                break;
+
+            for (int i = 0; i < read; i++)
+                samples.Add(readBuffer[i]);
+        }
+
+        int sourceFrameCount = samples.Count / sourceChannels;
+        if (sourceFrameCount == 0)
+            return Array.Empty<short>();
+
+        if (targetSampleRate <= 0)
+            targetSampleRate = sourceSampleRate;
+
+        int targetFrameCount = sourceSampleRate == targetSampleRate
+            ? sourceFrameCount
+            : (int)Math.Ceiling(sourceFrameCount * (double)targetSampleRate / sourceSampleRate);
+
+        var pcm = new short[targetFrameCount * 2];
+        for (int frame = 0; frame < targetFrameCount; frame++)
+        {
+            double sourcePosition = sourceSampleRate == targetSampleRate
+                ? frame
+                : frame * (double)sourceSampleRate / targetSampleRate;
+            int baseFrame = Math.Min(sourceFrameCount - 1, (int)sourcePosition);
+            int nextFrame = Math.Min(sourceFrameCount - 1, baseFrame + 1);
+            double fraction = sourcePosition - baseFrame;
+
+            GetStereoSample(samples, sourceChannels, baseFrame, out float left0, out float right0);
+            GetStereoSample(samples, sourceChannels, nextFrame, out float left1, out float right1);
+
+            float left = (float)(left0 + ((left1 - left0) * fraction));
+            float right = (float)(right0 + ((right1 - right0) * fraction));
+
+            int sampleIndex = frame * 2;
+            pcm[sampleIndex] = FloatToPcm16(left);
+            pcm[sampleIndex + 1] = FloatToPcm16(right);
+        }
+
+        return pcm;
+    }
+
+    private static void GetStereoSample(List<float> samples, int sourceChannels, int frame, out float left, out float right)
+    {
+        int index = frame * sourceChannels;
+        left = samples[index];
+        right = sourceChannels > 1 ? samples[index + 1] : left;
+    }
+
+    private static short FloatToPcm16(float sample)
+    {
+        sample = Math.Clamp(sample, -1f, 1f);
+        return (short)Math.Round(sample * short.MaxValue);
+    }
+
+    private static short Clamp16(int sample)
+    {
+        if (sample > short.MaxValue)
+            return short.MaxValue;
+        if (sample < short.MinValue)
+            return short.MinValue;
+        return (short)sample;
+    }
+
+    private static bool TryGetMusicFileName(int track, out string fileName)
+    {
+        fileName = track switch
+        {
+            0x01 => "02 90's Acid Dub Character Select.mp3",
+            0x02 => "08 90's Dance.mp3",
+            0x03 => "42 1988 Commercial.mp3",
+            0x04 => "05 Asian Chill.mp3",
+            0x05 => "31 Bad Dudes vs Paprium.mp3",
+            0x06 => "43 Blade FM.mp3",
+            0x07 => "03 Bone Crusher.mp3",
+            0x0B => "26 Club Shuffle.mp3",
+            0x0C => "23 Continue.mp3",
+            0x0E => "07 Cool Groove.mp3",
+            0x0F => "36 Cyberpunk Ninja.mp3",
+            0x10 => "35 Cyberpunk Funk.mp3",
+            0x11 => "30 Cyber Interlude.mp3",
+            0x12 => "21 Cyborg Invasion.mp3",
+            0x13 => "44 Dark Alley.mp3",
+            0x14 => "29 Dark & Power Mad.mp3",
+            0x15 => "24 Intro.mp3",
+            0x16 => "27 Dark Rock.mp3",
+            0x17 => "04 Drumbass Boss.mp3",
+            0x18 => "45 Dubstep Groove.mp3",
+            0x19 => "15 Electro Acid Funk.mp3",
+            0x1B => "28 Evolve.mp3",
+            0x1C => "33 Funk Enhanced Mix.mp3",
+            0x1D => "41 Game Over.mp3",
+            0x1E => "46 Gothic.mp3",
+            0x20 => "13 Hard Rock.mp3",
+            0x21 => "22 Hardcore BP1.mp3",
+            0x22 => "11 Hardcore BP2.mp3",
+            0x23 => "38 Hardcore BP3.mp3",
+            0x24 => "40 Score.mp3",
+            0x25 => "47 House.mp3",
+            0x26 => "17 Indie Shuffle.mp3",
+            0x27 => "25 Indie Break Beat.mp3",
+            0x28 => "16 Jazzy Shuffle.mp3",
+            0x2A => "19 Neo Metal.mp3",
+            0x2B => "14 Neon Rider.mp3",
+            0x2E => "09 Retro Beat.mp3",
+            0x2F => "20 Sadness.mp3",
+            0x31 => "18 Slow Asian Beat.mp3",
+            0x32 => "48 Slow Mood.mp3",
+            0x33 => "49 Smooth Coords.mp3",
+            0x34 => "10 Spiral.mp3",
+            0x35 => "12 Stage Clear.mp3",
+            0x36 => "32 Summer Breeze.mp3",
+            0x37 => "06 Techno Beats.mp3",
+            0x38 => "50 Tension.mp3",
+            0x39 => "01 Theme of Paprium.mp3",
+            0x3A => "39 Ending.mp3",
+            0x3B => "34 Transe.mp3",
+            0x3C => "37 Urban.mp3",
+            0x3D => "51 Water.mp3",
+            0x3E => "52 Waterfront Beat.mp3",
+            _ => string.Empty
+        };
+
+        return fileName.Length > 0;
     }
 
     private void SetupData(uint bgmFile, uint unk1File, uint smpFile, uint unk2File, uint sfxFile, uint anmFile, uint blkFile)
@@ -882,6 +1450,11 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     }
 
+    private int ReadRomU16Raw(uint byteAddr)
+    {
+        return RomRawByte(byteAddr) | (RomRawByte(byteAddr + 1) << 8);
+    }
+
     private ushort GetCommandArg(int index) => GetWord(CommandArgsOffset + index * 2);
 
     private uint GetCommandArgLong(int index)
@@ -1110,5 +1683,22 @@ internal sealed class PapriumBusOverride : IM68kBusOverride
         public uint AnimOffset;
         public ushort CurrentAnim;
         public ushort Counter;
+    }
+
+    private struct SfxVoice
+    {
+        public int Num;
+        public int Ptr;
+        public int Start;
+        public int Size;
+        public int Type;
+        public int Volume;
+        public int Panning;
+        public int Flags;
+        public bool Loop;
+        public int Count;
+        public int Time;
+        public int Tick;
+        public int Decay;
     }
 }
