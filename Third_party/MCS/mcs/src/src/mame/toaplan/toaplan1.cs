@@ -811,13 +811,14 @@ namespace mame
             {
                 int py = y - dstY;
                 int priorityRow = y * ScreenWidth;
+                PointerU32 bitmapRow = bitmap.pix(y);
                 for (int x = minX; x <= maxX; x++)
                 {
                     int pen = pixels[(py << 3) | (x - dstX)];
                     if (pen == 0 && !opaque)
                         continue;
 
-                    bitmap.pix(y, x)[0] = palette[(paletteBase | pen) & 0x3ff];
+                    bitmapRow[x] = palette[(paletteBase | pen) & 0x3ff];
                     if (!opaque)
                         m_priority_bitmap[priorityRow + x] = priorityValue;
                 }
@@ -841,6 +842,7 @@ namespace mame
             {
                 int py = y - dstY;
                 int priorityRow = y * ScreenWidth;
+                PointerU32 bitmapRow = bitmap.pix(y);
                 for (int x = minX; x <= maxX; x++)
                 {
                     int pen = pixels[(py << 3) | (x - dstX)];
@@ -849,7 +851,7 @@ namespace mame
 
                     int priorityIndex = priorityRow + x;
                     if (((1U << (m_priority_bitmap[priorityIndex] & 0x1f)) & priorityMask) == 0)
-                        bitmap.pix(y, x)[0] = palette[(paletteBase | pen) & 0x3ff];
+                        bitmapRow[x] = palette[(paletteBase | pen) & 0x3ff];
                     m_priority_bitmap[priorityIndex] = 31;
                 }
             }
