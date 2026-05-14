@@ -51,6 +51,15 @@ namespace Ryu64Core
         private string _lastFramebufferStatus = "Not started";
         private uint _lastFallbackFramebufferOrigin;
         private uint _lastTrackedFramebufferOrigin;
+        private bool _cachedFramebufferValid;
+        private uint _cachedFramebufferOrigin;
+        private uint _cachedFramebufferRawViOrigin;
+        private int _cachedFramebufferWidth;
+        private int _cachedFramebufferHeight;
+        private int _cachedFramebufferBytesPerPixel;
+        private int _cachedFramebufferViType;
+        private bool _cachedFramebufferProducerBacked;
+        private bool _cachedFramebufferPreferSnapshot;
         private byte[] _framebufferScratch = Array.Empty<byte>();
 
         public event EventHandler<FramebufferUpdatedEventArgs> FramebufferUpdated;
@@ -183,6 +192,7 @@ namespace Ryu64Core
             _lastAudioLength = 0;
             _lastAudioDacrate = 0;
             _lastFramebufferStatus = "ROM loaded";
+            ClearFramebufferCandidateCache();
             _framebufferScratch = Array.Empty<byte>();
         }
 
@@ -341,6 +351,9 @@ namespace Ryu64Core
                 uint rdpColorImageWriteEpoch = R4300.memory.LastRdpColorImageWriteEpoch;
                 bool rdpColorImageSelected = false;
                 bool preferRdpVisibleSnapshot = false;
+                if (TryCopyCachedFramebuffer(rawOrigin, width, height, bytesPerPixel, viType, out framebuffer))
+                    return true;
+
                 if (rdpColorImageWriteEpoch != 0
                     && rdpColorImage >= HeuristicFramebufferOriginFloor
                     && rdpColorImage < RdramSizeBytes
@@ -574,6 +587,15 @@ namespace Ryu64Core
                 {
                     framebuffer = framebufferScratch;
                     _lastTrackedFramebufferOrigin = visibleSnapshotOrigin;
+                    RememberFramebufferCandidate(
+                        visibleSnapshotOrigin,
+                        rawOrigin,
+                        width,
+                        height,
+                        bytesPerPixel,
+                        viType,
+                        producerBackedFramebufferSelected,
+                        preferSnapshot: true);
                     R4300.memory.NotifyFramebufferConsumerRead(visibleSnapshotOrigin, (uint)bufferSize);
                     FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
                     _lastFramebufferStatus =
@@ -587,6 +609,15 @@ namespace Ryu64Core
                     framebuffer[i] = R4300.memory.ReadUInt8PhysicalUncached(origin + (uint)i);
                 }
                 R4300.memory.NotifyFramebufferConsumerRead(origin, (uint)bufferSize);
+                RememberFramebufferCandidate(
+                    origin,
+                    rawOrigin,
+                    width,
+                    height,
+                    bytesPerPixel,
+                    viType,
+                    producerBackedFramebufferSelected,
+                    preferRdpVisibleSnapshot);
 
                 FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
                 bool keepDetailedStatus =
@@ -762,6 +793,7 @@ namespace Ryu64Core
             _lastFramebufferStatus = reader.ReadString();
             _lastFallbackFramebufferOrigin = reader.ReadUInt32();
             _lastTrackedFramebufferOrigin = reader.ReadUInt32();
+            ClearFramebufferCandidateCache();
             R4300.LoadState(reader);
 
             if (restart)
@@ -776,6 +808,108 @@ namespace Ryu64Core
             isRunning = true;
             _resumeLoadedState = false;
             StateChanged?.Invoke(this, new EmulationStateChangedEventArgs(true));
+        }
+
+        private void ClearFramebufferCandidateCache()
+        {
+            _cachedFramebufferValid = false;
+            _cachedFramebufferOrigin = 0;
+            _cachedFramebufferRawViOrigin = 0;
+            _cachedFramebufferWidth = 0;
+            _cachedFramebufferHeight = 0;
+            _cachedFramebufferBytesPerPixel = 0;
+            _cachedFramebufferViType = 0;
+            _cachedFramebufferProducerBacked = false;
+            _cachedFramebufferPreferSnapshot = false;
+        }
+
+        private void RememberFramebufferCandidate(
+            uint origin,
+            uint rawViOrigin,
+            int width,
+            int height,
+            int bytesPerPixel,
+            int viType,
+            bool producerBacked,
+            bool preferSnapshot)
+        {
+            _cachedFramebufferValid = true;
+            _cachedFramebufferOrigin = origin;
+            _cachedFramebufferRawViOrigin = rawViOrigin;
+            _cachedFramebufferWidth = width;
+            _cachedFramebufferHeight = height;
+            _cachedFramebufferBytesPerPixel = bytesPerPixel;
+            _cachedFramebufferViType = viType;
+            _cachedFramebufferProducerBacked = producerBacked;
+            _cachedFramebufferPreferSnapshot = preferSnapshot;
+        }
+
+        private bool TryCopyCachedFramebuffer(
+            uint rawViOrigin,
+            int width,
+            int height,
+            int bytesPerPixel,
+            int viType,
+            out byte[] framebuffer)
+        {
+            framebuffer = Array.Empty<byte>();
+            if (!_cachedFramebufferValid
+                || _cachedFramebufferWidth != width
+                || _cachedFramebufferHeight != height
+                || _cachedFramebufferBytesPerPixel != bytesPerPixel
+                || _cachedFramebufferViType != viType)
+            {
+                return false;
+            }
+
+            bool suspiciousViOrigin = rawViOrigin < 0x00001000u;
+            if (rawViOrigin != _cachedFramebufferRawViOrigin)
+            {
+                if (!suspiciousViOrigin || _cachedFramebufferRawViOrigin >= 0x00001000u)
+                    return false;
+            }
+
+            if (!suspiciousViOrigin && _cachedFramebufferOrigin != rawViOrigin)
+                return false;
+
+            int bufferSize = checked(width * height * bytesPerPixel);
+            if (bufferSize <= 0 || (long)_cachedFramebufferOrigin + bufferSize > RdramSizeBytes)
+            {
+                ClearFramebufferCandidateCache();
+                return false;
+            }
+
+            byte[] framebufferScratch = GetFramebufferScratch(bufferSize);
+            if ((_cachedFramebufferPreferSnapshot || _cachedFramebufferProducerBacked)
+                && R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
+                    _cachedFramebufferOrigin,
+                    (uint)width,
+                    (uint)height,
+                    (uint)bytesPerPixel,
+                    framebufferScratch,
+                    out uint snapshotOrigin,
+                    out uint snapshotEpoch)
+                && snapshotOrigin == _cachedFramebufferOrigin)
+            {
+                framebuffer = framebufferScratch;
+                R4300.memory.NotifyFramebufferConsumerRead(snapshotOrigin, (uint)bufferSize);
+                FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
+                _lastFramebufferStatus =
+                    $"Cached RDP snapshot used (fb=0x{snapshotOrigin:x8}, size={width}x{height} bpp={bytesPerPixel}, snapshotEpoch={snapshotEpoch})";
+                return true;
+            }
+
+            for (int i = 0; i < bufferSize; i++)
+            {
+                framebufferScratch[i] = R4300.memory.ReadUInt8PhysicalUncached(_cachedFramebufferOrigin + (uint)i);
+            }
+
+            framebuffer = framebufferScratch;
+            R4300.memory.NotifyFramebufferConsumerRead(_cachedFramebufferOrigin, (uint)bufferSize);
+            FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
+            _lastFramebufferStatus =
+                $"Cached framebuffer used (vi=0x{rawViOrigin:x8} -> fb=0x{_cachedFramebufferOrigin:x8}, size={width}x{height} bpp={bytesPerPixel}, producerBacked={_cachedFramebufferProducerBacked})";
+            return true;
         }
 
         private static int InferVideoHeight(uint vStart)
