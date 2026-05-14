@@ -78,6 +78,7 @@ namespace mame
                 taitosj.driver_jungleh,
                 taitosj.driver_junglek,
                 //tempest.driver_tempest,
+                toaplan1.driver_outzone,
                 //turbo.driver_turbo,
                 williams.driver_defender,
                 williams.driver_joust,
