@@ -696,7 +696,7 @@ namespace Ryu64.MIPS
             uint ra = Reg32(31);
             uint t1 = Reg32(9);
             uint s6 = Reg32(22);
-            if (ra != 0x00100000u || t0 >= ra || t1 < 0x80000400u || t1 >= 0x80100000u)
+            if (ra != 0x00100000u || t0 >= ra || t1 < 0x80000400u || t1 >= 0x80800000u)
                 return false;
 
             ulong a2 = Registers.R4300.Reg[6];
@@ -803,8 +803,21 @@ namespace Ryu64.MIPS
             ulong s0 = Registers.R4300.Reg[16];
             ulong t8 = Registers.R4300.Reg[24];
             ulong t9 = Registers.R4300.Reg[25];
+            byte[] rdram = memory.RDRAM;
 
             uint iterations = 0;
+
+            uint ReadRdramWord(uint virtualAddress)
+            {
+                uint physical = virtualAddress & 0x1FFFFFFFu;
+                if (physical + 3u >= rdram.Length)
+                    return memory.ReadUInt32PhysicalFast(physical);
+
+                return ((uint)rdram[physical] << 24)
+                    | ((uint)rdram[physical + 1u] << 16)
+                    | ((uint)rdram[physical + 2u] << 8)
+                    | rdram[physical + 3u];
+            }
 
             void ExecuteTail()
             {
@@ -818,7 +831,7 @@ namespace Ryu64.MIPS
 
             while ((uint)t0 < raWord)
             {
-                v0 = SignExtend32(memory.ReadUInt32PhysicalFast((uint)t1));
+                v0 = SignExtend32(ReadRdramWord((uint)t1));
                 v1 = AddU32(a3, v0);
                 bool carry = v1 < a3;
                 a1 = v1;
@@ -1057,6 +1070,350 @@ namespace Ryu64.MIPS
             uint produced = dstPhys - initialDstPhys;
             AddSyntheticCycles(Math.Max(1u, produced * 4u));
             Common.Measure.InstructionCount += Math.Max(tokens * 8UL, produced);
+            return true;
+        }
+
+        private static bool TryFastForwardIpl3CacheLoop(uint pc)
+        {
+            if (!FastIdleLoop)
+                return false;
+
+            uint basePc;
+            uint expectedCacheOp;
+            uint stride;
+            if (pc >= 0xA4000428u && pc <= 0xA4000434u)
+            {
+                basePc = 0xA4000428u;
+                expectedCacheOp = 0xBD080000u;
+                stride = 0x20u;
+            }
+            else if (pc >= 0xA4000448u && pc <= 0xA4000454u)
+            {
+                basePc = 0xA4000448u;
+                expectedCacheOp = 0xBD010000u;
+                stride = 0x10u;
+            }
+            else
+            {
+                return TryFastForwardGenericIpl3CacheLoop(pc);
+            }
+
+            try
+            {
+                if (memory.ReadUInt32(basePc) != expectedCacheOp
+                    || memory.ReadUInt32(basePc + 0x04u) != 0x0109082Bu
+                    || memory.ReadUInt32(basePc + 0x08u) != 0x1420FFFDu
+                    || memory.ReadUInt32(basePc + 0x0Cu) != (0x25080000u | stride))
+                {
+                    return false;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            uint t0 = Reg32(8);
+            uint t1 = Reg32(9);
+            if (t0 >= t1)
+                return false;
+
+            uint remaining = ((t1 - t0) + (stride - 1u)) / stride;
+            Registers.R4300.Reg[8] = SignExtend32(t1);
+            Registers.R4300.PC = basePc + 0x10u;
+            AddSyntheticCycles(Math.Max(1u, remaining * 4u));
+            Common.Measure.InstructionCount += remaining * 4UL;
+            return true;
+        }
+
+        private static bool TryFastForwardGenericIpl3CacheLoop(uint pc)
+        {
+            if (pc < 0xA4000000u || pc >= 0xA4001000u)
+                return false;
+
+            for (uint offset = 0; offset <= 0x0Cu; offset += 4u)
+            {
+                if (pc < 0xA4000000u + offset)
+                    continue;
+
+                uint basePc = pc - offset;
+                try
+                {
+                    uint cacheOp = memory.ReadUInt32(basePc);
+                    uint stepOp = memory.ReadUInt32(basePc + 0x0Cu);
+                    if ((cacheOp & 0xFFFF0000u) != 0xBD000000u
+                        || memory.ReadUInt32(basePc + 0x04u) != 0x0109082Bu
+                        || memory.ReadUInt32(basePc + 0x08u) != 0x1420FFFDu
+                        || (stepOp & 0xFFFF0000u) != 0x25080000u)
+                    {
+                        continue;
+                    }
+
+                    uint stride = stepOp & 0xFFFFu;
+                    if (stride == 0 || stride > 0x40u)
+                        continue;
+
+                    uint t0 = Reg32(8);
+                    uint t1 = Reg32(9);
+                    if (t0 >= t1)
+                        return false;
+
+                    uint remaining = ((t1 - t0) + (stride - 1u)) / stride;
+                    Registers.R4300.Reg[8] = SignExtend32(t1);
+                    Registers.R4300.PC = basePc + 0x10u;
+                    AddSyntheticCycles(Math.Max(1u, remaining * 4u));
+                    Common.Measure.InstructionCount += remaining * 4UL;
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryFastForwardIpl3CopyLoop(uint pc)
+        {
+            if (!FastIdleLoop || pc < 0xA4000498u || pc > 0xA40004ACu)
+                return false;
+
+            try
+            {
+                if (memory.ReadUInt32(0xA4000490u) != 0x016A5825u
+                    || memory.ReadUInt32(0xA4000494u) != 0x25290000u
+                    || memory.ReadUInt32(0xA4000498u) != 0x8D0D0000u
+                    || memory.ReadUInt32(0xA400049Cu) != 0x25080004u
+                    || memory.ReadUInt32(0xA40004A0u) != 0x010B082Bu
+                    || memory.ReadUInt32(0xA40004A4u) != 0x25290004u
+                    || memory.ReadUInt32(0xA40004A8u) != 0x1420FFFBu
+                    || memory.ReadUInt32(0xA40004ACu) != 0xAD2DFFFCu)
+                {
+                    return false;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            uint src = Reg32(8);
+            uint dst = Reg32(9);
+            uint end = Reg32(11);
+            if (src >= end || ((src | dst | end) & 0x3u) != 0)
+                return false;
+
+            uint bytes = end - src;
+            if (bytes > 8u * 1024u * 1024u)
+                return false;
+
+            uint words = bytes >> 2;
+            uint srcPhysical = src & 0x1FFFFFFFu;
+            uint dstPhysical = dst & 0x1FFFFFFFu;
+            byte[] rdram = memory.RDRAM;
+            bool dstIsRdram = dstPhysical + bytes <= rdram.Length;
+            uint lastWord = 0;
+
+            for (uint i = 0; i < words; i++)
+            {
+                uint value = memory.ReadUInt32PhysicalFast(srcPhysical + (i << 2));
+                lastWord = value;
+                if (dstIsRdram)
+                {
+                    uint off = dstPhysical + (i << 2);
+                    rdram[off] = (byte)(value >> 24);
+                    rdram[off + 1u] = (byte)(value >> 16);
+                    rdram[off + 2u] = (byte)(value >> 8);
+                    rdram[off + 3u] = (byte)value;
+                }
+                else
+                {
+                    memory.WriteUInt32(0xA0000000u | (dstPhysical + (i << 2)), value);
+                }
+            }
+
+            Registers.R4300.Reg[8] = SignExtend32(end);
+            Registers.R4300.Reg[9] = SignExtend32(dst + bytes);
+            Registers.R4300.Reg[13] = SignExtend32(lastWord);
+            Registers.R4300.PC = 0xA40004B0u;
+            AddSyntheticCycles(Math.Max(1u, words * 6u));
+            Common.Measure.InstructionCount += words * 6UL;
+            return true;
+        }
+
+        private static bool TryFastForwardIpl3StoreDelayLoop(uint pc)
+        {
+            if (!FastIdleLoop || (pc != 0x80000280u && pc != 0x80000284u))
+                return false;
+
+            try
+            {
+                if (memory.ReadUInt32(0x80000274u) != 0x3C08A400u
+                    || memory.ReadUInt32(0x80000278u) != 0x25080000u
+                    || memory.ReadUInt32(0x8000027Cu) != 0x21091000u
+                    || memory.ReadUInt32(0x80000280u) != 0x25080004u
+                    || memory.ReadUInt32(0x80000284u) != 0x1509FFFEu
+                    || memory.ReadUInt32(0x80000288u) != 0xAE380004u)
+                {
+                    return false;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            uint t0 = Reg32(8);
+            uint t1 = Reg32(9);
+            if (t0 >= t1 || ((t1 - t0) & 0x3u) != 0)
+                return false;
+
+            uint iterations;
+            if (pc == 0x80000280u)
+            {
+                iterations = (t1 - t0) >> 2;
+            }
+            else
+            {
+                iterations = ((t1 - t0) >> 2) + 1u;
+            }
+
+            if (iterations == 0 || iterations > 0x100000u)
+                return false;
+
+            uint storeAddress = unchecked(Reg32(17) + 4u);
+            uint storeValue = Reg32(24);
+            memory.WriteUInt32(storeAddress, storeValue);
+            Registers.R4300.Reg[8] = SignExtend32(t1);
+            Registers.R4300.PC = 0x8000028Cu;
+            AddSyntheticCycles(iterations * 3u);
+            Common.Measure.InstructionCount += iterations * 3UL;
+            return true;
+        }
+
+        private static bool TryFastForwardInitialZeroLoop(uint pc)
+        {
+            if (!FastIdleLoop)
+                return false;
+
+            uint segment = pc & 0xE0000000u;
+            if (segment != 0x80000000u && segment != 0xA0000000u)
+                return false;
+
+            for (uint offset = 0; offset <= 0x14u; offset += 4u)
+            {
+                if (pc < offset)
+                    continue;
+
+                uint basePc = pc - offset;
+                if (TryFastForwardInitialZeroLoopAt(pc, basePc))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryFastForwardInitialZeroLoopAt(uint pc, uint basePc)
+        {
+            uint physical = basePc & 0x1FFFFFFFu;
+            if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint op0)
+                || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x04u, out uint op1)
+                || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x08u, out uint op2)
+                || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x0Cu, out uint op3)
+                || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x10u, out uint op4))
+            {
+                return false;
+            }
+
+            uint offset = pc - basePc;
+            if (op0 == 0x2529FFF8u
+                && op1 == 0xAD000000u
+                && op2 == 0xAD000004u
+                && op3 == 0x1520FFFCu
+                && op4 == 0x21080008u)
+            {
+                uint t0 = Reg32(8);
+                uint t1 = Reg32(9);
+                if (offset <= 0x08u)
+                {
+                    uint iterations = offset == 0 ? t1 >> 3 : (t1 >> 3) + 1u;
+                    return FastForwardZeroLoop(basePc + 0x14u, t0, t1, iterations);
+                }
+
+                uint start = unchecked(t0 + 8u);
+                uint iterationsAfterStores = t1 >> 3;
+                if (iterationsAfterStores == 0 && (t1 & 0x7u) == 0)
+                {
+                    Registers.R4300.Reg[8] = SignExtend32(start);
+                    Registers.R4300.Reg[9] = 0;
+                    Registers.R4300.PC = basePc + 0x14u;
+                    AddSyntheticCycles(1);
+                    Common.Measure.InstructionCount += 1UL;
+                    return true;
+                }
+
+                return FastForwardZeroLoop(basePc + 0x14u, start, t1, iterationsAfterStores);
+            }
+
+            if (op0 == 0xAD000000u
+                && op1 == 0xAD000004u
+                && op2 == 0x21080008u
+                && op3 == 0x2529FFF8u
+                && op4 == 0x1520FFFBu
+                && memory.TryReadRdramUInt32PhysicalFast(physical + 0x14u, out uint op5)
+                && op5 == 0x00000000u)
+            {
+                uint t0 = Reg32(8);
+                uint t1 = Reg32(9);
+                if (offset <= 0x08u)
+                    return FastForwardZeroLoop(basePc + 0x18u, t0, t1, t1 >> 3);
+
+                if (offset <= 0x14u)
+                {
+                    uint start = unchecked(t0 + 8u);
+                    uint iterationsAfterStores = t1 >> 3;
+                    if (iterationsAfterStores == 0 && (t1 & 0x7u) == 0)
+                    {
+                        Registers.R4300.Reg[8] = SignExtend32(start);
+                        Registers.R4300.Reg[9] = 0;
+                        Registers.R4300.PC = basePc + 0x18u;
+                        AddSyntheticCycles(1);
+                        Common.Measure.InstructionCount += 1UL;
+                        return true;
+                    }
+
+                    return FastForwardZeroLoop(basePc + 0x18u, start, t1, iterationsAfterStores);
+                }
+            }
+
+            return false;
+        }
+
+        private static bool FastForwardZeroLoop(uint exitPc, uint startAddress, uint counter, uint iterations)
+        {
+            if (iterations == 0 || (counter & 0x7u) != 0 || iterations > 0x400000u)
+                return false;
+
+            uint start = startAddress & 0x1FFFFFFFu;
+            uint bytes = iterations << 3;
+            if ((startAddress & 0xE0000000u) != 0x80000000u
+                && (startAddress & 0xE0000000u) != 0xA0000000u)
+            {
+                return false;
+            }
+
+            if (start >= memory.RDRAM.Length || bytes > memory.RDRAM.Length || start + bytes > memory.RDRAM.Length)
+                return false;
+
+            Array.Clear(memory.RDRAM, (int)start, (int)bytes);
+            Registers.R4300.Reg[8] = SignExtend32(startAddress + bytes);
+            Registers.R4300.Reg[9] = 0;
+            Registers.R4300.PC = exitPc;
+            AddSyntheticCycles(iterations * 5u);
+            Common.Measure.InstructionCount += iterations * 5UL;
             return true;
         }
 
@@ -1361,6 +1718,28 @@ namespace Ryu64.MIPS
             return (cicSeed >> 8) & 0xFFu;
         }
 
+        private static uint GetBootTvType()
+        {
+            byte country = memory != null ? memory.RomCountryCode : (byte)0;
+
+            switch ((char)country)
+            {
+                case 'D':
+                case 'F':
+                case 'I':
+                case 'P':
+                case 'S':
+                case 'U':
+                case 'X':
+                case 'Y':
+                    return 0u; // PAL
+                case 'B':
+                    return 2u; // MPAL
+                default:
+                    return 1u; // NTSC
+            }
+        }
+
         public static void InterpretOpcode(uint Opcode)
         {
             if (Registers.R4300.Reg[0] != 0) Registers.R4300.Reg[0] = 0;
@@ -1429,7 +1808,7 @@ namespace Ryu64.MIPS
             uint RomType   = 0; // 0 = Cart, 1 = DD
             uint ResetType = 0; // 0 = Cold Reset, 1 = NMI, 2 = Reset to boot disk
             uint osVersion = 0; // 00 = 1.0, 15 = 2.5, etc.
-            uint TVType    = 1; // 0 = PAL, 1 = NTSC, 2 = MPAL
+            uint TVType    = GetBootTvType(); // 0 = PAL, 1 = NTSC, 2 = MPAL
 
             uint cicSeed = GetCICSeed();
 
@@ -1554,6 +1933,14 @@ namespace Ryu64.MIPS
                         if (TryFastForwardBootClearLoop(pc))
                             continue;
                         if (TryFastForwardBootAssetDecode(pc))
+                            continue;
+                        if (TryFastForwardIpl3CacheLoop(pc))
+                            continue;
+                        if (TryFastForwardIpl3CopyLoop(pc))
+                            continue;
+                        if (TryFastForwardIpl3StoreDelayLoop(pc))
+                            continue;
+                        if (TryFastForwardInitialZeroLoop(pc))
                             continue;
                         if (TryFastForwardCompareLoadPollingLoop(pc))
                             continue;
@@ -2526,6 +2913,9 @@ namespace Ryu64.MIPS
                                 ulong a1 = Registers.R4300.Reg[5];
                                 ulong a2 = Registers.R4300.Reg[6];
                                 ulong a3 = Registers.R4300.Reg[7];
+                                ulong t0 = Registers.R4300.Reg[8];
+                                ulong t1 = Registers.R4300.Reg[9];
+                                ulong t2 = Registers.R4300.Reg[10];
                                 ulong v0 = Registers.R4300.Reg[2];
                                 ulong v1 = Registers.R4300.Reg[3];
                                 ulong t5 = Registers.R4300.Reg[13];
@@ -2542,6 +2932,7 @@ namespace Ryu64.MIPS
                                 Console.WriteLine(
                                     $"[N64PCWIN] #{_tracePcWindowCount} pc=0x{pc:x8} op=0x{Opcode:x8} " +
                                     $"a0=0x{a0:x16} a1=0x{a1:x16} a2=0x{a2:x16} a3=0x{a3:x16} " +
+                                    $"t0=0x{t0:x16} t1=0x{t1:x16} t2=0x{t2:x16} " +
                                     $"v0=0x{v0:x16} v1=0x{v1:x16} t5=0x{t5:x16} s0=0x{s0:x16} s1=0x{s1:x16} s4=0x{s4:x16} " +
                                     $"sp=0x{sp:x16} ra=0x{ra:x16} " +
                                     $"cop0Status=0x{cop0Status:x8} cop0Cause=0x{cop0Cause:x8} " +

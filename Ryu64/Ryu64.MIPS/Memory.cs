@@ -694,6 +694,7 @@ namespace Ryu64.MIPS
         public readonly byte[] PIFRAM    = new byte[64];
         private readonly byte[] OpenBus  = new byte[4];
         private readonly byte[] _rom;
+        public byte RomCountryCode => _rom != null && _rom.Length > 0x3Eu ? _rom[0x3E] : (byte)0;
         private uint _openBusMissCount;
         private bool _piDmaBusy;
         private bool _piInterruptDelayArmed;
@@ -8966,6 +8967,10 @@ namespace Ryu64.MIPS
                 uint physical = ToPhysicalAddress(index, isWrite: false);
                 if (IsCartridgeBusPhysicalAddress(physical))
                     return ReadCartridgeBusUInt16(physical);
+                if (physical + 1u < RDRAM.Length)
+                {
+                    return (ushort)((RDRAM[physical] << 8) | RDRAM[physical + 1u]);
+                }
             }
             catch
             {
@@ -9002,6 +9007,21 @@ namespace Ryu64.MIPS
                 if ((TraceExceptionVectorWrites && IsExceptionVectorPhysicalAddress(physical, 2))
                     || (TraceLowRamMutationWrites && IsLowRamDiagnosticPhysicalAddress(physical, 2)))
                     oldValue = ReadUInt16(index);
+
+                if (physical + 1u < RDRAM.Length
+                    && !TraceWatchAddress.HasValue
+                    && !ShouldTraceWatchRange(index, physical, 2)
+                    && !ShouldTraceSpRegisterStore(physical)
+                    && !(physical <= 0x00000300u
+                        && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal)))
+                {
+                    RDRAM[physical] = (byte)(value >> 8);
+                    RDRAM[physical + 1u] = (byte)value;
+                    NoteRdramWriteRange(physical, 2);
+                    TraceLowRamMutationWrite("write16", index, physical, oldValue, value, 2);
+                    TraceExceptionVectorWrite("write16", index, physical, oldValue, value, 2);
+                    return;
+                }
             }
             catch
             {
@@ -9084,6 +9104,16 @@ namespace Ryu64.MIPS
                 havePhysical = true;
                 if (IsCartridgeBusPhysicalAddress(physical))
                     return ReadCartridgeBusUInt32(physical);
+                if (physical + 3u < RDRAM.Length)
+                {
+                    uint value = ((uint)RDRAM[physical] << 24)
+                        | ((uint)RDRAM[physical + 1u] << 16)
+                        | ((uint)RDRAM[physical + 2u] << 8)
+                        | RDRAM[physical + 3u];
+                    if (ShouldTraceWatchRange(index, physical))
+                        TraceWatchRangeAccess("read32", index, physical, value);
+                    return value;
+                }
             }
             catch
             {
@@ -9153,6 +9183,27 @@ namespace Ryu64.MIPS
                 if ((TraceExceptionVectorWrites && IsExceptionVectorPhysicalAddress(physical, 4))
                     || (TraceLowRamMutationWrites && IsLowRamDiagnosticPhysicalAddress(physical, 4)))
                     oldValue = ReadUInt32(index);
+
+                if (physical + 3u < RDRAM.Length
+                    && !TraceWatchAddress.HasValue
+                    && !TraceMegaCallbackBlock
+                    && !TraceMegaFatalBlock
+                    && !TraceMegaStatusBlock
+                    && !TraceSm64SlotWrites
+                    && !ShouldTraceWatchRange(index, physical)
+                    && !ShouldTraceSpRegisterStore(physical)
+                    && !(physical <= 0x00000300u
+                        && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal)))
+                {
+                    RDRAM[physical] = (byte)(value >> 24);
+                    RDRAM[physical + 1u] = (byte)(value >> 16);
+                    RDRAM[physical + 2u] = (byte)(value >> 8);
+                    RDRAM[physical + 3u] = (byte)value;
+                    NoteRdramWriteRange(physical, 4);
+                    TraceLowRamMutationWrite("write32", index, physical, oldValue, value, 4);
+                    TraceExceptionVectorWrite("write32", index, physical, oldValue, value, 4);
+                    return;
+                }
             }
             catch
             {
