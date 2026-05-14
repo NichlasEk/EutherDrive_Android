@@ -10,6 +10,7 @@ internal sealed class Cps1QSound
     private const int DspSampleRate = 60_000_000 / 2 / 1248;
     private const int OutputSampleRate = 44_100;
     private const double OutputLowPassCutoffHz = 10_800.0;
+    private static readonly bool UseOutputLowPass = false;
 
     private const int DataPanTable = 0x110;
     private const int DataAdpcmTable = 0x9dc;
@@ -166,8 +167,11 @@ internal sealed class Cps1QSound
             int destinationIndex = sampleFrameIndex * 2;
             double left = Interpolate(_resamplePrevious[0], _resampleNext[0], _resampleAccumulator);
             double right = Interpolate(_resamplePrevious[1], _resampleNext[1], _resampleAccumulator);
-            left = _outputLowPassLeftB.Apply(_outputLowPassLeftA.Apply(left));
-            right = _outputLowPassRightB.Apply(_outputLowPassRightA.Apply(right));
+            if (UseOutputLowPass)
+            {
+                left = _outputLowPassLeftB.Apply(_outputLowPassLeftA.Apply(left));
+                right = _outputLowPassRightB.Apply(_outputLowPassRightA.Apply(right));
+            }
             destination[destinationIndex] = ClampToShort(left);
             destination[destinationIndex + 1] = ClampToShort(right);
             sampleFrameIndex++;
