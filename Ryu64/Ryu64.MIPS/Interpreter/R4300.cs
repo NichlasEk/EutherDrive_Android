@@ -1430,6 +1430,86 @@ namespace Ryu64.MIPS
             return true;
         }
 
+        private static bool TryFastForwardIpl3SpStoreFillLoop(uint pc)
+        {
+            if (!FastIdleLoop)
+                return false;
+
+            uint basePc;
+            bool addiuAlreadyExecuted;
+            if (pc == 0x80000268u)
+            {
+                basePc = pc;
+                addiuAlreadyExecuted = false;
+            }
+            else if (pc == 0x8000026Cu)
+            {
+                basePc = pc - 4u;
+                addiuAlreadyExecuted = true;
+            }
+            else
+            {
+                return false;
+            }
+
+            try
+            {
+                if (memory.ReadUInt32(basePc - 0x04u) != 0x21092000u
+                    || memory.ReadUInt32(basePc) != 0x25080004u
+                    || memory.ReadUInt32(basePc + 0x04u) != 0x1509FFFEu
+                    || memory.ReadUInt32(basePc + 0x08u) != 0xAD09FFFCu)
+                {
+                    return false;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            uint t0 = Reg32(8);
+            uint t1 = Reg32(9);
+            uint firstStore = addiuAlreadyExecuted ? unchecked(t0 - 4u) : t0;
+            if (t1 <= firstStore
+                || ((firstStore | t1) & 0x3u) != 0
+                || (firstStore & 0xE0000000u) != 0xA0000000u
+                || (t1 & 0xE0000000u) != 0xA0000000u)
+            {
+                return false;
+            }
+
+            uint bytes = t1 - firstStore;
+            if (bytes > 0x20000u)
+                return false;
+
+            uint physical = firstStore & 0x1FFFFFFFu;
+            uint endPhysical = physical + bytes;
+            if (physical < 0x04000000u || endPhysical > 0x04002000u || endPhysical <= physical)
+                return false;
+
+            byte[] spMem = memory.SP_MEM_RW;
+            int offset = (int)((physical - 0x04000000u) & 0x1FFFu);
+            int count = (int)(bytes >> 2);
+            byte b0 = (byte)(t1 >> 24);
+            byte b1 = (byte)(t1 >> 16);
+            byte b2 = (byte)(t1 >> 8);
+            byte b3 = (byte)t1;
+            for (int i = 0; i < count; i++)
+            {
+                int dst = offset + (i << 2);
+                spMem[dst] = b0;
+                spMem[dst + 1] = b1;
+                spMem[dst + 2] = b2;
+                spMem[dst + 3] = b3;
+            }
+
+            Registers.R4300.Reg[8] = SignExtend32(t1);
+            Registers.R4300.PC = basePc + 0x0Cu;
+            AddSyntheticCycles((uint)Math.Max(1, count * 3));
+            Common.Measure.InstructionCount += (ulong)count * 3UL;
+            return true;
+        }
+
         private static bool TryFastForwardInitialZeroLoop(uint pc)
         {
             if (!FastIdleLoop)
@@ -1473,6 +1553,9 @@ namespace Ryu64.MIPS
                 && op3 == 0x1520FFFCu
                 && op4 == 0x21080008u)
             {
+                if (offset >= 0x14u)
+                    return false;
+
                 uint t0 = Reg32(8);
                 uint t1 = Reg32(9);
                 if (offset <= 0x08u)
@@ -1504,6 +1587,9 @@ namespace Ryu64.MIPS
                 && memory.TryReadRdramUInt32PhysicalFast(physical + 0x14u, out uint op5)
                 && op5 == 0x00000000u)
             {
+                if (offset >= 0x18u)
+                    return false;
+
                 uint t0 = Reg32(8);
                 uint t1 = Reg32(9);
                 if (offset <= 0x08u)
@@ -2100,6 +2186,8 @@ namespace Ryu64.MIPS
                         if (TryFastForwardIpl3CopyLoop(pc))
                             continue;
                         if (TryFastForwardIpl3StoreDelayLoop(pc))
+                            continue;
+                        if (TryFastForwardIpl3SpStoreFillLoop(pc))
                             continue;
                         if (TryFastForwardInitialZeroLoop(pc))
                             continue;
