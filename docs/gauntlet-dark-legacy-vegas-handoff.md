@@ -2823,3 +2823,96 @@ Verification note:
   (`BoogwingBus.SetInput2` and, with ad-hoc excludes, wider project duplicate
   assembly attribute errors). Re-run the 1200-frame probe after those unrelated
   build blockers are gone.
+
+## 2026-05-14 Follow-up: Loaded Glide State Helpers
+
+Committed previous state before this pass:
+
+```text
+0c8b403 Skip Gauntlet Glide error reporter
+```
+
+This pass focused on speeding up the loaded Glide state/register spam after the
+active `grSstSelect` error reporter was skipped.
+
+New code:
+
+- Added `TryFastPathKnownGauntletGlideTwoWordStatePacket` for the loaded
+  two-word state packet helper around `0xffffffff8010251c`.
+  - Runtime trace showed the actual hot PCs are `0xffffffff80102520` after the
+    stack adjust and `0xffffffff8010253c` after the prologue.
+  - The fastpath is constrained to the exact function signature and Gauntlet's
+    loaded Glide state pointer `0xffffffff80262d64`.
+  - It normalizes the loaded FIFO state, writes the same `0x00010219` type-1
+    register packet, advances FIFO room/pointer state, restores the stack
+    frame when entered after the prologue, and returns to `ra`.
+- Extended `TryFastPathKnownGlideSetupPacketHelper` to also match the loaded
+  helper at `0xffffffff80103f70`.
+  - This is the relocated equivalent of the existing `0xffffffff80052bc0`
+    helper, but it loads state from `0xffffffff80262c8c` instead of
+    `0xffffffff800b4d2c`.
+
+Build status:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+450 Warning(s)
+0 Error(s)
+```
+
+Verification:
+
+```text
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=100 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw \
+    EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 300 2000000
+```
+
+Current endpoint:
+
+```text
+frame=300
+pc=0xffffffff800e0d08
+lastOp=0x8c620018
+ra=0xffffffff800e13c8
+sp=0xffffffff807ffdf0
+voodoo regs=2265577 fifoWords=4066068 fifoPackets=2030820
+drawPackets=0 directTriangles=0 setupTriangles=0
+lfbWrites=18546688 texWrites=1 fastFills=283 swaps=450872
+packetTypes=0:0,1:2029425,2:0,3:0,4:1395,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=151456 colored=21408
+```
+
+Interpretation:
+
+- This moves the 300-frame high-budget endpoint from the loaded Glide
+  registersetter at `0xffffffff8010253c` to runtime code at
+  `0xffffffff800e0d08`.
+- The visible framebuffer is still the diagnostic/clear-bars image; no real
+  Gauntlet geometry is being emitted yet.
+- Voodoo traffic is still state/clear/swap dominated. `drawPackets`,
+  `directTriangles`, and `setupTriangles` remain `0`.
+
+New hot-code dump around the endpoint:
+
+```text
+mem[0xffffffff800e0cd0]:
+  +0x020: 00000000 27bdffe8 3c028022 2443af10
+  +0x030: afbf0010 8c620018 04400006 00000000
+  +0x040: 8c620020 24420001 ac620020 0c040a81
+  +0x050: 8c640018 8fbf0010 03e00008 27bd0018
+```
+
+Next recommended target:
+
+1. Inspect `0xffffffff800e0d08` and caller `0xffffffff800e13c8`; the endpoint
+   looks like a small runtime counter/dispatch helper rather than Voodoo draw.
+2. Keep chasing the first non-state render producer. Do not spend more time on
+   packet type 2 parsing until the guest emits setup/triangle-looking traffic.
+3. A useful next probe is a CPU trace around
+   `0xffffffff800e0cd0..0xffffffff800e0d60` plus stack dump at
+   `0xffffffff807ffdd0`.
