@@ -1329,7 +1329,7 @@ namespace Ryu64.MIPS
             }
 
             uint offset = pc - basePc;
-            if (op0 == 0x2529FFF8u
+            if ((op0 == 0x2129FFF8u || op0 == 0x2529FFF8u)
                 && op1 == 0xAD000000u
                 && op2 == 0xAD000004u
                 && op3 == 0x1520FFFCu
@@ -1361,7 +1361,7 @@ namespace Ryu64.MIPS
             if (op0 == 0xAD000000u
                 && op1 == 0xAD000004u
                 && op2 == 0x21080008u
-                && op3 == 0x2529FFF8u
+                && (op3 == 0x2129FFF8u || op3 == 0x2529FFF8u)
                 && op4 == 0x1520FFFBu
                 && memory.TryReadRdramUInt32PhysicalFast(physical + 0x14u, out uint op5)
                 && op5 == 0x00000000u)
