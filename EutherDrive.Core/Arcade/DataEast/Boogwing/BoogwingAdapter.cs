@@ -828,7 +828,8 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
                     : fiveBpp ? Decode5BppTile(gfx, code, srcX, srcY) : Decode4BppTile(gfx, code, srcX, srcY);
                 if (pen == 0 && !opaque)
                     continue;
-                plot(x, y, (colorBase + color) * 16 + pen, pen);
+                int colorStep = fiveBpp ? 32 : 16;
+                plot(x, y, colorBase + color * colorStep + pen, pen);
             }
         }
     }
@@ -910,7 +911,7 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
         int srcX = tileFlipX ? tileSize - 1 - px : px;
         int srcY = tileFlipY ? tileSize - 1 - py : py;
         pen = Decode4BppTile(gfx, (tile & 0x0fff) + tileBank, srcX, srcY);
-        return (colorBase + color) * 16 + pen;
+        return colorBase + color * 16 + pen;
     }
 
     private void RenderSpritesRaw(ushort[] raw, int width, int height, ushort[] spr, byte[] gfx, long frame)
@@ -1140,12 +1141,6 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
             int b = (int)((raw >> 16) & 0xff);
             int g = (int)((raw >> 8) & 0xff);
             int r = (int)(raw & 0xff);
-            if ((raw & 0x00f0f0f0u) == 0 && (raw & 0x000f0f0fu) != 0)
-            {
-                b = Expand4(b & 0x0f);
-                g = Expand4(g & 0x0f);
-                r = Expand4(r & 0x0f);
-            }
             _colors[i + 0x800] = 0xff000000u | ((uint)r << 16) | ((uint)g << 8) | (uint)b;
 
             if (mode == 0x1000)
@@ -1357,8 +1352,6 @@ internal sealed class BoogwingBus : IBusInterface, IOpcodeBusInterface
             }
         }
     }
-
-    private static int Expand4(int value) => (value << 4) | value;
 
     private static ushort ReadBe16(byte[] data, int offset)
     {
