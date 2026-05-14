@@ -2631,3 +2631,88 @@ env EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1 \
     dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
       /home/nichlas/roms/MAME/Midway/Vegas/gauntd 650 200000
 ```
+
+## 2026-05-13 Late Pass: Glide Init Reached, Still No Draw Packets
+
+This pass moves `gauntdl24` past the loaded-code serial/vector setup, runtime
+timer waits, `grSstQueryHardware`, and the first `grSstWinOpen` failure path.
+
+Use the real ROM archive from the UI/probe path:
+
+```text
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z
+```
+
+Raw disk sidecar expected by this bring-up:
+
+```text
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw
+```
+
+New implementation work in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added a loaded boot vector setup-loop fastpath at `0x80011830`.
+- Added NILE timer IRQ state generation for active NILE timers.
+- Added runtime delay/callback fastpaths for `0x800d03b8` and
+  `0x800e1420`.
+- Added a runtime tick wait fastpath for the `0x800e0be4..0x800e0c18`
+  loop over counter `0x80228114`.
+- Added a command-completion wait fastpath for the `0x800d78c0` command
+  `0x8a` loop.
+- Extended `grSstQueryHardware` fastpath to the currently loaded query
+  routine at `0x80108e84`.
+- Added a narrow skip for the `main: grSstWinOpen failed!` panic call from
+  `0x800e1b70`.
+- Extended FIFO make-room/state normalization to the relocated Glide state at
+  `0x80262d64` and make-room routine at `0x801097c0`.
+
+Current verified command:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=1000 \
+    EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl_2200.ppm \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 2200 200000
+```
+
+Build status:
+
+```text
+Build succeeded.
+331 Warning(s)
+0 Error(s)
+```
+
+Latest probe endpoint:
+
+```text
+frame=2200
+pc=0xffffffff80120164
+voodoo regs=343080 fifoWords=605572 fifoPackets=300572
+drawPackets=0 directTriangles=0 setupTriangles=0
+fastFills=283 swaps=66374
+packetTypes=0:0,1:299177,2:0,3:0,4:1395,5:0,6:0,7:0
+framebuffer=640x480 nonBlack=152480 colored=21408
+frameDump=/tmp/gauntdl_2200.ppm
+```
+
+Image status:
+
+- The UI/probe still shows diagnostic bars, not real Gauntlet graphics.
+- The big progress is that Glide init now runs much deeper and Voodoo traffic
+  jumps from roughly `14k` register writes to roughly `343k`.
+- Still missing: triangle/setup packet production or correct decoding of the
+  guest's render packet stream. `drawPackets` remains `0`.
+
+Next recommended target:
+
+1. Inspect the hot path around `0xffffffff8011f6e4`,
+   `0xffffffff80120164`, and `0xffffffff801209f8`.
+2. Determine whether the guest is still in front-end/font/LFB code or whether
+   packet type `1` register traffic should be interpreted into setup/triangle
+   state by the Voodoo parser.
+3. Keep probes headless with `EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1` while
+   debugging; dump a PPM only after packet stats move.
