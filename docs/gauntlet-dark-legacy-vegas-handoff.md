@@ -3206,3 +3206,77 @@ Next target:
    `0xffffffff800eb764`, and `0xffffffff800e2c0c`.
 2. Keep looking for the first transition from type-1 state packets to Voodoo
    setup/triangle packets; that is the next meaningful "real graphics" gate.
+
+## 2026-05-14 Follow-up: Runtime Two-word State Update
+
+This pass added one more verified fastpath in the loaded Glide runtime state
+path.
+
+New code:
+
+- Added `TryFastPathKnownGauntletGlideRuntimeTwoWordStateUpdate`.
+  - It catches the repeated leaf at `0xffffffff801036a0`.
+  - The routine updates loaded state word `0xffffffff80262d64+0x264`,
+    writes type-1 packet `0x00010211`, then flushes the loaded FIFO.
+  - The first guard attempt used packet-tail offsets that were 0x24 bytes too
+    early; the kept version is anchored to the actual `0xffffffff8010374c`
+    packet write sequence.
+
+Clean verification in `/tmp/eutherdrive-gauntlet-verify`:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+Warmup-series before this fastpath:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff8010378c regs=3102547 fifoWords=6182880 fifoPackets=3089226
+checkpoint extra=10000000 pc=0xffffffff800e0cf4 regs=3165156 fifoWords=6308098 fifoPackets=3151835
+drawPackets=0 directTriangles=0 setupTriangles=0
+```
+
+Warmup-series after this fastpath:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff800eb640 regs=3103093 fifoWords=6183972 fifoPackets=3089772
+checkpoint extra=2000000 pc=0xffffffff800eb76c regs=3110597 fifoWords=6198980 fifoPackets=3097276
+checkpoint extra=5000000 pc=0xffffffff8010331c regs=3133112 fifoWords=6244010 fifoPackets=3119791
+checkpoint extra=10000000 pc=0xffffffff800ce5f0 regs=3170637 fifoWords=6319060 fifoPackets=3157316
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:3155921,2:0,3:0,4:1395,5:0,6:0,7:0
+```
+
+Longer warmup-series after this fastpath:
+
+```text
+checkpoint extra=25000000 pc=0xffffffff800eb768 regs=3283205 fifoWords=6544196 fifoPackets=3269884
+checkpoint extra=50000000 pc=0xffffffff801021b0 regs=3470821 fifoWords=6919428 fifoPackets=3457500
+checkpoint extra=100000000 pc=0xffffffff800e13e0 regs=3846060 fifoWords=7669906 fifoPackets=3832739
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:3831344,2:0,3:0,4:1395,5:0,6:0,7:0
+```
+
+Interpretation:
+
+- The fastpath is effective: the 1M endpoint moves from the return at
+  `0xffffffff8010378c` to `0xffffffff800eb640`, and longer budgets move past
+  the previous `0xffffffff800e0cf4` endpoint.
+- Even after 100M extra steps from the 300-frame warmup snapshot, Voodoo still
+  only sees type-1 state packets plus type-4 clear/fill. No geometry yet.
+- `0xffffffff800ce5f0` is a small runtime callback wrapper, not a direct Voodoo
+  state-packet writer. Do not skip it blindly; trace its callee/effect first if
+  it remains hot.
+
+Next target:
+
+1. Trace around `0xffffffff800e13e0` and the surrounding caller path. That is
+   the 100M endpoint after the latest fastpath.
+2. If `0xffffffff800ce5f0` remains hot, trace its call to the runtime helper
+   before adding a wrapper fastpath.
+3. Keep using `EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-f300-s2000000-bc88fcdd60ae.warm`
+   and focused `EUTHERDRIVE_GAUNTDL_EXTRA_SERIES`; cold 300-frame probes are no
+   longer the fastest workflow.

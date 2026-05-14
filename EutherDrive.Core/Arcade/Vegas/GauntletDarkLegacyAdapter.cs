@@ -522,6 +522,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGauntletGlideRuntimeStateInitTail(pc))
             return;
+        if (TryFastPathKnownGauntletGlideRuntimeTwoWordStateUpdate(pc))
+            return;
         if (TryFastPathKnownRuntimeCommandCompleteWait(pc))
             return;
         NormalizeKnownGlideFifoState(pc);
@@ -3375,6 +3377,106 @@ internal sealed class MipsR5000Core
         _gpr[29] = framePointer + 0x20UL;
         Pc = returnAddress;
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGauntletGlideRuntimeTwoWordStateUpdate(ulong pc)
+    {
+        const ulong entry = 0xffffffff801036a0UL;
+        if (pc != entry)
+            return false;
+
+        if (_memory.Read32(entry) != 0x27bdffe0U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c028026U ||
+            _memory.Read32(entry + 0x08UL) != 0xafb10014U ||
+            _memory.Read32(entry + 0x0cUL) != 0x8c512c8cU ||
+            _memory.Read32(entry + 0x10UL) != 0x2402ffc0U ||
+            _memory.Read32(entry + 0x14UL) != 0xafbf0018U ||
+            _memory.Read32(entry + 0x18UL) != 0xafb00010U ||
+            _memory.Read32(entry + 0x1cUL) != 0x8e300264U ||
+            _memory.Read32(entry + 0xacUL) != 0x3c030001U ||
+            _memory.Read32(entry + 0xb0UL) != 0x8e220374U ||
+            _memory.Read32(entry + 0xb4UL) != 0x34630211U ||
+            _memory.Read32(entry + 0xb8UL) != 0xac430000U ||
+            _memory.Read32(entry + 0xbcUL) != 0xac500004U ||
+            _memory.Read32(entry + 0xc0UL) != 0x8e220374U ||
+            _memory.Read32(entry + 0xc4UL) != 0x8e23037cU ||
+            _memory.Read32(entry + 0xc8UL) != 0x24420008U ||
+            _memory.Read32(entry + 0xccUL) != 0x2463fff8U ||
+            _memory.Read32(entry + 0xd0UL) != 0xae220374U ||
+            _memory.Read32(entry + 0xd4UL) != 0x0c040f92U ||
+            _memory.Read32(entry + 0xd8UL) != 0xae23037cU ||
+            _memory.Read32(entry + 0xdcUL) != 0x8fbf0018U ||
+            _memory.Read32(entry + 0xe0UL) != 0x8fb10014U ||
+            _memory.Read32(entry + 0xe4UL) != 0x8fb00010U ||
+            _memory.Read32(entry + 0xe8UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0xecUL) != 0x27bd0020U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00103000UL or > 0x00103600UL)
+            return false;
+
+        ulong state = SignExtend32(_memory.Read32(0xffffffff80262c8cUL));
+        if (state != 0xffffffff80262d64UL ||
+            !IsMainRamRange(state + 0x264UL, 4) ||
+            !IsMainRamRange(state + 0x374UL, 12))
+        {
+            return false;
+        }
+
+        uint stateWord = _memory.Read32(state + 0x264UL) & 0xffffffc0u;
+        uint selector = (uint)_gpr[4];
+        uint lowSelector = selector & 0xffu;
+        if (lowSelector == 1u)
+        {
+            stateWord |= 0x09u;
+        }
+        else if (lowSelector == 2u)
+        {
+            stateWord |= 0x11u;
+        }
+        else if (lowSelector == 3u)
+        {
+            stateWord |= 0x01u;
+        }
+        else
+        {
+            if ((selector & 0x100u) != 0)
+                stateWord |= 0x04u;
+            if ((selector & 0x200u) != 0)
+                stateWord |= 0x02u;
+            stateWord |= 0xc0u;
+        }
+
+        uint room = _memory.Read32(state + 0x37cUL);
+        if (room < 8)
+            return false;
+
+        uint fifo = _memory.Read32(state + 0x374UL);
+        if ((fifo & 3u) != 0 || fifo is < 0xa8200000u or >= 0xa8300000u)
+            return false;
+
+        _memory.Write32(state + 0x264UL, stateWord);
+        WriteSignedAddress32(fifo, 0x00010211u);
+        WriteSignedAddress32(fifo + 4u, stateWord);
+        _memory.Write32(state + 0x374UL, fifo + 8u);
+        _memory.Write32(state + 0x37cUL, room - 8u);
+        NormalizeGlideFifoState(state);
+
+        _gpr[2] = _memory.Read32(state + 0x37cUL);
+        _gpr[3] = state + 8UL;
+        _gpr[4] = state;
+        _gpr[5] = state;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 196UL);
+        _instructionCounter += 196UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
         return true;
     }
 
