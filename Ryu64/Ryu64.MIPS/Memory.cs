@@ -775,6 +775,9 @@ namespace Ryu64.MIPS
         private bool _rdpOtherModesEnableTlut;
         private bool _rdpOtherModesTlutType;
         private bool _rdpOtherModesPerspectiveTexture;
+        private bool _rdpOtherModesSampleType;
+        private bool _rdpOtherModesBiLerp0;
+        private bool _rdpOtherModesBiLerp1;
         private uint _rdpOtherModesZMode;
         private bool _rdpOtherModesZUpdate;
         private bool _rdpOtherModesZCompare;
@@ -972,7 +975,7 @@ namespace Ryu64.MIPS
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
 
-            const int version = 2;
+            const int version = 3;
             writer.Write(version);
 
             WriteByteArrays(writer);
@@ -1061,6 +1064,9 @@ namespace Ryu64.MIPS
             writer.Write(_rdpOtherModesEnableTlut);
             writer.Write(_rdpOtherModesTlutType);
             writer.Write(_rdpOtherModesPerspectiveTexture);
+            writer.Write(_rdpOtherModesSampleType);
+            writer.Write(_rdpOtherModesBiLerp0);
+            writer.Write(_rdpOtherModesBiLerp1);
             writer.Write(_rdpOtherModesZMode);
             writer.Write(_rdpOtherModesZUpdate);
             writer.Write(_rdpOtherModesZCompare);
@@ -1113,7 +1119,7 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(reader));
 
             int version = reader.ReadInt32();
-            if (version < 1 || version > 2)
+            if (version < 1 || version > 3)
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
 
             ReadByteArrays(reader);
@@ -1210,6 +1216,18 @@ namespace Ryu64.MIPS
             _rdpOtherModesEnableTlut = reader.ReadBoolean();
             _rdpOtherModesTlutType = reader.ReadBoolean();
             _rdpOtherModesPerspectiveTexture = reader.ReadBoolean();
+            if (version >= 3)
+            {
+                _rdpOtherModesSampleType = reader.ReadBoolean();
+                _rdpOtherModesBiLerp0 = reader.ReadBoolean();
+                _rdpOtherModesBiLerp1 = reader.ReadBoolean();
+            }
+            else
+            {
+                _rdpOtherModesSampleType = false;
+                _rdpOtherModesBiLerp0 = false;
+                _rdpOtherModesBiLerp1 = false;
+            }
             _rdpOtherModesZMode = reader.ReadUInt32();
             _rdpOtherModesZUpdate = reader.ReadBoolean();
             _rdpOtherModesZCompare = reader.ReadBoolean();
@@ -2367,8 +2385,10 @@ namespace Ryu64.MIPS
                         currentW,
                         usePerspective,
                         out int sampleS,
-                        out int sampleT);
-                    if (!SampleRdpTexture(ref sampler, sampleS, sampleT, out uint rgba))
+                        out int sampleT,
+                        out int sampleFracS,
+                        out int sampleFracT);
+                    if (!SampleRdpTexture(ref sampler, sampleS, sampleT, sampleFracS, sampleFracT, out uint rgba))
                     {
                         sampleMisses++;
                         currentS += tex.DsDx;
@@ -2778,12 +2798,16 @@ namespace Ryu64.MIPS
             long wFixed,
             bool perspective,
             out int s,
-            out int t)
+            out int t,
+            out int fracS,
+            out int fracT)
         {
             if (!perspective)
             {
                 s = RdpTriangleTextureFixedToTexel(sFixed);
                 t = RdpTriangleTextureFixedToTexel(tFixed);
+                fracS = (int)((sFixed >> 14) & 0x1F);
+                fracT = (int)((tFixed >> 14) & 0x1F);
                 return;
             }
 
@@ -2792,6 +2816,8 @@ namespace Ryu64.MIPS
             {
                 s = RdpTriangleTextureFixedToTexel(sFixed);
                 t = RdpTriangleTextureFixedToTexel(tFixed);
+                fracS = (int)((sFixed >> 14) & 0x1F);
+                fracT = (int)((tFixed >> 14) & 0x1F);
                 return;
             }
 
@@ -2806,6 +2832,8 @@ namespace Ryu64.MIPS
             int tCoordinate = shift == 0xE ? tProduct << 1 : tProduct >> (13 - shift);
             s = SignExtend17(sCoordinate & 0x1FFFF) >> 5;
             t = SignExtend17(tCoordinate & 0x1FFFF) >> 5;
+            fracS = sCoordinate & 0x1F;
+            fracT = tCoordinate & 0x1F;
         }
 
         private bool DrawRdpTriangle(
@@ -3408,6 +3436,9 @@ namespace Ryu64.MIPS
             _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
             _rdpOtherModesTlutType = ((mode >> 46) & 1UL) != 0;
             _rdpOtherModesPerspectiveTexture = ((mode >> 51) & 1UL) != 0;
+            _rdpOtherModesSampleType = ((mode >> 45) & 1UL) != 0;
+            _rdpOtherModesBiLerp0 = ((mode >> 43) & 1UL) != 0;
+            _rdpOtherModesBiLerp1 = ((mode >> 42) & 1UL) != 0;
             _rdpOtherModesForceBlend = ((mode >> 14) & 1UL) != 0;
             _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
             _rdpOtherModesCvgDest = (uint)((mode >> 8) & 0x3UL);
@@ -4160,6 +4191,9 @@ namespace Ryu64.MIPS
         }
 
         private bool SampleRdpTexture(ref RdpPreparedTextureSampler sampler, int s, int t, out uint rgba)
+            => SampleRdpTexture(ref sampler, s, t, 0, 0, out rgba);
+
+        private bool SampleRdpTexture(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
         {
             rgba = 0;
             if (!sampler.Valid)
@@ -4171,7 +4205,44 @@ namespace Ryu64.MIPS
             if (u < 0 || v < 0)
                 return false;
 
+            if (_rdpOtherModesSampleType && _rdpOtherModesBiLerp0 && (fracS != 0 || fracT != 0))
+                return DecodeRdpTextureColorBilinear(ref sampler, s, t, fracS, fracT, out rgba);
+
             return DecodeRdpTextureColor(tile, u, v, out rgba);
+        }
+
+        private bool DecodeRdpTextureColorBilinear(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
+        {
+            rgba = 0;
+            RdpTileState tile = sampler.Tile;
+            int s0 = ApplyRdpTextureCoordinate(s, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
+            int t0 = ApplyRdpTextureCoordinate(t, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
+            int s1 = ApplyRdpTextureCoordinate(s + 1, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
+            int t1 = ApplyRdpTextureCoordinate(t + 1, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
+            if (s0 < 0 || t0 < 0 || s1 < 0 || t1 < 0)
+                return false;
+
+            if (!DecodeRdpTextureColor(tile, s0, t0, out uint c00)
+                || !DecodeRdpTextureColor(tile, s1, t0, out uint c10)
+                || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
+                || !DecodeRdpTextureColor(tile, s1, t1, out uint c11))
+                return false;
+
+            uint w00 = (uint)((32 - fracS) * (32 - fracT));
+            uint w10 = (uint)(fracS * (32 - fracT));
+            uint w01 = (uint)((32 - fracS) * fracT);
+            uint w11 = (uint)(fracS * fracT);
+            rgba = BlendRdpTexels(c00, c10, c01, c11, w00, w10, w01, w11);
+            return true;
+        }
+
+        private static uint BlendRdpTexels(uint c00, uint c10, uint c01, uint c11, uint w00, uint w10, uint w01, uint w11)
+        {
+            uint r = ((((c00 >> 24) & 0xFFu) * w00) + (((c10 >> 24) & 0xFFu) * w10) + (((c01 >> 24) & 0xFFu) * w01) + (((c11 >> 24) & 0xFFu) * w11) + 512u) >> 10;
+            uint g = ((((c00 >> 16) & 0xFFu) * w00) + (((c10 >> 16) & 0xFFu) * w10) + (((c01 >> 16) & 0xFFu) * w01) + (((c11 >> 16) & 0xFFu) * w11) + 512u) >> 10;
+            uint b = ((((c00 >> 8) & 0xFFu) * w00) + (((c10 >> 8) & 0xFFu) * w10) + (((c01 >> 8) & 0xFFu) * w01) + (((c11 >> 8) & 0xFFu) * w11) + 512u) >> 10;
+            uint a = (((c00 & 0xFFu) * w00) + ((c10 & 0xFFu) * w10) + ((c01 & 0xFFu) * w01) + ((c11 & 0xFFu) * w11) + 512u) >> 10;
+            return (r << 24) | (g << 16) | (b << 8) | a;
         }
 
         private static int ApplyRdpTextureCoordinate(int value, uint origin, uint extent, uint mask, uint shift, bool clamp, bool mirror)
