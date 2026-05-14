@@ -2994,3 +2994,79 @@ Next target:
    around `0xffffffff807ffdc0`.
 3. Keep treating type-1-only traffic as bring-up/state noise until the guest
    emits setup/triangle packet types.
+
+## 2026-05-14 Follow-up: Loaded State Emitter
+
+This pass added a verified fastpath for the loaded Glide state-emitter body.
+
+New code:
+
+- Added `TryFastPathKnownGauntletGlideStateEmit`.
+  - The correct function entry is `0xffffffff80103fcc`; the earlier attempted
+    `0xffffffff80103fc8` address was the preceding delay-slot/nop.
+  - The endpoint inside the mask body is `0xffffffff80104068`.
+  - The function emits more loaded Glide state packets from
+    `0xffffffff80262d64`; it is still type-1 state traffic, not geometry.
+  - The fastpath normalizes the loaded FIFO state and returns to the caller
+    for both entry and mask-body budget stops.
+
+Clean verification was done in `/tmp/eutherdrive-gauntlet-verify` because the
+main worktree still has unrelated dirty build blockers.
+
+Clean build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+Probe:
+
+```text
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_PROGRESS_INTERVAL=100 \
+    EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw \
+    EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 300 2000000
+```
+
+New endpoint:
+
+```text
+frame=300
+pc=0xffffffff800eb020
+lastOp=0xacc30004
+ra=0xffffffff800eb768
+sp=0xffffffff807ffda8
+a2=0x0000000080262bc8
+voodoo regs=2382893 fifoWords=4743572 fifoPackets=2369572
+drawPackets=0 directTriangles=0 setupTriangles=0
+lfbWrites=18546688 texWrites=1 fastFills=283 swaps=566
+packetTypes=0:0,1:2368177,2:0,3:0,4:1395,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=151456 colored=21408
+```
+
+Interpretation:
+
+- Endpoint moved from `0xffffffff80104068` to `0xffffffff800eb020`.
+- This is forward progress through another loaded state emitter, but Voodoo
+  traffic is still only type-1 state plus type-4 clear/fill.
+- The framebuffer is still diagnostic/clear-bars only.
+
+Attempted but not kept:
+
+- A fastpath for the bitfield/update helper around `0xffffffff800eafdc` was
+  tried, including corrected trace-derived entry/signature. It still did not
+  move the endpoint or stats, so it was removed before commit.
+
+Next target:
+
+1. Continue at `0xffffffff800eb020`; trace showed the helper entry is
+   `0xffffffff800eafdc`.
+2. Current record pointer at the endpoint is `0x0000000080262bc8`.
+3. If retrying that helper, derive the exact branch/body semantics from the
+   trace rather than the byte dump; the byte-offset alignment was easy to get
+   wrong.
