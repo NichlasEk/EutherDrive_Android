@@ -1,6 +1,6 @@
 # Ryu64 Rendering Handoff
 
-Date: 2026-05-13
+Date: 2026-05-14
 
 ## Current State
 
@@ -8,6 +8,9 @@ Ryu64 now reaches real N64 framebuffer output in Zelda, Mario, Perfect Dark, and
 
 Recent relevant commits:
 
+- local WIP 2026-05-14: MAME-style TMEM row-swap for `LoadTile` and texture fetches
+- `6a9322b Broaden Ryu64 boot zero-loop fast path`
+- `0808d5e Improve Ryu64 boot region and fast paths`
 - `f2a7486 Ryu64: apply depth to shaded triangles`
 - `9645e12 Ryu64: avoid solid fill for failed texrects`
 - `deff9de Ryu64: reuse framebuffer buffers`
@@ -26,6 +29,10 @@ EUTHERDRIVE_N64_TEXRECT_SOLID_FALLBACK=1
 
 `deff9de` reduces framebuffer overhead by reusing a scratch framebuffer buffer and copying visible RDP snapshots directly into it. It also avoids repeat visible-pixel scans within one framebuffer decision.
 
+2026-05-14 local WIP adds MAME-like TMEM address swizzling for `LoadTile`, the sequential `LoadBlock` path, and texture sampling. The old path copied loaded texture rows/blocks linearly into TMEM and sampled them linearly. MAME alternates the byte/word address XOR by row, and its fetchers use the same odd/even row swap. Ryu64 now mirrors that for 8-bit, 16-bit, and 32-bit tile loads and for RGBA, CI, IA, and I fetches. `LoadBlock` now writes through the same word xor for normal sequential blocks, with 32-bit textures split into the paired TMEM planes.
+
+Performance note: this was kept in the hot path as fixed `uint` xor/mask helpers and row-level precomputed xor values in load loops. No per-pixel allocations, dictionaries, LINQ, or generalized format objects were added. The 4-bit `LoadTile` path remains on the previous linear copy fallback because MAME's `LoadTile` switch only covers 8/16/32-bit texture image sizes; CI4 fetch addressing now uses the MAME-style packed nibble address.
+
 ## Verification
 
 Build used:
@@ -34,7 +41,14 @@ Build used:
 dotnet build Ryu64/Ryu64Core/Ryu64Core.csproj -c Release /m:1
 ```
 
-This builds successfully. Full headless project build is currently blocked by unrelated untracked Taito code in `EutherDrive.Core/Arcade/Taito/`.
+This builds successfully. The current local run also built:
+
+```sh
+dotnet build Ryu64/Ryu64Core/Ryu64Core.csproj -c Release --no-restore
+dotnet build EutherDrive.Headless/EutherDrive.Headless.csproj -c Release --no-restore
+```
+
+Both builds succeeded. Existing warning noise remains outside this RDP change.
 
 Headless smoke tests used:
 
@@ -60,30 +74,54 @@ Mario kept visible framebuffer content. Last run after depth changes:
 - framebuffer content recovered and stayed visible
 - output inspected at `/tmp/n64_mario_depth_all_tri/frame240.png`
 
+2026-05-14 smoke after TMEM row-swap WIP:
+
+```sh
+env EUTHERDRIVE_HEADLESS_CORE=n64 EUTHERDRIVE_N64_HEADLESS_PERF=1 EUTHERDRIVE_N64_SKIP_AUDIO=1 EUTHERDRIVE_N64_RUNFRAME_WAIT_MS=1 EUTHERDRIVE_N64_BRINGUP_RUNFRAME_WAIT_MS=1 dotnet run --no-build --project EutherDrive.Headless/EutherDrive.Headless.csproj -c Release -- "/home/nichlas/roms/N64/Earthworm Jim 3D (Europe) (En,Fr,De,Es,It).z64" 420
+```
+
+- PAL/region path still passes the unit check and reaches framebuffer at runFrame 67.
+- Framebuffer stayed steady through runFrame 420.
+- Final headless `fb_has_content` still reports false for this ROM despite steady VI logs; treat the steady logs as the useful signal until that final snapshot heuristic is fixed.
+
+```sh
+env EUTHERDRIVE_HEADLESS_CORE=n64 EUTHERDRIVE_N64_HEADLESS_PERF=1 EUTHERDRIVE_N64_PERF=1 EUTHERDRIVE_N64_SKIP_AUDIO=1 EUTHERDRIVE_N64_RUNFRAME_WAIT_MS=1 EUTHERDRIVE_N64_BRINGUP_RUNFRAME_WAIT_MS=1 dotnet run --no-build --project EutherDrive.Headless/EutherDrive.Headless.csproj -c Release -- --load-savestate "/home/nichlas/roms/N64/Legend of Zelda, The - Ocarina of Time (USA) (Rev 2).z64" "/home/nichlas/roms/N64/Legend_of_Zelda__The_-_Ocarina_of_Time__USA___Rev_2_.z64_49acd388.euthstate" 120
+```
+
+- Zelda slot 1 stayed visible through 120 frames.
+- RDP after the run: `lists=9849`, `cmds=130117/130117`, `tri=14563`, `tex=3680`, `fill=714`.
+- Initial 120-frame run after `LoadTile`/fetch swizzle: `rdpList=604/223.867ms avg=0.371ms`, `triTex=730/192.231ms avg=0.263ms`, `fbSnap=650/7.822ms avg=0.012ms`.
+- Follow-up 60-frame run after adding matching sequential `LoadBlock` swizzle stayed visible: `rdpList=241/146.929ms avg=0.610ms`, `triTex=292/118.250ms avg=0.405ms`, `fbSnap=260/3.670ms avg=0.014ms`.
+
 ## Known Issues
 
-- Mario boot/logo is still visually incomplete: text and pieces show, but geometry/textures are not fully correct.
+- Mario boot/logo is still inconsistent in current headless cold boot runs. In this local run, both the Europe ROM and the older USA smoke ROM stalled before VI became active, so no RDP signal was available from Mario.
 - Zelda terrain is recognizable but still has warping, missing/incorrect texture details, and likely TMEM address issues.
 - Some UI/browser testing uses copied Ryu64 DLLs in `EutherDrive.Headless/bin/Release/net8.0/` because full project build is blocked by unrelated Taito code.
 - Performance varies run-to-run; use headless savestates for comparisons.
+- `LoadBlock` still needs the DXT-driven row stepping path from MAME. The current Ryu64 path handles sequential blocks with the correct word xor and 32-bit plane split, but not DXT row wrap/line skip behavior yet.
 
 ## Next Best Targets
 
-1. Implement MAME-like TMEM row XOR/address swizzling for texture loads and texture fetches.
-   MAME reference: `/home/nichlas/mame/src/mame/nintendo/rdptpipe.cpp` and `/home/nichlas/mame/src/mame/nintendo/n64_v.cpp`.
+1. Finish MAME-like DXT `LoadBlock` semantics.
+   MAME reference: `/home/nichlas/mame/src/mame/nintendo/n64_v.cpp`, especially `cmd_load_block`.
 
 2. Improve texture load semantics:
-   - `LoadTile`
    - `LoadBlock`
-   - 4-bit/8-bit CI and IA formats
+   - 4-bit `LoadTile` edge cases if real ROM traces show them
    - TLUT addressing
 
-3. Continue depth/coverage work:
+3. Continue texture fetch semantics:
+   - bilinear filtering
+   - copy-cycle texrect behavior
+   - tile LOD / second texture tile
+
+4. Continue depth/coverage work:
    - coverage hidden bits
    - image-read blending
    - Z mode edge cases
 
-4. Use Zelda slot 1/2 and Mario boot as reference smoke tests after each change.
+5. Use Zelda slot 1/2 and a PAL game like Earthworm Jim as smoke tests after each RDP change. Use Mario only after the cold boot regression is understood, because it currently does not reach VI in this local headless run.
 
 ## Working Tree Note
 
