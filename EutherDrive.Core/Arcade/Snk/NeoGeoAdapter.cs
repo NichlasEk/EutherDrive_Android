@@ -90,6 +90,17 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
         return true;
     }
 
+    public static bool IsSupportedDriverName(string driverName)
+    {
+        if (string.IsNullOrWhiteSpace(driverName) ||
+            driverName.Equals("neogeo", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return TryGetRomSetInfo(driverName.Trim().ToLowerInvariant(), out _);
+    }
+
     public static IReadOnlyList<string> FindLocalMameRomDirectories()
     {
         var paths = new List<string>();
@@ -250,12 +261,20 @@ public sealed class NeoGeoAdapter : IEmulatorCore, ISavestateCapable, IDisposabl
         {
             string? romDirectory = Path.GetDirectoryName(Path.GetFullPath(romPath));
             if (!string.IsNullOrWhiteSpace(romDirectory))
+            {
                 yield return Path.Combine(romDirectory, BiosArchiveName);
+                string? mameRoot = Directory.GetParent(romDirectory)?.FullName;
+                if (!string.IsNullOrWhiteSpace(mameRoot))
+                    yield return Path.Combine(mameRoot, "NeoGeo", BiosArchiveName);
+            }
         }
 
         string? mameRoms = DefaultMameRomDirectory;
         if (!string.IsNullOrWhiteSpace(mameRoms))
             yield return Path.Combine(mameRoms, BiosArchiveName);
+
+        foreach (string directory in FindLocalMameRomDirectories())
+            yield return Path.Combine(directory, BiosArchiveName);
 
         yield return Path.Combine(Directory.GetCurrentDirectory(), "bios", BiosArchiveName);
         yield return Path.Combine(Directory.GetCurrentDirectory(), BiosArchiveName);

@@ -1759,7 +1759,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         private bool ShouldPublishNativeRaster()
             => !string.IsNullOrWhiteSpace(_owner._driverName)
-                && EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_owner._driverName);
+                && (EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedDriverName(_owner._driverName)
+                    || EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedDriverName(_owner._driverName));
 
         private bool RequiresSoftwareRenderer()
             => _owner._driverName is "rampage" or "rampage2";

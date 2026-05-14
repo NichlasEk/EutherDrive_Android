@@ -250,6 +250,12 @@ public partial class MainView : UserControl
         }
         catch (Exception ex)
         {
+            if (await TryHandleMissingSystemFileAsync(ex))
+            {
+                await StartCoreAsync();
+                return;
+            }
+
             _viewModel.IsRunning = false;
             _viewModel.StatusPill = _viewModel.HasRomLoaded ? "ROM loaded" : "Idle";
             string details = FormatExceptionForUi(ex);
@@ -268,6 +274,58 @@ public partial class MainView : UserControl
             footerStatus: _viewModel.HasRomLoaded
                 ? "Session paused. ROM remains selected."
                 : "Idle.");
+    }
+
+    private async Task<bool> TryHandleMissingSystemFileAsync(Exception ex)
+    {
+        if (!TryGetMissingSystemFileRequest(ex, out MissingSystemFileRequest request))
+            return false;
+
+        _viewModel.IsRunning = false;
+        _viewModel.StatusPill = _viewModel.HasRomLoaded ? "ROM loaded" : "Idle";
+        _viewModel.ScreenOverlayVisible = true;
+        _viewModel.ScreenTitle = "BIOS not found";
+        _viewModel.ScreenDescription = $"{request.DisplayName} not found. Pick file.";
+        _viewModel.FooterStatus = $"{request.DisplayName} not found. Pick file.";
+
+        bool picked = await PickSystemFileAsync(request.Key, request.Title, request.Patterns);
+        if (picked)
+            _viewModel.FooterStatus = $"{request.DisplayName} selected. Retrying boot...";
+
+        return picked;
+    }
+
+    private static bool TryGetMissingSystemFileRequest(Exception ex, out MissingSystemFileRequest request)
+    {
+        for (Exception? current = ex; current != null; current = current.InnerException)
+        {
+            if (current is FileNotFoundException fileNotFound)
+            {
+                string message = fileNotFound.Message ?? string.Empty;
+                if (message.Contains("Neo Geo BIOS", StringComparison.OrdinalIgnoreCase))
+                {
+                    request = new MissingSystemFileRequest(
+                        "NEO GEO BIOS",
+                        "Neo Geo BIOS",
+                        "Select Neo Geo BIOS",
+                        new[] { "neogeo.zip", "*.zip", "*.7z", "*.*" });
+                    return true;
+                }
+
+                if (message.Contains("Sega CD BIOS", StringComparison.OrdinalIgnoreCase))
+                {
+                    request = new MissingSystemFileRequest(
+                        "SEGA CD BIOS",
+                        "Sega CD BIOS",
+                        "Select Sega CD BIOS",
+                        new[] { "*.bin", "*.*" });
+                    return true;
+                }
+            }
+        }
+
+        request = default!;
+        return false;
     }
 
     private void OnMenuTapped(object? sender, RoutedEventArgs e)
@@ -1393,6 +1451,8 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1 => cps1.GetTargetFps(),
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2 => cps2.GetTargetFps(),
             EutherDrive.Core.Arcade.System32.System32Adapter system32 => system32.GetTargetFps(),
+            EutherDrive.Core.Arcade.Snk.NeoGeoAdapter neoGeo => neoGeo.GetTargetFps(),
+            EutherDrive.Core.Arcade.Igs.Pgm2Adapter pgm2 => pgm2.GetTargetFps(),
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => DefaultTargetFrameRate,
             _ => DefaultTargetFrameRate
         };
@@ -1464,6 +1524,8 @@ public partial class MainView : UserControl
             || _core is EutherDrive.Core.Arcade.System32.System32Adapter
             || _core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
             || _core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
+            || _core is EutherDrive.Core.Arcade.Snk.NeoGeoAdapter
+            || _core is EutherDrive.Core.Arcade.Igs.Pgm2Adapter
             || _core is EutherDrive.Core.Arcade.Igs.KovPgmAdapter
             || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(forceOpaque);
@@ -2602,6 +2664,9 @@ public partial class MainView : UserControl
 
     private static bool ShouldRegisterArcadeSibling(string fileName)
     {
+        if (EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedSidecarFileName(fileName))
+            return true;
+
         string ext = Path.GetExtension(fileName).ToLowerInvariant();
         if (ext is not ".zip" and not ".7z" and not ".bin")
             return false;
@@ -2627,17 +2692,19 @@ public partial class MainView : UserControl
             || EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(pseudoPath);
     }
 
-    private async Task PickSystemFileAsync(string key, string title, string[] patterns)
+    private async Task<bool> PickSystemFileAsync(string key, string title, string[] patterns)
     {
         var topLevel = TopLevel.GetTopLevel(this);
         if (topLevel?.StorageProvider is not { } storageProvider)
         {
             _viewModel.FooterStatus = "System file picker is unavailable on this surface.";
-            return;
+            return false;
         }
 
         var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -2655,7 +2722,8 @@ public partial class MainView : UserControl
 
         if (files.Count == 0)
         {
-            return;
+            _viewModel.FooterStatus = $"{key} not selected.";
+            return false;
         }
 
         try
@@ -2665,10 +2733,12 @@ public partial class MainView : UserControl
             SaveSettings();
             ApplySettings();
             _viewModel.FooterStatus = $"{key} selected";
+            return true;
         }
         catch (Exception ex)
         {
             _viewModel.FooterStatus = $"{key} import failed: {ex.Message}";
+            return false;
         }
     }
 
@@ -2688,6 +2758,8 @@ public partial class MainView : UserControl
     private void OnClearSegaCdBios(object? sender, RoutedEventArgs e) => ClearSystemFile("SEGA CD BIOS");
     private async void OnPickPsxBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("PSX BIOS", "Select PSX BIOS", new[] { "*.bin", "*.*" });
     private void OnClearPsxBios(object? sender, RoutedEventArgs e) => ClearSystemFile("PSX BIOS");
+    private async void OnPickNeoGeoBios(object? sender, RoutedEventArgs e) => await PickSystemFileAsync("NEO GEO BIOS", "Select Neo Geo BIOS", new[] { "neogeo.zip", "*.zip", "*.7z", "*.*" });
+    private void OnClearNeoGeoBios(object? sender, RoutedEventArgs e) => ClearSystemFile("NEO GEO BIOS");
     private void OnPsxFastLoadToggle(object? sender, RoutedEventArgs e)
     {
         if (_isInitializingSettings)
@@ -2815,6 +2887,7 @@ public partial class MainView : UserControl
         GbaAdapter.BiosPath = _viewModel.GbaBiosPath;
         string? segaCdBiosPath = RegisterSystemFileVirtualPath("SEGA CD BIOS", _viewModel.SegaCdBiosPath, _viewModel.SegaCdBiosDisplay);
         PsxAdapter.BiosPath = RegisterSystemFileVirtualPath("PSX BIOS", _viewModel.PsxBiosPath, _viewModel.PsxBiosDisplay);
+        EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.BiosPath = _viewModel.NeoGeoBiosPath;
         ApplyPsxExecutionSettings();
         ApplySharpPixelsSetting();
 
@@ -3078,6 +3151,8 @@ public partial class MainView : UserControl
             SegaCdBiosDisplay = _viewModel.SegaCdBiosDisplay,
             PsxBiosPath = _viewModel.PsxBiosPath,
             PsxBiosDisplay = _viewModel.PsxBiosDisplay,
+            NeoGeoBiosPath = _viewModel.NeoGeoBiosPath,
+            NeoGeoBiosDisplay = _viewModel.NeoGeoBiosDisplay,
             PsxAnalogControllerEnabled = _viewModel.PsxAnalogControllerEnabled,
             PsxFastLoadEnabled = _viewModel.PsxFastLoadEnabled,
             PsxSuperFastBootEnabled = _viewModel.PsxSuperFastBootEnabled,
@@ -3182,6 +3257,8 @@ public partial class MainView : UserControl
         _viewModel.SegaCdBiosDisplay = settings.SegaCdBiosDisplay ?? "(none)";
         _viewModel.PsxBiosPath = settings.PsxBiosPath;
         _viewModel.PsxBiosDisplay = settings.PsxBiosDisplay ?? "(none)";
+        _viewModel.NeoGeoBiosPath = settings.NeoGeoBiosPath;
+        _viewModel.NeoGeoBiosDisplay = settings.NeoGeoBiosDisplay ?? "(auto: neogeo.zip)";
         _viewModel.PsxAnalogControllerEnabled = settings.PsxAnalogControllerEnabled;
         _viewModel.PsxFastLoadEnabled = settings.PsxFastLoadEnabled;
         _viewModel.PsxSuperFastBootEnabled = settings.PsxSuperFastBootEnabled;
@@ -4066,6 +4143,16 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter();
         }
 
+        if (EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.Snk.NeoGeoAdapter();
+        }
+
+        if (EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.Igs.Pgm2Adapter();
+        }
+
         if (EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedArchive(path))
         {
             return new EutherDrive.Core.Arcade.Igs.KovPgmAdapter();
@@ -4179,6 +4266,12 @@ public partial class MainView : UserControl
             case EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2:
                 cps2.SetMasterVolumePercent(100);
                 break;
+            case EutherDrive.Core.Arcade.Snk.NeoGeoAdapter neoGeo:
+                neoGeo.SetMasterVolumePercent(100);
+                break;
+            case EutherDrive.Core.Arcade.DataEast.Boogwing.BoogwingAdapter boogwing:
+                boogwing.SetMasterVolumePercent(100);
+                break;
         }
     }
 
@@ -4194,6 +4287,8 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter => "Arcade CPS2",
             EutherDrive.Core.Arcade.System32.System32Adapter => "Sega System 32",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
+            EutherDrive.Core.Arcade.Snk.NeoGeoAdapter => "Neo Geo",
+            EutherDrive.Core.Arcade.Igs.Pgm2Adapter => "IGS PGM2",
             EutherDrive.Core.Arcade.Igs.KovPgmAdapter => "IGS PGM",
             EutherDrive.Core.Arcade.McsArcadeAdapter => "MAME",
             GbAdapter => GetEffectiveRomExtension(romPath) == ".gbc" ? "Game Boy Color" : "Game Boy",
@@ -4260,6 +4355,7 @@ public partial class MainView : UserControl
         private string _gbaBiosDisplay = "(auto: gba_bios.bin)";
         private string _segaCdBiosDisplay = "(none)";
         private string _psxBiosDisplay = "(none)";
+        private string _neoGeoBiosDisplay = "(auto: neogeo.zip)";
         private bool _psxAnalogControllerEnabled;
         private bool _psxFastLoadEnabled;
         private bool _psxSuperFastBootEnabled;
@@ -4284,6 +4380,7 @@ public partial class MainView : UserControl
         private string? _gbaBiosPath;
         private string? _segaCdBiosPath;
         private string? _psxBiosPath;
+        private string? _neoGeoBiosPath;
         private string? _skinPath;
         private string? _dsp1Path;
         private string? _dsp2Path;
@@ -4557,6 +4654,7 @@ public partial class MainView : UserControl
         public string GbaBiosDisplay { get => _gbaBiosDisplay; set => SetField(ref _gbaBiosDisplay, value); }
         public string SegaCdBiosDisplay { get => _segaCdBiosDisplay; set => SetField(ref _segaCdBiosDisplay, value); }
         public string PsxBiosDisplay { get => _psxBiosDisplay; set => SetField(ref _psxBiosDisplay, value); }
+        public string NeoGeoBiosDisplay { get => _neoGeoBiosDisplay; set => SetField(ref _neoGeoBiosDisplay, value); }
         public bool PsxAnalogControllerEnabled { get => _psxAnalogControllerEnabled; set => SetField(ref _psxAnalogControllerEnabled, value); }
         public bool PsxFastLoadEnabled { get => _psxFastLoadEnabled; set => SetField(ref _psxFastLoadEnabled, value); }
         public bool PsxSuperFastBootEnabled { get => _psxSuperFastBootEnabled; set => SetField(ref _psxSuperFastBootEnabled, value); }
@@ -4606,6 +4704,7 @@ public partial class MainView : UserControl
         public string? GbaBiosPath { get => _gbaBiosPath; set => SetField(ref _gbaBiosPath, value); }
         public string? SegaCdBiosPath { get => _segaCdBiosPath; set => SetField(ref _segaCdBiosPath, value); }
         public string? PsxBiosPath { get => _psxBiosPath; set => SetField(ref _psxBiosPath, value); }
+        public string? NeoGeoBiosPath { get => _neoGeoBiosPath; set => SetField(ref _neoGeoBiosPath, value); }
         public string? SkinPath { get => _skinPath; set => SetField(ref _skinPath, value); }
         public string? Dsp1Path { get => _dsp1Path; set => SetField(ref _dsp1Path, value); }
         public string? Dsp2Path { get => _dsp2Path; set => SetField(ref _dsp2Path, value); }
@@ -4666,6 +4765,10 @@ public partial class MainView : UserControl
                 case "PSX BIOS":
                     PsxBiosPath = path;
                     PsxBiosDisplay = label;
+                    break;
+                case "NEO GEO BIOS":
+                    NeoGeoBiosPath = path;
+                    NeoGeoBiosDisplay = path == null ? "(auto: neogeo.zip)" : label;
                     break;
                 case "DSP1":
                     Dsp1Path = path;
@@ -4751,6 +4854,8 @@ public partial class MainView : UserControl
         public string? SegaCdBiosDisplay { get; set; }
         public string? PsxBiosPath { get; set; }
         public string? PsxBiosDisplay { get; set; }
+        public string? NeoGeoBiosPath { get; set; }
+        public string? NeoGeoBiosDisplay { get; set; }
         public bool PsxAnalogControllerEnabled { get; set; }
         public bool PsxFastLoadEnabled { get; set; }
         public bool PsxSuperFastBootEnabled { get; set; }
@@ -4778,4 +4883,6 @@ public partial class MainView : UserControl
     }
 
     private sealed record VirtualRomImport(string PrimaryPath, IReadOnlyList<string> RegisteredPaths);
+
+    private sealed record MissingSystemFileRequest(string Key, string DisplayName, string Title, string[] Patterns);
 }

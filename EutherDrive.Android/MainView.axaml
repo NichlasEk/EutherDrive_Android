@@ -1004,6 +1004,15 @@
                 </Border>
 
                 <Border Classes="surface" Padding="12">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="NEO GEO BIOS" FontWeight="Bold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding NeoGeoBiosDisplay}" Foreground="#91A8BD" TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="2" Classes="chrome" Content="Pick" Click="OnPickNeoGeoBios" />
+                    <Button Grid.Column="3" Classes="chrome" Content="Clear" Click="OnClearNeoGeoBios" />
+                  </Grid>
+                </Border>
+
+                <Border Classes="surface" Padding="12">
                   <StackPanel Spacing="8">
                     <TextBlock Text="PSX Boot"
                                FontWeight="Bold" />
