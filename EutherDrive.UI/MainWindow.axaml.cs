@@ -1051,6 +1051,8 @@ public partial class MainWindow : Window
             target = s32x.GetTargetFps();
         else if (_core is Cps1DinoAdapter cps1)
             target = cps1.GetTargetFps();
+        else if (_core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2)
+            target = cps2.GetTargetFps();
         else if (_core is Deco32Adapter deco32)
             target = deco32.GetTargetFps();
         else if (_core is BoogwingAdapter boogwing)
@@ -4451,6 +4453,7 @@ public partial class MainWindow : Window
             Pgm2Adapter => "IGS PGM2",
             KovPgmAdapter => "IGS PGM",
             TaitoF2ThunderFoxAdapter => "Taito F2",
+            EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter => "Arcade CPS2",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
         };
@@ -11552,6 +11555,8 @@ public partial class MainWindow : Window
             return psx.GetTargetFps() * _speedScale;
         if (_core is Cps1DinoAdapter cps1)
             return cps1.GetTargetFps() * _speedScale;
+        if (_core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2)
+            return cps2.GetTargetFps() * _speedScale;
         if (_core is Deco32Adapter deco32)
             return deco32.GetTargetFps() * _speedScale;
         if (_core is BoogwingAdapter boogwing)

@@ -1835,6 +1835,7 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
             "ddsom",
             "ddsomu",
             "ddsomur1",
+            "ddtod",
             "ddtodur1",
             "dstlku",
             "ecofghtr",
@@ -1871,6 +1872,15 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 throw new NotSupportedException($"CPS2 ROM set '{setName}' is not registered in the EutherDrive CPS2 loader.");
 
             Dictionary<string, byte[]> entries = ReadArchive(path);
+            if (setName == "ddtod"
+                && !HasDecryptionMaterial(entries, setName)
+                && TryFindSiblingArchive(path, "ddtodur1", out string clonePath))
+            {
+                path = clonePath;
+                setName = "ddtodur1";
+                entries = ReadArchive(path);
+            }
+
             MergeParentArchivesIfPresent(path, setName, entries);
 
             List<NumberedRomFile> programFiles = FindNumberedFiles(
@@ -2118,6 +2128,40 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 yield return "ddsom.zip";
                 yield return "ddsom.7z";
             }
+
+            if (setName is "ddtodur1")
+            {
+                yield return "ddtod.zip";
+                yield return "ddtod.7z";
+            }
+        }
+
+        private static bool TryFindSiblingArchive(string path, string setName, out string siblingPath)
+        {
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                foreach (string extension in new[] { ".zip", ".7z" })
+                {
+                    string candidate = Path.Combine(directory, setName + extension);
+                    if (RomArchiveExtractor.FileExists(candidate))
+                    {
+                        siblingPath = candidate;
+                        return true;
+                    }
+                }
+            }
+
+            siblingPath = string.Empty;
+            return false;
+        }
+
+        private static bool HasDecryptionMaterial(Dictionary<string, byte[]> entries, string setName)
+        {
+            if (TryFindKey(entries, setName, out _))
+                return true;
+
+            return entries.Keys.Any(IsOpcodeRomName);
         }
 
         private static int PreferredProgramScore(string setName, string name)
@@ -2131,6 +2175,8 @@ public sealed class Cps2DdsomAdapter : IEmulatorCore
                 "pgear" or "pgearr1" => new[] { "pwgj", "pwg.", "pwge" },
                 "ddsomu" or "ddsomur1" => new[] { "dd2u", "dd2.", "dd2e" },
                 "ddsom" => new[] { "dd2e", "dd2.", "dd2u" },
+                "ddtodur1" => new[] { "dadu", "dad.", "dade" },
+                "ddtod" => new[] { "dade", "dad.", "dadu" },
                 _ => Array.Empty<string>()
             };
 
