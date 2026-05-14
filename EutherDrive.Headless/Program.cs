@@ -35,6 +35,7 @@ using EutherDrive.Core.Arcade.Konami;
 using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.Arcade.System32;
 using EutherDrive.Core.Arcade.Taito;
+using EutherDrive.Core.Arcade.Toaplan;
 using EutherDrive.Platforms.DataEast.Deco32;
 using EutherDrive.Audio;
 using EutherDrive.Core.Cpu.M68000Emu;
@@ -387,6 +388,9 @@ class Program
                 || string.Equals(coreOverride, "thundfox", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "thunderfox", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(romPath));
+            bool useOutZone = string.Equals(coreOverride, "outzone", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "toaplan-outzone", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && OutZoneAdapter.IsSupportedArchive(romPath));
             bool useNeoGeo = string.Equals(coreOverride, "neogeo", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "neo-geo", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && NeoGeoAdapter.IsSupportedArchive(romPath));
@@ -397,7 +401,7 @@ class Program
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !useOutZone && !usePgm2 && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -418,6 +422,7 @@ class Program
                 useHshavoc = false;
                 useTmnt = false;
                 useTaitoF2 = false;
+                useOutZone = false;
                 useNeoGeo = false;
                 usePgm2 = false;
                 useMcsArcade = false;
@@ -602,6 +607,23 @@ class Program
                 Console.WriteLine($"[HEADLESS] TAITO-F2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 PrintHeadlessPerf("TAITO-F2", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useOutZone)
+            {
+                Console.WriteLine("[HEADLESS] Using Toaplan Out Zone core");
+                using var outZone = new OutZoneAdapter();
+                outZone.LoadRom(romPath);
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                    outZone.RunFrame();
+
+                ReadOnlySpan<byte> fbOut = outZone.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] OutZone final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

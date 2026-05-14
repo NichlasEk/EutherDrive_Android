@@ -30,6 +30,7 @@ using EutherDrive.Core.Arcade.DataEast.Hshavoc;
 using EutherDrive.Core.Arcade.Igs;
 using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.Arcade.Taito;
+using EutherDrive.Core.Arcade.Toaplan;
 using EutherDrive.Core.MdTracerCore;
 using EutherDrive.Core.SegaCd;
 using EutherDrive.Platforms.DataEast.Deco32;
@@ -831,6 +832,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(path))
             return new TaitoF2ThunderFoxAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && OutZoneAdapter.IsSupportedArchive(path))
+            return new OutZoneAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Technos.XainSleenaAdapter.IsSupportedArchive(path))
             return new EutherDrive.Core.Arcade.Technos.XainSleenaAdapter();
         if (!string.IsNullOrWhiteSpace(path) && NeoGeoAdapter.IsSupportedArchive(path))
@@ -1046,6 +1049,8 @@ public partial class MainWindow : Window
             target = pgm2.GetTargetFps();
         else if (_core is NeoGeoAdapter neoGeo)
             target = neoGeo.GetTargetFps();
+        else if (_core is OutZoneAdapter outZone)
+            target = outZone.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -1837,6 +1842,7 @@ public partial class MainWindow : Window
         {
             PsxAdapter => new AutoFireProfile("psx", _inputMappings.Psx, s_autoFireMdSixButtonButtons),
             NeoGeoAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
+            OutZoneAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             Pgm2Adapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             KovPgmAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             TaitoF2ThunderFoxAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
@@ -3165,6 +3171,11 @@ public partial class MainWindow : Window
                             UpdateRomInfo(neoGeo.RomInfo);
                             Console.WriteLine(neoGeo.RomInfo.Summary);
                         }
+                        else if (_core is OutZoneAdapter outZone)
+                        {
+                            UpdateRomInfo(outZone.RomInfo);
+                            Console.WriteLine(outZone.RomInfo.Summary);
+                        }
                         _audioPullReady = true;
                         PrimePullAudio();
                         AddRecentRom(_romPath);
@@ -3960,6 +3971,8 @@ public partial class MainWindow : Window
             kov.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is NeoGeoAdapter neoGeo)
             neoGeo.SetMasterVolumePercent(effectiveVolumePercent);
+        else if (_core is OutZoneAdapter outZone)
+            outZone.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter xain)
             xain.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is Deco32Adapter deco32)
@@ -4422,6 +4435,7 @@ public partial class MainWindow : Window
             BoogwingAdapter => "Data East Boogie Wings",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             NeoGeoAdapter => "Neo Geo",
+            OutZoneAdapter => "Toaplan Out Zone",
             Pgm2Adapter => "IGS PGM2",
             KovPgmAdapter => "IGS PGM",
             TaitoF2ThunderFoxAdapter => "Taito F2",
@@ -8574,6 +8588,7 @@ public partial class MainWindow : Window
             or Pgm2Adapter
             or KovPgmAdapter
             or NeoGeoAdapter
+            or OutZoneAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
             or Cps1DinoAdapter
             or EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
@@ -9299,6 +9314,7 @@ public partial class MainWindow : Window
             or Pgm2Adapter
             or KovPgmAdapter
             or NeoGeoAdapter
+            or OutZoneAdapter
             or TaitoF2ThunderFoxAdapter
             or BoogwingAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -9610,6 +9626,7 @@ public partial class MainWindow : Window
             || core is Pgm2Adapter
             || core is KovPgmAdapter
             || core is NeoGeoAdapter
+            || core is OutZoneAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is BoogwingAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -10588,7 +10605,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is OutZoneAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10600,6 +10617,7 @@ public partial class MainWindow : Window
                                     || core is Pgm2Adapter
                                     || core is KovPgmAdapter
                                     || core is NeoGeoAdapter
+                                    || core is OutZoneAdapter
                                     || core is TaitoF2ThunderFoxAdapter
                                     || core is BoogwingAdapter
                                     || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -10957,6 +10975,7 @@ public partial class MainWindow : Window
             || _core is Pgm2Adapter
             || _core is KovPgmAdapter
             || _core is NeoGeoAdapter
+            || _core is OutZoneAdapter
             || _core is TaitoF2ThunderFoxAdapter
             || _core is BoogwingAdapter
             || _core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
@@ -11531,6 +11550,8 @@ public partial class MainWindow : Window
             return pgm2.GetTargetFps() * _speedScale;
         if (_core is NeoGeoAdapter neoGeo)
             return neoGeo.GetTargetFps() * _speedScale;
+        if (_core is OutZoneAdapter outZone)
+            return outZone.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 

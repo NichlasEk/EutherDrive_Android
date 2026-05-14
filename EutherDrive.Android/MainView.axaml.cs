@@ -1452,6 +1452,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2 => cps2.GetTargetFps(),
             EutherDrive.Core.Arcade.System32.System32Adapter system32 => system32.GetTargetFps(),
             EutherDrive.Core.Arcade.Snk.NeoGeoAdapter neoGeo => neoGeo.GetTargetFps(),
+            EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter outZone => outZone.GetTargetFps(),
             EutherDrive.Core.Arcade.Igs.Pgm2Adapter pgm2 => pgm2.GetTargetFps(),
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => DefaultTargetFrameRate,
             _ => DefaultTargetFrameRate
@@ -1525,6 +1526,7 @@ public partial class MainView : UserControl
             || _core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
             || _core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || _core is EutherDrive.Core.Arcade.Snk.NeoGeoAdapter
+            || _core is EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter
             || _core is EutherDrive.Core.Arcade.Igs.Pgm2Adapter
             || _core is EutherDrive.Core.Arcade.Igs.KovPgmAdapter
             || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
@@ -2693,6 +2695,7 @@ public partial class MainView : UserControl
             || EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(pseudoPath);
@@ -4148,6 +4151,11 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.Snk.NeoGeoAdapter();
         }
 
+        if (EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter();
+        }
+
         if (EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedArchive(path))
         {
             return new EutherDrive.Core.Arcade.Igs.Pgm2Adapter();
@@ -4269,6 +4277,9 @@ public partial class MainView : UserControl
             case EutherDrive.Core.Arcade.Snk.NeoGeoAdapter neoGeo:
                 neoGeo.SetMasterVolumePercent(100);
                 break;
+            case EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter outZone:
+                outZone.SetMasterVolumePercent(100);
+                break;
             case EutherDrive.Core.Arcade.DataEast.Boogwing.BoogwingAdapter boogwing:
                 boogwing.SetMasterVolumePercent(100);
                 break;
@@ -4288,6 +4299,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.System32.System32Adapter => "Sega System 32",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             EutherDrive.Core.Arcade.Snk.NeoGeoAdapter => "Neo Geo",
+            EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter => "Toaplan Out Zone",
             EutherDrive.Core.Arcade.Igs.Pgm2Adapter => "IGS PGM2",
             EutherDrive.Core.Arcade.Igs.KovPgmAdapter => "IGS PGM",
             EutherDrive.Core.Arcade.McsArcadeAdapter => "MAME",
