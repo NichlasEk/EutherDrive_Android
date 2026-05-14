@@ -878,6 +878,7 @@ namespace Ryu64.MIPS
             public uint Height;
             public uint OriginS;
             public uint OriginT;
+            public bool FastClampCoordinates;
             public bool Valid;
         }
 
@@ -4186,6 +4187,9 @@ namespace Ryu64.MIPS
                 Height = height,
                 OriginS = tile.Uls >> 2,
                 OriginT = tile.Ult >> 2,
+                FastClampCoordinates =
+                    IsRdpLinearClampCoordinate(tile.MaskS, tile.ShiftS, tile.ClampS) &&
+                    IsRdpLinearClampCoordinate(tile.MaskT, tile.ShiftT, tile.ClampT),
                 Valid = true
             };
         }
@@ -4200,15 +4204,56 @@ namespace Ryu64.MIPS
                 return false;
 
             if (_rdpOtherModesSampleType && _rdpOtherModesBiLerp0 && (fracS != 0 || fracT != 0))
+            {
+                if (sampler.FastClampCoordinates)
+                    return DecodeRdpTextureColorLinearLerpFastClamp(ref sampler, s, t, fracS, fracT, out rgba);
                 return DecodeRdpTextureColorLinearLerp(ref sampler, s, t, fracS, fracT, out rgba);
+            }
 
             RdpTileState tile = sampler.Tile;
-            int u = ApplyRdpTextureCoordinate(s, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
-            int v = ApplyRdpTextureCoordinate(t, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
+            int u;
+            int v;
+            if (sampler.FastClampCoordinates)
+            {
+                u = ClampRdpTextureCoordinate(s - (int)sampler.OriginS, sampler.Width);
+                v = ClampRdpTextureCoordinate(t - (int)sampler.OriginT, sampler.Height);
+            }
+            else
+            {
+                u = ApplyRdpTextureCoordinate(s, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
+                v = ApplyRdpTextureCoordinate(t, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
+            }
             if (u < 0 || v < 0)
                 return false;
 
             return DecodeRdpTextureColor(tile, u, v, out rgba);
+        }
+
+        private bool DecodeRdpTextureColorLinearLerpFastClamp(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
+        {
+            rgba = 0;
+            int relativeS = s - (int)sampler.OriginS;
+            int relativeT = t - (int)sampler.OriginT;
+            int s0 = ClampRdpTextureCoordinate(relativeS, sampler.Width);
+            int t0 = ClampRdpTextureCoordinate(relativeT, sampler.Height);
+            int s1 = ClampRdpTextureCoordinate(relativeS + 1, sampler.Width);
+            int t1 = ClampRdpTextureCoordinate(relativeT + 1, sampler.Height);
+            if (s0 < 0 || t0 < 0 || s1 < 0 || t1 < 0)
+                return false;
+
+            RdpTileState tile = sampler.Tile;
+            if (!DecodeRdpTextureColor(tile, s0, t0, out uint c00)
+                || !DecodeRdpTextureColor(tile, s1, t0, out uint c10)
+                || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
+                || !DecodeRdpTextureColor(tile, s1, t1, out uint c11))
+                return false;
+
+            rgba = (fracS + fracT) >= 32
+                ? BlendRdpTexelsTriangleUpper(c10, c01, c11, fracS, fracT)
+                : BlendRdpTexelsTriangleLower(c00, c10, c01, fracS, fracT);
+            if ((rgba & 0xFFu) < 0x80u)
+                rgba &= 0xFFFFFF00u;
+            return true;
         }
 
         private bool DecodeRdpTextureColorLinearLerp(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
@@ -4295,6 +4340,20 @@ namespace Ryu64.MIPS
                     : (~mirrored) & maskValue;
             }
 
+            if (value < 0)
+                return 0;
+            if ((uint)value >= extent)
+                return (int)extent - 1;
+            return value;
+        }
+
+        private static bool IsRdpLinearClampCoordinate(uint mask, uint shift, bool clamp)
+            => shift == 0 && (clamp || mask == 0 || mask >= 31);
+
+        private static int ClampRdpTextureCoordinate(int value, uint extent)
+        {
+            if (extent == 0)
+                return -1;
             if (value < 0)
                 return 0;
             if ((uint)value >= extent)
