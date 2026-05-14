@@ -252,7 +252,9 @@ static string? ResolveWarmupSnapshotPath(string? configuredPath, GauntletDarkLeg
 
     string romName = adapter.RomIdentity?.Name ?? "unknown";
     string moduleId = typeof(GauntletDarkLegacyAdapter).Assembly.ManifestModule.ModuleVersionId.ToString("N")[..12];
-    string fileName = $"gauntdl-{SanitizeFileName(romName)}-f{frames}-s{cpuStepsPerFrame}-{moduleId}.warm";
+    string modeId = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST") == "1" ? "fast" : "base";
+    string diskId = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RAW_DISK")) ? "chd" : "raw";
+    string fileName = $"gauntdl-{SanitizeFileName(romName)}-{modeId}-{diskId}-f{frames}-s{cpuStepsPerFrame}-{moduleId}.warm";
     return Path.Combine(Path.GetTempPath(), "eutherdrive-gauntlet-probe", fileName);
 }
 

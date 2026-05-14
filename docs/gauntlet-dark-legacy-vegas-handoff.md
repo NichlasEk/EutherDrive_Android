@@ -3392,3 +3392,167 @@ Next target:
    the fastest route to the no-geometry blocker.
 3. Do not spend time on Voodoo triangle decode until a probe first shows
    non-zero setup/draw packet counters.
+
+## 2026-05-14 Follow-up: Snapshot Mode Split and State Snapshot Copy
+
+This pass fixed one probe workflow issue and added one narrow loaded-runtime
+fastpath.
+
+Probe change:
+
+- `tools/GauntletProbe` auto warmup snapshots now include `fast/base` and
+  `raw/chd` in the filename.
+- This prevents accidentally loading a base/CHD 300-frame snapshot for the
+  `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1` + raw-disk workflow. The bad snapshot
+  lands in idle/interrupt code around `0xffffffff80015784` with loaded runtime
+  code ranges still zeroed.
+
+New fastpath:
+
+- Added `TryFastPathKnownGauntletGlideRuntimeStateSnapshotCopy`.
+  - Catches the loaded runtime wrapper at `0xffffffff80108298` and budget-stop
+    epilogue points through `0xffffffff801082f8`.
+  - Signature-gated against the exact wrapper body.
+  - Copies `0x108` bytes from loaded Glide state
+    `0xffffffff80262d64+0x24c` to the caller-provided destination, matching the
+    wrapper's call to the generic copy helper.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+Correct warmup snapshot recreated with:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=auto
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300
+```
+
+Snapshot path:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f300-s2000000-40cf7be0343c.warm
+```
+
+Warmup-series after the fastpath:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff8010253c regs=3784835 fifoWords=7547456 fifoPackets=3771514
+checkpoint extra=5000000 pc=0xffffffff800eb528 regs=3818517 fifoWords=7614820 fifoPackets=3805196
+checkpoint extra=10000000 pc=0xffffffff800eb7ac regs=3860621 fifoWords=7699028 fifoPackets=3847300
+checkpoint extra=25000000 pc=0xffffffff800e1464 regs=3986940 fifoWords=7951666 fifoPackets=3973619
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:3972224,2:0,3:0,4:1395,5:0,6:0,7:0
+```
+
+Interpretation:
+
+- The new fastpath is valid after correcting the entry-case stack behavior.
+  The first attempt adjusted `sp` as if the prologue had already run and was
+  rejected after probe verification hit invalid code/data PCs.
+- The former 1M endpoint at `0xffffffff801082ec` no longer dominates; the
+  25M endpoint is now `0xffffffff800e1464`.
+- Voodoo still only sees type-1 state packets and type-4 clear/fill packets.
+  No real geometry yet.
+
+Next target:
+
+1. Trace/dump around `0xffffffff800e1464` and caller `0xffffffff800e1460`.
+2. Keep using the fast/raw warmup snapshot path above.
+3. Continue looking for the first transition to type-3/type-5 draw/setup
+   packets before spending time in triangle decode.
+
+## 2026-05-14 Pause Handoff: Runtime Loop Progress, Still No Geometry
+
+This pass kept the same fast/raw 300-frame warmup snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f300-s2000000-40cf7be0343c.warm
+```
+
+Probe/build status before pausing:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+333 Warning(s)
+0 Error(s)
+```
+
+Implemented bringup changes:
+
+- Corrected `TryFastPathKnownRuntimeDelayCallbackLoop`:
+  - Real entry is `0xffffffff800e1414`, not `0xffffffff800e1420`.
+  - Signature offsets were adjusted to the full prologue/body/epilogue.
+  - Mid-loop stops now restore `s2/s1/s0/ra/sp`.
+  - Callback is accepted as either zero or `0x800d03b8`.
+  - This moved the hot stop from `0xffffffff800e1464` to the inline tick wait
+    around `0xffffffff800e18ec`.
+- Added `TryFastPathKnownRuntimeInlineTickWaitLoop`:
+  - Covers `0xffffffff800e18c0..0xffffffff800e18f0`.
+  - Advances counter `0xffffffff80228114` by `0xb4` and resumes at
+    `0xffffffff800e18f8`.
+  - This moved the hot stop into the QIO/error status tail around
+    `0xffffffff800d0e40`.
+- Added `TryFastPathKnownRuntimeQioErrorPollTail`:
+  - Narrow catch at `0xffffffff800d0e40` when the pending branch returns to
+    `0xffffffff800d0964`, with `s1=8` and `s5=0`.
+  - Signature-gated around `0xffffffff800d0964/0968` and
+    `0xffffffff800d0e34..0e48`.
+  - Writes the expected `0xa1` status path and clears `s1`.
+  - This moved the run forward into loaded-runtime text/state code around
+    `0xffffffff800e38xx` / `0xffffffff800e3ffc`.
+- Added `TryFastPathKnownRuntimeTextStateBlitBody`:
+  - Current accepted range is `0xffffffff800e3500..0xffffffff800e388c`.
+  - Restores saved `s0..s7/fp/ra`, advances `sp` by `0xa8`, and returns via
+    the saved `ra`.
+  - A broader attempted range starting at `0xffffffff800e3370` regressed the
+    long probe back to `0xffffffff800d0968` with lower FIFO counts, so it was
+    rejected and reverted.
+- Added state emit/copy handling:
+  - `TryFastPathKnownGauntletGlideRuntimeStateSnapshotCopy` copies the
+    `0x108`-byte loaded Glide state snapshot.
+  - `TryFastPathKnownGauntletGlideStateEmitCallerEpilogue` handles the caller
+    epilogue at `0xffffffff80103f64`; single-step probing showed this point
+    continues normally through `0xffffffff80103f68`, then to
+    `0xffffffff801036a0` and `0xffffffff800eb870`.
+- Diagnostic trace output now includes `s3..s7`, which was useful for the QIO
+  and runtime state-loop probes.
+
+Best long-run checkpoints from the accepted range still show no real draw
+traffic:
+
+```text
+checkpoint extra=5000001 pc=0xffffffff800eb864 regs=3787119 fifoWords=7552024 fifoPackets=3773798
+checkpoint extra=25000000 pc=0xffffffff800e30c4 regs=3820223 fifoWords=7618232 fifoPackets=3806902
+checkpoint extra=100000000 pc=0xffffffff800d0ffc regs=3944383 fifoWords=7866552 fifoPackets=3931062
+checkpoint extra=400000000 pc=0xffffffff80103f64 regs=4441005 fifoWords=8859796 fifoPackets=4427684
+checkpoint extra=800000000 pc=0xffffffff800d0f5c regs=5103151 fifoWords=10184088 fifoPackets=5089830
+drawPackets=0 directTriangles=0 setupTriangles=0
+packetTypes=0:0,1:5088435,2:0,3:0,4:1395,5:0,6:0,7:0
+```
+
+Interpretation:
+
+- The bringup made real progress through several loaded-runtime wait/status
+  loops, but the Voodoo FIFO still only receives type-1 state packets and the
+  same 1395 type-4 clear/fill packets.
+- There are still no type-3 or type-5 packets, so the missing image is still
+  upstream of Voodoo triangle decode.
+- The current useful stop points for the next session are
+  `0xffffffff800d0f5c`, `0xffffffff800e3fd8`, and `0xffffffff800e345c`.
+
+Next target:
+
+1. Trace the runtime state/text/IO loops around those three PCs.
+2. Keep the text-state fastpath range at `0xffffffff800e3500..388c` unless a
+   new trace proves an earlier entry is safe.
+3. Continue looking for the first non-zero type-3/type-5 packet before doing
+   any Voodoo raster work.
