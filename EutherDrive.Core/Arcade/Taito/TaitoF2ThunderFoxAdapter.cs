@@ -1251,7 +1251,10 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
             if (address is >= 0x200000 and <= 0x20000f)
                 return (address & 1) != 0 ? ReadIoRegister((int)((address - 0x200000) >> 1)) : (byte)0xff;
             if (address == 0x220002)
+            {
+                _sound?.SynchronizeFromMain();
                 return _sound?.MasterCommRead() ?? (byte)0xff;
+            }
             if (address is >= 0x220000 and <= 0x220003)
                 return 0xff;
 
@@ -1338,6 +1341,7 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
             if (address == 0x220002)
             {
                 _sound?.MasterCommWrite(value);
+                _sound?.SynchronizeFromMain();
                 return;
             }
             if (address is >= 0x220000 and <= 0x220003)
@@ -1362,6 +1366,7 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
             if (address == 0x220002)
             {
                 _sound?.MasterCommWrite((byte)(value >> 8));
+                _sound?.SynchronizeFromMain();
                 return;
             }
 
@@ -1486,9 +1491,10 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
         [NonSerialized] private int _lastYmPort;
         [NonSerialized] private int _lastYmAddress;
         [NonSerialized] private int _lastYmData;
+        [NonSerialized] private int _synchronizedCycles;
 
         public string DebugSummary
-            => $"sndZ80=0x{_cpu.Pc:X4} sndSt=0x{_status:X2} nmi={(_nmiEnabled ? 1 : 0)} rst={(_resetAsserted ? 1 : 0)} modes={_mainMode:X1}/{_subMode:X1} bank={_bank} mW/R={_masterWrites}/{_masterReads} sW/R={_slaveWrites}/{_slaveReads} ymW={_ymWrites} ym={_lastYmPort}:{_lastYmAddress:X2}={_lastYmData:X2} {_ym.DebugSummary} bW={_bankWrites} nmiEn={_nmiEnables} audPeak={_lastPeak}";
+            => $"sndZ80=0x{_cpu.Pc:X4} sndSt=0x{_status:X2} nmi={(_nmiEnabled ? 1 : 0)} rst={(_resetAsserted ? 1 : 0)} modes={_mainMode:X1}/{_subMode:X1} bank={_bank} sync={_synchronizedCycles} mW/R={_masterWrites}/{_masterReads} sW/R={_slaveWrites}/{_slaveReads} ymW={_ymWrites} ym={_lastYmPort}:{_lastYmAddress:X2}={_lastYmData:X2} {_ym.DebugSummary} bW={_bankWrites} nmiEn={_nmiEnables} audPeak={_lastPeak}";
 
         public void Load(byte[] program, byte[] adpcmA, byte[] adpcmB)
         {
@@ -1520,25 +1526,35 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
             _lastYmPort = 0;
             _lastYmAddress = 0;
             _lastYmData = 0;
+            _synchronizedCycles = 0;
             _ym.Reset();
             _cpu.ApplyResetLine();
         }
 
         public void SaveState(BinaryWriter writer) => StateBinarySerializer.WriteInto(writer, this);
-        public void LoadState(BinaryReader reader) => StateBinarySerializer.ReadInto(reader, this);
+        public void LoadState(BinaryReader reader)
+        {
+            StateBinarySerializer.ReadInto(reader, this);
+            _ym.AfterLoadState();
+            _status = (byte)(_status & 0x03);
+            _synchronizedCycles = 0;
+        }
 
         public void RunFrame(Span<short> audioBuffer)
         {
             audioBuffer.Clear();
             int sampleFrames = audioBuffer.Length / OutputChannels;
             int cycles = 0;
-            int budget = AudioCpuClock / 60;
+            int budget = Math.Max(0, (AudioCpuClock / 60) - _synchronizedCycles);
+            _synchronizedCycles = 0;
             int rendered = 0;
 
             while (cycles < budget)
             {
                 uint elapsed = _cpu.ExecuteInstruction(this);
-                cycles += Math.Max(1, (int)elapsed);
+                int elapsedCycles = Math.Max(1, (int)elapsed);
+                _ym.ClockTimersForCpuCycles(elapsedCycles, AudioCpuClock);
+                cycles += elapsedCycles;
                 int target = (int)Math.Min(sampleFrames, ((long)cycles * sampleFrames) / budget);
                 if (target > rendered)
                 {
@@ -1551,6 +1567,23 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
                 _ym.RenderStereo(audioBuffer, rendered, sampleFrames - rendered, OutputSampleRate);
             _lastPeak = AudioPeak(audioBuffer);
             _frameCounter++;
+        }
+
+        public void SynchronizeFromMain()
+        {
+            if (_resetAsserted)
+                return;
+
+            int budget = AudioCpuClock / 1200;
+            int cycles = 0;
+            while (cycles < budget)
+            {
+                uint elapsed = _cpu.ExecuteInstruction(this);
+                int elapsedCycles = Math.Max(1, (int)elapsed);
+                _ym.ClockTimersForCpuCycles(elapsedCycles, AudioCpuClock);
+                cycles += elapsedCycles;
+            }
+            _synchronizedCycles += cycles;
         }
 
         public void MasterPortWrite(byte data)
@@ -1700,11 +1733,9 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
                     break;
                 case 1:
                     _masterData[_subMode++] = data;
-                    _status |= 0x04;
                     break;
                 case 3:
                     _masterData[_subMode++] = data;
-                    _status |= 0x08;
                     break;
                 case 5:
                     _nmiEnabled = false;
@@ -1739,10 +1770,17 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
 
     private sealed class TaitoYm2610Lite
     {
+        private const double YmClock = 24_000_000.0 / 3.0;
         private const int ChannelsA = 6;
+        private const int FmChannels = 6;
+        private const int FmOperators = 4;
+        private const int SsgChannels = 3;
         private const int AdpcmAddressShift = 8;
         private const int AdpcmBStepMin = 127;
         private const int AdpcmBStepMax = 24576;
+        private const double EnvelopeAttackStep = 0.0025;
+        private const double EnvelopeDecayStep = 0.00007;
+        private const double EnvelopeReleaseStep = 0.0012;
         private static readonly ushort[] s_adpcmaSteps =
         {
              16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
@@ -1757,6 +1795,24 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
         private readonly byte[] _regs = new byte[0x200];
         private readonly byte[] _address = new byte[2];
         private readonly byte[] _bRegs = new byte[0x10];
+        [NonSerialized] private readonly bool[] _fmPlaying = new bool[FmChannels];
+        [NonSerialized] private readonly byte[] _fmKeyMask = new byte[FmChannels];
+        [NonSerialized] private readonly ushort[] _fmFnum = new ushort[FmChannels];
+        [NonSerialized] private readonly byte[] _fmBlock = new byte[FmChannels];
+        [NonSerialized] private readonly byte[] _fmPan = new byte[FmChannels];
+        [NonSerialized] private readonly byte[] _fmAlgorithm = new byte[FmChannels];
+        [NonSerialized] private readonly byte[] _fmFeedback = new byte[FmChannels];
+        [NonSerialized] private readonly double[] _fmFeedbackSample = new double[FmChannels];
+        [NonSerialized] private readonly byte[] _fmMultiple = new byte[FmChannels * FmOperators];
+        [NonSerialized] private readonly byte[] _fmTotalLevel = new byte[FmChannels * FmOperators];
+        [NonSerialized] private readonly byte[] _fmAttackRate = new byte[FmChannels * FmOperators];
+        [NonSerialized] private readonly byte[] _fmDecayRate = new byte[FmChannels * FmOperators];
+        [NonSerialized] private readonly byte[] _fmSustainRate = new byte[FmChannels * FmOperators];
+        [NonSerialized] private readonly byte[] _fmReleaseRate = new byte[FmChannels * FmOperators];
+        [NonSerialized] private readonly byte[] _fmSustainLevel = new byte[FmChannels * FmOperators];
+        [NonSerialized] private readonly double[] _fmPhase = new double[FmChannels * FmOperators];
+        [NonSerialized] private readonly double[] _fmEnvelope = new double[FmChannels * FmOperators];
+        [NonSerialized] private readonly double[] _ssgPhase = new double[SsgChannels];
         private readonly bool[] _aPlaying = new bool[ChannelsA];
         private readonly uint[] _aAddress = new uint[ChannelsA];
         private readonly byte[] _aNibble = new byte[ChannelsA];
@@ -1774,14 +1830,23 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
         private int _bStep = AdpcmBStepMin;
         private byte _eosStatus;
         private byte _flagMask = 0xbf;
+        [NonSerialized] private byte _timerStatus;
+        [NonSerialized] private byte _timerControl;
+        [NonSerialized] private ushort _timerALatch;
+        [NonSerialized] private byte _timerBLatch;
+        [NonSerialized] private double _timerASamples;
+        [NonSerialized] private double _timerBSamples;
         private double _aClockAccumulator;
+        [NonSerialized] private int _fmKeyOns;
         [NonSerialized] private int _aKeyOns;
         [NonSerialized] private int _bKeyOns;
 
         public string DebugSummary
-            => $"aKey={_aKeyOns} bKey={_bKeyOns} aPlay={CountPlayingA()} bPlay={((_bStatus & 0x04) != 0 ? 1 : 0)} b0={_bRegs[0]:X2} b1={_bRegs[1]:X2} bAdr={_bAddress:X6}";
+            => $"irq={(IrqAsserted ? 1 : 0)} t={_timerStatus:X1}/{_timerControl:X2} ta={_timerALatch:X3} tb={_timerBLatch:X2} ssg={CountActiveSsg()} fmKey={_fmKeyOns} fmPlay={CountPlayingFm()} aKey={_aKeyOns} bKey={_bKeyOns} aPlay={CountPlayingA()} bPlay={((_bStatus & 0x04) != 0 ? 1 : 0)} b0={_bRegs[0]:X2} b1={_bRegs[1]:X2} bAdr={_bAddress:X6}";
 
-        public bool IrqAsserted => false;
+        public bool IrqAsserted
+            => ((_timerStatus & 0x01) != 0 && (_timerControl & 0x04) != 0)
+                || ((_timerStatus & 0x02) != 0 && (_timerControl & 0x08) != 0);
 
         public void Load(byte[] adpcmA, byte[] adpcmB)
         {
@@ -1795,6 +1860,24 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
             Array.Clear(_regs);
             Array.Clear(_address);
             Array.Clear(_bRegs);
+            Array.Clear(_fmPlaying);
+            Array.Clear(_fmKeyMask);
+            Array.Clear(_fmFnum);
+            Array.Clear(_fmBlock);
+            Array.Fill(_fmPan, (byte)0xc0);
+            Array.Clear(_fmAlgorithm);
+            Array.Clear(_fmFeedback);
+            Array.Clear(_fmFeedbackSample);
+            Array.Fill(_fmMultiple, (byte)1);
+            Array.Clear(_fmTotalLevel);
+            Array.Clear(_fmAttackRate);
+            Array.Clear(_fmDecayRate);
+            Array.Clear(_fmSustainRate);
+            Array.Clear(_fmReleaseRate);
+            Array.Clear(_fmSustainLevel);
+            Array.Clear(_fmPhase);
+            Array.Clear(_fmEnvelope);
+            Array.Clear(_ssgPhase);
             Array.Clear(_aPlaying);
             Array.Clear(_aAddress);
             Array.Clear(_aNibble);
@@ -1812,7 +1895,47 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
             _bStep = AdpcmBStepMin;
             _eosStatus = 0;
             _flagMask = 0xbf;
+            _timerStatus = 0;
+            _timerControl = 0;
+            _timerALatch = 0;
+            _timerBLatch = 0;
+            _timerASamples = TimerASamples();
+            _timerBSamples = TimerBSamples();
             _aClockAccumulator = 0;
+            _fmKeyOns = 0;
+            _aKeyOns = 0;
+            _bKeyOns = 0;
+        }
+
+        public void AfterLoadState()
+        {
+            Array.Clear(_fmPlaying);
+            Array.Clear(_fmKeyMask);
+            Array.Clear(_fmFnum);
+            Array.Clear(_fmBlock);
+            Array.Fill(_fmPan, (byte)0xc0);
+            Array.Clear(_fmAlgorithm);
+            Array.Clear(_fmFeedback);
+            Array.Clear(_fmFeedbackSample);
+            Array.Fill(_fmMultiple, (byte)1);
+            Array.Clear(_fmTotalLevel);
+            Array.Clear(_fmAttackRate);
+            Array.Clear(_fmDecayRate);
+            Array.Clear(_fmSustainRate);
+            Array.Clear(_fmReleaseRate);
+            Array.Clear(_fmSustainLevel);
+            Array.Clear(_fmPhase);
+            Array.Clear(_fmEnvelope);
+            Array.Clear(_ssgPhase);
+            RebuildFmStateFromRegisters();
+            _timerStatus = 0;
+            _timerControl = 0;
+            _timerALatch = TimerALatchFromRegisters();
+            _timerBLatch = _regs[0x26];
+            _timerASamples = TimerASamples();
+            _timerBSamples = TimerBSamples();
+            WriteTimerControl(_regs[0x27]);
+            _fmKeyOns = 0;
             _aKeyOns = 0;
             _bKeyOns = 0;
         }
@@ -1821,7 +1944,7 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
         {
             return (offset & 3) switch
             {
-                0 => 0,
+                0 => _timerStatus,
                 1 => _address[0] < 0x0e ? _regs[_address[0]] : (byte)0,
                 2 => (byte)(_eosStatus & _flagMask),
                 _ => 0
@@ -1861,10 +1984,29 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
                     _flagMask = (byte)(~data & 0xbf);
                     _eosStatus = (byte)(_eosStatus & ~(data & 0xbf));
                 }
+                else if (reg == 0x24 || reg == 0x25)
+                {
+                    _timerALatch = TimerALatchFromRegisters();
+                    if ((_timerControl & 0x01) == 0)
+                        _timerASamples = TimerASamples();
+                }
+                else if (reg == 0x26)
+                {
+                    _timerBLatch = data;
+                    if ((_timerControl & 0x02) == 0)
+                        _timerBSamples = TimerBSamples();
+                }
+                else if (reg == 0x27)
+                    WriteTimerControl(data);
+                else if (reg == 0x28)
+                    WriteFmKeyOn(data);
                 else if (reg >= 0x10 && reg < 0x1c)
                     WriteAdpcmB((byte)(reg & 0x0f), data);
             }
-            else if (_address[1] < 0x30)
+            if (TryMapFmChannel(port, _address[port], out int fmChannel, out byte fmReg))
+                WriteFmRegister(fmChannel, fmReg, data);
+
+            if (port == 1 && _address[1] < 0x30)
             {
                 WriteAdpcmA(_address[1], data);
             }
@@ -1887,6 +2029,8 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
 
                 int left = 0;
                 int right = 0;
+                MixSsg(sampleRate, ref left, ref right);
+                MixFm(sampleRate, ref left, ref right);
                 for (int channel = 0; channel < ChannelsA; channel++)
                     MixAdpcmA(channel, ref left, ref right);
                 if (ClockAdpcmB())
@@ -1902,6 +2046,286 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
 
         private static short ClampSample(int value) => (short)Math.Clamp(value, short.MinValue, short.MaxValue);
         private static int Gain(int value, int percent) => (int)Math.Clamp((long)value * percent / 100, short.MinValue, short.MaxValue);
+
+        private void WriteTimerControl(byte data)
+        {
+            byte oldControl = _timerControl;
+            if ((data & 0x10) != 0)
+                _timerStatus &= unchecked((byte)~0x01);
+            if ((data & 0x20) != 0)
+                _timerStatus &= unchecked((byte)~0x02);
+            _timerControl = (byte)(data & 0x0f);
+            if ((data & 0x01) != 0 && (oldControl & 0x01) == 0)
+                _timerASamples = TimerASamples();
+            else if ((data & 0x01) == 0)
+                _timerASamples = TimerASamples();
+            if ((data & 0x02) != 0 && (oldControl & 0x02) == 0)
+                _timerBSamples = TimerBSamples();
+            else if ((data & 0x02) == 0)
+                _timerBSamples = TimerBSamples();
+        }
+
+        public void ClockTimersForCpuCycles(int cycles, double cpuClock)
+        {
+            if (cycles <= 0 || cpuClock <= 0.0)
+                return;
+            ClockTimers(cycles * OutputSampleRate / cpuClock);
+        }
+
+        private void ClockTimers(double elapsedSamples)
+        {
+            if ((_timerControl & 0x01) != 0)
+            {
+                _timerASamples -= elapsedSamples;
+                if (_timerASamples <= 0.0)
+                {
+                    _timerASamples += TimerASamples();
+                    _timerStatus |= 0x01;
+                }
+            }
+
+            if ((_timerControl & 0x02) != 0)
+            {
+                _timerBSamples -= elapsedSamples;
+                if (_timerBSamples <= 0.0)
+                {
+                    _timerBSamples += TimerBSamples();
+                    _timerStatus |= 0x02;
+                }
+            }
+        }
+
+        private ushort TimerALatchFromRegisters()
+            => (ushort)(((_regs[0x24] << 2) | (_regs[0x25] & 0x03)) & 0x03ff);
+
+        private double TimerASamples()
+        {
+            int count = 1024 - (_timerALatch & 0x03ff);
+            if (count <= 0)
+                count = 1024;
+            return Math.Max(1.0, count * 144.0 * OutputSampleRate / YmClock);
+        }
+
+        private double TimerBSamples()
+        {
+            int count = 256 - _timerBLatch;
+            if (count <= 0)
+                count = 256;
+            return Math.Max(1.0, count * 2304.0 * OutputSampleRate / YmClock);
+        }
+
+        private static bool TryMapFmChannel(int port, byte reg, out int channel, out byte fmReg)
+        {
+            channel = -1;
+            fmReg = reg;
+            if (reg is < 0x30 or > 0xb6)
+                return false;
+
+            int low = reg & 0x03;
+            if (low == 3)
+                return false;
+
+            channel = low + (port != 0 ? 3 : 0);
+            return (uint)channel < 6;
+        }
+
+        private void WriteFmRegister(int channel, byte reg, byte data)
+        {
+            if (reg is >= 0x30 and <= 0x9e)
+            {
+                int op = (reg >> 2) & 3;
+                int opIndex = (channel * FmOperators) + op;
+                switch (reg & 0xf0)
+                {
+                    case 0x30:
+                        _fmMultiple[opIndex] = (byte)(data & 0x0f);
+                        if (_fmMultiple[opIndex] == 0)
+                            _fmMultiple[opIndex] = 1;
+                        break;
+                    case 0x40:
+                        _fmTotalLevel[opIndex] = (byte)(data & 0x7f);
+                        break;
+                    case 0x50:
+                        _fmAttackRate[opIndex] = (byte)(data & 0x1f);
+                        break;
+                    case 0x60:
+                        _fmDecayRate[opIndex] = (byte)(data & 0x1f);
+                        break;
+                    case 0x70:
+                        _fmSustainRate[opIndex] = (byte)(data & 0x1f);
+                        break;
+                    case 0x80:
+                        _fmSustainLevel[opIndex] = (byte)((data >> 4) & 0x0f);
+                        _fmReleaseRate[opIndex] = (byte)(data & 0x0f);
+                        break;
+                }
+            }
+            else if (reg is >= 0xa0 and <= 0xa2)
+            {
+                _fmFnum[channel] = (ushort)((_fmFnum[channel] & 0x0700) | data);
+            }
+            else if (reg is >= 0xa4 and <= 0xa6)
+            {
+                _fmFnum[channel] = (ushort)((_fmFnum[channel] & 0x00ff) | ((data & 0x07) << 8));
+                _fmBlock[channel] = (byte)((data >> 3) & 0x07);
+            }
+            else if (reg is >= 0xb4 and <= 0xb6)
+            {
+                _fmPan[channel] = (byte)(data & 0xc0);
+            }
+            else if (reg is >= 0xb0 and <= 0xb2)
+            {
+                _fmFeedback[channel] = (byte)((data >> 3) & 0x07);
+                _fmAlgorithm[channel] = (byte)(data & 0x07);
+            }
+        }
+
+        private void WriteFmKeyOn(byte data)
+        {
+            int channel = data & 0x03;
+            if (channel == 3)
+                return;
+            if ((data & 0x04) != 0)
+                channel += 3;
+
+            byte keyMask = (byte)(data >> 4);
+            bool keyOn = keyMask != 0;
+            _fmKeyMask[channel] = keyMask;
+            _fmPlaying[channel] = keyOn;
+            if (keyOn)
+            {
+                _fmKeyOns++;
+                for (int op = 0; op < FmOperators; op++)
+                {
+                    if ((keyMask & (1 << op)) == 0)
+                        continue;
+                    int opIndex = (channel * FmOperators) + op;
+                    _fmEnvelope[opIndex] = 0.0;
+                    _fmPhase[opIndex] = 0.0;
+                }
+            }
+        }
+
+        private void MixFm(double sampleRate, ref int left, ref int right)
+        {
+            for (int channel = 0; channel < _fmPlaying.Length; channel++)
+            {
+                if (!_fmPlaying[channel])
+                    continue;
+
+                int fnum = _fmFnum[channel];
+                if (fnum == 0)
+                    continue;
+
+                double frequency = (fnum / 1024.0) * 440.0 * Math.Pow(2.0, _fmBlock[channel] - 4);
+                if (frequency < 20.0)
+                    frequency = 20.0;
+                else if (frequency > 6000.0)
+                    frequency = 6000.0;
+
+                double modulation = 0.0;
+                double parallel = 0.0;
+                for (int op = 0; op < FmOperators; op++)
+                {
+                    int opIndex = (channel * FmOperators) + op;
+                    if ((_fmKeyMask[channel] & (1 << op)) == 0)
+                    {
+                        _fmEnvelope[opIndex] = Math.Max(0.0, _fmEnvelope[opIndex] - ReleaseStep(opIndex));
+                        if (_fmEnvelope[opIndex] <= 0.0)
+                            continue;
+                    }
+                    else
+                    {
+                        AdvanceFmEnvelope(opIndex);
+                    }
+
+                    double phase = _fmPhase[opIndex] + frequency * _fmMultiple[opIndex] / sampleRate;
+                    phase -= Math.Floor(phase);
+                    _fmPhase[opIndex] = phase;
+                    double level = _fmEnvelope[opIndex] * TotalLevelGain(opIndex);
+                    double input = modulation;
+                    if (op == 0 && _fmFeedback[channel] != 0)
+                        input += _fmFeedbackSample[channel] * _fmFeedback[channel] * 0.08;
+                    double opValue = Math.Sin((phase + input) * Math.Tau) * level;
+
+                    if (_fmAlgorithm[channel] >= 4 || op == FmOperators - 1)
+                        parallel += opValue;
+                    else
+                        modulation = opValue * 0.55;
+
+                    if (op == 0)
+                        _fmFeedbackSample[channel] = opValue;
+                }
+
+                int value = (int)(parallel * 1800.0);
+                byte pan = _fmPan[channel];
+                if ((pan & 0xc0) == 0)
+                    pan = 0xc0;
+                if ((pan & 0x80) != 0) left += value;
+                if ((pan & 0x40) != 0) right += value;
+            }
+        }
+
+        private void AdvanceFmEnvelope(int opIndex)
+        {
+            double sustain = 1.0 - (_fmSustainLevel[opIndex] / 15.0);
+            double attack = EnvelopeAttackStep * Math.Max(1, (int)_fmAttackRate[opIndex]);
+            if (_fmEnvelope[opIndex] < 1.0)
+            {
+                _fmEnvelope[opIndex] = Math.Min(1.0, _fmEnvelope[opIndex] + attack);
+                return;
+            }
+
+            double decayRate = EnvelopeDecayStep * Math.Max(1, (int)_fmDecayRate[opIndex]);
+            if (_fmEnvelope[opIndex] > sustain)
+                _fmEnvelope[opIndex] = Math.Max(sustain, _fmEnvelope[opIndex] - decayRate);
+        }
+
+        private double ReleaseStep(int opIndex)
+            => EnvelopeReleaseStep * Math.Max(1, (int)_fmReleaseRate[opIndex]);
+
+        private double TotalLevelGain(int opIndex)
+            => Math.Pow(10.0, -_fmTotalLevel[opIndex] / 48.0);
+
+        private void MixSsg(double sampleRate, ref int left, ref int right)
+        {
+            byte mixer = _regs[0x07];
+            for (int channel = 0; channel < SsgChannels; channel++)
+            {
+                if ((mixer & (1 << channel)) != 0)
+                    continue;
+
+                int periodReg = channel * 2;
+                int period = _regs[periodReg] | ((_regs[periodReg + 1] & 0x0f) << 8);
+                if (period == 0)
+                    period = 1;
+                int volume = _regs[0x08 + channel] & 0x0f;
+                if (volume == 0)
+                    continue;
+
+                double frequency = YmClock / 16.0 / period;
+                if (frequency > sampleRate * 0.45)
+                    frequency = sampleRate * 0.45;
+                _ssgPhase[channel] += frequency / sampleRate;
+                _ssgPhase[channel] -= Math.Floor(_ssgPhase[channel]);
+                int value = (_ssgPhase[channel] < 0.5 ? 1 : -1) * volume * 70;
+                left += value;
+                right += value;
+            }
+        }
+
+        private void RebuildFmStateFromRegisters()
+        {
+            for (int port = 0; port < 2; port++)
+            {
+                for (byte reg = 0x30; reg <= 0xb6; reg++)
+                {
+                    if (!TryMapFmChannel(port, reg, out int channel, out byte fmReg))
+                        continue;
+                    WriteFmRegister(channel, fmReg, _regs[(port << 8) | reg]);
+                }
+            }
+        }
 
         private void WriteAdpcmA(byte reg, byte data)
         {
@@ -2011,6 +2435,29 @@ public sealed class TaitoF2ThunderFoxAdapter : IEmulatorCore, ISavestateCapable
             for (int i = 0; i < _aPlaying.Length; i++)
                 if (_aPlaying[i])
                     count++;
+            return count;
+        }
+
+        private int CountPlayingFm()
+        {
+            int count = 0;
+            for (int i = 0; i < _fmPlaying.Length; i++)
+                if (_fmPlaying[i])
+                    count++;
+            return count;
+        }
+
+        private int CountActiveSsg()
+        {
+            int count = 0;
+            byte mixer = _regs[0x07];
+            for (int channel = 0; channel < SsgChannels; channel++)
+            {
+                if ((mixer & (1 << channel)) != 0)
+                    continue;
+                if ((_regs[0x08 + channel] & 0x0f) != 0)
+                    count++;
+            }
             return count;
         }
 
