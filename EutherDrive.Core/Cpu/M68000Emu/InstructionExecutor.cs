@@ -341,7 +341,7 @@ internal sealed partial class InstructionExecutor
 
         if (opcode == 0x41E8)
         {
-            short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+            short displacement = (short)ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu);
             _registers.Address[0] = unchecked(_registers.Address[0] + (uint)displacement);
             SetSequentialPc(maskedPc + 4u);
             cycles = 8;
@@ -350,7 +350,7 @@ internal sealed partial class InstructionExecutor
 
         if (opcode == 0x51C8)
         {
-            short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+            short displacement = (short)ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu);
             ushort value = (ushort)_registers.Data[0];
             _registers.Data[0] = (_registers.Data[0] & 0xffff_0000u) | unchecked((ushort)(value - 1));
             if (value != 0)
@@ -376,7 +376,7 @@ internal sealed partial class InstructionExecutor
 
             if (displacement8 == 0)
             {
-                short displacement = (short)_bus.ReadWord((maskedPc + 2u) & 0x00ff_ffffu);
+                short displacement = (short)ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu);
                 if (take)
                 {
                     uint target = unchecked(maskedPc + 2u + (uint)displacement) & 0x00ff_ffffu;
@@ -425,8 +425,11 @@ internal sealed partial class InstructionExecutor
     {
         uint masked = pc & 0x00ff_ffffu;
         _registers.Pc = masked;
-        _registers.Prefetch = _bus.ReadWord(masked);
+        _registers.Prefetch = ReadFastOpcodeWord(masked);
     }
+
+    private ushort ReadFastOpcodeWord(uint address)
+        => _bus is IOpcodeBusInterface opcodeBus ? opcodeBus.ReadOpcodeWord(address) : _bus.ReadWord(address);
 
     private void SetTestByteFlags(byte value)
     {

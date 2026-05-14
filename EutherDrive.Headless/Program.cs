@@ -28,6 +28,7 @@ using EutherDrive.Core.Savestates;
 using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
 using EutherDrive.Core.Arcade.Cps2;
+using EutherDrive.Core.Arcade.DataEast.Boogwing;
 using EutherDrive.Core.Arcade.DataEast.Hshavoc;
 using EutherDrive.Core.Arcade.Igs;
 using EutherDrive.Core.Arcade.Konami;
@@ -368,6 +369,10 @@ class Program
                 || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Deco32Adapter.IsSupportedArchive(romPath));
+            bool useBoogwing = string.Equals(coreOverride, "boogwing", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "ragtime", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "dataeast-boogwing", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && BoogwingAdapter.IsSupportedArchive(romPath));
             bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
@@ -392,7 +397,7 @@ class Program
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useTaitoF2 && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -409,6 +414,7 @@ class Program
                 useCps2 = false;
                 useSystem32 = false;
                 useDeco32 = false;
+                useBoogwing = false;
                 useHshavoc = false;
                 useTmnt = false;
                 useTaitoF2 = false;
@@ -427,6 +433,12 @@ class Program
             {
                 Console.WriteLine("[HEADLESS] Using Data East HSHavoc probe core");
                 return RunHshavocHeadless(romPath, framesToRun, dumpDir);
+            }
+
+            if (useBoogwing)
+            {
+                Console.WriteLine("[HEADLESS] Using Data East Boogie Wings core");
+                return RunBoogwingHeadless(romPath, framesToRun, dumpDir);
             }
 
             if (useCps2)
@@ -2338,6 +2350,66 @@ class Program
             Console.Error.WriteLine($"[HEADLESS-ERROR] {ex}");
             return 1;
         }
+    }
+
+    private static int RunBoogwingHeadless(string romPath, int framesToRun, string dumpDir)
+    {
+        var boogwing = new BoogwingAdapter();
+        boogwing.LoadRom(romPath);
+
+        ReadOnlySpan<byte> fbIn = boogwing.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+        var statsIn = GetFrameStats(fbIn, wIn, hIn, sIn);
+        ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+        int unchangedFrames = 0;
+        bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+        var inputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_BOOGWING_HEADLESS_INPUT_SCRIPT"));
+
+        Console.WriteLine($"[HEADLESS] Boogwing fb_has_content={statsIn.HasContent} nonzero_pixels={statsIn.NonZeroPixels} first_nonzero=({statsIn.FirstX},{statsIn.FirstY}) fp=0x{lastFingerprint:X16}");
+        Console.WriteLine($"[HEADLESS] Boogwing debug {boogwing.DebugSummary}");
+        DumpBgraToPpm(fbIn, wIn, hIn, sIn, Path.Combine(dumpDir, "headless_frame0.ppm"));
+
+        long runTicksTotal = 0;
+        long runTicksMin = long.MaxValue;
+        long runTicksMax = 0;
+        for (int frame = 0; frame < framesToRun; frame++)
+        {
+            var input = ResolveSnesInputForFrame(frame, inputScript);
+            boogwing.SetInputState(
+                input.Up, input.Down, input.Left, input.Right,
+                input.A, input.B, input.X,
+                input.Start,
+                input.Y, input.L, input.R,
+                input.Select,
+                PadType.SixButton);
+            long runStart = Stopwatch.GetTimestamp();
+            boogwing.RunFrame();
+            long runTicks = Stopwatch.GetTimestamp() - runStart;
+            runTicksTotal += runTicks;
+            runTicksMin = Math.Min(runTicksMin, runTicks);
+            runTicksMax = Math.Max(runTicksMax, runTicks);
+
+            ReadOnlySpan<byte> fb = boogwing.GetFrameBuffer(out int w, out int h, out int s);
+            var stats = GetFrameStats(fb, w, h, s);
+            ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+            unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+            lastFingerprint = fingerprint;
+
+            if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                Console.WriteLine($"[HEADLESS] Frame {frame}: boogwing_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} debug={boogwing.DebugSummary}");
+
+            if (frame == 0 || frame == 5 || frame == 10)
+                DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_frame{frame}.ppm"));
+        }
+
+        ReadOnlySpan<byte> fbOut = boogwing.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+        var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+        ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+        Console.WriteLine($"[HEADLESS] Boogwing final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+        Console.WriteLine($"[HEADLESS] Boogwing debug {boogwing.DebugSummary}");
+        DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+        PrintHeadlessPerf("Boogwing", framesToRun, runTicksTotal, runTicksMin, runTicksMax, boogwing.GetTargetFps());
+        Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+        return 0;
     }
 
     private static int RunHshavocHeadless(string romPath, int framesToRun, string dumpDir)

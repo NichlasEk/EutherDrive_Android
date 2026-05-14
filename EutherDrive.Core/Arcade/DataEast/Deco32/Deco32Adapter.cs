@@ -1465,6 +1465,12 @@ internal sealed class SerialEeprom93C46
     }
 }
 
+internal enum Deco104AddressScramble
+{
+    Interleave,
+    Reverse
+}
+
 internal sealed class Deco104Protection
 {
     private const short InputPortA = -1;
@@ -1475,6 +1481,8 @@ internal sealed class Deco104Protection
 
     private readonly ushort[][] _ram = { new ushort[0x80], new ushort[0x80] };
     private readonly byte[] _regionSelects = new byte[6];
+    private readonly Deco104AddressScramble _addressScramble;
+    private readonly bool _useMagicReadAddressXor;
     private ushort _xor;
     private ushort _nand;
     private ushort _latchAddress = 0xffff;
@@ -1493,6 +1501,20 @@ internal sealed class Deco104Protection
     private byte _lastReadFlags;
     private byte _lastCsFlags;
     private byte _lastUpper;
+    private int _portAReadCount;
+    private int _portBReadCount;
+    private int _portCReadCount;
+    private ushort _lastPortAValue;
+    private ushort _lastPortBValue;
+    private ushort _lastPortCValue;
+
+    public Deco104Protection(
+        Deco104AddressScramble addressScramble = Deco104AddressScramble.Interleave,
+        bool useMagicReadAddressXor = false)
+    {
+        _addressScramble = addressScramble;
+        _useMagicReadAddressXor = useMagicReadAddressXor;
+    }
 
     public void Reset()
     {
@@ -1517,11 +1539,23 @@ internal sealed class Deco104Protection
         _lastReadFlags = 0;
         _lastCsFlags = 0;
         _lastUpper = 0;
+        _portAReadCount = 0;
+        _portBReadCount = 0;
+        _portCReadCount = 0;
+        _lastPortAValue = 0;
+        _lastPortBValue = 0;
+        _lastPortCValue = 0;
     }
 
     public ushort Read(uint byteOffset, ushort portA, ushort portB, ushort portC)
     {
         ushort address = DecodeCpuAddress(byteOffset);
+        return ReadDecodedAddress(address, portA, portB, portC);
+    }
+
+    public ushort ReadDecodedAddress(uint decodedAddress, ushort portA, ushort portB, ushort portC)
+    {
+        ushort address = (ushort)(decodedAddress & 0x7fff);
         byte upper = (byte)((address >> 11) & 0x0f);
         _readCount++;
         _lastReadAddress = address;
@@ -1547,6 +1581,12 @@ internal sealed class Deco104Protection
     public byte? Write(uint byteOffset, ushort data, ushort mask)
     {
         ushort address = DecodeCpuAddress(byteOffset);
+        return WriteDecodedAddress(address, data, mask);
+    }
+
+    public byte? WriteDecodedAddress(uint decodedAddress, ushort data, ushort mask)
+    {
+        ushort address = (ushort)(decodedAddress & 0x7fff);
         byte upper = (byte)((address >> 11) & 0x0f);
         _writeCount++;
         _lastWriteAddress = address;
@@ -1580,7 +1620,7 @@ internal sealed class Deco104Protection
     public string DebugSummary
         => string.Create(
             CultureInfo.InvariantCulture,
-            $"protR={_readCount}/0x{_lastReadAddress:X4}=0x{_lastReadValue:X4}/raw0x{_lastReadRaw:X4}/loc{_lastReadLocation}/fl0x{_lastReadFlags:X1} protW={_writeCount}/0x{_lastWriteAddress:X4}=0x{_lastWriteData:X4} cfg={_configWriteCount} up=0x{_lastUpper:X1} cs=0x{_lastCsFlags:X2} bank={_currentRamBank} rs=[0x{_regionSelects[0]:X1},0x{_regionSelects[1]:X1},0x{_regionSelects[2]:X1},0x{_regionSelects[3]:X1},0x{_regionSelects[4]:X1},0x{_regionSelects[5]:X1}]");
+            $"protR={_readCount}/0x{_lastReadAddress:X4}=0x{_lastReadValue:X4}/raw0x{_lastReadRaw:X4}/loc{_lastReadLocation}/fl0x{_lastReadFlags:X1} protW={_writeCount}/0x{_lastWriteAddress:X4}=0x{_lastWriteData:X4} cfg={_configWriteCount} up=0x{_lastUpper:X1} cs=0x{_lastCsFlags:X2} bank={_currentRamBank} ports={_portAReadCount}:0x{_lastPortAValue:X4}/{_portBReadCount}:0x{_lastPortBValue:X4}/{_portCReadCount}:0x{_lastPortCValue:X4} rs=[0x{_regionSelects[0]:X1},0x{_regionSelects[1]:X1},0x{_regionSelects[2]:X1},0x{_regionSelects[3]:X1},0x{_regionSelects[4]:X1},0x{_regionSelects[5]:X1}]");
 
     private ushort ReadProtectionPort(ushort address, ushort portA, ushort portB, ushort portC)
     {
@@ -1591,6 +1631,9 @@ internal sealed class Deco104Protection
         }
 
         _latchValid = false;
+        if (_useMagicReadAddressXor)
+            address ^= 0x02a4;
+
         ushort value = ReadDataGetLocation(address, portA, portB, portC, out int location);
         if (location == 0x66)
             _currentRamBank ^= 1;
@@ -1633,6 +1676,21 @@ internal sealed class Deco104Protection
             InputPortC => portC,
             _ => _ram[_currentRamBank][(writeOffset >> 1) & 0x7f]
         };
+        switch (writeOffset)
+        {
+            case InputPortA:
+                _portAReadCount++;
+                _lastPortAValue = portA;
+                break;
+            case InputPortB:
+                _portBReadCount++;
+                _lastPortBValue = portB;
+                break;
+            case InputPortC:
+                _portCReadCount++;
+                _lastPortCValue = portC;
+                break;
+        }
 
         _lastReadLocation = location;
         _lastReadRaw = value;
@@ -1655,17 +1713,22 @@ internal sealed class Deco104Protection
     private static void Combine(ref ushort target, ushort data, ushort mask)
         => target = (ushort)((target & ~mask) | (data & mask));
 
-    private static ushort DecodeCpuAddress(uint byteOffset)
+    private ushort DecodeCpuAddress(uint byteOffset)
     {
         ushort realAddress = (ushort)(((byteOffset >> 2) * 2) & 0xffff);
         ushort decoAddress = (ushort)((((realAddress >> 14) & 0x0f) << 11) | (realAddress & 0x07ff));
-        return BitswapInterleave(decoAddress);
+        return DecodeExternalAddress(decoAddress);
     }
 
-    private static ushort BitswapInterleave(ushort address)
+    public ushort DecodeExternalAddress(uint byteOffset)
+        => BitswapExternalAddress((ushort)(byteOffset & 0x7fff));
+
+    private ushort BitswapExternalAddress(ushort address)
     {
         ushort input = (ushort)(address >> 1);
-        ReadOnlySpan<byte> swap = stackalloc byte[] { 9, 0, 8, 1, 7, 2, 6, 3, 5, 4 };
+        ReadOnlySpan<byte> swap = _addressScramble == Deco104AddressScramble.Reverse
+            ? stackalloc byte[] { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 }
+            : stackalloc byte[] { 9, 0, 8, 1, 7, 2, 6, 3, 5, 4 };
         ushort output = (ushort)(input & 0xfc00);
         for (int i = 0; i < swap.Length; i++)
             output |= (ushort)(((input >> swap[i]) & 1) << i);

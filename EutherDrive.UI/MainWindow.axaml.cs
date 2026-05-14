@@ -25,6 +25,7 @@ using EutherDrive.Rendering;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade;
 using EutherDrive.Core.Arcade.Cps1;
+using EutherDrive.Core.Arcade.DataEast.Boogwing;
 using EutherDrive.Core.Arcade.DataEast.Hshavoc;
 using EutherDrive.Core.Arcade.Igs;
 using EutherDrive.Core.Arcade.Snk;
@@ -819,6 +820,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter();
         if (!string.IsNullOrWhiteSpace(path) && Deco32Adapter.IsSupportedArchive(path))
             return new Deco32Adapter();
+        if (!string.IsNullOrWhiteSpace(path) && BoogwingAdapter.IsSupportedArchive(path))
+            return new BoogwingAdapter();
         if (!string.IsNullOrWhiteSpace(path) && EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsSupportedPath(path))
         {
             ConfigureGauntletDarkLegacyUiBringup();
@@ -1035,6 +1038,8 @@ public partial class MainWindow : Window
             target = cps1.GetTargetFps();
         else if (_core is Deco32Adapter deco32)
             target = deco32.GetTargetFps();
+        else if (_core is BoogwingAdapter boogwing)
+            target = boogwing.GetTargetFps();
         else if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             target = tmnt.GetTargetFps();
         else if (_core is Pgm2Adapter pgm2)
@@ -3141,6 +3146,15 @@ public partial class MainWindow : Window
                             UpdateDeco32RomInfo(_romPath, deco32);
                             Console.WriteLine("Data East Deco32 ROM loaded.");
                         }
+                        else if (_core is BoogwingAdapter boogwing)
+                        {
+                            UpdateRomInfo(new RomInfo
+                            {
+                                Summary = $"Data East Boogie Wings: {Path.GetFileName(_romPath)}",
+                                ExtraInfo = boogwing.DebugSummary
+                            });
+                            Console.WriteLine(boogwing.DebugSummary);
+                        }
                         else if (_core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter hshavoc)
                         {
                             UpdateRomInfo(hshavoc.RomInfo);
@@ -4403,6 +4417,7 @@ public partial class MainWindow : Window
             EutherDrive.Core.Sega32XAdapter => "Sega 32X",
             N64Adapter => "Nintendo 64",
             Deco32Adapter => "Data East Deco32",
+            BoogwingAdapter => "Data East Boogie Wings",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             NeoGeoAdapter => "Neo Geo",
             Pgm2Adapter => "IGS PGM2",
@@ -8562,6 +8577,7 @@ public partial class MainWindow : Window
             or EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
             or EutherDrive.Core.Arcade.System32.System32Adapter
             or Deco32Adapter
+            or BoogwingAdapter
             or EutherDrive.Core.Arcade.Konami.TmntAdapter
             or TaitoF2ThunderFoxAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -8837,6 +8853,8 @@ public partial class MainWindow : Window
         core.SetInputState(up, down, left, right, a, b, c, start, x, y, z, mode, padType);
         if (core is MdTracerAdapter adapter)
             adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
+        else if (core is BoogwingAdapter boogwingAdapter)
+            boogwingAdapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
         else if (core is Pgm2Adapter pgm2Adapter)
             pgm2Adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
         else if (core is SnesAdapter snesAdapter)
@@ -9280,6 +9298,7 @@ public partial class MainWindow : Window
             or KovPgmAdapter
             or NeoGeoAdapter
             or TaitoF2ThunderFoxAdapter
+            or BoogwingAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         var blitOptions = CreateCurrentFrameBlitOptions(core, forceOpaque);
@@ -9590,11 +9609,13 @@ public partial class MainWindow : Window
             || core is KovPgmAdapter
             || core is NeoGeoAdapter
             || core is TaitoF2ThunderFoxAdapter
+            || core is BoogwingAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter
             || core is EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter
-            || core is Deco32Adapter;
+            || core is Deco32Adapter
+            || core is BoogwingAdapter;
         bool sharpPixels = _sharpPixelsEnabled || forceSharpPixels;
         bool applyAdvancedPixelFilter = sharpPixels && _advancedPixelFilterEnabled && !forceSharpPixels;
         int scanlineStrength = ClampPercent(_crtScanlineStrengthPercent);
@@ -10565,7 +10586,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is TaitoF2ThunderFoxAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10578,6 +10599,7 @@ public partial class MainWindow : Window
                                     || core is KovPgmAdapter
                                     || core is NeoGeoAdapter
                                     || core is TaitoF2ThunderFoxAdapter
+                                    || core is BoogwingAdapter
                                     || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
                                     || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
                                     || core is Deco32Adapter)
@@ -10934,6 +10956,7 @@ public partial class MainWindow : Window
             || _core is KovPgmAdapter
             || _core is NeoGeoAdapter
             || _core is TaitoF2ThunderFoxAdapter
+            || _core is BoogwingAdapter
             || _core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter
             || _core is Cps1DinoAdapter
             || _core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter
@@ -11498,6 +11521,8 @@ public partial class MainWindow : Window
             return cps1.GetTargetFps() * _speedScale;
         if (_core is Deco32Adapter deco32)
             return deco32.GetTargetFps() * _speedScale;
+        if (_core is BoogwingAdapter boogwing)
+            return boogwing.GetTargetFps() * _speedScale;
         if (_core is EutherDrive.Core.Arcade.Konami.TmntAdapter tmnt)
             return tmnt.GetTargetFps() * _speedScale;
         if (_core is Pgm2Adapter pgm2)
