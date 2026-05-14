@@ -581,6 +581,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGlideFifoMakeRoom(pc))
             return;
+        if (TryFastPathKnownGlideLogWrite(pc))
+            return;
         if (TryFastPathKnownGlideUiDispatchFromFrameLoop(pc))
             return;
         if (TryFastPathKnownRuntimeCopyLoop(pc))
@@ -1250,22 +1252,49 @@ internal sealed class MipsR5000Core
 
     private bool TryFastPathKnownGlideSelect(ulong pc)
     {
-        if ((pc & 0x1fffffffUL) != 0x00064cd0UL)
-            return false;
-        if (_memory.Read32(pc) != 0x27bdffe0U ||
-            _memory.Read32(pc + 4) != 0x3c02800bU ||
-            _memory.Read32(pc + 8) != 0xafb10014U ||
-            _memory.Read32(pc + 12) != 0x24514d20U)
-            return false;
+        ulong offset = pc & 0x1fffffffUL;
         if ((_gpr[4] & 0xffffffffUL) != 0)
             return false;
 
-        const ulong state = 0xffffffff800b4d20UL;
-        _memory.Write32(state + 0x04, 0xa8000000u);
-        _memory.Write32(state + 0x0c, 0x800b4e04u);
-        _memory.Write32(state + 0x10, 0x00620000u);
-        _memory.Write32(0xffffffff800b4e08UL, 0xa8000000u);
-        _gpr[2] = 0x1c;
+        if (offset == 0x00064cd0UL &&
+            _memory.Read32(pc) == 0x27bdffe0U &&
+            _memory.Read32(pc + 4) == 0x3c02800bU &&
+            _memory.Read32(pc + 8) == 0xafb10014U &&
+            _memory.Read32(pc + 12) == 0x24514d20U)
+        {
+            const ulong state = 0xffffffff800b4d20UL;
+            _memory.Write32(state + 0x04, 0xa8000000u);
+            _memory.Write32(state + 0x0c, 0x800b4e04u);
+            _memory.Write32(state + 0x10, 0x00620000u);
+            _memory.Write32(0xffffffff800b4e08UL, 0xa8000000u);
+            _gpr[2] = 0x1c;
+            Pc = _gpr[31];
+            CompleteFastPathStep();
+            return true;
+        }
+
+        if (offset != 0x0010a528UL ||
+            _memory.Read32(pc) != 0x27bdffe0U ||
+            _memory.Read32(pc + 0x04UL) != 0xafb20018U ||
+            _memory.Read32(pc + 0x08UL) != 0x0080902dU ||
+            _memory.Read32(pc + 0x0cUL) != 0xafb00010U ||
+            _memory.Read32(pc + 0x10UL) != 0x3c108022U ||
+            _memory.Read32(pc + 0x18UL) != 0x3c118023U ||
+            _memory.Read32(pc + 0x1cUL) != 0x8e228134U ||
+            _memory.Read32(pc + 0x20UL) != 0x8e04f9e4U ||
+            _memory.Read32(pc + 0x28UL) != 0x8c420008U)
+        {
+            return false;
+        }
+
+        uint table = _memory.Read32(0xffffffff80228134UL);
+        if ((table & 0xe0000000u) != 0x80000000u)
+            return false;
+
+        uint selected = _memory.Read32(0xffffffff00000000UL | ((ulong)table + 8UL));
+        _memory.Write32(0xffffffff8021f9e4UL, selected);
+        NormalizeGlideFifoState(0xffffffff80262d64UL);
+        _gpr[2] = 1;
         Pc = _gpr[31];
         CompleteFastPathStep();
         return true;
@@ -1540,6 +1569,30 @@ internal sealed class MipsR5000Core
 
         NormalizeGlideFifoState(state);
         _gpr[2] = 0x00010000UL;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideLogWrite(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x0011ce40UL)
+            return false;
+        if (_memory.Read32(pc) != 0x27bdff98U ||
+            _memory.Read32(pc + 0x04UL) != 0xafb20058U ||
+            _memory.Read32(pc + 0x08UL) != 0x0080902dU ||
+            _memory.Read32(pc + 0x0cUL) != 0xafb10054U ||
+            _memory.Read32(pc + 0x10UL) != 0x00a0882dU ||
+            _memory.Read32(pc + 0x18UL) != 0xafbf0060U)
+        {
+            return false;
+        }
+
+        ulong returnOffset = _gpr[31] & 0x1fffffffUL;
+        if (returnOffset is < 0x00120000UL or > 0x00120240UL)
+            return false;
+
+        _gpr[2] = _gpr[4] & 0xffUL;
         Pc = _gpr[31];
         CompleteFastPathStep();
         return true;

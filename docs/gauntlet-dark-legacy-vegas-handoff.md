@@ -2716,3 +2716,67 @@ Next recommended target:
    state by the Voodoo parser.
 3. Keep probes headless with `EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER=1` while
    debugging; dump a PPM only after packet stats move.
+
+## 2026-05-14 Pass: Relocated Select + Glide Log Sink
+
+Committed the previous bring-up state as:
+
+```text
+e052ace Advance Gauntlet Glide bringup
+```
+
+Additional work after that commit:
+
+- Extended the `grSstSelect` fastpath for the relocated loaded routine at
+  `0xffffffff8010a528`.
+- Added a narrow Glide log/output callback sink at `0xffffffff8011ce40`.
+- Kept the ROM path real/UI-loadable:
+  `/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z`.
+- Kept the raw CHD sidecar:
+  `/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw`.
+
+Build status:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+332 Warning(s)
+0 Error(s)
+```
+
+Note: a later full build in the current dirty worktree is blocked by unrelated
+DataEast Boogwing work:
+`EutherDrive.Core/Arcade/DataEast/Boogwing/BoogwingAdapter.cs(831,12): error CS0103: The name 'Bitswap32' does not exist in the current context`.
+
+Latest 5000-frame probe endpoint:
+
+```text
+frame=5000
+pc=0xffffffff8011d6a8
+lastOp=0x30620001
+voodoo regs=951380 fifoWords=1700512 fifoPackets=848042
+drawPackets=0 directTriangles=0 setupTriangles=0
+fastFills=283 swaps=188034
+packetTypes=0:0,1:846647,2:0,3:0,4:1395,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=151456 colored=21408
+frameDump=/tmp/gauntdl_5000.ppm
+```
+
+Image status:
+
+- Still diagnostic bars only, not real Gauntlet graphics.
+- The log sink moved execution from the earlier formatter branch at
+  `0xffffffff80120164` to `0xffffffff8011d6a8` and increased Voodoo traffic,
+  but `drawPackets` is still `0`.
+- FIFO traffic is still almost entirely type `1` register packets plus type
+  `4`; no type `3` or type `5` triangle/setup stream is appearing yet.
+
+Current next target:
+
+1. Inspect `0xffffffff8011d6a8` and its caller/return context from
+   `0xffffffff8011ce80`; this still looks like log/stdio/GD error machinery.
+2. Determine whether the stale stack text
+   `gd error (glide): grSstSelect: non-existent SST` is still being emitted
+   through another path or only left in memory.
+3. Do not spend the next pass on the FIFO parser until the guest produces
+   non-clear/non-swap render packets; current stats say it is not there yet.
