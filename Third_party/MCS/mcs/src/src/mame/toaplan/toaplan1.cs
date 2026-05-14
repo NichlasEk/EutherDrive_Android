@@ -506,9 +506,10 @@ namespace mame
             LatchLiveSystemInput();
             if (m_video_dirty)
             {
-                bitmap.fill(0xff000000U, cliprect);
-                Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
                 EnsureGraphicsDecoded();
+                if (m_bcu_tile_count == 0)
+                    bitmap.fill(0xff000000U, cliprect);
+                Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
                 RenderBcu(bitmap, cliprect);
                 RenderFcu(bitmap, cliprect);
                 m_video_dirty = false;
