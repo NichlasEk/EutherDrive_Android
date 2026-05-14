@@ -9257,6 +9257,7 @@ public partial class MainWindow : Window
     private long _uiProfileRenderTicks;
     private double _presentationTargetWidth;
     private double _presentationTargetHeight;
+    private bool _detachedNativeOverlayBoundsValid;
 
     private void ResetPresentationState(bool clearBitmap)
     {
@@ -9272,6 +9273,7 @@ public partial class MainWindow : Window
         _lastPresentedWidth = 0;
         _lastPresentedHeight = 0;
         _presentedFrames = 0;
+        _detachedNativeOverlayBoundsValid = false;
 
         if (!clearBitmap)
             return;
@@ -9728,6 +9730,7 @@ public partial class MainWindow : Window
             || NativeScreenOverlayHost == null
             || ScreenSurfaceHost == null)
         {
+            _detachedNativeOverlayBoundsValid = false;
             return;
         }
 
@@ -9738,7 +9741,8 @@ public partial class MainWindow : Window
 
         if (topLeft is null || bottomRight is null)
         {
-            view.IsVisible = false;
+            if (!_detachedNativeOverlayBoundsValid)
+                view.IsVisible = false;
             return;
         }
 
@@ -9746,10 +9750,12 @@ public partial class MainWindow : Window
         double height = Math.Max(0, bottomRight.Value.Y - topLeft.Value.Y);
         if (width < 1 || height < 1)
         {
-            view.IsVisible = false;
+            if (!_detachedNativeOverlayBoundsValid)
+                view.IsVisible = false;
             return;
         }
 
+        _detachedNativeOverlayBoundsValid = true;
         view.IsVisible = true;
         Canvas.SetLeft(view, topLeft.Value.X);
         Canvas.SetTop(view, topLeft.Value.Y);

@@ -77,6 +77,8 @@ namespace mame
         readonly u32 [] [] m_palette_colors = { new u32[PaletteWords], new u32[PaletteWords] };
         readonly u16 [] m_tile_offsets = new u16[TileOffsetWords];
         readonly byte [] m_priority_bitmap = new byte[ScreenWidth * ScreenHeight];
+        readonly byte [] m_bcu_bitmap_cache = new byte[ScreenWidth * ScreenHeight * 4];
+        readonly byte [] m_bcu_priority_cache = new byte[ScreenWidth * ScreenHeight];
         byte [] [] m_decoded_bcu_tiles;
         byte [] [] m_decoded_fcu_tiles;
         int m_bcu_tile_count;
@@ -98,6 +100,9 @@ namespace mame
         int m_external_start_frames;
         int m_external_coin_frames;
         bool m_video_dirty = true;
+        bool m_bcu_dirty = true;
+        bool m_fcu_dirty = true;
+        bool m_bcu_cache_valid;
 
 
         public toaplan1_state(machine_config mconfig, device_type type, string tag)
@@ -213,7 +218,7 @@ namespace mame
                     if (m_spriteram[index] != value)
                     {
                         m_spriteram[index] = value;
-                        m_video_dirty = true;
+                        MarkFcuDirty();
                     }
                     m_spriteram_offs++;
                     break;
@@ -225,7 +230,7 @@ namespace mame
                     if (m_spritesizeram[index] != value)
                     {
                         m_spritesizeram[index] = value;
-                        m_video_dirty = true;
+                        MarkFcuDirty();
                     }
                     m_spriteram_offs++;
                     break;
@@ -387,7 +392,7 @@ namespace mame
                 {
                     m_paletteram[0, index] = value;
                     UpdatePaletteColor(0, index);
-                    m_video_dirty = true;
+                    MarkBcuDirty();
                 }
                 return;
             }
@@ -400,7 +405,7 @@ namespace mame
                 {
                     m_paletteram[1, index] = value;
                     UpdatePaletteColor(1, index);
-                    m_video_dirty = true;
+                    MarkFcuDirty();
                 }
             }
         }
@@ -428,7 +433,10 @@ namespace mame
 
             if (index == 3)
                 m_fcu_flipscreen = (u8)(data & 0xff);
-            m_video_dirty = true;
+            if (index == 3)
+                MarkFcuDirty();
+            else
+                MarkBcuDirty();
         }
 
 
@@ -507,12 +515,43 @@ namespace mame
             if (m_video_dirty)
             {
                 EnsureGraphicsDecoded();
-                if (m_bcu_tile_count == 0)
-                    bitmap.fill(0xff000000U, cliprect);
-                Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
-                RenderBcu(bitmap, cliprect);
-                RenderFcu(bitmap, cliprect);
+                bool redrawBcu = m_bcu_dirty || !m_bcu_cache_valid;
+                if (redrawBcu)
+                {
+                    if (m_bcu_tile_count == 0)
+                        bitmap.fill(0xff000000U, cliprect);
+                    Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
+                    RenderBcu(bitmap, cliprect);
+                    SaveBcuCache(bitmap);
+                    m_bcu_dirty = false;
+                }
+                else
+                {
+                    if (!RestoreBcuCache(bitmap))
+                    {
+                        if (m_bcu_tile_count == 0)
+                            bitmap.fill(0xff000000U, cliprect);
+                        Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
+                        RenderBcu(bitmap, cliprect);
+                        SaveBcuCache(bitmap);
+                        m_bcu_dirty = false;
+                    }
+                }
+
+                if (m_fcu_dirty)
+                    RenderFcu(bitmap, cliprect);
+                m_fcu_dirty = false;
                 m_video_dirty = false;
+            }
+            else if (!m_bcu_cache_valid)
+            {
+                EnsureGraphicsDecoded();
+                if (m_bcu_tile_count == 0)
+                {
+                    bitmap.fill(0xff000000U, cliprect);
+                    Array.Clear(m_priority_bitmap, 0, m_priority_bitmap.Length);
+                    SaveBcuCache(bitmap);
+                }
             }
             TraceVideoState();
             if (m_external_start_frames > 0)
@@ -523,6 +562,30 @@ namespace mame
             if (TraceZ80 && (m_frame_counter % 30 == 0 || m_external_coin_frames > 0 || m_external_start_frames > 0))
                 Console.WriteLine($"[TOAPLAN z80] frame={m_frame_counter} pc=0x{m_audiocpu.op0.DebugPc:x4} shared2=0x{m_sharedram[2]:x2} shared6=0x{m_sharedram[6]:x2} coinFrames={m_external_coin_frames} startFrames={m_external_start_frames}");
             return 0;
+        }
+
+
+        void MarkAllVideoDirty()
+        {
+            m_video_dirty = true;
+            m_bcu_dirty = true;
+            m_fcu_dirty = true;
+            m_bcu_cache_valid = false;
+        }
+
+
+        void MarkBcuDirty()
+        {
+            m_video_dirty = true;
+            m_bcu_dirty = true;
+            m_fcu_dirty = true;
+        }
+
+
+        void MarkFcuDirty()
+        {
+            m_video_dirty = true;
+            m_fcu_dirty = true;
         }
 
 
@@ -602,7 +665,7 @@ namespace mame
             m_mainram_trace_count = 0;
             m_external_start_frames = 0;
             m_external_coin_frames = 0;
-            m_video_dirty = true;
+            MarkAllVideoDirty();
             Array.Clear(m_mainram, 0, m_mainram.Length);
             reset_sound();
         }
@@ -610,7 +673,7 @@ namespace mame
         protected override void device_post_load()
         {
             RebuildPaletteColors();
-            m_video_dirty = true;
+            MarkAllVideoDirty();
         }
 
         void SaveStateRef<T>(string itemName, Func<T> getter, Action<T> setter)
@@ -638,7 +701,7 @@ namespace mame
             if (m_bcu_vram[layer, index] != value)
             {
                 m_bcu_vram[layer, index] = value;
-                m_video_dirty = true;
+                MarkBcuDirty();
             }
         }
 
@@ -667,7 +730,7 @@ namespace mame
                     return;
                 m_bcu_scrolly[layer] = value;
             }
-            m_video_dirty = true;
+            MarkBcuDirty();
         }
 
 
@@ -774,6 +837,46 @@ namespace mame
                 for (int layer = BcuLayerCount - 1; layer >= 0; layer--)
                     RenderBcuLayer(bitmap, cliprect, layer, priority, false, (byte)priority);
             }
+        }
+
+
+        void SaveBcuCache(bitmap_rgb32 bitmap)
+        {
+            if (bitmap.width() < ScreenWidth || bitmap.height() < ScreenHeight)
+            {
+                m_bcu_cache_valid = false;
+                return;
+            }
+
+            PointerU32 firstRow = bitmap.pix(0);
+            byte [] bitmapData = firstRow.Buffer.data_raw;
+            int bitmapOffset = firstRow.Offset;
+            int sourceRowBytes = bitmap.rowpixels() * 4;
+            int cacheRowBytes = ScreenWidth * 4;
+            for (int y = 0; y < ScreenHeight; y++)
+                Buffer.BlockCopy(bitmapData, bitmapOffset + y * sourceRowBytes, m_bcu_bitmap_cache, y * cacheRowBytes, cacheRowBytes);
+            Array.Copy(m_priority_bitmap, m_bcu_priority_cache, m_bcu_priority_cache.Length);
+            m_bcu_cache_valid = true;
+        }
+
+
+        bool RestoreBcuCache(bitmap_rgb32 bitmap)
+        {
+            if (bitmap.width() < ScreenWidth || bitmap.height() < ScreenHeight || !m_bcu_cache_valid)
+            {
+                MarkAllVideoDirty();
+                return false;
+            }
+
+            PointerU32 firstRow = bitmap.pix(0);
+            byte [] bitmapData = firstRow.Buffer.data_raw;
+            int bitmapOffset = firstRow.Offset;
+            int destinationRowBytes = bitmap.rowpixels() * 4;
+            int cacheRowBytes = ScreenWidth * 4;
+            for (int y = 0; y < ScreenHeight; y++)
+                Buffer.BlockCopy(m_bcu_bitmap_cache, y * cacheRowBytes, bitmapData, bitmapOffset + y * destinationRowBytes, cacheRowBytes);
+            Array.Copy(m_bcu_priority_cache, m_priority_bitmap, m_priority_bitmap.Length);
+            return true;
         }
 
 
