@@ -2168,7 +2168,7 @@ namespace Ryu64.MIPS
             uint physical = address & 0x00FFFFFCu;
             if (physical + 4u > RDRAM.Length)
                 return 0;
-            return ReadUInt32Physical(physical);
+            return ReadUInt32PhysicalFast(physical);
         }
 
         private ulong ReadRdpCommandDoubleWord(uint address, bool xbusDmem)
