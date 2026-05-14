@@ -579,6 +579,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGlideWinOpenPanic(pc))
             return;
+        if (TryFastPathKnownGlideErrorReport(pc))
+            return;
         if (TryFastPathKnownGlideFifoMakeRoom(pc))
             return;
         if (TryFastPathKnownGlideLogWrite(pc))
@@ -1253,8 +1255,6 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownGlideSelect(ulong pc)
     {
         ulong offset = pc & 0x1fffffffUL;
-        if ((_gpr[4] & 0xffffffffUL) != 0)
-            return false;
 
         if (offset == 0x00064cd0UL &&
             _memory.Read32(pc) == 0x27bdffe0U &&
@@ -1569,6 +1569,29 @@ internal sealed class MipsR5000Core
 
         NormalizeGlideFifoState(state);
         _gpr[2] = 0x00010000UL;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideErrorReport(ulong pc)
+    {
+        if ((pc & 0x1fffffffUL) != 0x0010a640UL)
+            return false;
+        if (_memory.Read32(pc) != 0x27bdffe8U ||
+            _memory.Read32(pc + 0x04UL) != 0xafbf0010U ||
+            _memory.Read32(pc + 0x08UL) != 0x10a00007U ||
+            _memory.Read32(pc + 0x0cUL) != 0x0080102dU ||
+            _memory.Read32(pc + 0x10UL) != 0x3c048016U ||
+            _memory.Read32(pc + 0x14UL) != 0x24848474U ||
+            _memory.Read32(pc + 0x18UL) != 0x0c042905U)
+        {
+            return false;
+        }
+
+        if (_gpr[5] == 0)
+            return false;
+
         Pc = _gpr[31];
         CompleteFastPathStep();
         return true;

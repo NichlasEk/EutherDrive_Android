@@ -2780,3 +2780,46 @@ Current next target:
    through another path or only left in memory.
 3. Do not spend the next pass on the FIFO parser until the guest produces
    non-clear/non-swap render packets; current stats say it is not there yet.
+
+## 2026-05-14 Follow-up: Active Glide Error Reporter
+
+After `eaeb6f1`, the stack text was confirmed active, not stale. At 1200
+frames the CPU is in the formatter path:
+
+```text
+frame=1200
+pc=0xffffffff801202e0
+ra=0xffffffff80120848
+a0=0xffffffff80159228
+a1=0xffffffff807ff7f1
+s0=0xffffffff80158474
+s1=0x5
+```
+
+Stack bytes at `0xffffffff807ff9c0` contain:
+
+```text
+gd error (glide): grSstSelect:  non-existent SST
+```
+
+A narrow CPU trace over `0xffffffff8010a520..0xffffffff8010a6c0` showed the
+hot path is not the `grSstSelect` entry fastpath. It repeatedly enters the
+loaded Glide error reporter at `0xffffffff8010a640` with `a1=1`; observed
+callers include `0xffffffff80115238` and `0xffffffff80109028`.
+
+New follow-up code in progress:
+
+- `TryFastPathKnownGlideSelect` no longer rejects nonzero SST indices before
+  normalizing the selected board state.
+- Added `TryFastPathKnownGlideErrorReport` for the exact function signature at
+  `0xffffffff8010a640`; when the reporter is active (`a1 != 0`) it returns to
+  `ra` instead of spending frames in the formatter/log path.
+
+Verification note:
+
+- `git diff --check` passes for the Gauntlet adapter patch.
+- A full `dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release`
+  is currently blocked by unrelated worktree compile errors outside Gauntlet
+  (`BoogwingBus.SetInput2` and, with ad-hoc excludes, wider project duplicate
+  assembly attribute errors). Re-run the 1200-frame probe after those unrelated
+  build blockers are gone.
