@@ -782,8 +782,8 @@ namespace mame
                 return;
 
             u16[,] source = m_vdp_spriteram_buffer;
-            int spriteScrollX = m_vdp_scrollx[vdp, 3] & 0x1ff;
-            int spriteScrollY = m_vdp_scrolly[vdp, 3] & 0x1ff;
+            int spriteScrollX = (m_vdp_scrollx[vdp, 3] - 0x1cc) & 0x1ff;
+            int spriteScrollY = (m_vdp_scrolly[vdp, 3] - 0x1ef) & 0x1ff;
             int oldX = (-spriteScrollX) & 0x1ff;
             int oldY = (-spriteScrollY) & 0x1ff;
 
