@@ -326,7 +326,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
     }
 
     public long? FrameCounter => _runtime?.PublishedFrames;
-    internal Func<byte[], bool>? BatsugunSharedRamProcessor { get; set; }
+    internal Func<byte[], bool, bool, bool>? BatsugunSharedRamProcessor { get; set; }
 
     public void SaveState(BinaryWriter writer)
     {
@@ -569,10 +569,12 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
         return accessed;
     }
 
-    private void ProcessBatsugunSharedRam(mame.running_machine machine)
+    private void ProcessBatsugunSharedRam(mame.running_machine machine, bool frameBoundary)
     {
-        Func<byte[], bool>? processor = BatsugunSharedRamProcessor;
+        Func<byte[], bool, bool, bool>? processor = BatsugunSharedRamProcessor;
         if (processor == null)
+            return;
+        if (!frameBoundary)
             return;
 
         object root = machine.root_device();
@@ -582,7 +584,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         if (!_batsugunSharedRamActive)
         {
-            if (_batsugunSharedRamPollCountdown > 0)
+            if (frameBoundary && _batsugunSharedRamPollCountdown > 0)
             {
                 _batsugunSharedRamPollCountdown--;
                 return;
@@ -593,7 +595,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
         MethodInfo? copyTo = type.GetMethod("CopyBatsugunSharedRamTo", BindingFlags.Instance | BindingFlags.Public);
         MethodInfo? copyFrom = type.GetMethod("CopyBatsugunSharedRamFrom", BindingFlags.Instance | BindingFlags.Public);
-        if (copyTo == null || copyFrom == null)
+        PropertyInfo? resetReleased = type.GetProperty("BatsugunSoundResetReleased", BindingFlags.Instance | BindingFlags.Public);
+        if (copyTo == null || copyFrom == null || resetReleased == null)
             return;
 
         copyTo.Invoke(root, new object[] { _batsugunSharedRam });
@@ -610,7 +613,8 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _batsugunSharedRam[0x004b] == 0xf3 &&
                 _batsugunSharedRam[0x004c] == 0xab;
         }
-        if (processor(_batsugunSharedRam))
+        bool soundResetReleased = resetReleased.GetValue(root) is bool released && released;
+        if (processor(_batsugunSharedRam, soundResetReleased, frameBoundary))
             copyFrom.Invoke(root, new object[] { _batsugunSharedRam });
     }
 
@@ -1871,7 +1875,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
 
             if (skipRedraw || _target == null)
             {
-                _owner.ProcessBatsugunSharedRam(_machine);
+                _owner.ProcessBatsugunSharedRam(_machine, frameBoundary: true);
                 CompleteFrameBoundary(_machine);
                 return;
             }
@@ -1920,7 +1924,7 @@ public sealed class McsArcadeAdapter : IEmulatorCore, ISavestateCapable, IDispos
                 _owner.PublishFrame(_bitmap.pix(0), publishWidth, publishHeight, _bitmap.rowpixels());
                 if (TraceMcsProfile)
                     publishTicks = Stopwatch.GetTimestamp() - publishStart;
-                _owner.ProcessBatsugunSharedRam(_machine);
+                _owner.ProcessBatsugunSharedRam(_machine, frameBoundary: true);
                 _runtime.MarkFrameReady();
                 _runtime.ProcessFrameBoundaryStateRequest(_machine);
             }

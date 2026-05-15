@@ -683,6 +683,19 @@ class Program
                 Console.WriteLine("[HEADLESS] Using Toaplan Batsugun core");
                 using var batsugun = new BatsugunAdapter();
                 batsugun.LoadRom(romPath);
+                if (Environment.GetEnvironmentVariable("EUTHERDRIVE_LOAD_SLOT1_ON_BOOT") == "1")
+                {
+                    try
+                    {
+                        new SavestateService(GetSavestateRoot()).Load(batsugun, 1);
+                        Console.WriteLine("[HEADLESS] Batsugun savestate slot 1 loaded successfully.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"[HEADLESS-WARN] Failed to load Batsugun savestate slot 1: {ex.Message}");
+                    }
+                }
+
                 using var batsugunAudioDump = OpenOptionalRawAudioDump(dumpDir, "headless_batsugun_audio_s16le.raw");
                 var batsugunInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_BATSUGUN_HEADLESS_INPUT_SCRIPT"));
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";

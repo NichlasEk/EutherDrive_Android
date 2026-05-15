@@ -80,6 +80,7 @@ namespace mame
         int m_workram_trace_count;
         int m_external_coin_frames;
         int m_external_start_frames;
+        bool m_sound_reset_released;
         bool m_video_dirty = true;
 
         public batsugun_state(machine_config mconfig, device_type type, string tag)
@@ -149,6 +150,8 @@ namespace mame
                 machine().bookkeeping().coin_counter_w(1, data & 0x02);
                 machine().bookkeeping().coin_lockout_w(0, (data & 0x04) == 0 ? 1 : 0);
                 machine().bookkeeping().coin_lockout_w(1, (data & 0x08) == 0 ? 1 : 0);
+                m_sound_reset_released = (data & 0x20) != 0;
+                TraceLimited(TraceHost, $"[BATSUGUN sound-reset] data=0x{data:x4} released={m_sound_reset_released} pc=0x{m_maincpu.op0.Pc:x6}");
                 if (!NativeSoundBridge && (data & 0x20) != 0)
                     ReleaseSoundCpuShim();
             }
@@ -412,10 +415,12 @@ namespace mame
             m_shared_read_trace_count = 0;
             m_shared_write_trace_count = 0;
             m_workram_trace_count = 0;
+            m_sound_reset_released = false;
             m_video_dirty = true;
         }
 
         public int BatsugunSharedRamLength => m_sharedram.Length;
+        public bool BatsugunSoundResetReleased => m_sound_reset_released;
 
         public void CopyBatsugunSharedRamTo(byte[] destination)
         {
