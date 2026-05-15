@@ -51,6 +51,8 @@ namespace EutherDrive.UI;
 
 public partial class MainWindow : Window
 {
+    private const double BatsugunPresentationAspect = 0.67;
+
     private enum BackdropDecorMode
     {
         None,
@@ -9351,6 +9353,7 @@ public partial class MainWindow : Window
             or KovPgmAdapter
             or NeoGeoAdapter
             or OutZoneAdapter
+            or BatsugunAdapter
             or TaitoF2ThunderFoxAdapter
             or BoogwingAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -9411,14 +9414,17 @@ public partial class MainWindow : Window
             }
         }
 
-        presentSrc = ApplyTateRotation(
-            presentSrc,
-            presentWidth,
-            presentHeight,
-            presentStride,
-            out presentWidth,
-            out presentHeight,
-            out presentStride);
+        if (core is not BatsugunAdapter)
+        {
+            presentSrc = ApplyTateRotation(
+                presentSrc,
+                presentWidth,
+                presentHeight,
+                presentStride,
+                out presentWidth,
+                out presentHeight,
+                out presentStride);
+        }
 
         EnsureBitmapFromCore(presentWidth, presentHeight);
         if (_renderSurface == null)
@@ -10272,6 +10278,11 @@ public partial class MainWindow : Window
                 targetHeight = adapterHeight;
             }
             ApplyPresentationSize(targetWidth, targetHeight);
+            return true;
+        }
+        else if (core is BatsugunAdapter)
+        {
+            ApplyPresentationSize(Math.Round(height * BatsugunPresentationAspect), height);
             return true;
         }
         else if (UsesFourThreeArcadePhysicalAspectPresentation(core, width, height))

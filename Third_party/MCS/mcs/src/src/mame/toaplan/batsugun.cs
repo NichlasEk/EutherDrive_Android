@@ -6,6 +6,7 @@ using System;
 using device_type = mame.emu.detail.device_type_impl_base;
 using MemoryU8 = mame.MemoryContainer<System.Byte>;
 using offs_t = System.UInt32;
+using s32 = System.Int32;
 using u8 = System.Byte;
 using u16 = System.UInt16;
 using u32 = System.UInt32;
@@ -71,9 +72,9 @@ namespace mame
         readonly u16[] m_vdp1_bitmap = new u16[ScreenWidth * ScreenHeight];
         byte[][][] m_decoded_tiles = new byte[VdpCount][][];
         int[] m_tile_counts = new int[VdpCount];
+        emu_timer m_vdp_irq_timer;
         int m_frame_counter;
         int m_vdpcount_reads;
-        int m_vdpstatus_reads;
         int m_trace_count;
         int m_shared_read_trace_count;
         int m_shared_write_trace_count;
@@ -95,6 +96,7 @@ namespace mame
             m_maincpu.op0.memory().set_addrmap(AS_PROGRAM, batsugun_68k_mem);
 
             screen_device screen = SCREEN(config, "screen", SCREEN_TYPE_RASTER);
+            screen.set_video_attributes(VIDEO_UPDATE_BEFORE_VBLANK);
             screen.set_screen_update(screen_update);
             screen.set_raw(PixelClock, 432, 0, 320, 262, 0, 240);
             screen.screen_vblank().set((write_line_delegate)screen_vblank).reg();
@@ -312,18 +314,22 @@ namespace mame
         }
 
         u16 VdpStatus()
-            => (u16)(((m_vdpstatus_reads++ & 0x01) == 0) ? 0 : 1);
+        {
+            screen_device screen = subdevice<screen_device>("screen");
+            int vpos = ((screen?.vpos() ?? 0) + 15) % 262;
+            return (u16)(vpos >= 245 ? 1 : 0);
+        }
 
         u16 vdpcount_r(address_space space, offs_t offset, u16 mem_mask)
         {
             m_vdpcount_reads++;
             screen_device screen = subdevice<screen_device>("screen");
             int hpos = screen?.hpos() ?? 0;
-            int vpos = screen?.vpos() ?? 0;
+            int vpos = ((screen?.vpos() ?? 0) + 15) % 262;
             u16 videoStatus = 0xff00;
             if (hpos > 325 && hpos < 380)
                 videoStatus &= unchecked((u16)~0x8000);
-            if ((screen?.vblank() ?? 0) != 0 || (vpos >= 232 && vpos <= 245))
+            if (vpos >= 232 && vpos <= 245)
             {
                 videoStatus &= unchecked((u16)~0x4000);
                 videoStatus &= unchecked((u16)~0x0100);
@@ -363,8 +369,17 @@ namespace mame
             {
                 Buffer.BlockCopy(m_vdp_spriteram, 0, m_vdp_spriteram_buffer, 0, m_vdp_spriteram.Length * sizeof(u16));
                 m_video_dirty = true;
-                m_maincpu.op0.set_input_line(4, ASSERT_LINE);
+                screen_device screen = subdevice<screen_device>("screen");
+                if (screen != null && m_vdp_irq_timer != null)
+                    m_vdp_irq_timer.adjust(screen.time_until_pos(0xe6));
+                else
+                    m_maincpu.op0.set_input_line(4, ASSERT_LINE);
             }
+        }
+
+        void raise_vdp_irq(s32 param)
+        {
+            m_maincpu.op0.set_input_line(4, ASSERT_LINE);
         }
 
         protected override void machine_start()
@@ -383,6 +398,8 @@ namespace mame
                 Fast68kWriteWord,
                 Fast68kReadLong,
                 Fast68kWriteLong);
+
+            m_vdp_irq_timer = timer_alloc(raise_vdp_irq);
 
             save_item(NAME(new { m_workram }));
             save_item(NAME(new { m_sharedram }));
@@ -411,7 +428,6 @@ namespace mame
             Array.Clear(m_vdp_scrolly, 0, m_vdp_scrolly.Length);
             m_frame_counter = 0;
             m_vdpcount_reads = 0;
-            m_vdpstatus_reads = 0;
             m_shared_read_trace_count = 0;
             m_shared_write_trace_count = 0;
             m_workram_trace_count = 0;

@@ -40,6 +40,7 @@ public partial class MainView : UserControl
     private const double JoystickDiagonalRatio = 0.56;
     private const double JoystickPadding = 10.0;
     private const double LandscapeIntegerSnapThreshold = 0.08;
+    private const double BatsugunPresentationAspect = 0.67;
     private const int DefaultScanlineStrengthPercent = 0;
     private const string SettingsFileName = "android-settings.toml";
     private const string LegacyJsonSettingsFileName = "android-settings.json";
@@ -1528,6 +1529,7 @@ public partial class MainView : UserControl
             || _core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || _core is EutherDrive.Core.Arcade.Snk.NeoGeoAdapter
             || _core is EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter
+            || _core is EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter
             || _core is EutherDrive.Core.Arcade.Igs.Pgm2Adapter
             || _core is EutherDrive.Core.Arcade.Igs.KovPgmAdapter
             || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
@@ -3889,6 +3891,12 @@ public partial class MainView : UserControl
         {
             targetWidth = adapterWidth;
             targetHeight = adapterHeight;
+        }
+        else if (_lastPresentationWidth <= 0 && _lastPresentationHeight <= 0
+            && core is EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter)
+        {
+            targetWidth = Math.Round(height * BatsugunPresentationAspect);
+            targetHeight = height;
         }
 
         bool isLandscape = _viewModel.IsLandscapeMode;
