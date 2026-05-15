@@ -26,6 +26,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
 
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _loaded ? _frameCounter : null;
+    public string DebugStatus => _machine.GetDebugStatus();
 
     internal static bool IsBringupFixEnabled(string name)
     {
@@ -210,6 +211,10 @@ internal sealed class GauntletDarkLegacyMachine
     }
 
     public void RenderFrame(EutherFrameTarget target) => Voodoo.RenderFrame(target);
+
+    public string GetDebugStatus()
+        => $"pc=0x{Cpu.Pc:X16} op=0x{Cpu.LastFetchedInstruction:X8} " +
+           $"voodoo={(Voodoo.HasVideoActivity ? "active" : "idle")} {Voodoo.DebugStatus} disk={(Disk.Attached ? "attached" : "missing")}";
 }
 
 internal sealed class GauntletRomSet
@@ -5842,7 +5847,10 @@ internal sealed class VegasMemoryMap
     private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
     private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
     private readonly int _nileCpuIrqShift = ParseNileCpuIrqShift();
+    private readonly byte[] _timekeeperRam = new byte[0x8000];
+    private readonly DateTime _timekeeperEpoch = new(1999, 12, 11, 6, 12, 0);
     private ulong _traceCpuPc;
+    private ulong _timekeeperReadTicks;
     private byte[] _mainBootRom = Array.Empty<byte>();
     private byte[] _securityPic = Array.Empty<byte>();
     private VegasSioDevice? _sio;
@@ -6106,6 +6114,8 @@ internal sealed class VegasMemoryMap
         Array.Clear(_nileRegisters);
         Array.Clear(_fpgaConfigRegisters);
         Array.Clear(_cpuIoRegisters);
+        Array.Clear(_timekeeperRam);
+        _timekeeperReadTicks = 0;
         Array.Clear(_ioasicRegisters);
         Array.Fill(_ioasicPicNvram, (byte)0xff);
         _ioasicRegisters[8] = 0x0001;
@@ -6965,6 +6975,9 @@ internal sealed class VegasMemoryMap
             return _sio?.Read(offset) ?? 0xff;
         }
 
+        if (chipSelect == 4)
+            return ReadTimekeeper(offset);
+
         if (chipSelect == 5)
             return ReadCpuIo(offset);
 
@@ -6982,10 +6995,42 @@ internal sealed class VegasMemoryMap
             return;
         }
 
-        if (chipSelect == 5)
+        if (chipSelect == 4)
+            WriteTimekeeper(offset, value);
+        else if (chipSelect == 5)
             WriteCpuIo(offset, value);
         else if (chipSelect == 6 && offset < 0x40)
             WriteIoasicPackedByte(offset, value);
+    }
+
+    private byte ReadTimekeeper(uint offset)
+    {
+        offset &= 0x7fff;
+        if (offset < 0x7ff8)
+            return _timekeeperRam[(int)offset];
+
+        if (offset == 0x7ff9)
+            _timekeeperReadTicks++;
+
+        DateTime now = _timekeeperEpoch.AddSeconds((long)(_timekeeperReadTicks >> 6));
+        return offset switch
+        {
+            0x7ff8 => _timekeeperRam[0x7ff8],
+            0x7ff9 => MakeBcd(now.Second),
+            0x7ffa => MakeBcd(now.Minute),
+            0x7ffb => MakeBcd(now.Hour),
+            0x7ffc => MakeBcd((int)now.DayOfWeek + 1),
+            0x7ffd => MakeBcd(now.Day),
+            0x7ffe => MakeBcd(now.Month),
+            0x7fff => MakeBcd(now.Year % 100),
+            _ => 0xff
+        };
+    }
+
+    private void WriteTimekeeper(uint offset, byte value)
+    {
+        offset &= 0x7fff;
+        _timekeeperRam[(int)offset] = value;
     }
 
     private byte ReadIoasicPackedByte(uint offset)
@@ -7604,13 +7649,23 @@ internal sealed class VegasVoodooPciDevice
     private readonly byte[] _config = new byte[0x100];
     private readonly uint[] _pciControl = new uint[8];
     private readonly uint[] _registers = new uint[0x400];
+    private readonly byte[] _dacRegisters = new byte[32];
+    private const int RegFbiInit7 = 0x24c >> 2;
+    private const int RegFbiInit3 = 0x21c >> 2;
+    private const int RegFbiInit2 = 0x218 >> 2;
+    private const int RegDacData = 0x22c >> 2;
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1";
+    private readonly int _traceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_PCI_LIMIT", 512);
     private IVoodooBackend? _voodoo;
     private uint _bar0 = 0xff000000u;
     private bool _bar0Probe;
     private uint _statusReadCounter;
     private uint _swapStatusCounter;
     private uint _vRetraceCounter;
+    private uint _hvRetraceCounter;
+    private uint _initEnable;
+    private uint _dacReadResult;
+    private int _traceCount;
 
     public void AttachVoodoo(IVoodooBackend voodoo) => _voodoo = voodoo;
 
@@ -7619,11 +7674,15 @@ internal sealed class VegasVoodooPciDevice
         Array.Clear(_config);
         Array.Clear(_pciControl);
         Array.Clear(_registers);
+        Array.Clear(_dacRegisters);
         _bar0 = 0xff000000u;
         _bar0Probe = false;
         _statusReadCounter = 0;
         _swapStatusCounter = 0;
         _vRetraceCounter = 0;
+        _hvRetraceCounter = 0;
+        _initEnable = 0;
+        _dacReadResult = 0;
         BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x00, 4), VendorDeviceId);
         BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), 0x0002);
         BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x08, 4), ClassCode);
@@ -7642,7 +7701,9 @@ internal sealed class VegasVoodooPciDevice
         if (offset + 3 >= _config.Length)
             return 0xffffffffu;
 
-        uint value = BinaryPrimitives.ReadUInt32LittleEndian(_config.AsSpan((int)offset, 4));
+        uint value = offset == 0x40
+            ? (_pciControl[0] & ~0xff000u) | 0x00044000u
+            : BinaryPrimitives.ReadUInt32LittleEndian(_config.AsSpan((int)offset, 4));
         Trace($"pci cfg read off={offset:x2} value={value:x8}");
         return value;
     }
@@ -7677,6 +7738,8 @@ internal sealed class VegasVoodooPciDevice
             case >= 0x40 and < 0x60:
                 int index = (int)((offset - 0x40) / 4);
                 _pciControl[index] = value;
+                if (offset == 0x40)
+                    _initEnable = value;
                 BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan((int)offset, 4), value);
                 break;
         }
@@ -7692,7 +7755,7 @@ internal sealed class VegasVoodooPciDevice
 
         value = offset switch
         {
-            < 0x00400000u => ReadRegister(offset),
+            < 0x00400000u => ReadRegister(MapRegisterOffset(offset)),
             < 0x00800000u => _voodoo?.ReadLfb32(offset - 0x00400000u) ?? 0,
             _ => 0
         };
@@ -7707,17 +7770,16 @@ internal sealed class VegasVoodooPciDevice
 
         if (offset < 0x00400000u)
         {
-            if (offset >= 0x00200000u)
+            if (offset >= 0x00200000u && IsCommandFifoEnabled)
             {
-                Span<uint> word = stackalloc uint[1];
-                word[0] = value;
-                _voodoo?.WriteFifo(word);
+                _voodoo?.WriteFifo((offset >> 2) & 0xffffu, value);
                 Trace($"fifo write off={offset:x6} value={value:x8}");
             }
             else
             {
-                WriteRegister(offset, value);
-                _voodoo?.WriteRegister(offset, value);
+                uint registerOffset = MapRegisterOffset(offset);
+                WriteRegister(registerOffset, value);
+                _voodoo?.WriteRegister(registerOffset, value);
                 Trace($"reg write off={offset:x6} value={value:x8}");
             }
         }
@@ -7743,21 +7805,83 @@ internal sealed class VegasVoodooPciDevice
             return ++_vRetraceCounter & 0x7ffu;
         if ((offset & 0x3ffu) == 0x1e8u)
             return ++_swapStatusCounter;
+        if ((offset & 0x3ffu) == 0x240u)
+            return ReadHvRetrace();
 
-        return _registers[(offset >> 2) & 0x3ffu];
+        uint register = (offset >> 2) & 0xffu;
+        if (register == RegFbiInit2 && ((_initEnable >> 2) & 1u) != 0)
+            return _dacReadResult;
+
+        return _registers[register];
     }
 
     private uint ReadStatus()
     {
-        uint status = VoodooStatusReady;
-        if ((_statusReadCounter++ & 1u) != 0)
-            status |= 0x40u;
-        return status;
+        bool vblank = (_statusReadCounter++ & 1u) != 0;
+        return _voodoo?.ReadStatus(vblank) ?? (VoodooStatusReady | (vblank ? 0x40u : 0u));
     }
 
     private void WriteRegister(uint offset, uint value)
     {
-        _registers[(offset >> 2) & 0x3ffu] = value;
+        uint register = (offset >> 2) & 0xffu;
+        _registers[register] = value;
+        if (register == RegDacData)
+            WriteDac(value);
+    }
+
+    private bool IsCommandFifoEnabled => ((_registers[RegFbiInit7] >> 8) & 1u) != 0;
+
+    private uint ReadHvRetrace()
+    {
+        uint tick = _hvRetraceCounter++;
+        uint hpos = (tick * 73u) % 858u;
+        uint vpos = (tick / 8u) % 525u;
+        if (vpos >= 480u)
+            vpos = 0;
+        return (hpos << 16) | vpos;
+    }
+
+    private uint MapRegisterOffset(uint offset)
+    {
+        uint register = (offset >> 2) & 0xffu;
+        if (offset >= 0x00200000u && ((_registers[RegFbiInit3] & 1u) != 0))
+            register = AliasRegister(register);
+        return register << 2;
+    }
+
+    private static uint AliasRegister(uint register)
+    {
+        ReadOnlySpan<byte> alias =
+        [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+            0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+            0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+            0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f
+        ];
+        return register < alias.Length ? alias[(int)register] : register;
+    }
+
+    private void WriteDac(uint value)
+    {
+        int register = (int)(((value >> 8) & 0x07u) + 8u * ((value >> 12) & 0x03u));
+        if (((value >> 11) & 1u) == 0)
+        {
+            _dacRegisters[register] = (byte)value;
+            return;
+        }
+
+        _dacReadResult = _dacRegisters[register];
+        _dacReadResult = _dacRegisters[7] switch
+        {
+            0x01 => 0x55u,
+            0x07 => 0x71u,
+            0x0b => 0x79u,
+            _ => _dacReadResult
+        };
     }
 
     public bool TryWriteMemory8(uint pciAddress, byte value)
@@ -7786,9 +7910,12 @@ internal sealed class VegasVoodooPciDevice
 
     private void Trace(string message)
     {
-        if (_traceEnabled)
+        if (_traceEnabled && _traceCount++ < _traceLimit)
             Console.WriteLine($"[GAUNTDL:VOODOO-PCI] {message}");
     }
+
+    private static int ParseTraceLimit(string name, int fallback)
+        => int.TryParse(Environment.GetEnvironmentVariable(name), out int value) && value >= 0 ? value : fallback;
 }
 
 internal sealed class VegasIdePciDevice
@@ -8760,10 +8887,12 @@ internal readonly record struct GauntletPlayerInput(
 public interface IVoodooBackend
 {
     void WriteRegister(uint address, uint value);
-    void WriteFifo(ReadOnlySpan<uint> words);
+    void WriteFifo(uint wordOffset, uint value);
+    uint ReadStatus(bool vblank);
     uint ReadLfb32(uint offset);
     void WriteLfb32(uint offset, uint value);
     void WriteTexture32(uint offset, uint value);
+    string DebugStatus { get; }
     void RenderFrame(EutherFrameTarget target);
 }
 
@@ -8775,6 +8904,7 @@ internal sealed class VoodooFacade : IVoodooBackend
 
     public bool TraceEnabled => _backend is VoodooTraceBackend;
     public bool HasVideoActivity => _backend is VoodooBringupBackend { HasVideoActivity: true };
+    public string DebugStatus => _backend.DebugStatus;
 
     public void Reset()
     {
@@ -8784,7 +8914,8 @@ internal sealed class VoodooFacade : IVoodooBackend
     }
 
     public void WriteRegister(uint address, uint value) => _backend.WriteRegister(address, value);
-    public void WriteFifo(ReadOnlySpan<uint> words) => _backend.WriteFifo(words);
+    public void WriteFifo(uint wordOffset, uint value) => _backend.WriteFifo(wordOffset, value);
+    public uint ReadStatus(bool vblank) => _backend.ReadStatus(vblank);
     public uint ReadLfb32(uint offset) => _backend.ReadLfb32(offset);
     public void WriteLfb32(uint offset, uint value) => _backend.WriteLfb32(offset, value);
     public void WriteTexture32(uint offset, uint value) => _backend.WriteTexture32(offset, value);
@@ -8795,10 +8926,35 @@ internal class VoodooBringupBackend : IVoodooBackend
 {
     private const int LfbBytes = 4 * 1024 * 1024;
     private const int LfbPixels = LfbBytes / 2;
+    private const int LfbRowPixels = 1024;
+    private const int LfbRows = LfbPixels / LfbRowPixels;
+    private const int CmdFifoWords = 1 << 16;
+    private const int CmdFifoMask = CmdFifoWords - 1;
+    private const int RegTriangleCommand = 0x80 >> 2;
+    private const int RegFtriangleCommand = 0x100 >> 2;
+    private const int RegFbzMode = 0x110 >> 2;
+    private const int RegLfbMode = 0x114 >> 2;
+    private const int RegClipLeftRight = 0x118 >> 2;
+    private const int RegClipLowYHighY = 0x11c >> 2;
+    private const int RegFastfillCommand = 0x124 >> 2;
+    private const int RegSwapbufferCommand = 0x128 >> 2;
+    private const int RegZaColor = 0x130 >> 2;
+    private const int RegColor0 = 0x144 >> 2;
+    private const int RegColor1 = 0x148 >> 2;
+    private const int RegCmdFifoRdPtr = 0x1e8 >> 2;
+    private const int RegFbiInit2 = 0x218 >> 2;
+    private const int RegFbiInit3 = 0x21c >> 2;
 
     private readonly uint[] _registers = new uint[0x400];
-    private readonly ushort[] _lfb = new ushort[LfbPixels];
+    private readonly ushort[][] _colorBuffers =
+    [
+        new ushort[LfbPixels],
+        new ushort[LfbPixels],
+        new ushort[LfbPixels]
+    ];
     private readonly List<uint> _fifoBuffer = new();
+    private readonly uint[] _cmdFifoRam = new uint[CmdFifoWords];
+    private readonly bool[] _cmdFifoValid = new bool[CmdFifoWords];
     private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
     private readonly int[] _fifoPacketTypeCounts = new int[8];
     private int _registerWriteCount;
@@ -8811,29 +8967,45 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _textureWriteCount;
     private int _fastFillCount;
     private int _swapBufferCount;
+    private int _pendingSwapCount;
     private int _renderFrame;
     private int _setupVertexCount;
+    private int _frontBufferIndex;
+    private int _backBufferIndex = 1;
+    private int _cmdFifoReadIndex;
+    private bool _cmdFifoReadPointerWritten;
+    private bool _cmdFifoJumped;
 
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
+    public string DebugStatus
+        => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
+           $"tri={_directTriangleCommandCount}+{_setupTriangleCommandCount} fill={_fastFillCount} swap={_swapBufferCount} " +
+           $"lfb={_lfbWriteCount} tex={_textureWriteCount} buf={_frontBufferIndex}/{_backBufferIndex}/{GetColorBufferCount()} " +
+           $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
 
     public virtual void WriteRegister(uint address, uint value)
     {
-        uint register = (address >> 2) & 0x3ffu;
+        uint register = (address >> 2) & 0xffu;
         _registers[register] = value;
         _registerWriteCount++;
         switch (register)
         {
-            case 0x20u:
+            case RegTriangleCommand:
                 DrawIntegerTriangle();
                 break;
-            case 0x40u:
+            case RegFtriangleCommand:
                 DrawFloatTriangle();
                 break;
-            case 0x49u:
+            case RegFastfillCommand:
                 FastFill();
                 break;
-            case 0x4au:
-                _swapBufferCount++;
+            case RegSwapbufferCommand:
+                SwapBuffers(value);
+                break;
+            case RegCmdFifoRdPtr:
+                _cmdFifoReadIndex = (int)((value >> 2) & CmdFifoMask);
+                _cmdFifoReadPointerWritten = true;
+                DecodeCommandFifoPackets();
                 break;
             case 0xa8u:
                 DrawSetupTriangle();
@@ -8844,27 +9016,70 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
     }
 
-    public virtual void WriteFifo(ReadOnlySpan<uint> words)
+    public virtual void WriteFifo(uint wordOffset, uint value)
     {
-        _fifoWriteCount += words.Length;
-        for (int i = 0; i < words.Length; i++)
-            _fifoBuffer.Add(words[i]);
-        DecodeFifoPackets();
+        int index = (int)(wordOffset & CmdFifoMask);
+        _cmdFifoRam[index] = value;
+        _cmdFifoValid[index] = true;
+        _fifoWriteCount++;
+
+        if (!_cmdFifoReadPointerWritten)
+        {
+            _cmdFifoReadIndex = index;
+            _cmdFifoReadPointerWritten = true;
+        }
+
+        DecodeCommandFifoPackets();
+    }
+
+    public uint ReadStatus(bool vblank)
+    {
+        if (vblank && _pendingSwapCount > 0)
+        {
+            _pendingSwapCount--;
+            ExecuteSwapBuffers(0);
+        }
+
+        uint status = 0x0ffff03fu | ((uint)(_frontBufferIndex & 3) << 10);
+        if (vblank)
+            status |= 0x40u;
+        status |= (uint)Math.Clamp(_pendingSwapCount, 0, 7) << 28;
+        return status;
     }
 
     public uint ReadLfb32(uint offset)
     {
-        int pixel = (int)((offset & (LfbBytes - 1u)) >> 1);
-        ushort low = _lfb[pixel & (LfbPixels - 1)];
-        ushort high = _lfb[(pixel + 1) & (LfbPixels - 1)];
-        return (uint)(low | (high << 16));
+        uint lfbMode = _registers[RegLfbMode];
+        int pixel = GetLfbPixelOffset(offset, IsTwoPixelLfbFormat((int)(lfbMode & 0x0fu)), lfbMode);
+        ushort[] buffer = GetLfbReadBuffer(lfbMode);
+        ushort low = buffer[pixel & (LfbPixels - 1)];
+        ushort high = buffer[(pixel + 1) & (LfbPixels - 1)];
+        uint value = (uint)(low | (high << 16));
+        if (((lfbMode >> 15) & 1u) != 0)
+            value = (value << 16) | (value >> 16);
+        if (((lfbMode >> 16) & 1u) != 0)
+            value = BinaryPrimitives.ReverseEndianness(value);
+        return value;
     }
 
     public virtual void WriteLfb32(uint offset, uint value)
     {
-        int pixel = (int)((offset & (LfbBytes - 1u)) >> 1);
-        _lfb[pixel & (LfbPixels - 1)] = (ushort)value;
-        _lfb[(pixel + 1) & (LfbPixels - 1)] = (ushort)(value >> 16);
+        uint lfbMode = _registers[RegLfbMode];
+        if (((lfbMode >> 12) & 1u) != 0)
+            value = BinaryPrimitives.ReverseEndianness(value);
+        if (((lfbMode >> 11) & 1u) != 0)
+            value = (value << 16) | (value >> 16);
+
+        int format = (int)(lfbMode & 0x0fu);
+        int rgbaLanes = (int)((lfbMode >> 9) & 0x03u);
+        bool twoPixels = IsTwoPixelLfbFormat(format);
+        int pixel = GetLfbPixelOffset(offset, twoPixels, lfbMode);
+        ushort[] buffer = GetLfbWriteBuffer(lfbMode);
+
+        if (TryExpandLfbPixel(value, format, rgbaLanes, highHalf: false, out ushort first))
+            buffer[pixel & (LfbPixels - 1)] = first;
+        if (twoPixels && TryExpandLfbPixel(value, format, rgbaLanes, highHalf: true, out ushort second))
+            buffer[(pixel + 1) & (LfbPixels - 1)] = second;
         _lfbWriteCount++;
     }
 
@@ -8895,13 +9110,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         int copyWidth = Math.Min(target.Width, 640);
         int copyHeight = Math.Min(target.Height, 480);
         int visiblePixels = 0;
+        ushort[] front = _colorBuffers[_frontBufferIndex];
         for (int y = 0; y < copyHeight; y++)
         {
             int src = y * 1024;
             int dst = y * target.Stride;
             for (int x = 0; x < copyWidth; x++)
             {
-                ushort rgb = _lfb[(src + x) & (LfbPixels - 1)];
+                ushort rgb = front[(src + x) & (LfbPixels - 1)];
                 if (rgb != 0)
                     visiblePixels++;
                 uint bgra = Rgb565ToBgra(rgb);
@@ -8990,41 +9206,61 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         x1 = Math.Min(x1, 1024);
-        y1 = Math.Min(y1, LfbPixels / 1024);
-        ushort color = ArgbToRgb565(_registers[0x52]);
+        y1 = Math.Min(y1, LfbRows);
+        ushort color = ArgbToRgb565(_registers[RegColor1]);
         if (color == 0)
-            color = ArgbToRgb565(_registers[0x51]);
+            color = ArgbToRgb565(_registers[RegColor0]);
         if (color == 0)
-            color = (ushort)_registers[0x4c];
+            color = (ushort)_registers[RegZaColor];
 
+        ushort[] buffer = GetDrawBuffer();
         for (int y = y0; y < y1; y++)
         {
-            int offset = y * 1024 + x0;
+            int offset = y * LfbRowPixels + x0;
             for (int x = x0; x < x1; x++)
-                _lfb[(offset++) & (LfbPixels - 1)] = color;
+                buffer[(offset++) & (LfbPixels - 1)] = color;
         }
 
         _fastFillCount++;
         _lfbWriteCount += Math.Max(1, ((x1 - x0) * (y1 - y0) + 1) / 2);
     }
 
-    private void DecodeFifoPackets()
+    private void DecodeCommandFifoPackets()
     {
-        while (_fifoBuffer.Count > 0)
+        int guard = 0;
+        while (guard++ < 2048 && _cmdFifoValid[_cmdFifoReadIndex])
         {
-            uint command = _fifoBuffer[0];
+            uint command = _cmdFifoRam[_cmdFifoReadIndex];
             int wordsNeeded = GetFifoPacketWordsNeeded(command);
             if (wordsNeeded <= 0)
                 wordsNeeded = 1;
-            if (_fifoBuffer.Count < wordsNeeded)
+            if (!HasCommandFifoWords(_cmdFifoReadIndex, wordsNeeded))
                 return;
 
+            _fifoBuffer.Clear();
+            for (int i = 0; i < wordsNeeded; i++)
+            {
+                int index = (_cmdFifoReadIndex + i) & CmdFifoMask;
+                _fifoBuffer.Add(_cmdFifoRam[index]);
+            }
+
+            _cmdFifoJumped = false;
             DecodeFifoPacket(command, wordsNeeded);
             _fifoPacketCount++;
-            _fifoBuffer.RemoveRange(0, wordsNeeded);
-            if (_fifoBuffer.Count > 4096)
-                _fifoBuffer.RemoveRange(0, _fifoBuffer.Count - 4096);
+            if (!_cmdFifoJumped)
+                _cmdFifoReadIndex = (_cmdFifoReadIndex + wordsNeeded) & CmdFifoMask;
         }
+    }
+
+    private bool HasCommandFifoWords(int start, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            if (!_cmdFifoValid[(start + i) & CmdFifoMask])
+                return false;
+        }
+
+        return true;
     }
 
     private void DecodeFifoPacket(uint command, int wordsNeeded)
@@ -9032,6 +9268,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         _fifoPacketTypeCounts[command & 7u]++;
         switch (command & 7u)
         {
+            case 0:
+                DecodeFifoType0(command);
+                break;
             case 1:
                 DecodeFifoType1(command);
                 break;
@@ -9048,13 +9287,23 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
     }
 
+    private void DecodeFifoType0(uint command)
+    {
+        int function = (int)((command >> 3) & 7u);
+        if (function == 3)
+        {
+            _cmdFifoReadIndex = (int)((command >> 6) & 0x7fffffu) & CmdFifoMask;
+            _cmdFifoJumped = true;
+        }
+    }
+
     private void DecodeFifoType1(uint command)
     {
         int count = (int)(command >> 16);
         int increment = ((command >> 15) & 1u) != 0 ? 1 : 0;
         uint target = (command >> 3) & 0xfffu;
         for (int i = 0; i < count; i++, target += (uint)increment)
-            WriteRegister(target << 2, _fifoBuffer[1 + i]);
+            WriteCmdFifoRegister(target, _fifoBuffer[1 + i]);
     }
 
     private void DecodeFifoType4(uint command)
@@ -9066,9 +9315,12 @@ internal class VoodooBringupBackend : IVoodooBackend
             if (((command >> bit) & 1u) == 0)
                 continue;
 
-            WriteRegister(target << 2, _fifoBuffer[source++]);
+            WriteCmdFifoRegister(target, _fifoBuffer[source++]);
         }
     }
+
+    private void WriteCmdFifoRegister(uint target, uint value)
+        => WriteRegister((target & 0xffu) << 2, value);
 
     private void DecodeFifoType3(uint command, int wordsNeeded)
     {
@@ -9168,12 +9420,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         _directTriangleCommandCount++;
         ushort color = GetDrawColor();
         DrawTriangleWire(
-            FixedVertexCoordinate(_registers[0x00]),
-            FixedVertexCoordinate(_registers[0x01]),
             FixedVertexCoordinate(_registers[0x02]),
             FixedVertexCoordinate(_registers[0x03]),
             FixedVertexCoordinate(_registers[0x04]),
             FixedVertexCoordinate(_registers[0x05]),
+            FixedVertexCoordinate(_registers[0x06]),
+            FixedVertexCoordinate(_registers[0x07]),
             color);
     }
 
@@ -9242,10 +9494,56 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (color == 0)
             color = 0xffff;
 
+        FillTriangle(ax, ay, bx, by, cx, cy, color);
         DrawLfbLine(ax, ay, bx, by, color);
         DrawLfbLine(bx, by, cx, cy, color);
         DrawLfbLine(cx, cy, ax, ay, color);
     }
+
+    private void FillTriangle(float ax, float ay, float bx, float by, float cx, float cy, ushort color)
+    {
+        if (!float.IsFinite(ax) || !float.IsFinite(ay) ||
+            !float.IsFinite(bx) || !float.IsFinite(by) ||
+            !float.IsFinite(cx) || !float.IsFinite(cy))
+        {
+            return;
+        }
+
+        float area = Edge(ax, ay, bx, by, cx, cy);
+        if (MathF.Abs(area) < 0.001f)
+            return;
+
+        GetClip(out int clipX0, out int clipX1, out int clipY0, out int clipY1);
+        int minX = Math.Clamp((int)MathF.Floor(MathF.Min(ax, MathF.Min(bx, cx))), clipX0, clipX1);
+        int maxX = Math.Clamp((int)MathF.Ceiling(MathF.Max(ax, MathF.Max(bx, cx))), clipX0, clipX1);
+        int minY = Math.Clamp((int)MathF.Floor(MathF.Min(ay, MathF.Min(by, cy))), clipY0, clipY1);
+        int maxY = Math.Clamp((int)MathF.Ceiling(MathF.Max(ay, MathF.Max(by, cy))), clipY0, clipY1);
+        if (maxX <= minX || maxY <= minY)
+            return;
+
+        bool positive = area > 0;
+        ushort[] buffer = GetDrawBuffer();
+        for (int y = minY; y < maxY; y++)
+        {
+            float py = y + 0.5f;
+            int row = y * LfbRowPixels;
+            for (int x = minX; x < maxX; x++)
+            {
+                float px = x + 0.5f;
+                float e0 = Edge(bx, by, cx, cy, px, py);
+                float e1 = Edge(cx, cy, ax, ay, px, py);
+                float e2 = Edge(ax, ay, bx, by, px, py);
+                if (positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0)
+                {
+                    buffer[(row + x) & (LfbPixels - 1)] = color;
+                    _lfbWriteCount++;
+                }
+            }
+        }
+    }
+
+    private static float Edge(float ax, float ay, float bx, float by, float px, float py)
+        => (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 
     private void DrawLfbLine(float ax, float ay, float bx, float by, ushort color)
     {
@@ -9286,21 +9584,21 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void PlotLfbPixel(int x, int y, ushort color)
     {
         GetClip(out int x0, out int x1, out int y0, out int y1);
-        if (x < x0 || x >= x1 || y < y0 || y >= y1 || x < 0 || x >= 1024 || y < 0 || y >= LfbPixels / 1024)
+        if (x < x0 || x >= x1 || y < y0 || y >= y1 || x < 0 || x >= LfbRowPixels || y < 0 || y >= LfbRows)
             return;
 
-        _lfb[(y * 1024 + x) & (LfbPixels - 1)] = color;
+        GetDrawBuffer()[(y * LfbRowPixels + x) & (LfbPixels - 1)] = color;
         _lfbWriteCount++;
     }
 
     private void GetClip(out int x0, out int x1, out int y0, out int y1)
     {
-        uint clipX = _registers[0x46];
-        uint clipY = _registers[0x47];
+        uint clipX = _registers[RegClipLeftRight];
+        uint clipY = _registers[RegClipLowYHighY];
         x0 = Math.Clamp((int)((clipX >> 16) & 0x7ff), 0, 1024);
         x1 = Math.Clamp((int)(clipX & 0x7ff), 0, 1024);
-        y0 = Math.Clamp((int)((clipY >> 16) & 0x7ff), 0, LfbPixels / 1024);
-        y1 = Math.Clamp((int)(clipY & 0x7ff), 0, LfbPixels / 1024);
+        y0 = Math.Clamp((int)((clipY >> 16) & 0x7ff), 0, LfbRows);
+        y1 = Math.Clamp((int)(clipY & 0x7ff), 0, LfbRows);
         if (x1 <= x0)
         {
             x0 = 0;
@@ -9313,6 +9611,242 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
     }
 
+    private int GetLfbPixelOffset(uint byteOffset, bool twoPixels, uint lfbMode)
+    {
+        uint wordOffset = (byteOffset & (LfbBytes - 1u)) >> 2;
+        uint pixelOffset = twoPixels ? wordOffset << 1 : wordOffset;
+        int x = (int)(pixelOffset & (LfbRowPixels - 1));
+        int y = (int)((pixelOffset >> 10) & 0x3ff);
+        if (((lfbMode >> 13) & 1u) != 0)
+            y = GetLfbYOrigin() - y;
+        y = Math.Clamp(y, 0, LfbRows - 1);
+        return y * LfbRowPixels + x;
+    }
+
+    private int GetLfbYOrigin()
+    {
+        int origin = (int)((_registers[RegFbiInit3] >> 22) & 0x3ff);
+        return origin > 0 ? Math.Min(origin, LfbRows - 1) : 479;
+    }
+
+    private ushort[] GetDrawBuffer()
+    {
+        int select = (int)((_registers[RegFbzMode] >> 14) & 0x03u);
+        return _colorBuffers[MapDrawBufferSelect(select)];
+    }
+
+    private ushort[] GetLfbReadBuffer(uint lfbMode)
+    {
+        int select = (int)((lfbMode >> 6) & 0x03u);
+        return _colorBuffers[MapLfbBufferSelect(select)];
+    }
+
+    private ushort[] GetLfbWriteBuffer(uint lfbMode)
+    {
+        int select = (int)((lfbMode >> 4) & 0x03u);
+        return _colorBuffers[MapLfbBufferSelect(select)];
+    }
+
+    private int MapDrawBufferSelect(int select)
+        => select switch
+        {
+            0 => _frontBufferIndex,
+            1 => _backBufferIndex,
+            2 => GetAuxBufferIndex(),
+            _ => _backBufferIndex
+        };
+
+    private int MapLfbBufferSelect(int select)
+        => select switch
+        {
+            0 => _frontBufferIndex,
+            1 => _backBufferIndex,
+            2 => GetAuxBufferIndex(),
+            _ => _frontBufferIndex
+        };
+
+    private int GetAuxBufferIndex()
+    {
+        int count = GetColorBufferCount();
+        if (count < 3)
+            return _backBufferIndex;
+
+        for (int i = 0; i < 3; i++)
+        {
+            if (i != _frontBufferIndex && i != _backBufferIndex)
+                return i;
+        }
+
+        return 2;
+    }
+
+    private int GetColorBufferCount()
+        => ((_registers[RegFbiInit2] >> 4) & 1u) != 0 ? 3 : 2;
+
+    private void SwapBuffers(uint command)
+    {
+        if ((command & 1u) != 0)
+        {
+            _pendingSwapCount = Math.Min(7, _pendingSwapCount + 1);
+            return;
+        }
+
+        ExecuteSwapBuffers(command);
+    }
+
+    private void ExecuteSwapBuffers(uint command)
+    {
+        _swapBufferCount++;
+
+        int count = GetColorBufferCount();
+        if (count >= 3)
+        {
+            _frontBufferIndex = (_frontBufferIndex + 1) % 3;
+            _backBufferIndex = (_frontBufferIndex + 1) % 3;
+        }
+        else
+        {
+            _frontBufferIndex = _backBufferIndex == 0 ? 0 : 1;
+            _backBufferIndex = 1 - _frontBufferIndex;
+        }
+
+        if (((command >> 6) & 1u) != 0)
+            Array.Clear(_colorBuffers[_backBufferIndex]);
+    }
+
+    private static bool IsTwoPixelLfbFormat(int format)
+        => format is 0 or 1 or 2 or 15;
+
+    private static bool TryExpandLfbPixel(uint value, int format, int rgbaLanes, bool highHalf, out ushort rgb565)
+    {
+        int shift = highHalf ? 16 : 0;
+        rgb565 = 0;
+        switch (format)
+        {
+            case 0:
+                rgb565 = ConvertRgb565Lane((ushort)(value >> shift), rgbaLanes);
+                return true;
+            case 1:
+                rgb565 = ConvertXrgb1555Lane((ushort)(value >> shift), rgbaLanes, hasAlphaBit: false);
+                return true;
+            case 2:
+                rgb565 = ConvertXrgb1555Lane((ushort)(value >> shift), rgbaLanes, hasAlphaBit: true);
+                return true;
+            case 4:
+            case 5:
+                if (highHalf)
+                    return false;
+                rgb565 = Convert8888Lane(value, rgbaLanes, hasAlpha: format == 5);
+                return true;
+            case 12:
+                if (highHalf)
+                    return false;
+                rgb565 = ConvertRgb565Lane((ushort)value, rgbaLanes);
+                return true;
+            case 13:
+                if (highHalf)
+                    return false;
+                rgb565 = ConvertXrgb1555Lane((ushort)value, rgbaLanes, hasAlphaBit: false);
+                return true;
+            case 14:
+                if (highHalf)
+                    return false;
+                rgb565 = ConvertXrgb1555Lane((ushort)value, rgbaLanes, hasAlphaBit: true);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static ushort ConvertRgb565Lane(ushort packed, int rgbaLanes)
+    {
+        int r = (rgbaLanes is 1 or 3) ? packed & 0x1f : (packed >> 11) & 0x1f;
+        int g = (packed >> 5) & 0x3f;
+        int b = (rgbaLanes is 1 or 3) ? (packed >> 11) & 0x1f : packed & 0x1f;
+        return (ushort)((r << 11) | (g << 5) | b);
+    }
+
+    private static ushort ConvertXrgb1555Lane(ushort packed, int rgbaLanes, bool hasAlphaBit)
+    {
+        int rShift;
+        int gShift;
+        int bShift;
+        if (rgbaLanes == 2)
+        {
+            rShift = 11;
+            gShift = 6;
+            bShift = 1;
+        }
+        else if (rgbaLanes == 3)
+        {
+            rShift = 1;
+            gShift = 6;
+            bShift = 11;
+        }
+        else if (rgbaLanes == 1)
+        {
+            rShift = 0;
+            gShift = 5;
+            bShift = 10;
+        }
+        else
+        {
+            rShift = 10;
+            gShift = 5;
+            bShift = 0;
+        }
+
+        if (hasAlphaBit)
+        {
+            // The alpha bit does not affect the bringup color buffer, but keeping
+            // the branch here mirrors the Voodoo format split and documents it.
+        }
+
+        int r = (packed >> rShift) & 0x1f;
+        int g = (packed >> gShift) & 0x1f;
+        int b = (packed >> bShift) & 0x1f;
+        return (ushort)((r << 11) | ((g << 1 | g >> 4) << 5) | b);
+    }
+
+    private static ushort Convert8888Lane(uint packed, int rgbaLanes, bool hasAlpha)
+    {
+        int r;
+        int g;
+        int b;
+        if (rgbaLanes == 2)
+        {
+            r = (int)((packed >> 24) & 0xff);
+            g = (int)((packed >> 16) & 0xff);
+            b = (int)((packed >> 8) & 0xff);
+        }
+        else if (rgbaLanes == 3)
+        {
+            r = (int)((packed >> 8) & 0xff);
+            g = (int)((packed >> 16) & 0xff);
+            b = (int)((packed >> 24) & 0xff);
+        }
+        else if (rgbaLanes == 1)
+        {
+            r = (int)(packed & 0xff);
+            g = (int)((packed >> 8) & 0xff);
+            b = (int)((packed >> 16) & 0xff);
+        }
+        else
+        {
+            r = (int)((packed >> 16) & 0xff);
+            g = (int)((packed >> 8) & 0xff);
+            b = (int)(packed & 0xff);
+        }
+
+        if (hasAlpha)
+        {
+            // Alpha is consumed by the real pixel pipeline; the bringup backend
+            // stores only the visible RGB surface for now.
+        }
+
+        return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    }
+
     private ushort GetDrawColor()
     {
         ushort color = FloatColorToRgb565(
@@ -9322,11 +9856,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (color != 0)
             return color;
 
-        color = ArgbToRgb565(_registers[0x52]);
+        color = ArgbToRgb565(_registers[RegColor1]);
         if (color == 0)
-            color = ArgbToRgb565(_registers[0x51]);
+            color = ArgbToRgb565(_registers[RegColor0]);
         if (color == 0)
-            color = (ushort)_registers[0x4c];
+            color = (ushort)_registers[RegZaColor];
         return color == 0 ? (ushort)0xffff : color;
     }
 
@@ -9512,9 +10046,11 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
     private readonly bool _traceInterestingFifo = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_INTERESTING") == "1";
     private readonly bool _traceLfb = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB") == "1";
     private readonly bool _traceTexture = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX") == "1";
+    private readonly int _registerTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_REG_LIMIT", 256);
     private readonly int _fifoTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FIFO_LIMIT", 64);
     private readonly int _lfbTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB_LIMIT", 64);
     private readonly int _textureTraceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEX_LIMIT", 64);
+    private int _registerTraceCount;
     private int _fifoTraceCount;
     private int _lfbTraceCount;
     private int _textureTraceCount;
@@ -9529,28 +10065,23 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
     public override void WriteRegister(uint address, uint value)
     {
         base.WriteRegister(address, value);
-        if (_traceRegisters)
-            Console.WriteLine($"[GAUNTDL:VOODOO] reg[{address:x8}]={value:x8}");
+        if (_traceRegisters && _registerTraceCount++ < _registerTraceLimit)
+            Console.WriteLine($"[GAUNTDL:VOODOO] reg[{address:x8}:{DescribeRegister(address)}]={value:x8}");
     }
 
-    public override void WriteFifo(ReadOnlySpan<uint> words)
+    public override void WriteFifo(uint wordOffset, uint value)
     {
-        base.WriteFifo(words);
+        base.WriteFifo(wordOffset, value);
         if (_traceRegisters)
-            Console.WriteLine($"[GAUNTDL:VOODOO] fifo words={words.Length}");
-        else if (_traceFifo)
+            Console.WriteLine($"[GAUNTDL:VOODOO] fifo[{wordOffset:x4}]={value:x8}");
+        else if (_traceFifo && _fifoTraceCount++ < _fifoTraceLimit)
         {
-            for (int i = 0; i < words.Length && _fifoTraceCount < _fifoTraceLimit; i++, _fifoTraceCount++)
-                Console.WriteLine($"[GAUNTDL:VOODOO] fifo[{_fifoTraceCount:x6}]={words[i]:x8}");
+            Console.WriteLine($"[GAUNTDL:VOODOO] fifo[{wordOffset:x4}]={value:x8}");
         }
-        else if (_traceInterestingFifo)
+        else if (_traceInterestingFifo && _fifoTraceCount < _fifoTraceLimit)
         {
-            for (int i = 0; i < words.Length && _fifoTraceCount < _fifoTraceLimit; i++)
-            {
-                uint word = words[i];
-                if (IsInterestingFifoWord(word, out string description))
-                    Console.WriteLine($"[GAUNTDL:VOODOO] fifoInteresting[{_fifoTraceCount++:x6}]={word:x8} {description}");
-            }
+            if (IsInterestingFifoWord(value, out string description))
+                Console.WriteLine($"[GAUNTDL:VOODOO] fifoInteresting[{_fifoTraceCount++:x6}]@{wordOffset:x4}={value:x8} {description}");
         }
     }
 
@@ -9570,6 +10101,36 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
 
     private static int ParseTraceLimit(string name, int fallback)
         => int.TryParse(Environment.GetEnvironmentVariable(name), out int value) && value >= 0 ? value : fallback;
+
+    private static string DescribeRegister(uint address)
+    {
+        uint register = (address >> 2) & 0x3ffu;
+        return register switch
+        {
+            0x20 => "triangleCMD",
+            0x40 => "ftriangleCMD",
+            0x41 => "fbzColorPath",
+            0x42 => "fogMode",
+            0x43 => "alphaMode",
+            0x44 => "fbzMode",
+            0x45 => "lfbMode",
+            0x46 => "clipLeftRight",
+            0x47 => "clipLowYHighY",
+            0x49 => "fastfillCMD",
+            0x4a => "swapbufferCMD",
+            0x4c => "zaColor",
+            0x51 => "color0",
+            0x52 => "color1",
+            0x80 => "fbiInit4",
+            0x81 => "vRetrace",
+            0x83 => "videoDimensions",
+            0x84 => "fbiInit0",
+            0x85 => "fbiInit1",
+            0x86 => "fbiInit2",
+            0x87 => "fbiInit3",
+            _ => $"0x{register:x3}"
+        };
+    }
 
     private static bool IsInterestingFifoWord(uint word, out string description)
     {

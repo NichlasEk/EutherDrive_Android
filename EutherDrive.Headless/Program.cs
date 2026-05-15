@@ -36,6 +36,7 @@ using EutherDrive.Core.Arcade.Snk;
 using EutherDrive.Core.Arcade.System32;
 using EutherDrive.Core.Arcade.Taito;
 using EutherDrive.Core.Arcade.Toaplan;
+using EutherDrive.Core.Arcade.Vegas;
 using EutherDrive.Platforms.DataEast.Deco32;
 using EutherDrive.Audio;
 using EutherDrive.Core.Cpu.M68000Emu;
@@ -300,7 +301,14 @@ class Program
         string romPath = args[0];
         int framesToRun = args.Length > 1 && int.TryParse(args[1], out int f) ? f : DefaultFrames;
 
-        if (!File.Exists(romPath))
+        string? earlyCoreOverride = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_CORE");
+        bool allowRomDirectory =
+            string.Equals(earlyCoreOverride, "gauntdl", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(earlyCoreOverride, "gauntdl24", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(earlyCoreOverride, "vegas", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(earlyCoreOverride, "midway-vegas", StringComparison.OrdinalIgnoreCase);
+
+        if (!File.Exists(romPath) && !(allowRomDirectory && Directory.Exists(romPath)))
         {
             Console.Error.WriteLine($"Error: ROM file not found: {romPath}");
             return 1;
@@ -366,6 +374,11 @@ class Program
                 || string.Equals(coreOverride, "s32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "sega-system32", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && System32Adapter.IsSupportedArchive(romPath));
+            bool useGauntletDarkLegacy = string.Equals(coreOverride, "gauntdl", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "gauntdl24", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "vegas", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "midway-vegas", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && GauntletDarkLegacyAdapter.IsSupportedPath(romPath));
             bool useDeco32 = string.Equals(coreOverride, "deco32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-deco32", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "nslasher", StringComparison.OrdinalIgnoreCase)
@@ -421,6 +434,7 @@ class Program
                 useCps1 = false;
                 useCps2 = false;
                 useSystem32 = false;
+                useGauntletDarkLegacy = false;
                 useDeco32 = false;
                 useBoogwing = false;
                 useHshavoc = false;
@@ -751,6 +765,55 @@ class Program
                 Console.WriteLine($"[HEADLESS] Batsugun final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={batsugun.FrameCounter ?? -1}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 PrintHeadlessPerf("Batsugun", framesToRun, runTicksTotal, runTicksMin, runTicksMax, batsugun.GetTargetFps());
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useGauntletDarkLegacy)
+            {
+                Console.WriteLine("[HEADLESS] Using Midway Vegas Gauntlet Dark Legacy core");
+                if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
+                    Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
+
+                var gauntlet = new GauntletDarkLegacyAdapter();
+                gauntlet.LoadRom(romPath);
+
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                ReadOnlySpan<byte> fbIn = gauntlet.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    long runStart = Stopwatch.GetTimestamp();
+                    gauntlet.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+
+                    if (frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    {
+                        ReadOnlySpan<byte> fb = gauntlet.GetFrameBuffer(out int w, out int h, out int s);
+                        var stats = GetFrameStats(fb, w, h, s);
+                        ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                        unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                        lastFingerprint = fingerprint;
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: gauntdl_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={gauntlet.FrameCounter ?? -1} {gauntlet.DebugStatus}");
+                        if (traceFrames || frame == 0 || frame == 5 || frame == 10)
+                            DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_gauntdl_frame{frame}.ppm"));
+                    }
+                }
+
+                ReadOnlySpan<byte> fbOut = gauntlet.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] GauntletDL final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} frameCounter={gauntlet.FrameCounter ?? -1} {gauntlet.DebugStatus}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                PrintHeadlessPerf("GauntletDL", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 57.0);
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
