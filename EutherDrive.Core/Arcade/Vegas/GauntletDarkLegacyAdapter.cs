@@ -9151,6 +9151,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegCmdFifoRdPtr = 0x1e8 >> 2;
     private const int RegCmdFifoDepth = 0x1f4 >> 2;
     private const int RegCmdFifoHoles = 0x1f8 >> 2;
+    private const uint RegBltSrcBaseAddr = 0x2c0u >> 2;
     private const int RegFbiInit2 = 0x218 >> 2;
     private const int RegFbiInit3 = 0x21c >> 2;
 
@@ -9587,7 +9588,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         for (uint regbit = 3; regbit <= 31 && source < _fifoBuffer.Count; regbit++)
         {
             if (((command >> (int)regbit) & 1u) != 0)
-                WriteCmdFifoRegister(regbit - 3u, _fifoBuffer[source++]);
+                WriteCmdFifoRegister(RegBltSrcBaseAddr + regbit - 3u, _fifoBuffer[source++]);
         }
     }
 
