@@ -7757,7 +7757,7 @@ internal sealed class VegasVoodooPciDevice
         {
             < 0x00400000u => ReadRegister(MapRegisterOffset(offset)),
             < 0x00800000u => _voodoo?.ReadLfb32(offset - 0x00400000u) ?? 0,
-            _ => 0
+            _ => _voodoo?.ReadTexture32(offset - 0x00800000u) ?? 0
         };
         Trace($"mem read off={offset:x6} value={value:x8}");
         return true;
@@ -8891,6 +8891,7 @@ public interface IVoodooBackend
     uint ReadStatus(bool vblank);
     uint ReadLfb32(uint offset);
     void WriteLfb32(uint offset, uint value);
+    uint ReadTexture32(uint offset);
     void WriteTexture32(uint offset, uint value);
     string DebugStatus { get; }
     void RenderFrame(EutherFrameTarget target);
@@ -8918,6 +8919,7 @@ internal sealed class VoodooFacade : IVoodooBackend
     public uint ReadStatus(bool vblank) => _backend.ReadStatus(vblank);
     public uint ReadLfb32(uint offset) => _backend.ReadLfb32(offset);
     public void WriteLfb32(uint offset, uint value) => _backend.WriteLfb32(offset, value);
+    public uint ReadTexture32(uint offset) => _backend.ReadTexture32(offset);
     public void WriteTexture32(uint offset, uint value) => _backend.WriteTexture32(offset, value);
     public void RenderFrame(EutherFrameTarget target) => _backend.RenderFrame(target);
 }
@@ -8928,6 +8930,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int LfbPixels = LfbBytes / 2;
     private const int LfbRowPixels = 1024;
     private const int LfbRows = LfbPixels / LfbRowPixels;
+    private const int TextureBytes = 8 * 1024 * 1024;
+    private const int TextureWords = TextureBytes / 4;
     private const int CmdFifoWords = 1 << 16;
     private const int CmdFifoMask = CmdFifoWords - 1;
     private const int RegTriangleCommand = 0x80 >> 2;
@@ -8953,6 +8957,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         new ushort[LfbPixels]
     ];
     private readonly List<uint> _fifoBuffer = new();
+    private readonly uint[] _textureMemory = new uint[TextureWords];
     private readonly uint[] _cmdFifoRam = new uint[CmdFifoWords];
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoWords];
     private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
@@ -8975,6 +8980,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _cmdFifoReadIndex;
     private bool _cmdFifoReadPointerWritten;
     private bool _cmdFifoJumped;
+    private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
 
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
@@ -9085,8 +9091,12 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public virtual void WriteTexture32(uint offset, uint value)
     {
+        _textureMemory[(offset >> 2) & (TextureWords - 1)] = value;
         _textureWriteCount++;
     }
+
+    public virtual uint ReadTexture32(uint offset)
+        => _textureMemory[(offset >> 2) & (TextureWords - 1)];
 
     public void RenderFrame(EutherFrameTarget target)
     {
@@ -9099,7 +9109,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             Clear(target, 0xff080b0fu);
             DrawRegisterBands(target);
         }
-        DrawViewportOverlay(target);
+        if (_showDebugOverlay)
+            DrawViewportOverlay(target);
     }
 
     private bool TryRenderLfb(EutherFrameTarget target)
@@ -10097,6 +10108,14 @@ internal sealed class VoodooTraceBackend : VoodooBringupBackend
         base.WriteTexture32(offset, value);
         if ((_traceRegisters || _traceTexture) && _textureTraceCount++ < _textureTraceLimit)
             Console.WriteLine($"[GAUNTDL:VOODOO] tex[{offset:x6}]={value:x8}");
+    }
+
+    public override uint ReadTexture32(uint offset)
+    {
+        uint value = base.ReadTexture32(offset);
+        if ((_traceRegisters || _traceTexture) && _textureTraceCount++ < _textureTraceLimit)
+            Console.WriteLine($"[GAUNTDL:VOODOO] texr[{offset:x6}]={value:x8}");
+        return value;
     }
 
     private static int ParseTraceLimit(string name, int fallback)
