@@ -70,6 +70,7 @@ namespace mame
         readonly byte[] m_priority_bitmap = new byte[ScreenWidth * ScreenHeight];
         readonly u16[] m_vdp0_bitmap = new u16[ScreenWidth * ScreenHeight];
         readonly u16[] m_vdp1_bitmap = new u16[ScreenWidth * ScreenHeight];
+        readonly u32[] m_present_bitmap = new u32[ScreenWidth * ScreenHeight];
         byte[][][] m_decoded_tiles = new byte[VdpCount][][];
         int[] m_tile_counts = new int[VdpCount];
         emu_timer m_vdp_irq_timer;
@@ -83,6 +84,7 @@ namespace mame
         int m_external_start_frames;
         bool m_sound_reset_released;
         bool m_video_dirty = true;
+        bool m_present_bitmap_valid;
 
         public batsugun_state(machine_config mconfig, device_type type, string tag)
             : base(mconfig, type, tag)
@@ -914,9 +916,29 @@ namespace mame
                     else
                         mixed = (u16)(((pix0 & 0x0780) > (pix1 & 0x0780)) ? pix1 : pix0);
 
-                    WriteRgb32(bitmapData, rowOffset + (x << 2), m_palette[mixed & (PaletteWords - 1)]);
+                    u32 color = m_palette[mixed & (PaletteWords - 1)];
+                    m_present_bitmap[row + x] = color;
+                    WriteRgb32(bitmapData, rowOffset + (x << 2), color);
                 }
             }
+
+            m_present_bitmap_valid = true;
+        }
+
+        public bool CopyEutherDriveFrame(mame.PointerU32 destination, int width, int height, int rowpixels)
+        {
+            if (!m_present_bitmap_valid || width != ScreenHeight || height != ScreenWidth)
+                return false;
+
+            for (int y = 0; y < height; y++)
+            {
+                int srcX = ScreenWidth - 1 - y;
+                int destRow = y * rowpixels;
+                for (int x = 0; x < width; x++)
+                    destination[destRow + x] = m_present_bitmap[x * ScreenWidth + srcX];
+            }
+
+            return true;
         }
 
         void UpdatePalette(int index)

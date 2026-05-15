@@ -9669,6 +9669,7 @@ public partial class MainWindow : Window
             || core is KovPgmAdapter
             || core is NeoGeoAdapter
             || core is OutZoneAdapter
+            || core is BatsugunAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is BoogwingAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
