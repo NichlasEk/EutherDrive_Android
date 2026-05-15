@@ -6,6 +6,8 @@ Update: 2026-05-07
 
 Update: 2026-05-09
 
+Update: 2026-05-15
+
 ## Scope
 
 This pass continued the Gauntlet Dark Legacy / Midway Vegas bring-up in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`.
@@ -47,6 +49,113 @@ Core builds:
 ```sh
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
 ```
+
+## 2026-05-15 Native DCS Audio Bring-Up Pass
+
+This pass started the real/native DCS audio path for Gauntlet Dark Legacy. The important outcome is that the adapter now has an actual audio buffer path and a MAME-shaped DCS/ADSP boot skeleton, but the game still has not reached the real DCS program upload.
+
+Changed files from this pass:
+
+- `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`
+- `tools/GauntletProbe/Program.cs`
+
+Implemented/verified:
+
+- `GauntletDarkLegacyAdapter.GetAudioBuffer()` now returns the machine DCS frame buffer instead of `ReadOnlySpan<short>.Empty`.
+- `GauntletDarkLegacyMachine` loads `vegassio.bin` into the DCS audio device and runs the audio device each frame.
+- `DcsAudioDevice` now decodes the boot ROM into ADSP program words.
+- Added a first-pass native ADSP-2104 core with boot execution, IRQ2 latch/state, IMASK/ICNTL status, status stack, RTI handling, program/data memory read/write, DAG access, and basic ALU/shift support.
+- DCS latch/status behavior now follows the relevant MAME shape more closely:
+  - host input full reports `0x80`
+  - output empty reports `0x40`
+  - FIFO status contributes the expected `0x08/0x10/0x20` bits
+- DCS stage-1 HLE transfer type `0` is now written as 24-bit ADSP program RAM, not incorrectly as 16-bit DRAM.
+- DCS output latch now has a tiny queue so checksum followed by `000a` does not overwrite the checksum before the host reads it.
+- `DebugStatus` now includes DCS transfer state, transfer type, words left, output queue depth, ADSP PC/PPC/ASTAT/MSTAT/IMASK/ICNTL/IRQ2, and step count.
+- `tools/GauntletProbe` prints adapter debug status at the end of a run.
+
+Build command used:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /p:AllowUnsafeBlocks=true
+```
+
+Result:
+
+```text
+Build succeeded.
+334 warnings, 0 errors.
+```
+
+Latest useful probe:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+    EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=12000 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 12000
+```
+
+Observed status:
+
+```text
+frame=12000
+pc=0xffffffff80042a70
+dcs boot=128w host=10 fifo=3584/0 xfer=0 state=0/0 type=0000 left=0 lc=0c00 out=000a oq=0
+adsp pc=0079 ppc=0079 astat=0002 mstat=0030 imask=0000 icntl=0000 irq2=0/0
+```
+
+Interpretation:
+
+- The DCS native path is wired up and ready to receive the real downloaded sound program.
+- ADSP `pc=0079` is the decoded boot ROM idle loop. This is expected until the host sends the DCS program transfer.
+- `xfer=0` means no real DCS program/data transfer has happened yet.
+- FIFO writes keep increasing in 512-word blocks, which appears to be the host repeating the DCS FIFO self-test/boot-control path rather than starting `001a/002a` program upload.
+- DCS trace confirms only early host writes and sequential FIFO self-test traffic so far.
+
+MAME references used:
+
+- `/home/nichlas/mame/src/mame/shared/dcs.cpp`
+- `/home/nichlas/mame/src/mame/shared/dcs.h`
+- `/home/nichlas/mame/src/mame/midway/vegas.cpp`
+- `/home/nichlas/mame/src/devices/cpu/adsp2100/adsp2100.cpp`
+- `/home/nichlas/mame/src/devices/cpu/adsp2100/2100ops.hxx`
+- `/home/nichlas/mame/src/devices/cpu/adsp2100/2100dasm.cpp`
+
+Current blocker:
+
+- Host/runtime is looping around the DCS/FIFO boot-control area, with PCs around `0xffffffff800428dc` and `0xffffffff80042a70`.
+- IOASIC trace shows the early DCS register traffic and then repeated writes through the shuffled register path. No real stage-1 DCS program transfer is seen.
+- Next work should focus on the host-side DCS boot/FIFO test condition and IOASIC sound status semantics, not on adding more ADSP opcodes yet.
+
+Useful trace commands:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+    EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=100000 \
+    EUTHERDRIVE_GAUNTDL_TRACE_IOASIC=1 \
+    EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_LIMIT=220 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 800
+```
+
+```sh
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+    EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=12000 \
+    EUTHERDRIVE_GAUNTDL_TRACE_DCS=1 \
+    EUTHERDRIVE_GAUNTDL_TRACE_DCS_LIMIT=500 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 5000
+```
+
+Do not lose these details:
+
+- The stage-1 DCS type-0 transfer fix is required for native sound. Without it, real downloaded ADSP code will be corrupted even if host-side boot proceeds.
+- The output latch queue is required so MAME-style delayed checksum/`000a` behavior is not collapsed into a single visible word.
+- The current ADSP core is still incomplete, but it is not the active blocker while `xfer=0`.
 
 ## 2026-05-14 Loaded Runtime Fastpath Pass
 

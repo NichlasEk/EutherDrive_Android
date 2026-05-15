@@ -106,7 +106,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
     {
         sampleRate = AudioSampleRate;
         channels = AudioChannels;
-        return ReadOnlySpan<short>.Empty;
+        return _machine.Audio.GetFrameBuffer();
     }
 
     public void SetInputState(
@@ -187,6 +187,7 @@ internal sealed class GauntletDarkLegacyMachine
         RomLoaded = romSet.MainRom.Length == 0x80000;
         Disk.Attach(romSet.ChdPath);
         Sio.LoadBootRom(romSet.VegasSioRom);
+        Audio.LoadBootRom(romSet.VegasSioRom);
         MemoryMap.LoadMainBootRom(romSet.MainRom);
         MemoryMap.LoadSecurityPic(romSet.SecurityPic);
         MemoryMap.AttachDevices(Sio, Disk, Audio, Voodoo);
@@ -208,6 +209,7 @@ internal sealed class GauntletDarkLegacyMachine
         Cpu.RunProbeFrame();
         Sio.PulseVblank(state: false);
         MemoryMap.StepFrame();
+        Audio.RunFrame();
         if (MemoryMap.ConsumeWatchdogResetRequest())
             Reset();
         RenderFrame(target);
@@ -216,9 +218,12 @@ internal sealed class GauntletDarkLegacyMachine
     public void RenderFrame(EutherFrameTarget target) => Voodoo.RenderFrame(target);
 
     public string GetDebugStatus()
-        => $"pc=0x{Cpu.Pc:X16} op=0x{Cpu.LastFetchedInstruction:X8} " +
-           $"voodoo={(Voodoo.HasVideoActivity ? "active" : "idle")} {Voodoo.DebugStatus} " +
-           $"{MemoryMap.DebugStatus} disk={(Disk.Attached ? "attached" : "missing")}";
+    {
+        return $"pc=0x{Cpu.Pc:X16} op=0x{Cpu.LastFetchedInstruction:X8} " +
+               $"{Cpu.RuntimeDiagnosticStatus} " +
+               $"voodoo={(Voodoo.HasVideoActivity ? "active" : "idle")} {Voodoo.DebugStatus} " +
+               $"{MemoryMap.DebugStatus} {Audio.DebugStatus} disk={(Disk.Attached ? "attached" : "missing")}";
+    }
 }
 
 internal sealed class GauntletRomSet
@@ -401,6 +406,10 @@ internal sealed class MipsR5000Core
     private readonly bool _enableBootLoaderAddressBase = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE");
     private readonly bool _enableBootSerialCopyLoop = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP");
     private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
+    private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
+    private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
+    private readonly bool _enableRuntimeInterruptBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE");
+    private readonly bool _enableDiagnosticRuntimeFastPaths = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME") == "1";
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
@@ -411,6 +420,7 @@ internal sealed class MipsR5000Core
     private int _rd0BootHeaderReadCount;
     private int _rd0BootFileReadCount;
     private int _rd0QioCandidateTraceCount;
+    private int _rd0OpenPollTraceCount;
     private int _loadedBootCacheLoopTraceCount;
     private int _loadedBootCacheLoopSkipTraceCount;
     private int _bootSerialCopyLoopTraceCount;
@@ -438,6 +448,9 @@ internal sealed class MipsR5000Core
     private ulong _instructionCounter;
     private int _traceInstructionCount;
     private int _runtimeLogTraceCount;
+    private int _runtimeTextCallCount;
+    private ulong _lastRuntimeTextPc;
+    private ulong _lastRuntimeTextRa;
     private bool _timerInterruptPending;
     private ulong _hi;
     private ulong _lo;
@@ -453,6 +466,10 @@ internal sealed class MipsR5000Core
     public ulong Cp0Cause => _cp0[13];
     public ulong Cp0Epc => _cp0[14];
     public ulong Cp0ErrorEpc => _cp0[30];
+    public string LastRuntimeText { get; private set; } = "";
+    public string RuntimeDiagnosticStatus
+        => $"rtxt={_runtimeTextCallCount}@0x{_lastRuntimeTextPc:X8}/ra=0x{_lastRuntimeTextRa:X8}" +
+           (string.IsNullOrWhiteSpace(LastRuntimeText) ? "" : $" \"{LastRuntimeText}\"");
 
     public void Reset()
     {
@@ -467,6 +484,7 @@ internal sealed class MipsR5000Core
         _cp0[16] = 0x00026030; // Config: 32-byte cache lines, 2x system clock
         Pc = 0xffffffffbfc00000UL;
         LastFetchedInstruction = 0xffffffff;
+        LastRuntimeText = "";
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -474,6 +492,10 @@ internal sealed class MipsR5000Core
         _immediatePcOverride = 0;
         _instructionCounter = 0;
         _traceInstructionCount = 0;
+        _runtimeLogTraceCount = 0;
+        _runtimeTextCallCount = 0;
+        _lastRuntimeTextPc = 0;
+        _lastRuntimeTextRa = 0;
         _timerInterruptPending = false;
         _hi = 0;
         _lo = 0;
@@ -529,6 +551,16 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeQioErrorPollTail(pc))
             return;
+        if (TryRepairKnownDcsBootCallbackWait(pc))
+            return;
+        if (TryRepairKnownRuntimeFsysQioStatus(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeDiagnosticDrawEntry(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeTextHexDrawWrapper(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeTextDrawEntry(pc))
+            return;
         if (TryFastPathKnownRuntimeTextStateBlitBody(pc))
             return;
         if (TryFastPathKnownGauntletGlideStateEmitCallerEpilogue(pc))
@@ -538,6 +570,10 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeAlignedQwordCopy(pc))
             return;
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeInputPoll(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeStatusBitfieldRead(pc))
             return;
         if (TryFastPathKnownRuntimeBitfieldUpdate(pc))
             return;
@@ -622,13 +658,25 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGlideUiDispatchFromFrameLoop(pc))
             return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeHexFormat(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeStrlen(pc))
+            return;
         if (TryFastPathKnownRuntimeCopyLoop(pc))
+            return;
+        if (TryFastPathKnownRuntimeDwordTouchLoop(pc))
             return;
         if (TryFastPathKnownRuntimeTableLookup(pc))
             return;
         if (TryFastPathKnownRuntimeEventPollWrapper(pc))
             return;
         if (TryFastPathKnownRuntimeFdSlotToHandle(pc))
+            return;
+        if (TryCompleteKnownRuntimeGenericQioWait(pc))
+            return;
+        if (TryCompleteKnownRuntimeRd0OpenPoll(pc))
+            return;
+        if (TryCompleteKnownRuntimeRd0FollowupPoll(pc))
             return;
         if (TryKickKnownRd0AsyncCallback(pc))
             return;
@@ -1691,6 +1739,134 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRuntimeHexFormat(ulong pc)
+    {
+        const ulong entry = 0xffffffff800d0fa8UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x00c0402dU ||
+            _memory.Read32(entry + 0x04UL) != 0x00a61021U ||
+            _memory.Read32(entry + 0x08UL) != 0xa0400000U ||
+            _memory.Read32(entry + 0x0cUL) != 0x24030030U ||
+            _memory.Read32(entry + 0x10UL) != 0x24020020U ||
+            _memory.Read32(entry + 0x14UL) != 0x0067100aU ||
+            _memory.Read32(entry + 0x18UL) != 0x0040382dU ||
+            _memory.Read32(entry + 0x1cUL) != 0x3c028014U ||
+            _memory.Read32(entry + 0x20UL) != 0x24496058U ||
+            _memory.Read32(entry + 0x24UL) != 0x2508ffffU ||
+            _memory.Read32(entry + 0x28UL) != 0x3082000fU ||
+            _memory.Read32(entry + 0x2cUL) != 0x00042102U ||
+            _memory.Read32(entry + 0x34UL) != 0x90430000U ||
+            _memory.Read32(entry + 0x3cUL) != 0x19000003U ||
+            _memory.Read32(entry + 0x40UL) != 0xa0430000U ||
+            _memory.Read32(entry + 0x44UL) != 0x5480fff8U ||
+            _memory.Read32(entry + 0x4cUL) != 0x19000005U ||
+            _memory.Read32(entry + 0x50UL) != 0x00c83023U ||
+            _memory.Read32(entry + 0x54UL) != 0x2508ffffU ||
+            _memory.Read32(entry + 0x58UL) != 0x00a81021U ||
+            _memory.Read32(entry + 0x5cUL) != 0x1d00fffdU ||
+            _memory.Read32(entry + 0x60UL) != 0xa0470000U ||
+            _memory.Read32(entry + 0x64UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x68UL) != 0x00c0102dU)
+        {
+            return false;
+        }
+
+        uint value = (uint)_gpr[4];
+        ulong destination = _gpr[5];
+        int width = (int)_gpr[6];
+        if (width < 0 || width > 64 || !IsMainRamRange(destination, (ulong)width + 1UL))
+            return false;
+
+        byte pad = _gpr[7] != 0 ? (byte)'0' : (byte)' ';
+        Span<byte> output = stackalloc byte[64];
+        for (int i = 0; i < width; i++)
+            output[i] = pad;
+
+        int cursor = width - 1;
+        do
+        {
+            if (cursor < 0)
+                break;
+            output[cursor--] = (byte)(value < 10 ? '0' + value : 'A' + value - 10);
+            value >>= 4;
+        }
+        while (value != 0);
+
+        for (int i = 0; i < width; i++)
+            _memory.Write8(destination + (uint)i, output[i]);
+        _memory.Write8(destination + (uint)width, 0);
+
+        _gpr[2] = (ulong)(uint)width;
+        _gpr[4] = value;
+        _gpr[8] = cursor < 0 ? 0UL : (ulong)(uint)cursor;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (ulong)Math.Max(1, width + 8));
+        _instructionCounter += (ulong)Math.Max(1, width + 8);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
+    }
+
+    private bool TryRepairKnownDcsBootCallbackWait(ulong pc)
+    {
+        if (!_enableDcsBootCallbackRepair)
+            return false;
+
+        ulong flagAddress;
+        ulong resumePc;
+        uint expectedSuccess;
+        if (pc == 0xffffffff8004113cUL || pc == 0xffffffff80041140UL)
+        {
+            if (_memory.Read32(0xffffffff80041130UL) != 0x0c01049aU ||
+                _memory.Read32(0xffffffff80041134UL) != 0xafa0002cU ||
+                _memory.Read32(0xffffffff80041138UL) != 0x8fa20024U ||
+                _memory.Read32(0xffffffff8004113cUL) != 0x1040fffeU ||
+                _memory.Read32(0xffffffff80041144UL) != 0x8fa20024U ||
+                _memory.Read32(0xffffffff80041148UL) != 0x1451ffeeU)
+            {
+                return false;
+            }
+
+            flagAddress = _gpr[29] + 0x24UL;
+            resumePc = 0xffffffff80041144UL;
+            expectedSuccess = 1;
+        }
+        else if (pc == 0xffffffff800411c4UL || pc == 0xffffffff800411c8UL)
+        {
+            if (_memory.Read32(0xffffffff800411b8UL) != 0x0c01049aU ||
+                _memory.Read32(0xffffffff800411bcUL) != 0xafa00054U ||
+                _memory.Read32(0xffffffff800411c0UL) != 0x8fa2004cU ||
+                _memory.Read32(0xffffffff800411c4UL) != 0x1040fffeU ||
+                _memory.Read32(0xffffffff800411ccUL) != 0x8fa2004cU ||
+                _memory.Read32(0xffffffff800411d0UL) != 0x1452001eU)
+            {
+                return false;
+            }
+
+            flagAddress = _gpr[29] + 0x4cUL;
+            resumePc = 0xffffffff800411ccUL;
+            expectedSuccess = 1;
+        }
+        else
+        {
+            return false;
+        }
+
+        if (!IsMainRamRange(flagAddress, 4))
+            return false;
+
+        if (_memory.Read32(flagAddress) == 0)
+            _memory.Write32(flagAddress, expectedSuccess);
+
+        _gpr[2] = expectedSuccess;
+        _gpr[0] = 0;
+        Pc = resumePc;
+        CompleteFastPathStep();
+        return true;
+    }
+
     private bool TryFastPathKnownRuntimeCopyLoop(ulong pc)
     {
         const ulong byteSetup = 0xffffffff8003ce94UL;
@@ -1751,6 +1927,74 @@ internal sealed class MipsR5000Core
             _memory.Read32(baseAddress + 0x98) == 0x2508ffffU &&
             _memory.Read32(baseAddress + 0x9c) == 0xdca90000U &&
             _memory.Read32(baseAddress + 0xa4) == 0xfc890000U;
+    }
+
+    private bool TryFastPathKnownRuntimeDwordTouchLoop(ulong pc)
+    {
+        const ulong delaySlot = 0xffffffff8003d028UL;
+        const ulong loopTarget = 0xffffffff8003d01cUL;
+        if (pc != delaySlot || !_hasPendingBranch || _pendingBranchTarget != loopTarget || (long)_gpr[8] <= 0)
+            return false;
+
+        if (_memory.Read32(loopTarget) != 0x2508ffffU ||
+            _memory.Read32(loopTarget + 0x04UL) != 0xfc850000U ||
+            _memory.Read32(loopTarget + 0x08UL) != 0x1d00fffdU ||
+            _memory.Read32(loopTarget + 0x0cUL) != 0x24840008U ||
+            _memory.Read32(loopTarget + 0x10UL) != 0x1000ffcfU)
+        {
+            return false;
+        }
+
+        ulong remaining = _gpr[8];
+        _gpr[4] += (remaining + 1UL) * 8UL;
+        _gpr[8] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * Math.Min(remaining * 3UL, 262_144UL));
+        _instructionCounter += Math.Min(remaining * 3UL, 262_144UL);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = loopTarget + 0x10UL;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeStrlen(ulong pc)
+    {
+        const ulong entry = 0xffffffff8011fab8UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry) != 0x80820000U ||
+            _memory.Read32(entry + 0x04UL) != 0x10400005U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080182dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x24840001U ||
+            _memory.Read32(entry + 0x10UL) != 0x80820000U ||
+            _memory.Read32(entry + 0x14UL) != 0x5440fffeU ||
+            _memory.Read32(entry + 0x18UL) != 0x24840001U ||
+            _memory.Read32(entry + 0x1cUL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x20UL) != 0x00831023U)
+        {
+            return false;
+        }
+
+        ulong address = _gpr[4];
+        int length = 0;
+        for (; length < 4096; length++)
+        {
+            if (_memory.Read8(address + (uint)length) == 0)
+                break;
+        }
+        if (length >= 4096)
+            return false;
+
+        _gpr[2] = (ulong)length;
+        _gpr[3] = address;
+        _gpr[4] = address + (uint)length;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (ulong)Math.Max(1, length + 4));
+        _instructionCounter += (ulong)Math.Max(1, length + 4);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        return true;
     }
 
     private bool TryFastPathKnownRuntimeByteCopy()
@@ -2234,6 +2478,99 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryCompleteKnownRuntimeRd0OpenPoll(ulong pc)
+    {
+        const ulong branchPc = 0xffffffff80015a2cUL;
+        const ulong rd0Object = 0xffffffff800e7810UL;
+        if (pc != branchPc || _gpr[22] != rd0Object || _gpr[6] != 0)
+            return false;
+
+        uint openState = _memory.Read32(rd0Object + 0x0cUL);
+        uint openStatus = _memory.Read32(rd0Object + 0x14UL);
+        if (openState is not (4U or 7U) || openStatus != 0)
+        {
+            if (_traceRd0Home && _rd0OpenPollTraceCount++ < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:RD0] rd0-open-poll-wait pc={pc:x16} state={openState:x8} " +
+                    $"status={openStatus:x8}");
+            }
+            return false;
+        }
+
+        const uint successStatus = 0x3500U;
+        _memory.Write32(rd0Object + 0x14UL, successStatus);
+        _gpr[6] = successStatus;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 8UL);
+        _instructionCounter += 8UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = branchPc + 0x08UL;
+        if (_traceRd0Home)
+            Console.WriteLine($"[GAUNTDL:RD0] rd0-open-poll-complete pc={pc:x16} state={openState:x8} status={successStatus:x8}");
+        return true;
+    }
+
+    private bool TryCompleteKnownRuntimeGenericQioWait(ulong pc)
+    {
+        const ulong loadPc = 0xffffffff80022aa8UL;
+        if (pc != loadPc && pc != 0xffffffff80022aacUL && pc != 0xffffffff80022ab0UL)
+            return false;
+        if (_gpr[16] == 0 || !IsMainRamRange(_gpr[16], 0x18))
+            return false;
+        if (_memory.Read32(0xffffffff80022aa0UL) != 0x14400004U ||
+            _memory.Read32(0xffffffff80022aa8UL) != 0x8e020014U ||
+            _memory.Read32(0xffffffff80022aacUL) != 0x1040fffeU)
+        {
+            return false;
+        }
+
+        uint status = _memory.Read32(_gpr[16] + 0x14UL);
+        if (status == 0)
+        {
+            status = 0x3500U;
+            _memory.Write32(_gpr[16] + 0x14UL, status);
+        }
+
+        _gpr[2] = SignExtend32(status);
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 4UL);
+        _instructionCounter += 4UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = loadPc + 0x0cUL;
+        if (_traceRd0Home)
+            Console.WriteLine($"[GAUNTDL:QIO] generic-wait-complete pc={pc:x16} object={_gpr[16]:x16} status={status:x8}");
+        return true;
+    }
+
+    private bool TryCompleteKnownRuntimeRd0FollowupPoll(ulong pc)
+    {
+        const ulong loopLoadPc = 0xffffffff80022b88UL;
+        const ulong rd0Object = 0xffffffff800e7810UL;
+        if (pc != loopLoadPc || _gpr[16] != rd0Object)
+            return false;
+
+        uint openState = _memory.Read32(rd0Object + 0x0cUL);
+        uint openStatus = _memory.Read32(rd0Object + 0x14UL);
+        if (openState is not (4U or 7U) || openStatus != 0)
+            return false;
+
+        const uint successStatus = 0x3500U;
+        _memory.Write32(rd0Object + 0x14UL, successStatus);
+        _gpr[2] = successStatus;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 4UL);
+        _instructionCounter += 4UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = loopLoadPc + 0x0cUL;
+        if (_traceRd0Home)
+            Console.WriteLine($"[GAUNTDL:RD0] rd0-followup-poll-complete pc={pc:x16} state={openState:x8} status={successStatus:x8}");
+        return true;
+    }
+
     private void ApplyKnownRd0CallbackRaRestore(ulong pc)
     {
         if (!_hasRd0CallbackRaRestore || pc != _rd0CallbackRestorePc || _gpr[31] != _rd0CallbackRestorePc)
@@ -2263,6 +2600,16 @@ internal sealed class MipsR5000Core
         {
             objectAddress = _gpr[16];
             returnPc = 0xffffffff80022b88UL;
+            return IsMainRamRange(objectAddress, 0x300);
+        }
+
+        if ((pc == 0xffffffff80022aa8UL ||
+             pc == 0xffffffff80022aacUL ||
+             pc == 0xffffffff80022ab0UL) &&
+            _gpr[16] != 0)
+        {
+            objectAddress = _gpr[16];
+            returnPc = 0xffffffff80022aa8UL;
             return IsMainRamRange(objectAddress, 0x300);
         }
 
@@ -2486,8 +2833,19 @@ internal sealed class MipsR5000Core
         }
 
         ulong table = _gpr[16];
-        if (!IsMainRamRange(table, 0x90) ||
-            _memory.Read32(homeSectorBuffer) != 0xfeedf00dU ||
+        if (!IsMainRamRange(table, 0x90))
+        {
+            return;
+        }
+
+        if (_memory.Read32(homeSectorBuffer) != 0xfeedf00dU ||
+            _memory.Read32(homeSectorBuffer + 0x38UL) != 0xfe1dfaedU)
+        {
+            // Vegas keeps redundant home sectors; Gauntlet's boot path reads the primary copy at LBA 1.
+            _memory.TryReadDiskSectorToMemory(1, homeSectorBuffer, 512, out _, out _);
+        }
+
+        if (_memory.Read32(homeSectorBuffer) != 0xfeedf00dU ||
             _memory.Read32(homeSectorBuffer + 0x38UL) != 0xfe1dfaedU)
         {
             return;
@@ -3197,6 +3555,39 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryRepairKnownRuntimeFsysQioStatus(ulong pc)
+    {
+        const ulong statusReadPc = 0xffffffff800d0a10UL;
+        const ulong fsysObject = 0xffffffff802954b0UL;
+        if (!_enableFsysQioBringupRepair || pc != statusReadPc || _gpr[21] != fsysObject)
+            return false;
+        if (_memory.Read32(statusReadPc) != 0x8ea20014U ||
+            _memory.Read32(statusReadPc + 0x04UL) != 0x304200ffU ||
+            _memory.Read32(statusReadPc + 0x08UL) != 0x10400017U ||
+            _memory.Read32(statusReadPc + 0x0cUL) != 0x02238824U)
+        {
+            return false;
+        }
+
+        uint status = _memory.Read32(fsysObject + 0x14UL);
+        if ((status & 0xffU) == 0)
+            return false;
+
+        uint repaired = status & 0xffffff00U;
+        _memory.Write32(fsysObject + 0x14UL, repaired);
+        _gpr[2] = SignExtend32(repaired);
+        _gpr[0] = 0;
+        Pc = statusReadPc + 4UL;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FSYS] repair-qio-status pc={pc:x16} object={fsysObject:x16} " +
+                $"status={status:x8}->{repaired:x8}");
+        }
+        return true;
+    }
+
     private bool TryFastPathKnownRuntimeTextStateBlitBody(ulong pc)
     {
         if (pc is < 0xffffffff800e3500UL or > 0xffffffff800e388cUL)
@@ -3238,6 +3629,146 @@ internal sealed class MipsR5000Core
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * 128UL);
         _instructionCounter += 128UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTextDrawEntry(ulong pc)
+    {
+        const ulong entry = 0xffffffff800e3378UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdff58U ||
+            _memory.Read32(entry + 0x04UL) != 0xafbe00a0U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080f02dU ||
+            _memory.Read32(entry + 0x0cUL) != 0xafb60098U ||
+            _memory.Read32(entry + 0x10UL) != 0x00a0b02dU ||
+            _memory.Read32(entry + 0x14UL) != 0xafb00080U ||
+            _memory.Read32(entry + 0x18UL) != 0x3c108022U ||
+            _memory.Read32(entry + 0x20UL) != 0x2612d8f8U ||
+            _memory.Read32(entry + 0x28UL) != 0x30e20003U ||
+            _memory.Read32(entry + 0x2cUL) != 0xafbf00a4U ||
+            _memory.Read32(entry + 0x64UL) != 0x0c038c26U ||
+            _memory.Read32(entry + 0x6cUL) != 0x06c10005U ||
+            _memory.Read32(0xffffffff800e3888UL) != 0x02a0102dU ||
+            _memory.Read32(0xffffffff800e388cUL) != 0x8fbf00a4U ||
+            _memory.Read32(0xffffffff800e38b4UL) != 0x03e00008U ||
+            _memory.Read32(0xffffffff800e38b8UL) != 0x27bd00a8U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+            return false;
+
+        ulong text = _gpr[6];
+        int length = 0;
+        if (text != 0)
+        {
+            for (; length < 512; length++)
+            {
+                if (_memory.Read8(text + (uint)length) == 0)
+                    break;
+            }
+            if (length >= 512)
+                return false;
+        }
+
+        _gpr[2] = (ulong)(uint)length;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (ulong)Math.Max(1, length + 16));
+        _instructionCounter += (ulong)Math.Max(1, length + 16);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeDiagnosticDrawEntry(ulong pc)
+    {
+        const ulong entry = 0xffffffff800e3decUL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdfe88U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb00168U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080802dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x3c038022U ||
+            _memory.Read32(entry + 0x10UL) != 0xafb1016cU ||
+            _memory.Read32(entry + 0x14UL) != 0x27b10030U ||
+            _memory.Read32(entry + 0x18UL) != 0x8c62d900U ||
+            _memory.Read32(entry + 0x1cUL) != 0x0220202dU ||
+            _memory.Read32(entry + 0x20UL) != 0xafbf0170U ||
+            _memory.Read32(entry + 0x24UL) != 0x24420001U ||
+            _memory.Read32(entry + 0x28UL) != 0x0c0420a6U ||
+            _memory.Read32(entry + 0x30UL) != 0x0c040d5dU ||
+            _memory.Read32(entry + 0x38UL) != 0x0c040947U ||
+            _memory.Read32(entry + 0xa4UL) != 0x8fbf0170U ||
+            _memory.Read32(entry + 0xb0UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0xb4UL) != 0x27bd0178U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+            return false;
+
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 64UL);
+        _instructionCounter += 64UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTextHexDrawWrapper(ulong pc)
+    {
+        const ulong entry = 0xffffffff800e3204UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffc8U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb00028U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080802dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x00c0202dU ||
+            _memory.Read32(entry + 0x10UL) != 0x00e0302dU ||
+            _memory.Read32(entry + 0x14UL) != 0x8fa70048U ||
+            _memory.Read32(entry + 0x18UL) != 0xafb20030U ||
+            _memory.Read32(entry + 0x1cUL) != 0x00a0902dU ||
+            _memory.Read32(entry + 0x20UL) != 0xafb1002cU ||
+            _memory.Read32(entry + 0x24UL) != 0x8fb1004cU ||
+            _memory.Read32(entry + 0x28UL) != 0xafbf0034U ||
+            _memory.Read32(entry + 0x2cUL) != 0x0c0343eaU ||
+            _memory.Read32(entry + 0x34UL) != 0x0200202dU ||
+            _memory.Read32(entry + 0x38UL) != 0x0240282dU ||
+            _memory.Read32(entry + 0x3cUL) != 0x27a60010U ||
+            _memory.Read32(entry + 0x40UL) != 0x0c038cdeU ||
+            _memory.Read32(entry + 0x44UL) != 0x0220382dU ||
+            _memory.Read32(entry + 0x58UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x5cUL) != 0x27bd0038U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+            return false;
+
+        ulong width = _gpr[7];
+        if (width > 512UL)
+            return false;
+
+        _gpr[2] = width;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (ulong)Math.Max(1, (int)width + 24));
+        _instructionCounter += (ulong)Math.Max(1, (int)width + 24);
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = returnAddress;
@@ -3454,6 +3985,155 @@ internal sealed class MipsR5000Core
         _gpr[7] = a3;
         Pc = returnAddress;
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeStatusBitfieldRead(ulong pc)
+    {
+        const ulong entry = 0xffffffff800eb834UL;
+        const ulong wrapper = 0xffffffff800eb8a4UL;
+        const ulong table = 0xffffffff80262b90UL;
+
+        bool atEntry = pc == entry;
+        bool atWrapper = pc == wrapper;
+        if (!atEntry && !atWrapper)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x2c820007U ||
+            _memory.Read32(entry + 0x04UL) != 0x14400003U ||
+            _memory.Read32(entry + 0x08UL) != 0x000418c0U ||
+            _memory.Read32(entry + 0x14UL) != 0x00641823U ||
+            _memory.Read32(entry + 0x18UL) != 0x00031880U ||
+            _memory.Read32(entry + 0x1cUL) != 0x3c028026U ||
+            _memory.Read32(entry + 0x20UL) != 0x24422b90U ||
+            _memory.Read32(entry + 0x24UL) != 0x00623821U ||
+            _memory.Read32(entry + 0x28UL) != 0x8ce80008U ||
+            _memory.Read32(entry + 0x2cUL) != 0x8ce3000cU ||
+            _memory.Read32(entry + 0x30UL) != 0x8ce40004U ||
+            _memory.Read32(entry + 0x34UL) != 0x8ce20000U ||
+            _memory.Read32(entry + 0x38UL) != 0x01033026U ||
+            _memory.Read32(entry + 0x3cUL) != 0x10a0000aU ||
+            _memory.Read32(entry + 0x40UL) != 0x00822025U ||
+            _memory.Read32(entry + 0x44UL) != 0x00061827U ||
+            _memory.Read32(entry + 0x48UL) != 0x00641824U ||
+            _memory.Read32(entry + 0x4cUL) != 0x00651824U ||
+            _memory.Read32(entry + 0x50UL) != 0x00c33025U ||
+            _memory.Read32(entry + 0x54UL) != 0x01061026U ||
+            _memory.Read32(entry + 0x58UL) != 0xace2000cU ||
+            _memory.Read32(entry + 0x5cUL) != 0x00051027U ||
+            _memory.Read32(entry + 0x60UL) != 0x00821024U ||
+            _memory.Read32(entry + 0x64UL) != 0x00432025U ||
+            _memory.Read32(entry + 0x68UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x6cUL) != 0x0080102dU ||
+            _memory.Read32(wrapper + 0x00UL) != 0x27bdffe8U ||
+            _memory.Read32(wrapper + 0x04UL) != 0x0080282dU ||
+            _memory.Read32(wrapper + 0x08UL) != 0xafbf0010U ||
+            _memory.Read32(wrapper + 0x0cUL) != 0x0c03ae0dU ||
+            _memory.Read32(wrapper + 0x10UL) != 0x24040005U ||
+            _memory.Read32(wrapper + 0x14UL) != 0x8fbf0010U ||
+            _memory.Read32(wrapper + 0x18UL) != 0x03e00008U ||
+            _memory.Read32(wrapper + 0x1cUL) != 0x27bd0018U)
+        {
+            return false;
+        }
+
+        uint index = atWrapper ? 5u : (uint)_gpr[4];
+        uint mask = atWrapper ? (uint)_gpr[4] : (uint)_gpr[5];
+        ulong returnAddress = _gpr[31];
+        if (atWrapper)
+        {
+            ulong returnOffset = returnAddress & 0x1fffffffUL;
+            if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+                return false;
+        }
+
+        if (index >= 7u)
+        {
+            _gpr[2] = 0;
+            _gpr[0] = 0;
+            Pc = returnAddress;
+            CompleteFastPathStep();
+            return true;
+        }
+
+        ulong record = table + index * 28UL;
+        if (!IsMainRamRange(record, 0x10UL))
+            return false;
+
+        uint oldBits = _memory.Read32(record + 0x08UL);
+        uint sourceBits = _memory.Read32(record + 0x0cUL);
+        uint combined = _memory.Read32(record + 0x04UL) | _memory.Read32(record);
+        uint changed = oldBits ^ sourceBits;
+        uint result;
+
+        if (mask == 0)
+        {
+            result = combined;
+        }
+        else
+        {
+            uint selected = ~changed & combined & mask;
+            _memory.Write32(record + 0x0cUL, oldBits ^ (changed | selected));
+            result = (~mask & combined) | selected;
+        }
+
+        _gpr[2] = SignExtend32(result);
+        _gpr[3] = changed;
+        _gpr[4] = combined;
+        _gpr[5] = mask;
+        _gpr[6] = changed | (~changed & combined & mask);
+        _gpr[7] = record;
+        _gpr[8] = SignExtend32(oldBits);
+        _gpr[0] = 0;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeInputPoll(ulong pc)
+    {
+        const ulong entry = 0xffffffff800eb078UL;
+        if (!_enableBootCountDelay || pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffa0U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c028026U ||
+            _memory.Read32(entry + 0x08UL) != 0xafb70054U ||
+            _memory.Read32(entry + 0x0cUL) != 0x24572b90U ||
+            _memory.Read32(entry + 0x10UL) != 0x3c03a4a0U ||
+            _memory.Read32(entry + 0x14UL) != 0x3463000cU ||
+            _memory.Read32(entry + 0x18UL) != 0x3c02a4a0U ||
+            _memory.Read32(entry + 0x1cUL) != 0x3442000aU ||
+            _memory.Read32(entry + 0x20UL) != 0x3c04a4a0U ||
+            _memory.Read32(entry + 0x24UL) != 0x3484000eU ||
+            _memory.Read32(entry + 0x28UL) != 0x3c06a4a0U ||
+            _memory.Read32(entry + 0x2cUL) != 0x34c60008U ||
+            _memory.Read32(entry + 0x30UL) != 0x24070001U ||
+            _memory.Read32(entry + 0x34UL) != 0xafbf005cU ||
+            _memory.Read32(0xffffffff800eb780UL) != 0x8fbf005cU ||
+            _memory.Read32(0xffffffff800eb7a8UL) != 0x03e00008U ||
+            _memory.Read32(0xffffffff800eb7acUL) != 0x27bd0060U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000e0000UL or > 0x000e3000UL)
+            return false;
+
+        // Bringup-only: this runtime helper polls the A4A0 input ports and
+        // fans the result into the debounced bitfield table at 0x80262b90.
+        // Until Gauntlet reaches real Voodoo geometry, treat it as no buttons
+        // pressed so the boot path does not spend most of its frame budget here.
+        _gpr[2] = 0;
+        _gpr[3] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 32UL);
+        _instructionCounter += 32UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
         return true;
     }
 
@@ -5343,6 +6023,16 @@ internal sealed class MipsR5000Core
         if (pending == 0)
             return false;
 
+        if (_enableRuntimeInterruptBridge && IsRuntimeCodeAddress(pc))
+        {
+            // The copied runtime enables Vegas interrupts before the Nile/IOASIC IRQ
+            // controller is complete. Let polling paths advance instead of entering
+            // the game's fatal "unhandled exception" path during bringup.
+            _timerInterruptPending = false;
+            _cp0[13] &= ~Cp0CauseInterruptPendingMask;
+            return false;
+        }
+
         _cp0[14] = CanonicalizeCodeAddress(pc);
         _cp0[13] &= ~Cp0CauseExceptionCodeMask;
         _cp0[12] |= Cp0StatusExl;
@@ -5355,6 +6045,12 @@ internal sealed class MipsR5000Core
             ? 0xffffffffbfc00380UL
             : 0xffffffff80000180UL;
         return true;
+    }
+
+    private static bool IsRuntimeCodeAddress(ulong pc)
+    {
+        ulong physical = pc & 0x1fffffffUL;
+        return physical is >= 0x00000000UL and < 0x01000000UL;
     }
 
     private void UpdateInterruptPendingBits()
@@ -5704,10 +6400,30 @@ internal sealed class MipsR5000Core
 
     private void TraceRuntimeLogCall(ulong pc)
     {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is 0x000e30a0UL or 0x000e3378UL)
+        {
+            _runtimeTextCallCount++;
+            _lastRuntimeTextPc = pc;
+            _lastRuntimeTextRa = _gpr[31];
+            string text = offset == 0x000e30a0UL
+                ? ReadAsciiTraceString(_gpr[4], 160)
+                : PickRuntimeTextArgument();
+            if (LooksLikeRuntimeText(text))
+                LastRuntimeText = text;
+            if (!_traceRuntimeLog || _runtimeLogTraceCount >= 96)
+                return;
+
+            _runtimeLogTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TEXT] pc={pc:x16} ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
+                $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} text=\"{text}\" stable=\"{LastRuntimeText}\"");
+            return;
+        }
+
         if (!_traceRuntimeLog || _runtimeLogTraceCount >= 96)
             return;
 
-        ulong offset = pc & 0x1fffffffUL;
         if (offset is not (0x000fb57cUL or 0x000fbcc0UL or 0x000fcf70UL))
             return;
 
@@ -5716,6 +6432,47 @@ internal sealed class MipsR5000Core
             $"[GAUNTDL:LOG] pc={pc:x16} ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
             $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} text=\"{ReadAsciiTraceString(_gpr[5], 160)}\"");
+    }
+
+    private string PickRuntimeTextArgument()
+    {
+        for (int register = 4; register <= 7; register++)
+        {
+            string text = ReadAsciiTraceString(_gpr[register], 160);
+            if (LooksLikeRuntimeText(text))
+                return text;
+        }
+
+        return "";
+    }
+
+    private static bool LooksLikeRuntimeText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        if (text.All(ch => ch is >= '0' and <= '9' or >= 'A' and <= 'F' or >= 'a' and <= 'f'))
+            return false;
+
+        int printable = 0;
+        foreach (char ch in text)
+        {
+            if (ch is >= ' ' and <= '~')
+                printable++;
+        }
+
+        int meaningful = 0;
+        foreach (char ch in text)
+        {
+            if (ch is >= '0' and <= '9' ||
+                ch is >= 'A' and <= 'Z' ||
+                ch is >= 'a' and <= 'z' ||
+                ch == ' ')
+            {
+                meaningful++;
+            }
+        }
+
+        return printable >= 4 && meaningful >= 4;
     }
 
     private static string DisassembleBrief(uint op)
@@ -5871,6 +6628,12 @@ internal sealed class VegasMemoryMap
     private readonly bool _enableRd0DmaQioComplete = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE");
     private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
     private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
+    private readonly bool _traceIoasic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC") == "1";
+    private readonly int _traceIoasicLimit = ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_LIMIT"), 240);
+    private readonly bool _traceIoasicPic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_PIC") == "1";
+    private readonly int _traceIoasicPicLimit = ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_PIC_LIMIT"), 200);
+    private readonly ushort? _ioasicSoundStatusOverride = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_SOUNDSTAT"));
+    private readonly ushort? _ioasicSoundInputOverride = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_SOUNDIN"));
     private readonly int _nileCpuIrqShift = ParseNileCpuIrqShift();
     private readonly byte[] _timekeeperRam = new byte[0x8000];
     private readonly DateTime _timekeeperEpoch = new(1999, 12, 11, 6, 12, 0);
@@ -5902,6 +6665,16 @@ internal sealed class VegasMemoryMap
     private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
     private bool _ioasicPort0TraceLogged;
+    private int _traceIoasicCount;
+    private int _traceIoasicPicCount;
+    private readonly uint[] _ioasicReadCounts = new uint[16];
+    private readonly uint[] _ioasicWriteCounts = new uint[16];
+    private int _lastIoasicReadRegister = -1;
+    private int _lastIoasicWriteRegister = -1;
+    private ushort _lastIoasicReadValue;
+    private ushort _lastIoasicWriteValue;
+    private int _lastIoasicPhysicalReadRegister = -1;
+    private int _lastIoasicPhysicalWriteRegister = -1;
 
     public VegasMemoryMap()
     {
@@ -5937,7 +6710,9 @@ internal sealed class VegasMemoryMap
     public void LoadMainBootRom(byte[] mainBootRom) => _mainBootRom = mainBootRom.ToArray();
 
     public void LoadSecurityPic(byte[] securityPic) => _securityPic = securityPic.ToArray();
-    public string DebugStatus => $"bram={GetTimekeeperNonDefaultCount()} wdog={_timekeeperWatchdogFrameCountdown} picbram={GetIoasicPicNvramNonDefaultCount()} pic={_ioasicPicState:X2}/{_ioasicPicIndex}/{_ioasicPicTotal}";
+    public string DebugStatus
+        => $"bram={GetTimekeeperNonDefaultCount()} wdog={_timekeeperWatchdogFrameCountdown} " +
+           $"io={GetIoasicDebugStatus()} picbram={GetIoasicPicNvramNonDefaultCount()} pic={_ioasicPicState:X2}/{_ioasicPicIndex}/{_ioasicPicTotal}";
 
     public void SetTraceCpuPc(ulong pc) => _traceCpuPc = pc;
 
@@ -6155,6 +6930,16 @@ internal sealed class VegasMemoryMap
         _timekeeperWatchdogResetRequested = false;
         _cmosUnlocked = false;
         Array.Clear(_ioasicRegisters);
+        Array.Clear(_ioasicReadCounts);
+        Array.Clear(_ioasicWriteCounts);
+        _lastIoasicReadRegister = -1;
+        _lastIoasicWriteRegister = -1;
+        _lastIoasicPhysicalReadRegister = -1;
+        _lastIoasicPhysicalWriteRegister = -1;
+        _lastIoasicReadValue = 0;
+        _lastIoasicWriteValue = 0;
+        _traceIoasicCount = 0;
+        _traceIoasicPicCount = 0;
         if (!_ioasicPicNvramInitialized)
         {
             Array.Fill(_ioasicPicNvram, (byte)0xff);
@@ -6264,6 +7049,9 @@ internal sealed class VegasMemoryMap
             return pciValue;
         }
 
+        if (TryReadChipSelect16(address, out ushort chipSelectValue))
+            return chipSelectValue;
+
         ushort value = (ushort)(Read8(address) | (Read8(address + 1) << 8));
         return value;
     }
@@ -6365,6 +7153,9 @@ internal sealed class VegasMemoryMap
             Trace("write16", address, value, "PCI");
             return;
         }
+
+        if (TryWriteChipSelect16(address, value))
+            return;
 
         Write8(address, (byte)value);
         Write8(address + 1, (byte)(value >> 8));
@@ -6900,7 +7691,7 @@ internal sealed class VegasMemoryMap
     {
         if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
         {
-            uint value = ReadChipSelectByte(chipSelect, offset);
+            uint value = ReadChipSelect32Mapped(chipSelect, offset);
             Trace("read32", FormatChipSelectAddress(chipSelect, offset), value, range.Name);
             return value;
         }
@@ -6914,7 +7705,7 @@ internal sealed class VegasMemoryMap
         if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
         {
             Trace("write32", FormatChipSelectAddress(chipSelect, offset), value, range.Name);
-            WriteChipSelectByte(chipSelect, offset, (byte)(value & 0xff));
+            WriteChipSelect32Mapped(chipSelect, offset, value);
             return;
         }
 
@@ -6945,17 +7736,7 @@ internal sealed class VegasMemoryMap
 
         if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
         {
-            if (chipSelect == 4)
-            {
-                value = (uint)(ReadChipSelectByte(chipSelect, offset) |
-                    (ReadChipSelectByte(chipSelect, offset + 1) << 8) |
-                    (ReadChipSelectByte(chipSelect, offset + 2) << 16) |
-                    (ReadChipSelectByte(chipSelect, offset + 3) << 24));
-            }
-            else
-            {
-                value = ReadChipSelectByte(chipSelect, offset);
-            }
+            value = ReadChipSelect32Mapped(chipSelect, offset);
 
             Trace("read32", address, value, range.Name);
         }
@@ -6965,6 +7746,20 @@ internal sealed class VegasMemoryMap
             Trace("read32", address, value, $"CS{chipSelect} unmapped");
         }
 
+        return true;
+    }
+
+    private bool TryReadChipSelect16(ulong address, out ushort value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out int chipSelect, out uint offset))
+        {
+            value = 0xffff;
+            return false;
+        }
+
+        bool mapped = TryFindRange(chipSelect, offset, out VegasMemoryRange range);
+        value = mapped ? ReadChipSelect16Mapped(chipSelect, offset) : (ushort)0xffff;
+        Trace("read16", address, value, mapped ? range.Name : $"CS{chipSelect} unmapped");
         return true;
     }
 
@@ -7007,27 +7802,31 @@ internal sealed class VegasMemoryMap
 
         if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
         {
-            if (chipSelect == 4)
-            {
-                if (_cmosUnlocked)
-                {
-                    WriteTimekeeper(offset, (byte)value);
-                    WriteTimekeeper(offset + 1, (byte)(value >> 8));
-                    WriteTimekeeper(offset + 2, (byte)(value >> 16));
-                    WriteTimekeeper(offset + 3, (byte)(value >> 24));
-                    _cmosUnlocked = false;
-                }
-            }
-            else
-            {
-                WriteChipSelectByte(chipSelect, offset, (byte)value);
-            }
+            WriteChipSelect32Mapped(chipSelect, offset, value);
 
             Trace("write32", address, value, range.Name);
         }
         else
         {
             Trace("write32", address, value, $"CS{chipSelect} unmapped");
+        }
+
+        return true;
+    }
+
+    private bool TryWriteChipSelect16(ulong address, ushort value)
+    {
+        if (!TryTranslateChipSelectWindow(address, out int chipSelect, out uint offset))
+            return false;
+
+        if (TryFindRange(chipSelect, offset, out VegasMemoryRange range))
+        {
+            WriteChipSelect16Mapped(chipSelect, offset, value);
+            Trace("write16", address, value, range.Name);
+        }
+        else
+        {
+            Trace("write16", address, value, $"CS{chipSelect} unmapped");
         }
 
         return true;
@@ -7043,8 +7842,152 @@ internal sealed class VegasMemoryMap
         return true;
     }
 
+    private uint ReadChipSelect32Mapped(int chipSelect, uint offset)
+    {
+        if ((chipSelect == 6 || chipSelect == 7) && (offset & 0xfffffffcu) == 0x00007000)
+            return _audio?.ReadIdmaData() ?? UnmappedReadValue;
+
+        if (chipSelect == 4)
+        {
+            return (uint)(ReadChipSelectByte(chipSelect, offset) |
+                (ReadChipSelectByte(chipSelect, offset + 1) << 8) |
+                (ReadChipSelectByte(chipSelect, offset + 2) << 16) |
+                (ReadChipSelectByte(chipSelect, offset + 3) << 24));
+        }
+
+        return ReadChipSelectByte(chipSelect, offset);
+    }
+
+    private ushort ReadChipSelect16Mapped(int chipSelect, uint offset)
+    {
+        if ((chipSelect == 6 || chipSelect == 7) && (offset & 0xfffffffcu) == 0x00007000)
+            return (ushort)(_audio?.ReadIdmaData() ?? 0xffffu);
+
+        return (ushort)(ReadChipSelectByte(chipSelect, offset) |
+            (ReadChipSelectByte(chipSelect, offset + 1) << 8));
+    }
+
+    private void WriteChipSelect32Mapped(int chipSelect, uint offset, uint value)
+    {
+        if (chipSelect == 6)
+        {
+            uint aligned = offset & 0xfffffffcu;
+            if (aligned == 0x00001000)
+            {
+                _audio?.WriteFifo((ushort)value);
+                return;
+            }
+
+            if (aligned == 0x00003000)
+            {
+                _audio?.SetFifoForceFull();
+                return;
+            }
+
+            if (aligned == 0x00005000)
+            {
+                _audio?.WriteIdmaAddress(value);
+                return;
+            }
+
+            if (aligned == 0x00007000)
+            {
+                _audio?.WriteIdmaData(value);
+                return;
+            }
+        }
+
+        if (chipSelect == 7)
+        {
+            uint aligned = offset & 0xfffffffcu;
+            if (aligned == 0x00005000)
+            {
+                _audio?.WriteIdmaAddress(value);
+                return;
+            }
+
+            if (aligned == 0x00007000)
+            {
+                _audio?.WriteIdmaData(value);
+                return;
+            }
+        }
+
+        if (chipSelect == 4)
+        {
+            if (_cmosUnlocked)
+            {
+                WriteTimekeeper(offset, (byte)value);
+                WriteTimekeeper(offset + 1, (byte)(value >> 8));
+                WriteTimekeeper(offset + 2, (byte)(value >> 16));
+                WriteTimekeeper(offset + 3, (byte)(value >> 24));
+                _cmosUnlocked = false;
+            }
+            return;
+        }
+
+        WriteChipSelectByte(chipSelect, offset, (byte)value);
+    }
+
+    private void WriteChipSelect16Mapped(int chipSelect, uint offset, ushort value)
+    {
+        if (chipSelect == 6)
+        {
+            uint aligned = offset & 0xfffffffeu;
+            if (aligned == 0x00001000)
+            {
+                _audio?.WriteFifo(value);
+                return;
+            }
+
+            if (aligned == 0x00003000)
+            {
+                _audio?.SetFifoForceFull();
+                return;
+            }
+
+            if (aligned == 0x00005000)
+            {
+                _audio?.WriteIdmaAddress(value);
+                return;
+            }
+
+            if (aligned == 0x00007000)
+            {
+                _audio?.WriteIdmaData16(value);
+                return;
+            }
+        }
+
+        if (chipSelect == 7)
+        {
+            uint aligned = offset & 0xfffffffeu;
+            if (aligned == 0x00005000)
+            {
+                _audio?.WriteIdmaAddress(value);
+                return;
+            }
+
+            if (aligned == 0x00007000)
+            {
+                _audio?.WriteIdmaData16(value);
+                return;
+            }
+        }
+
+        WriteChipSelectByte(chipSelect, offset, (byte)value);
+        WriteChipSelectByte(chipSelect, offset + 1, (byte)(value >> 8));
+    }
+
     private byte ReadChipSelectByte(int chipSelect, uint offset)
     {
+        uint aligned = offset & 0xfffffffcu;
+        if ((chipSelect == 6 || chipSelect == 7) && aligned == 0x00007000)
+        {
+            uint value = _audio?.ReadIdmaData() ?? UnmappedReadValue;
+            return (byte)(value >> (int)((offset & 3) * 8));
+        }
+
         if (chipSelect == 2)
         {
             if ((offset >> 12) == 0)
@@ -7066,6 +8009,9 @@ internal sealed class VegasMemoryMap
 
     private void WriteChipSelectByte(int chipSelect, uint offset, byte value)
     {
+        if (TryWriteDcsChipSelectLane(chipSelect, offset, value))
+            return;
+
         if (chipSelect == 2)
         {
             switch (offset >> 12)
@@ -7098,6 +8044,33 @@ internal sealed class VegasMemoryMap
             WriteCpuIo(offset, value);
         else if (chipSelect == 6 && offset < 0x40)
             WriteIoasicPackedByte(offset, value);
+    }
+
+    private bool TryWriteDcsChipSelectLane(int chipSelect, uint offset, byte value)
+    {
+        if (chipSelect is not (6 or 7))
+            return false;
+
+        uint aligned = offset & 0xfffffffcu;
+        int lane = (int)(offset & 3);
+        switch (aligned)
+        {
+            case 0x00001000 when chipSelect == 6:
+                _audio?.WriteFifo((ushort)(value << ((lane & 1) * 8)));
+                return true;
+            case 0x00003000 when chipSelect == 6:
+                _audio?.SetFifoForceFull();
+                return true;
+            case 0x00005000:
+                _audio?.WriteIdmaAddress((uint)value << (lane * 8));
+                return true;
+            case 0x00007000:
+                // MAME's 32-bit DSIO handlers still accept narrow accesses through mem_mask.
+                _audio?.WriteIdmaData16((ushort)(value << ((lane & 1) * 8)));
+                return true;
+            default:
+                return false;
+        }
     }
 
     private byte ReadTimekeeper(uint offset)
@@ -7209,7 +8182,10 @@ internal sealed class VegasMemoryMap
 
     private byte ReadIoasicPackedByte(uint offset)
     {
-        ushort value = ReadIoasicRegister(DecodeIoasicRegister(GetIoasicPackedRegister(offset)));
+        int physicalRegister = GetIoasicPackedRegister(offset);
+        int register = DecodeIoasicRegister(physicalRegister);
+        ushort value = ReadIoasicRegister(register);
+        RecordIoasicRead(physicalRegister, register, value);
         return (byte)(value >> (int)((offset & 1) * 8));
     }
 
@@ -7225,6 +8201,7 @@ internal sealed class VegasMemoryMap
             _ioasicRegisters[register] = merged;
 
         WriteIoasicRegister(register, merged);
+        RecordIoasicWrite(physicalRegister, register, merged);
         UpdateIoasicIrq();
     }
 
@@ -7239,9 +8216,9 @@ internal sealed class VegasMemoryMap
             1 => ReadIoasicInputPort(1),
             2 => ReadIoasicInputPort(2),
             3 => ReadIoasicInputPort(3),
-            10 => 0x0048,
-            11 => 0x000a,
-            13 => (ushort)(ReadIoasicPicData() | (ReadIoasicPicStatus() << 8)),
+            10 => ReadIoasicSoundStatus(),
+            11 => ReadIoasicSoundInput(),
+            13 => ReadIoasicPicRegister(),
             _ => _ioasicRegisters[register]
         };
     }
@@ -7264,9 +8241,17 @@ internal sealed class VegasMemoryMap
                 _ioasicRegisters[6] = (ushort)((value & 0x00ff) | 0x3000);
                 break;
             case 8:
+                _audio?.ResetLine((value & 1) != 0);
+                _audio?.SetFifoReset((value & 4) == 0);
                 break;
             case 12:
                 WriteIoasicPic((byte)value);
+                break;
+            case 9:
+                _audio?.WriteData(value);
+                break;
+            case 11:
+                _audio?.Ack();
                 break;
             case 13:
                 break;
@@ -7274,6 +8259,73 @@ internal sealed class VegasMemoryMap
                 UpdateIoasicIrq();
                 break;
         }
+    }
+
+    private ushort ReadIoasicSoundStatus()
+    {
+        if (_ioasicSoundStatusOverride.HasValue)
+            return _ioasicSoundStatusOverride.Value;
+
+        ushort value = 0;
+        if (_audio is not null)
+        {
+            value |= (ushort)(((_audio.Control >> 4) ^ 0x40) & 0x00c0);
+            value |= (ushort)(_audio.FifoStatus & 0x0038);
+            value |= (ushort)(_audio.Data2 & 0xff00);
+            return value;
+        }
+
+        return 0x0048;
+    }
+
+    private ushort ReadIoasicSoundInput()
+    {
+        if (_ioasicSoundInputOverride.HasValue)
+            return _ioasicSoundInputOverride.Value;
+
+        ushort value = _audio?.ReadData() ?? 0x000a;
+        _audio?.Ack();
+        return value;
+    }
+
+    private void RecordIoasicRead(int physicalRegister, int register, ushort value)
+    {
+        _ioasicReadCounts[register & 0x0f]++;
+        _lastIoasicPhysicalReadRegister = physicalRegister & 0x0f;
+        _lastIoasicReadRegister = register & 0x0f;
+        _lastIoasicReadValue = value;
+        TraceIoasic($"read p{physicalRegister & 0x0f:x}->r{register & 0x0f:x} value={value:x4}");
+    }
+
+    private void RecordIoasicWrite(int physicalRegister, int register, ushort value)
+    {
+        _ioasicWriteCounts[register & 0x0f]++;
+        _lastIoasicPhysicalWriteRegister = physicalRegister & 0x0f;
+        _lastIoasicWriteRegister = register & 0x0f;
+        _lastIoasicWriteValue = value;
+        TraceIoasic($"write p{physicalRegister & 0x0f:x}->r{register & 0x0f:x} value={value:x4}");
+    }
+
+    private string GetIoasicDebugStatus()
+    {
+        string lastRead = _lastIoasicReadRegister >= 0
+            ? $"r{_lastIoasicPhysicalReadRegister:X}->{_lastIoasicReadRegister:X}:{_lastIoasicReadValue:X4}"
+            : "r-";
+        string lastWrite = _lastIoasicWriteRegister >= 0
+            ? $"w{_lastIoasicPhysicalWriteRegister:X}->{_lastIoasicWriteRegister:X}:{_lastIoasicWriteValue:X4}"
+            : "w-";
+        return $"{(_ioasicShuffleActive ? "shuf" : "raw")} {lastRead}/{lastWrite} " +
+               $"rd[10]={_ioasicReadCounts[10]} rd[11]={_ioasicReadCounts[11]} rd[13]={_ioasicReadCounts[13]} " +
+               $"wr[12]={_ioasicWriteCounts[12]} wr[15]={_ioasicWriteCounts[15]}";
+    }
+
+    private void TraceIoasic(string message)
+    {
+        if (!_traceIoasic || _traceIoasicCount >= _traceIoasicLimit)
+            return;
+
+        Console.WriteLine($"[GAUNTDL:IOASIC] pc={_traceCpuPc:x16} {message}");
+        _traceIoasicCount++;
     }
 
     private void UpdateIoasicIrq()
@@ -7338,13 +8390,19 @@ internal sealed class VegasMemoryMap
 
     private void GenerateIoasicPicSerialData()
     {
-        uint serialNumber = 346_123_456;
+        const uint gauntletDarkLegacyUpper = 109;
+        const uint serialDigit = 0;
+        uint serialNumber = 123_450 + gauntletDarkLegacyUpper * 1_000_000 + (serialDigit & 0x0f);
         Span<byte> digit = stackalloc byte[9];
-        for (int i = 8; i >= 0; i--)
-        {
-            digit[i] = (byte)(serialNumber % 10);
-            serialNumber /= 10;
-        }
+        digit[0] = (byte)((serialNumber / 100_000_000) % 10);
+        digit[1] = (byte)((serialNumber / 10_000_000) % 10);
+        digit[2] = (byte)((serialNumber / 1_000_000) % 10);
+        digit[3] = (byte)((serialNumber / 100_000) % 10);
+        digit[4] = (byte)((serialNumber / 10_000) % 10);
+        digit[5] = (byte)((serialNumber / 1_000) % 10);
+        digit[6] = (byte)((serialNumber / 100) % 10);
+        digit[7] = (byte)((serialNumber / 10) % 10);
+        digit[8] = (byte)(serialNumber % 10);
 
         _ioasicPicSerialData[12] = 0x12;
         _ioasicPicSerialData[13] = 0x34;
@@ -7373,6 +8431,15 @@ internal sealed class VegasMemoryMap
         _ioasicPicSerialData[0] = (byte)temp;
         _ioasicPicSerialData[1] = (byte)(temp >> 8);
         _ioasicPicSerialData[2] = (byte)(temp >> 16);
+    }
+
+    private ushort ReadIoasicPicRegister()
+    {
+        byte data = ReadIoasicPicData();
+        byte status = ReadIoasicPicStatus();
+        ushort value = (ushort)(data | (status << 8));
+        TraceIoasicPic($"read reg=0d value={value:x4} data={data:x2} status={status:x2} latch={_ioasicPicLatch:x4} index={_ioasicPicIndex} total={_ioasicPicTotal} state={_ioasicPicState:x2}");
+        return value;
     }
 
     private void ResetIoasicPic()
@@ -7407,10 +8474,12 @@ internal sealed class VegasMemoryMap
     private void WriteIoasicPic(byte data)
     {
         _ioasicPicLatch = (ushort)((data & 0x0f) | 0x0480);
+        TraceIoasicPic($"write data={data:x2} latch={_ioasicPicLatch:x4} state={_ioasicPicState:x2} index={_ioasicPicIndex} total={_ioasicPicTotal}");
         if ((data & 0x10) == 0)
             return;
 
         int command = _ioasicPicState != 0 ? _ioasicPicState & 0x0f : _ioasicPicLatch & 0x0f;
+        TraceIoasicPic($"command={command:x1} state={_ioasicPicState:x2} index={_ioasicPicIndex} total={_ioasicPicTotal}");
         switch (command)
         {
             case 0:
@@ -7424,6 +8493,7 @@ internal sealed class VegasMemoryMap
                     _ioasicPicSerialData.CopyTo(_ioasicPicBuffer, 0);
                     _ioasicPicTotal = 16;
                     _ioasicPicIndex = 0;
+                    TraceIoasicPic($"serial prepared {Convert.ToHexString(_ioasicPicBuffer, 0, _ioasicPicTotal).ToLowerInvariant()}");
                 }
                 break;
             case 3:
@@ -7448,6 +8518,16 @@ internal sealed class VegasMemoryMap
     {
         if (_ioasicPicIndex < _ioasicPicTotal)
             _ioasicPicLatch = (ushort)(0x0400 | _ioasicPicBuffer[_ioasicPicIndex++]);
+        TraceIoasicPic($"latch next latch={_ioasicPicLatch:x4} index={_ioasicPicIndex} total={_ioasicPicTotal}");
+    }
+
+    private void TraceIoasicPic(string message)
+    {
+        if (!_traceIoasicPic || _traceIoasicPicCount >= _traceIoasicPicLimit)
+            return;
+
+        Console.WriteLine($"[GAUNTDL:IOASIC:PIC] pc={_traceCpuPc:x16} {message}");
+        _traceIoasicPicCount++;
     }
 
     private void PrepareIoasicPicClockRead()
@@ -7770,6 +8850,9 @@ internal sealed class VegasMemoryMap
         ulong? parsed = ParseOptionalHexUlong(raw);
         return parsed.HasValue && parsed.Value <= ushort.MaxValue ? (ushort)parsed.Value : null;
     }
+
+    private static int ParseOptionalPositiveInt(string? raw, int fallback)
+        => int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
 
     private static TraceAddressFilter[] ParseTraceAddressFilters(string? raw)
     {
@@ -9062,7 +10145,1173 @@ internal sealed class VegasSioDevice
 
 internal sealed class DcsAudioDevice
 {
-    public void Reset() { }
+    private const ushort LatchOutputEmpty = 0x0400;
+    private const ushort LatchInputEmpty = 0x0800;
+    private const int AudioSampleRate = 44_100;
+    private const int AudioChannels = 2;
+    private const int FrameSamples = AudioSampleRate / 60;
+    private const int FifoSize = 512;
+    private const int DramWords = 4 * 1024 * 1024 / 2;
+
+    private readonly bool _trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_DCS") == "1";
+    private readonly bool _traceAdspIo = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_DCS_ADSP_IO") == "1";
+    private readonly bool _enableDiagnosticTone = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DCS_DIAGNOSTIC_TONE") == "1";
+    private readonly int _traceLimit = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_DCS_LIMIT"), out int parsed) && parsed > 0 ? parsed : 120;
+    private readonly ushort[] _dram = new ushort[DramWords];
+    private readonly ushort[] _fifo = new ushort[FifoSize];
+    private readonly short[] _audioFrame = new short[FrameSamples * AudioChannels];
+    private readonly uint[] _programRam = new uint[0x4000];
+    private readonly ushort[] _internalDataRam = new ushort[0x200];
+    private readonly ushort[] _sdrcRegisters = new ushort[4];
+    private readonly ushort[] _adspControlRegisters = new ushort[0x20];
+    private readonly DcsAdsp2104Core _adsp;
+    private readonly Queue<ushort> _outputQueue = new();
+    private byte[] _bootRom = Array.Empty<byte>();
+    private int _traceCount;
+    private int _fifoIn;
+    private int _fifoOut;
+    private int _fifoCount;
+    private bool _fifoForceFull;
+    private bool _fifoFullSelfTestReported;
+    private ushort _lastCommand;
+    private ushort _latchControl;
+    private ushort _inputData;
+    private ushort _outputData;
+    private ushort _outputControl;
+    private bool _resetAsserted;
+    private bool _fifoReset;
+    private bool _bootStatusCompat;
+    private uint _idmaAddress;
+    private int _transferState;
+    private int _transferDcsState;
+    private uint _transferStart;
+    private uint _transferStop;
+    private uint _transferType;
+    private int _transferWritesLeft;
+    private ushort _transferSum;
+    private ushort _programHighByte;
+    private int _toneSamplesLeft;
+    private int _tonePhase;
+    private int _toneStep;
+    private int _toneVolume;
+    private ulong _hostWrites;
+    private ulong _fifoWrites;
+    private ulong _transferredWords;
+    private int _bootProgramWords;
+
+    public DcsAudioDevice()
+    {
+        _adsp = new DcsAdsp2104Core(this);
+    }
+
+    public ushort Control => _bootStatusCompat ? (ushort)0 : _latchControl;
+    public ushort FifoStatus
+    {
+        get
+        {
+            ushort result = 0;
+            if (_fifoCount == 0 && !_fifoForceFull)
+                result |= 0x0008;
+            if (_fifoCount >= FifoSize / 2)
+                result |= 0x0010;
+            if (_fifoCount >= FifoSize || _fifoForceFull)
+            {
+                result |= 0x0020;
+                if (!_fifoForceFull && !_fifoFullSelfTestReported && IsSequentialFifoSelfTest())
+                {
+                    _fifoFullSelfTestReported = true;
+                    Trace($"fifo-status selftest-full value={result:x4}; draining for DCS handoff");
+                    ClearFifo();
+                }
+            }
+            return result;
+        }
+    }
+    public ushort Data2 => _outputControl;
+    public string DebugStatus => $"dcs boot={_bootProgramWords}w host={_hostWrites} fifo={_fifoWrites}/{_fifoCount} xfer={_transferredWords} " +
+                                 $"state={_transferDcsState}/{_transferState} type={_transferType:x4} left={_transferWritesLeft} " +
+                                 $"lc={_latchControl:x4} out={_outputData:x4} oq={_outputQueue.Count} {_adsp.DebugStatus}";
+
+    public void LoadBootRom(byte[] bootRom)
+    {
+        _bootRom = bootRom.ToArray();
+        DecodeBootProgram();
+    }
+
+    public void Reset()
+    {
+        _traceCount = 0;
+        _fifoIn = 0;
+        _fifoOut = 0;
+        _fifoCount = 0;
+        _fifoForceFull = false;
+        _fifoFullSelfTestReported = false;
+        _lastCommand = 0;
+        _latchControl = LatchInputEmpty | LatchOutputEmpty;
+        _inputData = 0;
+        _outputData = 0x000a;
+        _outputControl = 0;
+        _outputQueue.Clear();
+        _resetAsserted = false;
+        _fifoReset = false;
+        _bootStatusCompat = true;
+        _idmaAddress = 0;
+        _transferState = 0;
+        _transferDcsState = 0;
+        _transferStart = 0;
+        _transferStop = 0;
+        _transferType = 0;
+        _transferWritesLeft = 0;
+        _transferSum = 0;
+        _programHighByte = 0;
+        _toneSamplesLeft = 0;
+        _tonePhase = 0;
+        _toneStep = 0;
+        _toneVolume = 0;
+        _hostWrites = 0;
+        _fifoWrites = 0;
+        _transferredWords = 0;
+        DecodeBootProgram();
+        _adsp.Reset();
+        Array.Clear(_audioFrame);
+    }
+
+    public void ResetLine(bool stateHigh)
+    {
+        bool asserted = !stateHigh;
+        _resetAsserted = asserted;
+        if (asserted)
+        {
+            _lastCommand = 0;
+            _latchControl = LatchInputEmpty | LatchOutputEmpty;
+            _outputData = 0x000a;
+            _outputControl = 0;
+            _outputQueue.Clear();
+            _transferState = 0;
+            _transferDcsState = 0;
+            _bootStatusCompat = true;
+            DecodeBootProgram();
+            _adsp.Reset();
+        }
+        Trace($"reset state={(stateHigh ? 1 : 0)} asserted={asserted}");
+    }
+
+    public void SetFifoReset(bool asserted)
+    {
+        _fifoReset = asserted;
+        if (asserted)
+        {
+            _fifoIn = 0;
+            _fifoOut = 0;
+            _fifoCount = 0;
+            _fifoForceFull = false;
+            _fifoFullSelfTestReported = false;
+        }
+        Trace($"fifo-reset asserted={asserted}");
+    }
+
+    public void WriteData(ushort value)
+    {
+        _hostWrites++;
+        _bootStatusCompat = false;
+        _lastCommand = value;
+        if (TryPreprocessWrite(value))
+        {
+            Trace($"data-w hle value={value:x4} state={_transferState} dcsState={_transferDcsState}");
+            return;
+        }
+
+        _inputData = value;
+        _latchControl &= unchecked((ushort)~LatchInputEmpty);
+        _adsp.SetIrq2(true);
+        QueueDiagnosticTone(value);
+        Trace($"data-w value={value:x4} input={_inputData:x4}");
+    }
+
+    public ushort ReadData()
+    {
+        ushort value = _outputData;
+        Trace($"data-r value={value:x4} last={_lastCommand:x4} reset={_resetAsserted} lc={_latchControl:x4}");
+        return value;
+    }
+
+    public void Ack()
+    {
+        _latchControl |= LatchOutputEmpty;
+        FlushQueuedOutput();
+        Trace("ack");
+    }
+
+    public void WriteFifo(ushort value)
+    {
+        _bootStatusCompat = false;
+        if (_fifoCount < FifoSize)
+        {
+            _fifo[_fifoIn++ % FifoSize] = value;
+            _fifoCount++;
+            _fifoWrites++;
+        }
+
+        if (_transferState != 0 || _transferDcsState != 0 || (_fifoCount == 1 && (value is 0x001a or 0x002a)))
+            FifoNotify();
+        Trace($"fifo-w value={value:x4} count={_fifoCount}");
+    }
+
+    public void SetFifoForceFull()
+    {
+        _fifoForceFull = true;
+        FifoNotify();
+        Trace("fifo-force-full");
+    }
+
+    public void WriteIdmaAddress(uint value)
+    {
+        _bootStatusCompat = false;
+        _idmaAddress = value & 0x3fffff;
+        Trace($"idma-addr value={value:x8}");
+    }
+
+    public void WriteIdmaData(uint value)
+    {
+        WriteIdmaWord((ushort)value);
+        WriteIdmaWord((ushort)(value >> 16));
+        Trace($"idma-data-w value={value:x8} addr={_idmaAddress:x6}");
+    }
+
+    public void WriteIdmaData16(ushort value)
+    {
+        WriteIdmaWord(value);
+        Trace($"idma-data16-w value={value:x4} addr={_idmaAddress:x6}");
+    }
+
+    public uint ReadIdmaData()
+    {
+        ushort low = ReadIdmaWord();
+        ushort high = ReadIdmaWord();
+        uint value = (uint)(low | (high << 16));
+        Trace($"idma-data-r value={value:x8} addr={_idmaAddress:x6}");
+        return value;
+    }
+
+    public void RunFrame()
+    {
+        if (!_resetAsserted && _bootProgramWords > 0)
+            _adsp.Run(60_000);
+
+        int offset = 0;
+        for (int i = 0; i < FrameSamples; i++)
+        {
+            short sample = 0;
+            if (_toneSamplesLeft > 0)
+            {
+                _tonePhase = (_tonePhase + _toneStep) & 0xffff;
+                int wave = _tonePhase < 0x8000 ? _toneVolume : -_toneVolume;
+                int envelope = Math.Min(_toneSamplesLeft, 512);
+                sample = (short)((wave * envelope) / 512);
+                _toneSamplesLeft--;
+            }
+
+            _audioFrame[offset++] = sample;
+            _audioFrame[offset++] = sample;
+        }
+    }
+
+    public ReadOnlySpan<short> GetFrameBuffer() => _audioFrame;
+
+    internal uint ReadProgramWord(ushort address)
+        => _programRam[address & 0x3fff] & 0x00ffffffu;
+
+    internal void WriteProgramWord(ushort address, uint value)
+        => _programRam[address & 0x3fff] = value & 0x00ffffffu;
+
+    internal ushort ReadDataMemory(ushort address)
+    {
+        address &= 0x3fff;
+        if (address == 0x0400)
+        {
+            ushort value = _inputData;
+            _latchControl |= LatchInputEmpty;
+            _adsp.SetIrq2(false);
+            TraceAdspIo($"input-r value={value:x4} lc={_latchControl:x4}");
+            return value;
+        }
+
+        if (address == 0x0402)
+            return _outputControl;
+        if (address == 0x0403)
+        {
+            ushort status = 0;
+            if ((_latchControl & LatchInputEmpty) == 0)
+                status |= 0x0080;
+            if ((_latchControl & LatchOutputEmpty) != 0)
+                status |= 0x0040;
+            status = (ushort)(status | (FifoStatus & 0x0038));
+            TraceAdspIo($"status-r value={status:x4} lc={_latchControl:x4} fifo={_fifoCount}");
+            return status;
+        }
+        if (address is >= 0x0404 and <= 0x0407)
+        {
+            ushort value = PopFifo();
+            TraceAdspIo($"fifo-r value={value:x4} count={_fifoCount}");
+            return value;
+        }
+        if (address is >= 0x0480 and <= 0x0483)
+            return _sdrcRegisters[address - 0x0480];
+        if (address is >= 0x3800 and <= 0x39ff)
+            return _internalDataRam[address - 0x3800];
+        if (address is >= 0x3fe0 and <= 0x3fff)
+            return _adspControlRegisters[address - 0x3fe0];
+
+        return _dram[address % DramWords];
+    }
+
+    internal void WriteDataMemory(ushort address, ushort value)
+    {
+        address &= 0x3fff;
+        if (address == 0x0400)
+        {
+            _latchControl |= LatchInputEmpty;
+            _adsp.SetIrq2(false);
+            TraceAdspIo($"input-ack lc={_latchControl:x4}");
+            return;
+        }
+
+        if (address == 0x0401)
+        {
+            TraceAdspIo($"output-w value={value:x4}");
+            OutputLatch(value);
+            return;
+        }
+
+        if (address == 0x0402)
+        {
+            _outputControl = value;
+            TraceAdspIo($"control-w value={value:x4}");
+            return;
+        }
+
+        if (address is >= 0x0480 and <= 0x0483)
+        {
+            _sdrcRegisters[address - 0x0480] = value;
+            return;
+        }
+
+        if (address is >= 0x3800 and <= 0x39ff)
+        {
+            _internalDataRam[address - 0x3800] = value;
+            return;
+        }
+
+        if (address is >= 0x3fe0 and <= 0x3fff)
+        {
+            _adspControlRegisters[address - 0x3fe0] = value;
+            return;
+        }
+
+        _dram[address % DramWords] = value;
+    }
+
+    private void DecodeBootProgram()
+    {
+        Array.Clear(_programRam);
+        _bootProgramWords = 0;
+        if (_bootRom.Length < 4)
+            return;
+
+        // MAME's ADSP load_boot_data expands 8-bit DCS boot ROM bytes into 24-bit program words.
+        int pageWords = (_bootRom[3] + 1) * 8;
+        int availableWords = Math.Min(pageWords, Math.Min(_programRam.Length, _bootRom.Length / 4));
+        for (int i = 0; i < availableWords; i++)
+        {
+            int source = i * 4;
+            _programRam[i] = (uint)((_bootRom[source] << 16) | (_bootRom[source + 1] << 8) | _bootRom[source + 2]);
+        }
+
+        _bootProgramWords = availableWords;
+        Trace($"boot-rom decoded words={_bootProgramWords} first={(_bootProgramWords > 0 ? _programRam[0] : 0):x6}");
+    }
+
+    private void WriteIdmaWord(ushort value)
+    {
+        _dram[(int)(_idmaAddress++ % DramWords)] = value;
+        _transferredWords++;
+    }
+
+    private ushort ReadIdmaWord()
+        => _dram[(int)(_idmaAddress++ % DramWords)];
+
+    private void FifoNotify()
+    {
+        while (_fifoCount > 0 && (_transferState != 5 || _fifoCount == _transferWritesLeft || _fifoCount >= 256))
+            TryPreprocessWrite(PopFifo());
+    }
+
+    private bool IsSequentialFifoSelfTest()
+    {
+        if (_fifoCount != FifoSize)
+            return false;
+
+        for (int i = 0; i < FifoSize; i++)
+        {
+            if (_fifo[(_fifoOut + i) % FifoSize] != i + 1)
+                return false;
+        }
+
+        return true;
+    }
+
+    private void ClearFifo()
+    {
+        _fifoIn = 0;
+        _fifoOut = 0;
+        _fifoCount = 0;
+        _fifoForceFull = false;
+    }
+
+    private ushort PopFifo()
+    {
+        if (_fifoCount == 0)
+            return 0xffff;
+
+        ushort value = _fifo[_fifoOut++ % FifoSize];
+        _fifoCount--;
+        return value;
+    }
+
+    private bool TryPreprocessWrite(ushort data)
+    {
+        return _transferDcsState == 0
+            ? TryPreprocessStage1(data)
+            : TryPreprocessStage2(data);
+    }
+
+    private bool TryPreprocessStage1(ushort data)
+    {
+        switch (_transferState)
+        {
+            case 0:
+                if (data == 0x001a)
+                {
+                    _transferState = 1;
+                    return true;
+                }
+
+                if (data == 0x002a)
+                {
+                    _transferDcsState = 1;
+                    return false;
+                }
+                return false;
+            case 1:
+                _transferStart = data;
+                _transferState = 2;
+                return true;
+            case 2:
+                _transferStop = data;
+                _transferState = 3;
+                return true;
+            case 3:
+                _transferType = data;
+                _transferWritesLeft = (int)(_transferStop - _transferStart + 1);
+                if (_transferType == 0)
+                    _transferWritesLeft *= 2;
+                _transferSum = 0;
+                _transferState = 4;
+                return true;
+            case 4:
+                _transferSum += data;
+                if (_transferType == 0)
+                {
+                    if ((_transferWritesLeft & 1) != 0)
+                        _programHighByte = data;
+                    else
+                        WriteProgramTransferWord(_transferStart++, ((uint)_programHighByte << 8) | (data & 0xffu));
+                }
+                else
+                {
+                    WriteDataMemory((ushort)_transferStart++, data);
+                    _transferredWords++;
+                }
+
+                if (--_transferWritesLeft == 0)
+                {
+                    _transferState = 0;
+                    OutputLatch(_transferSum);
+                    OutputLatch(0x000a);
+                }
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool TryPreprocessStage2(ushort data)
+    {
+        switch (_transferState)
+        {
+            case 0:
+                if (data is 0x55d0 or 0x55d1)
+                {
+                    _transferState = 1;
+                    return true;
+                }
+                return false;
+            case 1:
+                _transferStart = (uint)data << 16;
+                _transferState = 2;
+                return true;
+            case 2:
+                _transferStart |= data;
+                _transferState = 3;
+                return true;
+            case 3:
+                _transferStop = (uint)data << 16;
+                _transferState = 4;
+                return true;
+            case 4:
+                _transferStop |= data;
+                _transferWritesLeft = (int)(_transferStop - _transferStart + 1);
+                _transferSum = 0;
+                _transferState = 5;
+                return true;
+            case 5:
+                _transferSum += data;
+                WriteDram(_transferStart++, data);
+                if (--_transferWritesLeft == 0)
+                {
+                    _transferState = 0;
+                    OutputLatch(_transferSum);
+                    _outputControl = (ushort)((_outputControl & ~0xff00) | 0x0300);
+                }
+                return true;
+        }
+
+        return false;
+    }
+
+    private void WriteDram(uint address, ushort value)
+    {
+        _dram[(int)(address % DramWords)] = value;
+        _transferredWords++;
+    }
+
+    private void WriteProgramTransferWord(uint address, uint value)
+    {
+        WriteProgramWord((ushort)address, value);
+        _transferredWords++;
+    }
+
+    private void OutputLatch(ushort value)
+    {
+        if ((_latchControl & LatchOutputEmpty) == 0)
+        {
+            _outputQueue.Enqueue(value);
+            return;
+        }
+
+        _outputData = value;
+        _latchControl &= unchecked((ushort)~LatchOutputEmpty);
+    }
+
+    private void FlushQueuedOutput()
+    {
+        if ((_latchControl & LatchOutputEmpty) == 0 || _outputQueue.Count == 0)
+            return;
+
+        _outputData = _outputQueue.Dequeue();
+        _latchControl &= unchecked((ushort)~LatchOutputEmpty);
+    }
+
+    private void QueueDiagnosticTone(ushort command)
+    {
+        if (!_enableDiagnosticTone || command == 0)
+            return;
+
+        _toneSamplesLeft = AudioSampleRate / 12;
+        _toneStep = 0x100 + ((command & 0x3f) * 17);
+        _toneVolume = 1200 + ((command >> 8) & 0x0f) * 120;
+    }
+
+    private void Trace(string message)
+    {
+        if (!_trace || _traceCount++ >= _traceLimit)
+            return;
+        Console.WriteLine($"[GAUNTDL:DCS] {message}");
+    }
+
+    private void TraceAdspIo(string message)
+    {
+        if (!_traceAdspIo)
+            return;
+        Trace($"adsp-{message}");
+    }
+}
+
+internal sealed class DcsAdsp2104Core
+{
+    private const ushort ZFlag = 0x0001;
+    private const ushort NFlag = 0x0002;
+    private const ushort VFlag = 0x0004;
+    private const ushort CFlag = 0x0008;
+    private const ushort MStatBank = 0x0001;
+
+    private readonly DcsAudioDevice _bus;
+    private readonly bool _trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_ADSP") == "1";
+    private readonly bool _tracePc = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_ADSP_PC") == "1";
+    private readonly int _traceLimit = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_ADSP_LIMIT"), out int parsed) && parsed > 0 ? parsed : 160;
+    private readonly ushort[] _r = new ushort[16];
+    private readonly ushort[] _rAlt = new ushort[16];
+    private readonly ushort[] _i = new ushort[8];
+    private readonly ushort[] _m = new ushort[8];
+    private readonly ushort[] _l = new ushort[8];
+    private readonly ushort[] _pcStack = new ushort[16];
+    private readonly ushort[,] _statStack = new ushort[8, 3];
+    private readonly uint[] _loopStack = new uint[4];
+    private int _pcStackDepth;
+    private int _statStackDepth;
+    private int _loopStackDepth;
+    private ushort _pc;
+    private ushort _ppc;
+    private ushort _loop;
+    private int _loopCondition;
+    private ushort _astat;
+    private ushort _mstat;
+    private ushort _sstat;
+    private ushort _imask;
+    private ushort _icntl;
+    private ushort _cntr;
+    private ushort _px;
+    private ushort _pmovlay;
+    private ushort _dmovlay;
+    private bool _irq2State;
+    private bool _irq2Latch;
+    private int _traceCount;
+    private uint _steps;
+
+    public DcsAdsp2104Core(DcsAudioDevice bus)
+    {
+        _bus = bus;
+    }
+
+    public string DebugStatus => $"adsp pc={_pc:x4} ppc={_ppc:x4} astat={_astat:x4} mstat={_mstat:x4} imask={_imask:x4} icntl={_icntl:x4} irq2={(_irq2State ? 1 : 0)}/{(_irq2Latch ? 1 : 0)} cntr={_cntr:x4} steps={_steps}";
+
+    public void Reset()
+    {
+        Array.Clear(_r);
+        Array.Clear(_rAlt);
+        Array.Clear(_i);
+        Array.Clear(_m);
+        Array.Clear(_l);
+        Array.Clear(_pcStack);
+        Array.Clear(_statStack);
+        Array.Clear(_loopStack);
+        _pcStackDepth = 0;
+        _statStackDepth = 0;
+        _loopStackDepth = 0;
+        _pc = 0;
+        _ppc = 0;
+        _loop = 0xffff;
+        _loopCondition = 0;
+        _astat = 0;
+        _mstat = 0;
+        _sstat = 0;
+        _imask = 0;
+        _icntl = 0;
+        _cntr = 0;
+        _px = 0;
+        _pmovlay = 0;
+        _dmovlay = 0;
+        _irq2State = false;
+        _irq2Latch = false;
+        _steps = 0;
+    }
+
+    public void SetIrq2(bool asserted)
+    {
+        if (asserted && !_irq2State)
+            _irq2Latch = true;
+        _irq2State = asserted;
+    }
+
+    public void Run(int cycles)
+    {
+        for (int i = 0; i < cycles; i++)
+            Step();
+    }
+
+    private void Step()
+    {
+        CheckInterrupts();
+        _ppc = _pc;
+        uint op = _bus.ReadProgramWord(_pc);
+        if (_tracePc && (_steps & 0x3fff) == 0)
+            Trace($"pc={_pc:x4} op={op:x6} astat={_astat:x4} cntr={_cntr:x4}");
+        if (_pc != _loop)
+        {
+            _pc = (ushort)((_pc + 1) & 0x3fff);
+        }
+        else if (Condition(_loopCondition))
+        {
+            _pc = PcStackTop();
+        }
+        else
+        {
+            PopLoop();
+            PopPcValue();
+            _pc = (ushort)((_pc + 1) & 0x3fff);
+        }
+        _steps++;
+
+        switch (Bit(op, 16, 8))
+        {
+            case 0x00:
+                break;
+            case 0x02:
+                break;
+            case 0x04:
+                if (IsBitSet(op, 4))
+                    PopPcValue();
+                break;
+            case 0x09:
+                {
+                    int index = (int)Bit(op, 2, 3);
+                    ModifyAddress(index, (index & 4) | (int)Bit(op, 0, 2));
+                    break;
+                }
+            case 0x0a:
+                if (Condition((int)Bit(op, 0, 4)))
+                {
+                    PopPc();
+                    if (IsBitSet(op, 4))
+                        PopStatus();
+                }
+                break;
+            case 0x0c:
+                ApplyModeControl(op);
+                break;
+            case 0x0d:
+                WriteReg((int)Bit(op, 8, 2), (int)Bit(op, 4, 4), ReadReg((int)Bit(op, 10, 2), (int)Bit(op, 0, 4)));
+                break;
+            case 0x0e:
+            case 0x0f:
+                ExecuteShift(op);
+                break;
+            case 0x12:
+                ExecuteShift(op);
+                if (IsBitSet(op, 15))
+                    DataWriteDag1(op, ReadReg0((int)Bit(op, 4, 4)));
+                else
+                    WriteReg0((int)Bit(op, 4, 4), DataReadDag1(op));
+                break;
+            case 0x13:
+                ExecuteShift(op);
+                if (IsBitSet(op, 15))
+                    DataWriteDag2(op, ReadReg0((int)Bit(op, 4, 4)));
+                else
+                    WriteReg0((int)Bit(op, 4, 4), DataReadDag2(op));
+                break;
+            case >= 0x14 and <= 0x17:
+                PushLoop(op & 0x3ffff);
+                PushPc();
+                break;
+            case >= 0x18 and <= 0x1b:
+                if (Condition((int)Bit(op, 0, 4)))
+                {
+                    _pc = (ushort)Bit(op, 4, 14);
+                    if (_pc == _ppc)
+                        return;
+                }
+                break;
+            case >= 0x1c and <= 0x1f:
+                if (Condition((int)Bit(op, 0, 4)))
+                {
+                    PushPc();
+                    _pc = (ushort)Bit(op, 4, 14);
+                }
+                break;
+            case >= 0x20 and <= 0x27:
+                if (Condition((int)Bit(op, 0, 4)))
+                    ExecuteAluMac(op, destinationBit: IsBitSet(op, 18), constantVariant: IsBitSet(op, 4));
+                break;
+            case >= 0x28 and <= 0x2f:
+                ExecuteAluMac(op, destinationBit: IsBitSet(op, 18), constantVariant: false);
+                WriteReg0((int)Bit(op, 4, 4), ReadReg0((int)Bit(op, 0, 4)));
+                break;
+            case >= 0x30 and <= 0x3f:
+                WriteReg((int)Bit(op, 18, 2), (int)Bit(op, 0, 4), (ushort)Bit(op, 4, 14));
+                break;
+            case >= 0x40 and <= 0x4f:
+                WriteReg0((int)Bit(op, 0, 4), (ushort)Bit(op, 4, 16));
+                break;
+            case >= 0x50 and <= 0x57:
+                ExecuteAluMac(op, destinationBit: (Bit(op, 17, 2) & 1u) != 0, constantVariant: false);
+                WriteReg0((int)Bit(op, 4, 4), ProgramReadDag2(op));
+                break;
+            case >= 0x58 and <= 0x5f:
+                ProgramWriteDag2(op, ReadReg0((int)Bit(op, 4, 4)));
+                ExecuteAluMac(op, destinationBit: (Bit(op, 17, 2) & 1u) != 0, constantVariant: false);
+                break;
+            case >= 0x60 and <= 0x6f:
+                if (IsBitSet(op, 19))
+                    DataWriteDag1(op, ReadReg0((int)Bit(op, 4, 4)));
+                else
+                    WriteReg0((int)Bit(op, 4, 4), DataReadDag1(op));
+                break;
+            case >= 0x70 and <= 0x7f:
+                if (IsBitSet(op, 19))
+                    DataWriteDag2(op, ReadReg0((int)Bit(op, 4, 4)));
+                else
+                    WriteReg0((int)Bit(op, 4, 4), DataReadDag2(op));
+                break;
+            case >= 0x80 and <= 0x8f:
+                WriteReg((int)Bit(op, 18, 2), (int)Bit(op, 0, 4), _bus.ReadDataMemory((ushort)Bit(op, 4, 14)));
+                break;
+            case >= 0x90 and <= 0x9f:
+                _bus.WriteDataMemory((ushort)Bit(op, 4, 14), ReadReg((int)Bit(op, 18, 2), (int)Bit(op, 0, 4)));
+                break;
+            case >= 0xa0 and <= 0xaf:
+                DataWriteDag1(op, (ushort)Bit(op, 4, 16));
+                break;
+            case >= 0xb0 and <= 0xbf:
+                DataWriteDag2(op, (ushort)Bit(op, 4, 16));
+                break;
+            default:
+                Trace($"unsupported pc={_ppc:x4} op={op:x6} top={Bit(op, 16, 8):x2}");
+                break;
+        }
+    }
+
+    private void ExecuteAluMac(uint op, bool destinationBit, bool constantVariant)
+    {
+        int opIndex = (int)Bit(op, 13, 5);
+        ushort x = ReadReg0((int)Bit(op, 8, 3));
+        ushort y = constantVariant ? AdspConstant((int)(Bit(op, 5, 3) | (Bit(op, 11, 2) << 3))) : ReadReg0(4 + (int)Bit(op, 11, 2));
+        int result = opIndex switch
+        {
+            0x10 => y,
+            0x11 => y + 1,
+            0x13 => x + y,
+            0x15 => -y,
+            0x17 => x - y,
+            0x18 => y - 1,
+            0x19 => -y,
+            0x1b => ~y,
+            0x1c => x & y,
+            0x1d => x | y,
+            0x1e => x ^ y,
+            0x1f => Math.Abs((short)x),
+            _ => ReadReg0(10)
+        };
+
+        ushort value = (ushort)result;
+        UpdateNz(value);
+        if (destinationBit)
+            WriteReg0(1, value);
+        else
+            WriteReg0(10, value);
+    }
+
+    private void ExecuteShift(uint op)
+    {
+        int source = (int)Bit(op, 8, 3);
+        ushort value = source == 0 ? ReadReg0(8) : ReadReg0(source);
+        int amount = (sbyte)(op & 0xff);
+        ushort shifted = amount >= 0
+            ? (ushort)(value << Math.Min(amount, 15))
+            : (ushort)(value >> Math.Min(-amount, 15));
+        WriteReg0(14, shifted);
+        UpdateNz(shifted);
+    }
+
+    private ushort DataReadDag1(uint op)
+    {
+        int index = (int)Bit(op, 2, 2);
+        ushort address = _i[index];
+        ushort value = _bus.ReadDataMemory(address);
+        ModifyAddress(index, (int)Bit(op, 0, 2));
+        return value;
+    }
+
+    private ushort DataReadDag2(uint op)
+    {
+        int index = 4 + (int)Bit(op, 2, 2);
+        ushort address = _i[index];
+        ushort value = _bus.ReadDataMemory(address);
+        ModifyAddress(index, 4 + (int)Bit(op, 0, 2));
+        return value;
+    }
+
+    private void DataWriteDag1(uint op, ushort value)
+    {
+        int index = (int)Bit(op, 2, 2);
+        _bus.WriteDataMemory(_i[index], value);
+        ModifyAddress(index, (int)Bit(op, 0, 2));
+    }
+
+    private void DataWriteDag2(uint op, ushort value)
+    {
+        int index = 4 + (int)Bit(op, 2, 2);
+        _bus.WriteDataMemory(_i[index], value);
+        ModifyAddress(index, 4 + (int)Bit(op, 0, 2));
+    }
+
+    private ushort ProgramReadDag2(uint op)
+    {
+        int index = 4 + (int)Bit(op, 2, 2);
+        ushort address = _i[index];
+        uint value = _bus.ReadProgramWord(address);
+        ModifyAddress(index, 4 + (int)Bit(op, 0, 2));
+        _px = (ushort)(value & 0xff);
+        Trace($"pm-r addr={address:x4} value={value:x6} i{index}={_i[index]:x4}");
+        return (ushort)(value >> 8);
+    }
+
+    private void ProgramWriteDag2(uint op, ushort value)
+    {
+        int index = 4 + (int)Bit(op, 2, 2);
+        ushort address = _i[index];
+        uint programWord = (uint)((value << 8) | (_px & 0xff));
+        _bus.WriteProgramWord(address, programWord);
+        ModifyAddress(index, 4 + (int)Bit(op, 0, 2));
+        Trace($"pm-w addr={address:x4} value={programWord:x6} i{index}={_i[index]:x4}");
+    }
+
+    private void ModifyAddress(int iRegister, int mRegister)
+    {
+        int value = _i[iRegister] + (short)_m[mRegister];
+        ushort length = _l[iRegister];
+        if (length != 0)
+        {
+            int mask = length - 1;
+            int baseAddress = _i[iRegister] & ~mask;
+            value = baseAddress | (value & mask);
+        }
+
+        _i[iRegister] = (ushort)value;
+    }
+
+    private ushort ReadReg(int group, int register)
+        => group switch
+        {
+            0 => ReadReg0(register),
+            1 => register switch
+            {
+                <= 3 => _i[register],
+                <= 7 => _m[register - 4],
+                <= 11 => _l[register - 8],
+                14 => _pmovlay,
+                15 => _dmovlay,
+                _ => 0
+            },
+            2 => register switch
+            {
+                <= 3 => _i[register + 4],
+                <= 7 => _m[register],
+                <= 11 => _l[register - 4],
+                _ => 0
+            },
+            3 => register switch
+            {
+                0 => _astat,
+                1 => _mstat,
+                2 => _sstat,
+                3 => _imask,
+                4 => _icntl,
+                5 => _cntr,
+                7 => _px,
+                15 => PopPcValue(),
+                _ => 0
+            },
+            _ => 0
+        };
+
+    private void WriteReg(int group, int register, ushort value)
+    {
+        switch (group)
+        {
+            case 0:
+                WriteReg0(register, value);
+                break;
+            case 1:
+                if (register <= 3) _i[register] = value;
+                else if (register <= 7) _m[register - 4] = value;
+                else if (register <= 11) _l[register - 8] = value;
+                else if (register == 14) _pmovlay = value;
+                else if (register == 15) _dmovlay = value;
+                break;
+            case 2:
+                if (register <= 3) _i[register + 4] = value;
+                else if (register <= 7) _m[register] = value;
+                else if (register <= 11) _l[register - 4] = value;
+                break;
+            case 3:
+                if (register == 0) _astat = (ushort)(value & 0x00ff);
+                else if (register == 1) SetMstat(value);
+                else if (register == 3) _imask = value;
+                else if (register == 4) _icntl = value;
+                else if (register == 5) _cntr = (ushort)(value & 0x3fff);
+                else if (register == 7) _px = value;
+                else if (register == 15) PushPcValue((ushort)(value & 0x3fff));
+                break;
+        }
+    }
+
+    private ushort ReadReg0(int register) => _r[register & 0x0f];
+
+    private void WriteReg0(int register, ushort value) => _r[register & 0x0f] = value;
+
+    private void SetMstat(ushort value)
+    {
+        bool bankBefore = (_mstat & MStatBank) != 0;
+        _mstat = value;
+        bool bankAfter = (_mstat & MStatBank) != 0;
+        if (bankBefore != bankAfter)
+        {
+            for (int i = 0; i < _r.Length; i++)
+                (_r[i], _rAlt[i]) = (_rAlt[i], _r[i]);
+        }
+    }
+
+    private void CheckInterrupts()
+    {
+        bool active = (_icntl & 0x0004) != 0 ? _irq2Latch : _irq2State;
+        if (!active || (_imask & 0x0020) == 0)
+            return;
+
+        _irq2Latch = false;
+        PushPc();
+        PushStatus();
+        _pc = 0x0004;
+        if ((_icntl & 0x0010) != 0)
+            _imask &= 0x001f;
+        else
+            _imask &= 0xffc0;
+        Trace($"irq2 vector pc={_pc:x4} imask={_imask:x4}");
+    }
+
+    private void PushStatus()
+    {
+        if (_statStackDepth >= _statStack.GetLength(0))
+            return;
+
+        _statStack[_statStackDepth, 0] = _mstat;
+        _statStack[_statStackDepth, 1] = _imask;
+        _statStack[_statStackDepth, 2] = _astat;
+        _statStackDepth++;
+    }
+
+    private void PopStatus()
+    {
+        if (_statStackDepth > 0)
+            _statStackDepth--;
+
+        SetMstat(_statStack[_statStackDepth, 0]);
+        _imask = _statStack[_statStackDepth, 1];
+        _astat = _statStack[_statStackDepth, 2];
+    }
+
+    private void ApplyModeControl(uint op)
+    {
+        ushort value = _mstat;
+        if (IsBitSet(op, 5)) value = SetOrClear(value, MStatBank, IsBitSet(op, 4));
+        SetMstat(value);
+    }
+
+    private bool Condition(int condition)
+        => condition switch
+        {
+            0x0 => (_astat & ZFlag) != 0,
+            0x1 => (_astat & ZFlag) == 0,
+            0xa => (_astat & NFlag) != 0,
+            0xb => (_astat & NFlag) == 0,
+            0xf => true,
+            _ => true
+        };
+
+    private void UpdateNz(ushort value)
+    {
+        _astat &= unchecked((ushort)~(NFlag | ZFlag | VFlag | CFlag));
+        if (value == 0)
+            _astat |= ZFlag;
+        if ((value & 0x8000) != 0)
+            _astat |= NFlag;
+    }
+
+    private void PushPc()
+        => PushPcValue(_pc);
+
+    private void PushPcValue(ushort value)
+    {
+        if (_pcStackDepth < _pcStack.Length)
+            _pcStack[_pcStackDepth++] = value;
+    }
+
+    private void PopPc()
+    {
+        _pc = PopPcValue();
+    }
+
+    private ushort PcStackTop()
+        => _pcStackDepth > 0 ? _pcStack[_pcStackDepth - 1] : _pcStack[0];
+
+    private ushort PopPcValue()
+    {
+        if (_pcStackDepth > 0)
+            return _pcStack[--_pcStackDepth];
+        return _pcStack[0];
+    }
+
+    private void PushLoop(uint value)
+    {
+        if (_loopStackDepth < _loopStack.Length)
+            _loopStack[_loopStackDepth++] = value;
+        _loop = (ushort)((value >> 4) & 0x3fff);
+        _loopCondition = (int)(value & 0x0f);
+    }
+
+    private void PopLoop()
+    {
+        if (_loopStackDepth > 0)
+            _loopStackDepth--;
+        if (_loopStackDepth == 0)
+        {
+            _loop = 0xffff;
+            _loopCondition = 0;
+            return;
+        }
+
+        uint value = _loopStack[_loopStackDepth - 1];
+        _loop = (ushort)((value >> 4) & 0x3fff);
+        _loopCondition = (int)(value & 0x0f);
+    }
+
+    private static ushort SetOrClear(ushort value, ushort mask, bool set)
+        => set ? (ushort)(value | mask) : (ushort)(value & ~mask);
+
+    private static uint Bit(uint value, int start, int count = 1)
+        => (value >> start) & ((1u << count) - 1u);
+
+    private static bool IsBitSet(uint value, int bit)
+        => ((value >> bit) & 1u) != 0;
+
+    private static ushort AdspConstant(int index)
+    {
+        ReadOnlySpan<ushort> constants =
+        [
+            0x0001, 0xfffe, 0x0002, 0xfffd, 0x0004, 0xfffb, 0x0008, 0xfff7,
+            0x0010, 0xffef, 0x0020, 0xffdf, 0x0040, 0xffbf, 0x0080, 0xff7f,
+            0x0100, 0xfeff, 0x0200, 0xfdff, 0x0400, 0xfbff, 0x0800, 0xf7ff,
+            0x1000, 0xefff, 0x2000, 0xdfff, 0x4000, 0xbfff, 0x8000, 0x7fff
+        ];
+        return constants[index & 31];
+    }
+
+    private void Trace(string message)
+    {
+        if (!_trace || _traceCount++ >= _traceLimit)
+            return;
+        Console.WriteLine($"[GAUNTDL:ADSP] step={_steps} {message}");
+    }
 }
 
 internal sealed class GauntletInputPanel

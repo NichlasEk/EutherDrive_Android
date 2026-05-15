@@ -90,6 +90,7 @@ else if (extraSteps > 0)
 
 Console.WriteLine($"rom={adapter.RomIdentity?.Name ?? "unknown"}");
 Console.WriteLine($"frame={adapter.FrameCounter}");
+Console.WriteLine($"debug={adapter.DebugStatus}");
 
 object machine = GetField(adapter, "_machine");
 object cpu = GetProperty(machine, "Cpu");
