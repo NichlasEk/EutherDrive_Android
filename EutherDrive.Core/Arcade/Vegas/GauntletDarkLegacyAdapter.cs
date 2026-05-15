@@ -7968,7 +7968,7 @@ internal sealed class VegasVoodooPciDevice
 
         if (offset < 0x00400000u)
         {
-            if (offset >= 0x00200000u && IsCommandFifoEnabled)
+            if (offset >= 0x00200000u && (IsCommandFifoEnabled || IsGlideCommandFifoWindow(offset)))
             {
                 _voodoo?.WriteFifo((offset >> 2) & 0xffffu, value);
                 Trace($"fifo write off={offset:x6} value={value:x8}");
@@ -8028,6 +8028,9 @@ internal sealed class VegasVoodooPciDevice
     }
 
     private bool IsCommandFifoEnabled => ((_registers[RegFbiInit7] >> 8) & 1u) != 0;
+
+    private static bool IsGlideCommandFifoWindow(uint offset)
+        => offset is >= 0x00200000u and < 0x00300000u;
 
     private uint ReadHvRetrace()
     {
@@ -9185,6 +9188,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _cmdFifoReadPointerWritten;
     private bool _cmdFifoJumped;
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
+    private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
+    private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
+    private int _drawTraceCount;
 
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
@@ -9475,6 +9481,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (color == 0)
             color = (ushort)_registers[RegZaColor];
 
+        TraceDraw($"fastfill clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
         ushort[] buffer = GetDrawBuffer();
         for (int y = y0; y < y1; y++)
         {
@@ -9696,7 +9703,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void DrawIntegerTriangle()
     {
         _directTriangleCommandCount++;
-        ushort color = GetDrawColor();
+        ushort color = GetIntegerDrawColor();
+        TraceDraw($"itri color=0x{color:X4} xy=({FixedVertexCoordinate(_registers[0x02]):F1},{FixedVertexCoordinate(_registers[0x03]):F1})/({FixedVertexCoordinate(_registers[0x04]):F1},{FixedVertexCoordinate(_registers[0x05]):F1})/({FixedVertexCoordinate(_registers[0x06]):F1},{FixedVertexCoordinate(_registers[0x07]):F1}) fbz=0x{_registers[RegFbzMode]:X8}");
         DrawTriangleWire(
             FixedVertexCoordinate(_registers[0x02]),
             FixedVertexCoordinate(_registers[0x03]),
@@ -9710,7 +9718,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void DrawFloatTriangle()
     {
         _directTriangleCommandCount++;
-        ushort color = GetDrawColor();
+        ushort color = GetFloatDrawColor();
+        TraceDraw($"ftri color=0x{color:X4} xy=({FloatFromRegister(_registers[0x22]):F1},{FloatFromRegister(_registers[0x23]):F1})/({FloatFromRegister(_registers[0x24]):F1},{FloatFromRegister(_registers[0x25]):F1})/({FloatFromRegister(_registers[0x26]):F1},{FloatFromRegister(_registers[0x27]):F1}) rgb=({FloatFromRegister(_registers[0x28]):F3},{FloatFromRegister(_registers[0x29]):F3},{FloatFromRegister(_registers[0x2a]):F3}) fbz=0x{_registers[RegFbzMode]:X8}");
         DrawTriangleWire(
             FloatFromRegister(_registers[0x22]),
             FloatFromRegister(_registers[0x23]),
@@ -9758,14 +9767,18 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private void DrawSetupTriangleVertices()
-        => DrawTriangleWire(
+    {
+        ushort color = _setupVertices[2].Color != 0 ? _setupVertices[2].Color : GetDrawColor();
+        TraceDraw($"stri color=0x{color:X4} xy=({_setupVertices[0].X:F1},{_setupVertices[0].Y:F1})/({_setupVertices[1].X:F1},{_setupVertices[1].Y:F1})/({_setupVertices[2].X:F1},{_setupVertices[2].Y:F1}) setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
+        DrawTriangleWire(
             _setupVertices[0].X,
             _setupVertices[0].Y,
             _setupVertices[1].X,
             _setupVertices[1].Y,
             _setupVertices[2].X,
             _setupVertices[2].Y,
-            _setupVertices[2].Color != 0 ? _setupVertices[2].Color : GetDrawColor());
+            color);
+    }
 
     private void DrawTriangleWire(float ax, float ay, float bx, float by, float cx, float cy, ushort color)
     {
@@ -9888,6 +9901,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             y1 = 480;
         }
     }
+
+    private void TraceDraw(string message)
+    {
+        if (_traceDraw && _drawTraceCount++ < _drawTraceLimit)
+            Console.WriteLine($"[GAUNTDL:VOODOO-DRAW] {message}");
+    }
+
+    private static int ParseDrawTraceLimit(string name, int fallback)
+        => int.TryParse(Environment.GetEnvironmentVariable(name), out int value) && value >= 0 ? value : fallback;
 
     private int GetLfbPixelOffset(uint byteOffset, bool twoPixels, uint lfbMode)
     {
@@ -10151,10 +10173,11 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private ushort GetDrawColor()
     {
-        ushort color = FloatColorToRgb565(
-            FloatFromRegister(_registers[0x28]),
-            FloatFromRegister(_registers[0x29]),
-            FloatFromRegister(_registers[0x2a]));
+        ushort color = GetFloatDrawColorOrZero();
+        if (color != 0)
+            return color;
+
+        color = GetIntegerDrawColorOrZero();
         if (color != 0)
             return color;
 
@@ -10165,6 +10188,27 @@ internal class VoodooBringupBackend : IVoodooBackend
             color = (ushort)_registers[RegZaColor];
         return color == 0 ? (ushort)0xffff : color;
     }
+
+    private ushort GetIntegerDrawColor()
+    {
+        ushort color = GetIntegerDrawColorOrZero();
+        return color == 0 ? GetDrawColor() : color;
+    }
+
+    private ushort GetFloatDrawColor()
+    {
+        ushort color = GetFloatDrawColorOrZero();
+        return color == 0 ? GetDrawColor() : color;
+    }
+
+    private ushort GetIntegerDrawColorOrZero()
+        => FixedColorToRgb565(_registers[0x08], _registers[0x09], _registers[0x0a]);
+
+    private ushort GetFloatDrawColorOrZero()
+        => FloatColorToRgb565(
+            FloatFromRegister(_registers[0x28]),
+            FloatFromRegister(_registers[0x29]),
+            FloatFromRegister(_registers[0x2a]));
 
     private bool IsSetupFanMode()
         => ((_registers[0x98] >> 16) & 1u) != 0;
@@ -10284,6 +10328,23 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private static ushort PackedColorToRgb565(uint value)
         => ArgbToRgb565(value);
+
+    private static ushort FixedColorToRgb565(uint r, uint g, uint b)
+    {
+        int rb = FixedColorByte(r);
+        int gb = FixedColorByte(g);
+        int bb = FixedColorByte(b);
+        return (ushort)(((rb >> 3) << 11) | ((gb >> 2) << 5) | (bb >> 3));
+    }
+
+    private static int FixedColorByte(uint value)
+        => Math.Clamp(SignExtend24(value) >> 12, 0, 255);
+
+    private static int SignExtend24(uint value)
+    {
+        int raw = (int)(value & 0x00ff_ffffu);
+        return (raw & 0x0080_0000) != 0 ? raw | unchecked((int)0xff00_0000u) : raw;
+    }
 
     private static ushort FloatColorToRgb565(float r, float g, float b)
     {
