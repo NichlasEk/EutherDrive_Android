@@ -114,6 +114,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private int _lastSpriteCandidates;
     private int _lastVisibleSprites;
     private int _lastSpritePixels;
+    private int _lastPlayfieldCandidates;
+    private int _lastPlayfieldPixels;
     private ushort _lastSpriteControlWord;
     private int _lastSpriteCandidateEntry = -1;
     private int _lastSpriteCandidateX;
@@ -168,7 +170,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         $"cycles={_executedCycles} instr={_executedInstructions} " +
         $"020probe={_m68ec020ProbeInstructions} tasks={_f3TaskQueue.Count} q={BuildTaskQueueSample()} taskEnq={_f3TasksEnqueued} taskRun={_f3TasksDispatched} " +
         $"lastTask=0x{_lastF3TaskEntry:X6} enq={BuildRecentTaskSample(_recentF3EnqueuedTasks, _recentF3EnqueuedIndex)} run={BuildRecentTaskSample(_recentF3DispatchedTasks, _recentF3DispatchedIndex)} lastTrap=0x{_lastF3TrapPc:X6} vbr=0x{_bus.VectorBase:X6} " +
-        $"ramW={_bus.WorkRamWrites} palW={_bus.PaletteWrites} sprW={_bus.SpriteWrites} pfW={_bus.PlayfieldWrites} pfNZ={_bus.PlayfieldNonZeroWords} txtNZ={_bus.TextNonZeroWords} pivNZ={_bus.PivotNonZeroWords} " +
+        $"ramW={_bus.WorkRamWrites} palW={_bus.PaletteWrites} sprW={_bus.SpriteWrites} pfW={_bus.PlayfieldWrites} pfNZ={_bus.PlayfieldNonZeroWords} pfCand={_lastPlayfieldCandidates} pfPix={_lastPlayfieldPixels} txtNZ={_bus.TextNonZeroWords} pivNZ={_bus.PivotNonZeroWords} " +
         $"lastSprNZ=0x{_bus.LastNonZeroSpriteWritePc:X6}->0x{_bus.LastNonZeroSpriteWriteAddress:X6}:0x{_bus.LastNonZeroSpriteWriteValue:X2} lastPfNZ=0x{_bus.LastNonZeroPlayfieldWritePc:X6}->0x{_bus.LastNonZeroPlayfieldWriteAddress:X6}:0x{_bus.LastNonZeroPlayfieldWriteValue:X2} lastTxtNZ=0x{_bus.LastNonZeroTextWritePc:X6}->0x{_bus.LastNonZeroTextWriteAddress:X6}:0x{_bus.LastNonZeroTextWriteValue:X2} " +
         $"mode=0x{_bus.PeekByte(0x40221d):X2}/0x{_bus.PeekByte(0x40223a):X2}/0x{_bus.PeekByte(0x40223d):X2}/0x{_bus.PeekByte(0x40223f):X2} coin=0x{_bus.CoinWord0:X4}/0x{_bus.CoinWord1:X4} fio22={BuildFioSoftSample()} coinT={_bus.PeekWord(0x400090):X4},{_bus.PeekWord(0x400092):X4},{_bus.PeekWord(0x4000a2):X4},{_bus.PeekWord(0x4000a4):X4} bkup18=0x{_bus.PeekByte(0x406c6c):X2} cfg2_18=0x{_bus.PeekByte(0x406c8c):X2} gateEbb4=0x{_bus.PeekByte(0x406bb4):X2} gateEbb5=0x{_bus.PeekByte(0x406bb5):X2} gateEbb6=0x{_bus.PeekByte(0x406bb6):X2} gateW=0x{_bus.LastGateWritePc:X6}->0x{_bus.LastGateWriteAddress:X6}:0x{_bus.LastGateWriteValue:X2} gateNZ=0x{_bus.LastNonZeroGateWritePc:X6}->0x{_bus.LastNonZeroGateWriteAddress:X6}:0x{_bus.LastNonZeroGateWriteValue:X2}/{_bus.NonZeroGateWrites} scene=entry:{_sceneEntryHits}/init:{_sceneInitResumeHits},{_sceneInitMainHits},{_sceneMenuInitHits},{_sceneSpawnerYieldHits}/gate:{_sceneGateRoutineHits}/bset:{_sceneGateSetInstructionHits}/wait:{_sceneGateWaitHits}/mainwait:{_mainGateWaitHits}/call=0x{_lastSceneAbsoluteCallTarget:X6}/cont:{_sceneContinuationEnqueued},{_sceneContinuationDispatched},{_sceneContinuationRemoved}/rm=0x{_lastF3TaskRemoveMask:X8} flag224=0x{_bus.PeekByte(0x402224):X2} obj916=0x{_bus.PeekByte(0x408916):X2} obj917=0x{_bus.PeekByte(0x408917):X2} listCnt=0x{_bus.PeekWord(0x402218):X4} listPtr=0x{_bus.PeekLong(0x407360):X6} listPtrW=0x{_bus.LastSpriteListPointerWritePc:X6}->0x{_bus.LastSpriteListPointerWriteAddress:X6}:0x{_bus.LastSpriteListPointerValue:X8} listFlow={_spriteListBuildHits},{_spriteListProducerWrites},{_spriteListFinalizeHits},{_spriteListLatchedWrites} sprNZ={_bus.SpriteNonZeroWords} sprFirst={_bus.FirstNonZeroSpriteWordOffset:X4} sprRaw={BuildSpriteRamSample()} sprHead={BuildSpritePointerSample()} sprTiles={BuildSpriteTileSample()} " +
         $"sprCand={_lastSpriteCandidates} sprVis={_lastVisibleSprites} sprPix={_lastSpritePixels} sprCtl=0x{_lastSpriteControlWord:X4} sprBank={(_spriteBank ? 1 : 0)} sprLast={_lastSpriteCandidateEntry:X3}/0x{_lastSpriteCandidateTile:X5}/0x{_lastSpriteCandidateControl:X2}@{_lastSpriteCandidateX},{_lastSpriteCandidateY}+{_lastSpriteCandidateScaleX},{_lastSpriteCandidateScaleY} sprBox={_lastSpriteMinX},{_lastSpriteMinY}..{_lastSpriteMaxX},{_lastSpriteMaxY}/{_lastSpriteClosestDistance} " +
@@ -1895,6 +1897,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private bool RenderPlayfields(TaitoF3RomSet roms)
     {
+        _lastPlayfieldCandidates = 0;
+        _lastPlayfieldPixels = 0;
         bool drewAny = false;
         for (int layer = 0; layer < 4; layer++)
             drewAny |= RenderPlayfieldLayer(roms, layer);
@@ -1943,6 +1947,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 ushort code = _bus.ReadPlayfieldWord(entry + 1);
                 if ((attr | code) == 0)
                     continue;
+                _lastPlayfieldCandidates++;
 
                 int reefPixelX = pixelX;
                 int reefPixelY = pixelY;
@@ -1959,6 +1964,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     continue;
 
                 WritePalettePixel(screenX, screenY, line.PlayfieldPaletteAdd[lineRamLayer] + palette * 16 + pen, layerPriority, GetPlayfieldLayerRank(lineRamLayer), layerBlendMode, layerBlendSelect);
+                _lastPlayfieldPixels++;
                 drewAny = true;
             }
 
@@ -2193,11 +2199,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastSpriteMaxX = int.MinValue;
         _lastSpriteMaxY = int.MinValue;
         _lastSpriteClosestDistance = int.MaxValue;
-        BuildSpriteListFrom(0);
+        bool initialBank = _spriteBank;
+        BuildSpriteListFrom(0, initialBank, updateSpriteBank: true);
+        if (_lastSpriteCandidates != 0 || _bus.SpriteNonZeroWords == 0)
+            return;
+
+        bool commandBank = _spriteBank;
+        BuildSpriteListFrom(0, !initialBank, updateSpriteBank: false);
+        if (_lastSpriteCandidates != 0)
+            _spriteBank = commandBank;
     }
 
-    private void BuildSpriteListFrom(int startEntry)
+    private void BuildSpriteListFrom(int startEntry, bool initialBank, bool updateSpriteBank)
     {
+        bool spriteBank = initialBank;
         var xAxis = new SpriteAxis();
         var yAxis = new SpriteAxis();
         byte color = 0;
@@ -2209,7 +2224,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         for (int offs = startEntry, totalSprites = 0; (uint)offs < 0x400 && totalSprites < 0x400; offs++, totalSprites++)
         {
-            int bank = _spriteBank ? 0x4000 : 0;
+            int bank = spriteBank ? 0x4000 : 0;
             int wordOffset = bank + offs * 8;
             ushort w0 = _bus.ReadSpriteWord(wordOffset + 0);
             ushort w1 = _bus.ReadSpriteWord(wordOffset + 1);
@@ -2227,7 +2242,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 int extraPlanes = (w5 >> 8) & 3;
                 _spritePenMask = (extraPlanes << 4) | 0x0f;
                 _spriteTrails = (w5 & 0x0002) != 0;
-                _spriteBank = (w5 & 0x0001) != 0;
+                spriteBank = (w5 & 0x0001) != 0;
+                if (updateSpriteBank)
+                    _spriteBank = spriteBank;
             }
 
             if ((w6 & 0x8000) != 0)

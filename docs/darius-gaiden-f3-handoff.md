@@ -63,6 +63,99 @@ Observed final state:
   - `capacity_fps=46.557`
   - `target_fps=58.944`
 
+Post-crash continuation on 2026-05-16:
+
+```sh
+dotnet build EutherDrive.sln
+dotnet run --project EutherDrive.Headless/EutherDrive.Headless.csproj --no-build /home/nichlas/roms/MAME/TAITO/dariusg.zip 1600
+```
+
+Result with the current working tree:
+
+- build still passes, with existing repo warnings
+- framebuffer still has content and no unmapped reads/writes
+- current stable blocker is now the idle/task-dispatch loop at `pc=0x002326`, not `pc=0x0011EA`
+- final task queue is `010322,0038B2,0043AE`
+- `0x0043AE` is a frame/tick wait path that tests `0x406BB6`
+- forcing `0x406BB6` from the frame latch did not change the final signature because the ROM clears that byte later
+- MAME confirms IRQ2 vblank plus delayed IRQ3 after 10000 main CPU cycles in `src/mame/taito/taito_f3.cpp`; the local adapter already mirrors that broad cadence
+- sprite list is populated (`listPtr=0x600310`, `sprNZ=3101`) but the current renderer still reports no visible sprite pixels from that list (`sprVis=0`)
+
+Representative final debug signature after the post-crash run:
+
+```text
+pc=0x002326 op=0x60F8 tasks=3 q=010322,0038B2,0043AE
+taskEnq=2632 taskRun=1982
+lastTrap=0x0043AC
+scene=entry:190/init:190,190,190,0/mainwait:189/cont:190,190,0
+gateEbb4=0x01 gateEbb5=0x00 gateEbb6=0x00
+listPtr=0x600310 sprNZ=3101 sprVis=0
+unmappedR=0 unmappedW=0
+```
+
+Pause handoff on 2026-05-16 after commit `5dcfd93`:
+
+The current local target is past the old `COIN ERROR` blocker. The game now boots into the Zone A transition, showing the `ZONE A` label at the top of an otherwise black frame. It does not progress into visible gameplay during a 1800-frame headless run.
+
+Changes in the current pass:
+
+- added a sprite-bank fallback when building the F3 sprite list, so an empty selected bank can retry the opposite bank without permanently corrupting the command-selected bank
+- added playfield render diagnostics to the debug line:
+  - `pfCand`
+  - `pfPix`
+- confirmed playfield rendering is seeing and decoding a lot of candidate pixels internally
+
+Current 1800-frame headless command:
+
+```sh
+dotnet run --project EutherDrive.Headless/EutherDrive.Headless.csproj --no-build /home/nichlas/roms/MAME/TAITO/dariusg.zip 1800
+```
+
+Observed final state:
+
+- final framebuffer fingerprint: `0x8E81D3B5E8907A53`
+- the framebuffer content is stable from roughly frame 660 onward
+- visible output remains the `ZONE A` transition frame, not gameplay
+- `pc=0x00569C`, `op=0x322E`
+- task scheduler is active and repeatedly running tasks
+- queue remains `0038B2,0C63F2:1,01048E:1,010508:1,004154`
+- `taskEnq=89005`, `taskRun=88998`
+- scene counters are stuck in wait/mainwait growth:
+  - `scene=entry:1/init:1,1,1,1`
+  - `wait=14829`
+  - `mainwait=14829`
+- playfield diagnostics show the renderer is not empty:
+  - `pfNZ=1386`
+  - `pfCand=100224`
+  - `pfPix=86759`
+- sprite list data exists but current visible sprites are effectively gone by final frame:
+  - `listPtr=0x608310`
+  - `sprNZ=3120`
+  - `sprCand=1`
+  - `sprVis=0`
+  - `sprPix=0`
+- earlier around frame 660, sprite fallback did produce visible sprite pixels:
+  - `sprCand=17`
+  - `sprVis=16`
+  - `sprPix=3164`
+
+Important interpretation:
+
+`pfCand/pfPix` proves the playfield pass is decoding nonzero tiles and pens. The all-black area under `ZONE A` is therefore probably not a simple "no playfield data" problem. Next pass should start with one of these:
+
+1. Scene wait / scheduler semantics around the current wait loop, especially why `pc=0x00569C` keeps returning to the same task set and never advances the Zone A transition.
+2. F3 mixer initialization/composition. The local `_mixSrcPriority` starts at zero, while MAME's `pri_mode` starts as zeroed but accepts priority-zero source pixels through the `color` path only when the source comparison wins. If Darius is using priority-zero playfields at this point, local source/destination selection may be hiding valid playfield pixels.
+3. Palette/mix output verification. Since `pfPix` is high, sample `_mixSrcPalette`, `_mixSrcBlend`, `_mixDstPalette`, and final RGB for a few mid-screen playfield pixels before changing tile decode again.
+
+Useful files/places:
+
+- `EutherDrive.Core/Arcade/Taito/DariusGaidenAdapter.cs`
+- `BuildSpriteList()` and `BuildSpriteListFrom(...)`
+- `RenderPlayfieldLayer(...)`
+- `WritePalettePixel(...)`
+- `RenderMameMixBufferToFrame()`
+- MAME reference: `/home/nichlas/mame/src/mame/taito/taito_f3_v.cpp`, especially `mix_line()` and `scanline_draw()`
+
 Representative final debug signature:
 
 ```text
@@ -121,4 +214,3 @@ MAME reference files used for behavior checks:
 
 - `src/mame/taito/taito_f3.cpp`
 - `src/mame/taito/taito_f3_v.cpp`
-
