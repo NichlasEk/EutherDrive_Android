@@ -401,6 +401,11 @@ class Program
                 || string.Equals(coreOverride, "thundfox", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "thunderfox", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(romPath));
+            bool useDariusGaiden = string.Equals(coreOverride, "dariusg", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "darius-gaiden", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "taitof3", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "taito-f3", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && DariusGaidenAdapter.IsSupportedArchive(romPath));
             bool useOutZone = string.Equals(coreOverride, "outzone", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "toaplan-outzone", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && OutZoneAdapter.IsSupportedArchive(romPath));
@@ -418,7 +423,7 @@ class Program
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !useBatsugun && !useOutZone && !usePgm2 && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !useBatsugun && !useOutZone && !usePgm2 && !useTaitoF2 && !useDariusGaiden && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             if (string.Equals(coreOverride, "md", StringComparison.OrdinalIgnoreCase))
             {
                 useNes = false;
@@ -440,6 +445,7 @@ class Program
                 useHshavoc = false;
                 useTmnt = false;
                 useTaitoF2 = false;
+                useDariusGaiden = false;
                 useOutZone = false;
                 useNeoGeo = false;
                 usePgm2 = false;
@@ -625,6 +631,68 @@ class Program
                 Console.WriteLine($"[HEADLESS] TAITO-F2 final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY})");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 PrintHeadlessPerf("TAITO-F2", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useDariusGaiden)
+            {
+                Console.WriteLine("[HEADLESS] Using Taito F3 Darius Gaiden bringup core");
+                using var darius = new DariusGaidenAdapter();
+                darius.LoadRom(romPath);
+                var dariusInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_HEADLESS_INPUT_SCRIPT"));
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                ReadOnlySpan<byte> fbIn = darius.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
+                int unchangedFrames = 0;
+
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, dariusInputScript);
+                    darius.SetInputState(
+                        input.Up,
+                        input.Down,
+                        input.Left,
+                        input.Right,
+                        input.A,
+                        input.B,
+                        input.X,
+                        input.Start,
+                        input.Y,
+                        input.L,
+                        input.R,
+                        input.Select,
+                        PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
+                    darius.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+
+                    ReadOnlySpan<byte> fb = darius.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: dariusg_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} debug={darius.DebugSummary}");
+
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_dariusg_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = darius.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] DariusG final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] DariusG debug {darius.DebugSummary}");
+                Console.WriteLine($"[HEADLESS] DariusG {darius.MissingDevices}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
+                PrintHeadlessPerf("DariusG", framesToRun, runTicksTotal, runTicksMin, runTicksMax, darius.GetTargetFps());
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }

@@ -97,14 +97,27 @@ namespace mame
 
         ~osd_file()
         {
-            assert(m_isDisposed);  // can remove
+            if (!m_isDisposed)
+            {
+                try
+                {
+                    close();
+                }
+                catch
+                {
+                }
+            }
         }
 
         bool m_isDisposed = false;
         public virtual void Dispose()
         {
+            if (m_isDisposed)
+                return;
+
             close();
             m_isDisposed = true;
+            GC.SuppressFinalize(this);
         }
 
 

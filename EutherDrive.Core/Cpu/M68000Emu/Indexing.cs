@@ -31,7 +31,7 @@ internal readonly struct IndexRegister
 
 internal static class Indexing
 {
-    public static (IndexRegister Reg, IndexSize Size) ParseIndex(ushort extension)
+    public static (IndexRegister Reg, IndexSize Size, int Scale) ParseIndex(ushort extension)
     {
         byte registerNumber = (byte)((extension >> 12) & 0x07);
         IndexRegister reg = extension.Test(15)
@@ -39,6 +39,7 @@ internal static class Indexing
             : IndexRegister.Data(new DataRegister(registerNumber));
 
         IndexSize size = extension.Test(11) ? IndexSize.LongWord : IndexSize.SignExtendedWord;
-        return (reg, size);
+        int scale = 1 << ((extension >> 9) & 0x03);
+        return (reg, size, scale);
     }
 }

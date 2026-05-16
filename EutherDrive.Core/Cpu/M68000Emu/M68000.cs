@@ -8,13 +8,15 @@ public sealed class M68000
 
     private readonly Registers _regs = new();
     private readonly bool _allowTasWrites;
+    private readonly bool _allowUnalignedWordLongAccess;
     private readonly string _name;
     [NonSerialized] private IBusInterface? _executorBus;
     [NonSerialized] private InstructionExecutor? _executor;
 
-    private M68000(bool allowTasWrites, string name)
+    private M68000(bool allowTasWrites, bool allowUnalignedWordLongAccess, string name)
     {
         _allowTasWrites = allowTasWrites;
+        _allowUnalignedWordLongAccess = allowUnalignedWordLongAccess;
         _name = name;
     }
 
@@ -23,11 +25,18 @@ public sealed class M68000
     public sealed class Builder
     {
         private bool _allowTasWrites = true;
+        private bool _allowUnalignedWordLongAccess;
         private string _name = string.Empty;
 
         public Builder AllowTasWrites(bool allow)
         {
             _allowTasWrites = allow;
+            return this;
+        }
+
+        public Builder AllowUnalignedWordLongAccess(bool allow)
+        {
+            _allowUnalignedWordLongAccess = allow;
             return this;
         }
 
@@ -39,7 +48,7 @@ public sealed class M68000
 
         public M68000 Build()
         {
-            return new M68000(_allowTasWrites, _name);
+            return new M68000(_allowTasWrites, _allowUnalignedWordLongAccess, _name);
         }
     }
 
@@ -135,7 +144,7 @@ public sealed class M68000
         if (!ReferenceEquals(bus, _executorBus) || _executor == null)
         {
             _executorBus = bus;
-            _executor = new InstructionExecutor(_regs, bus, _allowTasWrites, _name);
+            _executor = new InstructionExecutor(_regs, bus, _allowTasWrites, _allowUnalignedWordLongAccess, _name);
         }
 
         return _executor.Execute();

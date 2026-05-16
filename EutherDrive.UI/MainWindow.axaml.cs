@@ -835,6 +835,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(path))
             return new TaitoF2ThunderFoxAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && DariusGaidenAdapter.IsSupportedArchive(path))
+            return new DariusGaidenAdapter();
         if (!string.IsNullOrWhiteSpace(path) && BatsugunAdapter.IsSupportedArchive(path))
             return new BatsugunAdapter();
         if (!string.IsNullOrWhiteSpace(path) && OutZoneAdapter.IsSupportedArchive(path))
@@ -1072,6 +1074,8 @@ public partial class MainWindow : Window
             target = outZone.GetTargetFps();
         else if (_core is BatsugunAdapter batsugun)
             target = batsugun.GetTargetFps();
+        else if (_core is DariusGaidenAdapter dariusg)
+            target = dariusg.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -4011,6 +4015,8 @@ public partial class MainWindow : Window
             cps2.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is EutherDrive.Core.Arcade.Taito.TaitoF2ThunderFoxAdapter thundfox)
             thundfox.SetMasterVolumePercent(effectiveVolumePercent);
+        else if (_core is DariusGaidenAdapter dariusg)
+            dariusg.SetMasterVolumePercent(effectiveVolumePercent);
     }
 
     private int GetEffectiveMasterVolumePercent()
@@ -4533,6 +4539,9 @@ public partial class MainWindow : Window
         if (!romRunning)
             return "idle";
 
+        if (_core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntlet)
+            return GetDeckMonitorGauntletStatus(gauntlet);
+
         double targetFps = GetLiveTargetFps();
         double capacityFps = Volatile.Read(ref _emuCapacityFps);
         if (!double.IsFinite(targetFps) || targetFps <= 0.1)
@@ -4544,6 +4553,16 @@ public partial class MainWindow : Window
         double percent = (capacityFps / targetFps) * 100.0;
         string sign = spareFps >= 0 ? "+" : "";
         return $"cap {capacityFps:0.0} fps / {sign}{spareFps:0.0} ({percent:0}%)";
+    }
+
+    private string GetDeckMonitorGauntletStatus(EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntlet)
+    {
+        double targetFps = GetLiveTargetFps();
+        double capacityFps = Volatile.Read(ref _emuCapacityFps);
+        string perf = double.IsFinite(targetFps) && targetFps > 0.1 && double.IsFinite(capacityFps) && capacityFps > 0.1
+            ? $"cap {capacityFps:0.0}/{targetFps:0.0} fps"
+            : "measuring";
+        return $"{perf} / {gauntlet.DebugStatus}";
     }
 
     private string GetDeckMonitorHintText(bool romRunning, bool audioEnabled, AmbientMusicSnapshot ambient)
@@ -9354,6 +9373,7 @@ public partial class MainWindow : Window
             or NeoGeoAdapter
             or OutZoneAdapter
             or BatsugunAdapter
+            or DariusGaidenAdapter
             or TaitoF2ThunderFoxAdapter
             or BoogwingAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -9670,6 +9690,7 @@ public partial class MainWindow : Window
             || core is NeoGeoAdapter
             || core is OutZoneAdapter
             || core is BatsugunAdapter
+            || core is DariusGaidenAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is BoogwingAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -10307,6 +10328,7 @@ public partial class MainWindow : Window
         => core is KovPgmAdapter ||
            core is Pgm2Adapter ||
            core is TaitoF2ThunderFoxAdapter ||
+           core is DariusGaidenAdapter ||
            core is NeoGeoAdapter ||
            (core is McsArcadeAdapter && ((width == 448 && height == 224) || (width == 224 && height == 448)));
 
@@ -10346,12 +10368,14 @@ public partial class MainWindow : Window
 
     private bool ShouldUsePostedFramePresenter(IEmulatorCore? core)
         => core is Pgm2Adapter
+            || core is DariusGaidenAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || ShouldUsePostedPsxAcceleratedPresenter(core);
 
     private static bool ShouldSnapshotFrameBufferForPresentation(IEmulatorCore core)
         => core is Pgm2Adapter
+            || core is DariusGaidenAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
 
@@ -10588,6 +10612,7 @@ public partial class MainWindow : Window
                 && core is not EutherDrive.Core.Arcade.Konami.TmntAdapter
                 && core is not McsArcadeAdapter
                 && core is not BatsugunAdapter
+                && core is not DariusGaidenAdapter
                 && core is not Pgm2Adapter
                 && core is not KovPgmAdapter)
             {
@@ -10659,7 +10684,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is BatsugunAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is OutZoneAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is BatsugunAdapter || core is DariusGaidenAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is OutZoneAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10669,6 +10694,7 @@ public partial class MainWindow : Window
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
                                     || core is McsArcadeAdapter
                                     || core is BatsugunAdapter
+                                    || core is DariusGaidenAdapter
                                     || core is Pgm2Adapter
                                     || core is KovPgmAdapter
                                     || core is NeoGeoAdapter
@@ -11622,6 +11648,8 @@ public partial class MainWindow : Window
             return outZone.GetTargetFps() * _speedScale;
         if (_core is BatsugunAdapter batsugun)
             return batsugun.GetTargetFps() * _speedScale;
+        if (_core is DariusGaidenAdapter dariusg)
+            return dariusg.GetTargetFps() * _speedScale;
         return Volatile.Read(ref _emuTargetFps) * _speedScale;
     }
 

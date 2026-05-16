@@ -10,6 +10,7 @@ internal sealed partial class InstructionExecutor
     private readonly Registers _registers;
     private readonly IBusInterface _bus;
     private readonly bool _allowTasWrites;
+    private readonly bool _allowUnalignedWordLongAccess;
     private readonly string _name;
 
     private ushort _opcode;
@@ -115,11 +116,12 @@ internal sealed partial class InstructionExecutor
     private const uint Line1111Vector = 11;
     private const uint AutoVectoredInterruptBase = 0x60;
 
-    public InstructionExecutor(Registers registers, IBusInterface bus, bool allowTasWrites, string name)
+    public InstructionExecutor(Registers registers, IBusInterface bus, bool allowTasWrites, bool allowUnalignedWordLongAccess, string name)
     {
         _registers = registers;
         _bus = bus;
         _allowTasWrites = allowTasWrites;
+        _allowUnalignedWordLongAccess = allowUnalignedWordLongAccess;
         _name = name;
     }
 
@@ -1661,8 +1663,8 @@ internal sealed partial class InstructionExecutor
 
     private uint ResolvePgmDemonFrontPcIndexedAddress(uint extensionAddress, ushort extension)
     {
-        var (idxReg, idxSize) = Indexing.ParseIndex(extension);
-        uint index = idxReg.Read(_registers, idxSize);
+        var (idxReg, idxSize, idxScale) = Indexing.ParseIndex(extension);
+        uint index = idxReg.Read(_registers, idxSize) * (uint)idxScale;
         sbyte displacement = (sbyte)extension;
         return (extensionAddress + index + unchecked((uint)displacement)) & 0x00ff_ffff;
     }
@@ -4184,21 +4186,43 @@ internal sealed partial class InstructionExecutor
     private ExecuteResult<ushort> ReadBusWord(uint address)
     {
         if ((address & 1) != 0)
+        {
+            if (_allowUnalignedWordLongAccess)
+                return ExecuteResult<ushort>.Ok((ushort)((_bus.ReadByte(address) << 8) | _bus.ReadByte(address + 1)));
             return ExecuteResult<ushort>.Err(M68kException.AddressError(address, BusOpType.Read));
+        }
         return ExecuteResult<ushort>.Ok(_bus.ReadWord(address));
     }
 
     private ExecuteResult<uint> ReadBusLong(uint address)
     {
         if ((address & 1) != 0)
+        {
+            if (_allowUnalignedWordLongAccess)
+            {
+                uint value = ((uint)_bus.ReadByte(address) << 24)
+                    | ((uint)_bus.ReadByte(address + 1) << 16)
+                    | ((uint)_bus.ReadByte(address + 2) << 8)
+                    | _bus.ReadByte(address + 3);
+                return ExecuteResult<uint>.Ok(value);
+            }
             return ExecuteResult<uint>.Err(M68kException.AddressError(address, BusOpType.Read));
+        }
         return ExecuteResult<uint>.Ok(_bus.ReadLong(address));
     }
 
     private ExecuteResult<object> WriteBusWord(uint address, ushort value)
     {
         if ((address & 1) != 0)
+        {
+            if (_allowUnalignedWordLongAccess)
+            {
+                _bus.WriteByte(address, (byte)(value >> 8));
+                _bus.WriteByte(address + 1, (byte)value);
+                return ExecuteResult<object>.Ok(null!);
+            }
             return ExecuteResult<object>.Err(M68kException.AddressError(address, BusOpType.Write));
+        }
         _bus.WriteWord(address, value);
         return ExecuteResult<object>.Ok(null!);
     }
@@ -4206,7 +4230,17 @@ internal sealed partial class InstructionExecutor
     private ExecuteResult<object> WriteBusLong(uint address, uint value)
     {
         if ((address & 1) != 0)
+        {
+            if (_allowUnalignedWordLongAccess)
+            {
+                _bus.WriteByte(address, (byte)(value >> 24));
+                _bus.WriteByte(address + 1, (byte)(value >> 16));
+                _bus.WriteByte(address + 2, (byte)(value >> 8));
+                _bus.WriteByte(address + 3, (byte)value);
+                return ExecuteResult<object>.Ok(null!);
+            }
             return ExecuteResult<object>.Err(M68kException.AddressError(address, BusOpType.Write));
+        }
         _bus.WriteLong(address, value);
         return ExecuteResult<object>.Ok(null!);
     }
@@ -4263,13 +4297,13 @@ internal sealed partial class InstructionExecutor
                 {
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
-                    var (idxReg, idxSize) = Indexing.ParseIndex(ext.Value);
+                    var (idxReg, idxSize, idxScale) = Indexing.ParseIndex(ext.Value);
                     uint baseAddress = mode.AddrReg.Read(_registers);
-                    uint index = idxReg.Read(_registers, idxSize);
+                    uint index = idxReg.Read(_registers, idxSize) * (uint)idxScale;
                     sbyte disp = (sbyte)ext.Value;
                     uint addr = baseAddress + index + (uint)disp;
                     if (size != OpSize.Byte && (addr & 1) != 0)
-                        MaybeTraceOddIndexed(mode, ext.Value, idxReg, idxSize, baseAddress, index, disp, addr, size);
+                        MaybeTraceOddIndexed(mode, ext.Value, idxReg, idxSize, idxScale, baseAddress, index, disp, addr, size);
                     resolved = ResolvedAddress.Memory(addr);
                     break;
                 }
@@ -4295,8 +4329,8 @@ internal sealed partial class InstructionExecutor
                     uint pcBefore = _registers.Pc;
                     var ext = FetchOperand();
                     if (!ext.IsOk) return ExecuteResult<ResolvedAddress>.Err(ext.Error!.Value);
-                    var (idxReg, idxSize) = Indexing.ParseIndex(ext.Value);
-                    uint index = idxReg.Read(_registers, idxSize);
+                    var (idxReg, idxSize, idxScale) = Indexing.ParseIndex(ext.Value);
+                    uint index = idxReg.Read(_registers, idxSize) * (uint)idxScale;
                     sbyte disp = (sbyte)ext.Value;
                     // PC-relative bases on the extension word address (PC before FetchOperand)
                     uint addr = pcBefore + index + (uint)disp;
@@ -4307,7 +4341,7 @@ internal sealed partial class InstructionExecutor
                         int idxNum = idxReg.IsAddress ? idxReg.AddrReg.Index : idxReg.DataReg.Index;
                         Console.WriteLine(
                             $"[M68K-PCIDX] pcBefore=0x{pcBefore:X8} pcAfter=0x{_registers.Pc:X8} ext=0x{ext.Value:X4} " +
-                            $"idx={idxKind}{idxNum} size={(idxSize == IndexSize.LongWord ? "L" : "W")} " +
+                            $"idx={idxKind}{idxNum} size={(idxSize == IndexSize.LongWord ? "L" : "W")} scale={idxScale} " +
                             $"index=0x{index:X8} disp=0x{(byte)disp:X2} addr=0x{addr:X8}");
                     }
                     resolved = ResolvedAddress.Memory(addr);
@@ -4678,6 +4712,7 @@ internal sealed partial class InstructionExecutor
         ushort extension,
         IndexRegister idxReg,
         IndexSize idxSize,
+        int idxScale,
         uint baseAddress,
         uint index,
         sbyte displacement,
@@ -4695,7 +4730,7 @@ internal sealed partial class InstructionExecutor
         string line =
             $"[M68K-ODDIDX] cpu={_name} pc=0x{_tracePc:X8} curPc=0x{_registers.Pc:X8} op=0x{_opcode:X4} inst={instKind} size={size} " +
             $"base=A{mode.AddrReg.Index}=0x{baseAddress:X8} ext=0x{extension:X4} " +
-            $"idx={idxKind}{idxNum}.{(idxSize == IndexSize.LongWord ? "L" : "W")} raw=0x{rawIndex:X8} value=0x{index:X8} " +
+            $"idx={idxKind}{idxNum}.{(idxSize == IndexSize.LongWord ? "L" : "W")} scale={idxScale} raw=0x{rawIndex:X8} value=0x{index:X8} " +
             $"disp=0x{(byte)displacement:X2} addr=0x{address:X8} " +
             $"A0=0x{_registers.Address[0]:X8} A1=0x{_registers.Address[1]:X8} A2=0x{_registers.Address[2]:X8} A3=0x{_registers.Address[3]:X8} " +
             $"D0=0x{_registers.Data[0]:X8} D1=0x{_registers.Data[1]:X8} D2=0x{_registers.Data[2]:X8} D3=0x{_registers.Data[3]:X8}";
