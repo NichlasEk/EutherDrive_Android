@@ -588,6 +588,8 @@ internal sealed class MipsR5000Core
         NormalizeKnownGlideFifoState(pc);
         if (TryFastPathKnownBootLoop(pc))
             return;
+        if (TryFastPathKnownBiosRomCopyLoop(pc))
+            return;
         if (TryFastPathKnownCacheLoop(pc))
             return;
         if (TryFastPathKnownBiosTextRoutine(pc))
@@ -613,6 +615,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownA180ReadyPoll(pc))
             return;
         if (TryFastPathKnownRamTest(pc))
+            return;
+        if (TryFastPathKnownRamQwordCopyBody(pc))
             return;
         if (TryFastPathKnownRamQwordFill(pc))
             return;
@@ -751,6 +755,54 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownBiosRomCopyLoop(ulong pc)
+    {
+        ulong offset = pc & 0x1fffffffUL;
+        if (offset is not (0x1fc00ee0UL or 0x1fc00ee4UL or 0x1fc00ee8UL or
+                           0x1fc00f1cUL or 0x1fc00f20UL or 0x1fc00f24UL or 0x1fc00f28UL))
+        {
+            return false;
+        }
+
+        ulong loopBase = (pc & 0xffffffffe0000000UL) |
+            (offset < 0x1fc00f00UL ? 0x1fc00ed8UL : 0x1fc00f1cUL);
+        ulong exit = loopBase + 0x18UL;
+        if (_memory.Read32(loopBase) != 0x8c650000U ||
+            _memory.Read32(loopBase + 0x04UL) != 0xac450000U ||
+            _memory.Read32(loopBase + 0x08UL) != 0x24630004U ||
+            _memory.Read32(loopBase + 0x0cUL) != 0x0064082bU ||
+            _memory.Read32(loopBase + 0x10UL) != 0x1420fffbU ||
+            _memory.Read32(loopBase + 0x14UL) != 0x24420004U)
+        {
+            return false;
+        }
+
+        ulong source = _gpr[3];
+        ulong end = _gpr[4];
+        ulong destination = _gpr[2];
+        if (source >= end || ((source | end | destination) & 3UL) != 0)
+            return false;
+
+        ulong byteLength = end - source;
+        if (byteLength > 0x00400000UL ||
+            (source & 0x1fffffffUL) is < 0x1fc00000UL or > 0x1fc80000UL ||
+            !IsMainRamRange(destination, byteLength))
+        {
+            return false;
+        }
+
+        for (ulong cursor = 0; cursor < byteLength; cursor += 4UL)
+            _memory.Write32(destination + cursor, _memory.Read32(source + cursor));
+
+        _gpr[1] = 0;
+        _gpr[2] = destination + byteLength;
+        _gpr[3] = end;
+        _gpr[5] = _memory.Read32(end - 4UL);
+        Pc = exit;
+        CompleteFastPathStep();
+        return true;
+    }
+
     private bool TryFastPathKnownCacheLoop(ulong pc)
     {
         ulong offset = pc & 0x1fffffffUL;
@@ -800,6 +852,39 @@ internal sealed class MipsR5000Core
 
     private bool TryFastPathKnownLoadedBootCacheLoop(ulong pc, ulong offset)
     {
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x00013598UL, 0x0001359cUL, 0x000135a0UL),
+                loopBaseOffset: 0x00013590UL,
+                exitOffset: 0x000135a4UL,
+                expectedOps: (0xbc800000U, 0x008c2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x000135c8UL, 0x000135ccUL, 0x000135d0UL),
+                loopBaseOffset: 0x000135c0UL,
+                exitOffset: 0x000135d4UL,
+                expectedOps: (0xbc810000U, 0x008d2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x000135f8UL, 0x000135fcUL, 0x00013600UL),
+                loopBaseOffset: 0x000135f0UL,
+                exitOffset: 0x00013604UL,
+                expectedOps: (0xbc830000U, 0x008f2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
         if (TryFastPathKnownLoadedBootCacheLoop(
                 pc,
                 offset,
@@ -1209,6 +1294,60 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = 0xffffffff80005b28UL;
+        return true;
+    }
+
+    private bool TryFastPathKnownRamQwordCopyBody(ulong pc)
+    {
+        const ulong entry = 0xffffffff80005a10UL;
+        const ulong tail = 0xffffffff800059a0UL;
+        if (pc is < entry or > 0xffffffff80005a4cUL)
+            return false;
+
+        if (_memory.Read32(entry) != 0x000640c2U ||
+            _memory.Read32(entry + 0x04UL) != 0x000848c0U ||
+            _memory.Read32(entry + 0x08UL) != 0x00c93022U ||
+            _memory.Read32(entry + 0x0cUL) != 0x1900ffdaU ||
+            _memory.Read32(entry + 0x10UL) != 0x2508ffffU ||
+            _memory.Read32(entry + 0x14UL) != 0xdca90000U ||
+            _memory.Read32(entry + 0x18UL) != 0x24a50008U ||
+            _memory.Read32(entry + 0x1cUL) != 0xfc890000U ||
+            _memory.Read32(entry + 0x20UL) != 0x1d00fffbU ||
+            _memory.Read32(entry + 0x24UL) != 0x24840008U ||
+            _memory.Read32(entry + 0x28UL) != 0x1000ffd3U)
+        {
+            return false;
+        }
+
+        long remainingAfterCurrent = unchecked((long)_gpr[8]);
+        if (remainingAfterCurrent < 0 || remainingAfterCurrent > 0x00100000L)
+            return false;
+
+        ulong qwords = (ulong)remainingAfterCurrent + 1UL;
+        ulong byteLength = qwords * 8UL;
+        ulong destination = _gpr[4];
+        ulong source = _gpr[5];
+        if ((destination & 7UL) != 0 ||
+            (source & 7UL) != 0 ||
+            !IsMainRamRange(destination, byteLength) ||
+            !IsMainRamRange(source, byteLength))
+        {
+            return false;
+        }
+
+        ulong lastValue = 0;
+        for (ulong offset = 0; offset < byteLength; offset += 8UL)
+        {
+            lastValue = _memory.Read64(source + offset);
+            _memory.Write64(destination + offset, lastValue);
+        }
+
+        _gpr[4] = destination + byteLength;
+        _gpr[5] = source + byteLength;
+        _gpr[8] = 0;
+        _gpr[9] = lastValue;
+        Pc = tail;
+        CompleteFastPathStep();
         return true;
     }
 
