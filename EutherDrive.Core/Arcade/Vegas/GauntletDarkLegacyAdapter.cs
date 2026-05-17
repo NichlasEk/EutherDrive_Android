@@ -1278,8 +1278,12 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownRuntimeCountDelay(ulong pc)
     {
         ulong offset = pc & 0xffffffffUL;
-        if (offset is not (0x80001a24UL or 0x80001a28UL or 0x80001a2cUL or 0x80001a30UL or 0x80001a34UL))
+        bool atEntry = offset == 0x80001a18UL;
+        if (!atEntry &&
+            offset is not (0x80001a24UL or 0x80001a28UL or 0x80001a2cUL or 0x80001a30UL or 0x80001a34UL))
+        {
             return false;
+        }
         const ulong entry = 0xffffffff80001a18UL;
         if (_memory.Read32(entry) != 0x00640019U ||
             _memory.Read32(entry + 0x04UL) != 0x00002012U ||
@@ -1294,7 +1298,9 @@ internal sealed class MipsR5000Core
             return false;
         }
 
-        ulong delay = _gpr[4] & 0xffffffffUL;
+        ulong delay = atEntry
+            ? ((ulong)(uint)_gpr[3] * (uint)_gpr[4]) & 0xffffffffUL
+            : _gpr[4] & 0xffffffffUL;
         if (delay == 0 || delay > 0x10000000UL)
             return false;
 
@@ -1310,9 +1316,10 @@ internal sealed class MipsR5000Core
         ulong skippedInstructions = Math.Max(1UL, remaining / Math.Max(1UL, _cp0CountStep));
         _gpr[1] = 0;
         _gpr[3] = (uint)(start + delay);
+        _gpr[4] = delay;
         _gpr[0] = 0;
         AdvanceCp0Count(Math.Max(_cp0CountStep, remaining));
-        _instructionCounter += skippedInstructions;
+        _instructionCounter += skippedInstructions + (atEntry ? 4UL : 0UL);
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = CanonicalizeCodeAddress(returnAddress);
