@@ -8,7 +8,7 @@ using SharpCompress.Archives;
 public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDisposable
 {
     private const int FrameWidth = 320;
-    private const int FrameHeight = 224;
+    private const int FrameHeight = 232;
     private const int VisibleAreaMinX = 46;
     private const int VisibleAreaMinY = 24;
     private const int FrameStride = FrameWidth * 4;
@@ -28,6 +28,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private const int MainInstructionLimitPerFrame = 30_000;
 
     private static readonly bool Trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE") == "1";
+    private static readonly bool UseNativeF3TrapScheduler = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_NATIVE_TRAPS") == "1";
     private static readonly bool TraceBootPc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_BOOT_PC") == "1";
     private static readonly int TraceInstructionLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_INSTRUCTIONS", 64);
     private static readonly int TraceBootPcLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_BOOT_PC_LIMIT", 256);
@@ -75,10 +76,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly ushort[] _spriteReefPalette = new ushort[FrameWidth * FrameHeight];
     private readonly byte[] _spriteReefGroup = new byte[FrameWidth * FrameHeight];
     private readonly F3LineState[] _lineStates = new F3LineState[256];
-    private readonly M68000 _mainCpu = M68000.CreateBuilder()
-        .AllowUnalignedWordLongAccess(true)
-        .Name("dariusg-main-020-probe")
-        .Build();
+    private readonly MameM68Ec020 _mainCpu = MameM68Ec020.Create("dariusg-main-020-probe");
     private readonly TaitoF3MainBus _bus = new();
     private RomIdentity? _romIdentity;
     private TaitoF3RomSet? _roms;
@@ -111,11 +109,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private int _spritePenMask = 0x0f;
     private readonly List<F3Sprite> _sprites = new(0x400);
     private readonly List<F3Sprite> _latchedSprites = new(0x400);
+    private readonly List<F3Sprite> _nextLatchedSprites = new(0x400);
     private int _lastSpriteCandidates;
     private int _lastVisibleSprites;
     private int _lastSpritePixels;
     private int _lastPlayfieldCandidates;
     private int _lastPlayfieldPixels;
+    private int _lastMixSourcePixels;
+    private int _lastMixLitSourcePixels;
+    private int _lastMixDestOnlyPixels;
+    private int _lastMixPriorityZeroConflicts;
+    private readonly int[] _lastPlayfieldLayerCandidates = new int[4];
+    private readonly int[] _lastPlayfieldLayerPixels = new int[4];
+    private readonly int[] _lastPlayfieldBlendSelect0 = new int[4];
+    private readonly int[] _lastPlayfieldBlendSelect1 = new int[4];
     private ushort _lastSpriteControlWord;
     private int _lastSpriteCandidateEntry = -1;
     private int _lastSpriteCandidateX;
@@ -170,9 +177,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         $"cycles={_executedCycles} instr={_executedInstructions} " +
         $"020probe={_m68ec020ProbeInstructions} tasks={_f3TaskQueue.Count} q={BuildTaskQueueSample()} taskEnq={_f3TasksEnqueued} taskRun={_f3TasksDispatched} " +
         $"lastTask=0x{_lastF3TaskEntry:X6} enq={BuildRecentTaskSample(_recentF3EnqueuedTasks, _recentF3EnqueuedIndex)} run={BuildRecentTaskSample(_recentF3DispatchedTasks, _recentF3DispatchedIndex)} lastTrap=0x{_lastF3TrapPc:X6} vbr=0x{_bus.VectorBase:X6} " +
-        $"ramW={_bus.WorkRamWrites} palW={_bus.PaletteWrites} sprW={_bus.SpriteWrites} pfW={_bus.PlayfieldWrites} pfNZ={_bus.PlayfieldNonZeroWords} pfCand={_lastPlayfieldCandidates} pfPix={_lastPlayfieldPixels} txtNZ={_bus.TextNonZeroWords} pivNZ={_bus.PivotNonZeroWords} " +
+        $"ramW={_bus.WorkRamWrites} palW={_bus.PaletteWrites} sprW={_bus.SpriteWrites} pfW={_bus.PlayfieldWrites} pfNZ={_bus.PlayfieldNonZeroWords} pfCand={_lastPlayfieldCandidates} pfPix={_lastPlayfieldPixels} pfL={BuildPlayfieldLayerSample()} mixSrc={_lastMixSourcePixels}/{_lastMixLitSourcePixels} mixDstOnly={_lastMixDestOnlyPixels} mixP0={_lastMixPriorityZeroConflicts} lineMid={BuildLineStateSample()} txtNZ={_bus.TextNonZeroWords} pivNZ={_bus.PivotNonZeroWords} " +
         $"lastSprNZ=0x{_bus.LastNonZeroSpriteWritePc:X6}->0x{_bus.LastNonZeroSpriteWriteAddress:X6}:0x{_bus.LastNonZeroSpriteWriteValue:X2} lastPfNZ=0x{_bus.LastNonZeroPlayfieldWritePc:X6}->0x{_bus.LastNonZeroPlayfieldWriteAddress:X6}:0x{_bus.LastNonZeroPlayfieldWriteValue:X2} lastTxtNZ=0x{_bus.LastNonZeroTextWritePc:X6}->0x{_bus.LastNonZeroTextWriteAddress:X6}:0x{_bus.LastNonZeroTextWriteValue:X2} " +
-        $"mode=0x{_bus.PeekByte(0x40221d):X2}/0x{_bus.PeekByte(0x40223a):X2}/0x{_bus.PeekByte(0x40223d):X2}/0x{_bus.PeekByte(0x40223f):X2} coin=0x{_bus.CoinWord0:X4}/0x{_bus.CoinWord1:X4} fio22={BuildFioSoftSample()} coinT={_bus.PeekWord(0x400090):X4},{_bus.PeekWord(0x400092):X4},{_bus.PeekWord(0x4000a2):X4},{_bus.PeekWord(0x4000a4):X4} bkup18=0x{_bus.PeekByte(0x406c6c):X2} cfg2_18=0x{_bus.PeekByte(0x406c8c):X2} gateEbb4=0x{_bus.PeekByte(0x406bb4):X2} gateEbb5=0x{_bus.PeekByte(0x406bb5):X2} gateEbb6=0x{_bus.PeekByte(0x406bb6):X2} gateW=0x{_bus.LastGateWritePc:X6}->0x{_bus.LastGateWriteAddress:X6}:0x{_bus.LastGateWriteValue:X2} gateNZ=0x{_bus.LastNonZeroGateWritePc:X6}->0x{_bus.LastNonZeroGateWriteAddress:X6}:0x{_bus.LastNonZeroGateWriteValue:X2}/{_bus.NonZeroGateWrites} scene=entry:{_sceneEntryHits}/init:{_sceneInitResumeHits},{_sceneInitMainHits},{_sceneMenuInitHits},{_sceneSpawnerYieldHits}/gate:{_sceneGateRoutineHits}/bset:{_sceneGateSetInstructionHits}/wait:{_sceneGateWaitHits}/mainwait:{_mainGateWaitHits}/call=0x{_lastSceneAbsoluteCallTarget:X6}/cont:{_sceneContinuationEnqueued},{_sceneContinuationDispatched},{_sceneContinuationRemoved}/rm=0x{_lastF3TaskRemoveMask:X8} flag224=0x{_bus.PeekByte(0x402224):X2} obj916=0x{_bus.PeekByte(0x408916):X2} obj917=0x{_bus.PeekByte(0x408917):X2} listCnt=0x{_bus.PeekWord(0x402218):X4} listPtr=0x{_bus.PeekLong(0x407360):X6} listPtrW=0x{_bus.LastSpriteListPointerWritePc:X6}->0x{_bus.LastSpriteListPointerWriteAddress:X6}:0x{_bus.LastSpriteListPointerValue:X8} listFlow={_spriteListBuildHits},{_spriteListProducerWrites},{_spriteListFinalizeHits},{_spriteListLatchedWrites} sprNZ={_bus.SpriteNonZeroWords} sprFirst={_bus.FirstNonZeroSpriteWordOffset:X4} sprRaw={BuildSpriteRamSample()} sprHead={BuildSpritePointerSample()} sprTiles={BuildSpriteTileSample()} " +
+        $"mode=0x{_bus.PeekByte(0x40221d):X2}/0x{_bus.PeekByte(0x40223a):X2}/0x{_bus.PeekByte(0x40223d):X2}/0x{_bus.PeekByte(0x40223f):X2} coin=0x{_bus.CoinWord0:X4}/0x{_bus.CoinWord1:X4}/in{(_bus.Input.Coin1 ? 1 : 0)} fio22={BuildFioSoftSample()} coinT={_bus.PeekWord(0x400090):X4},{_bus.PeekWord(0x400092):X4},{_bus.PeekWord(0x4000a2):X4},{_bus.PeekWord(0x4000a4):X4} bkup18=0x{_bus.PeekByte(0x406c6c):X2} cfg2_18=0x{_bus.PeekByte(0x406c8c):X2} gateEbb4=0x{_bus.PeekByte(0x406bb4):X2} gateEbb5=0x{_bus.PeekByte(0x406bb5):X2} gateEbb6=0x{_bus.PeekByte(0x406bb6):X2} gateW=0x{_bus.LastGateWritePc:X6}->0x{_bus.LastGateWriteAddress:X6}:0x{_bus.LastGateWriteValue:X2} gateNZ=0x{_bus.LastNonZeroGateWritePc:X6}->0x{_bus.LastNonZeroGateWriteAddress:X6}:0x{_bus.LastNonZeroGateWriteValue:X2}/{_bus.NonZeroGateWrites} scene=entry:{_sceneEntryHits}/init:{_sceneInitResumeHits},{_sceneInitMainHits},{_sceneMenuInitHits},{_sceneSpawnerYieldHits}/gate:{_sceneGateRoutineHits}/bset:{_sceneGateSetInstructionHits}/wait:{_sceneGateWaitHits}/mainwait:{_mainGateWaitHits}/call=0x{_lastSceneAbsoluteCallTarget:X6}/cont:{_sceneContinuationEnqueued},{_sceneContinuationDispatched},{_sceneContinuationRemoved}/rm=0x{_lastF3TaskRemoveMask:X8} flag224=0x{_bus.PeekByte(0x402224):X2} obj916=0x{_bus.PeekByte(0x408916):X2} obj917=0x{_bus.PeekByte(0x408917):X2} listCnt=0x{_bus.PeekWord(0x402218):X4} listPtr=0x{_bus.PeekLong(0x407360):X6} listPtrW=0x{_bus.LastSpriteListPointerWritePc:X6}->0x{_bus.LastSpriteListPointerWriteAddress:X6}:0x{_bus.LastSpriteListPointerValue:X8} listFlow={_spriteListBuildHits},{_spriteListProducerWrites},{_spriteListFinalizeHits},{_spriteListLatchedWrites} sprNZ={_bus.SpriteNonZeroWords} sprFirst={_bus.FirstNonZeroSpriteWordOffset:X4} sprRaw={BuildSpriteRamSample()} sprHead={BuildSpritePointerSample()} sprTiles={BuildSpriteTileSample()} " +
         $"sprCand={_lastSpriteCandidates} sprVis={_lastVisibleSprites} sprPix={_lastSpritePixels} sprCtl=0x{_lastSpriteControlWord:X4} sprBank={(_spriteBank ? 1 : 0)} sprLast={_lastSpriteCandidateEntry:X3}/0x{_lastSpriteCandidateTile:X5}/0x{_lastSpriteCandidateControl:X2}@{_lastSpriteCandidateX},{_lastSpriteCandidateY}+{_lastSpriteCandidateScaleX},{_lastSpriteCandidateScaleY} sprBox={_lastSpriteMinX},{_lastSpriteMinY}..{_lastSpriteMaxX},{_lastSpriteMaxY}/{_lastSpriteClosestDistance} " +
         $"ctrlR={_bus.ControlReads} lastCtrl=0x{_bus.LastControlReadAddress:X6}:0x{_bus.LastControlReadValue:X2} modeW=0x{_bus.LastModeWritePc:X6}->0x{_bus.LastModeWriteAddress:X6}:0x{_bus.LastModeWriteValue:X2} modeBtst=0x{_bus.LastModeBtstPc:X6}@0x{_bus.LastModeBtstAddress:X6}:0x{_bus.LastModeBtstValue:X2}/b{_bus.LastModeBtstBit}/z{(_bus.LastModeBtstZero ? 1 : 0)} btst=0x{_bus.LastBtstAddress:X6}:0x{_bus.LastBtstValue:X2}/b{_bus.LastBtstBit} bkupW=0x{_bus.LastBackupWritePc:X6}:0x{_bus.LastBackupWriteValue:X2} ctrlW={_bus.ControlWrites} dpramR={_bus.DualPortReads}@0x{_bus.LastDualPortReadPc:X6}->0x{_bus.LastDualPortReadAddress:X6}:0x{_bus.LastDualPortReadValue:X2} dpramW={_bus.DualPortWrites}@0x{_bus.LastDualPortWritePc:X6}->0x{_bus.LastDualPortWriteAddress:X6}:0x{_bus.LastDualPortWriteValue:X2} sndRst={(_bus.SoundCpuResetAsserted ? 1 : 0)} sndRstW=0x{_bus.LastSoundResetWritePc:X6}->0x{_bus.LastSoundResetWriteAddress:X6} unmappedR={_bus.UnmappedReads} unmappedW={_bus.UnmappedWrites} stop={_lastStopReason}";
     }
@@ -185,6 +192,22 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         return string.Create(CultureInfo.InvariantCulture, $"{_bus.PeekWord(pointer):X4},{_bus.PeekWord(pointer + 2):X4},{_bus.PeekWord(pointer + 4):X4},{_bus.PeekWord(pointer + 6):X4},{_bus.PeekWord(pointer + 8):X4},{_bus.PeekWord(pointer + 10):X4},{_bus.PeekWord(pointer + 12):X4},{_bus.PeekWord(pointer + 14):X4}");
     }
+
+    private string BuildLineStateSample()
+    {
+        F3LineState line = _lineStates[(VisibleAreaMinY + FrameHeight / 2) & 0xff];
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"b={line.Blend[0]},{line.Blend[1]},{line.Blend[2]},{line.Blend[3]} pf={line.PlayfieldMix[0]:X4},{line.PlayfieldMix[1]:X4},{line.PlayfieldMix[2]:X4},{line.PlayfieldMix[3]:X4} piv={line.PivotMix:X4}");
+    }
+
+    private string BuildPlayfieldLayerSample()
+        => string.Create(
+            CultureInfo.InvariantCulture,
+            $"0:{_lastPlayfieldLayerCandidates[0]}/{_lastPlayfieldLayerPixels[0]}/{_lastPlayfieldBlendSelect0[0]},{_lastPlayfieldBlendSelect1[0]} " +
+            $"1:{_lastPlayfieldLayerCandidates[1]}/{_lastPlayfieldLayerPixels[1]}/{_lastPlayfieldBlendSelect0[1]},{_lastPlayfieldBlendSelect1[1]} " +
+            $"2:{_lastPlayfieldLayerCandidates[2]}/{_lastPlayfieldLayerPixels[2]}/{_lastPlayfieldBlendSelect0[2]},{_lastPlayfieldBlendSelect1[2]} " +
+            $"3:{_lastPlayfieldLayerCandidates[3]}/{_lastPlayfieldLayerPixels[3]}/{_lastPlayfieldBlendSelect0[3]},{_lastPlayfieldBlendSelect1[3]}");
 
     private string BuildFioSoftSample()
         => string.Create(
@@ -225,8 +248,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         => _f3TaskQueue.Count == 0
             ? "-"
             : string.Join(",", _f3TaskQueue.Take(5).Select(static task => task.DelayFrames == 0
-                ? task.Pc.ToString("X6", CultureInfo.InvariantCulture)
-                : string.Create(CultureInfo.InvariantCulture, $"{task.Pc:X6}:{task.DelayFrames}")));
+                ? string.Create(CultureInfo.InvariantCulture, $"{task.Pc:X6}/p{task.Priority}")
+                : string.Create(CultureInfo.InvariantCulture, $"{task.Pc:X6}/p{task.Priority}:{task.DelayFrames}")));
 
     private static string BuildRecentTaskSample(uint[] ring, int nextIndex)
     {
@@ -296,6 +319,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _traceInstructionsRemaining = TraceInstructionLimit;
         _traceBootPcRemaining = TraceBootPcLimit;
         _f3TaskQueue.Clear();
+        ResetVideoRuntime();
         _lastStopReason = "reset";
         _romIdentity = new RomIdentity(_driverName, BuildRomHash(roms.MainCpu), Path.GetDirectoryName(Path.GetFullPath(path)));
         UpdateRomInfo(path);
@@ -325,7 +349,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _traceBootPcRemaining = TraceBootPcLimit;
         _traceInstructionsRemaining = TraceInstructionLimit;
         _f3TaskQueue.Clear();
+        ResetVideoRuntime();
         RenderUglyVideo();
+    }
+
+    private void ResetVideoRuntime()
+    {
+        _spriteBank = false;
+        _spriteTrails = false;
+        _spritePenMask = 0x0f;
+        _sprites.Clear();
+        _latchedSprites.Clear();
+        _nextLatchedSprites.Clear();
+        Array.Clear(_spriteReefPalette);
+        Array.Clear(_spriteReefGroup);
     }
 
     public void RunFrame()
@@ -337,7 +374,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _bus.BeginFrameInterrupt();
         if (_f3TasksEnqueued == 0)
             _bus.PulseBootSchedulerGate();
-        _bus.RefreshInputLatches();
+        if (_f3TasksEnqueued != 0)
+            _bus.RefreshInputLatches();
         if (_cpuFaulted)
         {
             DrawBringupFrame();
@@ -421,6 +459,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (Trace || _frameCounter <= 3 || (_frameCounter % 60) == 0)
             Console.WriteLine($"[DARIUSG] {DebugSummary}");
 
+        if (_f3TasksEnqueued != 0)
+            _bus.RefreshInputLatches();
         RenderUglyVideo();
     }
 
@@ -461,7 +501,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         bool mode,
         PadType padType)
     {
-        _bus.Input = new TaitoF3InputState(up, down, left, right, a, b, c, start, x, y, z, mode);
+        _bus.Input = new TaitoF3InputState(up, down, left, right, a, b, c, start, x, y, z, coin1: mode);
     }
 
     public void SaveState(BinaryWriter writer)
@@ -548,9 +588,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (!drewAny && _hasPresentFrame)
             return;
 
-        if (_hasPresentFrame && !FrameHasVisibleDetail())
-            return;
-
         Buffer.BlockCopy(_frameBuffer, 0, _presentFrameBuffer, 0, _frameBuffer.Length);
         _hasPresentFrame = true;
     }
@@ -597,14 +634,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return true;
         if (TryBypassCoinErrorStatusGate(pc, op, out cycles))
             return true;
-        if (TryBypassCreditStartGate(pc, op, out cycles))
-            return true;
         if (TryBypassWaitAMomentGate(pc, op, out cycles))
             return true;
         if (TryBypassBackupRamInitReset(pc, op, out cycles))
             return true;
-        if (TryExecuteDariusSpriteReefClear(pc, out cycles))
-            return true;
+        // Sprite RAM command/list layout is sensitive; keep these writes on the
+        // ROM's real 68k path so the MAME-style sprite walker sees matching data.
         if (TryExecuteDariusWorkRamCurrent(pc, op, out cycles))
             return true;
         if (TryExecuteDariusF3MemoryTide(pc, op, out cycles))
@@ -849,6 +884,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         cycles = 0;
         if (op != 0x4e41 && op != 0x4e42 && op != 0x4e43 && op != 0x4e44 && op != 0x4e45)
             return false;
+        if (UseNativeF3TrapScheduler)
+            return false;
 
         var state = _mainCpu.GetState();
         uint nextPc;
@@ -875,6 +912,16 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             uint sp = (state.Sr & 0x2000) != 0 ? state.Ssp : state.Usp;
             uint mask = _bus.ReadLong(sp);
             RemoveF3TasksByMask(mask);
+            uint currentBit = _currentF3TaskPriority < 32 ? 1u << _currentF3TaskPriority : 0;
+            if ((mask & currentBit) != 0)
+            {
+                nextPc = 0x002326;
+                ushort idlePrefetch = _bus.ReadOpcodeWord(nextPc);
+                _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, usp, ssp, state.Sr, nextPc, idlePrefetch));
+                _m68ec020ProbeInstructions++;
+                cycles = 34;
+                return true;
+            }
             nextPc = (pc + 2) & 0x00ff_ffff;
         }
         else if (op == 0x4e43)
@@ -901,7 +948,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                         ? 0
                         : op == 0x4e44
                             ? Math.Clamp((int)(_bus.ReadLong((state.Sr & 0x2000) != 0 ? state.Ssp : state.Usp) & 0x7fff), 1, 600)
-                            : 1;
+                            : 0;
                     EnqueueF3Task(
                         CreateContinuationF3TaskState(state, continuation, delayFrames, _currentF3TaskPriority),
                         preferFront: ridesFastCurrent);
@@ -1154,6 +1201,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private bool TryExecuteF3SchedulerYieldEntry(uint pc, ushort op, out uint cycles)
     {
         cycles = 0;
+        if (UseNativeF3TrapScheduler)
+            return false;
         if (pc != 0x001f62 || op != 0x40ed)
             return false;
 
@@ -1383,6 +1432,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         cycles = 0;
         if (pc != 0x010420 || op != 0x082d)
             return false;
+        if (_f3TasksEnqueued != 0)
+            return false;
 
         var state = _mainCpu.GetState();
         uint nextPc = 0x010478;
@@ -1400,7 +1451,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
 
         var state = _mainCpu.GetState();
-        state.Data[0] = 0;
+        state.Data[0] = _bus.HasInsertedCredit ? 0u : 0xffff_ffffu;
         uint nextPc = 0x0102ee;
         ushort prefetch = _bus.ReadOpcodeWord(nextPc);
         _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, nextPc, prefetch));
@@ -1899,76 +1950,119 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     {
         _lastPlayfieldCandidates = 0;
         _lastPlayfieldPixels = 0;
-        bool drewAny = false;
+        Array.Clear(_lastPlayfieldLayerCandidates);
+        Array.Clear(_lastPlayfieldLayerPixels);
+        Array.Clear(_lastPlayfieldBlendSelect0);
+        Array.Clear(_lastPlayfieldBlendSelect1);
+        Span<int> regSx = stackalloc int[4];
+        Span<int> regFxY = stackalloc int[4];
         for (int layer = 0; layer < 4; layer++)
-            drewAny |= RenderPlayfieldLayer(roms, layer);
+            GetMamePlayfieldScroll(layer, out regSx[layer], out regFxY[layer]);
+
+        bool drewAny = false;
+        for (int screenY = 0; screenY < FrameHeight; screenY++)
+        {
+            int screenLine = screenY + VisibleAreaMinY;
+            int[] layerOrder = BuildMamePlayfieldOrder(screenLine);
+            for (int i = 0; i < layerOrder.Length; i++)
+                drewAny |= RenderPlayfieldLine(roms, layerOrder[i], screenY, regSx[layerOrder[i]], regFxY[layerOrder[i]]);
+
+            if (screenY != 0)
+            {
+                F3LineState line = _lineStates[screenLine & 0xff];
+                for (int layer = 0; layer < 4; layer++)
+                    regFxY[layer] += line.PlayfieldYScale[layer];
+            }
+        }
+
         return drewAny;
     }
 
-    private bool RenderPlayfieldLayer(TaitoF3RomSet roms, int layer)
+    private int[] BuildMamePlayfieldOrder(int screenLine)
+    {
+        int[] order = [0, 3, 2, 1];
+        Array.Sort(order, (a, b) =>
+        {
+            int pa = TryReadMixableCurrentState(screenLine, 7, a, spriteRules: false, out int priorityA, out _, out _) ? priorityA : -1;
+            int pb = TryReadMixableCurrentState(screenLine, 7, b, spriteRules: false, out int priorityB, out _, out _) ? priorityB : -1;
+            int priorityCompare = pb.CompareTo(pa);
+            if (priorityCompare != 0)
+                return priorityCompare;
+
+            return MamePlayfieldStableRank(a).CompareTo(MamePlayfieldStableRank(b));
+        });
+        return order;
+    }
+
+    private static int MamePlayfieldStableRank(int layer)
+        => layer switch
+        {
+            0 => 0,
+            3 => 1,
+            2 => 2,
+            _ => 3,
+        };
+
+    private bool RenderPlayfieldLine(TaitoF3RomSet roms, int layer, int screenY, int regSx, int regFxY)
     {
         const int tileSize = 16;
         const int mapTiles = 32;
         int lineRamLayer = layer & 3;
-        GetMamePlayfieldScroll(layer, out int regSx, out int regSy);
-        int regFxY = regSy;
+        int screenLine = screenY + VisibleAreaMinY;
+        if (!TryReadMixableCurrentState(screenLine, 7, lineRamLayer, spriteRules: false, out int layerPriority, out int layerBlendMode, out _))
+            return false;
+
+        F3LineState line = _lineStates[screenLine & 0xff];
+        int tilemap = layer + (line.PlayfieldAltTilemap[lineRamLayer] ? 2 : 0);
+        int sourceY = ((regFxY >> 8) + line.PlayfieldColScroll[lineRamLayer]) & 0x01ff;
+        if (!_bus.IsPlayfieldRowUsed(sourceY >> 4, tilemap))
+            return false;
+
         bool drewAny = false;
-
-        for (int screenY = 0; screenY < FrameHeight; screenY++)
+        int tileY = sourceY / tileSize;
+        int pixelY = sourceY & 15;
+        int lineRegFxX = regSx + line.PlayfieldRowScroll[lineRamLayer] + (10 * (line.PlayfieldXScale[lineRamLayer] - 0x100));
+        int layerWordBase = tilemap * 0x800;
+        ushort layerMixValue = line.PlayfieldMix[lineRamLayer];
+        for (int screenX = 0; screenX < FrameWidth; screenX++)
         {
-            int screenLine = screenY + VisibleAreaMinY;
-            if (!TryReadMixableCurrentState(screenLine, 7, lineRamLayer, spriteRules: false, out int layerPriority, out int layerBlendMode, out bool layerBlendSelect))
+            if (!IsMameClipAllowed(screenLine, layerMixValue, screenX + VisibleAreaMinX))
                 continue;
 
-            F3LineState line = _lineStates[screenLine & 0xff];
-            int tilemap = layer + (line.PlayfieldAltTilemap[lineRamLayer] ? 2 : 0);
-            int sourceY = ((regFxY >> 8) + line.PlayfieldColScroll[lineRamLayer]) & 0x01ff;
-            if (!_bus.IsPlayfieldRowUsed(sourceY >> 4, tilemap))
-            {
-                regFxY += line.PlayfieldYScale[lineRamLayer];
+            int sourceX = (((lineRegFxX + (screenX * line.PlayfieldXScale[lineRamLayer])) >> 8) + VisibleAreaMinX) & 0x01ff;
+            int tileX = sourceX / tileSize;
+            int pixelX = sourceX & 15;
+            int entry = layerWordBase + (tileY * mapTiles + tileX) * 2;
+            ushort attr = _bus.ReadPlayfieldWord(entry);
+            ushort code = _bus.ReadPlayfieldWord(entry + 1);
+            if ((attr | code) == 0)
                 continue;
-            }
+            _lastPlayfieldCandidates++;
+            _lastPlayfieldLayerCandidates[lineRamLayer]++;
 
-            int tileY = sourceY / tileSize;
-            int pixelY = sourceY & 15;
-            int lineRegFxX = regSx + line.PlayfieldRowScroll[lineRamLayer] + (10 * (line.PlayfieldXScale[lineRamLayer] - 0x100));
-            int layerWordBase = tilemap * 0x800;
-            ushort layerMixValue = line.PlayfieldMix[lineRamLayer];
-            for (int screenX = 0; screenX < FrameWidth; screenX++)
-            {
-                if (!IsMameClipAllowed(screenLine, layerMixValue, screenX + VisibleAreaMinX))
-                    continue;
+            int reefPixelX = pixelX;
+            int reefPixelY = pixelY;
+            if ((attr & 0x4000) != 0)
+                reefPixelX = 15 - reefPixelX;
+            if ((attr & 0x8000) != 0)
+                reefPixelY = 15 - reefPixelY;
 
-                int sourceX = (((lineRegFxX + (screenX * line.PlayfieldXScale[lineRamLayer])) >> 8) + VisibleAreaMinX) & 0x01ff;
-                int tileX = sourceX / tileSize;
-                int pixelX = sourceX & 15;
-                int entry = layerWordBase + (tileY * mapTiles + tileX) * 2;
-                ushort attr = _bus.ReadPlayfieldWord(entry);
-                ushort code = _bus.ReadPlayfieldWord(entry + 1);
-                if ((attr | code) == 0)
-                    continue;
-                _lastPlayfieldCandidates++;
+            int extraPlanes = (attr >> 10) & 3;
+            bool tileBlendSelect = (attr & 0x0200) != 0;
+            int palette = attr & 0x01ff;
+            int penMask = ((extraPlanes & ~palette) << 4) | 0x0f;
+            int pen = DecodeTilemapPixel(roms, code, reefPixelX, reefPixelY, penMask);
+            if (pen == 0)
+                continue;
 
-                int reefPixelX = pixelX;
-                int reefPixelY = pixelY;
-                if ((attr & 0x4000) != 0)
-                    reefPixelX = 15 - reefPixelX;
-                if ((attr & 0x8000) != 0)
-                    reefPixelY = 15 - reefPixelY;
-
-                int extraPlanes = (attr >> 10) & 3;
-                int palette = attr & 0x01ff;
-                int penMask = ((extraPlanes & ~palette) << 4) | 0x0f;
-                int pen = DecodeTilemapPixel(roms, code, reefPixelX, reefPixelY, penMask);
-                if (pen == 0)
-                    continue;
-
-                WritePalettePixel(screenX, screenY, line.PlayfieldPaletteAdd[lineRamLayer] + palette * 16 + pen, layerPriority, GetPlayfieldLayerRank(lineRamLayer), layerBlendMode, layerBlendSelect);
-                _lastPlayfieldPixels++;
-                drewAny = true;
-            }
-
-            regFxY += line.PlayfieldYScale[lineRamLayer];
+            if (tileBlendSelect)
+                _lastPlayfieldBlendSelect1[lineRamLayer]++;
+            else
+                _lastPlayfieldBlendSelect0[lineRamLayer]++;
+            WritePalettePixel(screenX, screenY, line.PlayfieldPaletteAdd[lineRamLayer] + palette * 16 + pen, layerPriority, GetPlayfieldLayerRank(lineRamLayer), layerBlendMode, tileBlendSelect);
+            _lastPlayfieldPixels++;
+            _lastPlayfieldLayerPixels[lineRamLayer]++;
+            drewAny = true;
         }
 
         return drewAny;
@@ -2170,15 +2264,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             Array.Clear(_spriteReefGroup);
         }
 
-        List<F3Sprite> drawSprites = _latchedSprites.Count == 0 ? _sprites : _latchedSprites;
-        for (int i = drawSprites.Count - 1; i >= 0; i--)
-            DrawSpriteToReef(roms, drawSprites[i]);
+        int drawnSpriteCount = _latchedSprites.Count;
+        for (int i = _latchedSprites.Count - 1; i >= 0; i--)
+            DrawSpriteToReef(roms, _latchedSprites[i]);
 
         BuildSpriteList();
         _latchedSprites.Clear();
-        _latchedSprites.AddRange(_sprites);
+        _latchedSprites.AddRange(_nextLatchedSprites);
+        _nextLatchedSprites.Clear();
+        _nextLatchedSprites.AddRange(_sprites);
 
-        _lastVisibleSprites = drawSprites.Count;
+        _lastVisibleSprites = drawnSpriteCount;
         return drewAny || _lastSpritePixels != 0;
     }
 
@@ -2199,15 +2295,33 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastSpriteMaxX = int.MinValue;
         _lastSpriteMaxY = int.MinValue;
         _lastSpriteClosestDistance = int.MaxValue;
-        bool initialBank = _spriteBank;
-        BuildSpriteListFrom(0, initialBank, updateSpriteBank: true);
-        if (_lastSpriteCandidates != 0 || _bus.SpriteNonZeroWords == 0)
-            return;
+        BuildSpriteListFrom(0, _spriteBank, updateSpriteBank: true);
+        if (_sprites.Count == 0)
+        {
+            if (!TryBuildSpriteListFromPointer(_bus.PeekLong(0x407360), skipHeader: true)
+                && !TryBuildSpriteListFromPointer(_bus.PeekLong(0x407364), skipHeader: true))
+                TryBuildSpriteListFromPointer(_bus.PeekLong(0x407368), skipHeader: true);
+        }
+    }
 
-        bool commandBank = _spriteBank;
-        BuildSpriteListFrom(0, !initialBank, updateSpriteBank: false);
-        if (_lastSpriteCandidates != 0)
-            _spriteBank = commandBank;
+    private bool TryBuildSpriteListFromPointer(uint pointer, bool skipHeader)
+    {
+        pointer &= 0x00ff_ffff;
+        if (pointer < 0x600000 || pointer >= 0x610000)
+            return false;
+
+        int wordOffset = (int)((pointer - 0x600000) >> 1);
+        if ((uint)wordOffset >= 0x8000)
+            return false;
+
+        bool pointerBank = (wordOffset & 0x4000) != 0;
+        int startEntry = (wordOffset & 0x3fff) / 8;
+        if (skipHeader)
+            startEntry++;
+
+        int previousCount = _sprites.Count;
+        BuildSpriteListFrom(startEntry, pointerBank, updateSpriteBank: false);
+        return _sprites.Count != previousCount;
     }
 
     private void BuildSpriteListFrom(int startEntry, bool initialBank, bool updateSpriteBank)
@@ -2327,9 +2441,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     continue;
 
                 byte spriteRank = GetSpriteLayerRank(spriteGroup);
-                if (!CanWritePalettePixel(row + x, spritePriority, spriteRank))
-                    continue;
-
                 WritePalettePixel(x, y, paletteIndex, spritePriority, spriteRank, spriteBlendMode, spriteBlendSelect);
                 drewAny = true;
             }
@@ -2629,6 +2740,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         Array.Clear(_mixSrcBlend);
         Array.Clear(_mixSrcPriority);
         Array.Clear(_mixDstPriority);
+        _lastMixPriorityZeroConflicts = 0;
         Array.Fill(_mixDstPalette, (ushort)paletteIndex);
         Array.Fill(_mixDstBlend, (byte)8);
         Array.Fill(_mixSrcBlendMode, (byte)0xff);
@@ -2685,6 +2797,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         if (priority >= _mixDstPriority[priorityOffset])
         {
+            if (priority == _mixDstPriority[priorityOffset] && priority == 0)
+                _lastMixPriorityZeroConflicts++;
             _mixDstPalette[priorityOffset] = priority != _mixDstPriority[priorityOffset] ? palette : (ushort)0;
             _mixDstPriority[priorityOffset] = (byte)priority;
             _mixDstBlendMode[priorityOffset] = (byte)blendMode;
@@ -2703,17 +2817,33 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private void RenderMameMixBufferToFrame()
     {
+        int sourcePixels = 0;
+        int litSourcePixels = 0;
+        int destOnlyPixels = 0;
         for (int y = 0; y < FrameHeight; y++)
         {
             int row = y * FrameWidth;
             for (int x = 0; x < FrameWidth; x++)
             {
                 int offset = row + x;
+                if (_mixSrcBlendMode[offset] != 0xff)
+                {
+                    sourcePixels++;
+                    if (_mixSrcBlend[offset] != 0 && _mixSrcPalette[offset] != 0)
+                        litSourcePixels++;
+                }
+                else if (_mixDstPalette[offset] != 0)
+                {
+                    destOnlyPixels++;
+                }
                 uint source = _bus.ReadPaletteColor(_mixSrcPalette[offset], fallback: SynthColor(_mixSrcPalette[offset]));
                 uint destination = _bus.ReadPaletteColor(_mixDstPalette[offset], fallback: SynthColor(_mixDstPalette[offset]));
                 WriteFrameColor(x, y, BlendFixed3(source, destination, _mixSrcBlend[offset], _mixDstBlend[offset]));
             }
         }
+        _lastMixSourcePixels = sourcePixels;
+        _lastMixLitSourcePixels = litSourcePixels;
+        _lastMixDestOnlyPixels = destOnlyPixels;
     }
 
     private static uint BlendFixed3(uint source, uint destination, int sourceWeight, int destinationWeight)
@@ -3012,9 +3142,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public readonly bool X;
         public readonly bool Y;
         public readonly bool Z;
-        public readonly bool Mode;
+        public readonly bool Coin1;
 
-        public TaitoF3InputState(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start, bool x, bool y, bool z, bool mode)
+        public TaitoF3InputState(bool up, bool down, bool left, bool right, bool a, bool b, bool c, bool start, bool x, bool y, bool z, bool coin1)
         {
             Up = up;
             Down = down;
@@ -3027,7 +3157,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             X = x;
             Y = y;
             Z = z;
-            Mode = mode;
+            Coin1 = coin1;
         }
     }
 
@@ -3429,7 +3559,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         private int _textNonZeroWords;
         private int _pivotNonZeroWords;
         private int _spriteNonZeroWords;
-        private byte _interruptLevel;
+        private bool _interrupt2Asserted;
+        private bool _interrupt3Asserted;
         private bool _pendingInterrupt3;
         private bool _interrupt3Ready;
         private int _interrupt3DelayCycles;
@@ -3438,6 +3569,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         private ushort _timerControl0;
         private ushort _timerControl1;
         private byte _eepromOutLatch;
+        private bool _previousCoin1;
+        private bool _previousStart;
+        private byte _startLatchFrames;
+        private ushort _creditCount;
         private bool _soundCpuResetAsserted;
         private readonly Eeprom93C46 _eeprom = new();
 
@@ -3507,6 +3642,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public int FirstNonZeroSpriteWordOffset => FindFirstNonZeroWord(_spriteRam);
         public ushort CoinWord0 => _coinWord0;
         public ushort CoinWord1 => _coinWord1;
+        public bool HasInsertedCredit => _creditCount != 0;
         public bool SoundCpuResetAsserted => _soundCpuResetAsserted;
         public bool IsPlayfieldRowUsed(int row, int tilemap)
             => (uint)row < 32 && (uint)tilemap < 8 && _tilemapRowUsage[row, tilemap] > 0;
@@ -3538,7 +3674,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _textNonZeroWords = 0;
             _pivotNonZeroWords = 0;
             _spriteNonZeroWords = 0;
-            _interruptLevel = 0;
+            _interrupt2Asserted = false;
+            _interrupt3Asserted = false;
             _pendingInterrupt3 = false;
             _interrupt3Ready = false;
             _interrupt3DelayCycles = 0;
@@ -3547,6 +3684,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _timerControl0 = 0;
             _timerControl1 = 0;
             _eepromOutLatch = 0;
+            _previousCoin1 = false;
+            _previousStart = false;
+            _startLatchFrames = 0;
+            _creditCount = 0;
             _eeprom.Reset();
             _soundCpuResetAsserted = true;
             VectorBase = 0;
@@ -3606,7 +3747,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             // MAME's F3 driver asserts IRQ2 on vblank and then IRQ3 after
             // roughly 10000 main CPU cycles. Keep IRQ3 delayed so the ROM
             // scheduler sees the same ocean tide instead of a back-to-back pair.
-            _interruptLevel = 2;
+            _interrupt2Asserted = true;
             _pendingInterrupt3 = true;
             _interrupt3Ready = false;
             _interrupt3DelayCycles = 10_000;
@@ -3618,6 +3759,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             // The boot scheduler needs one external wake edge before the ROM's
             // own task traps are active. Keep it out of the steady-state path:
             // bit 0 is later used by game code as a scene restart gate.
+            PulseSchedulerGateBit0();
+        }
+
+        public void PulseSchedulerGateBit0()
+        {
             _workRam[0x006bb4] = (byte)((_workRam[0x006bb4] | 0x01) & ~0x02);
             _workRam[0x006bb5] = (byte)((_workRam[0x006bb5] | 0x01) & ~0x02);
         }
@@ -3633,8 +3779,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             _interrupt3Ready = true;
             _interrupt3DelayCycles = 0;
-            if (_interruptLevel == 0)
-                _interruptLevel = 3;
+            _interrupt3Asserted = true;
         }
 
         public void RefreshInputLatches()
@@ -3649,10 +3794,36 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             // 0xff and the attract/title task treats them as active service/start
             // gates, looping back to its TRAP #5 wait forever. Keep only those
             // no-input status bytes neutral while leaving the ROM's live
-            // 0x40221c/0x40221d latch math untouched.
+            // 0x40221c/0x40221d latch math untouched. 0x402224 is also tested
+            // by the Darius scene-gate path before it sets A5-$144c bit 0.
+            WriteWorkRamByteSilently(0x402224, 0x00);
             WriteWorkRamByteSilently(0x402225, 0x00);
-            WriteWorkRamByteSilently(0x402229, 0x00);
+            if (Input.Start && !_previousStart)
+                _startLatchFrames = 18;
+
+            bool startLatched = _startLatchFrames != 0;
+            WriteWorkRamByteSilently(0x402228, startLatched ? (byte)0x7f : (byte)0xff);
+            if (Input.Start && !_previousStart)
+            {
+                WriteWorkRamByteSilently(0x402229, 0x7f);
+                if (_creditCount != 0)
+                {
+                    _creditCount--;
+                    PulseSchedulerGateBit0();
+                }
+            }
+            else if (startLatched)
+            {
+                WriteWorkRamByteSilently(0x402229, 0x7f);
+            }
             WriteWorkRamByteSilently(0x40223a, 0x00);
+
+            if (Input.Coin1 && !_previousCoin1)
+                _creditCount = (ushort)Math.Min(_creditCount + 1, 9);
+            _previousCoin1 = Input.Coin1;
+            _previousStart = Input.Start;
+            if (_startLatchFrames != 0)
+                _startLatchFrames--;
         }
 
         public ushort ReadPlayfieldWord(int wordOffset)
@@ -3738,6 +3909,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 _workRam[ramOffset] = value;
         }
 
+        private void WriteWorkRamWordSilently(uint address, ushort value)
+        {
+            if (!MapWindow(address & 0x00ff_ffff, 0x400000, 0x40000, _workRam, out int ramOffset))
+                return;
+
+            _workRam[ramOffset] = (byte)(value >> 8);
+            _workRam[ramOffset + 1] = (byte)value;
+        }
+
         private void LatchSchedulerFrameTick()
         {
             // The ROM copies A5-$144c to A5-$144b in its own scheduler path.
@@ -3808,27 +3988,30 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             WriteWord(address + 2, (ushort)value);
         }
 
-        public byte InterruptLevel() => _interruptLevel;
+        public byte InterruptLevel()
+        {
+            if (_interrupt3Asserted)
+                return 3;
+            if (_interrupt2Asserted)
+                return 2;
+            return 0;
+        }
 
         public void AcknowledgeInterrupt(byte level)
         {
-            if (level != _interruptLevel)
-                return;
-
             if (level == 2)
             {
-                _interruptLevel = _interrupt3Ready ? (byte)3 : (byte)0;
+                _interrupt2Asserted = false;
                 return;
             }
 
             if (level == 3)
             {
+                _interrupt3Asserted = false;
                 _pendingInterrupt3 = false;
                 _interrupt3Ready = false;
                 _interrupt3DelayCycles = 0;
             }
-
-            _interruptLevel = 0;
         }
         public bool Reset() => false;
         public bool Halt() => false;
@@ -3846,7 +4029,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             writer.Write(_dualPortRam);
             writer.Write(_textNonZeroWords);
             writer.Write(_spriteNonZeroWords);
-            writer.Write(_interruptLevel);
+            writer.Write(InterruptLevel());
             writer.Write(_pendingInterrupt3);
             writer.Write(_interrupt3Ready);
             writer.Write(_interrupt3DelayCycles);
@@ -3879,10 +4062,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _textNonZeroWords = version >= 6 ? reader.ReadInt32() : CountNonZeroWords(_textRam);
             _spriteNonZeroWords = version >= 7 ? reader.ReadInt32() : CountNonZeroWords(_spriteRam);
             _pivotNonZeroWords = CountNonZeroWords(_pivotRam);
-            _interruptLevel = reader.ReadByte();
+            byte savedInterruptLevel = reader.ReadByte();
+            _interrupt2Asserted = savedInterruptLevel == 2;
+            _interrupt3Asserted = savedInterruptLevel == 3;
             _pendingInterrupt3 = version >= 5 && reader.ReadBoolean();
             _interrupt3Ready = version >= 10 && reader.ReadBoolean();
             _interrupt3DelayCycles = version >= 10 ? reader.ReadInt32() : 0;
+            if (_interrupt3Ready)
+                _interrupt3Asserted = true;
             _timerControl0 = 0;
             _timerControl1 = 0;
             _eepromOutLatch = 0;
@@ -3910,6 +4097,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             else
             {
                 _pendingInterrupt3 = false;
+                _interrupt2Asserted = false;
+                _interrupt3Asserted = false;
                 _coinWord0 = 0;
                 _coinWord1 = 0;
                 _timerControl0 = 0;
@@ -4198,6 +4387,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             uint pc = CurrentCpuPc & 0x00ff_ffff;
             return address switch
             {
+                0x402224 => pc is 0x004276 or 0x004280 or 0x00428a,
                 0x40223a => pc is 0x0042ac or 0x004410 or 0x0044d4,
                 0x402225 => pc == 0x0044ca,
                 0x402229 => pc == 0x0044e2,
@@ -4256,16 +4446,16 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             byte eepromIn = 0xff;
             if (!_eeprom.DataOut)
                 eepromIn &= unchecked((byte)~0x01);
-            if (Input.Mode)
-                eepromIn &= unchecked((byte)~0x02);
+            if (Input.Coin1)
+                eepromIn &= unchecked((byte)~0x10);
 
             uint value = ((uint)eepromIn << 24) | ((uint)eepromIn << 16) | 0x0000_ffffu;
             if (Input.A) value &= ~0x0000_0001u;
             if (Input.B) value &= ~0x0000_0002u;
             if (Input.C) value &= ~0x0000_0004u;
             if (Input.X) value &= ~0x0000_0008u;
-            if (Input.Mode) value &= ~0x0000_0200u;
             if (Input.Start) value &= ~0x0000_1000u;
+            if (Input.Z) value &= ~0x0000_2000u;
             return value;
         }
 
