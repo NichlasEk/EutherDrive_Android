@@ -12234,6 +12234,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _cmdFifoJumped;
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
+    private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private int _drawTraceCount;
 
@@ -12242,7 +12243,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
            $"tri={_directTriangleCommandCount}+{_setupTriangleCommandCount} fill={_fastFillCount} swap={_swapBufferCount} " +
            $"lfb={_lfbWriteCount} tex={_textureWriteCount} buf={_frontBufferIndex}/{_backBufferIndex}/{GetColorBufferCount()} " +
-           $"bnnz={GetBufferNonZeroCount(0)}/{GetBufferNonZeroCount(1)}/{GetBufferNonZeroCount(2)} " +
+           GetBufferCountDebugStatus() +
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
 
@@ -13016,6 +13017,11 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private int GetColorBufferCount()
         => ((_registers[RegFbiInit2] >> 4) & 1u) != 0 ? 3 : 2;
+
+    private string GetBufferCountDebugStatus()
+        => _debugBufferCounts
+            ? $"bnnz={GetBufferNonZeroCount(0)}/{GetBufferNonZeroCount(1)}/{GetBufferNonZeroCount(2)} "
+            : "";
 
     private int GetBufferNonZeroCount(int index)
     {
