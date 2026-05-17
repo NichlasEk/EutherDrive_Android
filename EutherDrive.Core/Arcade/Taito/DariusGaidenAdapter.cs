@@ -643,6 +643,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         // ROM's real 68k path so the MAME-style sprite walker sees matching data.
         if (TryExecuteDariusWorkRamCurrent(pc, op, out cycles))
             return true;
+        if (TryExecuteDariusBootRamClear(pc, op, out cycles))
+            return true;
         if (TryExecuteDariusF3MemoryTide(pc, op, out cycles))
             return true;
         if (TryExecuteDariusPaletteCurrent(pc, op, out cycles))
@@ -1055,9 +1057,62 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return true;
     }
 
+    private bool TryExecuteDariusBootRamClear(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        bool atLoopHead = pc == 0x01009a && op == 0x13fc;
+        bool atLongWrite = pc == 0x0100a2 && op == 0x20c1;
+        if (!atLoopHead && !atLongWrite)
+            return false;
+
+        if (_bus.PeekWord(0x01009a) != 0x13fc
+            || _bus.PeekWord(0x0100a2) != 0x20c1
+            || _bus.PeekWord(0x0100a4) != 0x5380
+            || _bus.PeekWord(0x0100a6) != 0x66f2)
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        uint remaining = state.Data[0] & 0x00ff_ffff;
+        uint address = state.Address[0] & 0x00ff_ffff;
+        if (remaining == 0 || remaining > 0x20000 || state.Data[1] != 0)
+            return false;
+
+        uint byteCount = remaining * 4;
+        if (!IsF3WritableRamRange(address, byteCount))
+            return false;
+
+        if (atLoopHead)
+        {
+            byte value = (byte)_bus.PeekWord(0x01009c);
+            uint watchdogAddress = _bus.ReadLong(0x01009e) & 0x00ff_ffff;
+            _bus.WriteByte(watchdogAddress, value);
+        }
+
+        for (uint i = 0; i < remaining; i++)
+        {
+            _bus.WriteLong(address, 0);
+            address = (address + 4) & 0x00ff_ffff;
+        }
+
+        state.Data[0] = 0;
+        state.Address[0] = address;
+        uint nextPc = 0x0100a8;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        ushort sr = (ushort)((state.Sr & 0xfff0) | 0x0004);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += remaining * 4;
+        cycles = Math.Max(34u, remaining * 10u);
+        return true;
+    }
+
     private bool TryExecuteDariusF3MemoryTide(uint pc, ushort op, out uint cycles)
     {
         cycles = 0;
+        if (TryExecuteDariusF3RamPatternFill(pc, op, out cycles))
+            return true;
+
         if (op == 0x20c1 && _bus.PeekWord(pc + 2) == 0x51c8)
             return TryExecuteDariusDbraLongFill(pc, out cycles);
 
@@ -1068,6 +1123,90 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return TryExecuteDariusLineMaskTide(pc, out cycles);
 
         return false;
+    }
+
+    private bool TryExecuteDariusF3RamPatternFill(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        int unitSize;
+        uint finalD1;
+        bool byteFill = false;
+
+        if (pc == 0x000522
+            && op == 0x7603
+            && _bus.PeekWord(pc + 2) == 0x123c
+            && _bus.PeekWord(pc + 6) == 0x13fc
+            && _bus.PeekWord(pc + 0x26) == 0x51cb)
+        {
+            unitSize = 1;
+            finalD1 = 0xab;
+            byteFill = true;
+        }
+        else if (pc == 0x000554
+            && op == 0x7603
+            && _bus.PeekWord(pc + 2) == 0x323c
+            && _bus.PeekWord(pc + 6) == 0x13fc
+            && _bus.PeekWord(pc + 0x26) == 0x51cb)
+        {
+            unitSize = 2;
+            finalD1 = 0xaaab;
+        }
+        else if (pc == 0x000586
+            && op == 0x7603
+            && _bus.PeekWord(pc + 2) == 0x72ff
+            && _bus.PeekWord(pc + 4) == 0x13fc
+            && _bus.PeekWord(pc + 0x26) == 0x51cb)
+        {
+            unitSize = 4;
+            finalD1 = 0xaaaa_aaab;
+        }
+        else
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        uint address = state.Address[0] & 0x00ff_ffff;
+        uint byteCount = state.Data[0] & 0x00ff_ffff;
+        if (byteCount == 0 || byteCount > 0x400000 || (byteCount % (uint)unitSize) != 0)
+            return false;
+        if (!IsF3WritableRamRange(address, byteCount))
+            return false;
+
+        uint current = address;
+        uint elements = byteCount / (uint)unitSize;
+        for (uint i = 0; i < elements; i++)
+        {
+            if (unitSize == 1)
+                _bus.WriteByte(current, 0);
+            else if (unitSize == 2)
+                _bus.WriteWord(current, 0);
+            else
+                _bus.WriteLong(current, 0);
+
+            current = (current + (uint)unitSize) & 0x00ff_ffff;
+        }
+
+        uint[] data = CloneRegisters(state.Data);
+        uint[] addressRegs = CloneRegisters(state.Address);
+        data[0] = 0;
+        data[1] = unitSize switch
+        {
+            1 => (data[1] & 0xffff_ff00u) | finalD1,
+            2 => (data[1] & 0xffff_0000u) | finalD1,
+            _ => finalD1
+        };
+        data[2] = byteFill ? data[2] & 0xffff_ff00u : unitSize == 2 ? data[2] & 0xffff_0000u : 0;
+        data[3] = 0x0000_ffff;
+        addressRegs[0] = (address + byteCount) & 0x00ff_ffff;
+
+        uint nextPc = state.Address[6] & 0x00ff_ffff;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
+        _mainCpu.SetState(new M68000.M68000State(data, addressRegs, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += elements * 4;
+        cycles = Math.Max(34u, elements * (uint)(unitSize == 4 ? 12 : unitSize == 2 ? 8 : 6));
+        return true;
     }
 
     private bool TryExecuteDariusDbraLongFill(uint pc, out uint cycles)
@@ -1156,6 +1295,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static bool IsF3VideoAddress(uint address)
         => (address >= 0x440000 && address < 0x448000)
             || (address >= 0x600000 && address < 0x640000);
+
+    private static bool IsF3WritableRamRange(uint address, uint byteCount)
+    {
+        if (byteCount == 0)
+            return false;
+
+        ulong endExclusive = (ulong)address + byteCount;
+        return (address >= 0x400000 && endExclusive <= 0x440000)
+            || (address >= 0x440000 && endExclusive <= 0x448000)
+            || (address >= 0x600000 && endExclusive <= 0x640000);
+    }
 
     private bool TryExecuteDariusPaletteCurrent(uint pc, ushort op, out uint cycles)
     {

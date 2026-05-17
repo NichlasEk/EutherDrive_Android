@@ -56,6 +56,7 @@ public sealed class MameMusashi68Ec020
 
     public M68000.M68000State GetState()
     {
+        SaveActiveStackPointer();
         uint[] data = new uint[8];
         uint[] address = new uint[7];
         Array.Copy(_d, data, data.Length);
@@ -169,6 +170,11 @@ public sealed class MameMusashi68Ec020
             int opmode = (op >> 6) & 7;
             if (opmode <= 3 || opmode == 7)
                 _handlers[op] = Compare;
+        }
+        for (int op = 0xe000; op <= 0xefff; op++)
+        {
+            if ((op & 0x00c0) != 0x00c0)
+                _handlers[op] = ShiftRotateRegister;
         }
         for (int op = 0x6000; op <= 0x6fff; op += 0x0100)
         {
@@ -542,6 +548,78 @@ public sealed class MameMusashi68Ec020
         _lastCycles = _cycles[_ir];
     }
 
+    private void ShiftRotateRegister()
+    {
+        int reg = _ir & 7;
+        int operation = (_ir >> 3) & 3;
+        bool registerCount = (_ir & 0x0020) != 0;
+        OpSize size = ((_ir >> 6) & 3) switch
+        {
+            0 => OpSize.Byte,
+            1 => OpSize.Word,
+            2 => OpSize.Long,
+            _ => throw new InvalidOperationException($"Invalid shift size for opcode 0x{_ir:X4}.")
+        };
+        bool left = (_ir & 0x0100) != 0;
+        int count = registerCount
+            ? (int)(_d[(_ir >> 9) & 7] & 0x3f)
+            : (((_ir >> 9) & 7) == 0 ? 8 : ((_ir >> 9) & 7));
+
+        uint mask = MaskForSize(size);
+        int bits = size switch
+        {
+            OpSize.Byte => 8,
+            OpSize.Word => 16,
+            _ => 32
+        };
+        uint value = _d[reg] & mask;
+        uint result = value;
+        bool carry = false;
+        bool overflow = false;
+
+        if (count != 0)
+        {
+            switch (operation)
+            {
+                case 0:
+                    result = left
+                        ? ArithmeticShiftLeft(value, count, bits, out carry, out overflow)
+                        : ArithmeticShiftRight(value, count, bits, out carry);
+                    X = carry;
+                    break;
+                case 1:
+                    result = left
+                        ? LogicalShiftLeft(value, count, bits, out carry)
+                        : LogicalShiftRight(value, count, bits, out carry);
+                    X = carry;
+                    break;
+                case 2:
+                    result = left
+                        ? RotateWithExtendLeft(value, count, bits, X, out carry)
+                        : RotateWithExtendRight(value, count, bits, X, out carry);
+                    X = carry;
+                    break;
+                case 3:
+                    result = left
+                        ? RotateLeft(value, count, bits, out carry)
+                        : RotateRight(value, count, bits, out carry);
+                    break;
+            }
+        }
+        else if (operation == 2)
+        {
+            carry = X;
+        }
+
+        result &= mask;
+        WriteDataRegister(reg, size, result);
+        N = (result & SignBitForSize(size)) != 0;
+        Z = result == 0;
+        V = operation == 0 && left && overflow;
+        C = carry;
+        _lastCycles = _cycles[_ir] + (uint)(count * 2);
+    }
+
     private void Swap()
     {
         int register = _ir & 7;
@@ -846,6 +924,144 @@ public sealed class MameMusashi68Ec020
         _ => 0xffff_ffffu
     };
 
+    private static uint SignBitForSize(OpSize size) => size switch
+    {
+        OpSize.Byte => 0x80u,
+        OpSize.Word => 0x8000u,
+        _ => 0x8000_0000u
+    };
+
+    private static uint LogicalShiftRight(uint value, int count, int bits, out bool carry)
+    {
+        if (count >= bits)
+        {
+            carry = count == bits && (value & (1u << (bits - 1))) != 0;
+            return 0;
+        }
+
+        carry = ((value >> (count - 1)) & 1u) != 0;
+        return value >> count;
+    }
+
+    private static uint LogicalShiftLeft(uint value, int count, int bits, out bool carry)
+    {
+        uint mask = bits == 32 ? 0xffff_ffffu : (1u << bits) - 1u;
+        if (count >= bits)
+        {
+            carry = count == bits && (value & 1u) != 0;
+            return 0;
+        }
+
+        carry = ((value >> (bits - count)) & 1u) != 0;
+        return (value << count) & mask;
+    }
+
+    private static uint ArithmeticShiftRight(uint value, int count, int bits, out bool carry)
+    {
+        uint mask = bits == 32 ? 0xffff_ffffu : (1u << bits) - 1u;
+        uint sign = 1u << (bits - 1);
+        if (count >= bits)
+        {
+            carry = (value & sign) != 0;
+            return carry ? mask : 0;
+        }
+
+        carry = ((value >> (count - 1)) & 1u) != 0;
+        if ((value & sign) == 0)
+            return value >> count;
+
+        uint fill = mask << (bits - count);
+        return ((value >> count) | fill) & mask;
+    }
+
+    private static uint ArithmeticShiftLeft(uint value, int count, int bits, out bool carry, out bool overflow)
+    {
+        uint mask = bits == 32 ? 0xffff_ffffu : (1u << bits) - 1u;
+        uint sign = 1u << (bits - 1);
+        uint result = value & mask;
+        carry = false;
+        overflow = false;
+        for (int i = 0; i < count; i++)
+        {
+            bool before = (result & sign) != 0;
+            carry = before;
+            result = (result << 1) & mask;
+            overflow |= before != ((result & sign) != 0);
+        }
+
+        return result;
+    }
+
+    private static uint RotateRight(uint value, int count, int bits, out bool carry)
+    {
+        uint mask = bits == 32 ? 0xffff_ffffu : (1u << bits) - 1u;
+        count %= bits;
+        value &= mask;
+        if (count == 0)
+        {
+            carry = (value & (1u << (bits - 1))) != 0;
+            return value;
+        }
+
+        uint result = ((value >> count) | (value << (bits - count))) & mask;
+        carry = (result & (1u << (bits - 1))) != 0;
+        return result;
+    }
+
+    private static uint RotateLeft(uint value, int count, int bits, out bool carry)
+    {
+        uint mask = bits == 32 ? 0xffff_ffffu : (1u << bits) - 1u;
+        count %= bits;
+        value &= mask;
+        if (count == 0)
+        {
+            carry = (value & 1u) != 0;
+            return value;
+        }
+
+        uint result = ((value << count) | (value >> (bits - count))) & mask;
+        carry = (result & 1u) != 0;
+        return result;
+    }
+
+    private static uint RotateWithExtendRight(uint value, int count, int bits, bool extend, out bool carry)
+    {
+        uint mask = bits == 32 ? 0xffff_ffffu : (1u << bits) - 1u;
+        uint result = value & mask;
+        carry = extend;
+        int period = bits + 1;
+        count %= period;
+        for (int i = 0; i < count; i++)
+        {
+            bool nextExtend = (result & 1u) != 0;
+            result >>= 1;
+            if (carry)
+                result |= 1u << (bits - 1);
+            carry = nextExtend;
+        }
+
+        return result & mask;
+    }
+
+    private static uint RotateWithExtendLeft(uint value, int count, int bits, bool extend, out bool carry)
+    {
+        uint mask = bits == 32 ? 0xffff_ffffu : (1u << bits) - 1u;
+        uint result = value & mask;
+        carry = extend;
+        int period = bits + 1;
+        count %= period;
+        for (int i = 0; i < count; i++)
+        {
+            bool nextExtend = (result & (1u << (bits - 1))) != 0;
+            result = (result << 1) & mask;
+            if (carry)
+                result |= 1u;
+            carry = nextExtend;
+        }
+
+        return result & mask;
+    }
+
     private void SetAddSubFlags(OpSize size, uint src, uint dst, uint result, bool subtract)
     {
         uint sign = size switch
@@ -1027,7 +1243,12 @@ public sealed class MameMusashi68Ec020
         _sr = value ? (ushort)(_sr | mask) : (ushort)(_sr & ~mask);
     }
 
-    private uint CurrentSupervisorStackPointer() => Master ? _msp : _isp;
+    private uint CurrentSupervisorStackPointer()
+    {
+        if (Supervisor)
+            return _a[7] & 0x00ff_ffffu;
+        return Master ? _msp : _isp;
+    }
 
     private void SaveActiveStackPointer()
     {
