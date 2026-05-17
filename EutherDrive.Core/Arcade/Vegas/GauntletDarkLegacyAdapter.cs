@@ -12510,15 +12510,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         TraceDraw($"fastfill clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
         ushort[] buffer = GetDrawBuffer();
+        int width = x1 - x0;
         for (int y = y0; y < y1; y++)
         {
             int offset = y * LfbRowPixels + x0;
-            for (int x = x0; x < x1; x++)
-                buffer[(offset++) & (LfbPixels - 1)] = color;
+            buffer.AsSpan(offset, width).Fill(color);
         }
 
         _fastFillCount++;
-        _lfbWriteCount += Math.Max(1, ((x1 - x0) * (y1 - y0) + 1) / 2);
+        _lfbWriteCount += Math.Max(1, (width * (y1 - y0) + 1) / 2);
     }
 
     private void DecodeCommandFifoPackets()
