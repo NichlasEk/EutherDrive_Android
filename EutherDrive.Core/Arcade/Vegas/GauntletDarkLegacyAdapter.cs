@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using EutherDrive.Core.Savestates;
@@ -617,6 +618,10 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRamTest(pc))
             return;
         if (TryFastPathKnownRamQwordCopyBody(pc))
+            return;
+        if (TryFastPathKnownLoadedBootInflate(pc))
+            return;
+        if (TryFastPathKnownLoadedBootBssClear(pc))
             return;
         if (TryFastPathKnownRamQwordFill(pc))
             return;
@@ -1347,6 +1352,132 @@ internal sealed class MipsR5000Core
         _gpr[8] = 0;
         _gpr[9] = lastValue;
         Pc = tail;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownLoadedBootInflate(ulong pc)
+    {
+        if (pc is < 0xffffffff80042830UL or > 0xffffffff80042bd4UL)
+            return false;
+
+        if (_gpr[31] != 0xffffffff80041fc0UL)
+            return false;
+        if (_memory.Read32(0xffffffff8004b2b0UL) != 0x666e6920U ||
+            _memory.Read32(0xffffffff8004b2b4UL) != 0x6574616cU ||
+            _memory.Read32(0xffffffff80042830UL) != 0x27bdffe0U ||
+            _memory.Read32(0xffffffff80042834UL) != 0x8fae0034U)
+        {
+            return false;
+        }
+
+        ulong stream = _gpr[19];
+        if (!IsMainRamRange(stream, 0x38UL))
+            return false;
+
+        uint nextIn = _memory.Read32(stream + 0x00UL);
+        uint availIn = _memory.Read32(stream + 0x04UL);
+        uint totalIn = _memory.Read32(stream + 0x08UL);
+        uint nextOut = _memory.Read32(stream + 0x0cUL);
+        uint availOut = _memory.Read32(stream + 0x10UL);
+        uint totalOut = _memory.Read32(stream + 0x14UL);
+        uint state = _memory.Read32(stream + 0x1cUL);
+
+        if (nextIn < totalIn || nextOut < totalOut)
+            return false;
+
+        uint sourceBase32 = nextIn - totalIn;
+        uint destinationBase32 = nextOut - totalOut;
+        uint sourceLength = totalIn + availIn;
+        uint destinationCapacity = totalOut + availOut;
+        ulong sourceBase = SignExtend32(sourceBase32);
+        ulong destinationBase = SignExtend32(destinationBase32);
+        if (state != 0x800f0870U ||
+            sourceLength is 0 or > 0x00400000U ||
+            destinationCapacity is 0 or > 0x01000000U ||
+            !IsMainRamRange(sourceBase, sourceLength) ||
+            !IsMainRamRange(destinationBase, destinationCapacity))
+        {
+            return false;
+        }
+
+        byte[] compressed = new byte[sourceLength];
+        for (uint i = 0; i < sourceLength; i++)
+            compressed[i] = _memory.Read8(sourceBase + i);
+
+        byte[] output = new byte[destinationCapacity];
+        int decoded;
+        try
+        {
+            using MemoryStream input = new(compressed);
+            using ZLibStream zlib = new(input, CompressionMode.Decompress);
+            decoded = 0;
+            while (decoded < output.Length)
+            {
+                int read = zlib.Read(output, decoded, output.Length - decoded);
+                if (read == 0)
+                    break;
+                decoded += read;
+            }
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+
+        if (decoded == 0 || decoded > destinationCapacity)
+            return false;
+
+        for (int i = 0; i < decoded; i++)
+            _memory.Write8(destinationBase + (uint)i, output[i]);
+
+        _memory.Write32(stream + 0x00UL, sourceBase32 + sourceLength);
+        _memory.Write32(stream + 0x04UL, 0);
+        _memory.Write32(stream + 0x08UL, sourceLength);
+        _memory.Write32(stream + 0x0cUL, destinationBase32 + (uint)decoded);
+        _memory.Write32(stream + 0x10UL, destinationCapacity - (uint)decoded);
+        _memory.Write32(stream + 0x14UL, (uint)decoded);
+
+        _gpr[2] = 1;
+        _gpr[3] = stream;
+        _gpr[4] = sourceBase + sourceLength;
+        _gpr[5] = destinationBase + (uint)decoded;
+        _gpr[6] = 1;
+        _gpr[7] = SignExtend32(destinationBase32);
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownLoadedBootBssClear(ulong pc)
+    {
+        const ulong loop = 0xffffffff800105b4UL;
+        if (pc is not (0xffffffff800105b4UL or 0xffffffff800105b8UL or
+                       0xffffffff800105bcUL or 0xffffffff800105c0UL))
+        {
+            return false;
+        }
+
+        if (_memory.Read32(loop) != 0xac400000U ||
+            _memory.Read32(loop + 0x04UL) != 0x24420004U ||
+            _memory.Read32(loop + 0x08UL) != 0x0043082aU ||
+            _memory.Read32(loop + 0x0cUL) != 0x1420fffdU ||
+            _memory.Read32(loop + 0x10UL) != 0xac400000U)
+        {
+            return false;
+        }
+
+        ulong cursor = _gpr[2];
+        ulong end = _gpr[3];
+        if (cursor >= end || ((cursor | end) & 3UL) != 0 || !IsMainRamRange(cursor, end - cursor))
+            return false;
+
+        for (ulong address = cursor; address < end; address += 4UL)
+            _memory.Write32(address, 0);
+
+        _gpr[1] = 0;
+        _gpr[2] = end;
+        Pc = 0xffffffff800105c8UL;
         CompleteFastPathStep();
         return true;
     }
