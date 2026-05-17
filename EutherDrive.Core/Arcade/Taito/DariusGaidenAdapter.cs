@@ -633,12 +633,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         else
             RenderMameMixBufferToFrame();
 
-        LatchPresentFrameIfUseful(drewAny);
+        bool hasSceneLayer = _lastPlayfieldPixels != 0 || _lastSpritePixels != 0;
+        LatchPresentFrameIfUseful(drewAny, hasSceneLayer);
     }
 
-    private void LatchPresentFrameIfUseful(bool drewAny)
+    private void LatchPresentFrameIfUseful(bool drewAny, bool hasSceneLayer)
     {
         if (!drewAny && _hasPresentFrame)
+            return;
+        if (!hasSceneLayer && _hasPresentFrame)
             return;
 
         Buffer.BlockCopy(_frameBuffer, 0, _presentFrameBuffer, 0, _frameBuffer.Length);
