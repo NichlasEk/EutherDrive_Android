@@ -396,6 +396,8 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
     private readonly int _stepBudget = ParseStepBudget();
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
+    private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
+    private readonly Dictionary<ulong, ulong> _hotPcCounts = [];
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
     private readonly bool _enableRd0AsyncCallbackKick = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK");
     private readonly bool _enableRd0SyncReadComplete = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_SYNC_READ_COMPLETE");
@@ -477,6 +479,7 @@ internal sealed class MipsR5000Core
     public string RuntimeDiagnosticStatus
         => $"rtxt={_runtimeTextCallCount}@0x{_lastRuntimeTextPc:X8}/ra=0x{_lastRuntimeTextRa:X8}" +
            (string.IsNullOrWhiteSpace(LastRuntimeText) ? "" : $" \"{LastRuntimeText}\"");
+    public string HotPcStatus => GetHotPcStatus();
 
     public void Reset()
     {
@@ -520,6 +523,8 @@ internal sealed class MipsR5000Core
     private void Step()
     {
         ulong pc = Pc;
+        if (_profileHotPcs)
+            CountHotPc(pc);
         _memory.SetTraceCpuPc(pc);
         if (TryFastPathKnownBootA420Handshake(pc))
             return;
@@ -547,6 +552,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownLoadedBootVectorSetupLoop(pc))
             return;
         if (TryFastPathKnownBootCountDelay(pc))
+            return;
+        if (TryFastPathKnownRuntimeCountDelay(pc))
             return;
         if (TryFastPathKnownRuntimeDelayCallback(pc))
             return;
@@ -699,6 +706,8 @@ internal sealed class MipsR5000Core
             return;
         ApplyKnownRd0OpenStatusProbe(pc);
         if (TryFastPathKnownRuntimeReadDelayHelper(pc))
+            return;
+        if (TryFastPathKnownRuntimeStatus3fSixPoll(pc))
             return;
         if (TryFastPathKnownRuntimeEventStatusNoCallback(pc))
             return;
@@ -871,6 +880,17 @@ internal sealed class MipsR5000Core
 
     private bool TryFastPathKnownLoadedBootCacheLoop(ulong pc, ulong offset)
     {
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x00003ae0UL, 0x00003ae4UL, 0x00003ae8UL),
+                loopBaseOffset: 0x00003ad8UL,
+                exitOffset: 0x00003aecUL,
+                expectedOps: (0xbc830000U, 0x008f2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
         if (TryFastPathKnownLoadedBootCacheLoop(
                 pc,
                 offset,
@@ -1255,6 +1275,50 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRuntimeCountDelay(ulong pc)
+    {
+        ulong offset = pc & 0xffffffffUL;
+        if (offset is not (0x80001a24UL or 0x80001a28UL or 0x80001a2cUL or 0x80001a30UL or 0x80001a34UL))
+            return false;
+        const ulong entry = 0xffffffff80001a18UL;
+        if (_memory.Read32(entry) != 0x00640019U ||
+            _memory.Read32(entry + 0x04UL) != 0x00002012U ||
+            _memory.Read32(entry + 0x08UL) != 0x40034800U ||
+            _memory.Read32(entry + 0x0cUL) != 0x00000000U ||
+            _memory.Read32(entry + 0x10UL) != 0x00621823U ||
+            _memory.Read32(entry + 0x14UL) != 0x0064082bU ||
+            _memory.Read32(entry + 0x18UL) != 0x5420fffcU ||
+            _memory.Read32(entry + 0x1cUL) != 0x40034800U ||
+            _memory.Read32(entry + 0x20UL) != 0x03e00008U)
+        {
+            return false;
+        }
+
+        ulong delay = _gpr[4] & 0xffffffffUL;
+        if (delay == 0 || delay > 0x10000000UL)
+            return false;
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00001000UL or > 0x01000000UL)
+            return false;
+
+        uint start = (uint)_gpr[2];
+        uint current = (uint)_cp0[9];
+        ulong elapsed = unchecked(current - start);
+        ulong remaining = elapsed >= delay ? 0UL : delay - elapsed;
+        ulong skippedInstructions = Math.Max(1UL, remaining / Math.Max(1UL, _cp0CountStep));
+        _gpr[1] = 0;
+        _gpr[3] = (uint)(start + delay);
+        _gpr[0] = 0;
+        AdvanceCp0Count(Math.Max(_cp0CountStep, remaining));
+        _instructionCounter += skippedInstructions;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = CanonicalizeCodeAddress(returnAddress);
+        return true;
+    }
+
     private bool TryFastPathKnownRamTest(ulong pc)
     {
         ulong offset = pc & 0x1fffffffUL;
@@ -1574,14 +1638,21 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRamCountDelay(pc))
             return true;
 
-        if (pc != 0x000000008000468cUL)
+        if ((pc & 0xffffffffUL) != 0x8000468cUL)
             return false;
         if ((_gpr[17] & 0xffffffffUL) != 0xbfa001e0UL)
             return false;
+        if (_memory.Read32(pc) != 0x8e300008U ||
+            _memory.Read32(pc + 0x04UL) != 0x2e020065U ||
+            _memory.Read32(pc + 0x08UL) != 0x1040fffdU ||
+            _memory.Read32(pc + 0x0cUL) != 0x00000000U)
+        {
+            return false;
+        }
 
         _gpr[16] = 0;
-        _gpr[2] = 0;
-        Pc = 0x000000008000469cUL;
+        _gpr[2] = 1;
+        Pc = SignExtend32(0x8000469cU);
         CompleteFastPathStep();
         return true;
     }
@@ -5177,6 +5248,61 @@ internal sealed class MipsR5000Core
            _memory.Read32(entry + 0x48) == 0x03c0e82dU &&
            _memory.Read32(entry + 0x54) == 0x03e00008U;
 
+    private bool TryFastPathKnownRuntimeStatus3fSixPoll(ulong pc)
+    {
+        const ulong entry = 0xffffffff8005e158UL;
+        if (pc != entry)
+            return false;
+        if (!MatchesKnownRuntimeStatus3fSixPollSignature(entry))
+            return false;
+
+        ulong oldSp = _gpr[29];
+        ulong newSp = oldSp - 0x20UL;
+        if (!IsMainRamRange(newSp + 0x10UL, 0x14UL))
+            return false;
+
+        _memory.Write32(newSp + 0x1cUL, (uint)_gpr[31]);
+        _memory.Write32(newSp + 0x18UL, (uint)_gpr[30]);
+        _memory.Write32(newSp + 0x20UL, (uint)_gpr[4]);
+        _memory.Write32(newSp + 0x10UL, 6U);
+
+        _gpr[2] = 1;
+        _gpr[3] = 6;
+        _gpr[29] = oldSp;
+        _gpr[30] = SignExtend32(_memory.Read32(newSp + 0x18UL));
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 386UL);
+        _instructionCounter += 386UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = CanonicalizeCodeAddress(_gpr[31]);
+        return true;
+    }
+
+    private bool MatchesKnownRuntimeStatus3fSixPollSignature(ulong entry)
+        => _memory.Read32(entry) == 0x27bdffe0U &&
+           _memory.Read32(entry + 0x04UL) == 0xafbf001cU &&
+           _memory.Read32(entry + 0x08UL) == 0xafbe0018U &&
+           _memory.Read32(entry + 0x0cUL) == 0x03a0f02dU &&
+           _memory.Read32(entry + 0x10UL) == 0xafc40020U &&
+           _memory.Read32(entry + 0x14UL) == 0xafc00010U &&
+           _memory.Read32(entry + 0x28UL) == 0x8fc40020U &&
+           _memory.Read32(entry + 0x2cUL) == 0x0c0178dfU &&
+           _memory.Read32(entry + 0x34UL) == 0x3043003fU &&
+           _memory.Read32(entry + 0x38UL) == 0x2402003fU &&
+           _memory.Read32(entry + 0x3cUL) == 0x1462000cU &&
+           _memory.Read32(entry + 0x44UL) == 0x8fc30010U &&
+           _memory.Read32(entry + 0x48UL) == 0x24620001U &&
+           _memory.Read32(entry + 0x4cUL) == 0x0040182dU &&
+           _memory.Read32(entry + 0x50UL) == 0xafc30010U &&
+           _memory.Read32(entry + 0x54UL) == 0x2c620006U &&
+           _memory.Read32(entry + 0x58UL) == 0x14400003U &&
+           _memory.Read32(entry + 0x78UL) == 0x03c0e82dU &&
+           _memory.Read32(entry + 0x7cUL) == 0x8fbf001cU &&
+           _memory.Read32(entry + 0x80UL) == 0x8fbe0018U &&
+           _memory.Read32(entry + 0x84UL) == 0x27bd0020U &&
+           _memory.Read32(entry + 0x88UL) == 0x03e00008U;
+
     private bool TryFastPathKnownRuntimeEventStatusNoCallback(ulong pc)
     {
         const ulong entry = 0xffffffff8005ec0cUL;
@@ -5429,6 +5555,32 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
         Pc = callsitePc + 0x1cUL;
         return true;
+    }
+
+    private void CountHotPc(ulong pc)
+    {
+        if (_hotPcCounts.TryGetValue(pc, out ulong count))
+        {
+            _hotPcCounts[pc] = count + 1UL;
+            return;
+        }
+
+        if (_hotPcCounts.Count < 8192)
+            _hotPcCounts.Add(pc, 1UL);
+    }
+
+    private string GetHotPcStatus()
+    {
+        if (_hotPcCounts.Count == 0)
+            return "hotpcs=disabled";
+
+        return "hotpcs=" + string.Join(
+            ",",
+            _hotPcCounts
+                .OrderByDescending(item => item.Value)
+                .ThenBy(item => item.Key)
+                .Take(16)
+                .Select(item => $"0x{item.Key:x16}:{item.Value}"));
     }
 
     private bool TryFastPathKnownGlideSetupPacketHelper(ulong pc)
