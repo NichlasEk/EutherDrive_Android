@@ -12178,7 +12178,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int copyWidth = Math.Min(target.Width, 640);
         int copyHeight = Math.Min(target.Height, 480);
-        ushort[] front = GetMostVisibleColorBuffer(out int visiblePixels);
+        ushort[] front = _colorBuffers[_frontBufferIndex];
         for (int y = 0; y < copyHeight; y++)
         {
             int src = y * 1024;
@@ -12196,25 +12196,6 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return _lfbWriteCount > 0;
-    }
-
-    private ushort[] GetMostVisibleColorBuffer(out int visiblePixels)
-    {
-        int bestIndex = _frontBufferIndex;
-        int bestCount = -1;
-        int count = GetColorBufferCount();
-        for (int i = 0; i < count; i++)
-        {
-            int visible = GetBufferNonZeroCount(i);
-            if (visible > bestCount)
-            {
-                bestCount = visible;
-                bestIndex = i;
-            }
-        }
-
-        visiblePixels = Math.Max(0, bestCount);
-        return _colorBuffers[bestIndex];
     }
 
     private void DrawRegisterBands(EutherFrameTarget target)
