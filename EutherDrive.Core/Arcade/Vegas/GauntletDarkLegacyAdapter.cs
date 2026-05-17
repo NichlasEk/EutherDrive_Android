@@ -417,7 +417,10 @@ internal sealed class MipsR5000Core
     private int _rd0SyncReadCompleteCount;
     private int _rd0HomeTableParseCount;
     private int _rd0SecondGetIoQErrorTraceCount;
+    private int _rd0SecondHomeReadReturnTraceCount;
+    private int _rd0SecondOpenPollTraceCount;
     private int _rd0SecondUnableHomeBlocksTraceCount;
+    private int _rd0HomeTableParsePcTraceCount;
     private int _rd0Stage4BootReadCount;
     private int _rd0Stage4BootReadTraceCount;
     private int _rd0BootHeaderReadCount;
@@ -3037,7 +3040,10 @@ internal sealed class MipsR5000Core
             0xffffffff80015858UL => "first-no-valid-home-blocks",
             0xffffffff800159b8UL => "second-open-error",
             0xffffffff800159f8UL => "second-getioq-error",
+            0xffffffff80015a20UL => "second-home-read-return",
+            0xffffffff80015a2cUL => "second-open-poll",
             0xffffffff80015a48UL => "second-unable-get-home-blocks",
+            0xffffffff80015a5cUL => "home-table-parse",
             0xffffffff80015aacUL => "home-block-version-mismatch",
             0xffffffff80015b38UL => "boot-slot-check",
             0xffffffff80015cb0UL => "no-boot-file",
@@ -3048,7 +3054,13 @@ internal sealed class MipsR5000Core
             return;
         if (pc == 0xffffffff800159f8UL && _rd0SecondGetIoQErrorTraceCount++ >= 8)
             return;
+        if (pc == 0xffffffff80015a20UL && _rd0SecondHomeReadReturnTraceCount++ >= 8)
+            return;
+        if (pc == 0xffffffff80015a2cUL && _rd0SecondOpenPollTraceCount++ >= 8)
+            return;
         if (pc == 0xffffffff80015a48UL && _rd0SecondUnableHomeBlocksTraceCount++ >= 8)
+            return;
+        if (pc == 0xffffffff80015a5cUL && _rd0HomeTableParsePcTraceCount++ >= 8)
             return;
 
         string detail = pc == 0xffffffff80015708UL
@@ -3064,7 +3076,7 @@ internal sealed class MipsR5000Core
                   $" slot1={_memory.Read32(_gpr[16] + 0x68UL):x8}" +
                   $" slot2={_memory.Read32(_gpr[16] + 0x74UL):x8}" +
                   $" slot3={_memory.Read32(_gpr[16] + 0x80UL):x8}"
-            : TraceKnownQioRecord(_gpr[5]);
+            : TraceKnownQioRecord(_gpr[5]) + TraceKnownHomeTable(_gpr[16]) + TraceKnownRd0Object(_gpr[22]);
         Console.WriteLine(
             $"[GAUNTDL:RD0] panic-site {label} pc={pc:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
             $"a2={_gpr[6]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} " +
@@ -3084,6 +3096,34 @@ internal sealed class MipsR5000Core
                $" qio24={_memory.Read32(address + 0x24UL):x8}" +
                $" qio2c={_memory.Read32(address + 0x2cUL):x8}" +
                $" qio30={_memory.Read32(address + 0x30UL):x8}";
+    }
+
+    private string TraceKnownHomeTable(ulong table)
+    {
+        if (!IsMainRamRange(table, 0x90))
+            return "";
+
+        return $" tbl04={_memory.Read32(table + 0x04UL):x8}" +
+               $" tbl40={_memory.Read32(table + 0x40UL):x8}" +
+               $" tbl44={_memory.Read32(table + 0x44UL):x8}" +
+               $" tbl64={_memory.Read32(table + 0x64UL):x8}" +
+               $" tbl50={_memory.Read32(table + 0x50UL):x8}" +
+               $" tbl68={_memory.Read32(table + 0x68UL):x8}" +
+               $" tbl74={_memory.Read32(table + 0x74UL):x8}" +
+               $" tbl80={_memory.Read32(table + 0x80UL):x8}";
+    }
+
+    private string TraceKnownRd0Object(ulong address)
+    {
+        if (!IsMainRamRange(address, 0x30))
+            return "";
+
+        return $" obj0c={_memory.Read32(address + 0x0cUL):x8}" +
+               $" obj14={_memory.Read32(address + 0x14UL):x8}" +
+               $" obj18={_memory.Read32(address + 0x18UL):x8}" +
+               $" obj20={_memory.Read32(address + 0x20UL):x8}" +
+               $" obj24={_memory.Read32(address + 0x24UL):x8}" +
+               $" obj2c={_memory.Read32(address + 0x2cUL):x8}";
     }
 
     private string ReadAsciiTraceString(ulong address, int maxLength)
@@ -3238,12 +3278,13 @@ internal sealed class MipsR5000Core
 
     private void ApplyKnownRd0HomeTableParse(ulong pc)
     {
+        const ulong homeReadReturnPc = 0xffffffff80015a20UL;
         const ulong tableCheckPc = 0xffffffff80015a5cUL;
         const ulong bootSlotCheckPc = 0xffffffff80015b38UL;
         const ulong homeSectorBuffer = 0xffffffff800f41e0UL;
 
-        if (!_enableRd0HomeTableParse || _rd0HomeTableParseCount != 0 ||
-            (pc != tableCheckPc && pc != bootSlotCheckPc))
+        if (!_enableRd0HomeTableParse ||
+            (pc != homeReadReturnPc && pc != tableCheckPc && pc != bootSlotCheckPc))
         {
             return;
         }
@@ -3284,6 +3325,12 @@ internal sealed class MipsR5000Core
         }
 
         _rd0HomeTableParseCount++;
+        if (pc == homeReadReturnPc && _gpr[2] == 0x300bUL)
+        {
+            _gpr[2] = 0;
+            if (IsMainRamRange(_gpr[22], 0x18) && _memory.Read32(_gpr[22] + 0x14UL) == 0x300bU)
+                _memory.Write32(_gpr[22] + 0x14UL, 0x3500U);
+        }
         if (_traceRd0Home && _rd0HomeTableParseCount <= 8)
         {
             Console.WriteLine(
