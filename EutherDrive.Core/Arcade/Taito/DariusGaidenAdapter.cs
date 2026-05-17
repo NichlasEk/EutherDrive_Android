@@ -109,8 +109,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private bool _flipScreen;
     private int _spritePenMask = 0x0f;
     private readonly List<F3Sprite> _sprites = new(0x400);
-    private readonly List<F3Sprite> _latchedSprites = new(0x400);
-    private readonly List<F3Sprite> _nextLatchedSprites = new(0x400);
     private int _lastSpriteCandidates;
     private int _lastVisibleSprites;
     private int _lastSpritePixels;
@@ -174,7 +172,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     {
         var state = _mainCpu.GetState();
         return $"driver={_driverName} frame={_frameCounter} pc=0x{_mainCpu.Pc:X6} sr=0x{_mainCpu.StatusRegister:X4} " +
-        $"op=0x{_mainCpu.NextOpcode:X4} d0=0x{state.Data[0]:X8} d1=0x{state.Data[1]:X8} a0=0x{state.Address[0]:X8} a1=0x{state.Address[1]:X8} " +
+        $"op=0x{_mainCpu.NextOpcode:X4} d0=0x{state.Data[0]:X8} d1=0x{state.Data[1]:X8} a0=0x{state.Address[0]:X8} a1=0x{state.Address[1]:X8} a5=0x{state.Address[5]:X8} a6=0x{state.Address[6]:X8} " +
         $"cycles={_executedCycles} instr={_executedInstructions} mame020={_mainCpu.ImplementedOpcodeCount}/{_mainCpu.MameEc020OpcodeCount} " +
         $"020probe={_m68ec020ProbeInstructions} tasks={_f3TaskQueue.Count} q={BuildTaskQueueSample()} taskEnq={_f3TasksEnqueued} taskRun={_f3TasksDispatched} " +
         $"lastTask=0x{_lastF3TaskEntry:X6} enq={BuildRecentTaskSample(_recentF3EnqueuedTasks, _recentF3EnqueuedIndex)} run={BuildRecentTaskSample(_recentF3DispatchedTasks, _recentF3DispatchedIndex)} lastTrap=0x{_lastF3TrapPc:X6} vbr=0x{_bus.VectorBase:X6} " +
@@ -360,8 +358,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _spriteTrails = false;
         _spritePenMask = 0x0f;
         _sprites.Clear();
-        _latchedSprites.Clear();
-        _nextLatchedSprites.Clear();
         Array.Clear(_spriteReefPalette);
         Array.Clear(_spriteReefGroup);
     }
@@ -1380,7 +1376,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 _sceneContinuationEnqueued++;
         }
 
-        uint idlePc = 0x002326;
+        uint idlePc = 0x002312;
         ushort prefetch = _bus.ReadOpcodeWord(idlePc);
         _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, idlePc, prefetch));
         _m68ec020ProbeInstructions++;
@@ -1399,7 +1395,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (_f3TaskQueue.Count > 0 && TryDispatchNextF3Task(state, out cycles))
             return true;
 
-        uint idlePc = 0x002326;
+        uint idlePc = 0x002312;
         ushort prefetch = _bus.ReadOpcodeWord(idlePc);
         _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, idlePc, prefetch));
         cycles = (uint)((int)(MainClockHz / TargetFps) * CpuScale);
@@ -2409,22 +2405,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         bool drewAny = RenderSpriteReefToFrame();
         _lastSpritePixels = 0;
 
+        int drawnSpriteCount = _sprites.Count;
         if (!_spriteTrails)
         {
             Array.Clear(_spriteReefPalette);
             Array.Clear(_spriteReefGroup);
         }
 
-        int drawnSpriteCount = _latchedSprites.Count;
-        for (int i = _latchedSprites.Count - 1; i >= 0; i--)
-            DrawSpriteToReef(roms, _latchedSprites[i]);
+        for (int i = _sprites.Count - 1; i >= 0; i--)
+            DrawSpriteToReef(roms, _sprites[i]);
 
         BuildSpriteList();
-        _latchedSprites.Clear();
-        _latchedSprites.AddRange(_nextLatchedSprites);
-        _nextLatchedSprites.Clear();
-        _nextLatchedSprites.AddRange(_sprites);
-
         _lastVisibleSprites = drawnSpriteCount;
         return drewAny || _lastSpritePixels != 0;
     }
