@@ -3064,12 +3064,26 @@ internal sealed class MipsR5000Core
                   $" slot1={_memory.Read32(_gpr[16] + 0x68UL):x8}" +
                   $" slot2={_memory.Read32(_gpr[16] + 0x74UL):x8}" +
                   $" slot3={_memory.Read32(_gpr[16] + 0x80UL):x8}"
-            : "";
+            : TraceKnownQioRecord(_gpr[5]);
         Console.WriteLine(
             $"[GAUNTDL:RD0] panic-site {label} pc={pc:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
             $"a2={_gpr[6]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} " +
             $"s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s4={_gpr[20]:x16} " +
             $"s6={_gpr[22]:x16} ra={_gpr[31]:x16}{detail}");
+    }
+
+    private string TraceKnownQioRecord(ulong address)
+    {
+        if (!IsMainRamRange(address, 0x34))
+            return "";
+
+        return $" qio08={_memory.Read32(address + 0x08UL):x8}" +
+               $" qio0c={_memory.Read32(address + 0x0cUL):x8}" +
+               $" qio1c={_memory.Read32(address + 0x1cUL):x8}" +
+               $" qio20={_memory.Read32(address + 0x20UL):x8}" +
+               $" qio24={_memory.Read32(address + 0x24UL):x8}" +
+               $" qio2c={_memory.Read32(address + 0x2cUL):x8}" +
+               $" qio30={_memory.Read32(address + 0x30UL):x8}";
     }
 
     private string ReadAsciiTraceString(ulong address, int maxLength)
