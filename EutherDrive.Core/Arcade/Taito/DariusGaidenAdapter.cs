@@ -86,6 +86,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private bool _loaded;
     private bool _cpuFaulted;
     private string _lastStopReason = "idle";
+    private uint _lastRecoveredInvalidPc;
+    private uint _lastPcBeforeRecoveredInvalidPc;
+    private ushort _lastOpBeforeRecoveredInvalidPc;
     private ulong _executedInstructions;
     private ulong _executedCycles;
     private ulong _m68ec020ProbeInstructions;
@@ -178,9 +181,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         $"lastTask=0x{_lastF3TaskEntry:X6} enq={BuildRecentTaskSample(_recentF3EnqueuedTasks, _recentF3EnqueuedIndex)} run={BuildRecentTaskSample(_recentF3DispatchedTasks, _recentF3DispatchedIndex)} lastTrap=0x{_lastF3TrapPc:X6} vbr=0x{_bus.VectorBase:X6} " +
         $"ramW={_bus.WorkRamWrites} palW={_bus.PaletteWrites} sprW={_bus.SpriteWrites} pfW={_bus.PlayfieldWrites} pfNZ={_bus.PlayfieldNonZeroWords} pfCand={_lastPlayfieldCandidates} pfPix={_lastPlayfieldPixels} pfL={BuildPlayfieldLayerSample()} mixSrc={_lastMixSourcePixels}/{_lastMixLitSourcePixels} mixDstOnly={_lastMixDestOnlyPixels} mixP0={_lastMixPriorityZeroConflicts} lineMid={BuildLineStateSample()} txtNZ={_bus.TextNonZeroWords} pivNZ={_bus.PivotNonZeroWords} " +
         $"lastSprNZ=0x{_bus.LastNonZeroSpriteWritePc:X6}->0x{_bus.LastNonZeroSpriteWriteAddress:X6}:0x{_bus.LastNonZeroSpriteWriteValue:X2} lastPfNZ=0x{_bus.LastNonZeroPlayfieldWritePc:X6}->0x{_bus.LastNonZeroPlayfieldWriteAddress:X6}:0x{_bus.LastNonZeroPlayfieldWriteValue:X2} lastTxtNZ=0x{_bus.LastNonZeroTextWritePc:X6}->0x{_bus.LastNonZeroTextWriteAddress:X6}:0x{_bus.LastNonZeroTextWriteValue:X2} " +
-        $"mode=0x{_bus.PeekByte(0x40221d):X2}/0x{_bus.PeekByte(0x40223a):X2}/0x{_bus.PeekByte(0x40223d):X2}/0x{_bus.PeekByte(0x40223f):X2} coin=0x{_bus.CoinWord0:X4}/0x{_bus.CoinWord1:X4}/in{(_bus.Input.Coin1 ? 1 : 0)} fio22={BuildFioSoftSample()} coinT={_bus.PeekWord(0x400090):X4},{_bus.PeekWord(0x400092):X4},{_bus.PeekWord(0x4000a2):X4},{_bus.PeekWord(0x4000a4):X4} bkup18=0x{_bus.PeekByte(0x406c6c):X2} cfg2_18=0x{_bus.PeekByte(0x406c8c):X2} gateEbb4=0x{_bus.PeekByte(0x406bb4):X2} gateEbb5=0x{_bus.PeekByte(0x406bb5):X2} gateEbb6=0x{_bus.PeekByte(0x406bb6):X2} gateW=0x{_bus.LastGateWritePc:X6}->0x{_bus.LastGateWriteAddress:X6}:0x{_bus.LastGateWriteValue:X2} gateNZ=0x{_bus.LastNonZeroGateWritePc:X6}->0x{_bus.LastNonZeroGateWriteAddress:X6}:0x{_bus.LastNonZeroGateWriteValue:X2}/{_bus.NonZeroGateWrites} scene=entry:{_sceneEntryHits}/init:{_sceneInitResumeHits},{_sceneInitMainHits},{_sceneMenuInitHits},{_sceneSpawnerYieldHits}/gate:{_sceneGateRoutineHits}/bset:{_sceneGateSetInstructionHits}/wait:{_sceneGateWaitHits}/mainwait:{_mainGateWaitHits}/call=0x{_lastSceneAbsoluteCallTarget:X6}/cont:{_sceneContinuationEnqueued},{_sceneContinuationDispatched},{_sceneContinuationRemoved}/rm=0x{_lastF3TaskRemoveMask:X8} flag224=0x{_bus.PeekByte(0x402224):X2} obj916=0x{_bus.PeekByte(0x408916):X2} obj917=0x{_bus.PeekByte(0x408917):X2} listCnt=0x{_bus.PeekWord(0x402218):X4} listPtr=0x{_bus.PeekLong(0x407360):X6} listPtrW=0x{_bus.LastSpriteListPointerWritePc:X6}->0x{_bus.LastSpriteListPointerWriteAddress:X6}:0x{_bus.LastSpriteListPointerValue:X8} listFlow={_spriteListBuildHits},{_spriteListProducerWrites},{_spriteListFinalizeHits},{_spriteListLatchedWrites} sprNZ={_bus.SpriteNonZeroWords} sprFirst={_bus.FirstNonZeroSpriteWordOffset:X4} sprRaw={BuildSpriteRamSample()} sprHead={BuildSpritePointerSample()} sprTiles={BuildSpriteTileSample()} " +
+        $"mode=0x{_bus.PeekByte(0x40221d):X2}/0x{_bus.PeekByte(0x40223a):X2}/0x{_bus.PeekByte(0x40223d):X2}/0x{_bus.PeekByte(0x40223f):X2} coin=0x{_bus.CoinWord0:X4}/0x{_bus.CoinWord1:X4}/in{(_bus.Input.Coin1 ? 1 : 0)} fio22={BuildFioSoftSample()} coinT={_bus.PeekWord(0x400090):X4},{_bus.PeekWord(0x400092):X4},{_bus.PeekWord(0x4000a2):X4},{_bus.PeekWord(0x4000a4):X4} bkup18=0x{_bus.PeekByte(0x406c6c):X2} cfg2_18=0x{_bus.PeekByte(0x406c8c):X2} gateEbb4=0x{_bus.PeekByte(0x406bb4):X2} gateEbb5=0x{_bus.PeekByte(0x406bb5):X2} gateEbb6=0x{_bus.PeekByte(0x406bb6):X2} gateW=0x{_bus.LastGateWritePc:X6}->0x{_bus.LastGateWriteAddress:X6}:0x{_bus.LastGateWriteValue:X2} gateNZ=0x{_bus.LastNonZeroGateWritePc:X6}->0x{_bus.LastNonZeroGateWriteAddress:X6}:0x{_bus.LastNonZeroGateWriteValue:X2}/{_bus.NonZeroGateWrites} scene=entry:{_sceneEntryHits}/init:{_sceneInitResumeHits},{_sceneInitMainHits},{_sceneMenuInitHits},{_sceneSpawnerYieldHits}/gate:{_sceneGateRoutineHits}/bset:{_sceneGateSetInstructionHits}/wait:{_sceneGateWaitHits}/mainwait:{_mainGateWaitHits}/call=0x{_lastSceneAbsoluteCallTarget:X6}/cont:{_sceneContinuationEnqueued},{_sceneContinuationDispatched},{_sceneContinuationRemoved}/rm=0x{_lastF3TaskRemoveMask:X8} flag224=0x{_bus.PeekByte(0x402224):X2} irqPtr=0x{_bus.PeekLong(0x406704):X8}/W0x{_bus.LastIrqWorkPointerWritePc:X6}->0x{_bus.LastIrqWorkPointerWriteAddress:X6}:0x{_bus.LastIrqWorkPointerValue:X8} obj916=0x{_bus.PeekByte(0x408916):X2} obj917=0x{_bus.PeekByte(0x408917):X2} listCnt=0x{_bus.PeekWord(0x402218):X4} listPtr=0x{_bus.PeekLong(0x407360):X6} listPtrW=0x{_bus.LastSpriteListPointerWritePc:X6}->0x{_bus.LastSpriteListPointerWriteAddress:X6}:0x{_bus.LastSpriteListPointerValue:X8} listFlow={_spriteListBuildHits},{_spriteListProducerWrites},{_spriteListFinalizeHits},{_spriteListLatchedWrites} sprNZ={_bus.SpriteNonZeroWords} sprFirst={_bus.FirstNonZeroSpriteWordOffset:X4} sprRaw={BuildSpriteRamSample()} sprHead={BuildSpritePointerSample()} sprTiles={BuildSpriteTileSample()} " +
         $"sprCand={_lastSpriteCandidates} sprVis={_lastVisibleSprites} sprPix={_lastSpritePixels} sprCtl=0x{_lastSpriteControlWord:X4} sprBank={(_spriteBank ? 1 : 0)} sprLast={_lastSpriteCandidateEntry:X3}/0x{_lastSpriteCandidateTile:X5}/0x{_lastSpriteCandidateControl:X2}@{_lastSpriteCandidateX},{_lastSpriteCandidateY}+{_lastSpriteCandidateScaleX},{_lastSpriteCandidateScaleY} sprBox={_lastSpriteMinX},{_lastSpriteMinY}..{_lastSpriteMaxX},{_lastSpriteMaxY}/{_lastSpriteClosestDistance} " +
-        $"ctrlR={_bus.ControlReads} lastCtrl=0x{_bus.LastControlReadAddress:X6}:0x{_bus.LastControlReadValue:X2} modeW=0x{_bus.LastModeWritePc:X6}->0x{_bus.LastModeWriteAddress:X6}:0x{_bus.LastModeWriteValue:X2} modeBtst=0x{_bus.LastModeBtstPc:X6}@0x{_bus.LastModeBtstAddress:X6}:0x{_bus.LastModeBtstValue:X2}/b{_bus.LastModeBtstBit}/z{(_bus.LastModeBtstZero ? 1 : 0)} btst=0x{_bus.LastBtstAddress:X6}:0x{_bus.LastBtstValue:X2}/b{_bus.LastBtstBit} bkupW=0x{_bus.LastBackupWritePc:X6}:0x{_bus.LastBackupWriteValue:X2} ctrlW={_bus.ControlWrites} dpramR={_bus.DualPortReads}@0x{_bus.LastDualPortReadPc:X6}->0x{_bus.LastDualPortReadAddress:X6}:0x{_bus.LastDualPortReadValue:X2} dpramW={_bus.DualPortWrites}@0x{_bus.LastDualPortWritePc:X6}->0x{_bus.LastDualPortWriteAddress:X6}:0x{_bus.LastDualPortWriteValue:X2} sndRst={(_bus.SoundCpuResetAsserted ? 1 : 0)} sndRstW=0x{_bus.LastSoundResetWritePc:X6}->0x{_bus.LastSoundResetWriteAddress:X6} unmappedR={_bus.UnmappedReads}@0x{_bus.LastUnmappedReadPc:X6}->0x{_bus.LastUnmappedReadAddress:X6} unmappedW={_bus.UnmappedWrites}@0x{_bus.LastUnmappedWritePc:X6}->0x{_bus.LastUnmappedWriteAddress:X6}:0x{_bus.LastUnmappedWriteValue:X2} stop={_lastStopReason}";
+        $"ctrlR={_bus.ControlReads} lastCtrl=0x{_bus.LastControlReadAddress:X6}:0x{_bus.LastControlReadValue:X2} modeW=0x{_bus.LastModeWritePc:X6}->0x{_bus.LastModeWriteAddress:X6}:0x{_bus.LastModeWriteValue:X2} modeBtst=0x{_bus.LastModeBtstPc:X6}@0x{_bus.LastModeBtstAddress:X6}:0x{_bus.LastModeBtstValue:X2}/b{_bus.LastModeBtstBit}/z{(_bus.LastModeBtstZero ? 1 : 0)} btst=0x{_bus.LastBtstAddress:X6}:0x{_bus.LastBtstValue:X2}/b{_bus.LastBtstBit} bkupW=0x{_bus.LastBackupWritePc:X6}:0x{_bus.LastBackupWriteValue:X2} ctrlW={_bus.ControlWrites} dpramR={_bus.DualPortReads}@0x{_bus.LastDualPortReadPc:X6}->0x{_bus.LastDualPortReadAddress:X6}:0x{_bus.LastDualPortReadValue:X2} dpramW={_bus.DualPortWrites}@0x{_bus.LastDualPortWritePc:X6}->0x{_bus.LastDualPortWriteAddress:X6}:0x{_bus.LastDualPortWriteValue:X2} sndRst={(_bus.SoundCpuResetAsserted ? 1 : 0)} sndRstW=0x{_bus.LastSoundResetWritePc:X6}->0x{_bus.LastSoundResetWriteAddress:X6} unmappedR={_bus.UnmappedReads}@0x{_bus.LastUnmappedReadPc:X6}->0x{_bus.LastUnmappedReadAddress:X6} unmappedW={_bus.UnmappedWrites}@0x{_bus.LastUnmappedWritePc:X6}->0x{_bus.LastUnmappedWriteAddress:X6}:0x{_bus.LastUnmappedWriteValue:X2} recover=0x{_lastRecoveredInvalidPc:X6}<-0x{_lastPcBeforeRecoveredInvalidPc:X6}/0x{_lastOpBeforeRecoveredInvalidPc:X4} stop={_lastStopReason}";
     }
 
     private string BuildSpritePointerSample()
@@ -312,6 +315,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastF3TaskEntry = 0;
         _lastF3TaskStack = 0;
         _lastF3TrapPc = 0;
+        _lastRecoveredInvalidPc = 0;
+        _lastPcBeforeRecoveredInvalidPc = 0;
+        _lastOpBeforeRecoveredInvalidPc = 0;
         _currentF3TaskPriority = 0;
         ResetSceneDiagnostics();
         _nextF3TaskStack = 0x0041_f000;
@@ -341,6 +347,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastF3TaskEntry = 0;
         _lastF3TaskStack = 0;
         _lastF3TrapPc = 0;
+        _lastRecoveredInvalidPc = 0;
+        _lastPcBeforeRecoveredInvalidPc = 0;
+        _lastOpBeforeRecoveredInvalidPc = 0;
         _currentF3TaskPriority = 0;
         ResetSceneDiagnostics();
         _nextF3TaskStack = 0x0041_f000;
@@ -427,6 +436,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 instructions++;
                 _executedCycles += used;
                 _executedInstructions++;
+                _lastPcBeforeRecoveredInvalidPc = pc;
+                _lastOpBeforeRecoveredInvalidPc = op;
 
                 if (_mainCpu.IsStopped || _mainCpu.IsFrozen)
                 {
@@ -663,6 +674,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return TryExecuteBfextuDataRegister(pc, op, out cycles);
         if ((op & 0xfff8) == 0xe9e8)
             return TryExecuteBfextuDisplacement(pc, op, out cycles);
+        if ((op & 0xffc0) == 0xecc0)
+            return TryExecuteBfclr(pc, op, out cycles);
+        if ((op & 0xffc0) == 0xedc0)
+            return TryExecuteBfffo(pc, op, out cycles);
+        if ((op & 0xffc0) == 0xeec0)
+            return TryExecuteBfset(pc, op, out cycles);
         if ((op & 0xfff8) == 0xefc0)
             return TryExecuteBfinsDataRegister(pc, op, out cycles);
         if ((op & 0xfff8) == 0xefe8)
@@ -1423,6 +1440,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (pc < 0x00200000)
             return false;
 
+        _lastRecoveredInvalidPc = pc;
         var state = _mainCpu.GetState();
         if (_f3TaskQueue.Count > 0 && TryDispatchNextF3Task(state, out cycles))
             return true;
@@ -1997,6 +2015,220 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return ExecuteBfins(pc, extension, state, ea, instructionLength: 6, out cycles);
     }
 
+    private bool TryExecuteBfffo(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        ushort extension = _bus.ReadOpcodeWord(pc + 2);
+        var state = _mainCpu.GetState();
+        if (!TryReadBitfieldOperand(pc, op, extension, state, out uint aligned, out uint extracted, out int offset, out int width, out _, out int instructionLength))
+            return false;
+
+        int resultOffset = offset;
+        for (uint bit = 1u << (width - 1); bit != 0 && (extracted & bit) == 0; bit >>= 1)
+            resultOffset++;
+
+        state.Data[(extension >> 12) & 7] = (uint)resultOffset;
+        bool negative = (aligned & 0x8000_0000u) != 0;
+        bool zero = extracted == 0;
+        ushort sr = UpdateCcr(state.Sr, negative, zero, overflow: false, carry: false);
+        uint nextPc = (pc + (uint)instructionLength) & 0x00ff_ffff;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions++;
+        cycles = 28;
+        return true;
+    }
+
+    private bool TryExecuteBfclr(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        ushort extension = _bus.ReadOpcodeWord(pc + 2);
+        var state = _mainCpu.GetState();
+        if (!TryReadBitfieldOperand(pc, op, extension, state, out uint aligned, out uint extracted, out int offset, out int width, out uint ea, out int instructionLength))
+            return false;
+
+        if ((op & 0x38) == 0)
+        {
+            int destinationRegister = op & 7;
+            uint destination = state.Data[destinationRegister];
+            for (int bit = 0; bit < width; bit++)
+                destination &= ~(1u << (31 - ((offset + bit) & 31)));
+            state.Data[destinationRegister] = destination;
+        }
+        else
+        {
+            uint maskBase = unchecked(uint.MaxValue << (32 - width));
+            uint maskLong = maskBase >> offset;
+            uint dataLong = offset + width < 8
+                ? (uint)_bus.ReadByte(ea) << 24
+                : offset + width < 16
+                    ? (uint)_bus.ReadWord(ea) << 16
+                    : _bus.ReadLong(ea);
+            uint clearedLong = dataLong & ~maskLong;
+
+            if (offset + width < 8)
+                _bus.WriteByte(ea, (byte)(clearedLong >> 24));
+            else if (offset + width < 16)
+                _bus.WriteWord(ea, (ushort)(clearedLong >> 16));
+            else
+                _bus.WriteLong(ea, clearedLong);
+
+            if (offset + width > 32)
+            {
+                byte maskByte = (byte)((byte)maskBase << (8 - offset));
+                byte dataByte = _bus.ReadByte(ea + 4);
+                _bus.WriteByte(ea + 4, (byte)(dataByte & ~maskByte));
+            }
+        }
+
+        bool negative = (aligned & 0x8000_0000u) != 0;
+        bool zero = extracted == 0;
+        ushort sr = UpdateCcr(state.Sr, negative, zero, overflow: false, carry: false);
+        uint nextPc = (pc + (uint)instructionLength) & 0x00ff_ffff;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions++;
+        cycles = 28;
+        return true;
+    }
+
+    private bool TryExecuteBfset(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        ushort extension = _bus.ReadOpcodeWord(pc + 2);
+        var state = _mainCpu.GetState();
+        if (!TryReadBitfieldOperand(pc, op, extension, state, out uint aligned, out uint extracted, out int offset, out int width, out uint ea, out int instructionLength))
+            return false;
+
+        if ((op & 0x38) == 0)
+        {
+            int destinationRegister = op & 7;
+            uint destination = state.Data[destinationRegister];
+            for (int bit = 0; bit < width; bit++)
+                destination |= 1u << (31 - ((offset + bit) & 31));
+            state.Data[destinationRegister] = destination;
+        }
+        else
+        {
+            uint maskBase = unchecked(uint.MaxValue << (32 - width));
+            uint maskLong = maskBase >> offset;
+            uint dataLong = offset + width < 8
+                ? (uint)_bus.ReadByte(ea) << 24
+                : offset + width < 16
+                    ? (uint)_bus.ReadWord(ea) << 16
+                    : _bus.ReadLong(ea);
+            uint setLong = dataLong | maskLong;
+
+            if (offset + width < 8)
+                _bus.WriteByte(ea, (byte)(setLong >> 24));
+            else if (offset + width < 16)
+                _bus.WriteWord(ea, (ushort)(setLong >> 16));
+            else
+                _bus.WriteLong(ea, setLong);
+
+            if (offset + width > 32)
+            {
+                byte maskByte = (byte)((byte)maskBase << (8 - offset));
+                byte dataByte = _bus.ReadByte(ea + 4);
+                _bus.WriteByte(ea + 4, (byte)(dataByte | maskByte));
+            }
+        }
+
+        bool negative = (aligned & 0x8000_0000u) != 0;
+        bool zero = extracted == 0;
+        ushort sr = UpdateCcr(state.Sr, negative, zero, overflow: false, carry: false);
+        uint nextPc = (pc + (uint)instructionLength) & 0x00ff_ffff;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions++;
+        cycles = 28;
+        return true;
+    }
+
+    private bool TryReadBitfieldOperand(
+        uint pc,
+        ushort op,
+        ushort extension,
+        M68000.M68000State state,
+        out uint aligned,
+        out uint extracted,
+        out int offset,
+        out int width,
+        out uint ea,
+        out int instructionLength)
+    {
+        aligned = 0;
+        extracted = 0;
+        ea = 0;
+        instructionLength = 4;
+        offset = (extension & 0x0800) != 0
+            ? unchecked((int)state.Data[(extension >> 6) & 7])
+            : (extension >> 6) & 31;
+        uint widthRaw = (extension & 0x0020) != 0
+            ? state.Data[extension & 7]
+            : (uint)(extension & 31);
+        width = (int)(((widthRaw - 1) & 31) + 1);
+
+        int mode = (op >> 3) & 7;
+        int reg = op & 7;
+        if (mode == 0)
+        {
+            offset &= 31;
+            uint source = state.Data[reg];
+            aligned = RotateLeft32(source, offset);
+            extracted = width == 32 ? aligned : aligned >> (32 - width);
+            return true;
+        }
+
+        if (!TryResolveSimpleBitfieldEa(pc, mode, reg, state, out ea, out instructionLength))
+            return false;
+
+        if ((extension & 0x0800) != 0)
+        {
+            ea = unchecked(ea + (uint)(offset / 8));
+            offset %= 8;
+            if (offset < 0)
+            {
+                offset += 8;
+                ea--;
+            }
+        }
+
+        aligned = ReadBitfieldWindow(ea, offset, width);
+        extracted = width == 32 ? aligned : aligned >> (32 - width);
+        return true;
+    }
+
+    private bool TryResolveSimpleBitfieldEa(uint pc, int mode, int reg, M68000.M68000State state, out uint ea, out int instructionLength)
+    {
+        instructionLength = 4;
+        ea = 0;
+        switch (mode)
+        {
+            case 2:
+                ea = state.Address[reg];
+                return true;
+            case 5:
+                ea = unchecked(state.Address[reg] + (uint)(short)_bus.ReadOpcodeWord(pc + 4));
+                instructionLength = 6;
+                return true;
+            case 6:
+                ea = CalculateBriefIndexedAddress(state, state.Address[reg], _bus.ReadOpcodeWord(pc + 4));
+                instructionLength = 6;
+                return true;
+            case 7 when reg == 0:
+                ea = unchecked((uint)(short)_bus.ReadOpcodeWord(pc + 4));
+                instructionLength = 6;
+                return true;
+            case 7 when reg == 1:
+                ea = _bus.ReadLong(pc + 4);
+                instructionLength = 8;
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private bool ExecuteBfins(uint pc, ushort extension, M68000.M68000State state, uint ea, int instructionLength, out uint cycles)
     {
         cycles = 0;
@@ -2107,6 +2339,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (overflow) next |= 0x0002;
         if (carry) next |= 0x0001;
         return next;
+    }
+
+    private static uint RotateLeft32(uint value, int count)
+    {
+        count &= 31;
+        return count == 0
+            ? value
+            : (value << count) | (value >> (32 - count));
     }
 
     private static uint CalculateBriefIndexedAddress(M68000.M68000State state, uint baseAddress, ushort extension)
@@ -3814,6 +4054,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public uint LastUnmappedWritePc { get; private set; }
         public uint LastUnmappedWriteAddress { get; private set; }
         public byte LastUnmappedWriteValue { get; private set; }
+        public uint LastIrqWorkPointerWritePc { get; private set; }
+        public uint LastIrqWorkPointerWriteAddress { get; private set; }
+        public uint LastIrqWorkPointerValue { get; private set; }
         public int PlayfieldNonZeroWords => _playfieldNonZeroWords;
         public int TextNonZeroWords => _textNonZeroWords;
         public int PivotNonZeroWords => _pivotNonZeroWords;
@@ -3923,6 +4166,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             LastUnmappedWritePc = 0;
             LastUnmappedWriteAddress = 0;
             LastUnmappedWriteValue = 0;
+            LastIrqWorkPointerWritePc = 0;
+            LastIrqWorkPointerWriteAddress = 0;
+            LastIrqWorkPointerValue = 0;
             EnsureBackupDefaults();
         }
 
@@ -4425,6 +4671,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     LastSpriteListPointerWritePc = CurrentCpuPc;
                     LastSpriteListPointerWriteAddress = address;
                     LastSpriteListPointerValue = PeekLong(0x407360);
+                }
+                if (address >= 0x406704 && address <= 0x406707)
+                {
+                    LastIrqWorkPointerWritePc = CurrentCpuPc;
+                    LastIrqWorkPointerWriteAddress = address;
+                    LastIrqWorkPointerValue = PeekLong(0x406704);
                 }
                 WorkRamWrites++;
                 return true;
