@@ -2,6 +2,7 @@ namespace EutherDrive.Core.Arcade.Taito;
 
 using System.Globalization;
 using EutherDrive.Core.Cpu.M68000Emu;
+using EutherDrive.Core.Cpu.MameMusashi;
 using EutherDrive.Core.Savestates;
 using SharpCompress.Archives;
 
@@ -76,7 +77,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly ushort[] _spriteReefPalette = new ushort[FrameWidth * FrameHeight];
     private readonly byte[] _spriteReefGroup = new byte[FrameWidth * FrameHeight];
     private readonly F3LineState[] _lineStates = new F3LineState[256];
-    private readonly MameM68Ec020 _mainCpu = MameM68Ec020.Create("dariusg-main-020-probe");
+    private readonly MameMusashi68Ec020 _mainCpu = new();
     private readonly TaitoF3MainBus _bus = new();
     private RomIdentity? _romIdentity;
     private TaitoF3RomSet? _roms;
@@ -174,7 +175,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         var state = _mainCpu.GetState();
         return $"driver={_driverName} frame={_frameCounter} pc=0x{_mainCpu.Pc:X6} sr=0x{_mainCpu.StatusRegister:X4} " +
         $"op=0x{_mainCpu.NextOpcode:X4} d0=0x{state.Data[0]:X8} d1=0x{state.Data[1]:X8} a0=0x{state.Address[0]:X8} a1=0x{state.Address[1]:X8} " +
-        $"cycles={_executedCycles} instr={_executedInstructions} " +
+        $"cycles={_executedCycles} instr={_executedInstructions} mame020={_mainCpu.ImplementedOpcodeCount}/{_mainCpu.MameEc020OpcodeCount} " +
         $"020probe={_m68ec020ProbeInstructions} tasks={_f3TaskQueue.Count} q={BuildTaskQueueSample()} taskEnq={_f3TasksEnqueued} taskRun={_f3TasksDispatched} " +
         $"lastTask=0x{_lastF3TaskEntry:X6} enq={BuildRecentTaskSample(_recentF3EnqueuedTasks, _recentF3EnqueuedIndex)} run={BuildRecentTaskSample(_recentF3DispatchedTasks, _recentF3DispatchedIndex)} lastTrap=0x{_lastF3TrapPc:X6} vbr=0x{_bus.VectorBase:X6} " +
         $"ramW={_bus.WorkRamWrites} palW={_bus.PaletteWrites} sprW={_bus.SpriteWrites} pfW={_bus.PlayfieldWrites} pfNZ={_bus.PlayfieldNonZeroWords} pfCand={_lastPlayfieldCandidates} pfPix={_lastPlayfieldPixels} pfL={BuildPlayfieldLayerSample()} mixSrc={_lastMixSourcePixels}/{_lastMixLitSourcePixels} mixDstOnly={_lastMixDestOnlyPixels} mixP0={_lastMixPriorityZeroConflicts} lineMid={BuildLineStateSample()} txtNZ={_bus.TextNonZeroWords} pivNZ={_bus.PivotNonZeroWords} " +
