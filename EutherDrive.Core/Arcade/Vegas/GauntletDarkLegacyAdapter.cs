@@ -422,6 +422,7 @@ internal sealed class MipsR5000Core
     private int _rd0Stage4BootReadTraceCount;
     private int _rd0BootHeaderReadCount;
     private int _rd0BootFileReadCount;
+    private int _genericQioWaitTraceCount;
     private int _rd0QioCandidateTraceCount;
     private int _rd0OpenPollTraceCount;
     private int _loadedBootCacheLoopTraceCount;
@@ -2890,8 +2891,14 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = loadPc + 0x0cUL;
-        if (_traceRd0Home)
-            Console.WriteLine($"[GAUNTDL:QIO] generic-wait-complete pc={pc:x16} object={_gpr[16]:x16} status={status:x8}");
+        if (_traceRd0Home && _genericQioWaitTraceCount++ < 16)
+        {
+            ulong obj = _gpr[16];
+            Console.WriteLine(
+                $"[GAUNTDL:QIO] generic-wait-complete pc={pc:x16} object={obj:x16} " +
+                $"state={_memory.Read32(obj + 0x0cUL):x8} status={status:x8} " +
+                $"next={_memory.Read32(obj + 0x18UL):x8} buf={_memory.Read32(obj + 0x2cUL):x8}");
+        }
         return true;
     }
 
