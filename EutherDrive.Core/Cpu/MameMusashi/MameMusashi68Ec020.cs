@@ -1343,11 +1343,11 @@ public sealed class MameMusashi68Ec020
         {
             2 => _a[reg],
             5 => unchecked(_a[reg] + (uint)(short)ReadImmediateWord()),
-            6 => GetBriefIndexedAddress(_a[reg]),
+            6 => GetIndexedAddress(_a[reg]),
             7 when reg == 0 => unchecked((uint)(short)ReadImmediateWord()),
             7 when reg == 1 => ReadImmediateLong(),
             7 when reg == 2 => GetPcDisplacementAddress(),
-            7 when reg == 3 => GetPcBriefIndexedAddress(),
+            7 when reg == 3 => GetPcIndexedAddress(),
             _ => throw new InvalidOperationException($"Unsupported EC020 control EA mode {mode}/{reg} for opcode 0x{_ir:X4}.")
         };
     }
@@ -1443,11 +1443,11 @@ public sealed class MameMusashi68Ec020
         {
             2 or 3 or 4 => _a[reg],
             5 => unchecked(_a[reg] + (uint)(short)ReadImmediateWord()),
-            6 => GetBriefIndexedAddress(_a[reg]),
+            6 => GetIndexedAddress(_a[reg]),
             7 when reg == 0 => unchecked((uint)(short)ReadImmediateWord()),
             7 when reg == 1 => ReadImmediateLong(),
             7 when reg == 2 => GetPcDisplacementAddress(),
-            7 when reg == 3 => GetPcBriefIndexedAddress(),
+            7 when reg == 3 => GetPcIndexedAddress(),
             _ => throw new InvalidOperationException($"Unsupported MOVEM EA mode {mode}/{reg} for opcode 0x{_ir:X4}.")
         };
     }
@@ -1472,7 +1472,7 @@ public sealed class MameMusashi68Ec020
             case 5:
                 return unchecked(_a[reg] + (uint)(short)ReadImmediateWord());
             case 6:
-                return GetBriefIndexedAddress(_a[reg]);
+                return GetIndexedAddress(_a[reg]);
             case 7 when reg == 0:
                 return unchecked((uint)(short)ReadImmediateWord());
             case 7 when reg == 1:
@@ -1494,11 +1494,11 @@ public sealed class MameMusashi68Ec020
             3 => ReadPostincrement(reg, size),
             4 => ReadPredecrement(reg, size),
             5 => ReadMemory(unchecked(_a[reg] + (uint)(short)ReadImmediateWord()), size),
-            6 => ReadMemory(GetBriefIndexedAddress(_a[reg]), size),
+            6 => ReadMemory(GetIndexedAddress(_a[reg]), size),
             7 when reg == 0 => ReadMemory(unchecked((uint)(short)ReadImmediateWord()), size),
             7 when reg == 1 => ReadMemory(ReadImmediateLong(), size),
             7 when reg == 2 => ReadMemory(GetPcDisplacementAddress(), size),
-            7 when reg == 3 => ReadMemory(GetPcBriefIndexedAddress(), size),
+            7 when reg == 3 => ReadMemory(GetPcIndexedAddress(), size),
             7 when reg == 4 => size switch
             {
                 OpSize.Byte => ReadImmediateWord() & 0xffu,
@@ -1533,7 +1533,7 @@ public sealed class MameMusashi68Ec020
                 WriteMemory(unchecked(_a[reg] + (uint)(short)ReadImmediateWord()), size, value);
                 break;
             case 6:
-                WriteMemory(GetBriefIndexedAddress(_a[reg]), size, value);
+                WriteMemory(GetIndexedAddress(_a[reg]), size, value);
                 break;
             case 7 when reg == 0:
                 WriteMemory(unchecked((uint)(short)ReadImmediateWord()), size, value);
@@ -1562,7 +1562,7 @@ public sealed class MameMusashi68Ec020
             3 => _a[reg],
             4 => (_a[reg] - EaStep(reg, size)) & 0x00ff_ffffu,
             5 => unchecked(_a[reg] + (uint)(short)ReadImmediateWord()),
-            6 => GetBriefIndexedAddress(_a[reg]),
+            6 => GetIndexedAddress(_a[reg]),
             7 when reg == 0 => unchecked((uint)(short)ReadImmediateWord()),
             7 when reg == 1 => ReadImmediateLong(),
             _ => throw new InvalidOperationException($"Unsupported modify EA mode {mode}/{reg} for opcode 0x{_ir:X4}.")
@@ -1864,9 +1864,12 @@ public sealed class MameMusashi68Ec020
         C = src > dst;
     }
 
-    private uint GetBriefIndexedAddress(uint baseAddress)
+    private uint GetIndexedAddress(uint baseAddress)
     {
         ushort extension = ReadImmediateWord();
+        if ((extension & 0x0100) != 0)
+            return GetFullIndexedAddress(baseAddress, extension);
+
         int indexReg = (extension >> 12) & 7;
         bool addressIndex = (extension & 0x8000) != 0;
         bool longIndex = (extension & 0x0800) != 0;
@@ -1877,16 +1880,58 @@ public sealed class MameMusashi68Ec020
         return unchecked(baseAddress + (uint)(index * scale + displacement));
     }
 
+    private uint GetFullIndexedAddress(uint baseAddress, ushort extension)
+    {
+        uint baseValue = (extension & 0x0080) != 0 ? 0 : baseAddress;
+        uint indexValue = 0;
+        if ((extension & 0x0040) == 0)
+        {
+            int indexReg = (extension >> 12) & 7;
+            bool addressIndex = (extension & 0x8000) != 0;
+            bool longIndex = (extension & 0x0800) != 0;
+            int scaleShift = (extension >> 9) & 3;
+            uint raw = addressIndex ? _a[indexReg] : _d[indexReg];
+            indexValue = longIndex
+                ? unchecked(raw << scaleShift)
+                : unchecked((uint)((int)(short)raw << scaleShift));
+        }
+
+        uint baseDisplacement = 0;
+        if ((extension & 0x0020) != 0)
+        {
+            baseDisplacement = (extension & 0x0010) != 0
+                ? ReadImmediateLong()
+                : unchecked((uint)(short)ReadImmediateWord());
+        }
+
+        int indirectSelection = extension & 0x0007;
+        uint baseAndDisplacement = unchecked(baseValue + baseDisplacement);
+        if (indirectSelection == 0)
+            return unchecked(baseAndDisplacement + indexValue);
+
+        uint outerDisplacement = 0;
+        if ((extension & 0x0002) != 0)
+        {
+            outerDisplacement = (extension & 0x0001) != 0
+                ? ReadImmediateLong()
+                : unchecked((uint)(short)ReadImmediateWord());
+        }
+
+        return (extension & 0x0004) != 0
+            ? unchecked(ReadLong(baseAndDisplacement) + indexValue + outerDisplacement)
+            : unchecked(ReadLong(baseAndDisplacement + indexValue) + outerDisplacement);
+    }
+
     private uint GetPcDisplacementAddress()
     {
         uint baseAddress = _pc;
         return unchecked(baseAddress + (uint)(short)ReadImmediateWord());
     }
 
-    private uint GetPcBriefIndexedAddress()
+    private uint GetPcIndexedAddress()
     {
         uint baseAddress = _pc;
-        return GetBriefIndexedAddress(baseAddress);
+        return GetIndexedAddress(baseAddress);
     }
 
     private void CheckInterrupts()

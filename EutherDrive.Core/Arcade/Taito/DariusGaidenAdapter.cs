@@ -180,7 +180,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         $"lastSprNZ=0x{_bus.LastNonZeroSpriteWritePc:X6}->0x{_bus.LastNonZeroSpriteWriteAddress:X6}:0x{_bus.LastNonZeroSpriteWriteValue:X2} lastPfNZ=0x{_bus.LastNonZeroPlayfieldWritePc:X6}->0x{_bus.LastNonZeroPlayfieldWriteAddress:X6}:0x{_bus.LastNonZeroPlayfieldWriteValue:X2} lastTxtNZ=0x{_bus.LastNonZeroTextWritePc:X6}->0x{_bus.LastNonZeroTextWriteAddress:X6}:0x{_bus.LastNonZeroTextWriteValue:X2} " +
         $"mode=0x{_bus.PeekByte(0x40221d):X2}/0x{_bus.PeekByte(0x40223a):X2}/0x{_bus.PeekByte(0x40223d):X2}/0x{_bus.PeekByte(0x40223f):X2} coin=0x{_bus.CoinWord0:X4}/0x{_bus.CoinWord1:X4}/in{(_bus.Input.Coin1 ? 1 : 0)} fio22={BuildFioSoftSample()} coinT={_bus.PeekWord(0x400090):X4},{_bus.PeekWord(0x400092):X4},{_bus.PeekWord(0x4000a2):X4},{_bus.PeekWord(0x4000a4):X4} bkup18=0x{_bus.PeekByte(0x406c6c):X2} cfg2_18=0x{_bus.PeekByte(0x406c8c):X2} gateEbb4=0x{_bus.PeekByte(0x406bb4):X2} gateEbb5=0x{_bus.PeekByte(0x406bb5):X2} gateEbb6=0x{_bus.PeekByte(0x406bb6):X2} gateW=0x{_bus.LastGateWritePc:X6}->0x{_bus.LastGateWriteAddress:X6}:0x{_bus.LastGateWriteValue:X2} gateNZ=0x{_bus.LastNonZeroGateWritePc:X6}->0x{_bus.LastNonZeroGateWriteAddress:X6}:0x{_bus.LastNonZeroGateWriteValue:X2}/{_bus.NonZeroGateWrites} scene=entry:{_sceneEntryHits}/init:{_sceneInitResumeHits},{_sceneInitMainHits},{_sceneMenuInitHits},{_sceneSpawnerYieldHits}/gate:{_sceneGateRoutineHits}/bset:{_sceneGateSetInstructionHits}/wait:{_sceneGateWaitHits}/mainwait:{_mainGateWaitHits}/call=0x{_lastSceneAbsoluteCallTarget:X6}/cont:{_sceneContinuationEnqueued},{_sceneContinuationDispatched},{_sceneContinuationRemoved}/rm=0x{_lastF3TaskRemoveMask:X8} flag224=0x{_bus.PeekByte(0x402224):X2} obj916=0x{_bus.PeekByte(0x408916):X2} obj917=0x{_bus.PeekByte(0x408917):X2} listCnt=0x{_bus.PeekWord(0x402218):X4} listPtr=0x{_bus.PeekLong(0x407360):X6} listPtrW=0x{_bus.LastSpriteListPointerWritePc:X6}->0x{_bus.LastSpriteListPointerWriteAddress:X6}:0x{_bus.LastSpriteListPointerValue:X8} listFlow={_spriteListBuildHits},{_spriteListProducerWrites},{_spriteListFinalizeHits},{_spriteListLatchedWrites} sprNZ={_bus.SpriteNonZeroWords} sprFirst={_bus.FirstNonZeroSpriteWordOffset:X4} sprRaw={BuildSpriteRamSample()} sprHead={BuildSpritePointerSample()} sprTiles={BuildSpriteTileSample()} " +
         $"sprCand={_lastSpriteCandidates} sprVis={_lastVisibleSprites} sprPix={_lastSpritePixels} sprCtl=0x{_lastSpriteControlWord:X4} sprBank={(_spriteBank ? 1 : 0)} sprLast={_lastSpriteCandidateEntry:X3}/0x{_lastSpriteCandidateTile:X5}/0x{_lastSpriteCandidateControl:X2}@{_lastSpriteCandidateX},{_lastSpriteCandidateY}+{_lastSpriteCandidateScaleX},{_lastSpriteCandidateScaleY} sprBox={_lastSpriteMinX},{_lastSpriteMinY}..{_lastSpriteMaxX},{_lastSpriteMaxY}/{_lastSpriteClosestDistance} " +
-        $"ctrlR={_bus.ControlReads} lastCtrl=0x{_bus.LastControlReadAddress:X6}:0x{_bus.LastControlReadValue:X2} modeW=0x{_bus.LastModeWritePc:X6}->0x{_bus.LastModeWriteAddress:X6}:0x{_bus.LastModeWriteValue:X2} modeBtst=0x{_bus.LastModeBtstPc:X6}@0x{_bus.LastModeBtstAddress:X6}:0x{_bus.LastModeBtstValue:X2}/b{_bus.LastModeBtstBit}/z{(_bus.LastModeBtstZero ? 1 : 0)} btst=0x{_bus.LastBtstAddress:X6}:0x{_bus.LastBtstValue:X2}/b{_bus.LastBtstBit} bkupW=0x{_bus.LastBackupWritePc:X6}:0x{_bus.LastBackupWriteValue:X2} ctrlW={_bus.ControlWrites} dpramR={_bus.DualPortReads}@0x{_bus.LastDualPortReadPc:X6}->0x{_bus.LastDualPortReadAddress:X6}:0x{_bus.LastDualPortReadValue:X2} dpramW={_bus.DualPortWrites}@0x{_bus.LastDualPortWritePc:X6}->0x{_bus.LastDualPortWriteAddress:X6}:0x{_bus.LastDualPortWriteValue:X2} sndRst={(_bus.SoundCpuResetAsserted ? 1 : 0)} sndRstW=0x{_bus.LastSoundResetWritePc:X6}->0x{_bus.LastSoundResetWriteAddress:X6} unmappedR={_bus.UnmappedReads} unmappedW={_bus.UnmappedWrites} stop={_lastStopReason}";
+        $"ctrlR={_bus.ControlReads} lastCtrl=0x{_bus.LastControlReadAddress:X6}:0x{_bus.LastControlReadValue:X2} modeW=0x{_bus.LastModeWritePc:X6}->0x{_bus.LastModeWriteAddress:X6}:0x{_bus.LastModeWriteValue:X2} modeBtst=0x{_bus.LastModeBtstPc:X6}@0x{_bus.LastModeBtstAddress:X6}:0x{_bus.LastModeBtstValue:X2}/b{_bus.LastModeBtstBit}/z{(_bus.LastModeBtstZero ? 1 : 0)} btst=0x{_bus.LastBtstAddress:X6}:0x{_bus.LastBtstValue:X2}/b{_bus.LastBtstBit} bkupW=0x{_bus.LastBackupWritePc:X6}:0x{_bus.LastBackupWriteValue:X2} ctrlW={_bus.ControlWrites} dpramR={_bus.DualPortReads}@0x{_bus.LastDualPortReadPc:X6}->0x{_bus.LastDualPortReadAddress:X6}:0x{_bus.LastDualPortReadValue:X2} dpramW={_bus.DualPortWrites}@0x{_bus.LastDualPortWritePc:X6}->0x{_bus.LastDualPortWriteAddress:X6}:0x{_bus.LastDualPortWriteValue:X2} sndRst={(_bus.SoundCpuResetAsserted ? 1 : 0)} sndRstW=0x{_bus.LastSoundResetWritePc:X6}->0x{_bus.LastSoundResetWriteAddress:X6} unmappedR={_bus.UnmappedReads}@0x{_bus.LastUnmappedReadPc:X6}->0x{_bus.LastUnmappedReadAddress:X6} unmappedW={_bus.UnmappedWrites}@0x{_bus.LastUnmappedWritePc:X6}->0x{_bus.LastUnmappedWriteAddress:X6}:0x{_bus.LastUnmappedWriteValue:X2} stop={_lastStopReason}";
     }
 
     private string BuildSpritePointerSample()
@@ -1115,6 +1115,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (op == 0x30c1 && _bus.PeekWord(pc + 2) == 0x51c8)
             return TryExecuteDariusDbraWordFill(pc, out cycles);
 
+        if (pc == 0x005be8 && op == 0x323c && _bus.PeekWord(pc + 2) == 0x00e7 && _bus.PeekWord(pc + 4) == 0x32c0)
+            return TryExecuteDariusDbraWordFillA1D1(pc + 4, out cycles);
+
+        if (op == 0x32c0 && _bus.PeekWord(pc + 2) == 0x51c9)
+            return TryExecuteDariusDbraWordFillA1D1(pc, out cycles);
+
         if ((pc == 0x005994 || pc == 0x0059f4) && op == 0xc559 && _bus.PeekWord(pc + 2) == 0x51c8)
             return TryExecuteDariusLineMaskTide(pc, out cycles);
 
@@ -1249,6 +1255,32 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
         state.Address[0] = address;
+        uint nextPc = (pc + 6) & 0x00ff_ffff;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += (ulong)remaining;
+        cycles = (uint)Math.Max(34, remaining * 6);
+        return true;
+    }
+
+    private bool TryExecuteDariusDbraWordFillA1D1(uint pc, out uint cycles)
+    {
+        cycles = 0;
+        var state = _mainCpu.GetState();
+        int remaining = pc == 0x005bec ? 0x00e8 : ((ushort)state.Data[1]) + 1;
+        uint address = state.Address[1] & 0x00ff_ffff;
+        if (remaining <= 0 || remaining > 0x1000 || !IsF3VideoAddress(address))
+            return false;
+
+        ushort value = (ushort)state.Data[0];
+        for (int i = 0; i < remaining; i++)
+        {
+            _bus.WriteWord(address, value);
+            address = (address + 2) & 0x00ff_ffff;
+        }
+
+        state.Data[1] = (state.Data[1] & 0xffff_0000u) | 0xffffu;
+        state.Address[1] = address;
         uint nextPc = (pc + 6) & 0x00ff_ffff;
         ushort prefetch = _bus.ReadOpcodeWord(nextPc);
         _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, nextPc, prefetch));
@@ -3777,6 +3809,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public bool LastModeBtstZero { get; set; }
         public int UnmappedReads { get; private set; }
         public int UnmappedWrites { get; private set; }
+        public uint LastUnmappedReadPc { get; private set; }
+        public uint LastUnmappedReadAddress { get; private set; }
+        public uint LastUnmappedWritePc { get; private set; }
+        public uint LastUnmappedWriteAddress { get; private set; }
+        public byte LastUnmappedWriteValue { get; private set; }
         public int PlayfieldNonZeroWords => _playfieldNonZeroWords;
         public int TextNonZeroWords => _textNonZeroWords;
         public int PivotNonZeroWords => _pivotNonZeroWords;
@@ -3881,6 +3918,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             LastModeBtstValue = 0;
             LastModeBtstBit = 0;
             LastModeBtstZero = false;
+            LastUnmappedReadPc = 0;
+            LastUnmappedReadAddress = 0;
+            LastUnmappedWritePc = 0;
+            LastUnmappedWriteAddress = 0;
+            LastUnmappedWriteValue = 0;
             EnsureBackupDefaults();
         }
 
@@ -4078,6 +4120,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 return value;
 
             UnmappedReads++;
+            LastUnmappedReadPc = CurrentCpuPc;
+            LastUnmappedReadAddress = address;
             return 0xff;
         }
 
@@ -4108,6 +4152,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 return;
 
             UnmappedWrites++;
+            LastUnmappedWritePc = CurrentCpuPc;
+            LastUnmappedWriteAddress = address;
+            LastUnmappedWriteValue = value;
         }
 
         public void WriteWord(uint address, ushort value)
@@ -4132,10 +4179,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         public byte InterruptLevel()
         {
-            if (_interrupt3Asserted)
-                return 3;
+            // MAME asserts F3 vblank IRQ2 first and schedules IRQ3 about
+            // 10000 main CPU cycles later. The bringup fast paths can cross
+            // that delay before the ROM has had a chance to lower SR and
+            // acknowledge IRQ2, so preserve the temporal order here.
             if (_interrupt2Asserted)
                 return 2;
+            if (_interrupt3Asserted)
+                return 3;
             return 0;
         }
 
