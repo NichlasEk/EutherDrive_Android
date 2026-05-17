@@ -394,7 +394,7 @@ internal sealed class MipsR5000Core
     private readonly ulong? _traceRa = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_RA");
     private readonly int _traceInstructionLimit = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", int.MaxValue);
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
-    private readonly int _stepBudget = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", 2048);
+    private readonly int _stepBudget = ParseStepBudget();
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
     private readonly bool _enableRd0AsyncCallbackKick = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK");
@@ -7023,6 +7023,19 @@ internal sealed class MipsR5000Core
     {
         string? raw = Environment.GetEnvironmentVariable(name);
         return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    private static int ParseStepBudget()
+    {
+        const int defaultBudget = 2048;
+        const int bringupFastBudget = 200_000;
+        string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME");
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME_FAST_DEFAULT")
+            ? bringupFastBudget
+            : defaultBudget;
     }
 
     private static ulong ParseGlideConfigInt(string? raw, ulong fallback)
