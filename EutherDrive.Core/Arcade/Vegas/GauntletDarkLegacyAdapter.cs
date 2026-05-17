@@ -702,6 +702,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeEventStatusNoCallback(pc))
             return;
+        if (TryFastPathKnownRuntimeTwoBitTileExpand(pc))
+            return;
         if (TryFastPathKnownGlideVertexCopyLoop(pc))
             return;
         if (TryFastPathKnownGlideSetupPacketHelper(pc))
@@ -5282,6 +5284,81 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = 0xffffffff800528acUL;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTwoBitTileExpand(ulong pc)
+    {
+        const ulong loopPc = 0xffffffff800194a0UL;
+        if (pc != loopPc)
+            return false;
+        if (_memory.Read32(loopPc) != 0x24080007U ||
+            _memory.Read32(loopPc + 0x04UL) != 0x95270000U ||
+            _memory.Read32(loopPc + 0x08UL) != 0x2529fffeU ||
+            _memory.Read32(loopPc + 0x0cUL) != 0x00c0182dU ||
+            _memory.Read32(loopPc + 0x10UL) != 0x0000282dU ||
+            _memory.Read32(loopPc + 0x14UL) != 0x30e20003U ||
+            _memory.Read32(loopPc + 0x18UL) != 0x50400006U ||
+            _memory.Read32(loopPc + 0x1cUL) != 0x24a50001U ||
+            _memory.Read32(loopPc + 0x20UL) != 0x00021040U ||
+            _memory.Read32(loopPc + 0x24UL) != 0x00441021U ||
+            _memory.Read32(loopPc + 0x28UL) != 0x94420000U ||
+            _memory.Read32(loopPc + 0x2cUL) != 0xa4620000U ||
+            _memory.Read32(loopPc + 0x30UL) != 0x24a50001U ||
+            _memory.Read32(loopPc + 0x34UL) != 0x24630002U ||
+            _memory.Read32(loopPc + 0x38UL) != 0x28a20008U ||
+            _memory.Read32(loopPc + 0x3cUL) != 0x1440fff5U ||
+            _memory.Read32(loopPc + 0x40UL) != 0x00073882U ||
+            _memory.Read32(loopPc + 0x44UL) != 0x2508ffffU ||
+            _memory.Read32(loopPc + 0x48UL) != 0x0501ffeeU ||
+            _memory.Read32(loopPc + 0x4cUL) != 0x246607f0U)
+        {
+            return false;
+        }
+
+        ulong palette = _gpr[4];
+        ulong source = _gpr[9];
+        ulong row = _gpr[6];
+        if (!IsMainRamRange(palette, 8) ||
+            !IsMainRamRange(source - 14UL, 16) ||
+            !IsMainRamRange(row, 7UL * 2048UL + 16UL))
+        {
+            return false;
+        }
+
+        ulong cursor = source;
+        ulong rowStart = row;
+        ulong lastPixel = row;
+        uint bits = 0;
+        for (int y = 0; y < 8; y++)
+        {
+            bits = _memory.Read16(cursor);
+            cursor -= 2UL;
+            lastPixel = rowStart;
+            for (int x = 0; x < 8; x++)
+            {
+                uint code = bits & 3U;
+                if (code != 0)
+                    _memory.Write16(lastPixel, _memory.Read16(palette + code * 2UL));
+                bits >>= 2;
+                lastPixel += 2UL;
+            }
+            rowStart = lastPixel + 0x7f0UL;
+        }
+
+        _gpr[2] = 0;
+        _gpr[3] = lastPixel;
+        _gpr[5] = 8;
+        _gpr[6] = rowStart;
+        _gpr[7] = bits;
+        _gpr[8] = unchecked(ulong.MaxValue);
+        _gpr[9] = cursor;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 160UL);
+        _instructionCounter += 160UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = loopPc + 0x50UL;
         return true;
     }
 
