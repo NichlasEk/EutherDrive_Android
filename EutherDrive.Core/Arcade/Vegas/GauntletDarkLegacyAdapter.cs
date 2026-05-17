@@ -416,6 +416,8 @@ internal sealed class MipsR5000Core
     private int _rd0AsyncCallbackKickCount;
     private int _rd0SyncReadCompleteCount;
     private int _rd0HomeTableParseCount;
+    private int _rd0SecondGetIoQErrorTraceCount;
+    private int _rd0SecondUnableHomeBlocksTraceCount;
     private int _rd0Stage4BootReadCount;
     private int _rd0Stage4BootReadTraceCount;
     private int _rd0BootHeaderReadCount;
@@ -3037,6 +3039,10 @@ internal sealed class MipsR5000Core
         };
         if (label is null)
             return;
+        if (pc == 0xffffffff800159f8UL && _rd0SecondGetIoQErrorTraceCount++ >= 8)
+            return;
+        if (pc == 0xffffffff80015a48UL && _rd0SecondUnableHomeBlocksTraceCount++ >= 8)
+            return;
 
         string detail = pc == 0xffffffff80015708UL
             ? $" msg=\"{ReadAsciiTraceString(_gpr[5], 96)}\""
@@ -3257,7 +3263,7 @@ internal sealed class MipsR5000Core
         }
 
         _rd0HomeTableParseCount++;
-        if (_traceRd0Home)
+        if (_traceRd0Home && _rd0HomeTableParseCount <= 8)
         {
             Console.WriteLine(
                 $"[GAUNTDL:RD0] home-table pc={pc:x16} table={table:x16} " +
