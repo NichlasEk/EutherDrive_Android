@@ -4264,11 +4264,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (Input.Start && !_previousStart)
             {
                 WriteWorkRamByteSilently(0x402229, 0x7f);
-                if (_creditCount != 0)
-                {
-                    _creditCount--;
-                    PulseSchedulerGateBit0();
-                }
             }
             else if (startLatched)
             {
