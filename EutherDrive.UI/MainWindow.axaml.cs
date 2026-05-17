@@ -529,6 +529,7 @@ public partial class MainWindow : Window
     private Thread? _emuThread;
     private volatile bool _emuRunning;
     private int _emuLoopGeneration;
+    private int _startGeneration;
     private double _emuTargetFps = 60.0;
     private int _padTypeRaw = (int)PadType.ThreeButton;
     private int _coinPulseFrames;
@@ -3041,6 +3042,7 @@ public partial class MainWindow : Window
         try
         {
             Console.WriteLine($"[UI] Start clicked. romPath='{_romPath}' exists={(!string.IsNullOrWhiteSpace(_romPath) && File.Exists(_romPath))}");
+            int startGeneration = Interlocked.Increment(ref _startGeneration);
             Interlocked.Exchange(ref _coinPulseFrames, 0);
             if (await ShouldBlockSportTitleLaunchAsync())
                 return;
@@ -3074,7 +3076,8 @@ public partial class MainWindow : Window
 
             else
             {
-                _core = CreateCoreForRom(_romPath);
+                IEmulatorCore createdCore = CreateCoreForRom(_romPath);
+                _core = createdCore;
                 Console.WriteLine($"[UI] Core created ({_core.GetType().Name}).");
                 ApplyMasterVolumeToCore();
                 ApplyAudioMixToCore();
@@ -3130,7 +3133,14 @@ public partial class MainWindow : Window
                     }
                     else
                     {
-                        _core.LoadRom(_romPath);
+                        await LoadRomIntoCoreAsync(createdCore, _romPath);
+                        if (startGeneration != Volatile.Read(ref _startGeneration) || !ReferenceEquals(createdCore, _core))
+                        {
+                            Console.WriteLine("[UI] Ignoring stale ROM load result.");
+                            if (!ReferenceEquals(createdCore, _core) && createdCore is IDisposable disposableCreatedCore)
+                                disposableCreatedCore.Dispose();
+                            return;
+                        }
                         if (_core is SnesAdapter snes)
                         {
                             UpdateSnesRomInfo(snes);
@@ -3267,6 +3277,20 @@ public partial class MainWindow : Window
             StopCrtPowerIntro(revealContent: false, showSplash: true);
             await _ambientMusicController.SetRomActiveAsync(false);
         }
+    }
+
+    private async Task LoadRomIntoCoreAsync(IEmulatorCore core, string romPath)
+    {
+        if (core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter)
+        {
+            StatusText.Text = "Gauntlet initializing...";
+            Console.WriteLine("[UI] Loading Gauntlet ROM on worker thread.");
+            await Task.Run(() => core.LoadRom(romPath));
+            Console.WriteLine("[UI] Gauntlet ROM loaded into core.");
+            return;
+        }
+
+        core.LoadRom(romPath);
     }
 
     private async Task<bool> ShouldBlockSportTitleLaunchAsync()
@@ -7163,6 +7187,7 @@ public partial class MainWindow : Window
 
     private async void OnStop(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
+        Interlocked.Increment(ref _startGeneration);
         Interlocked.Exchange(ref _coinPulseFrames, 0);
         DeactivateMouseCapture(updateStatus: false);
         _timer.Stop();
@@ -9393,14 +9418,32 @@ public partial class MainWindow : Window
         int srcStride;
         if (ShouldSnapshotFrameBufferForPresentation(core))
         {
-            lock (_coreAudioLock)
+            bool lockTaken = false;
+            bool skipIfBusy = core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
+            try
             {
+                if (skipIfBusy)
+                {
+                    lockTaken = Monitor.TryEnter(_coreAudioLock);
+                    if (!lockTaken)
+                        return;
+                }
+                else
+                {
+                    Monitor.Enter(_coreAudioLock, ref lockTaken);
+                }
+
                 src = core.GetFrameBuffer(out w, out h, out srcStride);
                 int byteCount = Math.Min(src.Length, Math.Max(0, srcStride) * Math.Max(0, h));
                 if (_presentSnapshotBuffer.Length < byteCount)
                     _presentSnapshotBuffer = new byte[byteCount];
                 src.Slice(0, byteCount).CopyTo(_presentSnapshotBuffer);
                 src = _presentSnapshotBuffer.AsSpan(0, byteCount);
+            }
+            finally
+            {
+                if (lockTaken)
+                    Monitor.Exit(_coreAudioLock);
             }
         }
         else
