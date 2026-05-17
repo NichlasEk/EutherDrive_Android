@@ -604,8 +604,11 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
 {
     object backend = GetField(facade, "_backend");
     WriteUIntArray(writer, GetFieldValue<uint[]>(backend, "_registers"));
-    WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_lfb"));
+    WriteUShortArrayArray(writer, GetFieldValue<ushort[][]>(backend, "_colorBuffers"));
     WriteUIntList(writer, GetFieldValue<IList>(backend, "_fifoBuffer"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(backend, "_textureMemory"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(backend, "_cmdFifoRam"));
+    WriteBoolArray(writer, GetFieldValue<bool[]>(backend, "_cmdFifoValid"));
     WriteSetupVertices(writer, (Array)GetField(backend, "_setupVertices"));
     WriteIntArray(writer, GetFieldValue<int[]>(backend, "_fifoPacketTypeCounts"));
     writer.Write(GetFieldValue<int>(backend, "_registerWriteCount"));
@@ -618,16 +621,27 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     writer.Write(GetFieldValue<int>(backend, "_textureWriteCount"));
     writer.Write(GetFieldValue<int>(backend, "_fastFillCount"));
     writer.Write(GetFieldValue<int>(backend, "_swapBufferCount"));
+    writer.Write(GetFieldValue<int>(backend, "_pendingSwapCount"));
     writer.Write(GetFieldValue<int>(backend, "_renderFrame"));
     writer.Write(GetFieldValue<int>(backend, "_setupVertexCount"));
+    writer.Write(GetFieldValue<int>(backend, "_frontBufferIndex"));
+    writer.Write(GetFieldValue<int>(backend, "_backBufferIndex"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoReadIndex"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoDepth"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoHoles"));
+    writer.Write(GetFieldValue<bool>(backend, "_cmdFifoReadPointerWritten"));
+    writer.Write(GetFieldValue<bool>(backend, "_cmdFifoJumped"));
 }
 
 static void LoadVoodoo(BinaryReader reader, object facade)
 {
     object backend = GetField(facade, "_backend");
     ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_registers"));
-    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_lfb"));
+    ReadUShortArrayArrayInto(reader, GetFieldValue<ushort[][]>(backend, "_colorBuffers"));
     ReadUIntList(reader, GetFieldValue<IList>(backend, "_fifoBuffer"));
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_textureMemory"));
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_cmdFifoRam"));
+    ReadBoolArrayInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoValid"));
     ReadSetupVertices(reader, (Array)GetField(backend, "_setupVertices"));
     ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_fifoPacketTypeCounts"));
     SetField(backend, "_registerWriteCount", reader.ReadInt32());
@@ -640,8 +654,16 @@ static void LoadVoodoo(BinaryReader reader, object facade)
     SetField(backend, "_textureWriteCount", reader.ReadInt32());
     SetField(backend, "_fastFillCount", reader.ReadInt32());
     SetField(backend, "_swapBufferCount", reader.ReadInt32());
+    SetField(backend, "_pendingSwapCount", reader.ReadInt32());
     SetField(backend, "_renderFrame", reader.ReadInt32());
     SetField(backend, "_setupVertexCount", reader.ReadInt32());
+    SetField(backend, "_frontBufferIndex", reader.ReadInt32());
+    SetField(backend, "_backBufferIndex", reader.ReadInt32());
+    SetField(backend, "_cmdFifoReadIndex", reader.ReadInt32());
+    SetField(backend, "_cmdFifoDepth", reader.ReadInt32());
+    SetField(backend, "_cmdFifoHoles", reader.ReadInt32());
+    SetField(backend, "_cmdFifoReadPointerWritten", reader.ReadBoolean());
+    SetField(backend, "_cmdFifoJumped", reader.ReadBoolean());
 }
 
 static void WriteByteArray(BinaryWriter writer, byte[] values)
@@ -679,6 +701,22 @@ static void ReadUShortArrayInto(BinaryReader reader, ushort[] values)
         throw new InvalidDataException($"UInt16 array length mismatch: snapshot={length} runtime={values.Length}");
     for (int i = 0; i < values.Length; i++)
         values[i] = reader.ReadUInt16();
+}
+
+static void WriteUShortArrayArray(BinaryWriter writer, ushort[][] values)
+{
+    writer.Write(values.Length);
+    foreach (ushort[] value in values)
+        WriteUShortArray(writer, value);
+}
+
+static void ReadUShortArrayArrayInto(BinaryReader reader, ushort[][] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"UInt16 array-array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        ReadUShortArrayInto(reader, values[i]);
 }
 
 static void WriteUIntArray(BinaryWriter writer, uint[] values)
@@ -727,6 +765,22 @@ static void ReadIntArrayInto(BinaryReader reader, int[] values)
         throw new InvalidDataException($"Int32 array length mismatch: snapshot={length} runtime={values.Length}");
     for (int i = 0; i < values.Length; i++)
         values[i] = reader.ReadInt32();
+}
+
+static void WriteBoolArray(BinaryWriter writer, bool[] values)
+{
+    writer.Write(values.Length);
+    foreach (bool value in values)
+        writer.Write(value);
+}
+
+static void ReadBoolArrayInto(BinaryReader reader, bool[] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"Boolean array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        values[i] = reader.ReadBoolean();
 }
 
 static void WriteUIntList(BinaryWriter writer, IList values)
