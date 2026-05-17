@@ -619,6 +619,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRamQwordCopyBody(pc))
             return;
+        if (TryFastPathKnownLoadedBootMemoryWalk(pc))
+            return;
         if (TryFastPathKnownLoadedBootInflate(pc))
             return;
         if (TryFastPathKnownLoadedBootBssClear(pc))
@@ -770,7 +772,7 @@ internal sealed class MipsR5000Core
         }
 
         ulong loopBase = (pc & 0xffffffffe0000000UL) |
-            (offset < 0x1fc00f00UL ? 0x1fc00ed8UL : 0x1fc00f1cUL);
+            (offset < 0x1fc00f00UL ? 0x1fc00ed8UL : 0x1fc00f18UL);
         ulong exit = loopBase + 0x18UL;
         if (_memory.Read32(loopBase) != 0x8c650000U ||
             _memory.Read32(loopBase + 0x04UL) != 0xac450000U ||
@@ -1352,6 +1354,79 @@ internal sealed class MipsR5000Core
         _gpr[8] = 0;
         _gpr[9] = lastValue;
         Pc = tail;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownLoadedBootMemoryWalk(ulong pc)
+    {
+        const ulong loop = 0xffffffffa00f0880UL;
+        if (pc is < loop or > 0xffffffffa00f08e4UL)
+            return false;
+
+        if (pc >= 0xffffffffa00f08d4UL &&
+            _memory.Read32(loop + 0x38UL) == 0x0083082bU &&
+            _memory.Read32(loop + 0x3cUL) == 0x14200003U &&
+            _memory.Read32(loop + 0x54UL) == 0x24840004U &&
+            _memory.Read32(loop + 0x58UL) == 0x24a50004U &&
+            _memory.Read32(loop + 0x5cUL) == 0x24c6fffcU &&
+            _memory.Read32(loop + 0x60UL) == 0x14c0fff2U &&
+            unchecked((long)_gpr[6]) <= 0)
+        {
+            _memory.Write32(0xffffffffa0000034UL, (uint)_gpr[7]);
+            Pc = _gpr[16];
+            CompleteFastPathStep();
+            return true;
+        }
+
+        if (_memory.Read32(loop) != 0x40086000U ||
+            _memory.Read32(loop + 0x04UL) != 0x3c012000U ||
+            _memory.Read32(loop + 0x08UL) != 0x00812025U ||
+            _memory.Read32(loop + 0x0cUL) != 0x0080802dU ||
+            _memory.Read32(loop + 0x10UL) != 0x2401fffeU ||
+            _memory.Read32(loop + 0x14UL) != 0x01014024U ||
+            _memory.Read32(loop + 0x18UL) != 0x40886000U ||
+            _memory.Read32(loop + 0x1cUL) != 0x3c03a000U ||
+            _memory.Read32(loop + 0x20UL) != 0x34630400U ||
+            _memory.Read32(loop + 0x24UL) != 0x3c08a000U ||
+            _memory.Read32(loop + 0x28UL) != 0x350807ffU ||
+            _memory.Read32(loop + 0x2cUL) != 0x0104082bU ||
+            _memory.Read32(loop + 0x60UL) != 0x14c0fff2U)
+        {
+            return false;
+        }
+
+        ulong remaining = _gpr[6];
+        if (remaining == 0 || remaining > 0x01000000UL || (remaining & 3UL) != 0)
+            return false;
+
+        ulong destination = _gpr[4];
+        ulong source = _gpr[5];
+        ulong jumpTarget = _gpr[16];
+        if (!IsMainRamRange(source, remaining))
+            return false;
+
+        for (ulong offset = 0; offset < remaining; offset += 4UL)
+        {
+            ulong target = destination + offset;
+            uint target32 = (uint)target;
+            if (target32 is >= 0xa0000400U and <= 0xa00007ffU)
+                continue;
+            if (!IsMainRamRange(target, 4UL))
+                return false;
+
+            _memory.Write32(target, _memory.Read32(source + offset));
+        }
+
+        _gpr[1] = 0;
+        _gpr[2] = _memory.Read32(source + remaining - 4UL);
+        _gpr[3] = 0x00000000a0000400UL;
+        _gpr[4] = destination + remaining;
+        _gpr[5] = source + remaining;
+        _gpr[6] = 0;
+        _gpr[8] = 0x00000000a00007ffUL;
+        _memory.Write32(0xffffffffa0000034UL, (uint)_gpr[7]);
+        Pc = jumpTarget;
         CompleteFastPathStep();
         return true;
     }
@@ -2784,6 +2859,9 @@ internal sealed class MipsR5000Core
 
     private bool TryCompleteKnownRuntimeGenericQioWait(ulong pc)
     {
+        if (TryCompleteKnownRuntimeEarlyQioWait(pc))
+            return true;
+
         const ulong loadPc = 0xffffffff80022aa8UL;
         if (pc != loadPc && pc != 0xffffffff80022aacUL && pc != 0xffffffff80022ab0UL)
             return false;
@@ -2812,6 +2890,47 @@ internal sealed class MipsR5000Core
         Pc = loadPc + 0x0cUL;
         if (_traceRd0Home)
             Console.WriteLine($"[GAUNTDL:QIO] generic-wait-complete pc={pc:x16} object={_gpr[16]:x16} status={status:x8}");
+        return true;
+    }
+
+    private bool TryCompleteKnownRuntimeEarlyQioWait(ulong pc)
+    {
+        const ulong loadPc = 0xffffffff8004dba8UL;
+        if (pc != loadPc && pc != 0xffffffff8004dbacUL && pc != 0xffffffff8004dbb0UL)
+            return false;
+        if (_gpr[16] == 0 || !IsMainRamRange(_gpr[16], 0x40))
+            return false;
+        if (_memory.Read32(0xffffffff8004dba0UL) != 0x14400004U ||
+            _memory.Read32(0xffffffff8004dba8UL) != 0x8e020014U ||
+            _memory.Read32(0xffffffff8004dbacUL) != 0x1040fffeU)
+        {
+            return false;
+        }
+
+        uint handle = _memory.Read32(_gpr[16] + 0x0cUL);
+        uint callback = _memory.Read32(_gpr[16] + 0x38UL);
+        if (handle == uint.MaxValue ||
+            callback is not (0x800508a8U or 0x8004fde4U))
+        {
+            return false;
+        }
+
+        uint status = _memory.Read32(_gpr[16] + 0x14UL);
+        if (status == 0)
+        {
+            status = 0x3500U;
+            _memory.Write32(_gpr[16] + 0x14UL, status);
+        }
+
+        _gpr[2] = SignExtend32(status);
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 4UL);
+        _instructionCounter += 4UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = loadPc + 0x0cUL;
+        if (_traceRd0Home)
+            Console.WriteLine($"[GAUNTDL:QIO] early-wait-complete pc={pc:x16} object={_gpr[16]:x16} status={status:x8}");
         return true;
     }
 
@@ -6499,6 +6618,10 @@ internal sealed class MipsR5000Core
             case 0x0f: // floor.w.s
                 _fpr[fd] = unchecked((uint)(int)MathF.Floor(value));
                 break;
+            case 0x11: // movf.s/movt.s
+                if (GetCop1Condition() == ((ft & 1) != 0))
+                    _fpr[fd] = (uint)_fpr[fs];
+                break;
             case 0x20: // cvt.s.s
                 _fpr[fd] = (uint)_fpr[fs];
                 break;
@@ -6562,6 +6685,10 @@ internal sealed class MipsR5000Core
             case 0x0f: // floor.w.d
                 _fpr[fd] = unchecked((uint)(int)Math.Floor(value));
                 break;
+            case 0x11: // movf.d/movt.d
+                if (GetCop1Condition() == ((ft & 1) != 0))
+                    _fpr[fd] = _fpr[fs];
+                break;
             case 0x20: // cvt.s.d
                 _fpr[fd] = BitConverter.SingleToUInt32Bits((float)value);
                 break;
@@ -6590,6 +6717,12 @@ internal sealed class MipsR5000Core
     {
         const uint fcc0 = 1u << 23;
         _fcr[31] = condition ? _fcr[31] | fcc0 : _fcr[31] & ~fcc0;
+    }
+
+    private bool GetCop1Condition()
+    {
+        const uint fcc0 = 1u << 23;
+        return (_fcr[31] & fcc0) != 0;
     }
 
     private void ExecuteCop1WordFormat(ulong pc, uint op, int fs, int fd, uint funct)
