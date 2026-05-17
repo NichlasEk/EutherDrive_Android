@@ -240,15 +240,21 @@ public sealed class MameMusashi68Ec020
         }
         for (int op = 0x8000; op <= 0x8fff; op++)
         {
-            if (((op >> 6) & 7) <= 2 && IsDataAluSourceEffectiveAddress(op))
+            int opmode = (op >> 6) & 7;
+            if (opmode <= 2 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = DataRegisterAlu;
+            else if (opmode is >= 4 and <= 6 && IsMemoryAlterableEffectiveAddress(op))
+                _handlers[op] = RegisterToEffectiveAddressAlu;
         }
         for (int op = 0x9000; op <= 0x9fff; op++)
         {
-            if (((op >> 6) & 7) <= 2 && IsDataAluSourceEffectiveAddress(op))
+            int opmode = (op >> 6) & 7;
+            if (opmode <= 2 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = DataRegisterAlu;
+            else if (opmode is >= 4 and <= 6 && IsMemoryAlterableEffectiveAddress(op))
+                _handlers[op] = RegisterToEffectiveAddressAlu;
         }
-        for (int op = 0x90c0; op <= 0x91ff; op++)
+        for (int op = 0x90c0; op <= 0x9fff; op++)
         {
             if ((op & 0xf1c0) is 0x90c0 or 0x91c0 && IsAddressAluSourceEffectiveAddress(op))
                 _handlers[op] = AddSubAddress;
@@ -258,23 +264,31 @@ public sealed class MameMusashi68Ec020
             int opmode = (op >> 6) & 7;
             if (opmode <= 3 || opmode == 7)
                 _handlers[op] = Compare;
+            else if (opmode is >= 4 and <= 6 && IsDataAlterableEffectiveAddress(op))
+                _handlers[op] = RegisterToEffectiveAddressAlu;
         }
         for (int op = 0xc000; op <= 0xcfff; op++)
         {
-            if (((op >> 6) & 7) <= 2 && IsDataAluSourceEffectiveAddress(op))
+            int opmode = (op >> 6) & 7;
+            if (opmode <= 2 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = DataRegisterAlu;
+            else if (opmode is >= 4 and <= 6 && IsMemoryAlterableEffectiveAddress(op))
+                _handlers[op] = RegisterToEffectiveAddressAlu;
         }
-        for (int op = 0xc0c0; op <= 0xc1ff; op++)
+        for (int op = 0xc0c0; op <= 0xcfff; op++)
         {
             if ((op & 0xf1c0) is 0xc0c0 or 0xc1c0 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = MultiplyWord;
         }
         for (int op = 0xd000; op <= 0xdfff; op++)
         {
-            if (((op >> 6) & 7) <= 2 && IsDataAluSourceEffectiveAddress(op))
+            int opmode = (op >> 6) & 7;
+            if (opmode <= 2 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = DataRegisterAlu;
+            else if (opmode is >= 4 and <= 6 && IsMemoryAlterableEffectiveAddress(op))
+                _handlers[op] = RegisterToEffectiveAddressAlu;
         }
-        for (int op = 0xd0c0; op <= 0xd1ff; op++)
+        for (int op = 0xd0c0; op <= 0xdfff; op++)
         {
             if ((op & 0xf1c0) is 0xd0c0 or 0xd1c0 && IsAddressAluSourceEffectiveAddress(op))
                 _handlers[op] = AddSubAddress;
@@ -284,6 +298,10 @@ public sealed class MameMusashi68Ec020
             if ((op & 0x00c0) != 0x00c0)
                 _handlers[op] = ShiftRotateRegister;
         }
+        for (int op = 0xa000; op <= 0xafff; op++)
+            _handlers[op] = Line1010;
+        for (int op = 0xf000; op <= 0xffff; op++)
+            _handlers[op] = Line1111;
         for (int op = 0x6000; op <= 0x6fff; op += 0x0100)
         {
             for (int low = 0; low <= 0xff; low++)
@@ -888,6 +906,55 @@ public sealed class MameMusashi68Ec020
         _lastCycles = _cycles[_ir];
     }
 
+    private void RegisterToEffectiveAddressAlu()
+    {
+        OpSize size = ((_ir >> 6) & 3) switch
+        {
+            0 => OpSize.Byte,
+            1 => OpSize.Word,
+            _ => OpSize.Long
+        };
+        int register = (_ir >> 9) & 7;
+        int ea = _ir & 0x3f;
+        uint source = ReadDataRegister(register, size);
+        uint dest = ReadAlterableEaForModify(ea, size, out uint address, out bool writeRegister);
+        uint mask = MaskForSize(size);
+        uint result;
+
+        switch (_ir & 0xf000)
+        {
+            case 0x8000:
+                result = (dest | source) & mask;
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
+                SetLogicFlags(size, result);
+                break;
+            case 0x9000:
+                result = unchecked(dest - source) & mask;
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
+                SetAddSubFlags(size, source, dest, result, subtract: true);
+                break;
+            case 0xb000:
+                result = (dest ^ source) & mask;
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
+                SetLogicFlags(size, result);
+                break;
+            case 0xc000:
+                result = (dest & source) & mask;
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
+                SetLogicFlags(size, result);
+                break;
+            case 0xd000:
+                result = unchecked(dest + source) & mask;
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
+                SetAddSubFlags(size, source, dest, result, subtract: false);
+                break;
+            default:
+                throw new InvalidOperationException($"Invalid register-to-EA ALU opcode 0x{_ir:X4}.");
+        }
+
+        _lastCycles = _cycles[_ir];
+    }
+
     private void MultiplyLong()
     {
         ushort extension = ReadImmediateWord();
@@ -1256,6 +1323,18 @@ public sealed class MameMusashi68Ec020
         _lastCycles = 34;
     }
 
+    private void Line1010()
+    {
+        ExceptionVector(10, _ppc);
+        _lastCycles = 20;
+    }
+
+    private void Line1111()
+    {
+        ExceptionVector(11, _ppc);
+        _lastCycles = 20;
+    }
+
     private uint ResolveControlEa(int ea)
     {
         int mode = (ea >> 3) & 7;
@@ -1308,6 +1387,22 @@ public sealed class MameMusashi68Ec020
         int mode = (ea >> 3) & 7;
         int reg = ea & 7;
         return mode != 1 && (mode < 7 || reg <= 4);
+    }
+
+    private static bool IsMemoryAlterableEffectiveAddress(int opcode)
+    {
+        int ea = opcode & 0x3f;
+        int mode = (ea >> 3) & 7;
+        int reg = ea & 7;
+        return mode is >= 2 and <= 6 || (mode == 7 && reg <= 1);
+    }
+
+    private static bool IsDataAlterableEffectiveAddress(int opcode)
+    {
+        int ea = opcode & 0x3f;
+        int mode = (ea >> 3) & 7;
+        int reg = ea & 7;
+        return mode == 0 || mode is >= 2 and <= 6 || (mode == 7 && reg <= 1);
     }
 
     private static bool IsAddressAluSourceEffectiveAddress(int opcode)
@@ -1449,6 +1544,49 @@ public sealed class MameMusashi68Ec020
             default:
                 throw new InvalidOperationException($"Unsupported write EA mode {mode}/{reg} for opcode 0x{_ir:X4}.");
         }
+    }
+
+    private uint ReadAlterableEaForModify(int ea, OpSize size, out uint address, out bool writeRegister)
+    {
+        int mode = (ea >> 3) & 7;
+        int reg = ea & 7;
+        writeRegister = mode == 0;
+        address = 0;
+
+        if (writeRegister)
+            return ReadDataRegister(reg, size);
+
+        address = mode switch
+        {
+            2 => _a[reg],
+            3 => _a[reg],
+            4 => (_a[reg] - EaStep(reg, size)) & 0x00ff_ffffu,
+            5 => unchecked(_a[reg] + (uint)(short)ReadImmediateWord()),
+            6 => GetBriefIndexedAddress(_a[reg]),
+            7 when reg == 0 => unchecked((uint)(short)ReadImmediateWord()),
+            7 when reg == 1 => ReadImmediateLong(),
+            _ => throw new InvalidOperationException($"Unsupported modify EA mode {mode}/{reg} for opcode 0x{_ir:X4}.")
+        };
+
+        if (mode == 4)
+            _a[reg] = address;
+
+        return ReadMemory(address, size);
+    }
+
+    private void WriteAlterableEaForModify(int ea, OpSize size, uint value, uint address, bool writeRegister)
+    {
+        int mode = (ea >> 3) & 7;
+        int reg = ea & 7;
+        if (writeRegister)
+        {
+            WriteDataRegister(reg, size, value);
+            return;
+        }
+
+        WriteMemory(address, size, value);
+        if (mode == 3)
+            _a[reg] = (_a[reg] + EaStep(reg, size)) & 0x00ff_ffffu;
     }
 
     private uint ReadDataRegister(int reg, OpSize size)
