@@ -243,6 +243,8 @@ public sealed class MameMusashi68Ec020
             int opmode = (op >> 6) & 7;
             if (opmode <= 2 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = DataRegisterAlu;
+            else if (opmode is 3 or 7 && IsDataAluSourceEffectiveAddress(op))
+                _handlers[op] = DivideWord;
             else if (opmode is >= 4 and <= 6 && IsMemoryAlterableEffectiveAddress(op))
                 _handlers[op] = RegisterToEffectiveAddressAlu;
         }
@@ -272,6 +274,8 @@ public sealed class MameMusashi68Ec020
             int opmode = (op >> 6) & 7;
             if (opmode <= 2 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = DataRegisterAlu;
+            else if (opmode is 3 or 7 && IsDataAluSourceEffectiveAddress(op))
+                _handlers[op] = MultiplyWord;
             else if (opmode is >= 4 and <= 6 && IsMemoryAlterableEffectiveAddress(op))
                 _handlers[op] = RegisterToEffectiveAddressAlu;
         }
@@ -330,15 +334,31 @@ public sealed class MameMusashi68Ec020
 
         for (int op = 0x4840; op <= 0x4847; op++)
             _handlers[op] = Swap;
+        for (int op = 0x4840; op <= 0x487f; op++)
+        {
+            if (IsControlEffectiveAddress(op))
+                _handlers[op] = Pea;
+        }
+        for (int op = 0x4808; op <= 0x480f; op++)
+            _handlers[op] = LinkLong;
         for (int op = 0x4880; op <= 0x4887; op++)
             _handlers[op] = ExtWord;
         for (int op = 0x48c0; op <= 0x48c7; op++)
             _handlers[op] = ExtLong;
         for (int op = 0x49c0; op <= 0x49c7; op++)
             _handlers[op] = ExtByteLong;
+        for (int op = 0x4880; op <= 0x4cff; op++)
+        {
+            if ((op & 0xfb80) == 0x4880 && IsMovemEffectiveAddress(op))
+                _handlers[op] = Movem;
+        }
 
         for (int op = 0x4e40; op <= 0x4e4f; op++)
             _handlers[op] = Trap;
+        for (int op = 0x4e50; op <= 0x4e57; op++)
+            _handlers[op] = LinkWord;
+        for (int op = 0x4e58; op <= 0x4e5f; op++)
+            _handlers[op] = Unlink;
         for (int op = 0x4e80; op <= 0x4ebf; op++)
             _handlers[op] = Jsr;
         for (int op = 0x4ec0; op <= 0x4eff; op++)
@@ -821,40 +841,46 @@ public sealed class MameMusashi68Ec020
             _ => ReadImmediateLong()
         };
         int ea = _ir & 0x3f;
-        uint dest = ReadEa(ea, size);
         uint mask = MaskForSize(size);
+
+        if ((_ir & 0xff00) == 0x0c00)
+        {
+            uint compareDest = ReadEa(ea, size);
+            uint compareResult = unchecked(compareDest - source) & mask;
+            SetCompareFlags(size, source, compareDest, compareResult);
+            _lastCycles = _cycles[_ir];
+            return;
+        }
+
+        uint dest = ReadAlterableEaForModify(ea, size, out uint address, out bool writeRegister);
         uint result;
 
         switch (_ir & 0xff00)
         {
             case 0x0000:
                 result = (dest | source) & mask;
-                WriteEa(ea, size, result);
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
                 SetLogicFlags(size, result);
                 break;
             case 0x0200:
                 result = (dest & source) & mask;
-                WriteEa(ea, size, result);
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
                 SetLogicFlags(size, result);
                 break;
             case 0x0400:
                 result = unchecked(dest - source) & mask;
-                WriteEa(ea, size, result);
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
                 SetAddSubFlags(size, source, dest, result, subtract: true);
                 break;
             case 0x0600:
                 result = unchecked(dest + source) & mask;
-                WriteEa(ea, size, result);
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
                 SetAddSubFlags(size, source, dest, result, subtract: false);
                 break;
             case 0x0a00:
                 result = (dest ^ source) & mask;
-                WriteEa(ea, size, result);
+                WriteAlterableEaForModify(ea, size, result, address, writeRegister);
                 SetLogicFlags(size, result);
-                break;
-            case 0x0c00:
-                result = unchecked(dest - source) & mask;
-                SetCompareFlags(size, source, dest, result);
                 break;
             default:
                 throw new InvalidOperationException($"Invalid immediate operation opcode 0x{_ir:X4}.");
@@ -904,6 +930,60 @@ public sealed class MameMusashi68Ec020
         }
 
         _lastCycles = _cycles[_ir];
+    }
+
+    private void DivideWord()
+    {
+        int register = (_ir >> 9) & 7;
+        bool signed = ((_ir >> 6) & 7) == 7;
+        uint sourceRaw = ReadEa(_ir & 0x3f, OpSize.Word) & 0xffffu;
+        if (sourceRaw == 0)
+        {
+            ExceptionVector(5, _ppc);
+            _lastCycles = 38;
+            return;
+        }
+
+        if (signed)
+        {
+            int dividend = unchecked((int)_d[register]);
+            int divisor = (short)sourceRaw;
+            int quotient = dividend / divisor;
+            int remainder = dividend % divisor;
+            SetC(false);
+            if (quotient < short.MinValue || quotient > short.MaxValue)
+            {
+                SetV(true);
+                _lastCycles = 158;
+                return;
+            }
+
+            uint quotientWord = (uint)(ushort)quotient;
+            _d[register] = ((uint)(ushort)remainder << 16) | quotientWord;
+            SetN((quotientWord & 0x8000u) != 0);
+            SetZ((quotientWord & 0xffffu) == 0);
+            SetV(false);
+        }
+        else
+        {
+            uint dividend = _d[register];
+            uint quotient = dividend / sourceRaw;
+            uint remainder = dividend % sourceRaw;
+            SetC(false);
+            if (quotient > 0xffffu)
+            {
+                SetV(true);
+                _lastCycles = 140;
+                return;
+            }
+
+            _d[register] = (remainder << 16) | (quotient & 0xffffu);
+            SetN((quotient & 0x8000u) != 0);
+            SetZ((quotient & 0xffffu) == 0);
+            SetV(false);
+        }
+
+        _lastCycles = 140;
     }
 
     private void RegisterToEffectiveAddressAlu()
@@ -1281,6 +1361,38 @@ public sealed class MameMusashi68Ec020
         _lastCycles = 16;
     }
 
+    private void Pea()
+    {
+        PushLong(ResolveControlEa(_ir & 0x3f));
+        _lastCycles = _cycles[_ir];
+    }
+
+    private void LinkWord()
+    {
+        int register = _ir & 7;
+        PushLong(_a[register]);
+        _a[register] = _a[7] & 0x00ff_ffffu;
+        _a[7] = unchecked(_a[7] + (uint)(int)(short)ReadImmediateWord()) & 0x00ff_ffffu;
+        _lastCycles = _cycles[_ir];
+    }
+
+    private void LinkLong()
+    {
+        int register = _ir & 7;
+        PushLong(_a[register]);
+        _a[register] = _a[7] & 0x00ff_ffffu;
+        _a[7] = unchecked(_a[7] + ReadImmediateLong()) & 0x00ff_ffffu;
+        _lastCycles = _cycles[_ir];
+    }
+
+    private void Unlink()
+    {
+        int register = _ir & 7;
+        _a[7] = _a[register] & 0x00ff_ffffu;
+        _a[register] = PopLong() & 0x00ff_ffffu;
+        _lastCycles = _cycles[_ir];
+    }
+
     private void Trapv()
     {
         if (V)
@@ -1299,7 +1411,7 @@ public sealed class MameMusashi68Ec020
     private void Trap()
     {
         uint vector = ExceptionTrapBase + (uint)(_ir & 0x0f);
-        ExceptionTrapFrame(vector, _pc, _ppc);
+        ExceptionVector(vector, _pc);
         _lastCycles = 38;
     }
 
@@ -1395,6 +1507,14 @@ public sealed class MameMusashi68Ec020
         int mode = (ea >> 3) & 7;
         int reg = ea & 7;
         return mode is >= 2 and <= 6 || (mode == 7 && reg <= 1);
+    }
+
+    private static bool IsControlEffectiveAddress(int opcode)
+    {
+        int ea = opcode & 0x3f;
+        int mode = (ea >> 3) & 7;
+        int reg = ea & 7;
+        return mode is 2 or 5 or 6 || (mode == 7 && reg <= 3);
     }
 
     private static bool IsDataAlterableEffectiveAddress(int opcode)
