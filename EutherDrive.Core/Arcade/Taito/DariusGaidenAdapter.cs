@@ -54,7 +54,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly int TraceTaskCreateFromFrame = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE_FROM_FRAME", 0);
     private static readonly int CpuScale = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_CPU_SCALE", 1), 1, 32);
     private static readonly int RenderDivisor = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_DIVISOR", 1), 1, 8);
-    private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") == "1";
+    private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") != "0";
     private static readonly long TargetFrameTicks = Math.Max(1, (long)(Stopwatch.Frequency / TargetFps));
 
     private static readonly HashSet<string> SupportedDrivers = new(StringComparer.OrdinalIgnoreCase)
