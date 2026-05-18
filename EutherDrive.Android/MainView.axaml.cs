@@ -1431,7 +1431,8 @@ public partial class MainView : UserControl
         _emulationThread = new Thread(() => EmulationLoop(core))
         {
             IsBackground = true,
-            Name = "EutherDrive.Android.Emulation"
+            Name = "EutherDrive.Android.Emulation",
+            Priority = ThreadPriority.BelowNormal
         };
         _emulationThread.Start();
     }
@@ -1472,6 +1473,11 @@ public partial class MainView : UserControl
             if (nextFrameTicks < nowTicks - frameTicks)
             {
                 nextFrameTicks = nowTicks;
+            }
+
+            if (nextFrameTicks <= nowTicks)
+            {
+                Thread.Yield();
             }
 
             SleepUntil(nextFrameTicks);
@@ -1768,23 +1774,7 @@ public partial class MainView : UserControl
     {
         try
         {
-            while (true)
-            {
-                PresentLatestFrame();
-
-                long latestSerial;
-                long presentedSerial;
-                lock (_frameSync)
-                {
-                    latestSerial = _latestFrameSerial;
-                    presentedSerial = _presentedFrameSerial;
-                }
-
-                if (latestSerial == presentedSerial)
-                {
-                    break;
-                }
-            }
+            PresentLatestFrame();
         }
         finally
         {
