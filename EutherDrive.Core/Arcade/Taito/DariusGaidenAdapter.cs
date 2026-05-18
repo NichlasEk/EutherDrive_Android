@@ -3393,29 +3393,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private static int DecodeSpritePixel(TaitoF3RomSet roms, int code, int x, int y)
     {
-        int elements = roms.Sprites.Length / (16 * 8);
+        int elements = roms.SpritePixels.Length / 0x100;
         if (elements <= 0)
             return 0;
 
         code %= elements;
-        int lowOffset = code * 16 * 8 + y * 8 + (x >> 1);
-        if ((uint)lowOffset >= (uint)roms.Sprites.Length)
-            return 0;
-
-        byte packed = roms.Sprites[lowOffset];
-        int low = DecodeMamePackedLsbNibble(packed, x);
-        int highBitOffset = code * 16 * 16 * 2 + y * 16 * 2 + SpriteHiXBitOffset(x);
-        int highOffset = highBitOffset >> 3;
-        if ((uint)highOffset >= (uint)roms.SpritesHi.Length)
-            return low;
-
-        int bit = 7 - (highBitOffset & 7);
-        int hi0 = (roms.SpritesHi[highOffset] >> bit) & 1;
-        int hi1 = 0;
-        int highOffset1 = (highBitOffset + 1) >> 3;
-        if ((uint)highOffset1 < (uint)roms.SpritesHi.Length)
-            hi1 = (roms.SpritesHi[highOffset1] >> (7 - ((highBitOffset + 1) & 7))) & 1;
-        return low | (hi0 << 4) | (hi1 << 5);
+        return roms.SpritePixels[(code << 8) | ((y & 0x0f) << 4) | (x & 0x0f)];
     }
 
     private static int SpriteHiXBitOffset(int x)
@@ -3669,14 +3652,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private static int DecodeTilemapPixel(TaitoF3RomSet roms, int code, int x, int y, int penMask)
     {
-        int elements = roms.Tilemap.Length / (16 * 8);
+        int elements = roms.TilemapPixels.Length / 0x100;
         if (elements <= 0)
             return 0;
 
         code %= elements;
-        int pen = DecodePacked4BppTilePixel(roms.Tilemap, code, x, y);
-        pen |= DecodeTilemapHighPlanes(roms.TilemapHi, code, x, y);
-        return pen & penMask;
+        return roms.TilemapPixels[(code << 8) | ((y & 0x0f) << 4) | (x & 0x0f)] & penMask;
     }
 
     private static int DecodePacked4BppTilePixel(byte[] rom, int code, int x, int y)
@@ -4107,8 +4088,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public byte[] SoundCpu { get; private init; } = Array.Empty<byte>();
         public byte[] Sprites { get; private init; } = Array.Empty<byte>();
         public byte[] SpritesHi { get; private init; } = Array.Empty<byte>();
+        public byte[] SpritePixels { get; private init; } = Array.Empty<byte>();
         public byte[] Tilemap { get; private init; } = Array.Empty<byte>();
         public byte[] TilemapHi { get; private init; } = Array.Empty<byte>();
+        public byte[] TilemapPixels { get; private init; } = Array.Empty<byte>();
         public byte[] Ensoniq { get; private init; } = Array.Empty<byte>();
 
         public static TaitoF3RomSet Load(string path)
@@ -4136,16 +4119,74 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             Load16Byte(entries, ensoniq, "d87-01.bin", 0);
             Load16Byte(entries, ensoniq, "d87-02.bin", 0x400000);
 
+            byte[] spritesHi = entries["d87-05.bin"];
+            byte[] tilemapHi = entries["d87-08.bin"];
+
             return new TaitoF3RomSet
             {
                 MainCpu = main,
                 SoundCpu = sound,
                 Sprites = sprites,
-                SpritesHi = entries["d87-05.bin"],
+                SpritesHi = spritesHi,
+                SpritePixels = BuildSpritePixelCache(sprites, spritesHi),
                 Tilemap = tilemap,
-                TilemapHi = entries["d87-08.bin"],
+                TilemapHi = tilemapHi,
+                TilemapPixels = BuildTilemapPixelCache(tilemap, tilemapHi),
                 Ensoniq = ensoniq
             };
+        }
+
+        private static byte[] BuildSpritePixelCache(byte[] lowPlanes, byte[] highPlanes)
+        {
+            int elements = lowPlanes.Length / (16 * 8);
+            byte[] pixels = new byte[elements * 0x100];
+            for (int code = 0; code < elements; code++)
+            {
+                int tileBase = code << 8;
+                for (int y = 0; y < 16; y++)
+                {
+                    for (int x = 0; x < 16; x++)
+                    {
+                        int lowOffset = code * 16 * 8 + y * 8 + (x >> 1);
+                        byte packed = lowOffset < lowPlanes.Length ? lowPlanes[lowOffset] : (byte)0;
+                        int pen = DecodeMamePackedLsbNibble(packed, x);
+                        int highBitOffset = code * 16 * 16 * 2 + y * 16 * 2 + SpriteHiXBitOffset(x);
+                        int highOffset0 = highBitOffset >> 3;
+                        if ((uint)highOffset0 < (uint)highPlanes.Length)
+                        {
+                            pen |= ((highPlanes[highOffset0] >> (7 - (highBitOffset & 7))) & 1) << 4;
+                            int highOffset1 = (highBitOffset + 1) >> 3;
+                            if ((uint)highOffset1 < (uint)highPlanes.Length)
+                                pen |= ((highPlanes[highOffset1] >> (7 - ((highBitOffset + 1) & 7))) & 1) << 5;
+                        }
+
+                        pixels[tileBase | (y << 4) | x] = (byte)pen;
+                    }
+                }
+            }
+
+            return pixels;
+        }
+
+        private static byte[] BuildTilemapPixelCache(byte[] lowPlanes, byte[] highPlanes)
+        {
+            int elements = lowPlanes.Length / (16 * 8);
+            byte[] pixels = new byte[elements * 0x100];
+            for (int code = 0; code < elements; code++)
+            {
+                int tileBase = code << 8;
+                for (int y = 0; y < 16; y++)
+                {
+                    for (int x = 0; x < 16; x++)
+                    {
+                        int pen = DecodePacked4BppTilePixel(lowPlanes, code, x, y);
+                        pen |= DecodeTilemapHighPlanes(highPlanes, code, x, y);
+                        pixels[tileBase | (y << 4) | x] = (byte)pen;
+                    }
+                }
+            }
+
+            return pixels;
         }
 
         private static Dictionary<string, byte[]> ReadArchive(string path)
