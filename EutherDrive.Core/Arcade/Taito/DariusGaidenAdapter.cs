@@ -1,5 +1,6 @@
 namespace EutherDrive.Core.Arcade.Taito;
 
+using System.Diagnostics;
 using System.Globalization;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.Cpu.MameMusashi;
@@ -53,6 +54,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly int TraceTaskCreateFromFrame = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE_FROM_FRAME", 0);
     private static readonly int CpuScale = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_CPU_SCALE", 1), 1, 32);
     private static readonly int RenderDivisor = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_DIVISOR", 1), 1, 8);
+    private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") != "0";
+    private static readonly long TargetFrameTicks = Math.Max(1, (long)(Stopwatch.Frequency / TargetFps));
 
     private static readonly HashSet<string> SupportedDrivers = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -107,6 +110,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private long _frameCounter;
     private bool _loaded;
     private bool _cpuFaulted;
+    private int _adaptiveRenderSkipsRemaining;
     private string _lastStopReason = "idle";
     private uint _lastRecoveredInvalidPc;
     private uint _lastPcBeforeRecoveredInvalidPc;
@@ -404,6 +408,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _mainCpu.Reset(_bus);
         _loaded = true;
         _cpuFaulted = false;
+        _adaptiveRenderSkipsRemaining = 0;
         _hasPresentFrame = false;
         _frameCounter = 0;
         _executedInstructions = 0;
@@ -480,6 +485,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (!_loaded)
             return;
 
+        long frameStartTicks = AdaptiveRenderPacing && RenderDivisor <= 1
+            ? Stopwatch.GetTimestamp()
+            : 0;
         _frameCounter++;
         _bus.BeginFrameInterrupt();
         if (!UseNativeF3TrapScheduler && _f3TasksEnqueued == 0)
@@ -616,10 +624,34 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _bus.RefreshInputLatches();
         if (ShouldRenderThisFrame())
             RenderUglyVideo();
+
+        if (frameStartTicks != 0)
+            UpdateAdaptiveRenderPacing(Stopwatch.GetTimestamp() - frameStartTicks);
     }
 
     private bool ShouldRenderThisFrame()
-        => RenderDivisor <= 1 || _frameCounter <= 3 || (_frameCounter % RenderDivisor) == 0;
+    {
+        if (RenderDivisor > 1 && _frameCounter > 3 && (_frameCounter % RenderDivisor) != 0)
+            return false;
+
+        if (AdaptiveRenderPacing && RenderDivisor <= 1 && _adaptiveRenderSkipsRemaining > 0 && _hasPresentFrame)
+        {
+            _adaptiveRenderSkipsRemaining--;
+            return false;
+        }
+
+        return true;
+    }
+
+    private void UpdateAdaptiveRenderPacing(long elapsedTicks)
+    {
+        if (!_hasPresentFrame)
+            return;
+
+        long highWaterTicks = TargetFrameTicks + (TargetFrameTicks / 10);
+        if (elapsedTicks > highWaterTicks)
+            _adaptiveRenderSkipsRemaining = 1;
+    }
 
     private void SoftResetF3Machine(string reason)
     {
