@@ -98,6 +98,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly byte[] _mixDstBlendMode = new byte[FrameWidth * FrameHeight];
     private readonly ushort[] _spriteReefPalette = new ushort[FrameWidth * FrameHeight];
     private readonly byte[] _spriteReefGroup = new byte[FrameWidth * FrameHeight];
+    private readonly List<int> _spriteReefOffsets = new(FrameWidth * FrameHeight / 4);
+    private readonly ushort[] _playfieldLineAttrCache = new ushort[32];
+    private readonly ushort[] _playfieldLineCodeCache = new ushort[32];
     private readonly uint[] _paletteColorCache = new uint[0x2000];
     private readonly int[] _paletteColorCacheStamp = new int[0x2000];
     private int _paletteColorCacheFrame;
@@ -478,6 +481,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _latchedSprites.Clear();
         Array.Clear(_spriteReefPalette);
         Array.Clear(_spriteReefGroup);
+        _spriteReefOffsets.Clear();
     }
 
     public void RunFrame()
@@ -2647,6 +2651,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int lineRegFxX = regSx + line.PlayfieldRowScroll[lineRamLayer] + (10 * (line.PlayfieldXScale[lineRamLayer] - 0x100));
         int layerWordBase = tilemap * 0x800;
         ushort layerMixValue = line.PlayfieldMix[lineRamLayer];
+        int tileRowWordBase = layerWordBase + tileY * mapTiles * 2;
+        for (int tileX = 0; tileX < mapTiles; tileX++)
+        {
+            int entry = tileRowWordBase + tileX * 2;
+            _playfieldLineAttrCache[tileX] = _bus.ReadPlayfieldWord(entry);
+            _playfieldLineCodeCache[tileX] = _bus.ReadPlayfieldWord(entry + 1);
+        }
+
         for (int screenX = 0; screenX < FrameWidth; screenX++)
         {
             if (!IsMameClipAllowed(screenLine, layerMixValue, screenX + VisibleAreaMinX))
@@ -2655,9 +2667,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             int sourceX = (((lineRegFxX + (screenX * line.PlayfieldXScale[lineRamLayer])) >> 8) + VisibleAreaMinX) & 0x01ff;
             int tileX = sourceX / tileSize;
             int pixelX = sourceX & 15;
-            int entry = layerWordBase + (tileY * mapTiles + tileX) * 2;
-            ushort attr = _bus.ReadPlayfieldWord(entry);
-            ushort code = _bus.ReadPlayfieldWord(entry + 1);
+            ushort attr = _playfieldLineAttrCache[tileX];
+            ushort code = _playfieldLineCodeCache[tileX];
             if ((attr | code) == 0)
                 continue;
             if (RenderStats)
@@ -2909,10 +2920,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastSpritePixels = 0;
 
         if (!_spriteTrails)
-        {
-            Array.Clear(_spriteReefPalette);
-            Array.Clear(_spriteReefGroup);
-        }
+            ClearSpriteReefForNextFrame();
 
         int drawnSpriteCount = _latchedSprites.Count;
         bool drewIntoReef = false;
@@ -3092,58 +3100,93 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _lastSpriteMixDisabled = 0;
             _lastSpriteMixClipped = 0;
         }
+
+        if (_spriteReefOffsets.Count != 0)
+        {
+            for (int i = 0; i < _spriteReefOffsets.Count; i++)
+                drewAny |= RenderSpriteReefPixel(_spriteReefOffsets[i]);
+            return drewAny;
+        }
+
         for (int y = 0; y < FrameHeight; y++)
         {
-            int screenY = y + VisibleAreaMinY;
             int row = y * FrameWidth;
             for (int x = 0; x < FrameWidth; x++)
             {
-                ushort paletteIndex = _spriteReefPalette[row + x];
-                if (paletteIndex == 0)
-                    continue;
-
-                int spriteGroup = _spriteReefGroup[row + x];
-                if (!TryReadSpriteCurrentState(screenY, spriteGroup, out int spritePriority, out int spriteBlendMode, out bool spriteBlendSelect))
-                {
-                    if (RenderStats)
-                        _lastSpriteMixDisabled++;
-                    continue;
-                }
-                ushort spriteMix = _lineStates[screenY & 0xff].SpriteMix[spriteGroup & 3];
-                if (!IsMameClipAllowed(screenY, spriteMix, x + VisibleAreaMinX))
-                {
-                    if (RenderStats)
-                        _lastSpriteMixClipped++;
-                    continue;
-                }
-
-                byte spriteRank = GetSpriteLayerRank(spriteGroup);
-                int priorityOffset = row + x;
-                if (spriteBlendMode == _mixSrcBlendMode[priorityOffset])
-                {
-                    if (RenderStats)
-                        _lastSpriteMixSameBlend++;
-                    continue;
-                }
-
-                if (RenderStats)
-                {
-                    int currentSourcePriority = _mixSrcPriority[priorityOffset];
-                    if (spritePriority > currentSourcePriority
-                        || spritePriority == currentSourcePriority && spriteRank < _framePriorityRank[priorityOffset])
-                        _lastSpriteMixSource++;
-                    else if (spritePriority >= _mixDstPriority[priorityOffset])
-                        _lastSpriteMixDest++;
-                    else
-                        _lastSpriteMixBehind++;
-                }
-
-                WritePalettePixel(x, y, paletteIndex, spritePriority, spriteRank, spriteBlendMode, spriteBlendSelect);
-                drewAny = true;
+                int offset = row + x;
+                if (_spriteReefPalette[offset] != 0)
+                    drewAny |= RenderSpriteReefPixel(offset);
             }
         }
 
         return drewAny;
+    }
+
+    private bool RenderSpriteReefPixel(int offset)
+    {
+        ushort paletteIndex = _spriteReefPalette[offset];
+        if (paletteIndex == 0)
+            return false;
+
+        int y = offset / FrameWidth;
+        int x = offset - y * FrameWidth;
+        int screenY = y + VisibleAreaMinY;
+        int spriteGroup = _spriteReefGroup[offset];
+        if (!TryReadSpriteCurrentState(screenY, spriteGroup, out int spritePriority, out int spriteBlendMode, out bool spriteBlendSelect))
+        {
+            if (RenderStats)
+                _lastSpriteMixDisabled++;
+            return false;
+        }
+
+        ushort spriteMix = _lineStates[screenY & 0xff].SpriteMix[spriteGroup & 3];
+        if (!IsMameClipAllowed(screenY, spriteMix, x + VisibleAreaMinX))
+        {
+            if (RenderStats)
+                _lastSpriteMixClipped++;
+            return false;
+        }
+
+        byte spriteRank = GetSpriteLayerRank(spriteGroup);
+        if (spriteBlendMode == _mixSrcBlendMode[offset])
+        {
+            if (RenderStats)
+                _lastSpriteMixSameBlend++;
+            return false;
+        }
+
+        if (RenderStats)
+        {
+            int currentSourcePriority = _mixSrcPriority[offset];
+            if (spritePriority > currentSourcePriority
+                || spritePriority == currentSourcePriority && spriteRank < _framePriorityRank[offset])
+                _lastSpriteMixSource++;
+            else if (spritePriority >= _mixDstPriority[offset])
+                _lastSpriteMixDest++;
+            else
+                _lastSpriteMixBehind++;
+        }
+
+        WritePalettePixel(x, y, paletteIndex, spritePriority, spriteRank, spriteBlendMode, spriteBlendSelect);
+        return true;
+    }
+
+    private void ClearSpriteReefForNextFrame()
+    {
+        if (_spriteReefOffsets.Count == 0)
+        {
+            Array.Clear(_spriteReefPalette);
+            Array.Clear(_spriteReefGroup);
+            return;
+        }
+
+        for (int i = 0; i < _spriteReefOffsets.Count; i++)
+        {
+            int offset = _spriteReefOffsets[i];
+            _spriteReefPalette[offset] = 0;
+            _spriteReefGroup[offset] = 0;
+        }
+        _spriteReefOffsets.Clear();
     }
 
     private bool TryReadSpriteCurrentState(int screenY, int spriteGroup, out int priority, out int blendMode, out bool blendSelect)
@@ -3382,6 +3425,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
                 _spriteReefPalette[reefOffset] = (ushort)(0x1000 + ((sprite.Color << 4) | pen));
                 _spriteReefGroup[reefOffset] = (byte)((sprite.Color >> 6) & 3);
+                _spriteReefOffsets.Add(reefOffset);
                 if (RenderStats)
                     _lastSpritePixels++;
                 drewAny = true;
