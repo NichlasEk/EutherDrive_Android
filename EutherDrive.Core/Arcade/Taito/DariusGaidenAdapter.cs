@@ -39,7 +39,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private const uint F3SchedulerA5 = F3WorkRamBase + 0x8000;
 
     private static readonly bool Trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE") == "1";
-    private static readonly bool UseNativeF3TrapScheduler = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_NATIVE_TRAPS") == "1";
+    private static readonly bool UseNativeF3TrapScheduler = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_NATIVE_TRAPS") != "0";
     private static readonly bool TraceBootPc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_BOOT_PC") == "1";
     private static readonly bool TraceSceneCopyPc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_SCENE_COPY_PC") == "1";
     private static readonly bool TraceTaskCreatePc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE") == "1";

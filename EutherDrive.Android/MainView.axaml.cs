@@ -53,6 +53,8 @@ public partial class MainView : UserControl
     private readonly HashSet<string> _pressedActions = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _nativePressedDirections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _nativePressedActions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _keyboardPressedDirections = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _keyboardPressedActions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<IPointer, HashSet<string>> _dpadPointerDirections = new();
     private readonly Dictionary<IPointer, double> _dpadPointerIntensity = new();
     private readonly Dictionary<IPointer, string> _directionPointers = new();
@@ -147,7 +149,97 @@ public partial class MainView : UserControl
         _viewModel.SettingsHint = "Small BIOS/chip files are imported into app storage. Large disc images are intentionally not cached here.";
         SettingsAboutZuulView.SetActive(false);
         SizeChanged += OnViewSizeChanged;
+        Focusable = true;
+        KeyDown += OnKeyboardKeyDown;
+        KeyUp += OnKeyboardKeyUp;
+        PointerPressed += OnMainPointerPressed;
+        AttachedToVisualTree += (_, _) => Focus();
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+    }
+
+    private void OnMainPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        Focus();
+    }
+
+    private void OnKeyboardKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (SetKeyboardInput(e.Key, pressed: true))
+            e.Handled = true;
+    }
+
+    private void OnKeyboardKeyUp(object? sender, KeyEventArgs e)
+    {
+        if (SetKeyboardInput(e.Key, pressed: false))
+            e.Handled = true;
+    }
+
+    private bool SetKeyboardInput(Key key, bool pressed)
+    {
+        string? direction = key switch
+        {
+            Key.Up or Key.W => "Up",
+            Key.Down or Key.S => "Down",
+            Key.Left or Key.A => "Left",
+            Key.Right or Key.D => "Right",
+            _ => null
+        };
+
+        if (direction != null)
+        {
+            lock (_inputSync)
+            {
+                if (pressed)
+                {
+                    _keyboardPressedDirections.Add(direction);
+                    _directionLatchFrames[direction] = InputLatchFrames;
+                    _viewModel.SetLastPressed(direction);
+                }
+                else
+                {
+                    _keyboardPressedDirections.Remove(direction);
+                    _directionLatchFrames[direction] = InputLatchFrames;
+                }
+
+                UpdateDPadVisualsLocked();
+            }
+
+            UpdateOverlaySummary();
+            return true;
+        }
+
+        string? action = key switch
+        {
+            Key.Space or Key.Z => "A",
+            Key.X => "B",
+            Key.C => "X",
+            Key.Enter => "Start",
+            Key.Back or Key.Insert => "Select",
+            Key.Escape => "Menu",
+            _ => null
+        };
+
+        if (action == null)
+            return false;
+
+        lock (_inputSync)
+        {
+            if (pressed)
+            {
+                _keyboardPressedActions.Add(action);
+                _viewModel.SetLastPressed(action);
+            }
+            else
+            {
+                _keyboardPressedActions.Remove(action);
+            }
+
+            _actionLatchFrames[action] = InputLatchFrames;
+            UpdateFaceVisualsLocked();
+        }
+
+        UpdateOverlaySummary();
+        return true;
     }
 
     private void OnViewSizeChanged(object? sender, SizeChangedEventArgs e)
@@ -927,10 +1019,10 @@ public partial class MainView : UserControl
 
     private void UpdateDPadVisualsLocked()
     {
-        bool up = _pressedDirections.Contains("Up") || _nativePressedDirections.Contains("Up");
-        bool down = _pressedDirections.Contains("Down") || _nativePressedDirections.Contains("Down");
-        bool left = _pressedDirections.Contains("Left") || _nativePressedDirections.Contains("Left");
-        bool right = _pressedDirections.Contains("Right") || _nativePressedDirections.Contains("Right");
+        bool up = _pressedDirections.Contains("Up") || _nativePressedDirections.Contains("Up") || _keyboardPressedDirections.Contains("Up");
+        bool down = _pressedDirections.Contains("Down") || _nativePressedDirections.Contains("Down") || _keyboardPressedDirections.Contains("Down");
+        bool left = _pressedDirections.Contains("Left") || _nativePressedDirections.Contains("Left") || _keyboardPressedDirections.Contains("Left");
+        bool right = _pressedDirections.Contains("Right") || _nativePressedDirections.Contains("Right") || _keyboardPressedDirections.Contains("Right");
 
         SetPadVisualState(PortraitPadUp, up);
         SetPadVisualState(PortraitPadDown, down);
@@ -944,10 +1036,10 @@ public partial class MainView : UserControl
 
     private void UpdateFaceVisualsLocked()
     {
-        bool a = _pressedActions.Contains("A") || _nativePressedActions.Contains("A");
-        bool b = _pressedActions.Contains("B") || _nativePressedActions.Contains("B");
-        bool x = _pressedActions.Contains("X") || _nativePressedActions.Contains("X");
-        bool y = _pressedActions.Contains("Y") || _nativePressedActions.Contains("Y");
+        bool a = _pressedActions.Contains("A") || _nativePressedActions.Contains("A") || _keyboardPressedActions.Contains("A");
+        bool b = _pressedActions.Contains("B") || _nativePressedActions.Contains("B") || _keyboardPressedActions.Contains("B");
+        bool x = _pressedActions.Contains("X") || _nativePressedActions.Contains("X") || _keyboardPressedActions.Contains("X");
+        bool y = _pressedActions.Contains("Y") || _nativePressedActions.Contains("Y") || _keyboardPressedActions.Contains("Y");
 
         SetFaceVisualState(PortraitFaceA, a);
         SetFaceVisualState(PortraitFaceB, b);
@@ -1455,6 +1547,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Snk.NeoGeoAdapter neoGeo => neoGeo.GetTargetFps(),
             EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter outZone => outZone.GetTargetFps(),
             EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter batsugun => batsugun.GetTargetFps(),
+            EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter dariusGaiden => dariusGaiden.GetTargetFps(),
             EutherDrive.Core.Arcade.Igs.Pgm2Adapter pgm2 => pgm2.GetTargetFps(),
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => DefaultTargetFrameRate,
             _ => DefaultTargetFrameRate
@@ -1530,6 +1623,7 @@ public partial class MainView : UserControl
             || _core is EutherDrive.Core.Arcade.Snk.NeoGeoAdapter
             || _core is EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter
             || _core is EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter
+            || _core is EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter
             || _core is EutherDrive.Core.Arcade.Igs.Pgm2Adapter
             || _core is EutherDrive.Core.Arcade.Igs.KovPgmAdapter
             || _core is EutherDrive.Core.Arcade.McsArcadeAdapter;
@@ -2104,6 +2198,8 @@ public partial class MainView : UserControl
             _pressedActions.Clear();
             _nativePressedDirections.Clear();
             _nativePressedActions.Clear();
+            _keyboardPressedDirections.Clear();
+            _keyboardPressedActions.Clear();
             _directionLatchFrames.Clear();
             _actionLatchFrames.Clear();
             UpdateDPadVisualsLocked();
@@ -2699,6 +2795,7 @@ public partial class MainView : UserControl
             || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Snk.NeoGeoAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter.IsSupportedArchive(pseudoPath)
+            || EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter.IsSupportedDriverName(Path.GetFileNameWithoutExtension(fileName))
             || EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(pseudoPath);
@@ -3298,7 +3395,7 @@ public partial class MainView : UserControl
     {
         lock (_inputSync)
         {
-            PadType padType = core is MdTracerAdapter or EutherDrive.Core.SegaCd.SegaCdAdapter
+            PadType padType = core is MdTracerAdapter or EutherDrive.Core.SegaCd.SegaCdAdapter or EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter
                 ? PadType.SixButton
                 : PadType.ThreeButton;
             bool throttlePsxJoystickDirections = core is PsxAdapter;
@@ -3349,6 +3446,23 @@ public partial class MainView : UserControl
                     input.West,
                     input.L1,
                     input.Select || input.Menu,
+                    input.PadType);
+            }
+            else if (core is EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter dariusGaiden)
+            {
+                dariusGaiden.SetInputState(
+                    input.Up,
+                    input.Down,
+                    input.Left,
+                    input.Right,
+                    input.South,
+                    input.East,
+                    input.West,
+                    input.Start,
+                    input.North,
+                    input.L1,
+                    input.R1,
+                    input.Select,
                     input.PadType);
             }
             else
@@ -3436,7 +3550,7 @@ public partial class MainView : UserControl
 
     private bool IsDirectionActiveLocked(string tag, bool throttleJoystickDirections = false)
     {
-        if (_pressedDirections.Contains(tag) || _nativePressedDirections.Contains(tag))
+        if (_pressedDirections.Contains(tag) || _nativePressedDirections.Contains(tag) || _keyboardPressedDirections.Contains(tag))
         {
             if (!throttleJoystickDirections)
             {
@@ -3459,26 +3573,29 @@ public partial class MainView : UserControl
     {
         return _pressedActions.Contains(tag)
             || _nativePressedActions.Contains(tag)
+            || _keyboardPressedActions.Contains(tag)
             || (_actionLatchFrames.TryGetValue(tag, out int frames) && frames > 0);
     }
 
     private HashSet<string> GetCombinedPressedDirectionsLocked()
     {
-        if (_nativePressedDirections.Count == 0)
+        if (_nativePressedDirections.Count == 0 && _keyboardPressedDirections.Count == 0)
             return _pressedDirections;
 
         var combined = new HashSet<string>(_pressedDirections, StringComparer.OrdinalIgnoreCase);
         combined.UnionWith(_nativePressedDirections);
+        combined.UnionWith(_keyboardPressedDirections);
         return combined;
     }
 
     private HashSet<string> GetCombinedPressedActionsLocked()
     {
-        if (_nativePressedActions.Count == 0)
+        if (_nativePressedActions.Count == 0 && _keyboardPressedActions.Count == 0)
             return _pressedActions;
 
         var combined = new HashSet<string>(_pressedActions, StringComparer.OrdinalIgnoreCase);
         combined.UnionWith(_nativePressedActions);
+        combined.UnionWith(_keyboardPressedActions);
         return combined;
     }
 
@@ -4165,6 +4282,11 @@ public partial class MainView : UserControl
             return new EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter();
         }
 
+        if (EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter.IsSupportedArchive(path))
+        {
+            return new EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter();
+        }
+
         if (EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedArchive(path))
         {
             return new EutherDrive.Core.Arcade.Igs.Pgm2Adapter();
@@ -4320,6 +4442,9 @@ public partial class MainView : UserControl
             case EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter batsugun:
                 batsugun.SetMasterVolumePercent(100);
                 break;
+            case EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter dariusGaiden:
+                dariusGaiden.SetMasterVolumePercent(100);
+                break;
             case EutherDrive.Core.Arcade.DataEast.Boogwing.BoogwingAdapter boogwing:
                 boogwing.SetMasterVolumePercent(100);
                 break;
@@ -4340,6 +4465,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             EutherDrive.Core.Arcade.Snk.NeoGeoAdapter => "Neo Geo",
             EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter => "Toaplan Out Zone",
+            EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter => "Taito F3",
             EutherDrive.Core.Arcade.Igs.Pgm2Adapter => "IGS PGM2",
             EutherDrive.Core.Arcade.Igs.KovPgmAdapter => "IGS PGM",
             EutherDrive.Core.Arcade.McsArcadeAdapter => "MAME",
