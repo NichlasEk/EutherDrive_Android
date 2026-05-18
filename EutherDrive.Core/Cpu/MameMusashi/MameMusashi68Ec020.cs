@@ -414,6 +414,7 @@ public sealed class MameMusashi68Ec020
             if ((op & 0xf1c0) is 0xc0c0 or 0xc1c0 && IsDataAluSourceEffectiveAddress(op))
                 _handlers[op] = MultiplyWord;
         }
+        RegisterExgOpcodes();
         for (int op = 0xd000; op <= 0xdfff; op++)
         {
             int opmode = (op >> 6) & 7;
@@ -505,6 +506,19 @@ public sealed class MameMusashi68Ec020
         ImplementedOpcodeCount = CountImplementedHandlers();
         MameEc020OpcodeCount = CountMameEc020Opcodes();
         _ = before;
+    }
+
+    private void RegisterExgOpcodes()
+    {
+        for (int x = 0; x < 8; x++)
+        {
+            for (int y = 0; y < 8; y++)
+            {
+                _handlers[0xc140 | (x << 9) | y] = ExchangeRegisters;
+                _handlers[0xc148 | (x << 9) | y] = ExchangeRegisters;
+                _handlers[0xc188 | (x << 9) | y] = ExchangeRegisters;
+            }
+        }
     }
 
     private void RegisterLongMultiplyDivideOpcodes()
@@ -1581,6 +1595,36 @@ public sealed class MameMusashi68Ec020
 
         _d[register] = result;
         SetLogicFlags(OpSize.Long, result);
+        _lastCycles = _cycles[_ir];
+    }
+
+    private void ExchangeRegisters()
+    {
+        int x = (_ir >> 9) & 7;
+        int y = _ir & 7;
+        uint temp;
+
+        switch (_ir & 0x00f8)
+        {
+            case 0x0040:
+                temp = _d[x];
+                _d[x] = _d[y];
+                _d[y] = temp;
+                break;
+            case 0x0048:
+                temp = _a[x];
+                _a[x] = _a[y];
+                _a[y] = temp;
+                break;
+            case 0x0088:
+                temp = _d[x];
+                _d[x] = _a[y];
+                _a[y] = temp;
+                break;
+            default:
+                throw new InvalidOperationException($"Invalid EXG opcode 0x{_ir:X4}.");
+        }
+
         _lastCycles = _cycles[_ir];
     }
 
