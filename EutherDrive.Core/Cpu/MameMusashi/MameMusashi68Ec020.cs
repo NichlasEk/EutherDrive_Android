@@ -356,6 +356,12 @@ public sealed class MameMusashi68Ec020
             int group = op & 0xff00;
             int sizeCode = (op >> 6) & 3;
             int mode = (op >> 3) & 7;
+            if (((op & 0xffc0) is 0x0e00 or 0x0e40 or 0x0e80) && IsMovesEffectiveAddress(op))
+            {
+                _handlers[op] = Moves;
+                continue;
+            }
+
             if (sizeCode <= 2
                 && mode != 1
                 && (group == 0x0000 || group == 0x0200 || group == 0x0400 || group == 0x0600 || group == 0x0a00 || group == 0x0c00))
@@ -1357,6 +1363,52 @@ public sealed class MameMusashi68Ec020
         _lastCycles = _cycles[_ir];
     }
 
+    private void Moves()
+    {
+        if (!Supervisor)
+        {
+            PrivilegeViolation();
+            return;
+        }
+
+        OpSize size = (_ir & 0x00c0) switch
+        {
+            0x0000 => OpSize.Byte,
+            0x0040 => OpSize.Word,
+            _ => OpSize.Long
+        };
+
+        ushort extension = ReadImmediateWord();
+        int register = (extension >> 12) & 7;
+        bool addressRegister = (extension & 0x8000) != 0;
+        bool registerToMemory = (extension & 0x0800) != 0;
+
+        if (registerToMemory)
+        {
+            uint value = addressRegister ? _a[register] : _d[register];
+            WriteEa(_ir & 0x3f, size, value);
+        }
+        else
+        {
+            uint value = ReadEa(_ir & 0x3f, size);
+            if (addressRegister)
+            {
+                _a[register] = size switch
+                {
+                    OpSize.Byte => unchecked((uint)(sbyte)(value & 0xffu)),
+                    OpSize.Word => unchecked((uint)(short)(value & 0xffffu)),
+                    _ => value
+                };
+            }
+            else
+            {
+                WriteDataRegister(register, size, value);
+            }
+        }
+
+        _lastCycles = _cycles[_ir];
+    }
+
     private void MultiplyLong()
     {
         ushort extension = ReadImmediateWord();
@@ -2210,6 +2262,13 @@ public sealed class MameMusashi68Ec020
         int mode = (opcode >> 3) & 7;
         int reg = opcode & 7;
         return mode == 0 || mode == 2 || mode == 5 || mode == 6 || (mode == 7 && reg <= 1);
+    }
+
+    private static bool IsMovesEffectiveAddress(int opcode)
+    {
+        int mode = (opcode >> 3) & 7;
+        int reg = opcode & 7;
+        return mode is >= 2 and <= 6 || (mode == 7 && reg <= 1);
     }
 
     private bool TryReadBitfield(

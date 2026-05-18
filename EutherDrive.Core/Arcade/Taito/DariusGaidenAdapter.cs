@@ -44,12 +44,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly bool TraceSceneCopyPc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_SCENE_COPY_PC") == "1";
     private static readonly bool TraceTaskCreatePc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE") == "1";
     private static readonly bool TraceTaskSchedulerPc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_TASK_SCHEDULER") == "1";
+    private static readonly bool TraceSummary = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_SUMMARY") == "1";
+    private static readonly bool RenderStats = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_RENDER_STATS") == "1";
     private static readonly int TraceInstructionLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_INSTRUCTIONS", 64);
     private static readonly int TraceBootPcLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_BOOT_PC_LIMIT", 256);
     private static readonly int TraceSceneCopyPcLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_SCENE_COPY_PC_LIMIT", 32);
     private static readonly int TraceTaskCreatePcLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE_LIMIT", 256);
     private static readonly int TraceTaskCreateFromFrame = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE_FROM_FRAME", 0);
     private static readonly int CpuScale = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_CPU_SCALE", 1), 1, 32);
+    private static readonly int RenderDivisor = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_DIVISOR", 1), 1, 8);
 
     private static readonly HashSet<string> SupportedDrivers = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -92,6 +95,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly byte[] _mixDstBlendMode = new byte[FrameWidth * FrameHeight];
     private readonly ushort[] _spriteReefPalette = new ushort[FrameWidth * FrameHeight];
     private readonly byte[] _spriteReefGroup = new byte[FrameWidth * FrameHeight];
+    private readonly uint[] _paletteColorCache = new uint[0x2000];
+    private readonly int[] _paletteColorCacheStamp = new int[0x2000];
+    private int _paletteColorCacheFrame;
     private readonly F3LineState[] _lineStates = new F3LineState[256];
     private readonly MameMusashi68Ec020 _mainCpu = new();
     private readonly TaitoF3MainBus _bus = new();
@@ -505,6 +511,24 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 _bus.CurrentCpuPc = pc;
                 ushort op = _mainCpu.NextOpcode;
                 TrackSceneDiagnosticPc(pc);
+                if (UseNativeF3TrapScheduler && IsNativeF3IdleSpin(pc, op))
+                {
+                    uint idleCycles = _bus.CyclesUntilInterrupt3Ready;
+                    if (idleCycles != 0)
+                    {
+                        cycles += (int)idleCycles;
+                        _bus.AdvanceMainCycles(idleCycles);
+                        _executedCycles += idleCycles;
+                        _lastStopReason = "f3 idle fast-forward irq3";
+                        continue;
+                    }
+
+                    if (_bus.CanEndFrameAtIdle)
+                    {
+                        _lastStopReason = "f3 idle";
+                        break;
+                    }
+                }
                 if (TryRecoverInvalidF3ProgramCounter(pc, out uint recoverCycles))
                 {
                     cycles += (int)recoverCycles;
@@ -585,13 +609,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             Console.Error.WriteLine($"[DARIUSG-020] fault frame={_frameCounter} pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4} {ex}");
         }
 
-        if (Trace || _frameCounter <= 3 || (_frameCounter % 60) == 0)
+        if (Trace || TraceSummary)
             Console.WriteLine($"[DARIUSG] {DebugSummary}");
 
         if (_f3TasksEnqueued != 0)
             _bus.RefreshInputLatches();
-        RenderUglyVideo();
+        if (ShouldRenderThisFrame())
+            RenderUglyVideo();
     }
+
+    private bool ShouldRenderThisFrame()
+        => RenderDivisor <= 1 || _frameCounter <= 3 || (_frameCounter % RenderDivisor) == 0;
 
     private void SoftResetF3Machine(string reason)
     {
@@ -707,7 +735,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return;
         }
 
-        ClearWithPalette(0);
+        ClearWithPalette(0, clearFrameBuffer: false);
         BuildMameLineStates();
         InitializeMameLineBackgrounds();
 
@@ -776,19 +804,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return true;
         if (TryBypassBackupRamInitReset(pc, op, out cycles))
             return true;
-        if (!UseNativeF3TrapScheduler)
-        {
-            // These are bringup speed paths for the old adapter scheduler.
-            // Native F3 scheduling must keep the ROM's register and stack flow.
-            if (TryExecuteDariusWorkRamCurrent(pc, op, out cycles))
-                return true;
-            if (TryExecuteDariusBootRamClear(pc, op, out cycles))
-                return true;
-            if (TryExecuteDariusF3MemoryTide(pc, op, out cycles))
-                return true;
-            if (TryExecuteDariusPaletteCurrent(pc, op, out cycles))
-                return true;
-        }
+        // Exact loop collapses for Darius' hot RAM/video fill routines. These
+        // keep native trap scheduling intact while avoiding thousands of tiny
+        // 020 memory operations per frame.
+        if (TryExecuteDariusWorkRamCurrent(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusBootRamClear(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusF3MemoryTide(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusPaletteCurrent(pc, op, out cycles))
+            return true;
         if (!UseNativeF3TrapScheduler && TryExecuteBtstImmediateByteDisplacement(pc, op, out cycles))
             return true;
         if (TryExecuteF3SchedulerYieldEntry(pc, op, out cycles))
@@ -828,6 +854,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
         return false;
     }
+
+    private static bool IsNativeF3IdleSpin(uint pc, ushort op)
+        => pc is 0x002320 or 0x002326
+            && op is 0x4eb9 or 0x60f8;
 
     private bool TrySkipEmptySpriteControlSlots(uint pc, ushort op, out uint cycles)
     {
@@ -1084,10 +1114,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _bus.WriteByte(watchdogAddress, value);
         }
 
-        for (uint i = 0; i < remaining; i++)
+        if (!_bus.TryClearWritableRamRange(address, byteCount))
         {
-            _bus.WriteLong(address, 0);
-            address = (address + 4) & 0x00ff_ffff;
+            for (uint i = 0; i < remaining; i++)
+            {
+                _bus.WriteLong(address, 0);
+                address = (address + 4) & 0x00ff_ffff;
+            }
+        }
+        else
+        {
+            address = (address + byteCount) & 0x00ff_ffff;
         }
 
         state.Data[0] = 0;
@@ -1173,18 +1210,21 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (!IsF3WritableRamRange(address, byteCount))
             return false;
 
-        uint current = address;
         uint elements = byteCount / (uint)unitSize;
-        for (uint i = 0; i < elements; i++)
+        if (!_bus.TryClearWritableRamRange(address, byteCount))
         {
-            if (unitSize == 1)
-                _bus.WriteByte(current, 0);
-            else if (unitSize == 2)
-                _bus.WriteWord(current, 0);
-            else
-                _bus.WriteLong(current, 0);
+            uint current = address;
+            for (uint i = 0; i < elements; i++)
+            {
+                if (unitSize == 1)
+                    _bus.WriteByte(current, 0);
+                else if (unitSize == 2)
+                    _bus.WriteWord(current, 0);
+                else
+                    _bus.WriteLong(current, 0);
 
-            current = (current + (uint)unitSize) & 0x00ff_ffff;
+                current = (current + (uint)unitSize) & 0x00ff_ffff;
+            }
         }
 
         uint[] data = CloneRegisters(state.Data);
@@ -1219,10 +1259,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
 
         uint value = state.Data[1];
-        for (int i = 0; i < remaining; i++)
+        uint byteCount = (uint)remaining * 4;
+        if (value == 0 && _bus.TryClearWritableRamRange(address, byteCount))
         {
-            _bus.WriteLong(address, value);
-            address = (address + 4) & 0x00ff_ffff;
+            address = (address + byteCount) & 0x00ff_ffff;
+        }
+        else
+        {
+            for (int i = 0; i < remaining; i++)
+            {
+                _bus.WriteLong(address, value);
+                address = (address + 4) & 0x00ff_ffff;
+            }
         }
 
         state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
@@ -1245,10 +1293,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
 
         ushort value = (ushort)state.Data[1];
-        for (int i = 0; i < remaining; i++)
+        uint byteCount = (uint)remaining * 2;
+        if (value == 0 && _bus.TryClearWritableRamRange(address, byteCount))
         {
-            _bus.WriteWord(address, value);
-            address = (address + 2) & 0x00ff_ffff;
+            address = (address + byteCount) & 0x00ff_ffff;
+        }
+        else
+        {
+            for (int i = 0; i < remaining; i++)
+            {
+                _bus.WriteWord(address, value);
+                address = (address + 2) & 0x00ff_ffff;
+            }
         }
 
         state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
@@ -1271,10 +1327,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
 
         ushort value = (ushort)state.Data[0];
-        for (int i = 0; i < remaining; i++)
+        uint byteCount = (uint)remaining * 2;
+        if (value == 0 && _bus.TryClearWritableRamRange(address, byteCount))
         {
-            _bus.WriteWord(address, value);
-            address = (address + 2) & 0x00ff_ffff;
+            address = (address + byteCount) & 0x00ff_ffff;
+        }
+        else
+        {
+            for (int i = 0; i < remaining; i++)
+            {
+                _bus.WriteWord(address, value);
+                address = (address + 2) & 0x00ff_ffff;
+            }
         }
 
         state.Data[1] = (state.Data[1] & 0xffff_0000u) | 0xffffu;
@@ -2462,22 +2526,30 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     {
         _lastPlayfieldCandidates = 0;
         _lastPlayfieldPixels = 0;
-        Array.Clear(_lastPlayfieldLayerCandidates);
-        Array.Clear(_lastPlayfieldLayerPixels);
-        Array.Clear(_lastPlayfieldBlendSelect0);
-        Array.Clear(_lastPlayfieldBlendSelect1);
+        if (RenderStats)
+        {
+            Array.Clear(_lastPlayfieldLayerCandidates);
+            Array.Clear(_lastPlayfieldLayerPixels);
+            Array.Clear(_lastPlayfieldBlendSelect0);
+            Array.Clear(_lastPlayfieldBlendSelect1);
+        }
         Span<int> regSx = stackalloc int[4];
         Span<int> regFxY = stackalloc int[4];
         for (int layer = 0; layer < 4; layer++)
             GetMamePlayfieldScroll(layer, out regSx[layer], out regFxY[layer]);
 
         bool drewAny = false;
+        Span<int> layerOrder = stackalloc int[4];
+        Span<int> layerPriority = stackalloc int[4];
         for (int screenY = 0; screenY < FrameHeight; screenY++)
         {
             int screenLine = screenY + VisibleAreaMinY;
-            int[] layerOrder = BuildMamePlayfieldOrder(screenLine);
+            BuildMamePlayfieldOrder(screenLine, layerOrder, layerPriority);
             for (int i = 0; i < layerOrder.Length; i++)
-                drewAny |= RenderPlayfieldLine(roms, layerOrder[i], screenY, regSx[layerOrder[i]], regFxY[layerOrder[i]]);
+            {
+                int layer = layerOrder[i];
+                drewAny |= RenderPlayfieldLine(roms, layer, screenY, regSx[layer], regFxY[layer]);
+            }
 
             if (screenY != 0)
             {
@@ -2490,30 +2562,37 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return drewAny;
     }
 
-    private int[] BuildMamePlayfieldOrder(int screenLine)
+    private void BuildMamePlayfieldOrder(int screenLine, Span<int> order, Span<int> priority)
     {
-        int[] order = [0, 3, 2, 1];
-        Array.Sort(order, (a, b) =>
-        {
-            int pa = TryReadMixableCurrentState(screenLine, 7, a, spriteRules: false, out int priorityA, out _, out _) ? priorityA : -1;
-            int pb = TryReadMixableCurrentState(screenLine, 7, b, spriteRules: false, out int priorityB, out _, out _) ? priorityB : -1;
-            int priorityCompare = pb.CompareTo(pa);
-            if (priorityCompare != 0)
-                return priorityCompare;
+        order[0] = 0;
+        order[1] = 3;
+        order[2] = 2;
+        order[3] = 1;
 
-            return MamePlayfieldStableRank(a).CompareTo(MamePlayfieldStableRank(b));
-        });
-        return order;
+        for (int i = 0; i < order.Length; i++)
+        {
+            int layer = order[i];
+            priority[i] = TryReadMixableCurrentState(screenLine, 7, layer, spriteRules: false, out int layerPriority, out _, out _)
+                ? layerPriority
+                : -1;
+        }
+
+        for (int i = 1; i < order.Length; i++)
+        {
+            int layer = order[i];
+            int layerPriority = priority[i];
+            int j = i - 1;
+            while (j >= 0 && layerPriority > priority[j])
+            {
+                order[j + 1] = order[j];
+                priority[j + 1] = priority[j];
+                j--;
+            }
+
+            order[j + 1] = layer;
+            priority[j + 1] = layerPriority;
+        }
     }
-
-    private static int MamePlayfieldStableRank(int layer)
-        => layer switch
-        {
-            0 => 0,
-            3 => 1,
-            2 => 2,
-            _ => 3,
-        };
 
     private bool RenderPlayfieldLine(TaitoF3RomSet roms, int layer, int screenY, int regSx, int regFxY)
     {
@@ -2549,8 +2628,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             ushort code = _bus.ReadPlayfieldWord(entry + 1);
             if ((attr | code) == 0)
                 continue;
-            _lastPlayfieldCandidates++;
-            _lastPlayfieldLayerCandidates[lineRamLayer]++;
+            if (RenderStats)
+            {
+                _lastPlayfieldCandidates++;
+                _lastPlayfieldLayerCandidates[lineRamLayer]++;
+            }
 
             int reefPixelX = pixelX;
             int reefPixelY = pixelY;
@@ -2567,13 +2649,19 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (pen == 0)
                 continue;
 
-            if (tileBlendSelect)
-                _lastPlayfieldBlendSelect1[lineRamLayer]++;
-            else
-                _lastPlayfieldBlendSelect0[lineRamLayer]++;
+            if (RenderStats)
+            {
+                if (tileBlendSelect)
+                    _lastPlayfieldBlendSelect1[lineRamLayer]++;
+                else
+                    _lastPlayfieldBlendSelect0[lineRamLayer]++;
+            }
             WritePalettePixel(screenX, screenY, line.PlayfieldPaletteAdd[lineRamLayer] + palette * 16 + pen, layerPriority, GetPlayfieldLayerRank(lineRamLayer), layerBlendMode, tileBlendSelect);
-            _lastPlayfieldPixels++;
-            _lastPlayfieldLayerPixels[lineRamLayer]++;
+            if (RenderStats)
+            {
+                _lastPlayfieldPixels++;
+                _lastPlayfieldLayerPixels[lineRamLayer]++;
+            }
             drewAny = true;
         }
 
@@ -2795,34 +2883,39 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
 
         int drawnSpriteCount = _latchedSprites.Count;
+        bool drewIntoReef = false;
         for (int i = _latchedSprites.Count - 1; i >= 0; i--)
-            DrawSpriteToReef(roms, _latchedSprites[i]);
+            drewIntoReef |= DrawSpriteToReef(roms, _latchedSprites[i]);
 
         BuildSpriteList();
         _latchedSprites.Clear();
         _latchedSprites.AddRange(_sprites);
 
-        _lastVisibleSprites = drawnSpriteCount;
-        return drewAny || _lastSpritePixels != 0;
+        if (RenderStats)
+            _lastVisibleSprites = drawnSpriteCount;
+        return drewAny || drewIntoReef;
     }
 
     private void BuildSpriteList()
     {
         _sprites.Clear();
         _lastSpriteCandidates = 0;
-        _lastVisibleSprites = 0;
-        _lastSpriteCandidateEntry = -1;
-        _lastSpriteCandidateX = 0;
-        _lastSpriteCandidateY = 0;
-        _lastSpriteCandidateScaleX = 0;
-        _lastSpriteCandidateScaleY = 0;
-        _lastSpriteCandidateTile = 0;
-        _lastSpriteCandidateControl = 0;
-        _lastSpriteMinX = int.MaxValue;
-        _lastSpriteMinY = int.MaxValue;
-        _lastSpriteMaxX = int.MinValue;
-        _lastSpriteMaxY = int.MinValue;
-        _lastSpriteClosestDistance = int.MaxValue;
+        if (RenderStats)
+        {
+            _lastVisibleSprites = 0;
+            _lastSpriteCandidateEntry = -1;
+            _lastSpriteCandidateX = 0;
+            _lastSpriteCandidateY = 0;
+            _lastSpriteCandidateScaleX = 0;
+            _lastSpriteCandidateScaleY = 0;
+            _lastSpriteCandidateTile = 0;
+            _lastSpriteCandidateControl = 0;
+            _lastSpriteMinX = int.MaxValue;
+            _lastSpriteMinY = int.MaxValue;
+            _lastSpriteMaxX = int.MinValue;
+            _lastSpriteMaxY = int.MinValue;
+            _lastSpriteClosestDistance = int.MaxValue;
+        }
         BuildSpriteListFrom(0, _spriteBank, updateSpriteBank: true);
         if (_sprites.Count == 0)
         {
@@ -2879,7 +2972,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             if (command)
             {
-                _lastSpriteControlWord = w5;
+                if (RenderStats)
+                    _lastSpriteControlWord = w5;
                 _flipScreen = (w5 & 0x2000) != 0;
                 int extraPlanes = (w5 >> 8) & 3;
                 _spritePenMask = (extraPlanes << 4) | 0x0f;
@@ -2911,17 +3005,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (tile == 0)
                 continue;
 
-            _lastSpriteCandidates++;
             int x = _flipScreen ? (512 << 8) - xAxis.BlockScale * 16 - xAxis.Pos : xAxis.Pos;
             int y = _flipScreen ? (256 << 8) - yAxis.BlockScale * 16 - yAxis.Pos : yAxis.Pos;
-            _lastSpriteCandidateEntry = offs;
-            _lastSpriteCandidateX = x;
-            _lastSpriteCandidateY = y;
-            _lastSpriteCandidateScaleX = xAxis.BlockScale;
-            _lastSpriteCandidateScaleY = yAxis.BlockScale;
-            _lastSpriteCandidateTile = tile;
-            _lastSpriteCandidateControl = spriteControl;
-            TrackSpriteCandidateBounds(x, y, xAxis.BlockScale, yAxis.BlockScale, visibleMinX, visibleMinY, visibleMaxX, visibleMaxY);
+            if (RenderStats)
+            {
+                _lastSpriteCandidates++;
+                _lastSpriteCandidateEntry = offs;
+                _lastSpriteCandidateX = x;
+                _lastSpriteCandidateY = y;
+                _lastSpriteCandidateScaleX = xAxis.BlockScale;
+                _lastSpriteCandidateScaleY = yAxis.BlockScale;
+                _lastSpriteCandidateTile = tile;
+                _lastSpriteCandidateControl = spriteControl;
+                TrackSpriteCandidateBounds(x, y, xAxis.BlockScale, yAxis.BlockScale, visibleMinX, visibleMinY, visibleMaxX, visibleMaxY);
+            }
             if (x + xAxis.BlockScale * 16 <= visibleMinX || x > visibleMaxX || y + yAxis.BlockScale * 16 <= visibleMinY || y > visibleMaxY)
                 continue;
 
@@ -2954,12 +3051,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private bool RenderSpriteReefToFrame()
     {
         bool drewAny = false;
-        _lastSpriteMixSource = 0;
-        _lastSpriteMixDest = 0;
-        _lastSpriteMixBehind = 0;
-        _lastSpriteMixSameBlend = 0;
-        _lastSpriteMixDisabled = 0;
-        _lastSpriteMixClipped = 0;
+        if (RenderStats)
+        {
+            _lastSpriteMixSource = 0;
+            _lastSpriteMixDest = 0;
+            _lastSpriteMixBehind = 0;
+            _lastSpriteMixSameBlend = 0;
+            _lastSpriteMixDisabled = 0;
+            _lastSpriteMixClipped = 0;
+        }
         for (int y = 0; y < FrameHeight; y++)
         {
             int screenY = y + VisibleAreaMinY;
@@ -2973,13 +3073,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 int spriteGroup = _spriteReefGroup[row + x];
                 if (!TryReadSpriteCurrentState(screenY, spriteGroup, out int spritePriority, out int spriteBlendMode, out bool spriteBlendSelect))
                 {
-                    _lastSpriteMixDisabled++;
+                    if (RenderStats)
+                        _lastSpriteMixDisabled++;
                     continue;
                 }
                 ushort spriteMix = _lineStates[screenY & 0xff].SpriteMix[spriteGroup & 3];
                 if (!IsMameClipAllowed(screenY, spriteMix, x + VisibleAreaMinX))
                 {
-                    _lastSpriteMixClipped++;
+                    if (RenderStats)
+                        _lastSpriteMixClipped++;
                     continue;
                 }
 
@@ -2987,18 +3089,22 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 int priorityOffset = row + x;
                 if (spriteBlendMode == _mixSrcBlendMode[priorityOffset])
                 {
-                    _lastSpriteMixSameBlend++;
+                    if (RenderStats)
+                        _lastSpriteMixSameBlend++;
                     continue;
                 }
 
-                int currentSourcePriority = _mixSrcPriority[priorityOffset];
-                if (spritePriority > currentSourcePriority
-                    || spritePriority == currentSourcePriority && spriteRank < _framePriorityRank[priorityOffset])
-                    _lastSpriteMixSource++;
-                else if (spritePriority >= _mixDstPriority[priorityOffset])
-                    _lastSpriteMixDest++;
-                else
-                    _lastSpriteMixBehind++;
+                if (RenderStats)
+                {
+                    int currentSourcePriority = _mixSrcPriority[priorityOffset];
+                    if (spritePriority > currentSourcePriority
+                        || spritePriority == currentSourcePriority && spriteRank < _framePriorityRank[priorityOffset])
+                        _lastSpriteMixSource++;
+                    else if (spritePriority >= _mixDstPriority[priorityOffset])
+                        _lastSpriteMixDest++;
+                    else
+                        _lastSpriteMixBehind++;
+                }
 
                 WritePalettePixel(x, y, paletteIndex, spritePriority, spriteRank, spriteBlendMode, spriteBlendSelect);
                 drewAny = true;
@@ -3210,8 +3316,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _ => EmptyLayerRank,
         };
 
-    private void DrawSpriteToReef(TaitoF3RomSet roms, F3Sprite sprite)
+    private bool DrawSpriteToReef(TaitoF3RomSet roms, F3Sprite sprite)
     {
+        bool drewAny = false;
         int dy8 = sprite.Y;
         if (!_flipScreen)
             dy8 += 255;
@@ -3243,9 +3350,13 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
                 _spriteReefPalette[reefOffset] = (ushort)(0x1000 + ((sprite.Color << 4) | pen));
                 _spriteReefGroup[reefOffset] = (byte)((sprite.Color >> 6) & 3);
-                _lastSpritePixels++;
+                if (RenderStats)
+                    _lastSpritePixels++;
+                drewAny = true;
             }
         }
+
+        return drewAny;
     }
 
     private static int DecodeSpritePixel(TaitoF3RomSet roms, int code, int x, int y)
@@ -3283,18 +3394,25 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     }
 
     private void ClearWithPalette(int paletteIndex)
+        => ClearWithPalette(paletteIndex, clearFrameBuffer: true);
+
+    private void ClearWithPalette(int paletteIndex, bool clearFrameBuffer)
     {
         uint color = _bus.ReadPaletteColor(paletteIndex, fallback: 0xff081020);
-        byte b = (byte)color;
-        byte g = (byte)(color >> 8);
-        byte r = (byte)(color >> 16);
-        for (int offset = 0; offset < _frameBuffer.Length; offset += 4)
+        if (clearFrameBuffer)
         {
-            _frameBuffer[offset + 0] = b;
-            _frameBuffer[offset + 1] = g;
-            _frameBuffer[offset + 2] = r;
-            _frameBuffer[offset + 3] = 0xff;
+            byte b = (byte)color;
+            byte g = (byte)(color >> 8);
+            byte r = (byte)(color >> 16);
+            for (int offset = 0; offset < _frameBuffer.Length; offset += 4)
+            {
+                _frameBuffer[offset + 0] = b;
+                _frameBuffer[offset + 1] = g;
+                _frameBuffer[offset + 2] = r;
+                _frameBuffer[offset + 3] = 0xff;
+            }
         }
+
         Array.Clear(_framePriority);
         Array.Fill(_framePriorityRank, EmptyLayerRank);
         Array.Clear(_framePriorityConflict);
@@ -3302,7 +3420,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         Array.Clear(_mixSrcBlend);
         Array.Clear(_mixSrcPriority);
         Array.Clear(_mixDstPriority);
-        _lastMixPriorityZeroConflicts = 0;
+        if (RenderStats)
+            _lastMixPriorityZeroConflicts = 0;
         Array.Fill(_mixDstPalette, (ushort)paletteIndex);
         Array.Fill(_mixDstBlend, (byte)8);
         Array.Fill(_mixSrcBlendMode, (byte)0xff);
@@ -3372,7 +3491,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         if (priority >= _mixDstPriority[priorityOffset])
         {
-            if (priority == _mixDstPriority[priorityOffset] && priority == 0)
+            if (RenderStats && priority == _mixDstPriority[priorityOffset] && priority == 0)
                 _lastMixPriorityZeroConflicts++;
             _mixDstPalette[priorityOffset] = priority != _mixDstPriority[priorityOffset] ? palette : (ushort)0;
             _mixDstPriority[priorityOffset] = (byte)priority;
@@ -3395,30 +3514,59 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int sourcePixels = 0;
         int litSourcePixels = 0;
         int destOnlyPixels = 0;
+        int cacheFrame = unchecked(_paletteColorCacheFrame + 1);
+        if (cacheFrame == 0)
+        {
+            Array.Clear(_paletteColorCacheStamp);
+            cacheFrame = 1;
+        }
+        _paletteColorCacheFrame = cacheFrame;
+
         for (int y = 0; y < FrameHeight; y++)
         {
             int row = y * FrameWidth;
+            int frameOffset = y * FrameStride;
             for (int x = 0; x < FrameWidth; x++)
             {
                 int offset = row + x;
-                if (_mixSrcBlendMode[offset] != 0xff)
+                if (RenderStats && _mixSrcBlendMode[offset] != 0xff)
                 {
                     sourcePixels++;
                     if (_mixSrcBlend[offset] != 0 && _mixSrcPalette[offset] != 0)
                         litSourcePixels++;
                 }
-                else if (_mixDstPalette[offset] != 0)
+                else if (RenderStats && _mixDstPalette[offset] != 0)
                 {
                     destOnlyPixels++;
                 }
-                uint source = _bus.ReadPaletteColor(_mixSrcPalette[offset], fallback: SynthColor(_mixSrcPalette[offset]));
-                uint destination = _bus.ReadPaletteColor(_mixDstPalette[offset], fallback: SynthColor(_mixDstPalette[offset]));
-                WriteFrameColor(x, y, BlendFixed3(source, destination, _mixSrcBlend[offset], _mixDstBlend[offset]));
+                uint source = ReadCachedPaletteColor(_mixSrcPalette[offset], cacheFrame);
+                uint destination = ReadCachedPaletteColor(_mixDstPalette[offset], cacheFrame);
+                uint color = BlendFixed3(source, destination, _mixSrcBlend[offset], _mixDstBlend[offset]);
+                int framePixelOffset = frameOffset + x * 4;
+                _frameBuffer[framePixelOffset + 0] = (byte)color;
+                _frameBuffer[framePixelOffset + 1] = (byte)(color >> 8);
+                _frameBuffer[framePixelOffset + 2] = (byte)(color >> 16);
+                _frameBuffer[framePixelOffset + 3] = 0xff;
             }
         }
-        _lastMixSourcePixels = sourcePixels;
-        _lastMixLitSourcePixels = litSourcePixels;
-        _lastMixDestOnlyPixels = destOnlyPixels;
+        if (RenderStats)
+        {
+            _lastMixSourcePixels = sourcePixels;
+            _lastMixLitSourcePixels = litSourcePixels;
+            _lastMixDestOnlyPixels = destOnlyPixels;
+        }
+    }
+
+    private uint ReadCachedPaletteColor(ushort paletteIndex, int cacheFrame)
+    {
+        int index = paletteIndex & 0x1fff;
+        if (_paletteColorCacheStamp[index] == cacheFrame)
+            return _paletteColorCache[index];
+
+        uint color = _bus.ReadPaletteColor(index, fallback: SynthColor(index));
+        _paletteColorCache[index] = color;
+        _paletteColorCacheStamp[index] = cacheFrame;
+        return color;
     }
 
     private static uint BlendFixed3(uint source, uint destination, int sourceWeight, int destinationWeight)
@@ -4289,8 +4437,13 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public uint InputPort0Snapshot => ReadInputPort0();
         public bool HasInsertedCredit => _creditCount != 0;
         public bool HasRomCredit => PeekWord(0x400090) != 0;
-        public bool IsStartLatched => Input.Start || _startLatchFrames != 0;
+        public bool IsStartLatched => Input.Start || (!UseNativeF3TrapScheduler && _startLatchFrames != 0);
         public bool SoundCpuResetAsserted => _soundCpuResetAsserted;
+        public bool CanEndFrameAtIdle => !_interrupt2Asserted && !_interrupt3Asserted && !_pendingInterrupt3;
+        public uint CyclesUntilInterrupt3Ready
+            => _pendingInterrupt3 && !_interrupt3Ready && !_interrupt3Asserted && _interrupt3DelayCycles > 0
+                ? (uint)_interrupt3DelayCycles
+                : 0;
         public int WatchdogKicks => _watchdogKicks;
         public int WatchdogSoftResets => _watchdogSoftResets;
         public int WatchdogCyclesRemaining => _watchdogCyclesRemaining;
@@ -4511,12 +4664,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         {
             // MAME exposes TC0640FIO through the 0x4a0000 control window. The
             // game is responsible for copying live inputs into its own work RAM.
-            if (Input.Start && !_previousStart)
+            if (!UseNativeF3TrapScheduler && Input.Start && !_previousStart)
                 _startLatchFrames = 18;
 
             _previousCoin1 = Input.Coin1;
             _previousStart = Input.Start;
-            if (_startLatchFrames != 0)
+            if (!UseNativeF3TrapScheduler && _startLatchFrames != 0)
                 _startLatchFrames--;
         }
 
@@ -5233,7 +5386,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (Input.B) value &= ~0x0000_0002u;
             if (Input.C) value &= ~0x0000_0004u;
             if (Input.X) value &= ~0x0000_0008u;
-            if (Input.Start || _startLatchFrames != 0) value &= ~0x0000_1000u;
+            if (Input.Start || (!UseNativeF3TrapScheduler && _startLatchFrames != 0)) value &= ~0x0000_1000u;
             if (Input.Z) value &= ~0x0000_2000u;
             return value;
         }
@@ -5262,14 +5415,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 case 0x04:
                     _coinWord0 = (ushort)((_coinWord0 & 0x00ff) | (value << 8));
                     break;
-                case 0x05:
-                    _coinWord0 = (ushort)((_coinWord0 & 0xff00) | value);
-                    break;
                 case 0x14:
                     _coinWord1 = (ushort)((_coinWord1 & 0x00ff) | (value << 8));
-                    break;
-                case 0x15:
-                    _coinWord1 = (ushort)((_coinWord1 & 0xff00) | value);
                     break;
                 case 0x13:
                     _eepromOutLatch = value;
@@ -5413,6 +5560,76 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     _timerControl1 = (ushort)((_timerControl1 & 0xff00) | value);
                     break;
             }
+        }
+
+        public bool TryClearWritableRamRange(uint address, uint byteCount)
+        {
+            address &= 0x00ff_ffff;
+            if (byteCount == 0 || byteCount > int.MaxValue)
+                return false;
+
+            if (TryClearWindow(address, byteCount, F3WorkRamBase, F3WorkRamMirrorWindowSize, _workRam))
+            {
+                WorkRamWrites += (int)Math.Min(byteCount, int.MaxValue);
+                return true;
+            }
+
+            if (TryClearWindow(address, byteCount, 0x440000, 0x8000, _palette))
+            {
+                PaletteWrites += (int)Math.Min(byteCount, int.MaxValue);
+                return true;
+            }
+
+            if (TryClearWindow(address, byteCount, 0x600000, 0x10000, _spriteRam))
+            {
+                _spriteNonZeroWords = 0;
+                SpriteWrites += (int)Math.Min(byteCount, int.MaxValue);
+                return true;
+            }
+
+            if (TryClearWindow(address, byteCount, 0x610000, 0xc000, _playfieldRam))
+            {
+                _playfieldNonZeroWords = 0;
+                RebuildPlayfieldRowUsage();
+                PlayfieldWrites += (int)Math.Min(byteCount, int.MaxValue);
+                return true;
+            }
+
+            if (TryClearWindow(address, byteCount, 0x61c000, 0x2000, _textRam))
+            {
+                _textNonZeroWords = 0;
+                PlayfieldWrites += (int)Math.Min(byteCount, int.MaxValue);
+                return true;
+            }
+
+            if (TryClearWindow(address, byteCount, 0x61e000, 0x2000, _charRam)
+                || TryClearWindow(address, byteCount, 0x620000, 0x10000, _lineRam))
+            {
+                PlayfieldWrites += (int)Math.Min(byteCount, int.MaxValue);
+                return true;
+            }
+
+            if (TryClearWindow(address, byteCount, 0x630000, 0x10000, _pivotRam))
+            {
+                _pivotNonZeroWords = 0;
+                PlayfieldWrites += (int)Math.Min(byteCount, int.MaxValue);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryClearWindow(uint address, uint byteCount, uint baseAddress, int windowSize, byte[] storage)
+        {
+            if (!MapWindow(address, baseAddress, windowSize, storage, out int offset))
+                return false;
+            if ((ulong)address + byteCount > (ulong)baseAddress + (uint)windowSize)
+                return false;
+            if ((ulong)offset + byteCount > (ulong)storage.Length)
+                return false;
+
+            Array.Clear(storage, offset, (int)byteCount);
+            return true;
         }
 
         private static bool MapWindow(uint address, uint baseAddress, int windowSize, byte[] storage, out int offset)
