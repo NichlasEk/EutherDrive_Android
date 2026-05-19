@@ -181,6 +181,7 @@ internal sealed class GauntletDarkLegacyMachine
     public GauntletDarkLegacyMachine()
     {
         Cpu = new MipsR5000Core(MemoryMap);
+        Voodoo.SetCpuPcProvider(() => Cpu.Pc);
     }
 
     public void Load(GauntletRomSet romSet)
@@ -12154,12 +12155,20 @@ internal sealed class VoodooFacade : IVoodooBackend
     public bool HasVideoActivity => _backend is VoodooBringupBackend { HasVideoActivity: true };
     public string DebugStatus => _backend.DebugStatus;
     public string RecentEventStatus => _backend.RecentEventStatus;
+    private Func<ulong>? _cpuPcProvider;
+
+    public void SetCpuPcProvider(Func<ulong> provider)
+    {
+        _cpuPcProvider = provider;
+        ApplyCpuPcProvider();
+    }
 
     public void Reset()
     {
         _backend = VoodooTraceBackend.IsEnabled()
             ? new VoodooTraceBackend()
             : new VoodooBringupBackend();
+        ApplyCpuPcProvider();
     }
 
     public void WriteRegister(uint address, uint value) => _backend.WriteRegister(address, value);
@@ -12171,6 +12180,12 @@ internal sealed class VoodooFacade : IVoodooBackend
     public uint ReadTexture32(uint offset) => _backend.ReadTexture32(offset);
     public void WriteTexture32(uint offset, uint value) => _backend.WriteTexture32(offset, value);
     public void RenderFrame(EutherFrameTarget target) => _backend.RenderFrame(target);
+
+    private void ApplyCpuPcProvider()
+    {
+        if (_backend is VoodooBringupBackend bringup)
+            bringup.CpuPcProvider = _cpuPcProvider;
+    }
 }
 
 internal class VoodooBringupBackend : IVoodooBackend
@@ -12214,6 +12229,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoWords];
     private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
     private readonly int[] _fifoPacketTypeCounts = new int[8];
+    private readonly bool[] _lastFastFillValid = new bool[3];
+    private readonly int[] _lastFastFillX0 = new int[3];
+    private readonly int[] _lastFastFillX1 = new int[3];
+    private readonly int[] _lastFastFillY0 = new int[3];
+    private readonly int[] _lastFastFillY1 = new int[3];
+    private readonly ushort[] _lastFastFillColor = new ushort[3];
     private int _registerWriteCount;
     private int _fifoWriteCount;
     private int _fifoPacketCount;
@@ -12243,6 +12264,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _drawTraceCount;
     private int _recentVoodooEventSequence;
 
+    public Func<ulong>? CpuPcProvider { get; set; }
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
         => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
@@ -12375,7 +12397,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         int rgbaLanes = (int)((lfbMode >> 9) & 0x03u);
         bool twoPixels = IsTwoPixelLfbFormat(format);
         int pixel = GetLfbPixelOffset(offset, twoPixels, lfbMode);
-        ushort[] buffer = GetLfbWriteBuffer(lfbMode);
+        int bufferIndex = GetLfbWriteBufferIndex(lfbMode);
+        InvalidateFastFillCache(bufferIndex);
+        ushort[] buffer = _colorBuffers[bufferIndex];
 
         if (TryExpandLfbPixel(value, format, rgbaLanes, highHalf: false, out ushort first))
             buffer[pixel & (LfbPixels - 1)] = first;
@@ -12517,12 +12541,18 @@ internal class VoodooBringupBackend : IVoodooBackend
             color = (ushort)_registers[RegZaColor];
 
         TraceDraw($"fastfill clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
-        ushort[] buffer = GetDrawBuffer();
+        int bufferIndex = GetDrawBufferIndex();
+        ushort[] buffer = _colorBuffers[bufferIndex];
         int width = x1 - x0;
-        for (int y = y0; y < y1; y++)
+        if (!IsCachedFastFill(bufferIndex, x0, x1, y0, y1, color))
         {
-            int offset = y * LfbRowPixels + x0;
-            buffer.AsSpan(offset, width).Fill(color);
+            for (int y = y0; y < y1; y++)
+            {
+                int offset = y * LfbRowPixels + x0;
+                buffer.AsSpan(offset, width).Fill(color);
+            }
+
+            CacheFastFill(bufferIndex, x0, x1, y0, y1, color);
         }
 
         _fastFillCount++;
@@ -12685,7 +12715,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         int sequence = _recentVoodooEventSequence++;
-        _recentVoodooEvents[sequence & (_recentVoodooEvents.Length - 1)] = $"{sequence}:{description}";
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        _recentVoodooEvents[sequence & (_recentVoodooEvents.Length - 1)] = $"{sequence}:{description}{pcStatus}";
     }
 
     private string FormatRecentVoodooEvents()
@@ -12932,7 +12964,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         bool positive = area > 0;
-        ushort[] buffer = GetDrawBuffer();
+        int bufferIndex = GetDrawBufferIndex();
+        InvalidateFastFillCache(bufferIndex);
+        ushort[] buffer = _colorBuffers[bufferIndex];
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
@@ -12997,7 +13031,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (x < x0 || x >= x1 || y < y0 || y >= y1 || x < 0 || x >= LfbRowPixels || y < 0 || y >= LfbRows)
             return;
 
-        GetDrawBuffer()[(y * LfbRowPixels + x) & (LfbPixels - 1)] = color;
+        int bufferIndex = GetDrawBufferIndex();
+        InvalidateFastFillCache(bufferIndex);
+        _colorBuffers[bufferIndex][(y * LfbRowPixels + x) & (LfbPixels - 1)] = color;
         _lfbWriteCount++;
     }
 
@@ -13049,9 +13085,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private ushort[] GetDrawBuffer()
+        => _colorBuffers[GetDrawBufferIndex()];
+
+    private int GetDrawBufferIndex()
     {
         int select = (int)((_registers[RegFbzMode] >> 14) & 0x03u);
-        return _colorBuffers[MapDrawBufferSelect(select)];
+        return MapDrawBufferSelect(select);
     }
 
     private ushort[] GetLfbReadBuffer(uint lfbMode)
@@ -13061,10 +13100,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private ushort[] GetLfbWriteBuffer(uint lfbMode)
-    {
-        int select = (int)((lfbMode >> 4) & 0x03u);
-        return _colorBuffers[MapLfbWriteBufferSelect(select)];
-    }
+        => _colorBuffers[GetLfbWriteBufferIndex(lfbMode)];
+
+    private int GetLfbWriteBufferIndex(uint lfbMode)
+        => MapLfbWriteBufferSelect((int)((lfbMode >> 4) & 0x03u));
 
     private int MapDrawBufferSelect(int select)
         => select switch
@@ -13159,7 +13198,38 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         if (((command >> 6) & 1u) != 0)
+        {
             Array.Clear(_colorBuffers[_backBufferIndex]);
+            CacheFastFill(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
+        }
+    }
+
+    private bool IsCachedFastFill(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
+        => (uint)bufferIndex < (uint)_lastFastFillValid.Length &&
+           _lastFastFillValid[bufferIndex] &&
+           _lastFastFillX0[bufferIndex] == x0 &&
+           _lastFastFillX1[bufferIndex] == x1 &&
+           _lastFastFillY0[bufferIndex] == y0 &&
+           _lastFastFillY1[bufferIndex] == y1 &&
+           _lastFastFillColor[bufferIndex] == color;
+
+    private void CacheFastFill(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
+    {
+        if ((uint)bufferIndex >= (uint)_lastFastFillValid.Length)
+            return;
+
+        _lastFastFillValid[bufferIndex] = true;
+        _lastFastFillX0[bufferIndex] = x0;
+        _lastFastFillX1[bufferIndex] = x1;
+        _lastFastFillY0[bufferIndex] = y0;
+        _lastFastFillY1[bufferIndex] = y1;
+        _lastFastFillColor[bufferIndex] = color;
+    }
+
+    private void InvalidateFastFillCache(int bufferIndex)
+    {
+        if ((uint)bufferIndex < (uint)_lastFastFillValid.Length)
+            _lastFastFillValid[bufferIndex] = false;
     }
 
     private static bool IsTwoPixelLfbFormat(int format)
