@@ -102,6 +102,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly ushort[] _spriteReefPalette = new ushort[FrameWidth * FrameHeight];
     private readonly byte[] _spriteReefGroup = new byte[FrameWidth * FrameHeight];
     private readonly List<int> _spriteReefOffsets = new(FrameWidth * FrameHeight / 4);
+    private readonly int[] _spriteReefNext = new int[FrameWidth * FrameHeight];
+    private readonly int[] _spriteReefRowHead = new int[FrameHeight];
+    private readonly bool[] _spriteReefRowActive = new bool[FrameHeight];
+    private readonly List<int> _spriteReefTouchedRows = new(FrameHeight);
     private readonly ushort[] _playfieldLineAttrCache = new ushort[32];
     private readonly ushort[] _playfieldLineCodeCache = new ushort[32];
     private readonly uint[] _paletteColorCache = new uint[0x2000];
@@ -505,7 +509,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _latchedSprites.Clear();
         Array.Clear(_spriteReefPalette);
         Array.Clear(_spriteReefGroup);
+        Array.Clear(_spriteReefRowActive);
         _spriteReefOffsets.Clear();
+        _spriteReefTouchedRows.Clear();
     }
 
     public void RunFrame()
@@ -3650,6 +3656,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _lastSpriteMixClipped = 0;
         }
 
+        if (_spriteReefTouchedRows.Count != 0)
+        {
+            for (int i = 0; i < _spriteReefTouchedRows.Count; i++)
+            {
+                int y = _spriteReefTouchedRows[i];
+                int rowOffset = y * FrameWidth;
+                int screenY = y + VisibleAreaMinY;
+                drewAny |= RenderSpriteReefRow(y, rowOffset, screenY);
+            }
+            return drewAny;
+        }
+
         if (_spriteReefOffsets.Count != 0)
         {
             for (int i = 0; i < _spriteReefOffsets.Count; i++)
@@ -3680,6 +3698,76 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int y = offset / FrameWidth;
         int x = offset - y * FrameWidth;
         int screenY = y + VisibleAreaMinY;
+        return RenderSpriteReefPixelAt(offset, x, y, screenY, paletteIndex);
+    }
+
+    private bool RenderSpriteReefRow(int y, int rowOffset, int screenY)
+    {
+        bool drewAny = false;
+        F3LineState line = _lineStates[screenY & 0xff];
+        ushort mix0 = line.SpriteMix[0];
+        ushort mix1 = line.SpriteMix[1];
+        ushort mix2 = line.SpriteMix[2];
+        ushort mix3 = line.SpriteMix[3];
+        int state0 = PackSpriteCurrentState(mix0, line.SpriteBlendSelect[0], Sprite0LayerRank);
+        int state1 = PackSpriteCurrentState(mix1, line.SpriteBlendSelect[1], Sprite1LayerRank);
+        int state2 = PackSpriteCurrentState(mix2, line.SpriteBlendSelect[2], Sprite2LayerRank);
+        int state3 = PackSpriteCurrentState(mix3, line.SpriteBlendSelect[3], Sprite3LayerRank);
+
+        for (int node = _spriteReefRowHead[y]; node != 0;)
+        {
+            int offset = node - 1;
+            node = _spriteReefNext[offset];
+            ushort paletteIndex = _spriteReefPalette[offset];
+            if (paletteIndex == 0)
+                continue;
+
+            int spriteGroup = _spriteReefGroup[offset] & 3;
+            ushort spriteMix = spriteGroup switch
+            {
+                0 => mix0,
+                1 => mix1,
+                2 => mix2,
+                _ => mix3,
+            };
+            int spriteState = spriteGroup switch
+            {
+                0 => state0,
+                1 => state1,
+                2 => state2,
+                _ => state3,
+            };
+
+            drewAny |= RenderSpriteReefPixelAt(offset, offset - rowOffset, y, screenY, paletteIndex, spriteMix, spriteState);
+        }
+
+        return drewAny;
+    }
+
+    private static int PackSpriteCurrentState(ushort mixValue, bool blendSelect, byte rank)
+    {
+        int blendMode = (mixValue >> 14) & 3;
+        int state = (mixValue & 0x0f) | (blendMode << 4) | (rank << 8);
+        if ((mixValue & 0x2000) != 0 && blendMode != 0)
+            state |= 1 << 16;
+        if (((mixValue >> 8) & 0x0f) != 0)
+            state |= 1 << 17;
+        if (blendSelect)
+            state |= 1 << 18;
+        return state;
+    }
+
+    private bool RenderSpriteReefPixelAt(int offset, int x, int y, int screenY)
+    {
+        ushort paletteIndex = _spriteReefPalette[offset];
+        if (paletteIndex == 0)
+            return false;
+
+        return RenderSpriteReefPixelAt(offset, x, y, screenY, paletteIndex);
+    }
+
+    private bool RenderSpriteReefPixelAt(int offset, int x, int y, int screenY, ushort paletteIndex)
+    {
         int spriteGroup = _spriteReefGroup[offset];
         if (!TryReadSpriteCurrentState(screenY, spriteGroup, out int spritePriority, out int spriteBlendMode, out bool spriteBlendSelect))
         {
@@ -3720,12 +3808,57 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return true;
     }
 
+    private bool RenderSpriteReefPixelAt(int offset, int x, int y, int screenY, ushort paletteIndex, ushort spriteMix, int spriteState)
+    {
+        if ((spriteState & (1 << 16)) == 0)
+        {
+            if (RenderStats)
+                _lastSpriteMixDisabled++;
+            return false;
+        }
+
+        if ((spriteState & (1 << 17)) != 0
+            && !IsMameClipAllowed(screenY, spriteMix, x + VisibleAreaMinX))
+        {
+            if (RenderStats)
+                _lastSpriteMixClipped++;
+            return false;
+        }
+
+        int spriteBlendMode = (spriteState >> 4) & 3;
+        if (spriteBlendMode == _mixSrcBlendMode[offset])
+        {
+            if (RenderStats)
+                _lastSpriteMixSameBlend++;
+            return false;
+        }
+
+        int spritePriority = spriteState & 0x0f;
+        byte spriteRank = (byte)((spriteState >> 8) & 0xff);
+        if (RenderStats)
+        {
+            int currentSourcePriority = _mixSrcPriority[offset];
+            if (spritePriority > currentSourcePriority
+                || spritePriority == currentSourcePriority && spriteRank < _framePriorityRank[offset])
+                _lastSpriteMixSource++;
+            else if (spritePriority >= _mixDstPriority[offset])
+                _lastSpriteMixDest++;
+            else
+                _lastSpriteMixBehind++;
+        }
+
+        WritePalettePixel(x, y, paletteIndex, spritePriority, spriteRank, spriteBlendMode, (spriteState & (1 << 18)) != 0);
+        return true;
+    }
+
     private void ClearSpriteReefForNextFrame()
     {
         if (_spriteReefOffsets.Count == 0)
         {
             Array.Clear(_spriteReefPalette);
             Array.Clear(_spriteReefGroup);
+            Array.Clear(_spriteReefRowActive);
+            _spriteReefTouchedRows.Clear();
             return;
         }
 
@@ -3734,8 +3867,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             int offset = _spriteReefOffsets[i];
             _spriteReefPalette[offset] = 0;
             _spriteReefGroup[offset] = 0;
+            _spriteReefNext[offset] = 0;
         }
         _spriteReefOffsets.Clear();
+
+        for (int i = 0; i < _spriteReefTouchedRows.Count; i++)
+        {
+            int y = _spriteReefTouchedRows[i];
+            _spriteReefRowActive[y] = false;
+            _spriteReefRowHead[y] = 0;
+        }
+        _spriteReefTouchedRows.Clear();
     }
 
     private bool TryReadSpriteCurrentState(int screenY, int spriteGroup, out int priority, out int blendMode, out bool blendSelect)
@@ -3942,7 +4084,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private bool DrawSpriteToReef(TaitoF3RomSet roms, F3Sprite sprite)
     {
+        int elements = roms.SpritePixels.Length >> 8;
+        if (elements <= 0)
+            return false;
+
         bool drewAny = false;
+        int codeBase = (sprite.Code % elements) << 8;
         int dy8 = sprite.Y;
         if (!_flipScreen)
             dy8 += 255;
@@ -3956,6 +4103,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             int dx8 = sprite.X + 128;
             int sourceY = sprite.FlipY ? sy ^ 0x0f : sy;
+            int sourceRow = codeBase + (sourceY << 4);
+            int rowOffset = dy * FrameWidth;
             for (int sx = 0; sx < 16; sx++)
             {
                 int dx = dx8 >> 8;
@@ -3964,17 +4113,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     continue;
 
                 int sourceX = sprite.FlipX ? sx ^ 0x0f : sx;
-                int pen = DecodeSpritePixel(roms, sprite.Code, sourceX, sourceY) & _spritePenMask;
+                int pen = roms.SpritePixels[sourceRow | sourceX] & _spritePenMask;
                 if (pen == 0)
                     continue;
 
-                int reefOffset = dy * FrameWidth + dx;
+                int reefOffset = rowOffset + dx;
                 if (_spriteReefPalette[reefOffset] != 0)
                     continue;
 
                 _spriteReefPalette[reefOffset] = (ushort)(0x1000 + ((sprite.Color << 4) | pen));
                 _spriteReefGroup[reefOffset] = (byte)((sprite.Color >> 6) & 3);
                 _spriteReefOffsets.Add(reefOffset);
+                LinkSpriteReefOffset(dy, reefOffset);
                 if (RenderStats)
                     _lastSpritePixels++;
                 drewAny = true;
@@ -3982,6 +4132,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
 
         return drewAny;
+    }
+
+    private void LinkSpriteReefOffset(int y, int offset)
+    {
+        if (!_spriteReefRowActive[y])
+        {
+            _spriteReefRowActive[y] = true;
+            _spriteReefTouchedRows.Add(y);
+        }
+
+        _spriteReefNext[offset] = _spriteReefRowHead[y];
+        _spriteReefRowHead[y] = offset + 1;
     }
 
     private static int DecodeSpritePixel(TaitoF3RomSet roms, int code, int x, int y)
