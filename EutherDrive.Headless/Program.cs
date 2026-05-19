@@ -161,6 +161,8 @@ class Program
                     case "l": l = true; break;
                     case "r": r = true; break;
                     case "start": start = true; break;
+                    case "coin":
+                    case "coin1":
                     case "select":
                     case "sel": select = true; break;
                 }
@@ -640,14 +642,35 @@ class Program
                 Console.WriteLine("[HEADLESS] Using Taito F3 Darius Gaiden bringup core");
                 using var darius = new DariusGaidenAdapter();
                 darius.LoadRom(romPath);
+                darius.SetMasterVolumePercent(100);
+                using var dariusAudioDump = OpenOptionalRawAudioDump(dumpDir, "headless_dariusg_audio_s16le.raw");
                 var dariusInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_HEADLESS_INPUT_SCRIPT"));
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool traceDariusTiming = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_HEADLESS_TIMING") == "1";
+                long dariusAudioSamplesTotal = 0;
+                long dariusAudioNonZeroTotal = 0;
+                int dariusAudioPeakMax = 0;
+                int dariusAudioRateLast = 0;
+                int dariusAudioChannelsLast = 0;
                 long runTicksTotal = 0;
                 long runTicksMin = long.MaxValue;
                 long runTicksMax = 0;
+                Span<long> topRunTicks = stackalloc long[16];
+                Span<int> topRunFrames = stackalloc int[16];
+                int framesOverBudget = 0;
+                int framesOver25Ms = 0;
+                int framesOver33Ms = 0;
+                int framesOver50Ms = 0;
+                int lastOverBudgetFrame = -1;
+                int overBudgetGapMin = int.MaxValue;
+                int overBudgetGapMax = 0;
                 ReadOnlySpan<byte> fbIn = darius.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
                 ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
                 int unchangedFrames = 0;
+                long targetFrameTicks = (long)(Stopwatch.Frequency / darius.GetTargetFps());
+                long ticks25Ms = Stopwatch.Frequency / 40;
+                long ticks33Ms = Stopwatch.Frequency / 30;
+                long ticks50Ms = Stopwatch.Frequency / 20;
 
                 for (int frame = 0; frame < framesToRun; frame++)
                 {
@@ -669,9 +692,51 @@ class Program
                     long runStart = Stopwatch.GetTimestamp();
                     darius.RunFrame();
                     long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    ReadOnlySpan<short> audio = darius.GetAudioBuffer(out int dariusFrameAudioRate, out int dariusFrameAudioChannels);
+                    WriteRawAudio(dariusAudioDump, audio);
+                    int audioPeak = AudioPeak(audio);
+                    int audioNonZero = CountNonZeroAudioSamples(audio);
+                    dariusAudioSamplesTotal += audio.Length;
+                    dariusAudioNonZeroTotal += audioNonZero;
+                    dariusAudioPeakMax = Math.Max(dariusAudioPeakMax, audioPeak);
+                    dariusAudioRateLast = dariusFrameAudioRate;
+                    dariusAudioChannelsLast = dariusFrameAudioChannels;
                     runTicksTotal += runTicks;
                     runTicksMin = Math.Min(runTicksMin, runTicks);
                     runTicksMax = Math.Max(runTicksMax, runTicks);
+                    if (traceDariusTiming)
+                    {
+                        if (runTicks > targetFrameTicks)
+                        {
+                            framesOverBudget++;
+                            if (lastOverBudgetFrame >= 0)
+                            {
+                                int gap = frame - lastOverBudgetFrame;
+                                overBudgetGapMin = Math.Min(overBudgetGapMin, gap);
+                                overBudgetGapMax = Math.Max(overBudgetGapMax, gap);
+                            }
+                            lastOverBudgetFrame = frame;
+                        }
+                        if (runTicks >= ticks25Ms)
+                            framesOver25Ms++;
+                        if (runTicks >= ticks33Ms)
+                            framesOver33Ms++;
+                        if (runTicks >= ticks50Ms)
+                            framesOver50Ms++;
+                        for (int i = 0; i < topRunTicks.Length; i++)
+                        {
+                            if (runTicks <= topRunTicks[i])
+                                continue;
+                            for (int j = topRunTicks.Length - 1; j > i; j--)
+                            {
+                                topRunTicks[j] = topRunTicks[j - 1];
+                                topRunFrames[j] = topRunFrames[j - 1];
+                            }
+                            topRunTicks[i] = runTicks;
+                            topRunFrames[i] = frame;
+                            break;
+                        }
+                    }
 
                     ReadOnlySpan<byte> fb = darius.GetFrameBuffer(out int w, out int h, out int s);
                     var stats = GetFrameStats(fb, w, h, s);
@@ -679,7 +744,7 @@ class Program
                     unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
                     lastFingerprint = fingerprint;
                     if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
-                        Console.WriteLine($"[HEADLESS] Frame {frame}: dariusg_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} debug={darius.DebugSummary}");
+                        Console.WriteLine($"[HEADLESS] Frame {frame}: dariusg_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} audio={dariusFrameAudioRate}Hz/{dariusFrameAudioChannels}ch samples={audio.Length} nonzero={audioNonZero} peak={audioPeak} debug={darius.DebugSummary}");
 
                     if (frame == 0 || frame == 5 || frame == 10)
                         DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_dariusg_frame{frame}.ppm"));
@@ -689,10 +754,35 @@ class Program
                 var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
                 ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
                 Console.WriteLine($"[HEADLESS] DariusG final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
+                Console.WriteLine($"[HEADLESS] DariusG audio samples={dariusAudioSamplesTotal} rate={dariusAudioRateLast} channels={dariusAudioChannelsLast} nonzero_samples={dariusAudioNonZeroTotal} max_abs={dariusAudioPeakMax}");
                 Console.WriteLine($"[HEADLESS] DariusG debug {darius.DebugSummary}");
                 Console.WriteLine($"[HEADLESS] DariusG {darius.MissingDevices}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_output.ppm"));
                 PrintHeadlessPerf("DariusG", framesToRun, runTicksTotal, runTicksMin, runTicksMax, darius.GetTargetFps());
+                if (traceDariusTiming)
+                {
+                    double tickMs = 1000.0 / Stopwatch.Frequency;
+                    var topBuilder = new StringBuilder();
+                    for (int i = 0; i < topRunTicks.Length; i++)
+                    {
+                        if (topRunTicks[i] <= 0)
+                            continue;
+                        if (topBuilder.Length != 0)
+                            topBuilder.Append(", ");
+                        topBuilder.Append(topRunFrames[i]);
+                        topBuilder.Append(':');
+                        topBuilder.Append((topRunTicks[i] * tickMs).ToString("0.###", CultureInfo.InvariantCulture));
+                        topBuilder.Append("ms");
+                    }
+                    string topFrames = topBuilder.ToString();
+                    string gapText = framesOverBudget > 1
+                        ? $"{overBudgetGapMin}..{overBudgetGapMax}"
+                        : "n/a";
+                    Console.WriteLine(
+                        $"[HEADLESS][DariusG-TIMING] over_budget={framesOverBudget}/{framesToRun} " +
+                        $"over25={framesOver25Ms} over33={framesOver33Ms} over50={framesOver50Ms} " +
+                        $"budget_ms={targetFrameTicks * tickMs:0.###} over_budget_gap_frames={gapText} top={topFrames}");
+                }
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
@@ -4214,6 +4304,11 @@ class Program
             bool usePgm2 = string.Equals(coreOverride, "pgm2", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "igs-pgm2", StringComparison.OrdinalIgnoreCase)
                 || (string.IsNullOrEmpty(coreOverride) && Pgm2Adapter.IsSupportedArchive(romPath));
+            bool useDariusGaiden = string.Equals(coreOverride, "dariusg", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "darius-gaiden", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "taitof3", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(coreOverride, "taito-f3", StringComparison.OrdinalIgnoreCase)
+                || (string.IsNullOrEmpty(coreOverride) && DariusGaidenAdapter.IsSupportedArchive(romPath));
             bool useOutZone = string.Equals(coreOverride, "outzone", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "toaplan-outzone", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "toaplan1", StringComparison.OrdinalIgnoreCase)
@@ -4222,7 +4317,7 @@ class Program
                 || string.Equals(coreOverride, "mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "arcade-mcs", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "xsleena", StringComparison.OrdinalIgnoreCase)
-                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useOutZone && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
+                || (string.IsNullOrEmpty(coreOverride) && !useNeoGeo && !usePgm2 && !useDariusGaiden && !useOutZone && !useTaitoF2 && !useBoogwing && McsArcadeAdapter.IsLikelyArcadeArchive(romPath));
             bool useHshavoc = string.Equals(coreOverride, "hshavoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "high-seas-havoc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(coreOverride, "dataeast-hshavoc", StringComparison.OrdinalIgnoreCase)
@@ -4515,6 +4610,159 @@ class Program
                 Console.WriteLine($"[HEADLESS] TAITO-F2 state final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16}");
                 DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_taitof2_state_output.ppm"));
                 PrintHeadlessPerf("TAITO-F2", framesToRun, runTicksTotal, runTicksMin, runTicksMax, 60.0);
+                Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
+                return 0;
+            }
+
+            if (useDariusGaiden)
+            {
+                using var darius = new DariusGaidenAdapter();
+                darius.LoadRom(romPath);
+
+                int? slotOverrideDarius = ParseOptionalIntEnv("EUTHERDRIVE_SAVESTATE_SLOT");
+                var payloadDarius = TryLoadSavestatePayload(savestatePath, darius.RomIdentity, slotOverrideDarius, out var dariusError);
+                if (payloadDarius == null)
+                {
+                    Console.Error.WriteLine($"[HEADLESS-ERROR] Savestate load failed: {dariusError}");
+                    return 1;
+                }
+
+                using (var dariusStateStream = new MemoryStream(payloadDarius, writable: false))
+                using (var dariusStateReader = new BinaryReader(dariusStateStream))
+                    darius.LoadState(dariusStateReader);
+
+                Console.WriteLine("[HEADLESS] Savestate loaded successfully (DariusG)");
+                var dariusInputScript = ParseSnesInputScript(Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_HEADLESS_INPUT_SCRIPT"));
+                bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                bool traceDariusTiming = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_HEADLESS_TIMING") == "1";
+                ReadOnlySpan<byte> fbBefore = darius.GetFrameBuffer(out int wBefore, out int hBefore, out int sBefore);
+                var statsBefore = GetFrameStats(fbBefore, wBefore, hBefore, sBefore);
+                ulong lastFingerprint = ComputeFrameFingerprint(fbBefore, wBefore, hBefore, sBefore);
+                int unchangedFrames = 0;
+                Console.WriteLine($"[HEADLESS] DariusG before fb_has_content={statsBefore.HasContent} nonzero_pixels={statsBefore.NonZeroPixels} first_nonzero=({statsBefore.FirstX},{statsBefore.FirstY}) fp=0x{lastFingerprint:X16} debug={darius.DebugSummary}");
+                DumpBgraToPpm(fbBefore, wBefore, hBefore, sBefore, Path.Combine(dumpDir, "headless_dariusg_state_before.ppm"));
+
+                using var dariusAudioDump = OpenOptionalRawAudioDump(dumpDir, "headless_dariusg_state_audio_s16le.raw");
+                long dariusAudioSamplesTotal = 0;
+                long dariusAudioNonZeroTotal = 0;
+                int dariusAudioPeakMax = 0;
+                int dariusAudioRateLast = 0;
+                int dariusAudioChannelsLast = 0;
+                long runTicksTotal = 0;
+                long runTicksMin = long.MaxValue;
+                long runTicksMax = 0;
+                Span<long> topRunTicks = stackalloc long[16];
+                Span<int> topRunFrames = stackalloc int[16];
+                int framesOverBudget = 0;
+                int framesOver25Ms = 0;
+                int framesOver33Ms = 0;
+                int framesOver50Ms = 0;
+                int lastOverBudgetFrame = -1;
+                int overBudgetGapMin = int.MaxValue;
+                int overBudgetGapMax = 0;
+                long targetFrameTicks = (long)(Stopwatch.Frequency / darius.GetTargetFps());
+                long ticks25Ms = Stopwatch.Frequency / 40;
+                long ticks33Ms = Stopwatch.Frequency / 30;
+                long ticks50Ms = Stopwatch.Frequency / 20;
+                for (int frame = 0; frame < framesToRun; frame++)
+                {
+                    var input = ResolveSnesInputForFrame(frame, dariusInputScript);
+                    darius.SetInputState(
+                        input.Up, input.Down, input.Left, input.Right,
+                        input.A, input.B, input.X, input.Start,
+                        input.Y, input.L, input.R, input.Select,
+                        PadType.SixButton);
+                    long runStart = Stopwatch.GetTimestamp();
+                    darius.RunFrame();
+                    long runTicks = Stopwatch.GetTimestamp() - runStart;
+                    ReadOnlySpan<short> audio = darius.GetAudioBuffer(out int dariusFrameAudioRate, out int dariusFrameAudioChannels);
+                    WriteRawAudio(dariusAudioDump, audio);
+                    int audioPeak = AudioPeak(audio);
+                    int audioNonZero = CountNonZeroAudioSamples(audio);
+                    dariusAudioSamplesTotal += audio.Length;
+                    dariusAudioNonZeroTotal += audioNonZero;
+                    dariusAudioPeakMax = Math.Max(dariusAudioPeakMax, audioPeak);
+                    dariusAudioRateLast = dariusFrameAudioRate;
+                    dariusAudioChannelsLast = dariusFrameAudioChannels;
+                    runTicksTotal += runTicks;
+                    runTicksMin = Math.Min(runTicksMin, runTicks);
+                    runTicksMax = Math.Max(runTicksMax, runTicks);
+                    if (traceDariusTiming)
+                    {
+                        if (runTicks > targetFrameTicks)
+                        {
+                            framesOverBudget++;
+                            if (lastOverBudgetFrame >= 0)
+                            {
+                                int gap = frame - lastOverBudgetFrame;
+                                overBudgetGapMin = Math.Min(overBudgetGapMin, gap);
+                                overBudgetGapMax = Math.Max(overBudgetGapMax, gap);
+                            }
+                            lastOverBudgetFrame = frame;
+                        }
+                        if (runTicks >= ticks25Ms)
+                            framesOver25Ms++;
+                        if (runTicks >= ticks33Ms)
+                            framesOver33Ms++;
+                        if (runTicks >= ticks50Ms)
+                            framesOver50Ms++;
+                        for (int i = 0; i < topRunTicks.Length; i++)
+                        {
+                            if (runTicks <= topRunTicks[i])
+                                continue;
+                            for (int j = topRunTicks.Length - 1; j > i; j--)
+                            {
+                                topRunTicks[j] = topRunTicks[j - 1];
+                                topRunFrames[j] = topRunFrames[j - 1];
+                            }
+                            topRunTicks[i] = runTicks;
+                            topRunFrames[i] = frame;
+                            break;
+                        }
+                    }
+
+                    ReadOnlySpan<byte> fb = darius.GetFrameBuffer(out int w, out int h, out int s);
+                    var stats = GetFrameStats(fb, w, h, s);
+                    ulong fingerprint = ComputeFrameFingerprint(fb, w, h, s);
+                    unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
+                    lastFingerprint = fingerprint;
+                    if (traceFrames || frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                        Console.WriteLine($"[HEADLESS] DariusG state frame {frame}: fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} audio={dariusFrameAudioRate}Hz/{dariusFrameAudioChannels}ch samples={audio.Length} nonzero={audioNonZero} peak={audioPeak} debug={darius.DebugSummary}");
+                    if (frame == 0 || frame == 5 || frame == 10)
+                        DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_dariusg_state_frame{frame}.ppm"));
+                }
+
+                ReadOnlySpan<byte> fbOut = darius.GetFrameBuffer(out int wOut, out int hOut, out int sOut);
+                var statsOut = GetFrameStats(fbOut, wOut, hOut, sOut);
+                ulong finalFingerprint = ComputeFrameFingerprint(fbOut, wOut, hOut, sOut);
+                Console.WriteLine($"[HEADLESS] DariusG state final fb_has_content={statsOut.HasContent} nonzero_pixels={statsOut.NonZeroPixels} first_nonzero=({statsOut.FirstX},{statsOut.FirstY}) fp=0x{finalFingerprint:X16} debug={darius.DebugSummary}");
+                Console.WriteLine($"[HEADLESS] DariusG state audio samples={dariusAudioSamplesTotal} rate={dariusAudioRateLast} channels={dariusAudioChannelsLast} nonzero_samples={dariusAudioNonZeroTotal} max_abs={dariusAudioPeakMax}");
+                DumpBgraToPpm(fbOut, wOut, hOut, sOut, Path.Combine(dumpDir, "headless_dariusg_state_output.ppm"));
+                PrintHeadlessPerf("DariusG", framesToRun, runTicksTotal, runTicksMin, runTicksMax, darius.GetTargetFps());
+                if (traceDariusTiming)
+                {
+                    double tickMs = 1000.0 / Stopwatch.Frequency;
+                    var topBuilder = new StringBuilder();
+                    for (int i = 0; i < topRunTicks.Length; i++)
+                    {
+                        if (topRunTicks[i] <= 0)
+                            continue;
+                        if (topBuilder.Length != 0)
+                            topBuilder.Append(", ");
+                        topBuilder.Append(topRunFrames[i]);
+                        topBuilder.Append(':');
+                        topBuilder.Append((topRunTicks[i] * tickMs).ToString("0.###", CultureInfo.InvariantCulture));
+                        topBuilder.Append("ms");
+                    }
+                    string topFrames = topBuilder.ToString();
+                    string gapText = framesOverBudget > 1
+                        ? $"{overBudgetGapMin}..{overBudgetGapMax}"
+                        : "n/a";
+                    Console.WriteLine(
+                        $"[HEADLESS][DariusG-TIMING] over_budget={framesOverBudget}/{framesToRun} " +
+                        $"over25={framesOver25Ms} over33={framesOver33Ms} over50={framesOver50Ms} " +
+                        $"budget_ms={targetFrameTicks * tickMs:0.###} over_budget_gap_frames={gapText} top={topFrames}");
+                }
                 Console.WriteLine($"[HEADLESS] Completed {framesToRun} frames");
                 return 0;
             }
