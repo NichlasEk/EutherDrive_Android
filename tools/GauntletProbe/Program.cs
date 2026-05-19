@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Diagnostics;
 using System.Reflection;
 using EutherDrive.Core.Arcade.Vegas;
 
@@ -21,8 +22,11 @@ if (args.Length > 6 && !string.IsNullOrWhiteSpace(args[6]))
 if (args.Length > 7 && args[7] == "dumpcode")
     Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CODE", "1");
 
+var totalStopwatch = Stopwatch.StartNew();
+var loadStopwatch = Stopwatch.StartNew();
 var adapter = new GauntletDarkLegacyAdapter();
 adapter.LoadRom(romPath);
+loadStopwatch.Stop();
 
 ulong? stopPc = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_STOP_PC"));
 string? warmupSnapshotPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_WARMUP_STATE");
@@ -41,6 +45,8 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
     Console.Error.WriteLine($"warmupSnapshotLoaded={warmupSnapshotPath}");
 }
 
+long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
+var runStopwatch = Stopwatch.StartNew();
 if (!loadedWarmupSnapshot)
 {
     RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames, stopPc);
@@ -53,6 +59,7 @@ if (!loadedWarmupSnapshot)
 }
 
 RunUntilFrame(adapter, frames, stopPc);
+runStopwatch.Stop();
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
     ? parsedExtraSteps
@@ -90,6 +97,7 @@ else if (extraSteps > 0)
 
 Console.WriteLine($"rom={adapter.RomIdentity?.Name ?? "unknown"}");
 Console.WriteLine($"frame={adapter.FrameCounter}");
+PrintScoreboard(adapter, frames, runStartFrame, loadStopwatch.Elapsed, runStopwatch.Elapsed, totalStopwatch.Elapsed);
 Console.WriteLine($"debug={adapter.DebugStatus}");
 
 object machine = GetField(adapter, "_machine");
@@ -329,10 +337,43 @@ static void DumpVoodoo(object facade)
         $"directTriangles={directTriangles} setupTriangles={setupTriangles} lfbWrites={lfbWrites} texWrites={texWrites} " +
         $"fastFills={fastFills} swaps={swaps}");
     Console.WriteLine("voodoo packetTypes=" + string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}")));
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_EVENTS") == "1")
+        Console.WriteLine("voodoo recentEvents=" + GetProperty(facade, "RecentEventStatus"));
 
     var registers = (uint[])GetField(backend, "_registers");
     foreach (int reg in new[] { 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x40, 0x46, 0x47, 0x49, 0x4a, 0x51, 0x52, 0x83, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa8, 0xa9 })
         Console.WriteLine($"voodoo reg[{reg:x3}]=0x{registers[reg]:x8}");
+}
+
+static void PrintScoreboard(GauntletDarkLegacyAdapter adapter, int targetFrames, long runStartFrame, TimeSpan loadElapsed, TimeSpan runElapsed, TimeSpan totalElapsed)
+{
+    long frameCounter = adapter.FrameCounter.GetValueOrDefault();
+    long framesRan = Math.Max(0, frameCounter - runStartFrame);
+    double frameRate = runElapsed.TotalSeconds > 0 ? framesRan / runElapsed.TotalSeconds : 0;
+    uint frameHash = HashFrame(adapter.GetFrameBuffer(out int width, out int height, out int stride), width, height, stride);
+    Console.WriteLine(
+        $"score targetFrames={targetFrames} frameCounter={frameCounter} ranFrames={framesRan} " +
+        $"loadMs={loadElapsed.TotalMilliseconds:F1} runMs={runElapsed.TotalMilliseconds:F1} totalMs={totalElapsed.TotalMilliseconds:F1} " +
+        $"fps={frameRate:F2} frameHash=0x{frameHash:x8}");
+}
+
+static uint HashFrame(ReadOnlySpan<byte> frame, int width, int height, int stride)
+{
+    const uint fnvOffset = 2166136261u;
+    const uint fnvPrime = 16777619u;
+    uint hash = fnvOffset;
+    for (int y = 0; y < height; y++)
+    {
+        int row = y * stride;
+        int bytes = width * 4;
+        for (int i = 0; i < bytes; i++)
+        {
+            hash ^= frame[row + i];
+            hash *= fnvPrime;
+        }
+    }
+
+    return hash;
 }
 
 static int GetIntField(object instance, string name)

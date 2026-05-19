@@ -12140,6 +12140,7 @@ public interface IVoodooBackend
     uint ReadTexture32(uint offset);
     void WriteTexture32(uint offset, uint value);
     string DebugStatus { get; }
+    string RecentEventStatus { get; }
     void RenderFrame(EutherFrameTarget target);
 }
 
@@ -12152,6 +12153,7 @@ internal sealed class VoodooFacade : IVoodooBackend
     public bool TraceEnabled => _backend is VoodooTraceBackend;
     public bool HasVideoActivity => _backend is VoodooBringupBackend { HasVideoActivity: true };
     public string DebugStatus => _backend.DebugStatus;
+    public string RecentEventStatus => _backend.RecentEventStatus;
 
     public void Reset()
     {
@@ -12235,8 +12237,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
+    private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
+    private readonly string[] _recentVoodooEvents = new string[64];
     private int _drawTraceCount;
+    private int _recentVoodooEventSequence;
 
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
@@ -12246,12 +12251,15 @@ internal class VoodooBringupBackend : IVoodooBackend
            GetBufferCountDebugStatus() +
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
+    public string RecentEventStatus => FormatRecentVoodooEvents();
 
     public virtual void WriteRegister(uint address, uint value)
     {
         uint register = (address >> 2) & 0xffu;
         _registers[register] = value;
         _registerWriteCount++;
+        if (IsInterestingEventRegister(register))
+            RecordVoodooEvent($"reg[{register:x3}]=0x{value:x8}");
         switch (register)
         {
             case RegTriangleCommand:
@@ -12565,6 +12573,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void DecodeFifoPacket(uint command, int wordsNeeded)
     {
         _fifoPacketTypeCounts[command & 7u]++;
+        RecordInterestingFifoEvent(command, wordsNeeded);
         switch (command & 7u)
         {
             case 0:
@@ -12633,6 +12642,89 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void WriteCmdFifoRegister(uint target, uint value)
         => WriteRegister((target & 0xffu) << 2, value);
+
+    private void RecordInterestingFifoEvent(uint command, int wordsNeeded)
+    {
+        if (!_recordVoodooEvents)
+            return;
+
+        uint type = command & 7u;
+        switch (type)
+        {
+            case 0:
+                RecordVoodooEvent($"fifo type0 cmd=0x{command:x8} words={wordsNeeded} rd=0x{_cmdFifoReadIndex:x4}");
+                break;
+            case 1:
+            {
+                int count = (int)(command >> 16);
+                uint target = (command >> 3) & 0xfffu;
+                if (TouchesInterestingEventRegister(target, (uint)Math.Max(0, count)))
+                    RecordVoodooEvent($"fifo type1 cmd=0x{command:x8} target=0x{target:x3} count={count} inc={(command >> 15) & 1u} words={wordsNeeded} rd=0x{_cmdFifoReadIndex:x4}");
+                break;
+            }
+            case 3:
+                RecordVoodooEvent($"fifo type3 cmd=0x{command:x8} count={(command >> 6) & 0xfu} code={(command >> 3) & 7u} words={wordsNeeded} rd=0x{_cmdFifoReadIndex:x4}");
+                break;
+            case 4:
+            {
+                uint target = (command >> 3) & 0xfffu;
+                uint mask = (command >> 15) & 0x3fffu;
+                if (TouchesInterestingType4Register(target, mask))
+                    RecordVoodooEvent($"fifo type4 cmd=0x{command:x8} target=0x{target:x3} mask=0x{mask:x4} words={wordsNeeded} rd=0x{_cmdFifoReadIndex:x4}");
+                break;
+            }
+            case 5:
+                RecordVoodooEvent($"fifo type5 cmd=0x{command:x8} count={(command >> 3) & 0x7ffffu} space={command >> 30} words={wordsNeeded} rd=0x{_cmdFifoReadIndex:x4}");
+                break;
+        }
+    }
+
+    private void RecordVoodooEvent(string description)
+    {
+        if (!_recordVoodooEvents)
+            return;
+
+        int sequence = _recentVoodooEventSequence++;
+        _recentVoodooEvents[sequence & (_recentVoodooEvents.Length - 1)] = $"{sequence}:{description}";
+    }
+
+    private string FormatRecentVoodooEvents()
+    {
+        int count = Math.Min(_recentVoodooEventSequence, _recentVoodooEvents.Length);
+        if (count == 0)
+            return "none";
+
+        int start = _recentVoodooEventSequence - count;
+        return string.Join(" | ", Enumerable.Range(0, count).Select(i => _recentVoodooEvents[(start + i) & (_recentVoodooEvents.Length - 1)]));
+    }
+
+    private static bool TouchesInterestingEventRegister(uint target, uint count)
+    {
+        for (uint i = 0; i < count; i++)
+        {
+            if (IsInterestingEventRegister(target + i))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TouchesInterestingType4Register(uint target, uint mask)
+    {
+        for (uint bit = 0; bit < 14; bit++)
+        {
+            if (((mask >> (int)bit) & 1u) != 0 && IsInterestingEventRegister(target + bit))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsInterestingEventRegister(uint register)
+        => register is RegTriangleCommand or RegFtriangleCommand or RegFbzMode or RegLfbMode or
+            RegClipLeftRight or RegClipLowYHighY or RegFastfillCommand or RegSwapbufferCommand or
+            RegColor0 or RegColor1 or 0x98u or 0x99u or 0x9au or 0x9bu or 0x9cu or 0x9du or 0x9eu or
+            0xa8u or 0xa9u;
 
     private void DecodeFifoType3(uint command, int wordsNeeded)
     {
