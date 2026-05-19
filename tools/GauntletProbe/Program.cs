@@ -339,6 +339,8 @@ static void DumpVoodoo(object facade)
     Console.WriteLine("voodoo packetTypes=" + string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}")));
     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_EVENTS") == "1")
         Console.WriteLine("voodoo recentEvents=" + GetProperty(facade, "RecentEventStatus"));
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1")
+        Console.WriteLine("voodoo statusPcs=" + GetProperty(backend, "StatusPcProfile"));
 
     var registers = (uint[])GetField(backend, "_registers");
     foreach (int reg in new[] { 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x40, 0x46, 0x47, 0x49, 0x4a, 0x51, 0x52, 0x83, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa8, 0xa9 })

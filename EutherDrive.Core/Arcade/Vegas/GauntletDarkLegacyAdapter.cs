@@ -12260,8 +12260,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
+    private readonly bool _profileStatusPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1";
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private readonly string[] _recentVoodooEvents = new string[64];
+    private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
     private int _drawTraceCount;
     private int _recentVoodooEventSequence;
 
@@ -12275,6 +12277,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
+    public string StatusPcProfile => GetStatusPcProfile();
 
     public virtual void WriteRegister(uint address, uint value)
     {
@@ -12359,6 +12362,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public uint ReadStatus(bool vblank)
     {
         _statusReadCount++;
+        CountStatusPc();
         if (vblank && _pendingSwapCount > 0)
         {
             _pendingSwapCount--;
@@ -12733,6 +12737,31 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int start = _recentVoodooEventSequence - count;
         return string.Join(" | ", Enumerable.Range(0, count).Select(i => _recentVoodooEvents[(start + i) & (_recentVoodooEvents.Length - 1)]));
+    }
+
+    private void CountStatusPc()
+    {
+        if (!_profileStatusPcs)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        _statusPcCounts.TryGetValue(pc, out ulong count);
+        _statusPcCounts[pc] = count + 1;
+    }
+
+    private string GetStatusPcProfile()
+    {
+        if (_statusPcCounts.Count == 0)
+            return "none";
+
+        return string.Join(",", _statusPcCounts
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key)
+            .Take(16)
+            .Select(pair => $"0x{pair.Key:x16}:{pair.Value}"));
     }
 
     private static bool TouchesInterestingEventRegister(uint target, uint count)
