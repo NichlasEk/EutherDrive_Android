@@ -46,6 +46,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly bool TraceTaskCreatePc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE") == "1";
     private static readonly bool TraceTaskSchedulerPc = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_TASK_SCHEDULER") == "1";
     private static readonly bool TraceSummary = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_SUMMARY") == "1";
+    private static readonly bool TracePhaseTiming = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_PHASE_TIMING") == "1";
+    private static readonly bool TraceHotFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_HOT_FILL") == "1";
     private static readonly bool RenderStats = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_RENDER_STATS") == "1";
     private static readonly int TraceInstructionLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_INSTRUCTIONS", 64);
     private static readonly int TraceBootPcLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_BOOT_PC_LIMIT", 256);
@@ -121,8 +123,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private ulong _executedInstructions;
     private ulong _executedCycles;
     private ulong _m68ec020ProbeInstructions;
+    private int _lastFrameInstructions;
+    private int _lastFrameCycles;
+    private long _lastFrameTotalTicks;
+    private long _lastFrameCpuTicks;
+    private long _lastFrameRenderTicks;
+    private long _lastFrameControlTicks;
     private int _traceInstructionsRemaining;
     private int _traceSceneCopyPcRemaining;
+    private int _traceHotFillRemaining = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_HOT_FILL_LIMIT", 128);
     private readonly Queue<F3TaskState> _f3TaskQueue = new();
     private ulong _f3TasksEnqueued;
     private ulong _f3TasksDispatched;
@@ -211,12 +220,25 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     public string DebugSummary =>
         BuildDebugSummary();
 
+    public int LastFrameInstructions => _lastFrameInstructions;
+
+    public int LastFrameCycles => _lastFrameCycles;
+
+    public long LastFrameTotalTicks => _lastFrameTotalTicks;
+
+    public long LastFrameCpuTicks => _lastFrameCpuTicks;
+
+    public long LastFrameRenderTicks => _lastFrameRenderTicks;
+
+    public long LastFrameControlTicks => _lastFrameControlTicks;
+
     private string BuildDebugSummary()
     {
         var state = _mainCpu.GetState();
+        double tickMs = 1000.0 / Stopwatch.Frequency;
         return $"driver={_driverName} frame={_frameCounter} pc=0x{_mainCpu.Pc:X6} sr=0x{_mainCpu.StatusRegister:X4} " +
         $"op=0x{_mainCpu.NextOpcode:X4} d0=0x{state.Data[0]:X8} d1=0x{state.Data[1]:X8} a0=0x{state.Address[0]:X8} a1=0x{state.Address[1]:X8} a5=0x{state.Address[5]:X8} a6=0x{state.Address[6]:X8} " +
-        $"cycles={_executedCycles} instr={_executedInstructions} mame020={_mainCpu.ImplementedOpcodeCount}/{_mainCpu.MameEc020OpcodeCount} " +
+        $"cycles={_executedCycles} instr={_executedInstructions} frameInstr={_lastFrameInstructions} frameCycles={_lastFrameCycles} phaseMs={_lastFrameTotalTicks * tickMs:0.###}/{_lastFrameCpuTicks * tickMs:0.###}/{_lastFrameRenderTicks * tickMs:0.###}/{_lastFrameControlTicks * tickMs:0.###} mame020={_mainCpu.ImplementedOpcodeCount}/{_mainCpu.MameEc020OpcodeCount} " +
         $"020probe={_m68ec020ProbeInstructions} tasks={_f3TaskQueue.Count} q={BuildTaskQueueSample()} taskEnq={_f3TasksEnqueued} taskRun={_f3TasksDispatched} " +
         $"lastTask=0x{_lastF3TaskEntry:X6} enq={BuildRecentTaskSample(_recentF3EnqueuedTasks, _recentF3EnqueuedIndex)} run={BuildRecentTaskSample(_recentF3DispatchedTasks, _recentF3DispatchedIndex)} lastTrap=0x{_lastF3TrapPc:X6} vbr=0x{_mainCpu.VectorBase:X6} " +
         $"rte={_mainCpu.RteCount}/{_mainCpu.SuspiciousRteCount}@0x{_mainCpu.LastRteStackPointer:X6}:sr{_mainCpu.LastRteStatusRegister:X4}/pc0x{_mainCpu.LastRteProgramCounter:X6}/fmt{_mainCpu.LastRteFormatWord:X4} firstBadRte=0x{_mainCpu.FirstSuspiciousRteInstructionPc:X6}/0x{_mainCpu.FirstSuspiciousRteOpcode:X4}@sp0x{_mainCpu.FirstSuspiciousRteStackPointer:X6}:sr{_mainCpu.FirstSuspiciousRteStatusRegister:X4}/pc0x{_mainCpu.FirstSuspiciousRteProgramCounter:X6}/fmt{_mainCpu.FirstSuspiciousRteFormatWord:X4} sp=a7:{_mainCpu.ActiveStackPointer:X6}/u:{_mainCpu.UserStackPointer:X6}/i:{_mainCpu.InterruptStackPointer:X6}/m:{_mainCpu.MasterStackPointer:X6} badSupSp={_mainCpu.SuspiciousSupervisorStackCount}@0x{_mainCpu.FirstSuspiciousSupervisorStackPc:X6}/0x{_mainCpu.FirstSuspiciousSupervisorStackOpcode:X4}:sr{_mainCpu.FirstSuspiciousSupervisorStackStatusRegister:X4}/sp0x{_mainCpu.FirstSuspiciousSupervisorStackPointer:X6} lowSp={_mainCpu.LowStackSwitchCount}@0x{_mainCpu.LastLowStackSwitchPc:X6}/0x{_mainCpu.LastLowStackSwitchOpcode:X4}:sr{_mainCpu.LastLowStackSwitchOldSr:X4}->{_mainCpu.LastLowStackSwitchNewSr:X4}:0x{_mainCpu.LastLowStackSwitchOldStackPointer:X6}->0x{_mainCpu.LastLowStackSwitchNewStackPointer:X6}/u{_mainCpu.LastLowStackSwitchUserStackPointer:X6}/i{_mainCpu.LastLowStackSwitchInterruptStackPointer:X6}/m{_mainCpu.LastLowStackSwitchMasterStackPointer:X6} restIdx=0x{_mainCpu.LastRestoreIndexedPc:X6}/ext{_mainCpu.LastRestoreIndexedExtension:X4}:base0x{_mainCpu.LastRestoreIndexedBase:X8}+idx{_mainCpu.LastRestoreIndexedIndex}/raw0x{_mainCpu.LastRestoreIndexedRawIndex:X8}->ea0x{_mainCpu.LastRestoreIndexedAddress:X8}=0x{_mainCpu.LastRestoreIndexedValue:X8} " +
@@ -489,14 +511,21 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (!_loaded)
             return;
 
+        long profileStartTicks = TracePhaseTiming ? Stopwatch.GetTimestamp() : 0;
+        long controlTicks = 0;
+        long cpuTicks = 0;
+        long renderTicks = 0;
         long frameStartTicks = AdaptiveRenderPacing && RenderDivisor <= 1
             ? Stopwatch.GetTimestamp()
             : 0;
         _frameCounter++;
+        long controlStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
         _bus.BeginFrameInterrupt();
         if (!UseNativeF3TrapScheduler && _f3TasksEnqueued == 0)
             _bus.PulseBootSchedulerGate();
         _bus.RefreshInputLatches();
+        if (controlStartTicks != 0)
+            controlTicks += Stopwatch.GetTimestamp() - controlStartTicks;
         if (_cpuFaulted)
         {
             DrawBringupFrame();
@@ -505,6 +534,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         int cycles = 0;
         int instructions = 0;
+        long cpuStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
         try
         {
             int cycleBudget = (int)(MainClockHz / TargetFps) * CpuScale;
@@ -583,6 +613,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     _traceInstructionsRemaining--;
                     Console.WriteLine($"[DARIUSG-020] f={_frameCounter} i={instructions} pc=0x{pc:X6} op=0x{op:X4} sr=0x{_mainCpu.StatusRegister:X4}");
                 }
+                if (TraceHotFill && _traceHotFillRemaining > 0 && pc >= 0x005880 && pc <= 0x005896)
+                {
+                    _traceHotFillRemaining--;
+                    var hotState = _mainCpu.GetState();
+                    Console.WriteLine(
+                        $"[DARIUSG-HOTFILL] f={_frameCounter} i={instructions} c={cycles} pc=0x{pc:X6} op=0x{op:X4} " +
+                        $"d0=0x{hotState.Data[0]:X8} d1=0x{hotState.Data[1]:X8} a0=0x{hotState.Address[0]:X8} next=0x{_bus.PeekWord(pc + 2):X4}");
+                }
 
                 uint used = TryExecuteM68ec020ProbeInstruction(pc, op, out uint probeCycles)
                     ? probeCycles
@@ -620,17 +658,45 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _lastStopReason = $"{ex.GetType().Name}: {ex.Message}";
             Console.Error.WriteLine($"[DARIUSG-020] fault frame={_frameCounter} pc=0x{_mainCpu.Pc:X6} op=0x{_mainCpu.NextOpcode:X4} {ex}");
         }
+        if (cpuStartTicks != 0)
+            cpuTicks = Stopwatch.GetTimestamp() - cpuStartTicks;
 
         if (Trace || TraceSummary)
             Console.WriteLine($"[DARIUSG] {DebugSummary}");
 
+        controlStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
         if (_f3TasksEnqueued != 0)
             _bus.RefreshInputLatches();
-        if (ShouldRenderThisFrame())
+        if (controlStartTicks != 0)
+            controlTicks += Stopwatch.GetTimestamp() - controlStartTicks;
+
+        bool renderedFrame = ShouldRenderThisFrame();
+        if (renderedFrame)
+        {
+            long renderStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
             RenderUglyVideo();
+            if (renderStartTicks != 0)
+                renderTicks = Stopwatch.GetTimestamp() - renderStartTicks;
+        }
 
         if (frameStartTicks != 0)
             UpdateAdaptiveRenderPacing(Stopwatch.GetTimestamp() - frameStartTicks);
+
+        _lastFrameInstructions = instructions;
+        _lastFrameCycles = cycles;
+        _lastFrameCpuTicks = cpuTicks;
+        _lastFrameRenderTicks = renderTicks;
+        _lastFrameControlTicks = controlTicks;
+        _lastFrameTotalTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() - profileStartTicks : 0;
+
+        if (TracePhaseTiming && _lastFrameTotalTicks > TargetFrameTicks)
+        {
+            double tickMs = 1000.0 / Stopwatch.Frequency;
+            Console.WriteLine(
+                $"[DARIUSG-PHASE] f={_frameCounter} total={_lastFrameTotalTicks * tickMs:0.###}ms " +
+                $"cpu={cpuTicks * tickMs:0.###}ms render={renderTicks * tickMs:0.###}ms ctrl={controlTicks * tickMs:0.###}ms " +
+                $"instr={instructions} cycles={cycles} rendered={(renderedFrame ? 1 : 0)} stop={_lastStopReason} pc=0x{_mainCpu.Pc:X6} irq={_bus.InterruptLevel()}");
+        }
     }
 
     private bool ShouldRenderThisFrame()
@@ -843,6 +909,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         // Exact loop collapses for Darius' hot RAM/video fill routines. These
         // keep native trap scheduling intact while avoiding thousands of tiny
         // 020 memory operations per frame.
+        if (TryExecuteDariusSpriteReefClear(pc, out cycles))
+            return true;
+        if (TrySkipEmptySpriteControlSlots(pc, op, out cycles))
+            return true;
         if (TryExecuteDariusWorkRamCurrent(pc, op, out cycles))
             return true;
         if (TryExecuteDariusBootRamClear(pc, op, out cycles))
@@ -1101,10 +1171,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
 
         ushort value = (ushort)state.Data[1];
-        for (int i = 0; i < remaining; i++)
+        if (!_bus.TryFillWorkRamWordRange(address, (uint)remaining, value))
         {
-            _bus.WriteWord(address, value);
-            address = (address + 2) & 0x00ff_ffff;
+            for (int i = 0; i < remaining; i++)
+            {
+                _bus.WriteWord(address, value);
+                address = (address + 2) & 0x00ff_ffff;
+            }
+        }
+        else
+        {
+            address = (address + (uint)remaining * 2u) & 0x00ff_ffff;
         }
 
         state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
@@ -1180,8 +1257,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (TryExecuteDariusF3RamPatternFill(pc, op, out cycles))
             return true;
 
+        if (pc == 0x005880 && op == 0x48e7)
+            return TryExecuteDariusTextRamClearRoutine(pc, out cycles);
+        if (pc == 0x0058ae && op == 0x48e7)
+            return TryExecuteDariusTextRamColumnClearRoutine(pc, out cycles);
+        if ((pc == 0x0058da || pc == 0x005918 || pc == 0x005956 || pc == 0x0059b4) && op == 0x48e7)
+            return TryExecuteDariusPlayfieldClearRoutine(pc, out cycles);
+
         if (op == 0x20c1 && _bus.PeekWord(pc + 2) == 0x51c8)
             return TryExecuteDariusDbraLongFill(pc, out cycles);
+
+        if (op == 0x51c8 && _bus.PeekWord(pc - 2) == 0x20c1 && _bus.PeekWord(pc + 2) == 0xfffc)
+            return TryExecuteDariusDbraLongFillAfterFirstWrite(pc, out cycles);
 
         if (op == 0x30c1 && _bus.PeekWord(pc + 2) == 0x51c8)
             return TryExecuteDariusDbraWordFill(pc, out cycles);
@@ -1317,6 +1404,208 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _m68ec020ProbeInstructions += (ulong)remaining;
         cycles = (uint)Math.Max(34, remaining * 8);
         return true;
+    }
+
+    private bool TryExecuteDariusDbraLongFillAfterFirstWrite(uint pc, out uint cycles)
+    {
+        cycles = 0;
+        var state = _mainCpu.GetState();
+        int remaining = (ushort)state.Data[0];
+        uint address = state.Address[0] & 0x00ff_ffff;
+        if (remaining <= 0 || remaining > 0x1000 || !IsF3VideoAddress(address))
+            return false;
+
+        uint value = state.Data[1];
+        uint byteCount = (uint)remaining * 4;
+        if (value == 0 && _bus.TryClearWritableRamRange(address, byteCount))
+        {
+            address = (address + byteCount) & 0x00ff_ffff;
+        }
+        else
+        {
+            for (int i = 0; i < remaining; i++)
+            {
+                _bus.WriteLong(address, value);
+                address = (address + 4) & 0x00ff_ffff;
+            }
+        }
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
+        state.Address[0] = address;
+        uint nextPc = (pc + 4) & 0x00ff_ffff;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += (ulong)remaining;
+        cycles = (uint)Math.Max(34, remaining * 8);
+        return true;
+    }
+
+    private bool TryExecuteDariusTextRamClearRoutine(uint pc, out uint cycles)
+    {
+        cycles = 0;
+        if (_bus.PeekWord(pc + 0x00) != 0x48e7
+            || _bus.PeekWord(pc + 0x02) != 0xc080
+            || _bus.PeekWord(pc + 0x04) != 0x41f9
+            || _bus.PeekLong(pc + 0x06) != 0x0061_c000u
+            || _bus.PeekWord(pc + 0x0a) != 0x303c
+            || _bus.PeekWord(pc + 0x0c) != 0x07ff
+            || _bus.PeekWord(pc + 0x0e) != 0x7200
+            || _bus.PeekWord(pc + 0x10) != 0x20c1
+            || _bus.PeekWord(pc + 0x12) != 0x51c8
+            || _bus.PeekWord(pc + 0x14) != 0xfffc
+            || _bus.PeekWord(pc + 0x16) != 0x7000)
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        _bus.TryClearWritableRamRange(0x61c000, 0x2000);
+        _bus.WriteLong(F3SchedulerA5 + 0x2278, 0);
+        _bus.WriteWord(F3SchedulerA5 + 0x227c, 0);
+        _bus.WriteLong(F3SchedulerA5 + 0x22a0, 0);
+        _bus.WriteWord(F3SchedulerA5 + 0x22a4, 0);
+
+        ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
+        SetStateAfterRts(state, sr);
+        _m68ec020ProbeInstructions += 0x0800;
+        cycles = 8;
+        return true;
+    }
+
+    private bool TryExecuteDariusTextRamColumnClearRoutine(uint pc, out uint cycles)
+    {
+        cycles = 0;
+        if (_bus.PeekWord(pc + 0x00) != 0x48e7
+            || _bus.PeekWord(pc + 0x02) != 0xf080
+            || _bus.PeekWord(pc + 0x04) != 0x41f9
+            || _bus.PeekLong(pc + 0x06) != 0x0061_c000u
+            || _bus.PeekWord(pc + 0x0a) != 0x7000
+            || _bus.PeekWord(pc + 0x0c) != 0x323c
+            || _bus.PeekWord(pc + 0x0e) != 0x001d
+            || _bus.PeekWord(pc + 0x10) != 0x343c
+            || _bus.PeekWord(pc + 0x12) != 0x0013
+            || _bus.PeekWord(pc + 0x14) != 0x2608
+            || _bus.PeekWord(pc + 0x16) != 0x20c0
+            || _bus.PeekWord(pc + 0x18) != 0x51ca
+            || _bus.PeekWord(pc + 0x1a) != 0xfffc
+            || _bus.PeekWord(pc + 0x1c) != 0x2043
+            || _bus.PeekWord(pc + 0x1e) != 0x41e8
+            || _bus.PeekWord(pc + 0x20) != 0x0080
+            || _bus.PeekWord(pc + 0x22) != 0x51c9
+            || _bus.PeekWord(pc + 0x24) != 0xffec
+            || _bus.PeekWord(pc + 0x26) != 0x4cdf
+            || _bus.PeekWord(pc + 0x28) != 0x010f
+            || _bus.PeekWord(pc + 0x2a) != 0x4e75)
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        for (uint row = 0; row < 0x1e; row++)
+            _bus.TryClearWritableRamRange(0x61c000 + row * 0x80, 0x50);
+
+        ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
+        SetStateAfterRts(state, sr);
+        _m68ec020ProbeInstructions += 0x0258;
+        cycles = 8;
+        return true;
+    }
+
+    private bool TryExecuteDariusPlayfieldClearRoutine(uint pc, out uint cycles)
+    {
+        cycles = 0;
+        uint playfieldAddress;
+        uint lineAddress;
+        ushort controlLowOffset;
+        ushort controlHighOffset;
+        uint? maskAddress = null;
+
+        switch (pc)
+        {
+            case 0x0058da:
+                playfieldAddress = 0x610000;
+                lineAddress = 0x62a000;
+                controlLowOffset = 0x2258;
+                controlHighOffset = 0x2280;
+                break;
+            case 0x005918:
+                playfieldAddress = 0x611000;
+                lineAddress = 0x62a200;
+                controlLowOffset = 0x2260;
+                controlHighOffset = 0x2288;
+                break;
+            case 0x005956:
+                playfieldAddress = 0x612000;
+                lineAddress = 0x62a400;
+                maskAddress = 0x628400;
+                controlLowOffset = 0x2268;
+                controlHighOffset = 0x2290;
+                break;
+            case 0x0059b4:
+                playfieldAddress = 0x613000;
+                lineAddress = 0x62a600;
+                maskAddress = 0x628600;
+                controlLowOffset = 0x2270;
+                controlHighOffset = 0x2298;
+                break;
+            default:
+                return false;
+        }
+
+        if (_bus.PeekWord(pc + 0x00) != 0x48e7
+            || _bus.PeekWord(pc + 0x04) != 0x41f9
+            || _bus.PeekLong(pc + 0x06) != playfieldAddress
+            || _bus.PeekWord(pc + 0x0a) != 0x303c
+            || _bus.PeekWord(pc + 0x0c) != 0x03ff
+            || _bus.PeekWord(pc + 0x0e) != 0x7200
+            || _bus.PeekWord(pc + 0x10) != 0x20c1
+            || _bus.PeekWord(pc + 0x12) != 0x51c8
+            || _bus.PeekWord(pc + 0x14) != 0xfffc
+            || _bus.PeekWord(pc + 0x16) != 0x41f9
+            || _bus.PeekLong(pc + 0x18) != lineAddress
+            || _bus.PeekWord(pc + 0x1c) != 0x303c
+            || _bus.PeekWord(pc + 0x1e) != 0x00ff
+            || _bus.PeekWord(pc + 0x20) != 0x30c1
+            || _bus.PeekWord(pc + 0x22) != 0x51c8
+            || _bus.PeekWord(pc + 0x24) != 0xfffc)
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        _bus.TryClearWritableRamRange(playfieldAddress, 0x1000);
+        _bus.TryClearWritableRamRange(lineAddress, 0x200);
+        if (maskAddress.HasValue)
+        {
+            uint address = maskAddress.Value;
+            for (int i = 0; i < 0x100; i++)
+            {
+                _bus.WriteWord(address, 0x0080);
+                address += 2;
+            }
+        }
+
+        _bus.WriteLong(F3SchedulerA5 + controlLowOffset, 0);
+        _bus.WriteWord(F3SchedulerA5 + controlLowOffset + 4u, 0);
+        _bus.WriteLong(F3SchedulerA5 + controlHighOffset, 0);
+        _bus.WriteWord(F3SchedulerA5 + controlHighOffset + 4u, 0);
+
+        ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
+        SetStateAfterRts(state, sr);
+        _m68ec020ProbeInstructions += maskAddress.HasValue ? 0x0500u : 0x0400u;
+        cycles = 8;
+        return true;
+    }
+
+    private void SetStateAfterRts(M68000.M68000State state, ushort sr)
+    {
+        uint sp = (state.Sr & 0x2000) != 0 ? state.Ssp : state.Usp;
+        uint returnPc = _bus.ReadLong(sp) & 0x00ff_ffff;
+        sp = (sp + 4) & 0x00ff_ffff;
+        ushort prefetch = _bus.ReadOpcodeWord(returnPc);
+        uint usp = (state.Sr & 0x2000) != 0 ? state.Usp : sp;
+        uint ssp = (state.Sr & 0x2000) != 0 ? sp : state.Ssp;
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, usp, ssp, sr, returnPc, prefetch));
     }
 
     private bool TryExecuteDariusDbraWordFill(uint pc, out uint cycles)
@@ -3598,9 +3887,21 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 {
                     destOnlyPixels++;
                 }
-                uint source = ReadCachedPaletteColor(_mixSrcPalette[offset], cacheFrame);
-                uint destination = ReadCachedPaletteColor(_mixDstPalette[offset], cacheFrame);
-                uint color = BlendFixed3(source, destination, _mixSrcBlend[offset], _mixDstBlend[offset]);
+                uint color;
+                if (_mixSrcBlendMode[offset] == 0xff || _mixSrcBlend[offset] == 0)
+                {
+                    color = ReadCachedPaletteColor(_mixDstPalette[offset], cacheFrame);
+                }
+                else if (_mixDstBlend[offset] == 0)
+                {
+                    color = ReadCachedPaletteColor(_mixSrcPalette[offset], cacheFrame);
+                }
+                else
+                {
+                    uint source = ReadCachedPaletteColor(_mixSrcPalette[offset], cacheFrame);
+                    uint destination = ReadCachedPaletteColor(_mixDstPalette[offset], cacheFrame);
+                    color = BlendFixed3(source, destination, _mixSrcBlend[offset], _mixDstBlend[offset]);
+                }
                 int framePixelOffset = frameOffset + x * 4;
                 _frameBuffer[framePixelOffset + 0] = (byte)color;
                 _frameBuffer[framePixelOffset + 1] = (byte)(color >> 8);
@@ -5736,6 +6037,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
+        public bool TryFillWorkRamWordRange(uint address, uint wordCount, ushort value)
+        {
+            address &= 0x00ff_ffff;
+            if (wordCount == 0 || wordCount > int.MaxValue / 2)
+                return false;
+
+            uint byteCount = wordCount * 2u;
+            if (!TryFillWordWindow(address, byteCount, value, F3WorkRamBase, F3WorkRamMirrorWindowSize, _workRam))
+                return false;
+
+            WorkRamWrites += (int)Math.Min(byteCount, int.MaxValue);
+            return true;
+        }
+
         private static bool TryClearWindow(uint address, uint byteCount, uint baseAddress, int windowSize, byte[] storage)
         {
             if (!MapWindow(address, baseAddress, windowSize, storage, out int offset))
@@ -5746,6 +6061,29 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 return false;
 
             Array.Clear(storage, offset, (int)byteCount);
+            return true;
+        }
+
+        private static bool TryFillWordWindow(uint address, uint byteCount, ushort value, uint baseAddress, int windowSize, byte[] storage)
+        {
+            if ((byteCount & 1) != 0)
+                return false;
+            if (!MapWindow(address, baseAddress, windowSize, storage, out int offset))
+                return false;
+            if ((ulong)address + byteCount > (ulong)baseAddress + (uint)windowSize)
+                return false;
+            if ((ulong)offset + byteCount > (ulong)storage.Length)
+                return false;
+
+            byte high = (byte)(value >> 8);
+            byte low = (byte)value;
+            int end = offset + (int)byteCount;
+            for (int i = offset; i < end; i += 2)
+            {
+                storage[i] = high;
+                storage[i + 1] = low;
+            }
+
             return true;
         }
 
