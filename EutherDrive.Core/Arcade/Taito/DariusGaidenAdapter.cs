@@ -48,6 +48,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly bool TraceSummary = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_SUMMARY") == "1";
     private static readonly bool TracePhaseTiming = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_PHASE_TIMING") == "1";
     private static readonly bool TraceHotFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_TRACE_HOT_FILL") == "1";
+    private static readonly bool TracePcProfile = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_PC_PROFILE") == "1";
     private static readonly bool RenderStats = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_RENDER_STATS") == "1";
     private static readonly int TraceInstructionLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_INSTRUCTIONS", 64);
     private static readonly int TraceBootPcLimit = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_BOOT_PC_LIMIT", 256);
@@ -56,7 +57,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly int TraceTaskCreateFromFrame = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE_FROM_FRAME", 0);
     private static readonly int CpuScale = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_CPU_SCALE", 1), 1, 32);
     private static readonly int RenderDivisor = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_DIVISOR", 1), 1, 8);
-    private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") != "0";
+    private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") == "1";
     private static readonly long TargetFrameTicks = Math.Max(1, (long)(Stopwatch.Frequency / TargetFps));
 
     private static readonly HashSet<string> SupportedDrivers = new(StringComparer.OrdinalIgnoreCase)
@@ -132,6 +133,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private int _traceInstructionsRemaining;
     private int _traceSceneCopyPcRemaining;
     private int _traceHotFillRemaining = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_HOT_FILL_LIMIT", 128);
+    private readonly Dictionary<uint, int> _framePcProfile = new();
     private readonly Queue<F3TaskState> _f3TaskQueue = new();
     private ulong _f3TasksEnqueued;
     private ulong _f3TasksDispatched;
@@ -535,6 +537,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int cycles = 0;
         int instructions = 0;
         long cpuStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
+        if (TracePcProfile)
+            _framePcProfile.Clear();
         try
         {
             int cycleBudget = (int)(MainClockHz / TargetFps) * CpuScale;
@@ -552,6 +556,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 uint pc = _mainCpu.Pc;
                 _bus.CurrentCpuPc = pc;
                 ushort op = _mainCpu.NextOpcode;
+                if (TracePcProfile)
+                {
+                    uint pcKey = pc & 0x00ff_ffff;
+                    _framePcProfile[pcKey] = _framePcProfile.TryGetValue(pcKey, out int pcHits) ? pcHits + 1 : 1;
+                }
                 TrackSceneDiagnosticPc(pc);
                 if (UseNativeF3TrapScheduler && IsNativeF3IdleSpin(pc, op))
                 {
@@ -696,7 +705,21 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 $"[DARIUSG-PHASE] f={_frameCounter} total={_lastFrameTotalTicks * tickMs:0.###}ms " +
                 $"cpu={cpuTicks * tickMs:0.###}ms render={renderTicks * tickMs:0.###}ms ctrl={controlTicks * tickMs:0.###}ms " +
                 $"instr={instructions} cycles={cycles} rendered={(renderedFrame ? 1 : 0)} stop={_lastStopReason} pc=0x{_mainCpu.Pc:X6} irq={_bus.InterruptLevel()}");
+            if (TracePcProfile)
+                Console.WriteLine($"[DARIUSG-PCPROFILE] f={_frameCounter} {BuildFramePcProfileSample()}");
         }
+    }
+
+    private string BuildFramePcProfileSample()
+    {
+        if (_framePcProfile.Count == 0)
+            return "-";
+
+        return string.Join(",",
+            _framePcProfile
+                .OrderByDescending(static pair => pair.Value)
+                .Take(12)
+                .Select(static pair => $"0x{pair.Key:X6}:{pair.Value}"));
     }
 
     private bool ShouldRenderThisFrame()
@@ -909,6 +932,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         // Exact loop collapses for Darius' hot RAM/video fill routines. These
         // keep native trap scheduling intact while avoiding thousands of tiny
         // 020 memory operations per frame.
+        if (TryExecuteDariusF3TaskMaskScan(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusF3ZeroWait(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusSceneSpriteCopy(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusEmptySceneSpriteScan(pc, op, out cycles))
+            return true;
         if (TryExecuteDariusSpriteReefClear(pc, out cycles))
             return true;
         if (TrySkipEmptySpriteControlSlots(pc, op, out cycles))
@@ -964,6 +995,229 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static bool IsNativeF3IdleSpin(uint pc, ushort op)
         => pc is 0x002320 or 0x002326
             && op is 0x4eb9 or 0x60f8;
+
+    private bool TryExecuteDariusF3TaskMaskScan(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x0104e2 || op != 0x0302
+            || _bus.PeekWord(pc + 2) != 0x6600
+            || _bus.PeekWord(pc + 4) != 0x000e
+            || _bus.PeekWord(0x0104f4) != 0x41e8
+            || _bus.PeekWord(0x0104f6) != 0x006c
+            || _bus.PeekWord(0x0104f8) != 0x51c9)
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        int bit = (short)(ushort)state.Data[1];
+        if (bit < 0 || bit > 31)
+            return false;
+
+        uint mask = state.Data[2];
+        int skipped = 0;
+        while (bit - skipped >= 0 && ((mask >> (bit - skipped)) & 1u) != 0)
+            skipped++;
+
+        if (skipped == 0)
+            return false;
+
+        int nextBit = bit - skipped;
+        state.Address[0] = (state.Address[0] + (uint)(skipped * 0x6c)) & 0x00ff_ffff;
+        state.Data[1] = (state.Data[1] & 0xffff_0000u) | (ushort)(nextBit < 0 ? 0xffff : nextBit);
+        ushort sr = (ushort)(state.Sr & ~0x0004);
+        uint nextPc = nextBit < 0 ? 0x0104fcu : 0x0104e2u;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += (ulong)(skipped * 4);
+        cycles = (uint)Math.Max(34, skipped * 12);
+        return true;
+    }
+
+    private bool TryExecuteDariusF3ZeroWait(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x001a44 || op != 0x4a2d || _bus.PeekWord(pc + 2) != 0xa2b3 || _bus.PeekWord(pc + 4) != 0x56c8)
+            return false;
+
+        var state = _mainCpu.GetState();
+        uint waitAddress = (state.Address[5] + unchecked((uint)(short)0xa2b3)) & 0x00ff_ffff;
+        if (_bus.ReadByte(waitAddress) != 0)
+            return false;
+
+        int remaining = ((ushort)state.Data[0]) + 1;
+        if (remaining <= 0 || remaining > 0x0800)
+            return false;
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
+        ushort sr = (ushort)((state.Sr & 0xfff0) | 0x0004);
+        uint nextPc = 0x001a4c;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += (ulong)remaining;
+        cycles = (uint)Math.Max(34, remaining * 6);
+        return true;
+    }
+
+    private bool TryExecuteDariusEmptySceneSpriteScan(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x001348 || op != 0x3292
+            || _bus.PeekWord(pc + 2) != 0x6700
+            || _bus.PeekWord(pc + 4) != 0x0046
+            || _bus.PeekWord(0x001392) != 0x0884
+            || _bus.PeekWord(0x001394) != 0x000c
+            || _bus.PeekWord(0x001396) != 0x0884
+            || _bus.PeekWord(0x001398) != 0x000d
+            || _bus.PeekWord(0x00139a) != 0xd4c6
+            || _bus.PeekWord(0x00139c) != 0x9445
+            || _bus.PeekWord(0x00139e) != 0x51c8)
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        int remaining = ((ushort)state.Data[0]) + 1;
+        if (remaining <= 0 || remaining > 0x0400)
+            return false;
+
+        int sourceStep = unchecked((short)(ushort)state.Data[6]);
+        if (sourceStep <= 0 || sourceStep > 0x0100)
+            return false;
+
+        uint source = state.Address[2] & 0x00ff_ffff;
+        int skip = 0;
+        while (skip < remaining && _bus.ReadWord(source + (uint)(skip * sourceStep)) == 0)
+            skip++;
+
+        if (skip == 0)
+            return false;
+
+        uint destination = state.Address[1] & 0x00ff_ffff;
+        _bus.WriteWord(destination, 0);
+
+        ushort oldD2 = (ushort)state.Data[2];
+        ushort subtrahend = (ushort)(unchecked((short)(ushort)state.Data[5]) * skip);
+        uint result = (uint)(oldD2 - subtrahend) & 0xffffu;
+        state.Data[2] = (state.Data[2] & 0xffff_0000u) | result;
+        state.Data[4] &= ~(uint)((1 << 12) | (1 << 13));
+        state.Address[2] = (state.Address[2] + (uint)(skip * sourceStep)) & 0x00ff_ffff;
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | (ushort)((remaining - skip - 1) & 0xffff);
+
+        bool negative = (result & 0x8000u) != 0;
+        bool zero = result == 0;
+        bool overflow = ((oldD2 ^ subtrahend) & (oldD2 ^ result) & 0x8000u) != 0;
+        bool carry = oldD2 < subtrahend;
+        ushort sr = UpdateAddSubCcr(state.Sr, negative, zero, overflow, carry);
+        uint nextPc = skip == remaining ? 0x0013a2u : 0x001348u;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += (ulong)(skip * 7);
+        cycles = (uint)Math.Max(34, skip * 50);
+        return true;
+    }
+
+    private bool TryExecuteDariusSceneSpriteCopy(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x001348 || op != 0x3292
+            || _bus.PeekWord(0x001348) != 0x3292
+            || _bus.PeekWord(0x00134a) != 0x6700
+            || _bus.PeekWord(0x00134c) != 0x0046
+            || _bus.PeekWord(0x00134e) != 0x362a
+            || _bus.PeekWord(0x001350) != 0x0002
+            || _bus.PeekWord(0x001352) != 0xb943
+            || _bus.PeekWord(0x001354) != 0x4a28
+            || _bus.PeekWord(0x001356) != 0x001d
+            || _bus.PeekWord(0x001364) != 0x3368
+            || _bus.PeekWord(0x001366) != 0x001e
+            || _bus.PeekWord(0x001368) != 0x0002
+            || _bus.PeekWord(0x001382) != 0xe9c2
+            || _bus.PeekWord(0x001384) != 0x340c
+            || _bus.PeekWord(0x00139a) != 0xd4c6
+            || _bus.PeekWord(0x00139c) != 0x9445
+            || _bus.PeekWord(0x00139e) != 0x51c8)
+        {
+            return false;
+        }
+
+        var state = _mainCpu.GetState();
+        int count = ((ushort)state.Data[0]) + 1;
+        if (count <= 0 || count > 0x0400)
+            return false;
+
+        int sourceStep = unchecked((short)(ushort)state.Data[6]);
+        if (sourceStep <= 0 || sourceStep > 0x0100)
+            return false;
+
+        uint a0 = state.Address[0] & 0x00ff_ffff;
+        uint a1 = state.Address[1] & 0x00ff_ffff;
+        uint a2 = state.Address[2] & 0x00ff_ffff;
+        if (!IsSpriteRamAddress(a1))
+            return false;
+
+        uint d2 = state.Data[2] & 0xffffu;
+        uint d3 = state.Data[3];
+        uint d4 = state.Data[4];
+        ushort d5 = (ushort)state.Data[5];
+        byte overrideByte = _bus.ReadByte(a0 + 0x1d);
+        ushort spriteWord2 = _bus.ReadWord(a0 + 0x1e);
+        ushort lastD2BeforeSub = (ushort)d2;
+
+        for (int i = 0; i < count; i++)
+        {
+            ushort sourceWord = _bus.ReadWord(a2);
+            _bus.WriteWord(a1, sourceWord);
+            if (sourceWord == 0)
+            {
+                d4 &= ~(uint)((1 << 12) | (1 << 13));
+            }
+            else
+            {
+                d3 = (d3 & 0xffff_0000u) | (ushort)(_bus.ReadWord(a2 + 2) ^ (ushort)d4);
+                if (overrideByte != 0)
+                    d3 = (d3 & 0xffff_ff00u) | overrideByte;
+
+                _bus.WriteWord(a1 + 8, (ushort)d3);
+                _bus.WriteWord(a1 + 2, spriteWord2);
+                bool bit12WasSet = (d4 & (1u << 12)) != 0;
+                d4 |= 1u << 12;
+                if (!bit12WasSet)
+                {
+                    d4 |= (1u << 13) | (1u << 14) | (1u << 31);
+                    d4 &= ~(1u << 15);
+                    uint repeated = (d2 << 16) | d2;
+                    d3 = (d3 & 0xffff_0000u) | ((repeated >> 4) & 0x0fffu);
+                    _bus.WriteWord(a1 + 6, (ushort)d3);
+                }
+
+                a1 = (a1 + 0x10) & 0x00ff_ffff;
+            }
+
+            a2 = (a2 + (uint)sourceStep) & 0x00ff_ffff;
+            lastD2BeforeSub = (ushort)d2;
+            d2 = (uint)((ushort)d2 - d5) & 0xffffu;
+        }
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
+        state.Data[2] = (state.Data[2] & 0xffff_0000u) | d2;
+        state.Data[3] = d3;
+        state.Data[4] = d4;
+        state.Address[1] = a1;
+        state.Address[2] = a2;
+
+        bool negative = (d2 & 0x8000u) != 0;
+        bool zero = d2 == 0;
+        bool overflow = ((lastD2BeforeSub ^ d5) & (lastD2BeforeSub ^ d2) & 0x8000u) != 0;
+        bool carry = lastD2BeforeSub < d5;
+        ushort sr = UpdateAddSubCcr(state.Sr, negative, zero, overflow, carry);
+        uint nextPc = 0x0013a2u;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += (ulong)(count * 14);
+        cycles = (uint)Math.Max(34, count * 68);
+        return true;
+    }
 
     private bool TrySkipEmptySpriteControlSlots(uint pc, ushort op, out uint cycles)
     {
@@ -2940,21 +3194,27 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int lineRegFxX = regSx + line.PlayfieldRowScroll[lineRamLayer] + (10 * (line.PlayfieldXScale[lineRamLayer] - 0x100));
         int layerWordBase = tilemap * 0x800;
         ushort layerMixValue = line.PlayfieldMix[lineRamLayer];
+        bool clippedLine = ((layerMixValue >> 8) & 0x0f) != 0;
+        int tilemapElements = roms.TilemapPixels.Length >> 8;
+        if (tilemapElements <= 0)
+            return false;
+
         int tileRowWordBase = layerWordBase + tileY * mapTiles * 2;
         for (int tileX = 0; tileX < mapTiles; tileX++)
         {
             int entry = tileRowWordBase + tileX * 2;
             _playfieldLineAttrCache[tileX] = _bus.ReadPlayfieldWord(entry);
-            _playfieldLineCodeCache[tileX] = _bus.ReadPlayfieldWord(entry + 1);
+            int code = _bus.ReadPlayfieldWord(entry + 1);
+            _playfieldLineCodeCache[tileX] = (ushort)(code < tilemapElements ? code : code % tilemapElements);
         }
 
         for (int screenX = 0; screenX < FrameWidth; screenX++)
         {
-            if (!IsMameClipAllowed(screenLine, layerMixValue, screenX + VisibleAreaMinX))
+            if (clippedLine && !IsMameClipAllowed(screenLine, layerMixValue, screenX + VisibleAreaMinX))
                 continue;
 
             int sourceX = (((lineRegFxX + (screenX * line.PlayfieldXScale[lineRamLayer])) >> 8) + VisibleAreaMinX) & 0x01ff;
-            int tileX = sourceX / tileSize;
+            int tileX = sourceX >> 4;
             int pixelX = sourceX & 15;
             ushort attr = _playfieldLineAttrCache[tileX];
             ushort code = _playfieldLineCodeCache[tileX];
@@ -2977,7 +3237,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             bool tileBlendSelect = (attr & 0x0200) != 0;
             int palette = attr & 0x01ff;
             int penMask = ((extraPlanes & ~palette) << 4) | 0x0f;
-            int pen = DecodeTilemapPixel(roms, code, reefPixelX, reefPixelY, penMask);
+            int pen = roms.TilemapPixels[(code << 8) | (reefPixelY << 4) | reefPixelX] & penMask;
             if (pen == 0)
                 continue;
 
