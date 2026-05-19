@@ -12241,6 +12241,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _fifoDrawPacketCount;
     private int _directTriangleCommandCount;
     private int _setupTriangleCommandCount;
+    private int _statusReadCount;
     private int _lfbWriteCount;
     private int _textureWriteCount;
     private int _fastFillCount;
@@ -12268,7 +12269,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
         => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
-           $"tri={_directTriangleCommandCount}+{_setupTriangleCommandCount} fill={_fastFillCount} swap={_swapBufferCount} " +
+           $"tri={_directTriangleCommandCount}+{_setupTriangleCommandCount} fill={_fastFillCount} swap={_swapBufferCount} stat={_statusReadCount} " +
            $"lfb={_lfbWriteCount} tex={_textureWriteCount} buf={_frontBufferIndex}/{_backBufferIndex}/{GetColorBufferCount()} " +
            GetBufferCountDebugStatus() +
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
@@ -12357,16 +12358,20 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public uint ReadStatus(bool vblank)
     {
+        _statusReadCount++;
         if (vblank && _pendingSwapCount > 0)
         {
             _pendingSwapCount--;
             ExecuteSwapBuffers(0);
+            RecordVoodooEvent($"status swap-drain vblank={(vblank ? 1 : 0)} pend={_pendingSwapCount}");
         }
 
         uint status = 0x0ffff03fu | ((uint)(_frontBufferIndex & 3) << 10);
         if (vblank)
             status |= 0x40u;
         status |= (uint)Math.Clamp(_pendingSwapCount, 0, 7) << 28;
+        if (_recordVoodooEvents && (_statusReadCount <= 16 || _pendingSwapCount > 0 || (_statusReadCount & 0x3ff) == 0))
+            RecordVoodooEvent($"status read value=0x{status:x8} vblank={(vblank ? 1 : 0)} pend={_pendingSwapCount}");
         return status;
     }
 
