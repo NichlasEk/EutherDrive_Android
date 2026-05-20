@@ -5938,14 +5938,38 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         public ushort ReadWord(uint address)
         {
+            address &= 0x00ff_ffff;
+            if (TryReadWordFast(address, out ushort value))
+            {
+                CurrentOpcode = value;
+                return value;
+            }
+
             CurrentOpcode = (ushort)((ReadByte(address) << 8) | ReadByte(address + 1));
             return CurrentOpcode;
         }
 
         public uint ReadLong(uint address)
-            => ((uint)ReadWord(address) << 16) | ReadWord(address + 2);
+        {
+            address &= 0x00ff_ffff;
+            if (TryReadLongFast(address, out uint value))
+                return value;
 
-        public ushort ReadOpcodeWord(uint address) => ReadWord(address);
+            return ((uint)ReadWord(address) << 16) | ReadWord(address + 2);
+        }
+
+        public ushort ReadOpcodeWord(uint address)
+        {
+            address &= 0x00ff_ffff;
+            if (address + 1u < (uint)_rom.Length)
+            {
+                ushort value = (ushort)((_rom[address] << 8) | _rom[address + 1]);
+                CurrentOpcode = value;
+                return value;
+            }
+
+            return ReadWord(address);
+        }
 
         public byte SoundReadDualPortByte(int offset)
         {
@@ -5984,6 +6008,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         {
             address &= 0x00ff_ffff;
             if (TryWriteControlWord(address, value))
+                return;
+            if (TryWriteWordFast(address, value))
                 return;
 
             WriteByte(address, (byte)(value >> 8));
@@ -6237,6 +6263,106 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
+        private bool TryReadWordFast(uint address, out ushort value)
+        {
+            if (address + 1u < (uint)_rom.Length)
+            {
+                value = (ushort)((_rom[address] << 8) | _rom[address + 1]);
+                return true;
+            }
+
+            uint relative = address - F3WorkRamBase;
+            if (relative < F3WorkRamMirrorWindowSize)
+            {
+                int ramOffset = (int)(relative & ((uint)_workRam.Length - 1u));
+                if ((uint)(ramOffset + 1) < (uint)_workRam.Length)
+                {
+                    value = (ushort)((_workRam[ramOffset] << 8) | _workRam[ramOffset + 1]);
+                    return true;
+                }
+            }
+
+            relative = address - 0x440000u;
+            if (relative < (uint)_palette.Length - 1u)
+            {
+                int paletteOffset = (int)relative;
+                value = (ushort)((_palette[paletteOffset] << 8) | _palette[paletteOffset + 1]);
+                return true;
+            }
+
+            relative = address - 0x600000u;
+            if (relative < (uint)_spriteRam.Length - 1u)
+            {
+                int spriteOffset = (int)relative;
+                value = (ushort)((_spriteRam[spriteOffset] << 8) | _spriteRam[spriteOffset + 1]);
+                return true;
+            }
+
+            relative = address - 0x610000u;
+            if (relative < (uint)_playfieldRam.Length - 1u)
+            {
+                int pfOffset = (int)relative;
+                value = (ushort)((_playfieldRam[pfOffset] << 8) | _playfieldRam[pfOffset + 1]);
+                return true;
+            }
+
+            relative = address - 0x61c000u;
+            if (relative < (uint)_textRam.Length - 1u)
+            {
+                int textOffset = (int)relative;
+                value = (ushort)((_textRam[textOffset] << 8) | _textRam[textOffset + 1]);
+                return true;
+            }
+
+            relative = address - 0x61e000u;
+            if (relative < (uint)_charRam.Length - 1u)
+            {
+                int charOffset = (int)relative;
+                value = (ushort)((_charRam[charOffset] << 8) | _charRam[charOffset + 1]);
+                return true;
+            }
+
+            relative = address - 0x620000u;
+            if (relative < (uint)_lineRam.Length - 1u)
+            {
+                int lineOffset = (int)relative;
+                value = (ushort)((_lineRam[lineOffset] << 8) | _lineRam[lineOffset + 1]);
+                return true;
+            }
+
+            relative = address - 0x630000u;
+            if (relative < (uint)_pivotRam.Length - 1u)
+            {
+                int pivotOffset = (int)relative;
+                value = (ushort)((_pivotRam[pivotOffset] << 8) | _pivotRam[pivotOffset + 1]);
+                return true;
+            }
+
+            value = 0xffff;
+            return false;
+        }
+
+        private bool TryReadLongFast(uint address, out uint value)
+        {
+            if (address + 3u < (uint)_rom.Length)
+            {
+                value = ((uint)_rom[address] << 24)
+                    | ((uint)_rom[address + 1] << 16)
+                    | ((uint)_rom[address + 2] << 8)
+                    | _rom[address + 3];
+                return true;
+            }
+
+            if (TryReadWordFast(address, out ushort high) && TryReadWordFast(address + 2, out ushort low))
+            {
+                value = ((uint)high << 16) | low;
+                return true;
+            }
+
+            value = 0xffff_ffffu;
+            return false;
+        }
+
         private bool TryWriteByte(uint address, byte value)
         {
             if (MapWindow(address, F3WorkRamBase, F3WorkRamMirrorWindowSize, _workRam, out int ramOffset))
@@ -6463,6 +6589,128 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     LastSoundResetWriteAddress = address;
                 }
                 ControlWrites++;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryWriteWordFast(uint address, ushort value)
+        {
+            if ((address & 1) != 0)
+                return false;
+
+            uint relative = address - 0x440000u;
+            if (relative < (uint)_palette.Length - 1u)
+            {
+                int paletteOffset = (int)relative;
+                _palette[paletteOffset] = (byte)(value >> 8);
+                _palette[paletteOffset + 1] = (byte)value;
+                PaletteWrites += 2;
+                return true;
+            }
+
+            relative = address - 0x600000u;
+            if (relative < (uint)_spriteRam.Length - 1u)
+            {
+                int spriteOffset = (int)relative;
+                ushort before = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
+                _spriteRam[spriteOffset] = (byte)(value >> 8);
+                _spriteRam[spriteOffset + 1] = (byte)value;
+                ushort after = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
+                if (before == 0 && after != 0)
+                    _spriteNonZeroWords++;
+                else if (before != 0 && after == 0)
+                    _spriteNonZeroWords--;
+                if (value != 0)
+                {
+                    LastNonZeroSpriteWritePc = CurrentCpuPc;
+                    LastNonZeroSpriteWriteAddress = address;
+                    LastNonZeroSpriteWriteValue = (byte)value;
+                }
+                SpriteWrites += 2;
+                return true;
+            }
+
+            relative = address - 0x610000u;
+            if (relative < (uint)_playfieldRam.Length - 1u)
+            {
+                int pfOffset = (int)relative;
+                int wordOffset = pfOffset >> 1;
+                ushort before = ReadBigEndianWord(_playfieldRam, pfOffset & ~1);
+                _playfieldRam[pfOffset] = (byte)(value >> 8);
+                _playfieldRam[pfOffset + 1] = (byte)value;
+                ushort after = ReadBigEndianWord(_playfieldRam, pfOffset & ~1);
+                if (before == 0 && after != 0)
+                    _playfieldNonZeroWords++;
+                else if (before != 0 && after == 0)
+                    _playfieldNonZeroWords--;
+                UpdatePlayfieldRowUsage(wordOffset, before, after);
+                if (value != 0)
+                {
+                    LastNonZeroPlayfieldWritePc = CurrentCpuPc;
+                    LastNonZeroPlayfieldWriteAddress = address;
+                    LastNonZeroPlayfieldWriteValue = (byte)value;
+                }
+                PlayfieldWrites += 2;
+                return true;
+            }
+
+            relative = address - 0x61c000u;
+            if (relative < (uint)_textRam.Length - 1u)
+            {
+                int textOffset = (int)relative;
+                ushort before = ReadBigEndianWord(_textRam, textOffset & ~1);
+                _textRam[textOffset] = (byte)(value >> 8);
+                _textRam[textOffset + 1] = (byte)value;
+                ushort after = ReadBigEndianWord(_textRam, textOffset & ~1);
+                if (before == 0 && after != 0)
+                    _textNonZeroWords++;
+                else if (before != 0 && after == 0)
+                    _textNonZeroWords--;
+                if (value != 0)
+                {
+                    LastNonZeroTextWritePc = CurrentCpuPc;
+                    LastNonZeroTextWriteAddress = address;
+                    LastNonZeroTextWriteValue = (byte)value;
+                }
+                PlayfieldWrites += 2;
+                return true;
+            }
+
+            relative = address - 0x61e000u;
+            if (relative < (uint)_charRam.Length - 1u)
+            {
+                int charOffset = (int)relative;
+                _charRam[charOffset] = (byte)(value >> 8);
+                _charRam[charOffset + 1] = (byte)value;
+                PlayfieldWrites += 2;
+                return true;
+            }
+
+            relative = address - 0x620000u;
+            if (relative < (uint)_lineRam.Length - 1u)
+            {
+                int lineOffset = (int)relative;
+                _lineRam[lineOffset] = (byte)(value >> 8);
+                _lineRam[lineOffset + 1] = (byte)value;
+                PlayfieldWrites += 2;
+                return true;
+            }
+
+            relative = address - 0x630000u;
+            if (relative < (uint)_pivotRam.Length - 1u)
+            {
+                int pivotOffset = (int)relative;
+                ushort before = ReadBigEndianWord(_pivotRam, pivotOffset & ~1);
+                _pivotRam[pivotOffset] = (byte)(value >> 8);
+                _pivotRam[pivotOffset + 1] = (byte)value;
+                ushort after = ReadBigEndianWord(_pivotRam, pivotOffset & ~1);
+                if (before == 0 && after != 0)
+                    _pivotNonZeroWords++;
+                else if (before != 0 && after == 0)
+                    _pivotNonZeroWords--;
+                PlayfieldWrites += 2;
                 return true;
             }
 
