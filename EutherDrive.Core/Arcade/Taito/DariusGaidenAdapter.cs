@@ -2,6 +2,7 @@ namespace EutherDrive.Core.Arcade.Taito;
 
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.Cpu.MameMusashi;
 using EutherDrive.Core.Savestates;
@@ -3384,6 +3385,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (tilemapElements <= 0)
             return false;
 
+        byte layerRank = GetPlayfieldLayerRank(lineRamLayer);
+        int paletteAdd = line.PlayfieldPaletteAdd[lineRamLayer];
+        int rowOffset = screenY * FrameWidth;
         int tileRowWordBase = layerWordBase + tileY * mapTiles * 2;
         for (int tileX = 0; tileX < mapTiles; tileX++)
         {
@@ -3433,7 +3437,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 else
                     _lastPlayfieldBlendSelect0[lineRamLayer]++;
             }
-            WritePalettePixel(screenX, screenY, line.PlayfieldPaletteAdd[lineRamLayer] + palette * 16 + pen, layerPriority, GetPlayfieldLayerRank(lineRamLayer), layerBlendMode, tileBlendSelect);
+            WritePalettePixelAtOffset(rowOffset + screenX, (ushort)(paletteAdd + palette * 16 + pen), layerPriority, layerRank, layerBlendMode, tileBlendSelect, line);
             if (RenderStats)
             {
                 _lastPlayfieldPixels++;
@@ -4400,12 +4404,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if ((uint)priorityOffset >= (uint)_mixSrcPalette.Length)
             return;
 
+        WritePalettePixelAtOffset(priorityOffset, (ushort)paletteIndex, priority, layerRank, blendMode, blendSelect, _lineStates[(y + VisibleAreaMinY) & 0xff]);
+    }
+
+    private void WritePalettePixelAtOffset(int priorityOffset, ushort palette, int priority, byte layerRank, int blendMode, bool blendSelect, F3LineState line)
+    {
         if (blendMode == _mixSrcBlendMode[priorityOffset])
             return;
 
-        F3LineState line = _lineStates[(y + VisibleAreaMinY) & 0xff];
         int select = blendSelect ? 1 : 0;
-        ushort palette = (ushort)paletteIndex;
 
         int currentSourcePriority = _mixSrcPriority[priorityOffset];
         bool sourceWins = priority > currentSourcePriority
@@ -4461,6 +4468,91 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     }
 
     private void RenderMameMixBufferToFrame()
+    {
+        if (RenderStats)
+        {
+            RenderMameMixBufferToFrameWithStats();
+            return;
+        }
+
+        int cacheFrame = unchecked(_paletteColorCacheFrame + 1);
+        if (cacheFrame == 0)
+        {
+            Array.Clear(_paletteColorCacheStamp);
+            cacheFrame = 1;
+        }
+        _paletteColorCacheFrame = cacheFrame;
+
+        if (!BitConverter.IsLittleEndian)
+        {
+            RenderMameMixBufferToFrameBytes(cacheFrame);
+            return;
+        }
+
+        Span<uint> framePixels = MemoryMarshal.Cast<byte, uint>(_frameBuffer);
+        byte[] srcBlendMode = _mixSrcBlendMode;
+        ushort[] srcPalette = _mixSrcPalette;
+        ushort[] dstPalette = _mixDstPalette;
+        byte[] srcBlend = _mixSrcBlend;
+        byte[] dstBlend = _mixDstBlend;
+
+        int pixelCount = FrameWidth * FrameHeight;
+        for (int offset = 0; offset < pixelCount; offset++)
+        {
+            uint color;
+            if (srcBlendMode[offset] == 0xff || srcBlend[offset] == 0)
+            {
+                color = ReadCachedPaletteColor(dstPalette[offset], cacheFrame);
+            }
+            else if (dstBlend[offset] == 0)
+            {
+                color = ReadCachedPaletteColor(srcPalette[offset], cacheFrame);
+            }
+            else
+            {
+                uint source = ReadCachedPaletteColor(srcPalette[offset], cacheFrame);
+                uint destination = ReadCachedPaletteColor(dstPalette[offset], cacheFrame);
+                color = BlendFixed3(source, destination, srcBlend[offset], dstBlend[offset]);
+            }
+            framePixels[offset] = color | 0xff000000u;
+        }
+    }
+
+    private void RenderMameMixBufferToFrameBytes(int cacheFrame)
+    {
+        byte[] srcBlendMode = _mixSrcBlendMode;
+        ushort[] srcPalette = _mixSrcPalette;
+        ushort[] dstPalette = _mixDstPalette;
+        byte[] srcBlend = _mixSrcBlend;
+        byte[] dstBlend = _mixDstBlend;
+
+        int pixelCount = FrameWidth * FrameHeight;
+        for (int offset = 0; offset < pixelCount; offset++)
+        {
+            uint color;
+            if (srcBlendMode[offset] == 0xff || srcBlend[offset] == 0)
+            {
+                color = ReadCachedPaletteColor(dstPalette[offset], cacheFrame);
+            }
+            else if (dstBlend[offset] == 0)
+            {
+                color = ReadCachedPaletteColor(srcPalette[offset], cacheFrame);
+            }
+            else
+            {
+                uint source = ReadCachedPaletteColor(srcPalette[offset], cacheFrame);
+                uint destination = ReadCachedPaletteColor(dstPalette[offset], cacheFrame);
+                color = BlendFixed3(source, destination, srcBlend[offset], dstBlend[offset]);
+            }
+            int framePixelOffset = offset * 4;
+            _frameBuffer[framePixelOffset + 0] = (byte)color;
+            _frameBuffer[framePixelOffset + 1] = (byte)(color >> 8);
+            _frameBuffer[framePixelOffset + 2] = (byte)(color >> 16);
+            _frameBuffer[framePixelOffset + 3] = 0xff;
+        }
+    }
+
+    private void RenderMameMixBufferToFrameWithStats()
     {
         int sourcePixels = 0;
         int litSourcePixels = 0;
