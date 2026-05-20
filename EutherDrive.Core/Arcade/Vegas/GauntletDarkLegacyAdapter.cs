@@ -763,8 +763,6 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeEmptyTileSpan(pc))
             return;
-        if (TryFastPathKnownRuntimeTwoBitTileStatusGate(pc))
-            return;
         if (TryFastPathKnownRuntimeTwoBitTilePrepare(pc))
             return;
         if (TryFastPathKnownRuntimeTwoBitTileExpand(pc))
@@ -5689,87 +5687,6 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = loopPc + 0x50UL;
-        return true;
-    }
-
-    private bool TryFastPathKnownRuntimeTwoBitTileStatusGate(ulong pc)
-    {
-        const ulong entry = 0xffffffff80019360UL;
-        const ulong nextPc = 0xffffffff800193e4UL;
-        if (pc != entry)
-            return false;
-        if (_memory.Read32(entry) != 0x8c820000U ||
-            _memory.Read32(entry + 0x04UL) != 0x8fad0024U ||
-            _memory.Read32(entry + 0x08UL) != 0x8faa0018U ||
-            _memory.Read32(entry + 0x0cUL) != 0x8fab001cU ||
-            _memory.Read32(entry + 0x10UL) != 0x8fac0020U ||
-            _memory.Read32(entry + 0x14UL) != 0x00021302U ||
-            _memory.Read32(entry + 0x18UL) != 0x8da32f00U ||
-            _memory.Read32(entry + 0x1cUL) != 0x3042ffffU ||
-            _memory.Read32(entry + 0x20UL) != 0x0043182bU ||
-            _memory.Read32(entry + 0x24UL) != 0x54600001U ||
-            _memory.Read32(entry + 0x28UL) != 0xada22f00U ||
-            _memory.Read32(entry + 0x2cUL) != 0x0182102aU ||
-            _memory.Read32(entry + 0x30UL) != 0x1440000dU ||
-            _memory.Read32(entry + 0x34UL) != 0x00000000U ||
-            _memory.Read32(entry + 0x68UL) != 0x8fae0054U ||
-            _memory.Read32(entry + 0x6cUL) != 0x31c20002U ||
-            _memory.Read32(entry + 0x70UL) != 0x10400004U ||
-            _memory.Read32(entry + 0x74UL) != 0x00111827U ||
-            _memory.Read32(entry + 0x78UL) != 0x8e420000U ||
-            _memory.Read32(entry + 0x7cUL) != 0x00431024U ||
-            _memory.Read32(entry + 0x80UL) != 0xae420000U)
-        {
-            return false;
-        }
-
-        ulong sp = _gpr[29];
-        if (!IsMainRamRange(sp + 0x18UL, 0x40UL))
-            return false;
-
-        ulong t5 = SignExtend32(_memory.Read32(sp + 0x24UL));
-        ulong t2 = SignExtend32(_memory.Read32(sp + 0x18UL));
-        ulong t3 = SignExtend32(_memory.Read32(sp + 0x1cUL));
-        ulong t4 = SignExtend32(_memory.Read32(sp + 0x20UL));
-        if (!IsMainRamRange(t5 + 0x2f00UL, 4))
-            return false;
-
-        uint status = (_memory.Read32(_gpr[4]) >> 12) & 0xffffU;
-        if (!unchecked((long)t4 < (long)status))
-            return false;
-
-        uint previousLowWater = _memory.Read32(t5 + 0x2f00UL);
-        bool updateLowWater = status < previousLowWater;
-        ulong flags = SignExtend32(_memory.Read32(sp + 0x54UL));
-        ulong inverseMask = ~_gpr[17];
-        ulong result = flags & 2UL;
-        bool clearMask = result != 0;
-        if (clearMask)
-        {
-            if (!IsMainRamRange(_gpr[18], 4))
-                return false;
-            result = SignExtend32(_memory.Read32(_gpr[18])) & inverseMask;
-        }
-
-        int skippedInstructions = clearMask
-            ? (updateLowWater ? 21 : 20)
-            : (updateLowWater ? 18 : 17);
-        if (_remainingProbeSteps < skippedInstructions)
-            return false;
-
-        if (updateLowWater)
-            _memory.Write32(t5 + 0x2f00UL, status);
-        if (clearMask)
-            _memory.Write32(_gpr[18], (uint)result);
-
-        _gpr[2] = result;
-        _gpr[3] = inverseMask;
-        _gpr[10] = t2;
-        _gpr[11] = t3;
-        _gpr[12] = t4;
-        _gpr[13] = t5;
-        _gpr[14] = flags;
-        FinishKnownRuntimeBudgetedFastPath(skippedInstructions, nextPc);
         return true;
     }
 
