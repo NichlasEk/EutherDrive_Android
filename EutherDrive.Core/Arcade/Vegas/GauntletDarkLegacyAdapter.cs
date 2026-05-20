@@ -168,6 +168,9 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
 
 internal sealed class GauntletDarkLegacyMachine
 {
+    private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
+    private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
+
     public VegasMemoryMap MemoryMap { get; } = new();
     public MipsR5000Core Cpu { get; }
     public IdeDiskDevice Disk { get; } = new();
@@ -208,8 +211,17 @@ internal sealed class GauntletDarkLegacyMachine
     public void RunFrame(EutherFrameTarget target)
     {
         Sio.PulseVblank(state: true);
-        Cpu.RunProbeFrame();
-        Sio.PulseVblank(state: false);
+        if (_splitVblankCpu)
+        {
+            Cpu.RunProbeSteps(_vblankCpuSteps);
+            Sio.PulseVblank(state: false);
+            Cpu.RunProbeFrameAfterSteps(_vblankCpuSteps);
+        }
+        else
+        {
+            Cpu.RunProbeFrame();
+            Sio.PulseVblank(state: false);
+        }
         MemoryMap.StepFrame();
         Audio.RunFrame();
         if (MemoryMap.ConsumeWatchdogResetRequest())
@@ -225,6 +237,12 @@ internal sealed class GauntletDarkLegacyMachine
                $"{Cpu.RuntimeDiagnosticStatus} " +
                $"voodoo={(Voodoo.HasVideoActivity ? "active" : "idle")} {Voodoo.DebugStatus} " +
                $"{MemoryMap.DebugStatus} {Audio.DebugStatus} disk={(Disk.Attached ? "attached" : "missing")}";
+    }
+
+    private static int ParsePositiveInt(string name, int fallback)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
     }
 }
 
@@ -513,11 +531,17 @@ internal sealed class MipsR5000Core
     }
 
     public void RunProbeFrame()
+        => RunProbeSteps(_stepBudget);
+
+    public void RunProbeFrameAfterSteps(int completedSteps)
+        => RunProbeSteps(Math.Max(0, _stepBudget - Math.Max(0, completedSteps)));
+
+    public void RunProbeSteps(int stepCount)
     {
         if (_halted)
             return;
 
-        for (int i = 0; i < _stepBudget && !_halted; i++)
+        for (int i = 0; i < stepCount && !_halted; i++)
             Step();
     }
 
@@ -5362,31 +5386,47 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownRuntimeStatus3fSixPoll(ulong pc)
     {
         const ulong entry = 0xffffffff8005e158UL;
-        if (pc != entry)
+        if (pc < entry || pc > entry + 0x88UL)
             return false;
         if (!MatchesKnownRuntimeStatus3fSixPollSignature(entry))
             return false;
 
-        ulong oldSp = _gpr[29];
-        ulong newSp = oldSp - 0x20UL;
-        if (!IsMainRamRange(newSp + 0x10UL, 0x14UL))
-            return false;
+        ulong returnAddress = _gpr[31];
+        ulong oldFramePointer = _gpr[30];
+        ulong oldStackPointer = _gpr[29];
+        if (pc == entry)
+        {
+            ulong newSp = oldStackPointer - 0x20UL;
+            if (!IsMainRamRange(newSp + 0x10UL, 0x14UL))
+                return false;
 
-        _memory.Write32(newSp + 0x1cUL, (uint)_gpr[31]);
-        _memory.Write32(newSp + 0x18UL, (uint)_gpr[30]);
-        _memory.Write32(newSp + 0x20UL, (uint)_gpr[4]);
-        _memory.Write32(newSp + 0x10UL, 6U);
+            _memory.Write32(newSp + 0x1cUL, (uint)returnAddress);
+            _memory.Write32(newSp + 0x18UL, (uint)oldFramePointer);
+            _memory.Write32(newSp + 0x20UL, (uint)_gpr[4]);
+            _memory.Write32(newSp + 0x10UL, 6U);
+        }
+        else
+        {
+            ulong frame = _gpr[30];
+            if (!IsMainRamRange(frame + 0x18UL, 8))
+                return false;
+
+            oldFramePointer = SignExtend32(_memory.Read32(frame + 0x18UL));
+            returnAddress = SignExtend32(_memory.Read32(frame + 0x1cUL));
+            oldStackPointer = frame + 0x20UL;
+        }
 
         _gpr[2] = 1;
         _gpr[3] = 6;
-        _gpr[29] = oldSp;
-        _gpr[30] = SignExtend32(_memory.Read32(newSp + 0x18UL));
+        _gpr[29] = oldStackPointer;
+        _gpr[30] = oldFramePointer;
+        _gpr[31] = returnAddress;
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * 386UL);
         _instructionCounter += 386UL;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
-        Pc = CanonicalizeCodeAddress(_gpr[31]);
+        Pc = CanonicalizeCodeAddress(returnAddress);
         return true;
     }
 
