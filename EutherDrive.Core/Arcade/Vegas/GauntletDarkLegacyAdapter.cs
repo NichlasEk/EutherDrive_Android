@@ -757,6 +757,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeTileDepthPointerCallsite(pc))
             return;
+        if (TryFastPathKnownRuntimeMaskedTileSkip(pc))
+            return;
         if (TryFastPathKnownRuntimeEmptyTileSpan(pc))
             return;
         if (TryFastPathKnownRuntimeTwoBitTileExpand(pc))
@@ -5743,6 +5745,61 @@ internal sealed class MipsR5000Core
         }
 
         FinishKnownRuntimeBudgetedFastPath(skippedInstructions, 0xffffffff800194f0UL);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeMaskedTileSkip(ulong pc)
+    {
+        const ulong branchPc = 0xffffffff80019318UL;
+        if (pc != branchPc)
+            return false;
+        if (_gpr[2] != 0)
+            return false;
+        if (_memory.Read32(branchPc) != 0x50400076U ||
+            _memory.Read32(branchPc + 0x04UL) != 0x26100001U ||
+            _memory.Read32(0xffffffff800194f4UL) != 0x00118840U ||
+            _memory.Read32(0xffffffff800194f8UL) != 0x3c04800bU ||
+            _memory.Read32(0xffffffff800194fcUL) != 0x8c822e24U ||
+            _memory.Read32(0xffffffff80019500UL) != 0x0202102aU ||
+            _memory.Read32(0xffffffff80019504UL) != 0x1440ff70U ||
+            _memory.Read32(0xffffffff80019508UL) != 0x26730002U ||
+            _memory.Read32(0xffffffff8001950cUL) != 0x27de000cU ||
+            _memory.Read32(0xffffffff80019510UL) != 0x3c02800bU ||
+            _memory.Read32(0xffffffff80019514UL) != 0x8c422e1cU ||
+            _memory.Read32(0xffffffff80019518UL) != 0x26d60001U ||
+            _memory.Read32(0xffffffff8001951cUL) != 0x02c2102aU ||
+            _memory.Read32(0xffffffff80019520UL) != 0x1440ff5cU ||
+            _memory.Read32(0xffffffff80019524UL) != 0x26f70008U)
+        {
+            return false;
+        }
+
+        ulong columnLimit = SignExtend32(_memory.Read32(0xffffffff800b2e24UL));
+        ulong nextColumn = (ulong)((long)_gpr[16] + 1L);
+        bool staysInRow = unchecked((long)nextColumn) < unchecked((long)columnLimit);
+        int skippedInstructions = staysInRow ? 8 : 15;
+        if (_remainingProbeSteps < skippedInstructions)
+            return false;
+
+        _gpr[16] = nextColumn;
+        _gpr[17] = (uint)_gpr[17] << 1;
+        _gpr[4] = 0x800b0000UL;
+        _gpr[2] = staysInRow ? 1UL : 0UL;
+        _gpr[19] = (ulong)((long)_gpr[19] + 2L);
+        if (staysInRow)
+        {
+            FinishKnownRuntimeBudgetedFastPath(skippedInstructions, 0xffffffff800192c8UL);
+            return true;
+        }
+
+        ulong rowLimit = SignExtend32(_memory.Read32(0xffffffff800b2e1cUL));
+        _gpr[30] = (ulong)((long)_gpr[30] + 0x0cL);
+        _gpr[22] = (ulong)((long)_gpr[22] + 1L);
+        _gpr[2] = unchecked((long)_gpr[22]) < unchecked((long)rowLimit) ? 1UL : 0UL;
+        _gpr[23] = (ulong)((long)_gpr[23] + 8L);
+        FinishKnownRuntimeBudgetedFastPath(
+            skippedInstructions,
+            _gpr[2] != 0 ? 0xffffffff80019294UL : 0xffffffff80019528UL);
         return true;
     }
 
