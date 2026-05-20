@@ -2133,8 +2133,10 @@ internal sealed class MipsR5000Core
         if (!IsMainRamRange(sp + 0x18UL, 0x40UL))
             return false;
 
+        // Current Voodoo status exposes the FIFO counter field as 0xffff, so
+        // any lower signed limit takes the same branch through this poll block.
         ulong signedLimit = _gpr[12];
-        if (unchecked((long)signedLimit) >= 0)
+        if (unchecked((long)signedLimit) >= 0xffff)
             return false;
 
         ulong statusAddress = _gpr[4];
