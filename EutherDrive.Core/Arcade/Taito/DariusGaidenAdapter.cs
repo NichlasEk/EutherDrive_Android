@@ -4743,7 +4743,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     }
 
     private static int DecodeMamePackedLsbNibble(byte packed, int x)
-        => (x & 1) == 0 ? packed >> 4 : packed & 0x0f;
+        => (x & 1) == 0 ? packed & 0x0f : packed >> 4;
 
     private void DrawBringupFrame()
     {
