@@ -755,6 +755,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeTileDepthPointerHelper(pc))
             return;
+        if (TryFastPathKnownRuntimeTilePointerPreamble(pc))
+            return;
         if (TryFastPathKnownRuntimeTileDepthPointerCallsite(pc))
             return;
         if (TryFastPathKnownRuntimeMaskedTileSkip(pc))
@@ -5855,11 +5857,14 @@ internal sealed class MipsR5000Core
     }
 
     private void FinishKnownRuntimeBudgetedFastPath(int skippedInstructions, ulong nextPc)
+        => FinishKnownRuntimeBudgetedFastPath(skippedInstructions, skippedInstructions - 1, nextPc);
+
+    private void FinishKnownRuntimeBudgetedFastPath(int skippedInstructions, int probeStepDebt, ulong nextPc)
     {
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * (ulong)skippedInstructions);
         _instructionCounter += (ulong)skippedInstructions;
-        _probeStepDebt += skippedInstructions - 1;
+        _probeStepDebt += probeStepDebt;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = nextPc;
@@ -5927,6 +5932,70 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = callsitePc + 0x1cUL;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTilePointerPreamble(ulong pc)
+    {
+        const ulong entry = 0xffffffff80019318UL;
+        const ulong callsitePc = 0xffffffff80019344UL;
+        if (pc != entry || _gpr[2] == 0)
+            return false;
+        if (_memory.Read32(entry) != 0x50400076U ||
+            _memory.Read32(entry + 0x08UL) != 0x96620000U ||
+            _memory.Read32(entry + 0x0cUL) != 0xa7a20010U ||
+            _memory.Read32(entry + 0x10UL) != 0x97a20010U ||
+            _memory.Read32(entry + 0x14UL) != 0x50400071U ||
+            _memory.Read32(entry + 0x1cUL) != 0x8fae0054U ||
+            _memory.Read32(entry + 0x20UL) != 0x31c20004U ||
+            _memory.Read32(entry + 0x24UL) != 0x10400024U ||
+            _memory.Read32(entry + 0x28UL) != 0x31c20002U ||
+            _memory.Read32(callsitePc) != 0x0000202dU ||
+            _memory.Read32(callsitePc + 0x04UL) != 0xafaa0018U ||
+            _memory.Read32(callsitePc + 0x08UL) != 0xafab001cU ||
+            _memory.Read32(callsitePc + 0x0cUL) != 0xafac0020U ||
+            _memory.Read32(callsitePc + 0x10UL) != 0x0c00e1e3U ||
+            _memory.Read32(callsitePc + 0x14UL) != 0xafad0024U ||
+            _memory.Read32(callsitePc + 0x18UL) != 0x0040202dU ||
+            _memory.Read32(0xffffffff8003878cUL) != 0x3c02a800U ||
+            _memory.Read32(0xffffffff80038790UL) != 0x3c03a900U ||
+            _memory.Read32(0xffffffff80038794UL) != 0x03e00008U ||
+            _memory.Read32(0xffffffff80038798UL) != 0x0064100bU)
+        {
+            return false;
+        }
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(_gpr[19], 2) || !IsMainRamRange(sp + 0x10UL, 0x18UL))
+            return false;
+
+        uint tile = _memory.Read16(_gpr[19]);
+        if (tile == 0)
+            return false;
+
+        ulong flags = SignExtend32(_memory.Read32(sp + 0x54UL));
+        if ((flags & 0x4UL) == 0)
+            return false;
+
+        const int skippedInstructions = 19;
+        const int consumedProbeSteps = 10;
+        if (_remainingProbeSteps < consumedProbeSteps)
+            return false;
+
+        _memory.Write16(sp + 0x10UL, (ushort)tile);
+        _gpr[2] = 0xa8000000UL;
+        _gpr[3] = 0xa9000000UL;
+        _gpr[4] = 0xa8000000UL;
+        _gpr[14] = flags;
+        _memory.Write32(sp + 0x18UL, (uint)_gpr[10]);
+        _memory.Write32(sp + 0x1cUL, (uint)_gpr[11]);
+        _memory.Write32(sp + 0x20UL, (uint)_gpr[12]);
+        _memory.Write32(sp + 0x24UL, (uint)_gpr[13]);
+        _gpr[31] = callsitePc + 0x18UL;
+        FinishKnownRuntimeBudgetedFastPath(
+            skippedInstructions,
+            consumedProbeSteps - 1,
+            callsitePc + 0x1cUL);
         return true;
     }
 
