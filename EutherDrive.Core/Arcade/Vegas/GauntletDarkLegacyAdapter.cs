@@ -2241,6 +2241,9 @@ internal sealed class MipsR5000Core
         _gpr[12] = signedLimit;
         _gpr[13] = counterBase;
         _gpr[14] = t6;
+        if (TryFinishKnownRuntimeTwoBitTilePrepare((int)skippedInstructions, extraProbeStepDebt: 1))
+            return true;
+
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * skippedInstructions);
         _instructionCounter += skippedInstructions;
@@ -5721,9 +5724,15 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownRuntimeTwoBitTilePrepare(ulong pc)
     {
         const ulong entry = 0xffffffff800193e4UL;
-        const ulong nextPc = 0xffffffff800194a0UL;
         if (pc != entry)
             return false;
+        return TryFinishKnownRuntimeTwoBitTilePrepare(leadingSkippedInstructions: 0, extraProbeStepDebt: 0);
+    }
+
+    private bool TryFinishKnownRuntimeTwoBitTilePrepare(int leadingSkippedInstructions, int extraProbeStepDebt)
+    {
+        const ulong entry = 0xffffffff800193e4UL;
+        const ulong nextPc = 0xffffffff800194a0UL;
         if (_memory.Read32(entry) != 0x97a40010U ||
             _memory.Read32(entry + 0x04UL) != 0x97a50010U ||
             _memory.Read32(entry + 0x08UL) != 0x97a20010U ||
@@ -5781,7 +5790,10 @@ internal sealed class MipsR5000Core
         _gpr[6] = unchecked(rowPointer + _gpr[10]);
         _gpr[9] = source;
         _gpr[14] = 0x800a5f98UL;
-        FinishKnownRuntimeBudgetedFastPath(skippedInstructions, nextPc);
+        FinishKnownRuntimeBudgetedFastPath(
+            skippedInstructions + leadingSkippedInstructions,
+            skippedInstructions - 1 + extraProbeStepDebt,
+            nextPc);
         return true;
     }
 
