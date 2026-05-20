@@ -113,6 +113,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly int[] _paletteColorCacheStamp = new int[0x2000];
     private int _paletteColorCacheFrame;
     private readonly F3LineState[] _lineStates = new F3LineState[256];
+    private F3LineState _lineBuildState = new();
     private readonly MameMusashi68Ec020 _mainCpu = new();
     private readonly TaitoF3MainBus _bus = new();
     private readonly TaitoF3SoundSystem _sound = new();
@@ -4092,7 +4093,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private void BuildMameLineStates()
     {
-        var line = new F3LineState();
+        _lineBuildState.Reset();
+        var line = _lineBuildState;
         for (int y = 0; y < 256; y++)
         {
             if (TryReadLatchedLineWord(y, 2, 0, out ushort line6000))
@@ -4192,6 +4194,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 _lineStates[y] = new F3LineState();
             _lineStates[y].CopyFrom(line);
         }
+
+        _lineBuildState = line;
     }
 
     private bool TryReadLatchedLineWord(int screenY, int section, int subsection, out ushort value)
@@ -5000,6 +5004,25 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
 
         public bool IsInitialized => PlayfieldMix != null;
+
+        public void Reset()
+        {
+            PivotMix = 0;
+            BgPalette = 0;
+            PivotControl = 0;
+            PivotBlendSelect = false;
+            Array.Clear(PlayfieldMix);
+            Array.Clear(PlayfieldColScroll);
+            Array.Clear(PlayfieldAltTilemap);
+            Array.Fill(PlayfieldXScale, 0x80);
+            Array.Clear(PlayfieldYScale);
+            Array.Clear(PlayfieldRowScroll);
+            Array.Clear(PlayfieldPaletteAdd);
+            Array.Clear(SpriteMix);
+            Array.Clear(SpriteBlendSelect);
+            Array.Clear(Blend);
+            Array.Clear(Clip);
+        }
 
         public void CopyFrom(F3LineState source)
         {
