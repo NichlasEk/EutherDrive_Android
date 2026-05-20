@@ -5328,7 +5328,8 @@ internal sealed class MipsR5000Core
     {
         const ulong wrapperEntry = 0xffffffff8005e37cUL;
         const ulong readEntry = 0xffffffff8005eda4UL;
-        if (pc != wrapperEntry && pc != readEntry)
+        bool inReadRoutine = pc >= readEntry && pc <= readEntry + 0x5cUL;
+        if (pc != wrapperEntry && !inReadRoutine)
             return false;
 
         if (!MatchesKnownRuntimeReadDelayWrapperSignature(wrapperEntry) ||
@@ -5337,14 +5338,37 @@ internal sealed class MipsR5000Core
             return false;
         }
 
-        uint value = _memory.Read32(_gpr[4]);
+        ulong readAddress = _gpr[4];
+        ulong returnAddress = _gpr[31];
+        ulong oldFramePointer = _gpr[30];
+        ulong oldStackPointer = _gpr[29];
+        if (inReadRoutine && pc != readEntry)
+        {
+            if (pc < readEntry + 0x18UL)
+                return false;
+
+            ulong frame = _gpr[30];
+            if (!IsMainRamRange(frame + 0x18UL, 0x0cUL))
+                return false;
+
+            oldFramePointer = SignExtend32(_memory.Read32(frame + 0x18UL));
+            returnAddress = SignExtend32(_memory.Read32(frame + 0x1cUL));
+            readAddress = SignExtend32(_memory.Read32(frame + 0x20UL));
+            oldStackPointer = frame + 0x20UL;
+        }
+
+        uint value = _memory.Read32(readAddress);
         _gpr[2] = SignExtend32(value);
+        _gpr[29] = oldStackPointer;
+        _gpr[30] = oldFramePointer;
+        _gpr[31] = returnAddress;
         _gpr[0] = 0;
-        AdvanceCp0Count(_cp0CountStep * (pc == wrapperEntry ? 18UL : 14UL));
-        _instructionCounter += pc == wrapperEntry ? 18UL : 14UL;
+        ulong skippedInstructions = pc == wrapperEntry ? 18UL : 14UL;
+        AdvanceCp0Count(_cp0CountStep * skippedInstructions);
+        _instructionCounter += skippedInstructions;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
-        Pc = _gpr[31];
+        Pc = CanonicalizeCodeAddress(returnAddress);
         return true;
     }
 
