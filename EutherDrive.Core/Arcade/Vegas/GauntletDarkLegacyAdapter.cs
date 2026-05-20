@@ -757,6 +757,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeTileDepthPointerCallsite(pc))
             return;
+        if (TryFastPathKnownRuntimeEmptyTileSpan(pc))
+            return;
         if (TryFastPathKnownRuntimeTwoBitTileExpand(pc))
             return;
         if (TryFastPathKnownRuntimeTileOuterTail(pc))
@@ -5682,6 +5684,68 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRuntimeEmptyTileSpan(ulong pc)
+    {
+        const ulong entry = 0xffffffff800192c8UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry) != 0x16200013U ||
+            _memory.Read32(entry + 0x04UL) != 0x02911024U ||
+            _memory.Read32(entry + 0x08UL) != 0x02a0902dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x8e540000U ||
+            _memory.Read32(entry + 0x10UL) != 0x1680000dU ||
+            _memory.Read32(entry + 0x14UL) != 0x26550004U ||
+            _memory.Read32(entry + 0x18UL) != 0x8c832e24U ||
+            _memory.Read32(entry + 0x1cUL) != 0x2610001fU ||
+            _memory.Read32(entry + 0x20UL) != 0x2462ffffU ||
+            _memory.Read32(entry + 0x24UL) != 0x0050102aU ||
+            _memory.Read32(entry + 0x28UL) != 0x10400005U ||
+            _memory.Read32(entry + 0x2cUL) != 0x3062001fU ||
+            _memory.Read32(entry + 0x30UL) != 0x00021040U ||
+            _memory.Read32(entry + 0x34UL) != 0x2442fffeU ||
+            _memory.Read32(entry + 0x38UL) != 0x0800653cU ||
+            _memory.Read32(entry + 0x3cUL) != 0x02629821U ||
+            _memory.Read32(entry + 0x40UL) != 0x0800653cU ||
+            _memory.Read32(entry + 0x44UL) != 0x2673003eU)
+        {
+            return false;
+        }
+
+        if (_gpr[17] != 0 || !IsMainRamRange(_gpr[21], 4))
+            return false;
+
+        uint tileWord = _memory.Read32(_gpr[21]);
+        if (tileWord != 0)
+            return false;
+
+        ulong columnLimit = SignExtend32(_memory.Read32(_gpr[4] + 0x2e24UL));
+        ulong nextColumn = (ulong)((long)_gpr[16] + 31L);
+        bool overshotRow = unchecked((long)((ulong)((long)columnLimit - 1L))) < unchecked((long)nextColumn);
+        int skippedInstructions = overshotRow ? 16 : 14;
+        if (_remainingProbeSteps < skippedInstructions)
+            return false;
+
+        _gpr[2] = _gpr[20] & _gpr[17];
+        _gpr[18] = _gpr[21];
+        _gpr[20] = SignExtend32(tileWord);
+        _gpr[21] = (ulong)((long)_gpr[18] + 4L);
+        _gpr[3] = columnLimit;
+        _gpr[16] = nextColumn;
+        _gpr[2] = columnLimit & 0x1fUL;
+        if (overshotRow)
+        {
+            _gpr[2] = (ulong)((long)((uint)_gpr[2] << 1) - 2L);
+            _gpr[19] = _gpr[19] + _gpr[2];
+        }
+        else
+        {
+            _gpr[19] = (ulong)((long)_gpr[19] + 0x3eL);
+        }
+
+        FinishKnownRuntimeBudgetedFastPath(skippedInstructions, 0xffffffff800194f0UL);
+        return true;
+    }
+
     private bool TryFastPathKnownRuntimeTileOuterTail(ulong pc)
     {
         const ulong tailPc = 0xffffffff800194f0UL;
@@ -5718,7 +5782,7 @@ internal sealed class MipsR5000Core
         _gpr[19] = (ulong)((long)_gpr[19] + 2L);
         if (staysInRow)
         {
-            FinishKnownRuntimeTileOuterTail(skippedInstructions, 0xffffffff800192c8UL);
+            FinishKnownRuntimeBudgetedFastPath(skippedInstructions, 0xffffffff800192c8UL);
             return true;
         }
 
@@ -5727,13 +5791,13 @@ internal sealed class MipsR5000Core
         _gpr[22] = (ulong)((long)_gpr[22] + 1L);
         _gpr[2] = unchecked((long)_gpr[22]) < unchecked((long)rowLimit) ? 1UL : 0UL;
         _gpr[23] = (ulong)((long)_gpr[23] + 8L);
-        FinishKnownRuntimeTileOuterTail(
+        FinishKnownRuntimeBudgetedFastPath(
             skippedInstructions,
             _gpr[2] != 0 ? 0xffffffff80019294UL : 0xffffffff80019528UL);
         return true;
     }
 
-    private void FinishKnownRuntimeTileOuterTail(int skippedInstructions, ulong nextPc)
+    private void FinishKnownRuntimeBudgetedFastPath(int skippedInstructions, ulong nextPc)
     {
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * (ulong)skippedInstructions);
