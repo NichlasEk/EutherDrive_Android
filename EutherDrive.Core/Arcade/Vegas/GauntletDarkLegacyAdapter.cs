@@ -679,6 +679,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGlideFifoMakeRoom(pc))
             return;
+        if (TryFastPathKnownGlideStatusCounterNegativeLimit(pc))
+            return;
         if (TryFastPathKnownGlideLogWrite(pc))
             return;
         if (TryFastPathKnownGlideUiDispatchFromFrameLoop(pc))
@@ -2095,6 +2097,86 @@ internal sealed class MipsR5000Core
         _gpr[2] = 0x00010000UL;
         Pc = _gpr[31];
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGlideStatusCounterNegativeLimit(ulong pc)
+    {
+        const ulong entry = 0xffffffff80019360UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x8c820000U ||
+            _memory.Read32(entry + 0x04UL) != 0x8fad0024U ||
+            _memory.Read32(entry + 0x08UL) != 0x8faa0018U ||
+            _memory.Read32(entry + 0x0cUL) != 0x8fab001cU ||
+            _memory.Read32(entry + 0x10UL) != 0x8fac0020U ||
+            _memory.Read32(entry + 0x14UL) != 0x00021302U ||
+            _memory.Read32(entry + 0x18UL) != 0x8da32f00U ||
+            _memory.Read32(entry + 0x1cUL) != 0x3042ffffU ||
+            _memory.Read32(entry + 0x20UL) != 0x0043182bU ||
+            _memory.Read32(entry + 0x24UL) != 0x54600001U ||
+            _memory.Read32(entry + 0x2cUL) != 0x0182102aU ||
+            _memory.Read32(entry + 0x30UL) != 0x1440000dU ||
+            _memory.Read32(entry + 0x34UL) != 0x00000000U ||
+            _memory.Read32(entry + 0x68UL) != 0x8fae0054U ||
+            _memory.Read32(entry + 0x6cUL) != 0x31c20002U ||
+            _memory.Read32(entry + 0x70UL) != 0x10400004U ||
+            _memory.Read32(entry + 0x74UL) != 0x00111827U ||
+            _memory.Read32(entry + 0x78UL) != 0x8e420000U ||
+            _memory.Read32(entry + 0x7cUL) != 0x00431024U ||
+            _memory.Read32(entry + 0x80UL) != 0xae420000U)
+        {
+            return false;
+        }
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x18UL, 0x40UL))
+            return false;
+
+        ulong signedLimit = _gpr[12];
+        if (unchecked((long)signedLimit) >= 0)
+            return false;
+
+        ulong statusAddress = _gpr[4];
+        ulong counterBase = SignExtend32(_memory.Read32(sp + 0x24UL));
+        ulong maskTarget = _gpr[18];
+        if (!IsMainRamRange(counterBase + 0x2f00UL, 4))
+            return false;
+
+        uint status = _memory.Read32(statusAddress);
+        uint counter = (status >> 12) & 0xffffu;
+        uint previous = _memory.Read32(counterBase + 0x2f00UL);
+        if (counter < previous)
+            _memory.Write32(counterBase + 0x2f00UL, counter);
+
+        ulong t6 = SignExtend32(_memory.Read32(sp + 0x54UL));
+        ulong invertedMask = ~_gpr[17];
+        ulong result = t6 & 2UL;
+        ulong skippedInstructions = 18UL;
+        if (result != 0)
+        {
+            if (!IsMainRamRange(maskTarget, 4))
+                return false;
+
+            uint masked = _memory.Read32(maskTarget) & (uint)invertedMask;
+            _memory.Write32(maskTarget, masked);
+            result = SignExtend32(masked);
+            skippedInstructions += 3UL;
+        }
+
+        _gpr[2] = result;
+        _gpr[3] = invertedMask;
+        _gpr[10] = SignExtend32(_memory.Read32(sp + 0x18UL));
+        _gpr[11] = SignExtend32(_memory.Read32(sp + 0x1cUL));
+        _gpr[12] = signedLimit;
+        _gpr[13] = counterBase;
+        _gpr[14] = t6;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * skippedInstructions);
+        _instructionCounter += skippedInstructions;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = entry + 0x84UL;
         return true;
     }
 
