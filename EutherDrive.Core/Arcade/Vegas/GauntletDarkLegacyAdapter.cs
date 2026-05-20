@@ -537,6 +537,8 @@ internal sealed class MipsR5000Core
         ApplyKnownRd0Stage4BootReadCompletion(pc);
         ApplyKnownRd0CallbackRaRestore(pc);
         TraceKnownRd0HomePc(pc);
+        if (TryFastPathKnownGauntletGlideHotPath(pc))
+            return;
         if (TryFastPathKnownRd0BootHeaderRead(pc))
             return;
         if (TryFastPathKnownRd0BootFileRead(pc))
@@ -749,6 +751,23 @@ internal sealed class MipsR5000Core
         Pc = branchFromPreviousInstruction
             ? branchTarget
             : _hasImmediatePcOverride ? _immediatePcOverride : nextPc;
+    }
+
+    private bool TryFastPathKnownGauntletGlideHotPath(ulong pc)
+    {
+        return (pc & 0x1fffffffUL) switch
+        {
+            0x00019360UL => TryFastPathKnownGlideStatusCounterNegativeLimit(pc),
+            0x000653d8UL => TryFastPathKnownGlideFifoMakeRoom(pc),
+            >= 0x001097c0UL and <= 0x001098c0UL => TryFastPathKnownGlideFifoMakeRoom(pc),
+            0x000511c8UL => TryFastPathKnownGlideTwoWordStatePacketTail(pc),
+            0x000526acUL => TryFastPathKnownGlideStateFlush(pc),
+            0x00052bc0UL => TryFastPathKnownGlideSetupPacketHelper(pc),
+            0x00053340UL => TryFastPathKnownGlideBufferSwapPacketTail(pc),
+            0x00102520UL or 0x0010253cUL or 0x00102554UL => TryFastPathKnownGauntletGlideTwoWordStatePacket(pc),
+            0x00103f64UL or 0x00103f70UL or 0x00104068UL => TryFastPathKnownGlideStateFlush(pc),
+            _ => false
+        };
     }
 
     private bool TryFastPathKnownBootLoop(ulong pc)
@@ -12319,6 +12338,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _lastFastFillY0 = new int[3];
     private readonly int[] _lastFastFillY1 = new int[3];
     private readonly ushort[] _lastFastFillColor = new ushort[3];
+    private readonly bool[] _pendingClearValid = new bool[3];
+    private readonly int[] _pendingClearX0 = new int[3];
+    private readonly int[] _pendingClearX1 = new int[3];
+    private readonly int[] _pendingClearY0 = new int[3];
+    private readonly int[] _pendingClearY1 = new int[3];
+    private readonly ushort[] _pendingClearColor = new ushort[3];
     private int _registerWriteCount;
     private int _fifoWriteCount;
     private int _fifoPacketCount;
@@ -12532,6 +12557,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int copyWidth = Math.Min(target.Width, 640);
         int copyHeight = Math.Min(target.Height, 480);
+        MaterializePendingClear(_frontBufferIndex);
         ushort[] front = _colorBuffers[_frontBufferIndex];
         for (int y = 0; y < copyHeight; y++)
         {
@@ -12635,16 +12661,10 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         TraceDraw($"fastfill clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
         int bufferIndex = GetDrawBufferIndex();
-        ushort[] buffer = _colorBuffers[bufferIndex];
         int width = x1 - x0;
         if (!IsCachedFastFill(bufferIndex, x0, x1, y0, y1, color))
         {
-            for (int y = y0; y < y1; y++)
-            {
-                int offset = y * LfbRowPixels + x0;
-                buffer.AsSpan(offset, width).Fill(color);
-            }
-
+            SetPendingClear(bufferIndex, x0, x1, y0, y1, color);
             CacheFastFill(bufferIndex, x0, x1, y0, y1, color);
         }
 
@@ -13083,6 +13103,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         bool positive = area > 0;
         int bufferIndex = GetDrawBufferIndex();
+        MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
         for (int y = minY; y < maxY; y++)
@@ -13150,6 +13171,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         int bufferIndex = GetDrawBufferIndex();
+        MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         _colorBuffers[bufferIndex][(y * LfbRowPixels + x) & (LfbPixels - 1)] = color;
         _lfbWriteCount++;
@@ -13214,11 +13236,17 @@ internal class VoodooBringupBackend : IVoodooBackend
     private ushort[] GetLfbReadBuffer(uint lfbMode)
     {
         int select = (int)((lfbMode >> 6) & 0x03u);
-        return _colorBuffers[MapLfbBufferSelect(select)];
+        int bufferIndex = MapLfbBufferSelect(select);
+        MaterializePendingClear(bufferIndex);
+        return _colorBuffers[bufferIndex];
     }
 
     private ushort[] GetLfbWriteBuffer(uint lfbMode)
-        => _colorBuffers[GetLfbWriteBufferIndex(lfbMode)];
+    {
+        int bufferIndex = GetLfbWriteBufferIndex(lfbMode);
+        MaterializePendingClear(bufferIndex);
+        return _colorBuffers[bufferIndex];
+    }
 
     private int GetLfbWriteBufferIndex(uint lfbMode)
         => MapLfbWriteBufferSelect((int)((lfbMode >> 4) & 0x03u));
@@ -13317,9 +13345,52 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         if (((command >> 6) & 1u) != 0)
         {
-            Array.Clear(_colorBuffers[_backBufferIndex]);
+            SetPendingClear(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
             CacheFastFill(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
         }
+    }
+
+    private void SetPendingClear(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
+    {
+        if ((uint)bufferIndex >= (uint)_pendingClearValid.Length)
+            return;
+
+        if (_pendingClearValid[bufferIndex] &&
+            (_pendingClearX0[bufferIndex] != x0 ||
+             _pendingClearX1[bufferIndex] != x1 ||
+             _pendingClearY0[bufferIndex] != y0 ||
+             _pendingClearY1[bufferIndex] != y1))
+        {
+            MaterializePendingClear(bufferIndex);
+        }
+
+        _pendingClearValid[bufferIndex] = true;
+        _pendingClearX0[bufferIndex] = x0;
+        _pendingClearX1[bufferIndex] = x1;
+        _pendingClearY0[bufferIndex] = y0;
+        _pendingClearY1[bufferIndex] = y1;
+        _pendingClearColor[bufferIndex] = color;
+    }
+
+    private void MaterializePendingClear(int bufferIndex)
+    {
+        if ((uint)bufferIndex >= (uint)_pendingClearValid.Length || !_pendingClearValid[bufferIndex])
+            return;
+
+        int x0 = _pendingClearX0[bufferIndex];
+        int x1 = _pendingClearX1[bufferIndex];
+        int y0 = _pendingClearY0[bufferIndex];
+        int y1 = _pendingClearY1[bufferIndex];
+        ushort color = _pendingClearColor[bufferIndex];
+        ushort[] buffer = _colorBuffers[bufferIndex];
+        int width = x1 - x0;
+        for (int y = y0; y < y1; y++)
+        {
+            int offset = y * LfbRowPixels + x0;
+            buffer.AsSpan(offset, width).Fill(color);
+        }
+
+        _pendingClearValid[bufferIndex] = false;
     }
 
     private bool IsCachedFastFill(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
