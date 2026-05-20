@@ -759,6 +759,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeTileDepthPointerCallsite(pc))
             return;
+        if (TryFastPathKnownRuntimeTileMaskBranch(pc))
+            return;
         if (TryFastPathKnownRuntimeMaskedTileSkip(pc))
             return;
         if (TryFastPathKnownRuntimeEmptyTileSpan(pc))
@@ -5871,6 +5873,26 @@ internal sealed class MipsR5000Core
         FinishKnownRuntimeBudgetedFastPath(
             skippedInstructions,
             _gpr[2] != 0 ? 0xffffffff80019294UL : 0xffffffff80019528UL);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTileMaskBranch(ulong pc)
+    {
+        const ulong entry = 0xffffffff800192c8UL;
+        if (pc != entry || _gpr[17] == 0)
+            return false;
+        if (_memory.Read32(entry) != 0x16200013U ||
+            _memory.Read32(entry + 0x04UL) != 0x02911024U ||
+            _memory.Read32(0xffffffff80019318UL) != 0x50400076U)
+        {
+            return false;
+        }
+
+        if (_remainingProbeSteps < 2)
+            return false;
+
+        _gpr[2] = _gpr[20] & _gpr[17];
+        FinishKnownRuntimeBudgetedFastPath(2, 0xffffffff80019318UL);
         return true;
     }
 
