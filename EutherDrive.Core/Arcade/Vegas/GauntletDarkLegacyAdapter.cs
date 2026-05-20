@@ -5828,6 +5828,12 @@ internal sealed class MipsR5000Core
             return false;
         if (_gpr[2] != 0)
             return false;
+        return TryFinishKnownRuntimeMaskedTileSkip(0);
+    }
+
+    private bool TryFinishKnownRuntimeMaskedTileSkip(int leadingSkippedInstructions)
+    {
+        const ulong branchPc = 0xffffffff80019318UL;
         if (_memory.Read32(branchPc) != 0x50400076U ||
             _memory.Read32(branchPc + 0x04UL) != 0x26100001U ||
             _memory.Read32(0xffffffff800194f4UL) != 0x00118840U ||
@@ -5850,7 +5856,7 @@ internal sealed class MipsR5000Core
         ulong columnLimit = SignExtend32(_memory.Read32(0xffffffff800b2e24UL));
         ulong nextColumn = (ulong)((long)_gpr[16] + 1L);
         bool staysInRow = unchecked((long)nextColumn) < unchecked((long)columnLimit);
-        int skippedInstructions = staysInRow ? 8 : 15;
+        int skippedInstructions = (staysInRow ? 8 : 15) + leadingSkippedInstructions;
         if (_remainingProbeSteps < skippedInstructions)
             return false;
 
@@ -5891,7 +5897,11 @@ internal sealed class MipsR5000Core
         if (_remainingProbeSteps < 2)
             return false;
 
-        _gpr[2] = _gpr[20] & _gpr[17];
+        ulong maskResult = _gpr[20] & _gpr[17];
+        if (maskResult == 0 && TryFinishKnownRuntimeMaskedTileSkip(2))
+            return true;
+
+        _gpr[2] = maskResult;
         FinishKnownRuntimeBudgetedFastPath(2, 0xffffffff80019318UL);
         return true;
     }
