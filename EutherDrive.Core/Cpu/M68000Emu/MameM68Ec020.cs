@@ -41,6 +41,12 @@ public sealed class MameM68Ec020
         return new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, state.Pc, state.Prefetch);
     }
 
+    public M68000.M68000State GetState(uint[] data, uint[] address)
+    {
+        var state = _cpu.GetState(data, address);
+        return new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, state.Pc, state.Prefetch);
+    }
+
     public void SetState(M68000.M68000State state)
     {
         _cpu.SetState(new mame.eutherdrive_m68000.M68000.M68000State(

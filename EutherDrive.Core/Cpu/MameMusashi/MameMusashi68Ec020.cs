@@ -121,6 +121,18 @@ public sealed class MameMusashi68Ec020
         return new M68000.M68000State(data, address, _usp, CurrentSupervisorStackPointer(), _sr, Pc, NextOpcode);
     }
 
+    public M68000.M68000State GetState(uint[] data, uint[] address)
+    {
+        if (data.Length < 8)
+            throw new ArgumentException("Data register snapshot must have room for 8 entries.", nameof(data));
+        if (address.Length < 7)
+            throw new ArgumentException("Address register snapshot must have room for 7 entries.", nameof(address));
+        SaveActiveStackPointer();
+        Array.Copy(_d, data, 8);
+        Array.Copy(_a, address, 7);
+        return new M68000.M68000State(data, address, _usp, CurrentSupervisorStackPointer(), _sr, Pc, NextOpcode);
+    }
+
     public void SetState(M68000.M68000State state)
     {
         SaveActiveStackPointer();

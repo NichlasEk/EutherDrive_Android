@@ -102,7 +102,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly byte[] _mixDstBlendMode = new byte[FrameWidth * FrameHeight];
     private readonly ushort[] _spriteReefPalette = new ushort[FrameWidth * FrameHeight];
     private readonly byte[] _spriteReefGroup = new byte[FrameWidth * FrameHeight];
-    private readonly List<int> _spriteReefOffsets = new(FrameWidth * FrameHeight / 4);
+    private readonly int[] _spriteReefOffsets = new int[FrameWidth * FrameHeight];
+    private int _spriteReefOffsetCount;
     private readonly int[] _spriteReefNext = new int[FrameWidth * FrameHeight];
     private readonly int[] _spriteReefRowHead = new int[FrameHeight];
     private readonly bool[] _spriteReefRowActive = new bool[FrameHeight];
@@ -142,6 +143,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private int _traceHotFillRemaining = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_HOT_FILL_LIMIT", 128);
     private readonly Dictionary<uint, int> _framePcProfile = new();
     private readonly Queue<F3TaskState> _f3TaskQueue = new();
+    private readonly uint[] _m68ec020ScratchData = new uint[8];
+    private readonly uint[] _m68ec020ScratchAddress = new uint[7];
     private ulong _f3TasksEnqueued;
     private ulong _f3TasksDispatched;
     private uint _lastF3TaskEntry;
@@ -171,6 +174,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private int _lastMixLitSourcePixels;
     private int _lastMixDestOnlyPixels;
     private int _lastMixPriorityZeroConflicts;
+    private long _debugSummaryFrame = long.MinValue;
+    private string _debugSummaryCache = string.Empty;
     private readonly int[] _lastPlayfieldLayerCandidates = new int[4];
     private readonly int[] _lastPlayfieldLayerPixels = new int[4];
     private readonly int[] _lastPlayfieldBlendSelect0 = new int[4];
@@ -226,8 +231,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _frameCounter;
 
-    public string DebugSummary =>
-        BuildDebugSummary();
+    public string DebugSummary
+    {
+        get
+        {
+            if (_debugSummaryFrame == _frameCounter && _debugSummaryCache.Length != 0)
+                return _debugSummaryCache;
+            _debugSummaryCache = BuildDebugSummary();
+            _debugSummaryFrame = _frameCounter;
+            return _debugSummaryCache;
+        }
+    }
 
     public int LastFrameInstructions => _lastFrameInstructions;
 
@@ -243,7 +257,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private string BuildDebugSummary()
     {
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         double tickMs = 1000.0 / Stopwatch.Frequency;
         return $"driver={_driverName} frame={_frameCounter} pc=0x{_mainCpu.Pc:X6} sr=0x{_mainCpu.StatusRegister:X4} " +
         $"op=0x{_mainCpu.NextOpcode:X4} d0=0x{state.Data[0]:X8} d1=0x{state.Data[1]:X8} a0=0x{state.Address[0]:X8} a1=0x{state.Address[1]:X8} a5=0x{state.Address[5]:X8} a6=0x{state.Address[6]:X8} " +
@@ -336,7 +350,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private void TraceF3TaskCreatePc(int instructions, uint pc, ushort op)
     {
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         uint sp = (state.Sr & 0x2000) != 0 ? state.Ssp : state.Usp;
         uint slot15Stack = _bus.PeekLong(F3SchedulerStackSlots + 15u * 4u);
         uint slot15Frame = slot15Stack + 60u;
@@ -446,6 +460,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _adaptiveRenderSkipsRemaining = 0;
         _hasPresentFrame = false;
         _frameCounter = 0;
+        InvalidateDebugSummary();
         _executedInstructions = 0;
         _executedCycles = 0;
         _m68ec020ProbeInstructions = 0;
@@ -496,6 +511,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         ResetSceneDiagnostics();
         _nextF3TaskStack = 0x0041_f000;
         _lastStopReason = "reset";
+        InvalidateDebugSummary();
         _traceBootPcRemaining = TraceBootPcLimit;
         _traceInstructionsRemaining = TraceInstructionLimit;
         _traceSceneCopyPcRemaining = TraceSceneCopyPcLimit;
@@ -515,7 +531,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         Array.Clear(_spriteReefPalette);
         Array.Clear(_spriteReefGroup);
         Array.Clear(_spriteReefRowActive);
-        _spriteReefOffsets.Clear();
+        _spriteReefOffsetCount = 0;
         _spriteReefTouchedRows.Clear();
     }
 
@@ -542,6 +558,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (_cpuFaulted)
         {
             DrawBringupFrame();
+            InvalidateDebugSummary();
             return;
         }
 
@@ -709,6 +726,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastFrameRenderTicks = renderTicks;
         _lastFrameControlTicks = controlTicks;
         _lastFrameTotalTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() - profileStartTicks : 0;
+        InvalidateDebugSummary();
 
         if (TracePhaseTiming && _lastFrameTotalTicks > TargetFrameTicks)
         {
@@ -816,7 +834,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         writer.Write(_cpuFaulted);
         writer.Write(_lastStopReason);
         _bus.SaveState(writer);
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         writer.Write(state.Pc);
         writer.Write(state.Ssp);
         writer.Write(state.Usp);
@@ -853,6 +871,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         for (int i = 0; i < address.Length; i++) address[i] = reader.ReadUInt32();
         _mainCpu.SetState(new M68000.M68000State(data, address, usp, ssp, sr, pc, prefetch));
         _mainCpu.VectorBase = _bus.VectorBase;
+        InvalidateDebugSummary();
         if (version >= 12)
             _sound.LoadState(reader);
         else
@@ -945,17 +964,25 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         // Exact loop collapses for Darius' hot RAM/video fill routines. These
         // keep native trap scheduling intact while avoiding thousands of tiny
         // 020 memory operations per frame.
+        if (TryExecuteDariusF3IrqTaskScan(pc, op, out cycles))
+            return true;
         if (TryExecuteDariusF3TaskMaskScan(pc, op, out cycles))
             return true;
         if (TryExecuteDariusF3ZeroWait(pc, op, out cycles))
             return true;
         if (TryExecuteDariusIndexedLongCopyLoop(pc, op, out cycles))
             return true;
+        if (TryExecuteDariusTilemapRleDraw(pc, op, out cycles))
+            return true;
         if (TryExecuteDariusBytePairExpand(pc, op, out cycles))
             return true;
         if (TryExecuteDariusObjectPackLoop(pc, op, out cycles))
             return true;
+        if (TryExecuteDariusSceneSpriteProlog(pc, op, out cycles))
+            return true;
         if (TryExecuteDariusStaticSpriteCopyEntry(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusSceneSpriteRows(pc, op, out cycles))
             return true;
         if (TryExecuteDariusSceneSpriteCopy(pc, op, out cycles))
             return true;
@@ -964,6 +991,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (TryExecuteDariusEmptySceneSpriteScan(pc, op, out cycles))
             return true;
         if (TryExecuteDariusObjectTrailShift(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusObjectAnimPointerLoad(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusTimedObjectAnimPointerLoad(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusObjectAnimationStep(pc, op, out cycles))
+            return true;
+        if (TryExecuteDariusPaletteLerpTable(pc, op, out cycles))
             return true;
         if (TryExecuteDariusSpriteReefClear(pc, out cycles))
             return true;
@@ -1021,6 +1056,77 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         => pc is 0x002320 or 0x002326
             && op is 0x4eb9 or 0x60f8;
 
+    private bool TryExecuteDariusF3IrqTaskScan(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x002284 || op != 0x3880
+            || _bus.PeekWord(0x002284) != 0x3880
+            || _bus.PeekWord(0x002286) != 0x3200
+            || _bus.PeekWord(0x002288) != 0xe541
+            || _bus.PeekWord(0x00228a) != 0x47f4
+            || _bus.PeekWord(0x00228e) != 0x2b4b
+            || _bus.PeekWord(0x002292) != 0x2413
+            || _bus.PeekWord(0x002294) != 0x262d
+            || _bus.PeekWord(0x002298) != 0x0103
+            || _bus.PeekWord(0x00229a) != 0x67d8
+            || _bus.PeekWord(0x00229c) != 0x0802
+            || _bus.PeekWord(0x0022de) != 0x4a2d)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        uint a4 = state.Address[4] & 0x00ff_ffff;
+        uint a5 = state.Address[5] & 0x00ff_ffff;
+        if (a4 != ((a5 + unchecked((uint)(short)0xe6fa)) & 0x00ff_ffff))
+            return false;
+
+        ushort d0 = (ushort)state.Data[0];
+        uint maskAddress = (a5 + unchecked((uint)(short)0xe6fc)) & 0x00ff_ffff;
+        uint pointerAddress = (a5 + unchecked((uint)(short)0xe704)) & 0x00ff_ffff;
+        uint readyMask = _bus.ReadLong(maskAddress);
+        int skipped = 0;
+
+        while (d0 < 0x20)
+        {
+            ushort d1 = (ushort)(d0 << 2);
+            uint a3 = (a4 + 0x0eu + d1) & 0x00ff_ffff;
+            _bus.WriteWord(a4, d0);
+            _bus.WriteLong(pointerAddress, a3);
+            if (((readyMask >> d0) & 1u) != 0)
+            {
+                state.Data[0] = (state.Data[0] & 0xffff_0000u) | d0;
+                state.Data[1] = (state.Data[1] & 0xffff_0000u) | d1;
+                state.Data[2] = _bus.ReadLong(a3);
+                state.Data[3] = readyMask;
+                state.Address[3] = a3;
+                state.Address[4] = a4;
+                ushort sr = (ushort)(state.Sr & ~0x0004);
+                uint nextPc = 0x00229c;
+                _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, _bus.ReadOpcodeWord(nextPc)));
+                _m68ec020ProbeInstructions += (ulong)(skipped * 9 + 8);
+                cycles = (uint)Math.Max(24, skipped * 34 + 20);
+                return skipped != 0;
+            }
+
+            d0++;
+            skipped++;
+        }
+
+        if (skipped == 0)
+            return false;
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0x0020u;
+        state.Data[1] = (state.Data[1] & 0xffff_0000u) | 0x007cu;
+        state.Data[3] = readyMask;
+        state.Address[4] = a4;
+        uint noTaskPc = 0x0022de;
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, state.Sr, noTaskPc, _bus.ReadOpcodeWord(noTaskPc)));
+        _m68ec020ProbeInstructions += (ulong)(skipped * 9);
+        cycles = (uint)Math.Max(34, skipped * 34);
+        return true;
+    }
+
     private bool TryExecuteDariusF3TaskMaskScan(uint pc, ushort op, out uint cycles)
     {
         cycles = 0;
@@ -1034,7 +1140,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         int bit = (short)(ushort)state.Data[1];
         if (bit < 0 || bit > 31)
             return false;
@@ -1065,7 +1171,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (pc != 0x001a44 || op != 0x4a2d || _bus.PeekWord(pc + 2) != 0xa2b3 || _bus.PeekWord(pc + 4) != 0x56c8)
             return false;
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         uint waitAddress = (state.Address[5] + unchecked((uint)(short)0xa2b3)) & 0x00ff_ffff;
         if (_bus.ReadByte(waitAddress) != 0)
             return false;
@@ -1097,7 +1203,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         int remaining = ((ushort)state.Data[2]) + 1;
         if (remaining <= 0 || remaining > 0x0400)
             return false;
@@ -1181,6 +1287,170 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return true;
     }
 
+    private bool TryExecuteDariusTilemapRleDraw(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x0053b2 || op != 0x48e7
+            || _bus.PeekWord(0x0053b2) != 0x48e7
+            || _bus.PeekWord(0x0053b4) != 0xffe0
+            || _bus.PeekWord(0x0053b6) != 0x206f
+            || _bus.PeekWord(0x0053ba) != 0x7e00
+            || _bus.PeekWord(0x0053bc) != 0x1e18
+            || _bus.PeekWord(0x0053be) != 0x5347
+            || _bus.PeekWord(0x0053c0) != 0x4847
+            || _bus.PeekWord(0x0053c2) != 0x1e18
+            || _bus.PeekWord(0x0053c4) != 0x5347
+            || _bus.PeekWord(0x0053c6) != 0x2c2f
+            || _bus.PeekWord(0x0053ca) != 0x2246
+            || _bus.PeekWord(0x0053cc) != 0x262f
+            || _bus.PeekWord(0x0053d0) != 0xe9c3
+            || _bus.PeekWord(0x0053d4) != 0x45fa
+            || _bus.PeekWord(0x0053dc) != 0x4e92
+            || _bus.PeekWord(0x0053de) != 0x0283
+            || _bus.PeekWord(0x0053e4) != 0x45fa
+            || _bus.PeekWord(0x00540c) != 0x727c
+            || _bus.PeekWord(0x00540e) != 0xc841
+            || _bus.PeekWord(0x005410) != 0x4ed2
+            || _bus.PeekWord(0x00542a) != 0x3018
+            || _bus.PeekWord(0x00542c) != 0x6600
+            || _bus.PeekWord(0x005456) != 0x42b1
+            || _bus.PeekWord(0x00546c) != 0x2382
+            || _bus.PeekWord(0x005482) != 0x2382
+            || _bus.PeekWord(0x00549a) != 0x2382)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        uint sp = (state.Sr & 0x2000) != 0 ? state.Ssp : state.Usp;
+        uint source = _bus.ReadLong(sp + 4) & 0x00ff_ffff;
+        uint destination = _bus.ReadLong(sp + 8) & 0x00ff_ffff;
+        uint control = _bus.ReadLong(sp + 12);
+        if (!IsF3VideoAddress(destination))
+            return false;
+
+        int rows = _bus.ReadByte(source);
+        int columns = _bus.ReadByte(source + 1);
+        source = (source + 2) & 0x00ff_ffff;
+        if (rows <= 0 || rows > 0x80 || columns <= 0 || columns > 0x80)
+            return false;
+
+        uint d7 = ((uint)(rows - 1) << 16) | (ushort)(columns - 1);
+        uint d5;
+        uint d6 = destination;
+        switch ((control >> 30) & 3)
+        {
+            case 0:
+                d5 = 0x0080_0000u | (ushort)d6;
+                d6 = ((uint)(ushort)d6 << 16) | 0x0004u;
+                break;
+            case 1:
+                d5 = 0x0080_0000u | (ushort)d6;
+                d6 = (d6 & 0xffff_0000u) | (ushort)(d6 + (uint)((ushort)d7 << 2));
+                d6 = ((uint)(ushort)d6 << 16) | 0xfffcu;
+                break;
+            case 2:
+                d5 = 0xff80_0000u | (ushort)d6;
+                d5 = (d5 & 0xffff_0000u) | (ushort)(d5 + ((d7 >> 9) & 0x0fffu));
+                d6 = ((uint)(ushort)d6 << 16) | 0x0004u;
+                break;
+            default:
+                d5 = 0xff80_0000u | (ushort)d6;
+                d5 = (d5 & 0xffff_0000u) | (ushort)(d5 + ((d7 >> 9) & 0x0fffu));
+                d6 = (d6 & 0xffff_0000u) | (ushort)(d6 + (uint)((ushort)d7 << 2));
+                d6 = ((uint)(ushort)d6 << 16) | 0xfffcu;
+                break;
+        }
+
+        uint xorMask = control & 0xfe00_0000u;
+        uint rowBase = destination;
+        int repeatMode = 0;
+        int repeatRemaining = 0;
+        uint repeatValue = 0;
+        int cells = rows * columns;
+
+        for (int row = 0; row < rows; row++)
+        {
+            ushort rowOffset = (ushort)(d5 & 0x0f80u);
+            rowBase = (rowBase & 0xffff_f000u) + rowOffset;
+            if (!IsF3VideoAddress(rowBase))
+                return false;
+
+            ushort columnOffset = (ushort)(d6 >> 16);
+            for (int column = 0; column < columns; column++)
+            {
+                columnOffset &= 0x007c;
+                uint writeAddress = (rowBase + columnOffset) & 0x00ff_ffff;
+                if (!IsF3VideoAddress(writeAddress))
+                    return false;
+
+                if (repeatMode == 0)
+                {
+                    ushort command = _bus.ReadWord(source);
+                    source = (source + 2) & 0x00ff_ffff;
+                    if (command == 0)
+                    {
+                        uint value = _bus.ReadLong(source) ^ xorMask;
+                        source = (source + 4) & 0x00ff_ffff;
+                        _bus.WriteLong(writeAddress, value);
+                    }
+                    else
+                    {
+                        repeatMode = (command >> 8) & 0xff;
+                        repeatRemaining = (command & 0xff) + 1;
+                        if (repeatMode > 3)
+                            return false;
+                        if (repeatMode != 0)
+                        {
+                            repeatValue = _bus.ReadLong(source) ^ xorMask;
+                            source = (source + 4) & 0x00ff_ffff;
+                        }
+
+                        WriteDariusTilemapRleRepeat(writeAddress, repeatMode, ref repeatValue);
+                        if (--repeatRemaining == 0)
+                            repeatMode = 0;
+                    }
+                }
+                else
+                {
+                    WriteDariusTilemapRleRepeat(writeAddress, repeatMode, ref repeatValue);
+                    if (--repeatRemaining == 0)
+                        repeatMode = 0;
+                }
+
+                columnOffset = (ushort)(columnOffset + (ushort)d6);
+            }
+
+            d5 = (d5 & 0xffff_0000u) | (ushort)(d5 + (d5 >> 16));
+        }
+
+        SetStateAfterRts(state, state.Sr);
+        _m68ec020ProbeInstructions += (ulong)(cells * 5 + 24);
+        cycles = (uint)Math.Max(80, cells * 20 + 80);
+        return true;
+    }
+
+    private void WriteDariusTilemapRleRepeat(uint address, int mode, ref uint value)
+    {
+        switch (mode)
+        {
+            case 0:
+                _bus.WriteLong(address, 0);
+                break;
+            case 1:
+                _bus.WriteLong(address, value);
+                break;
+            case 2:
+                _bus.WriteLong(address, value);
+                value = (value & 0xffff_0000u) | (ushort)(value + 1);
+                break;
+            case 3:
+                _bus.WriteLong(address, value);
+                value = (value & 0xffff_0000u) | (ushort)(value - 1);
+                break;
+        }
+    }
+
     private bool TryExecuteDariusObjectPackLoop(uint pc, ushort op, out uint cycles)
     {
         cycles = 0;
@@ -1202,7 +1472,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         int count = ((ushort)state.Data[6]) + 1;
         if (count <= 0 || count > 0x0400)
             return false;
@@ -1269,7 +1539,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         int remaining = ((ushort)state.Data[0]) + 1;
         if (remaining <= 0 || remaining > 0x0400)
             return false;
@@ -1334,7 +1604,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         int count = ((ushort)state.Data[0]) + 1;
         if (count <= 0 || count > 0x0400)
             return false;
@@ -1354,25 +1624,25 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         uint d4 = state.Data[4];
         ushort d5 = (ushort)state.Data[5];
         byte overrideByte = _bus.ReadByte(a0 + 0x1d);
-        ushort spriteWord2 = _bus.ReadWord(a0 + 0x1e);
+        ushort spriteWord2 = _bus.ReadDataWord(a0 + 0x1e);
         ushort lastD2BeforeSub = (ushort)d2;
 
         for (int i = 0; i < count; i++)
         {
-            ushort sourceWord = _bus.ReadWord(a2);
-            _bus.WriteWord(a1, sourceWord);
+            ushort sourceWord = _bus.ReadDataWord(a2);
+            _bus.WriteSpriteWordAddress(a1, sourceWord);
             if (sourceWord == 0)
             {
                 d4 &= ~(uint)((1 << 12) | (1 << 13));
             }
             else
             {
-                d3 = (d3 & 0xffff_0000u) | (ushort)(_bus.ReadWord(a2 + 2) ^ (ushort)d4);
+                d3 = (d3 & 0xffff_0000u) | (ushort)(_bus.ReadDataWord(a2 + 2) ^ (ushort)d4);
                 if (overrideByte != 0)
                     d3 = (d3 & 0xffff_ff00u) | overrideByte;
 
-                _bus.WriteWord(a1 + 8, (ushort)d3);
-                _bus.WriteWord(a1 + 2, spriteWord2);
+                _bus.WriteSpriteWordAddress(a1 + 8, (ushort)d3);
+                _bus.WriteSpriteWordAddress(a1 + 2, spriteWord2);
                 bool bit12WasSet = (d4 & (1u << 12)) != 0;
                 d4 |= 1u << 12;
                 if (!bit12WasSet)
@@ -1381,7 +1651,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     d4 &= ~(1u << 15);
                     uint repeated = (d2 << 16) | d2;
                     d3 = (d3 & 0xffff_0000u) | ((repeated >> 4) & 0x0fffu);
-                    _bus.WriteWord(a1 + 6, (ushort)d3);
+                    _bus.WriteSpriteWordAddress(a1 + 6, (ushort)d3);
                 }
 
                 a1 = (a1 + 0x10) & 0x00ff_ffff;
@@ -1412,6 +1682,137 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return true;
     }
 
+    private bool TryExecuteDariusSceneSpriteRows(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x001330 || op != 0xe9c1
+            || _bus.PeekWord(0x001330) != 0xe9c1
+            || _bus.PeekWord(0x001332) != 0x0010
+            || _bus.PeekWord(0x001334) != 0x264a
+            || _bus.PeekWord(0x001336) != 0x3428
+            || _bus.PeekWord(0x001338) != 0x0018
+            || _bus.PeekWord(0x00133a) != 0xe94a
+            || _bus.PeekWord(0x00133c) != 0x0884
+            || _bus.PeekWord(0x00133e) != 0x000c
+            || _bus.PeekWord(0x001340) != 0x0884
+            || _bus.PeekWord(0x001342) != 0x000d
+            || _bus.PeekWord(0x001344) != 0x0884
+            || _bus.PeekWord(0x001346) != 0x001f
+            || _bus.PeekWord(0x001348) != 0x3292
+            || _bus.PeekWord(0x00139a) != 0xd4c6
+            || _bus.PeekWord(0x00139c) != 0x9445
+            || _bus.PeekWord(0x00139e) != 0x51c8
+            || _bus.PeekWord(0x0013a2) != 0x45f3
+            || _bus.PeekWord(0x0013a6) != 0x0804
+            || _bus.PeekWord(0x0013c4) != 0x51c9
+            || _bus.PeekWord(0x0013c8) != 0x2b49
+            || _bus.PeekWord(0x0013cc) != 0x4e75)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        int rows = ((ushort)state.Data[1]) + 1;
+        int columns = (ushort)(state.Data[1] >> 16) + 1;
+        if (rows <= 0 || rows > 0x0100 || columns <= 0 || columns > 0x0100)
+            return false;
+
+        int sourceStep = unchecked((short)(ushort)state.Data[6]);
+        int rowStep = unchecked((short)(ushort)state.Data[7]);
+        if (Math.Abs(sourceStep) > 0x0200 || Math.Abs(rowStep) > 0x2000)
+            return false;
+
+        uint a0 = state.Address[0] & 0x00ff_ffff;
+        uint a1 = state.Address[1] & 0x00ff_ffff;
+        uint a2 = state.Address[2] & 0x00ff_ffff;
+        uint a5 = state.Address[5] & 0x00ff_ffff;
+        if (!IsSpriteRamAddress(a1))
+            return false;
+
+        uint d2Start = ((uint)_bus.ReadDataWord(a0 + 0x18) << 4) & 0xffffu;
+        ushort d5 = (ushort)state.Data[5];
+        uint d3 = state.Data[3];
+        uint d4 = state.Data[4];
+        byte overrideByte = _bus.ReadByte(a0 + 0x1d);
+        ushort spriteWord2 = _bus.ReadDataWord(a0 + 0x1e);
+        ushort lastD2BeforeSub = (ushort)d2Start;
+        uint d2 = d2Start;
+        ulong copiedSlots = 0;
+
+        for (int row = 0; row < rows; row++)
+        {
+            uint rowStart = a2;
+            d2 = d2Start;
+            d4 &= ~((1u << 12) | (1u << 13) | (1u << 31));
+
+            for (int column = 0; column < columns; column++)
+            {
+                ushort sourceWord = _bus.ReadDataWord(a2);
+                _bus.WriteSpriteWordAddress(a1, sourceWord);
+                copiedSlots++;
+                if (sourceWord == 0)
+                {
+                    d4 &= ~(uint)((1 << 12) | (1 << 13));
+                }
+                else
+                {
+                    d3 = (d3 & 0xffff_0000u) | (ushort)(_bus.ReadDataWord(a2 + 2) ^ (ushort)d4);
+                    if (overrideByte != 0)
+                        d3 = (d3 & 0xffff_ff00u) | overrideByte;
+
+                    _bus.WriteSpriteWordAddress(a1 + 8, (ushort)d3);
+                    _bus.WriteSpriteWordAddress(a1 + 2, spriteWord2);
+                    bool bit12WasSet = (d4 & (1u << 12)) != 0;
+                    d4 |= 1u << 12;
+                    if (!bit12WasSet)
+                    {
+                        d4 |= (1u << 13) | (1u << 14) | (1u << 31);
+                        d4 &= ~(1u << 15);
+                        uint repeated = (d2 << 16) | d2;
+                        d3 = (d3 & 0xffff_0000u) | ((repeated >> 4) & 0x0fffu);
+                        _bus.WriteSpriteWordAddress(a1 + 6, (ushort)d3);
+                    }
+
+                    a1 = (a1 + 0x10) & 0x00ff_ffff;
+                }
+
+                a2 = unchecked(a2 + (uint)sourceStep) & 0x00ff_ffff;
+                lastD2BeforeSub = (ushort)d2;
+                d2 = (uint)((ushort)d2 - d5) & 0xffffu;
+            }
+
+            a2 = unchecked(rowStart + (uint)rowStep) & 0x00ff_ffff;
+            if ((d4 & (1u << 31)) == 0)
+            {
+                _bus.WriteSpriteWordAddress(a1 + 8, (ushort)d4);
+                _bus.WriteSpriteWordAddress(a1 + 2, spriteWord2);
+                d4 |= 1u << 14;
+                a1 = (a1 + 0x10) & 0x00ff_ffff;
+            }
+
+            d4 |= 1u << 15;
+        }
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | 0xffffu;
+        state.Data[1] = (state.Data[1] & 0xffff_0000u) | 0xffffu;
+        state.Data[2] = (state.Data[2] & 0xffff_0000u) | d2;
+        state.Data[3] = d3;
+        state.Data[4] = d4;
+        state.Address[1] = a1;
+        state.Address[2] = a2;
+        _bus.WriteLong((a5 - 0x0ca0u) & 0x00ff_ffff, a1);
+
+        bool negative = (d2 & 0x8000u) != 0;
+        bool zero = d2 == 0;
+        bool overflow = ((lastD2BeforeSub ^ d5) & (lastD2BeforeSub ^ d2) & 0x8000u) != 0;
+        bool carry = lastD2BeforeSub < d5;
+        ushort sr = UpdateAddSubCcr(state.Sr, negative, zero, overflow, carry);
+        SetStateAfterRts(state, sr);
+        _m68ec020ProbeInstructions += copiedSlots * 14u + (ulong)(rows * 10);
+        cycles = (uint)Math.Max(48, copiedSlots * 68u + (ulong)(rows * 42));
+        return true;
+    }
+
     private bool TryExecuteDariusStaticSpriteCopyEntry(uint pc, ushort op, out uint cycles)
     {
         cycles = 0;
@@ -1429,17 +1830,105 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         uint a0 = state.Address[0] & 0x00ff_ffff;
         uint a5 = state.Address[5] & 0x00ff_ffff;
-        uint a1 = _bus.ReadLong((a5 - 0x0ca0u) & 0x00ff_ffff) & 0x00ff_ffff;
-        uint a2 = _bus.ReadLong(a0 + 0x10) & 0x00ff_ffff;
-        if (_bus.ReadLong(a2) != 0x0001_0001u)
+        uint a1 = _bus.ReadDataLong((a5 - 0x0ca0u) & 0x00ff_ffff) & 0x00ff_ffff;
+        uint a2 = _bus.ReadDataLong(a0 + 0x10) & 0x00ff_ffff;
+        if (_bus.ReadDataLong(a2) != 0x0001_0001u)
             return false;
 
         state.Address[1] = a1;
         state.Address[2] = a2;
         return ExecuteDariusStaticSpriteCopyBody(state, a0, a1, a2, 22, 72, out cycles);
+    }
+
+    private bool TryExecuteDariusSceneSpriteProlog(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x001282 || op != 0x226d
+            || _bus.PeekWord(0x001282) != 0x226d
+            || _bus.PeekWord(0x001286) != 0x2468
+            || _bus.PeekWord(0x00128a) != 0x0c92
+            || _bus.PeekWord(0x001294) != 0x301a
+            || _bus.PeekWord(0x001296) != 0x321a
+            || _bus.PeekWord(0x001308) != 0xefc1
+            || _bus.PeekWord(0x00130c) != 0xe9e8
+            || _bus.PeekWord(0x001318) != 0xe9e8
+            || _bus.PeekWord(0x001324) != 0x3428
+            || _bus.PeekWord(0x001328) != 0xe9c2
+            || _bus.PeekWord(0x00132c) != 0x3343)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        uint a0 = state.Address[0] & 0x00ff_ffff;
+        uint a5 = state.Address[5] & 0x00ff_ffff;
+        uint a1 = _bus.ReadDataLong((a5 - 0x0ca0u) & 0x00ff_ffff) & 0x00ff_ffff;
+        uint a2 = _bus.ReadDataLong(a0 + 0x10) & 0x00ff_ffff;
+        if (!IsSpriteRamAddress(a1) || _bus.ReadDataLong(a2) == 0x0001_0001u)
+            return false;
+
+        ushort columnsWord = _bus.ReadDataWord(a2);
+        ushort rowsWord = _bus.ReadDataWord(a2 + 2);
+        int columns = columnsWord - 1;
+        int rows = rowsWord - 1;
+        if (columns < 0 || rows < 0 || columns > 0xff || rows > 0xff)
+            return false;
+
+        uint a2Cursor = (a2 + 4) & 0x00ff_ffff;
+        int d7 = columnsWord << 2;
+        int d6;
+        int mode = _bus.ReadByte(a0 + 0x1c) & 3;
+        switch (mode)
+        {
+            case 0:
+                d6 = 4;
+                break;
+            case 1:
+                d6 = 4;
+                d7 = unchecked((short)-d7);
+                a2Cursor = unchecked(a2Cursor - (uint)(short)(rows * d7)) & 0x00ff_ffff;
+                break;
+            case 2:
+                d6 = -4;
+                a2Cursor = unchecked(a2Cursor + (uint)(columns * 4)) & 0x00ff_ffff;
+                break;
+            default:
+                d6 = -4;
+                d7 = unchecked((short)-d7);
+                a2Cursor = unchecked(a2Cursor - (uint)(short)(rows * d7) + (uint)(columns * 4)) & 0x00ff_ffff;
+                break;
+        }
+
+        uint d1 = ((uint)(ushort)columns << 16) | (ushort)rows;
+        ushort xDelta = unchecked((ushort)(_bus.ReadByte(a0 + 0x1f) - 0x0101));
+        ushort yDelta = unchecked((ushort)(_bus.ReadByte(a0 + 0x1e) - 0x0100));
+        uint d5 = ((uint)xDelta << 16) | yDelta;
+        ushort xBase = (ushort)(_bus.ReadDataWord(a0 + 0x14) & 0x0fff);
+        _bus.WriteSpriteWordAddress(a1 + 4, xBase);
+        uint d2 = (uint)(_bus.ReadDataWord(a0 + 0x18) << 4) & 0xffffu;
+        uint d4 = _bus.ReadDataWord(a0 + 0x1c) & 0xff00u;
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | (ushort)columns;
+        state.Data[1] = d1;
+        state.Data[2] = (state.Data[2] & 0xffff_0000u) | d2;
+        state.Data[3] = (state.Data[3] & 0xffff_0000u) | xBase;
+        state.Data[4] = d4;
+        state.Data[5] = d5;
+        state.Data[6] = (state.Data[6] & 0xffff_0000u) | (ushort)d6;
+        state.Data[7] = (state.Data[7] & 0xffff_0000u) | (ushort)d7;
+        state.Address[1] = a1;
+        state.Address[2] = a2Cursor;
+        state.Address[3] = _bus.ReadDataLong(0x0012b8u + (uint)(mode * 4)) & 0x00ff_ffff;
+
+        uint nextPc = 0x001330u;
+        ushort sr = UpdateCcr(state.Sr, (xBase & 0x0800) != 0, xBase == 0, overflow: false, carry: false);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, _bus.ReadOpcodeWord(nextPc)));
+        _m68ec020ProbeInstructions += 28;
+        cycles = 96;
+        return true;
     }
 
     private bool TryExecuteDariusStaticSpriteCopy(uint pc, ushort op, out uint cycles)
@@ -1467,7 +1956,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
         }
 
-        var state = _mainCpu.GetState();
+        var state = GetScratchMainCpuState();
         uint a0 = state.Address[0] & 0x00ff_ffff;
         uint a1 = state.Address[1] & 0x00ff_ffff;
         uint a2 = state.Address[2] & 0x00ff_ffff;
@@ -1488,24 +1977,24 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (!IsSpriteRamAddress(a1))
             return false;
 
-        _bus.WriteWord(a1 + 2, _bus.ReadWord(a0 + 0x1e));
+        _bus.WriteSpriteWordAddress(a1 + 2, _bus.ReadDataWord(a0 + 0x1e));
 
-        uint d0 = _bus.ReadLong(a0 + 0x14);
-        d0 = (d0 & 0xffff_0000u) | _bus.ReadWord(a0 + 0x18);
+        uint d0 = _bus.ReadDataLong(a0 + 0x14);
+        d0 = (d0 & 0xffff_0000u) | _bus.ReadDataWord(a0 + 0x18);
         d0 &= 0x0fff_0fffu;
-        _bus.WriteLong(a1 + 4, d0);
+        _bus.WriteSpriteLongAddress(a1 + 4, d0);
 
-        _bus.WriteWord(a1, _bus.ReadWord(a2 + 4));
+        _bus.WriteSpriteWordAddress(a1, _bus.ReadDataWord(a2 + 4));
 
-        d0 = (d0 & 0xffff_0000u) | _bus.ReadWord(a2 + 6);
-        uint d1 = (state.Data[1] & 0xffff_0000u) | (ushort)(_bus.ReadWord(a0 + 0x1c) & 0xff00);
+        d0 = (d0 & 0xffff_0000u) | _bus.ReadDataWord(a2 + 6);
+        uint d1 = (state.Data[1] & 0xffff_0000u) | (ushort)(_bus.ReadDataWord(a0 + 0x1c) & 0xff00);
         d0 = (d0 & 0xffff_0000u) | (ushort)(((ushort)d0) ^ (ushort)d1);
 
         byte overrideByte = _bus.ReadByte(a0 + 0x1d);
         if (overrideByte != 0)
             d0 = (d0 & 0xffff_ff00u) | overrideByte;
 
-        _bus.WriteWord(a1 + 8, (ushort)d0);
+        _bus.WriteSpriteWordAddress(a1 + 8, (ushort)d0);
 
         a1 = (a1 + 0x10) & 0x00ff_ffff;
         state.Data[0] = d0;
@@ -1561,6 +2050,318 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _m68ec020ProbeInstructions += 48;
         cycles = 720;
         return true;
+    }
+
+    private bool TryExecuteDariusObjectAnimPointerLoad(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x0cfa86 || op != 0x3019
+            || _bus.PeekWord(0x0cfa86) != 0x3019
+            || _bus.PeekWord(0x0cfa88) != 0x1140
+            || _bus.PeekWord(0x0cfa8c) != 0x2159
+            || _bus.PeekWord(0x0cfa90) != 0x2151
+            || _bus.PeekWord(0x0cfa94) != 0x4e75)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        uint a0 = state.Address[0] & 0x00ff_ffff;
+        uint a1 = state.Address[1] & 0x00ff_ffff;
+        if (!IsF3WritableRamRange(a0, 0x6c))
+            return false;
+
+        ushort d0 = _bus.ReadWord(a1);
+        a1 = (a1 + 2) & 0x00ff_ffff;
+        _bus.WriteByte(a0 + 0x1c, (byte)d0);
+        uint pointer = _bus.ReadLong(a1);
+        _bus.WriteLong(a0 + 0x10, pointer);
+        a1 = (a1 + 4) & 0x00ff_ffff;
+        uint nextPointer = _bus.ReadLong(a1);
+        _bus.WriteLong(a0 + 0x68, nextPointer);
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | d0;
+        state.Address[1] = a1;
+        ushort sr = UpdateCcr(state.Sr, (nextPointer & 0x8000_0000u) != 0, nextPointer == 0, overflow: false, carry: false);
+        SetStateAfterRts(state, sr);
+        _m68ec020ProbeInstructions += 5;
+        cycles = 58;
+        return true;
+    }
+
+    private bool TryExecuteDariusTimedObjectAnimPointerLoad(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x0d0690 || op != 0x5368
+            || _bus.PeekWord(0x0d0690) != 0x5368
+            || _bus.PeekWord(0x0d0692) != 0x004c
+            || _bus.PeekWord(0x0d0694) != 0x6700
+            || _bus.PeekWord(0x0d0698) != 0x4e75
+            || _bus.PeekWord(0x0d069a) != 0x2268
+            || _bus.PeekWord(0x0d069e) != 0xd2fc
+            || _bus.PeekWord(0x0d06a2) != 0x2149
+            || _bus.PeekWord(0x0d06a6) != 0x3019
+            || _bus.PeekWord(0x0d06a8) != 0x6b00
+            || _bus.PeekWord(0x0d06ac) != 0x3140
+            || _bus.PeekWord(0x0d06b0) != 0x3019
+            || _bus.PeekWord(0x0d06b2) != 0x1140
+            || _bus.PeekWord(0x0d06b6) != 0x2159
+            || _bus.PeekWord(0x0d06ba) != 0x2151
+            || _bus.PeekWord(0x0d06be) != 0x4e75
+            || _bus.PeekWord(0x0d06c0) != 0x4a51
+            || _bus.PeekWord(0x0d06c2) != 0x6700
+            || _bus.PeekWord(0x0d06c6) != 0x92d1
+            || _bus.PeekWord(0x0d06c8) != 0x2149
+            || _bus.PeekWord(0x0d06cc) != 0x3159
+            || _bus.PeekWord(0x0d06d0) != 0x3019
+            || _bus.PeekWord(0x0d06d2) != 0x1140
+            || _bus.PeekWord(0x0d06d6) != 0x2159
+            || _bus.PeekWord(0x0d06da) != 0x2151
+            || _bus.PeekWord(0x0d06de) != 0x4e75)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        uint a0 = state.Address[0] & 0x00ff_ffff;
+        if (!IsF3WritableRamRange(a0, 0x6c))
+            return false;
+
+        ushort oldTimer = _bus.ReadWord(a0 + 0x4c);
+        ushort timer = (ushort)(oldTimer - 1);
+        _bus.WriteWord(a0 + 0x4c, timer);
+        ushort sr = UpdateSubWordCcr(state.Sr, 1, oldTimer, timer);
+        if (timer != 0)
+        {
+            SetStateAfterRts(state, sr);
+            _m68ec020ProbeInstructions += 3;
+            cycles = 30;
+            return true;
+        }
+
+        uint a1 = (_bus.ReadLong(a0 + 0x48) + 0x0cu) & 0x00ff_ffff;
+        _bus.WriteLong(a0 + 0x48, a1);
+        ushort d0 = _bus.ReadWord(a1);
+        a1 = (a1 + 2) & 0x00ff_ffff;
+        if ((d0 & 0x8000) != 0)
+        {
+            ushort jump = _bus.ReadWord(a1);
+            sr = UpdateCcr(state.Sr, (jump & 0x8000) != 0, jump == 0, overflow: false, carry: false);
+            if (jump == 0)
+            {
+                state.Data[0] = (state.Data[0] & 0xffff_0000u) | d0;
+                state.Address[1] = a1;
+                SetStateAfterRts(state, sr);
+                _m68ec020ProbeInstructions += 8;
+                cycles = 76;
+                return true;
+            }
+
+            a1 = unchecked(a1 - (uint)(short)jump) & 0x00ff_ffff;
+            _bus.WriteLong(a0 + 0x48, a1);
+            timer = _bus.ReadWord(a1);
+            _bus.WriteWord(a0 + 0x4c, timer);
+            a1 = (a1 + 2) & 0x00ff_ffff;
+        }
+        else
+        {
+            _bus.WriteWord(a0 + 0x4c, d0);
+        }
+
+        d0 = _bus.ReadWord(a1);
+        a1 = (a1 + 2) & 0x00ff_ffff;
+        _bus.WriteByte(a0 + 0x1c, (byte)d0);
+        uint pointer = _bus.ReadLong(a1);
+        _bus.WriteLong(a0 + 0x10, pointer);
+        a1 = (a1 + 4) & 0x00ff_ffff;
+        uint nextPointer = _bus.ReadLong(a1);
+        _bus.WriteLong(a0 + 0x68, nextPointer);
+
+        state.Data[0] = (state.Data[0] & 0xffff_0000u) | d0;
+        state.Address[1] = a1;
+        sr = UpdateCcr(state.Sr, (nextPointer & 0x8000_0000u) != 0, nextPointer == 0, overflow: false, carry: false);
+        SetStateAfterRts(state, sr);
+        _m68ec020ProbeInstructions += 13;
+        cycles = 118;
+        return true;
+    }
+
+    private bool TryExecuteDariusObjectAnimationStep(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x0cbd52 || op != 0x3028
+            || _bus.PeekWord(0x0cbd52) != 0x3028
+            || _bus.PeekWord(0x0cbd54) != 0x003a
+            || _bus.PeekWord(0x0cbd56) != 0x4a71
+            || _bus.PeekWord(0x0cbd58) != 0x0000
+            || _bus.PeekWord(0x0cbd5a) != 0x6c00
+            || _bus.PeekWord(0x0cbd5e) != 0x4268
+            || _bus.PeekWord(0x0cbd62) != 0x60ee
+            || _bus.PeekWord(0x0cbd64) != 0x5268
+            || _bus.PeekWord(0x0cbd68) != 0x3228
+            || _bus.PeekWord(0x0cbd6c) != 0xb271
+            || _bus.PeekWord(0x0cbd70) != 0x6f00
+            || _bus.PeekWord(0x0cbd74) != 0x4268
+            || _bus.PeekWord(0x0cbd78) != 0x5c68
+            || _bus.PeekWord(0x0cbd7c) != 0x60d4
+            || _bus.PeekWord(0x0cbd7e) != 0x2171
+            || _bus.PeekWord(0x0cbd84) != 0x4e75)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        uint a0 = state.Address[0] & 0x00ff_ffff;
+        uint a1 = state.Address[1] & 0x00ff_ffff;
+        if (!IsF3WritableRamRange(a0, 0x42))
+            return false;
+
+        ushort d0 = _bus.ReadWord(a0 + 0x3a);
+        ushort frameCounter = _bus.ReadWord(a0 + 0x3e);
+        ushort d1 = frameCounter;
+        int loops = 0;
+        while (true)
+        {
+            short entryFrames = unchecked((short)_bus.ReadWord(a1 + unchecked((uint)(short)d0)));
+            if (entryFrames < 0)
+            {
+                d0 = 0;
+                if (++loops > 64)
+                    return false;
+                continue;
+            }
+
+            d1 = (ushort)(frameCounter + 1);
+            if (unchecked((short)d1) > entryFrames)
+            {
+                frameCounter = 0;
+                d1 = 0;
+                d0 = (ushort)(d0 + 6);
+                if (++loops > 64)
+                    return false;
+                continue;
+            }
+
+            uint animationValue = _bus.ReadLong(a1 + unchecked((uint)(short)d0) + 2);
+            _bus.WriteWord(a0 + 0x3a, d0);
+            _bus.WriteWord(a0 + 0x3e, d1);
+            _bus.WriteLong(a0 + 0x10, animationValue);
+
+            state.Data[0] = (state.Data[0] & 0xffff_0000u) | d0;
+            state.Data[1] = (state.Data[1] & 0xffff_0000u) | d1;
+            ushort sr = UpdateCcr(state.Sr, (animationValue & 0x8000_0000u) != 0, animationValue == 0, overflow: false, carry: false);
+            SetStateAfterRts(state, sr);
+            _m68ec020ProbeInstructions += (ulong)(loops * 8 + 10);
+            cycles = (uint)(loops * 48 + 64);
+            return true;
+        }
+    }
+
+    private bool TryExecuteDariusPaletteLerpTable(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if (pc != 0x11c3d2 || op != 0x2419
+            || _bus.PeekWord(0x11c3d2) != 0x2419
+            || _bus.PeekWord(0x11c3d4) != 0x261a
+            || _bus.PeekWord(0x11c3d6) != 0x7800
+            || _bus.PeekWord(0x11c3d8) != 0xe9c2
+            || _bus.PeekWord(0x11c3dc) != 0xe9c3
+            || _bus.PeekWord(0x11c3e0) != 0x6100
+            || _bus.PeekWord(0x11c3e4) != 0xefc4
+            || _bus.PeekWord(0x11c3e8) != 0xe9c2
+            || _bus.PeekWord(0x11c3ec) != 0xe9c3
+            || _bus.PeekWord(0x11c3f0) != 0x6100
+            || _bus.PeekWord(0x11c3f4) != 0xefc4
+            || _bus.PeekWord(0x11c3f8) != 0xe9c2
+            || _bus.PeekWord(0x11c3fc) != 0xe9c3
+            || _bus.PeekWord(0x11c400) != 0x6100
+            || _bus.PeekWord(0x11c404) != 0xefc4
+            || _bus.PeekWord(0x11c408) != 0x26c4
+            || _bus.PeekWord(0x11c40a) != 0x51c9
+            || _bus.PeekWord(0x11c40e) != 0x2f3c)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        int count = ((ushort)state.Data[1]) + 1;
+        if (count <= 0 || count > 0x20)
+            return false;
+
+        uint sourceA = state.Address[1] & 0x00ff_ffff;
+        uint sourceB = state.Address[2] & 0x00ff_ffff;
+        uint destination = state.Address[3] & 0x00ff_ffff;
+        if (!IsF3WritableRamRange(destination, (uint)count * 4u))
+            return false;
+
+        short lerp = unchecked((short)(ushort)state.Data[0]);
+        uint d2 = state.Data[2];
+        uint d3 = state.Data[3];
+        uint d4 = state.Data[4];
+        uint d5 = state.Data[5];
+        uint d6 = state.Data[6];
+
+        for (int i = 0; i < count; i++)
+        {
+            d2 = _bus.ReadLong(sourceA);
+            d3 = _bus.ReadLong(sourceB);
+            sourceA = (sourceA + 4) & 0x00ff_ffff;
+            sourceB = (sourceB + 4) & 0x00ff_ffff;
+            d4 = 0;
+
+            d5 = ExtractRegisterBitfieldByte(d2, 8);
+            d6 = ExtractRegisterBitfieldByte(d3, 8);
+            d6 = DariusPaletteLerpByte(d5, d6, lerp);
+            d4 = InsertRegisterBitfieldByte(d4, d6, 8);
+
+            d5 = ExtractRegisterBitfieldByte(d2, 16);
+            d6 = ExtractRegisterBitfieldByte(d3, 16);
+            d6 = DariusPaletteLerpByte(d5, d6, lerp);
+            d4 = InsertRegisterBitfieldByte(d4, d6, 16);
+
+            d5 = ExtractRegisterBitfieldByte(d2, 24);
+            d6 = ExtractRegisterBitfieldByte(d3, 24);
+            d6 = DariusPaletteLerpByte(d5, d6, lerp);
+            d4 = InsertRegisterBitfieldByte(d4, d6, 24);
+
+            _bus.WriteLong(destination, d4);
+            destination = (destination + 4) & 0x00ff_ffff;
+        }
+
+        state.Address[1] = sourceA;
+        state.Address[2] = sourceB;
+        state.Address[3] = destination;
+        state.Data[1] = (state.Data[1] & 0xffff_0000u) | 0xffffu;
+        state.Data[2] = d2;
+        state.Data[3] = d3;
+        state.Data[4] = d4;
+        state.Data[5] = d5;
+        state.Data[6] = d6;
+
+        ushort sr = UpdateCcr(state.Sr, (d6 & 0x80u) != 0, (d6 & 0xffu) == 0, overflow: false, carry: false);
+        uint nextPc = 0x11c40e;
+        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _m68ec020ProbeInstructions += (ulong)(count * 19);
+        cycles = (uint)Math.Max(34, count * 84);
+        return true;
+    }
+
+    private static uint ExtractRegisterBitfieldByte(uint value, int offset)
+        => (value >> (32 - offset - 8)) & 0xffu;
+
+    private static uint InsertRegisterBitfieldByte(uint destination, uint value, int offset)
+    {
+        int shift = 32 - offset - 8;
+        uint mask = 0xffu << shift;
+        return (destination & ~mask) | ((value & 0xffu) << shift);
+    }
+
+    private static uint DariusPaletteLerpByte(uint source, uint target, short lerp)
+    {
+        short delta = unchecked((short)(ushort)(source - target));
+        int scaled = (delta * lerp) >> 8;
+        return (uint)(ushort)(unchecked((short)(ushort)target) + scaled);
     }
 
     private bool TrySkipEmptySpriteControlSlots(uint pc, ushort op, out uint cycles)
@@ -2204,6 +3005,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         uint usp = (state.Sr & 0x2000) != 0 ? state.Usp : sp;
         uint ssp = (state.Sr & 0x2000) != 0 ? sp : state.Ssp;
         _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, usp, ssp, sr, returnPc, prefetch));
+    }
+
+    private M68000.M68000State GetScratchMainCpuState()
+        => _mainCpu.GetState(_m68ec020ScratchData, _m68ec020ScratchAddress);
+
+    private void InvalidateDebugSummary()
+    {
+        _debugSummaryFrame = long.MinValue;
+        _debugSummaryCache = string.Empty;
     }
 
     private bool TryExecuteDariusDbraWordFill(uint pc, out uint cycles)
@@ -3421,6 +4231,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return next;
     }
 
+    private static ushort UpdateSubWordCcr(ushort sr, ushort source, ushort destination, ushort result)
+    {
+        bool negative = (result & 0x8000) != 0;
+        bool zero = result == 0;
+        bool overflow = ((destination ^ source) & (destination ^ result) & 0x8000) != 0;
+        bool carry = source > destination;
+        return UpdateAddSubCcr(sr, negative, zero, overflow, carry);
+    }
+
     private static uint RotateLeft32(uint value, int count)
     {
         count &= 31;
@@ -4010,9 +4829,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return drewAny;
         }
 
-        if (_spriteReefOffsets.Count != 0)
+        if (_spriteReefOffsetCount != 0)
         {
-            for (int i = 0; i < _spriteReefOffsets.Count; i++)
+            for (int i = 0; i < _spriteReefOffsetCount; i++)
                 drewAny |= RenderSpriteReefPixel(_spriteReefOffsets[i]);
             return drewAny;
         }
@@ -4195,7 +5014,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
     private void ClearSpriteReefForNextFrame()
     {
-        if (_spriteReefOffsets.Count == 0)
+        if (_spriteReefOffsetCount == 0)
         {
             Array.Clear(_spriteReefPalette);
             Array.Clear(_spriteReefGroup);
@@ -4204,14 +5023,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return;
         }
 
-        for (int i = 0; i < _spriteReefOffsets.Count; i++)
+        for (int i = 0; i < _spriteReefOffsetCount; i++)
         {
             int offset = _spriteReefOffsets[i];
             _spriteReefPalette[offset] = 0;
             _spriteReefGroup[offset] = 0;
             _spriteReefNext[offset] = 0;
         }
-        _spriteReefOffsets.Clear();
+        _spriteReefOffsetCount = 0;
 
         for (int i = 0; i < _spriteReefTouchedRows.Count; i++)
         {
@@ -4437,6 +5256,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (elements <= 0)
             return false;
 
+        if (sprite.ScaleX == 0x100 && sprite.ScaleY == 0x100)
+            return DrawUnscaledSpriteToReef(roms, sprite, elements);
+
         bool drewAny = false;
         int codeBase = (sprite.Code % elements) << 8;
         int dy8 = sprite.Y;
@@ -4472,7 +5294,53 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
                 _spriteReefPalette[reefOffset] = (ushort)(0x1000 + ((sprite.Color << 4) | pen));
                 _spriteReefGroup[reefOffset] = (byte)((sprite.Color >> 6) & 3);
-                _spriteReefOffsets.Add(reefOffset);
+                AddSpriteReefOffset(reefOffset);
+                LinkSpriteReefOffset(dy, reefOffset);
+                if (RenderStats)
+                    _lastSpritePixels++;
+                drewAny = true;
+            }
+        }
+
+        return drewAny;
+    }
+
+    private bool DrawUnscaledSpriteToReef(TaitoF3RomSet roms, F3Sprite sprite, int elements)
+    {
+        bool drewAny = false;
+        int codeBase = (sprite.Code % elements) << 8;
+        int baseY = ((_flipScreen ? sprite.Y : sprite.Y + 255) >> 8);
+        int baseX = ((sprite.X + 128) >> 8);
+        byte[] spritePixels = roms.SpritePixels;
+        int penMask = _spritePenMask;
+
+        for (int sy = 0; sy < 16; sy++)
+        {
+            int dy = baseY + sy;
+            if ((uint)dy >= FrameHeight)
+                continue;
+
+            int sourceY = sprite.FlipY ? sy ^ 0x0f : sy;
+            int sourceRow = codeBase + (sourceY << 4);
+            int rowOffset = dy * FrameWidth;
+            for (int sx = 0; sx < 16; sx++)
+            {
+                int dx = baseX + sx;
+                if ((uint)dx >= FrameWidth)
+                    continue;
+
+                int sourceX = sprite.FlipX ? sx ^ 0x0f : sx;
+                int pen = spritePixels[sourceRow | sourceX] & penMask;
+                if (pen == 0)
+                    continue;
+
+                int reefOffset = rowOffset + dx;
+                if (_spriteReefPalette[reefOffset] != 0)
+                    continue;
+
+                _spriteReefPalette[reefOffset] = (ushort)(0x1000 + ((sprite.Color << 4) | pen));
+                _spriteReefGroup[reefOffset] = (byte)((sprite.Color >> 6) & 3);
+                AddSpriteReefOffset(reefOffset);
                 LinkSpriteReefOffset(dy, reefOffset);
                 if (RenderStats)
                     _lastSpritePixels++;
@@ -4493,6 +5361,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         _spriteReefNext[offset] = _spriteReefRowHead[y];
         _spriteReefRowHead[y] = offset + 1;
+    }
+
+    private void AddSpriteReefOffset(int offset)
+    {
+        if ((uint)_spriteReefOffsetCount < (uint)_spriteReefOffsets.Length)
+            _spriteReefOffsets[_spriteReefOffsetCount++] = offset;
     }
 
     private static int DecodeSpritePixel(TaitoF3RomSet roms, int code, int x, int y)
@@ -6009,6 +6883,39 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return (ushort)((_spriteRam[offset] << 8) | _spriteRam[offset + 1]);
         }
 
+        public void WriteSpriteWordAddress(uint address, ushort value)
+        {
+            uint relative = (address & 0x00ff_ffff) - 0x600000u;
+            if (relative >= (uint)_spriteRam.Length - 1u)
+            {
+                WriteWord(address, value);
+                return;
+            }
+
+            int spriteOffset = (int)relative;
+            ushort before = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
+            _spriteRam[spriteOffset] = (byte)(value >> 8);
+            _spriteRam[spriteOffset + 1] = (byte)value;
+            ushort after = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
+            if (before == 0 && after != 0)
+                _spriteNonZeroWords++;
+            else if (before != 0 && after == 0)
+                _spriteNonZeroWords--;
+            if (value != 0)
+            {
+                LastNonZeroSpriteWritePc = CurrentCpuPc;
+                LastNonZeroSpriteWriteAddress = address & 0x00ff_ffff;
+                LastNonZeroSpriteWriteValue = (byte)value;
+            }
+            SpriteWrites += 2;
+        }
+
+        public void WriteSpriteLongAddress(uint address, uint value)
+        {
+            WriteSpriteWordAddress(address, (ushort)(value >> 16));
+            WriteSpriteWordAddress(address + 2, (ushort)value);
+        }
+
         public ushort ReadTextWord(int wordOffset)
         {
             int offset = wordOffset * 2;
@@ -6131,6 +7038,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return CurrentOpcode;
         }
 
+        public ushort ReadDataWord(uint address)
+        {
+            address &= 0x00ff_ffff;
+            if (TryReadWordFast(address, out ushort value))
+                return value;
+
+            return (ushort)((ReadByte(address) << 8) | ReadByte(address + 1));
+        }
+
         public uint ReadLong(uint address)
         {
             address &= 0x00ff_ffff;
@@ -6138,6 +7054,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 return value;
 
             return ((uint)ReadWord(address) << 16) | ReadWord(address + 2);
+        }
+
+        public uint ReadDataLong(uint address)
+        {
+            address &= 0x00ff_ffff;
+            if (TryReadLongFast(address, out uint value))
+                return value;
+
+            return ((uint)ReadDataWord(address) << 16) | ReadDataWord(address + 2);
         }
 
         public ushort ReadOpcodeWord(uint address)

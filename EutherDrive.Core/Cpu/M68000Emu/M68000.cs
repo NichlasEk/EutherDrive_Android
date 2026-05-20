@@ -100,6 +100,17 @@ public sealed class M68000
         return new M68000State(data, address, _regs.Usp, _regs.Ssp, _regs.StatusRegister(), _regs.Pc, _regs.Prefetch);
     }
 
+    public M68000State GetState(uint[] data, uint[] address)
+    {
+        if (data.Length < 8)
+            throw new ArgumentException("Data register snapshot must have room for 8 entries.", nameof(data));
+        if (address.Length < 7)
+            throw new ArgumentException("Address register snapshot must have room for 7 entries.", nameof(address));
+        Array.Copy(_regs.Data, data, 8);
+        Array.Copy(_regs.Address, address, 7);
+        return new M68000State(data, address, _regs.Usp, _regs.Ssp, _regs.StatusRegister(), _regs.Pc, _regs.Prefetch);
+    }
+
     public void SetState(M68000State state)
     {
         if (state.Data.Length >= 8)
