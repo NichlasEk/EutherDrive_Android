@@ -5926,6 +5926,8 @@ internal sealed class MipsR5000Core
         ulong maskResult = _gpr[20] & _gpr[17];
         if (maskResult == 0 && TryFinishKnownRuntimeMaskedTileSkip(2))
             return true;
+        if (TryFinishKnownRuntimeTilePointerPreamble(maskResult, leadingSkippedInstructions: 2))
+            return true;
 
         _gpr[2] = maskResult;
         FinishKnownRuntimeBudgetedFastPath(2, 0xffffffff80019318UL);
@@ -6104,8 +6106,16 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownRuntimeTilePointerPreamble(ulong pc)
     {
         const ulong entry = 0xffffffff80019318UL;
-        const ulong callsitePc = 0xffffffff80019344UL;
         if (pc != entry || _gpr[2] == 0)
+            return false;
+        return TryFinishKnownRuntimeTilePointerPreamble(_gpr[2], leadingSkippedInstructions: 0);
+    }
+
+    private bool TryFinishKnownRuntimeTilePointerPreamble(ulong branchResult, int leadingSkippedInstructions)
+    {
+        const ulong entry = 0xffffffff80019318UL;
+        const ulong callsitePc = 0xffffffff80019344UL;
+        if (branchResult == 0)
             return false;
         if (_memory.Read32(entry) != 0x50400076U ||
             _memory.Read32(entry + 0x08UL) != 0x96620000U ||
@@ -6145,7 +6155,7 @@ internal sealed class MipsR5000Core
 
         const int skippedInstructions = 19;
         const int consumedProbeSteps = 10;
-        if (_remainingProbeSteps < consumedProbeSteps)
+        if (_remainingProbeSteps < consumedProbeSteps + leadingSkippedInstructions)
             return false;
 
         _memory.Write16(sp + 0x10UL, (ushort)tile);
@@ -6159,8 +6169,8 @@ internal sealed class MipsR5000Core
         _memory.Write32(sp + 0x24UL, (uint)_gpr[13]);
         _gpr[31] = callsitePc + 0x18UL;
         FinishKnownRuntimeBudgetedFastPath(
-            skippedInstructions,
-            consumedProbeSteps - 1,
+            skippedInstructions + leadingSkippedInstructions,
+            consumedProbeSteps - 1 + leadingSkippedInstructions,
             callsitePc + 0x1cUL);
         return true;
     }
