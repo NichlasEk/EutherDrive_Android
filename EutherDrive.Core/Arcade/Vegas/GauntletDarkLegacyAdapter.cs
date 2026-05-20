@@ -5656,6 +5656,19 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        bool tailStaysInRow = false;
+        ulong tailRowLimit = 0;
+        int tailSkippedInstructions = 0;
+        bool canFoldOuterTail =
+            _memory.Read32(0xffffffff800194f0UL) == 0x26100001U &&
+            _memory.Read32(0xffffffff80019504UL) == 0x1440ff70U &&
+            _memory.Read32(0xffffffff80019520UL) == 0x1440ff5cU &&
+            TryPlanKnownRuntimeTileOuterTail(
+                verifySignature: false,
+                out tailStaysInRow,
+                out tailRowLimit,
+                out tailSkippedInstructions);
+
         ulong cursor = source;
         ulong rowStart = row;
         ulong lastPixel = row;
@@ -5683,6 +5696,19 @@ internal sealed class MipsR5000Core
         _gpr[7] = bits;
         _gpr[8] = unchecked(ulong.MaxValue);
         _gpr[9] = cursor;
+
+        if (canFoldOuterTail)
+        {
+            AdvanceCp0Count(_cp0CountStep * 160UL);
+            _instructionCounter += 160UL;
+            FinishKnownRuntimeTileOuterTail(
+                tailStaysInRow,
+                tailRowLimit,
+                tailSkippedInstructions,
+                extraProbeStepDebt: 1);
+            return true;
+        }
+
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * 160UL);
         _instructionCounter += 160UL;
@@ -5911,7 +5937,33 @@ internal sealed class MipsR5000Core
         const ulong tailPc = 0xffffffff800194f0UL;
         if (pc != tailPc)
             return false;
-        if (_memory.Read32(tailPc) != 0x26100001U ||
+        if (!TryPlanKnownRuntimeTileOuterTail(
+                verifySignature: true,
+                out bool staysInRow,
+                out ulong rowLimit,
+                out int skippedInstructions))
+            return false;
+
+        FinishKnownRuntimeTileOuterTail(
+            staysInRow,
+            rowLimit,
+            skippedInstructions,
+            extraProbeStepDebt: 0);
+        return true;
+    }
+
+    private bool TryPlanKnownRuntimeTileOuterTail(
+        bool verifySignature,
+        out bool staysInRow,
+        out ulong rowLimit,
+        out int skippedInstructions)
+    {
+        const ulong tailPc = 0xffffffff800194f0UL;
+        staysInRow = false;
+        rowLimit = 0;
+        skippedInstructions = 0;
+        if (verifySignature &&
+            (_memory.Read32(tailPc) != 0x26100001U ||
             _memory.Read32(tailPc + 0x04UL) != 0x00118840U ||
             _memory.Read32(tailPc + 0x08UL) != 0x3c04800bU ||
             _memory.Read32(tailPc + 0x0cUL) != 0x8c822e24U ||
@@ -5924,17 +5976,28 @@ internal sealed class MipsR5000Core
             _memory.Read32(tailPc + 0x28UL) != 0x26d60001U ||
             _memory.Read32(tailPc + 0x2cUL) != 0x02c2102aU ||
             _memory.Read32(tailPc + 0x30UL) != 0x1440ff5cU ||
-            _memory.Read32(tailPc + 0x34UL) != 0x26f70008U)
+            _memory.Read32(tailPc + 0x34UL) != 0x26f70008U))
         {
             return false;
         }
 
         ulong columnLimit = SignExtend32(_memory.Read32(0xffffffff800b2e24UL));
-        bool staysInRow = unchecked((long)((ulong)((long)_gpr[16] + 1L))) < unchecked((long)columnLimit);
-        int skippedInstructions = staysInRow ? 7 : 14;
+        staysInRow = unchecked((long)((ulong)((long)_gpr[16] + 1L))) < unchecked((long)columnLimit);
+        skippedInstructions = staysInRow ? 7 : 14;
         if (_remainingProbeSteps < skippedInstructions)
             return false;
 
+        if (!staysInRow)
+            rowLimit = SignExtend32(_memory.Read32(0xffffffff800b2e1cUL));
+        return true;
+    }
+
+    private void FinishKnownRuntimeTileOuterTail(
+        bool staysInRow,
+        ulong rowLimit,
+        int skippedInstructions,
+        int extraProbeStepDebt)
+    {
         _gpr[16] = (ulong)((long)_gpr[16] + 1L);
         _gpr[17] = (uint)_gpr[17] << 1;
         _gpr[4] = 0x800b0000UL;
@@ -5942,19 +6005,21 @@ internal sealed class MipsR5000Core
         _gpr[19] = (ulong)((long)_gpr[19] + 2L);
         if (staysInRow)
         {
-            FinishKnownRuntimeBudgetedFastPath(skippedInstructions, 0xffffffff800192c8UL);
-            return true;
+            FinishKnownRuntimeBudgetedFastPath(
+                skippedInstructions,
+                skippedInstructions - 1 + extraProbeStepDebt,
+                0xffffffff800192c8UL);
+            return;
         }
 
-        ulong rowLimit = SignExtend32(_memory.Read32(0xffffffff800b2e1cUL));
         _gpr[30] = (ulong)((long)_gpr[30] + 0x0cL);
         _gpr[22] = (ulong)((long)_gpr[22] + 1L);
         _gpr[2] = unchecked((long)_gpr[22]) < unchecked((long)rowLimit) ? 1UL : 0UL;
         _gpr[23] = (ulong)((long)_gpr[23] + 8L);
         FinishKnownRuntimeBudgetedFastPath(
             skippedInstructions,
+            skippedInstructions - 1 + extraProbeStepDebt,
             _gpr[2] != 0 ? 0xffffffff80019294UL : 0xffffffff80019528UL);
-        return true;
     }
 
     private void FinishKnownRuntimeBudgetedFastPath(int skippedInstructions, ulong nextPc)
