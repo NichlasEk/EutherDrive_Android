@@ -3921,7 +3921,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 _ => state3,
             };
 
-            drewAny |= RenderSpriteReefPixelAt(offset, offset - rowOffset, y, screenY, paletteIndex, spriteMix, spriteState);
+            drewAny |= RenderSpriteReefPixelAt(offset, offset - rowOffset, paletteIndex, spriteMix, spriteState, line);
         }
 
         return drewAny;
@@ -3991,7 +3991,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return true;
     }
 
-    private bool RenderSpriteReefPixelAt(int offset, int x, int y, int screenY, ushort paletteIndex, ushort spriteMix, int spriteState)
+    private bool RenderSpriteReefPixelAt(int offset, int x, ushort paletteIndex, ushort spriteMix, int spriteState, F3LineState line)
     {
         if ((spriteState & (1 << 16)) == 0)
         {
@@ -4001,7 +4001,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
 
         if ((spriteState & (1 << 17)) != 0
-            && !IsMameClipAllowed(screenY, spriteMix, x + VisibleAreaMinX))
+            && !IsMameClipAllowed(line, spriteMix, x + VisibleAreaMinX))
         {
             if (RenderStats)
                 _lastSpriteMixClipped++;
@@ -4030,7 +4030,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 _lastSpriteMixBehind++;
         }
 
-        WritePalettePixel(x, y, paletteIndex, spritePriority, spriteRank, spriteBlendMode, (spriteState & (1 << 18)) != 0);
+        WritePalettePixelAtOffset(offset, paletteIndex, spritePriority, spriteRank, spriteBlendMode, (spriteState & (1 << 18)) != 0, line);
         return true;
     }
 
@@ -4219,6 +4219,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     }
 
     private bool IsMameClipAllowed(int screenY, int mixValue, int x)
+        => IsMameClipAllowed(_lineStates[screenY & 0xff], mixValue, x);
+
+    private static bool IsMameClipAllowed(F3LineState line, int mixValue, int x)
     {
         int clipEnable = (mixValue >> 8) & 0x0f;
         if (clipEnable == 0)
@@ -4231,7 +4234,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (!invertMode)
             (normalPlanes, invertPlanes) = (invertPlanes, normalPlanes);
 
-        F3LineState line = _lineStates[screenY & 0xff];
         bool allowed = true;
         for (int plane = 0; plane < 4; plane++)
         {
