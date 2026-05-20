@@ -25,6 +25,8 @@ internal sealed class TaitoF3SoundSystem
     private bool _loaded;
     private bool _suspended;
     private bool _lastAudioWasNonZero;
+    private int _lastMainDualPortWriteSerial;
+    private int _silentCommandDrainFrames;
 
     public string DebugSummary => _bus.DebugSummary(_cpu.Pc, _cpu.NextOpcode, _cpu.StatusRegister, _suspended, _otis.DebugSummary);
 
@@ -42,6 +44,8 @@ internal sealed class TaitoF3SoundSystem
         _bus.ResetRuntime(copyVectors: true);
         _suspended = false;
         _lastAudioWasNonZero = false;
+        _lastMainDualPortWriteSerial = 0;
+        _silentCommandDrainFrames = 0;
         if (!asserted)
             _cpu.Reset(_bus);
         Array.Clear(_frameAudio);
@@ -53,11 +57,13 @@ internal sealed class TaitoF3SoundSystem
         _resetAsserted = resetAsserted;
         _suspended = true;
         _lastAudioWasNonZero = false;
+        _lastMainDualPortWriteSerial = 0;
+        _silentCommandDrainFrames = 0;
         Array.Clear(_frameAudio);
         _sampleAccumulator = 0;
     }
 
-    public void RunFrame(bool resetReleased)
+    public void RunFrame(bool resetReleased, int mainDualPortWriteSerial)
     {
         if (!_loaded)
             return;
@@ -72,11 +78,27 @@ internal sealed class TaitoF3SoundSystem
             _bus.ResetRuntime(copyVectors: true);
             _cpu.Reset(_bus);
             _lastAudioWasNonZero = false;
+            _lastMainDualPortWriteSerial = mainDualPortWriteSerial;
+            _silentCommandDrainFrames = 8;
         }
 
         int sampleFrames = BuildFrameAudio();
         if (_resetAsserted || _suspended)
             return;
+
+        bool hasNewMainCommand = mainDualPortWriteSerial != _lastMainDualPortWriteSerial;
+        if (hasNewMainCommand)
+        {
+            _lastMainDualPortWriteSerial = mainDualPortWriteSerial;
+            _silentCommandDrainFrames = 8;
+        }
+        else if (!_lastAudioWasNonZero && _silentCommandDrainFrames <= 0)
+        {
+            _bus.LastFrameCycles = 0;
+            _bus.LastFrameInstructions = 0;
+            _bus.LastFrameCycleBudget = 0;
+            return;
+        }
 
         int cycleBudget = _lastAudioWasNonZero
             ? SoundCyclesPerFrame
@@ -135,6 +157,8 @@ internal sealed class TaitoF3SoundSystem
         _bus.LastFrameCycleBudget = cycleBudget;
         _otis.RenderStereo(_frameAudio, sampleFrames);
         _lastAudioWasNonZero = HasNonZeroAudio(_frameAudio, _lastAudioSamples);
+        if (!_lastAudioWasNonZero && !hasNewMainCommand && _silentCommandDrainFrames > 0)
+            _silentCommandDrainFrames--;
     }
 
     private bool TryHandleSoundLineA(uint pc, ushort opcode, out uint cycles)

@@ -697,7 +697,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (renderStartTicks != 0)
                 renderTicks = Stopwatch.GetTimestamp() - renderStartTicks;
         }
-        _sound.RunFrame(!_bus.SoundCpuResetAsserted);
+        _sound.RunFrame(!_bus.SoundCpuResetAsserted, _bus.DualPortWriteSerial);
 
         if (frameStartTicks != 0)
             UpdateAdaptiveRenderPacing(Stopwatch.GetTimestamp() - frameStartTicks);
@@ -5482,6 +5482,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public int ControlWrites { get; private set; }
         public int DualPortReads { get; private set; }
         public int DualPortWrites { get; private set; }
+        public int DualPortWriteSerial { get; private set; }
         public uint CurrentCpuPc { get; set; }
         public uint LastControlReadAddress { get; private set; }
         public byte LastControlReadValue { get; private set; }
@@ -6569,6 +6570,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             {
                 _dualPortRam[dpramOffset] = value;
                 DualPortWrites++;
+                DualPortWriteSerial++;
                 LastDualPortWritePc = CurrentCpuPc;
                 LastDualPortWriteAddress = address;
                 LastDualPortWriteValue = value;
