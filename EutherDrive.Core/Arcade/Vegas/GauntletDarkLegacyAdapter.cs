@@ -415,6 +415,8 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
     private readonly int _stepBudget = ParseStepBudget();
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
+    private int _remainingProbeSteps;
+    private int _probeStepDebt;
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
     private readonly Dictionary<ulong, ulong> _hotPcCounts = [];
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
@@ -542,7 +544,18 @@ internal sealed class MipsR5000Core
             return;
 
         for (int i = 0; i < stepCount && !_halted; i++)
+        {
+            _remainingProbeSteps = stepCount - i;
             Step();
+            if (_probeStepDebt > 0)
+            {
+                int consumed = Math.Min(_probeStepDebt, stepCount - i - 1);
+                _probeStepDebt -= consumed;
+                i += consumed;
+            }
+        }
+
+        _remainingProbeSteps = 0;
     }
 
     private void Step()
@@ -745,6 +758,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeTileDepthPointerCallsite(pc))
             return;
         if (TryFastPathKnownRuntimeTwoBitTileExpand(pc))
+            return;
+        if (TryFastPathKnownRuntimeTileOuterTail(pc))
             return;
         if (TryFastPathKnownGlideVertexCopyLoop(pc))
             return;
@@ -5665,6 +5680,68 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
         Pc = loopPc + 0x50UL;
         return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTileOuterTail(ulong pc)
+    {
+        const ulong tailPc = 0xffffffff800194f0UL;
+        if (pc != tailPc)
+            return false;
+        if (_memory.Read32(tailPc) != 0x26100001U ||
+            _memory.Read32(tailPc + 0x04UL) != 0x00118840U ||
+            _memory.Read32(tailPc + 0x08UL) != 0x3c04800bU ||
+            _memory.Read32(tailPc + 0x0cUL) != 0x8c822e24U ||
+            _memory.Read32(tailPc + 0x10UL) != 0x0202102aU ||
+            _memory.Read32(tailPc + 0x14UL) != 0x1440ff70U ||
+            _memory.Read32(tailPc + 0x18UL) != 0x26730002U ||
+            _memory.Read32(tailPc + 0x1cUL) != 0x27de000cU ||
+            _memory.Read32(tailPc + 0x20UL) != 0x3c02800bU ||
+            _memory.Read32(tailPc + 0x24UL) != 0x8c422e1cU ||
+            _memory.Read32(tailPc + 0x28UL) != 0x26d60001U ||
+            _memory.Read32(tailPc + 0x2cUL) != 0x02c2102aU ||
+            _memory.Read32(tailPc + 0x30UL) != 0x1440ff5cU ||
+            _memory.Read32(tailPc + 0x34UL) != 0x26f70008U)
+        {
+            return false;
+        }
+
+        ulong columnLimit = SignExtend32(_memory.Read32(0xffffffff800b2e24UL));
+        bool staysInRow = unchecked((long)((ulong)((long)_gpr[16] + 1L))) < unchecked((long)columnLimit);
+        int skippedInstructions = staysInRow ? 7 : 14;
+        if (_remainingProbeSteps < skippedInstructions)
+            return false;
+
+        _gpr[16] = (ulong)((long)_gpr[16] + 1L);
+        _gpr[17] = (uint)_gpr[17] << 1;
+        _gpr[4] = 0x800b0000UL;
+        _gpr[2] = staysInRow ? 1UL : 0UL;
+        _gpr[19] = (ulong)((long)_gpr[19] + 2L);
+        if (staysInRow)
+        {
+            FinishKnownRuntimeTileOuterTail(skippedInstructions, 0xffffffff800192c8UL);
+            return true;
+        }
+
+        ulong rowLimit = SignExtend32(_memory.Read32(0xffffffff800b2e1cUL));
+        _gpr[30] = (ulong)((long)_gpr[30] + 0x0cL);
+        _gpr[22] = (ulong)((long)_gpr[22] + 1L);
+        _gpr[2] = unchecked((long)_gpr[22]) < unchecked((long)rowLimit) ? 1UL : 0UL;
+        _gpr[23] = (ulong)((long)_gpr[23] + 8L);
+        FinishKnownRuntimeTileOuterTail(
+            skippedInstructions,
+            _gpr[2] != 0 ? 0xffffffff80019294UL : 0xffffffff80019528UL);
+        return true;
+    }
+
+    private void FinishKnownRuntimeTileOuterTail(int skippedInstructions, ulong nextPc)
+    {
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (ulong)skippedInstructions);
+        _instructionCounter += (ulong)skippedInstructions;
+        _probeStepDebt += skippedInstructions - 1;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = nextPc;
     }
 
     private bool TryFastPathKnownRuntimeTileDepthPointerHelper(ulong pc)
