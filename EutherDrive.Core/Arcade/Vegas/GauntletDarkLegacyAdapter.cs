@@ -838,6 +838,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeTileDepthPointerCallsite(pc))
             return;
+        if (TryFastPathKnownRuntimeTileRowSetup(pc))
+            return;
         if (TryFastPathKnownRuntimeTileMaskBranch(pc))
             return;
         if (TryFastPathKnownRuntimeMaskedTileSkip(pc))
@@ -5935,6 +5937,61 @@ internal sealed class MipsR5000Core
         }
 
         FinishKnownRuntimeBudgetedFastPath(skippedInstructions, 0xffffffff800194f0UL);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTileRowSetup(ulong pc)
+    {
+        const ulong entry = 0xffffffff80019294UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x0000a02dU ||
+            _memory.Read32(entry + 0x04UL) != 0x0280882dU ||
+            _memory.Read32(entry + 0x08UL) != 0x3c04800bU ||
+            _memory.Read32(entry + 0x0cUL) != 0x0280802dU ||
+            _memory.Read32(entry + 0x10UL) != 0x3c0e800bU ||
+            _memory.Read32(entry + 0x14UL) != 0x8d620004U ||
+            _memory.Read32(entry + 0x18UL) != 0x8c832e24U ||
+            _memory.Read32(entry + 0x1cUL) != 0x005e9021U ||
+            _memory.Read32(entry + 0x20UL) != 0x8dc22e0cU ||
+            _memory.Read32(entry + 0x24UL) != 0x0240a82dU ||
+            _memory.Read32(entry + 0x28UL) != 0x00571023U ||
+            _memory.Read32(entry + 0x2cUL) != 0x18600092U ||
+            _memory.Read32(entry + 0x30UL) != 0x000252c0U)
+        {
+            return false;
+        }
+
+        const int skippedInstructions = 13;
+        if (_remainingProbeSteps < skippedInstructions)
+            return false;
+
+        if (!IsMainRamRange(_gpr[11] + 4UL, 4) ||
+            !IsMainRamRange(0xffffffff800b2e0cUL, 4) ||
+            !IsMainRamRange(0xffffffff800b2e24UL, 4))
+        {
+            return false;
+        }
+
+        uint rowSource = (uint)_memory.Read32(_gpr[11] + 4UL);
+        uint rowStart = rowSource + (uint)_gpr[30];
+        uint rowSpan = (uint)_memory.Read32(0xffffffff800b2e0cUL) - (uint)_gpr[23];
+
+        _gpr[20] = 0;
+        _gpr[17] = 0;
+        _gpr[4] = 0x800b0000UL;
+        _gpr[16] = 0;
+        _gpr[14] = 0x800b0000UL;
+        _gpr[2] = SignExtend32(rowSpan);
+        _gpr[3] = SignExtend32(_memory.Read32(0xffffffff800b2e24UL));
+        _gpr[18] = SignExtend32(rowStart);
+        _gpr[21] = _gpr[18];
+        _gpr[10] = SignExtend32(rowSpan << 11);
+
+        FinishKnownRuntimeBudgetedFastPath(
+            skippedInstructions,
+            skippedInstructions - 1,
+            unchecked((int)rowSpan) <= 0 ? 0xffffffff8001950cUL : 0xffffffff800192c8UL);
         return true;
     }
 
