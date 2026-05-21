@@ -511,7 +511,7 @@ internal sealed class MipsR5000Core
     private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
-    private readonly bool _enableRuntimeInterruptBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE");
+    private readonly bool _enableRuntimeInterruptBridge = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE") == "1";
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
