@@ -10146,6 +10146,7 @@ internal sealed class VegasMemoryMap
 
         ushort value = _audio?.ReadData() ?? 0x000a;
         _audio?.Ack();
+        UpdateIoasicIrq();
         return value;
     }
 
@@ -10193,9 +10194,10 @@ internal sealed class VegasMemoryMap
     {
         ushort intCtl = _ioasicRegisters[15];
         ushort irqBits = 0x2000;
-        irqBits |= (ushort)(_ioasicSoundIrqState & 0x00ff);
+        ushort soundIrqState = _audio?.IoasicSoundIrqState ?? _ioasicSoundIrqState;
+        ushort fifoState = _audio?.FifoIrqStatus ?? (ushort)0x0008;
+        irqBits |= (ushort)(soundIrqState & 0x00ff);
         irqBits |= (ushort)(_ioasicRegisters[6] & 0x3f00);
-        const ushort fifoState = 0x0008;
         if ((fifoState & 0x08) != 0)
             irqBits |= 0x0008;
         if (irqBits != 0)
@@ -12103,26 +12105,18 @@ internal sealed class DcsAudioDevice
     }
 
     public ushort Control => _bootStatusCompat ? (ushort)0 : _latchControl;
-    public ushort FifoStatus
+    public ushort FifoStatus => GetFifoStatus(allowSelfTestClear: true);
+    public ushort FifoIrqStatus => GetFifoStatus(allowSelfTestClear: false);
+    public ushort IoasicSoundIrqState
     {
         get
         {
-            ushort result = 0;
-            if (_fifoCount == 0 && !_fifoForceFull)
-                result |= 0x0008;
-            if (_fifoCount >= FifoSize / 2)
-                result |= 0x0010;
-            if (_fifoCount >= FifoSize || _fifoForceFull)
-            {
-                result |= 0x0020;
-                if (!_fifoForceFull && !_fifoFullSelfTestReported && IsSequentialFifoSelfTest())
-                {
-                    _fifoFullSelfTestReported = true;
-                    Trace($"fifo-status selftest-full value={result:x4}; draining for DCS handoff");
-                    ClearFifo();
-                }
-            }
-            return result;
+            ushort value = 0;
+            if ((_latchControl & LatchInputEmpty) != 0)
+                value |= 0x0080;
+            if ((_latchControl & LatchOutputEmpty) == 0)
+                value |= 0x0040;
+            return value;
         }
     }
     public ushort Data2 => _outputControl;
@@ -12442,6 +12436,26 @@ internal sealed class DcsAudioDevice
     {
         while (_fifoCount > 0 && (_transferState != 5 || _fifoCount == _transferWritesLeft || _fifoCount >= 256))
             TryPreprocessWrite(PopFifo());
+    }
+
+    private ushort GetFifoStatus(bool allowSelfTestClear)
+    {
+        ushort result = 0;
+        if (_fifoCount == 0 && !_fifoForceFull)
+            result |= 0x0008;
+        if (_fifoCount >= FifoSize / 2)
+            result |= 0x0010;
+        if (_fifoCount >= FifoSize || _fifoForceFull)
+        {
+            result |= 0x0020;
+            if (allowSelfTestClear && !_fifoForceFull && !_fifoFullSelfTestReported && IsSequentialFifoSelfTest())
+            {
+                _fifoFullSelfTestReported = true;
+                Trace($"fifo-status selftest-full value={result:x4}; draining for DCS handoff");
+                ClearFifo();
+            }
+        }
+        return result;
     }
 
     private bool IsSequentialFifoSelfTest()
