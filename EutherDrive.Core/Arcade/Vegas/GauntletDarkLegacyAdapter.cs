@@ -2846,9 +2846,9 @@ internal sealed class MipsR5000Core
 
     private bool TryFastPathKnownRuntimeTableLookup(ulong pc)
     {
-        const ulong entry = 0xffffffff8005d230UL;
+        const ulong entry = 0xffffffff8005d234UL;
         ulong offset = pc & 0x1fffffffUL;
-        if (offset is < 0x0005d230UL or > 0x0005d344UL)
+        if (offset is < 0x0005d234UL or > 0x0005d344UL)
             return false;
         if (!MatchesKnownRuntimeTableLookupSignature(entry))
             return false;
@@ -2944,7 +2944,7 @@ internal sealed class MipsR5000Core
         if (pc != entry && pc != body && pc != afterLookup)
             return false;
         if (!MatchesKnownRuntimeEventPollWrapperSignature(entry) ||
-            !MatchesKnownRuntimeTableLookupSignature(0xffffffff8005d230UL))
+            !MatchesKnownRuntimeTableLookupSignature(0xffffffff8005d234UL))
         {
             return false;
         }
