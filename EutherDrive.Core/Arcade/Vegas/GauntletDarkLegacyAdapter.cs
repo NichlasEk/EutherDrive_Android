@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using EutherDrive.Core.Savestates;
 using SharpCompress.Archives;
@@ -229,7 +230,12 @@ internal sealed class GauntletDarkLegacyMachine
         RenderFrame(target);
     }
 
-    public void RenderFrame(EutherFrameTarget target) => Voodoo.RenderFrame(target);
+    public void RenderFrame(EutherFrameTarget target)
+    {
+        Voodoo.RenderFrame(target);
+        if (ShouldRenderCpuBootSurface(target))
+            RenderCpuBootSurface(target);
+    }
 
     public string GetDebugStatus()
     {
@@ -237,6 +243,69 @@ internal sealed class GauntletDarkLegacyMachine
                $"{Cpu.RuntimeDiagnosticStatus} " +
                $"voodoo={(Voodoo.HasVideoActivity ? "active" : "idle")} {Voodoo.DebugStatus} " +
                $"{MemoryMap.DebugStatus} {Audio.DebugStatus} disk={(Disk.Attached ? "attached" : "missing")}";
+    }
+
+    private bool ShouldRenderCpuBootSurface(EutherFrameTarget target)
+        => GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_RENDER_TILE_BOOT_SURFACE") &&
+           target.Buffer is not null &&
+           target.Width > 0 &&
+           target.Height > 0 &&
+           target.Stride >= target.Width * 4 &&
+           Cpu.TileWriteCount > 0 &&
+           !Voodoo.HasDrawPackets;
+
+    private void RenderCpuBootSurface(EutherFrameTarget target)
+    {
+        const ulong surface = 0xffffffff800ed62aUL;
+        const int sourceWidth = 640;
+        const int sourceHeight = 240;
+        const int sourceStride = 2048;
+
+        ClearTarget(target, 0xff000000u);
+        int copyWidth = Math.Min(target.Width, sourceWidth);
+        int copyHeight = Math.Min(target.Height, sourceHeight);
+        for (int y = 0; y < copyHeight; y++)
+        {
+            ulong sourceRow = surface + (ulong)(y * sourceStride);
+            int destination = y * target.Stride;
+            for (int x = 0; x < copyWidth; x++)
+            {
+                ushort rgb = MemoryMap.Read16(sourceRow + (ulong)(x * 2));
+                uint bgra = Rgb565ToBgra(rgb);
+                target.Buffer[destination + 0] = (byte)(bgra & 0xff);
+                target.Buffer[destination + 1] = (byte)((bgra >> 8) & 0xff);
+                target.Buffer[destination + 2] = (byte)((bgra >> 16) & 0xff);
+                target.Buffer[destination + 3] = 0xff;
+                destination += 4;
+            }
+        }
+    }
+
+    private static void ClearTarget(EutherFrameTarget target, uint bgra)
+    {
+        for (int y = 0; y < target.Height; y++)
+        {
+            int offset = y * target.Stride;
+            for (int x = 0; x < target.Width; x++)
+            {
+                target.Buffer[offset + 0] = (byte)(bgra & 0xff);
+                target.Buffer[offset + 1] = (byte)((bgra >> 8) & 0xff);
+                target.Buffer[offset + 2] = (byte)((bgra >> 16) & 0xff);
+                target.Buffer[offset + 3] = (byte)((bgra >> 24) & 0xff);
+                offset += 4;
+            }
+        }
+    }
+
+    private static uint Rgb565ToBgra(ushort rgb)
+    {
+        uint r = (uint)((rgb >> 11) & 0x1f);
+        uint g = (uint)((rgb >> 5) & 0x3f);
+        uint b = (uint)(rgb & 0x1f);
+        r = (r << 3) | (r >> 2);
+        g = (g << 2) | (g >> 4);
+        b = (b << 3) | (b >> 2);
+        return 0xff000000u | (r << 16) | (g << 8) | b;
     }
 
     private static int ParsePositiveInt(string name, int fallback)
@@ -415,6 +484,9 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
     private readonly int _stepBudget = ParseStepBudget();
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
+    private readonly bool _profileTileWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_TILE_WRITES") == "1";
+    private readonly bool _trackTileWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_TILE_WRITES") == "1" ||
+                                             GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_RENDER_TILE_BOOT_SURFACE");
     private int _remainingProbeSteps;
     private int _probeStepDebt;
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
@@ -481,6 +553,9 @@ internal sealed class MipsR5000Core
     private int _runtimeTextCallCount;
     private ulong _lastRuntimeTextPc;
     private ulong _lastRuntimeTextRa;
+    private ulong _tileWriteMin = ulong.MaxValue;
+    private ulong _tileWriteMax;
+    private ulong _tileWriteCount;
     private bool _timerInterruptPending;
     private ulong _hi;
     private ulong _lo;
@@ -496,10 +571,14 @@ internal sealed class MipsR5000Core
     public ulong Cp0Cause => _cp0[13];
     public ulong Cp0Epc => _cp0[14];
     public ulong Cp0ErrorEpc => _cp0[30];
+    public ulong TileWriteCount => _tileWriteCount;
+    public ulong TileWriteMin => _tileWriteMin;
+    public ulong TileWriteMax => _tileWriteMax;
     public string LastRuntimeText { get; private set; } = "";
     public string RuntimeDiagnosticStatus
         => $"rtxt={_runtimeTextCallCount}@0x{_lastRuntimeTextPc:X8}/ra=0x{_lastRuntimeTextRa:X8}" +
-           (string.IsNullOrWhiteSpace(LastRuntimeText) ? "" : $" \"{LastRuntimeText}\"");
+           (string.IsNullOrWhiteSpace(LastRuntimeText) ? "" : $" \"{LastRuntimeText}\"") +
+           GetTileWriteStatus();
     public string HotPcStatus => GetHotPcStatus();
 
     public void Reset()
@@ -5685,7 +5764,7 @@ internal sealed class MipsR5000Core
             {
                 uint code = bits & 3U;
                 if (code != 0)
-                    _memory.Write16(lastPixel, _memory.Read16(palette + code * 2UL));
+                    WriteProfiledTilePixel16(lastPixel, _memory.Read16(palette + code * 2UL));
                 bits >>= 2;
                 lastPixel += 2UL;
             }
@@ -5867,6 +5946,26 @@ internal sealed class MipsR5000Core
         if (_gpr[2] != 0)
             return false;
         return TryFinishKnownRuntimeMaskedTileSkip(0);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteProfiledTilePixel16(ulong address, ushort value)
+    {
+        _memory.Write16(address, value);
+        if (!_trackTileWrites)
+            return;
+
+        _tileWriteCount++;
+        _tileWriteMin = Math.Min(_tileWriteMin, address);
+        _tileWriteMax = Math.Max(_tileWriteMax, address);
+    }
+
+    private string GetTileWriteStatus()
+    {
+        if (!_profileTileWrites || _tileWriteCount == 0)
+            return "";
+
+        return $" tilew={_tileWriteCount}@0x{_tileWriteMin:x16}-0x{_tileWriteMax:x16}";
     }
 
     private bool TryFinishKnownRuntimeMaskedTileSkip(int leadingSkippedInstructions)
@@ -12775,6 +12874,7 @@ internal sealed class VoodooFacade : IVoodooBackend
 
     public bool TraceEnabled => _backend is VoodooTraceBackend;
     public bool HasVideoActivity => _backend is VoodooBringupBackend { HasVideoActivity: true };
+    public bool HasDrawPackets => _backend is VoodooBringupBackend { DrawPacketCount: > 0 };
     public string DebugStatus => _backend.DebugStatus;
     public string RecentEventStatus => _backend.RecentEventStatus;
     private Func<ulong>? _cpuPcProvider;
@@ -12896,6 +12996,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _recentVoodooEventSequence;
 
     public Func<ulong>? CpuPcProvider { get; set; }
+    public int DrawPacketCount => _fifoDrawPacketCount;
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
         => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +

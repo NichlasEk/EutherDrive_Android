@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Reflection;
 using EutherDrive.Core.Arcade.Vegas;
@@ -126,6 +127,7 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS")
 
 DumpVoodoo(GetProperty(machine, "Voodoo"));
 DumpFrame(adapter);
+DumpRamSurfaceCandidates(GetProperty(machine, "MemoryMap"));
 
 static object GetField(object instance, string name)
 {
@@ -1290,3 +1292,148 @@ static void DumpFrame(GauntletDarkLegacyAdapter adapter)
 
     Console.WriteLine($"frameDump={ppmPath}");
 }
+
+static void DumpRamSurfaceCandidates(object memory)
+{
+    string? prefix = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_RAM_SURFACE_PREFIX");
+    if (string.IsNullOrWhiteSpace(prefix))
+        return;
+
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    int maxCandidates = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_RAM_SURFACE_COUNT"), 6);
+    var formats = new[]
+    {
+        new RamSurfaceFormat(512, 256, 1024),
+        new RamSurfaceFormat(640, 480, 1280),
+        new RamSurfaceFormat(320, 240, 640)
+    };
+
+    List<RamSurfaceCandidate> candidates = [];
+    foreach (RamSurfaceFormat format in formats)
+    {
+        int bytes = format.Stride * format.Height;
+        if (bytes <= 0 || bytes > mainRam.Length)
+            continue;
+
+        for (int offset = 0; offset + bytes <= mainRam.Length; offset += 0x1000)
+        {
+            RamSurfaceScore score = ScoreRgb565Surface(mainRam, offset, format);
+            if (score.NonZero < 512 || score.UniqueColors < 8)
+                continue;
+
+            candidates.Add(new RamSurfaceCandidate(offset, format, score));
+        }
+    }
+
+    candidates = candidates
+        .OrderByDescending(candidate => candidate.Score.Score)
+        .ThenBy(candidate => candidate.Offset)
+        .Take(maxCandidates)
+        .ToList();
+
+    Console.WriteLine("ramSurfaceCandidates=" + (candidates.Count == 0
+        ? "none"
+        : string.Join(",", candidates.Select(candidate =>
+            $"0x{0x80000000u + (uint)candidate.Offset:x8}:{candidate.Format.Width}x{candidate.Format.Height}/s{candidate.Format.Stride}/nz{candidate.Score.NonZero}/u{candidate.Score.UniqueColors}"))));
+
+    for (int i = 0; i < candidates.Count; i++)
+    {
+        RamSurfaceCandidate candidate = candidates[i];
+        string path = $"{prefix}_{i}_{0x80000000u + (uint)candidate.Offset:x8}_{candidate.Format.Width}x{candidate.Format.Height}.ppm";
+        DumpRgb565Surface(mainRam, candidate.Offset, candidate.Format, path);
+        Console.WriteLine($"ramSurfaceDump={path}");
+    }
+
+    DumpRequestedRamSurfaces(mainRam, prefix);
+}
+
+static void DumpRequestedRamSurfaces(byte[] mainRam, string prefix)
+{
+    string? specs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_RAM_SURFACE_SPECS");
+    if (string.IsNullOrWhiteSpace(specs))
+        return;
+
+    int index = 0;
+    foreach (string item in specs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 4 ||
+            !TryParseHexUlong(parts[0], out ulong address) ||
+            !int.TryParse(parts[1], out int width) ||
+            !int.TryParse(parts[2], out int height) ||
+            !int.TryParse(parts[3], out int stride) ||
+            width <= 0 || height <= 0 || stride < width * 2)
+        {
+            continue;
+        }
+
+        int offset = (int)(address & 0x1fffffffUL);
+        var format = new RamSurfaceFormat(width, height, stride);
+        int bytes = stride * height;
+        if (offset < 0 || offset + bytes > mainRam.Length)
+            continue;
+
+        string path = $"{prefix}_spec{index}_{0x80000000u + (uint)offset:x8}_{width}x{height}_s{stride}.ppm";
+        DumpRgb565Surface(mainRam, offset, format, path);
+        RamSurfaceScore score = ScoreRgb565Surface(mainRam, offset, format);
+        Console.WriteLine($"ramSurfaceSpecDump={path} nz={score.NonZero} colored={score.Colored} unique={score.UniqueColors}");
+        index++;
+    }
+}
+
+static RamSurfaceScore ScoreRgb565Surface(byte[] ram, int offset, RamSurfaceFormat format)
+{
+    int nonZero = 0;
+    int colored = 0;
+    HashSet<ushort> colors = [];
+    int stepX = Math.Max(1, format.Width / 128);
+    int stepY = Math.Max(1, format.Height / 96);
+    for (int y = 0; y < format.Height; y += stepY)
+    {
+        int row = offset + y * format.Stride;
+        for (int x = 0; x < format.Width; x += stepX)
+        {
+            ushort rgb = BinaryPrimitives.ReadUInt16LittleEndian(ram.AsSpan(row + x * 2, 2));
+            if (rgb == 0)
+                continue;
+
+            nonZero++;
+            colors.Add(rgb);
+            int r = (rgb >> 11) & 0x1f;
+            int g = (rgb >> 5) & 0x3f;
+            int b = rgb & 0x1f;
+            if (Math.Abs((r << 1) - g) > 3 || Math.Abs(r - b) > 2)
+                colored++;
+        }
+    }
+
+    int unique = colors.Count;
+    long score = (long)nonZero * 16L + colored * 8L + unique * 256L;
+    return new RamSurfaceScore(nonZero, colored, unique, score);
+}
+
+static void DumpRgb565Surface(byte[] ram, int offset, RamSurfaceFormat format, string path)
+{
+    using var stream = File.Create(path);
+    using var writer = new StreamWriter(stream, leaveOpen: true);
+    writer.Write($"P6\n{format.Width} {format.Height}\n255\n");
+    writer.Flush();
+    for (int y = 0; y < format.Height; y++)
+    {
+        int row = offset + y * format.Stride;
+        for (int x = 0; x < format.Width; x++)
+        {
+            ushort rgb = BinaryPrimitives.ReadUInt16LittleEndian(ram.AsSpan(row + x * 2, 2));
+            stream.WriteByte((byte)((rgb >> 8) & 0xf8));
+            stream.WriteByte((byte)((rgb >> 3) & 0xfc));
+            stream.WriteByte((byte)((rgb << 3) & 0xf8));
+        }
+    }
+}
+
+static int ParsePositiveInt(string? value, int fallback)
+    => int.TryParse(value, out int parsed) && parsed > 0 ? parsed : fallback;
+
+readonly record struct RamSurfaceFormat(int Width, int Height, int Stride);
+readonly record struct RamSurfaceScore(int NonZero, int Colored, int UniqueColors, long Score);
+readonly record struct RamSurfaceCandidate(int Offset, RamSurfaceFormat Format, RamSurfaceScore Score);
