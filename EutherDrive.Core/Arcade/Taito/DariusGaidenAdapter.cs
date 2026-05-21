@@ -972,8 +972,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return true;
         if (TryExecuteDariusIndexedLongCopyLoop(pc, op, out cycles))
             return true;
-        if (TryExecuteDariusTilemapRleDraw(pc, op, out cycles))
-            return true;
+        // Keep the ROM path for the tilemap RLE decompressor. The fastpath is
+        // bit-stable in short headless fingerprints but corrupts playfield
+        // graphics during longer gameplay/attract runs.
         if (TryExecuteDariusBytePairExpand(pc, op, out cycles))
             return true;
         if (TryExecuteDariusObjectPackLoop(pc, op, out cycles))
