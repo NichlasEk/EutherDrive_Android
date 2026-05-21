@@ -9708,6 +9708,9 @@ internal sealed class VegasMemoryMap
         if ((chipSelect == 6 || chipSelect == 7) && (offset & 0xfffffffcu) == 0x00007000)
             return _audio?.ReadIdmaData() ?? UnmappedReadValue;
 
+        if (chipSelect == 6 && offset < 0x40)
+            return (uint)(ReadIoasicPackedWord(offset) | (ReadIoasicPackedWord(offset + 2) << 16));
+
         if (chipSelect == 4)
         {
             return (uint)(ReadChipSelectByte(chipSelect, offset) |
@@ -9724,6 +9727,9 @@ internal sealed class VegasMemoryMap
         if ((chipSelect == 6 || chipSelect == 7) && (offset & 0xfffffffcu) == 0x00007000)
             return (ushort)(_audio?.ReadIdmaData() ?? 0xffffu);
 
+        if (chipSelect == 6 && offset < 0x40)
+            return ReadIoasicPackedWord(offset);
+
         return (ushort)(ReadChipSelectByte(chipSelect, offset) |
             (ReadChipSelectByte(chipSelect, offset + 1) << 8));
     }
@@ -9733,6 +9739,13 @@ internal sealed class VegasMemoryMap
         if (chipSelect == 6)
         {
             uint aligned = offset & 0xfffffffcu;
+            if (offset < 0x40)
+            {
+                WriteIoasicPackedWord(offset, (ushort)value);
+                WriteIoasicPackedWord(offset + 2, (ushort)(value >> 16));
+                return;
+            }
+
             if (aligned == 0x00001000)
             {
                 _audio?.WriteFifo((ushort)value);
@@ -9795,6 +9808,12 @@ internal sealed class VegasMemoryMap
         if (chipSelect == 6)
         {
             uint aligned = offset & 0xfffffffeu;
+            if (offset < 0x40)
+            {
+                WriteIoasicPackedWord(offset, value);
+                return;
+            }
+
             if (aligned == 0x00001000)
             {
                 _audio?.WriteFifo(value);
@@ -10050,6 +10069,15 @@ internal sealed class VegasMemoryMap
         return (byte)(value >> (int)((offset & 1) * 8));
     }
 
+    private ushort ReadIoasicPackedWord(uint offset)
+    {
+        int physicalRegister = GetIoasicPackedRegister(offset);
+        int register = DecodeIoasicRegister(physicalRegister);
+        ushort value = ReadIoasicRegister(register);
+        RecordIoasicRead(physicalRegister, register, value);
+        return value;
+    }
+
     private void WriteIoasicPackedByte(uint offset, byte value)
     {
         int physicalRegister = GetIoasicPackedRegister(offset);
@@ -10063,6 +10091,19 @@ internal sealed class VegasMemoryMap
 
         WriteIoasicRegister(register, merged);
         RecordIoasicWrite(physicalRegister, register, merged);
+        UpdateIoasicIrq();
+    }
+
+    private void WriteIoasicPackedWord(uint offset, ushort value)
+    {
+        int physicalRegister = GetIoasicPackedRegister(offset);
+        int register = DecodeIoasicRegister(physicalRegister);
+
+        if (_ioasicShuffleActive)
+            _ioasicRegisters[register] = value;
+
+        WriteIoasicRegister(register, value);
+        RecordIoasicWrite(physicalRegister, register, value);
         UpdateIoasicIrq();
     }
 
