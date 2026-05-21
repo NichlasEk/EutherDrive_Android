@@ -286,9 +286,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private string BuildLineStateSample()
     {
         F3LineState line = _lineStates[(VisibleAreaMinY + FrameHeight / 2) & 0xff];
+        uint bgColor = _bus.ReadPaletteColor(line.BgPalette, fallback: 0);
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"b={line.Blend[0]},{line.Blend[1]},{line.Blend[2]},{line.Blend[3]} pf={line.PlayfieldMix[0]:X4},{line.PlayfieldMix[1]:X4},{line.PlayfieldMix[2]:X4},{line.PlayfieldMix[3]:X4} piv={line.PivotMix:X4}");
+            $"bg={line.BgPalette:X4}/#{(bgColor >> 16) & 0xff:X2}{(bgColor >> 8) & 0xff:X2}{bgColor & 0xff:X2} flip={(_flipScreen ? 1 : 0)} pivCtl={line.PivotControl:X2} b={line.Blend[0]},{line.Blend[1]},{line.Blend[2]},{line.Blend[3]} pf={line.PlayfieldMix[0]:X4},{line.PlayfieldMix[1]:X4},{line.PlayfieldMix[2]:X4},{line.PlayfieldMix[3]:X4} piv={line.PivotMix:X4}");
     }
 
     private string BuildPlayfieldLayerSample()
@@ -914,6 +915,13 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         Span<int> regFxY = stackalloc int[4];
         for (int layer = 0; layer < 4; layer++)
             GetMamePlayfieldScroll(layer, out regSx[layer], out regFxY[layer]);
+
+        for (int skippedY = 1; skippedY < VisibleAreaMinY; skippedY++)
+        {
+            F3LineState skippedLine = _lineStates[skippedY & 0xff];
+            for (int layer = 0; layer < 4; layer++)
+                regFxY[layer] += skippedLine.PlayfieldYScale[layer];
+        }
 
         bool drewAny = false;
         Span<byte> layerOrder = stackalloc byte[9]
@@ -4501,12 +4509,16 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _playfieldLineCodeCache[tileX] = (ushort)(code < tilemapElements ? code : code % tilemapElements);
         }
 
+        bool xSampleEnabled = line.PlayfieldXSampleEnable[lineRamLayer];
         for (int screenX = 0, sourceXAccumulator = lineRegFxX; screenX < FrameWidth; screenX++, sourceXAccumulator += lineXScale)
         {
-            if (clippedLine && !IsMameClipAllowed(screenLine, layerMixValue, screenX + VisibleAreaMinX))
+            int absoluteX = screenX + VisibleAreaMinX;
+            if (clippedLine && !IsMameClipAllowed(screenLine, layerMixValue, absoluteX))
                 continue;
 
-            int sourceX = ((sourceXAccumulator >> 8) + VisibleAreaMinX) & 0x01ff;
+            int sourceX = xSampleEnabled
+                ? (((lineRegFxX + (MameMosaicX(absoluteX, line.XSample) - VisibleAreaMinX) * lineXScale) >> 8) + VisibleAreaMinX) & 0x01ff
+                : ((sourceXAccumulator >> 8) + VisibleAreaMinX) & 0x01ff;
             int tileX = sourceX >> 4;
             int pixelX = sourceX & 15;
             ushort attr = _playfieldLineAttrCache[tileX];
@@ -4559,12 +4571,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int syRaw = (short)_bus.ReadControlWord(0, 4 + playfield);
 
         syRaw += 1 << 7;
-        sxRaw += (40 - 4 * playfield) << 6;
+        if (_flipScreen)
+        {
+            sxRaw += 320 << 6;
+            sxRaw += (512 + 192) << 6;
+            syRaw = -syRaw;
+        }
 
+        sxRaw += (40 - 4 * playfield) << 6;
         regSx = sxRaw << 2;
         regSy = syRaw << 1;
         regSx ^= 0xfc;
         regSx -= VisibleAreaMinX << 8;
+        if (_flipScreen)
+            regSy = -regSy;
     }
 
     private bool RenderTextLayer(TaitoF3RomSet roms)
@@ -4635,16 +4655,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return false;
 
         ushort pivotMix = line.PivotMix;
+        bool xSampleEnabled = line.PivotXSampleEnable;
         int sourceY = screenLine & 0x01ff;
         int row = (sourceY >> 3) & 63;
         bool drewAny = false;
         int pixelY = sourceY & 7;
         for (int screenX = 0; screenX < FrameWidth; screenX++)
         {
-            int sourceX = (screenX + VisibleAreaMinX) & 0x01ff;
-            if (!IsMameClipAllowed(screenLine, pivotMix, sourceX))
+            int absoluteX = screenX + VisibleAreaMinX;
+            if (!IsMameClipAllowed(screenLine, pivotMix, absoluteX))
                 continue;
 
+            int sourceX = (xSampleEnabled ? MameMosaicX(absoluteX, line.XSample) : absoluteX) & 0x01ff;
             int column = (sourceX >> 3) & 63;
             int pixelX = sourceX & 7;
             ushort word = _bus.ReadTextWord(row * columns + column);
@@ -4762,6 +4784,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             : (-controlY) & 0x01ff;
 
         ushort pivotMix = line.PivotMix;
+        bool xSampleEnabled = line.PivotXSampleEnable;
         int sourceY = (screenY + VisibleAreaMinY + scrollY) & 0x01ff;
         int row = (sourceY >> 3) & 31;
         int pixelY = sourceY & 7;
@@ -4771,10 +4794,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         bool drewAny = false;
         for (int screenX = 0; screenX < FrameWidth; screenX++)
         {
-            if (!IsMameClipAllowed(screenLine, pivotMix, screenX + VisibleAreaMinX))
+            int absoluteX = screenX + VisibleAreaMinX;
+            if (!IsMameClipAllowed(screenLine, pivotMix, absoluteX))
                 continue;
 
-            int sourceX = (screenX + VisibleAreaMinX + scrollX) & 0x01ff;
+            int sampledX = xSampleEnabled ? MameMosaicX(absoluteX, line.XSample) : absoluteX;
+            int sourceX = (sampledX + scrollX) & 0x01ff;
             int column = (sourceX >> 3) & 63;
             int pixelX = sourceX & 7;
             if (_flipScreen)
@@ -5165,6 +5190,28 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int spriteState = PackSpriteCurrentState(spriteMix, line.SpriteBlendSelect[spriteGroup & 3], GetSpriteLayerRank(spriteGroup));
         int rowOffset = y * FrameWidth;
 
+        if (line.SpriteXSampleEnable[spriteGroup & 3])
+        {
+            for (int screenX = 0; screenX < FrameWidth; screenX++)
+            {
+                int sampleX = MameMosaicX(screenX + VisibleAreaMinX, line.XSample) - VisibleAreaMinX;
+                if ((uint)sampleX >= FrameWidth)
+                    continue;
+
+                int sourceOffset = rowOffset + sampleX;
+                if ((_spriteReefGroup[sourceOffset] & 3) != spriteGroup)
+                    continue;
+
+                ushort paletteIndex = _spriteReefPalette[sourceOffset];
+                if (paletteIndex == 0)
+                    continue;
+
+                drewAny |= RenderSpriteReefPixelAt(rowOffset + screenX, screenX, paletteIndex, spriteMix, spriteState, line);
+            }
+
+            return drewAny;
+        }
+
         for (int node = _spriteReefRowHead[y]; node != 0;)
         {
             int offset = node - 1;
@@ -5347,9 +5394,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     {
         _lineBuildState.Reset();
         var line = _lineBuildState;
-        for (int y = 0; y < 256; y++)
+        for (int screenY = 0; screenY < 256; screenY++)
         {
-            if (TryReadLatchedLineWord(y, 2, 0, out ushort line6000))
+            int lineRamY = _flipScreen ? 255 - screenY : screenY;
+            if (TryReadLatchedLineWord(lineRamY, 2, 0, out ushort line6000))
             {
                 line.PivotBlendSelect = (line6000 & 0x0200) != 0;
                 line.PivotControl = (byte)(line6000 >> 8);
@@ -5362,7 +5410,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             for (int playfield = 2; playfield < 4; playfield++)
             {
-                if (TryReadLatchedLineWord(y, 0, playfield, out ushort colScroll))
+                if (TryReadLatchedLineWord(lineRamY, 0, playfield, out ushort colScroll))
                 {
                     line.PlayfieldColScroll[playfield] = (ushort)(colScroll & 0x01ff);
                     line.PlayfieldAltTilemap[playfield] = (colScroll & 0x0200) != 0;
@@ -5374,23 +5422,33 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             for (int plane = 0; plane < 4; plane++)
             {
-                if (TryReadLatchedLineWord(y, 1, plane, out ushort clipLows))
+                if (TryReadLatchedLineWord(lineRamY, 1, plane, out ushort clipLows))
                     line.Clip[plane].SetLower(clipLows & 0xff, clipLows >> 8);
             }
 
-            if (TryReadLatchedLineWord(y, 2, 1, out ushort blendValues))
+            if (TryReadLatchedLineWord(lineRamY, 2, 1, out ushort blendValues))
             {
                 for (int index = 0; index < 4; index++)
                     line.Blend[index] = (byte)Math.Min(8, 0x0f - ((blendValues >> (index * 4)) & 0x0f));
             }
 
-            if (TryReadLatchedLineWord(y, 2, 3, out ushort bgPalette))
+            if (TryReadLatchedLineWord(lineRamY, 2, 2, out ushort xMosaic))
+            {
+                line.XSample = (byte)(16 - ((xMosaic >> 4) & 0x0f));
+                for (int playfield = 0; playfield < 4; playfield++)
+                    line.PlayfieldXSampleEnable[playfield] = ((xMosaic >> playfield) & 1) != 0;
+                for (int group = 0; group < 4; group++)
+                    line.SpriteXSampleEnable[group] = (xMosaic & 0x0100) != 0;
+                line.PivotXSampleEnable = (xMosaic & 0x0200) != 0;
+            }
+
+            if (TryReadLatchedLineWord(lineRamY, 2, 3, out ushort bgPalette))
                 line.BgPalette = bgPalette;
 
-            if (TryReadLatchedLineWord(y, 3, 1, out ushort pivotMix))
+            if (TryReadLatchedLineWord(lineRamY, 3, 1, out ushort pivotMix))
                 line.PivotMix = pivotMix;
 
-            if (TryReadLatchedLineWord(y, 3, 2, out ushort spriteMix))
+            if (TryReadLatchedLineWord(lineRamY, 3, 2, out ushort spriteMix))
             {
                 for (int group = 0; group < 4; group++)
                 {
@@ -5399,7 +5457,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 }
             }
 
-            if (TryReadLatchedLineWord(y, 3, 3, out ushort spritePriority))
+            if (TryReadLatchedLineWord(lineRamY, 3, 3, out ushort spritePriority))
             {
                 for (int group = 0; group < 4; group++)
                     line.SpriteMix[group] = (ushort)((line.SpriteMix[group] & 0xfff0) | ((spritePriority >> (group * 4)) & 0x0f));
@@ -5407,7 +5465,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             for (int playfield = 0; playfield < 4; playfield++)
             {
-                if (TryReadLatchedLineWord(y, 4, playfield, out ushort playfieldScale))
+                if (TryReadLatchedLineWord(lineRamY, 4, playfield, out ushort playfieldScale))
                 {
                     int scaledYPlayfield = playfield switch
                     {
@@ -5423,13 +5481,13 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             for (int playfield = 0; playfield < 4; playfield++)
             {
-                if (TryReadLatchedLineWord(y, 5, playfield, out ushort paletteAdd))
+                if (TryReadLatchedLineWord(lineRamY, 5, playfield, out ushort paletteAdd))
                     line.PlayfieldPaletteAdd[playfield] = paletteAdd * 16;
             }
 
             for (int playfield = 0; playfield < 4; playfield++)
             {
-                if (TryReadLatchedLineWord(y, 6, playfield, out ushort rowScroll))
+                if (TryReadLatchedLineWord(lineRamY, 6, playfield, out ushort rowScroll))
                 {
                     int fixedRowScroll = rowScroll << 2;
                     line.PlayfieldRowScroll[playfield] = (fixedRowScroll & unchecked((int)0xffffff00)) - (fixedRowScroll & 0xff);
@@ -5438,13 +5496,13 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             for (int playfield = 0; playfield < 4; playfield++)
             {
-                if (TryReadLatchedLineWord(y, 7, playfield, out ushort playfieldMix))
+                if (TryReadLatchedLineWord(lineRamY, 7, playfield, out ushort playfieldMix))
                     line.PlayfieldMix[playfield] = playfieldMix;
             }
 
-            if (!_lineStates[y].IsInitialized)
-                _lineStates[y] = new F3LineState();
-            _lineStates[y].CopyFrom(line);
+            if (!_lineStates[screenY].IsInitialized)
+                _lineStates[screenY] = new F3LineState();
+            _lineStates[screenY].CopyFrom(line);
         }
 
         _lineBuildState = line;
@@ -5503,6 +5561,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
 
         return allowed;
+    }
+
+    private static int MameMosaicX(int absoluteX, int sample)
+    {
+        if (sample <= 1)
+            return absoluteX;
+
+        int xCount = absoluteX - VisibleAreaMinX + 114;
+        if (xCount >= 432)
+            xCount -= 432;
+        return absoluteX - (xCount % sample);
     }
 
     private static byte GetSpriteLayerRank(int spriteGroup)
@@ -6032,10 +6101,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return 0;
 
         int bit = 7 - (bitOffset & 7);
-        int hi1 = (rom[byteOffset] >> bit) & 1;
+        int hi0 = (rom[byteOffset] >> bit) & 1;
         int plane0Offset = bitOffset + 8;
         int plane0ByteOffset = plane0Offset >> 3;
-        int hi0 = (uint)plane0ByteOffset < (uint)rom.Length
+        int hi1 = (uint)plane0ByteOffset < (uint)rom.Length
             ? (rom[plane0ByteOffset] >> (7 - (plane0Offset & 7))) & 1
             : 0;
         return (hi0 << 4) | (hi1 << 5);
@@ -6277,15 +6346,19 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         public ushort BgPalette;
         public byte PivotControl;
         public bool PivotBlendSelect;
+        public byte XSample;
+        public bool PivotXSampleEnable;
         public readonly ushort[] PlayfieldMix;
         public readonly ushort[] PlayfieldColScroll;
         public readonly bool[] PlayfieldAltTilemap;
+        public readonly bool[] PlayfieldXSampleEnable;
         public readonly int[] PlayfieldXScale;
         public readonly int[] PlayfieldYScale;
         public readonly int[] PlayfieldRowScroll;
         public readonly int[] PlayfieldPaletteAdd;
         public readonly ushort[] SpriteMix;
         public readonly bool[] SpriteBlendSelect;
+        public readonly bool[] SpriteXSampleEnable;
         public readonly byte[] Blend;
         public readonly F3ClipPlane[] Clip;
 
@@ -6295,15 +6368,19 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             BgPalette = 0;
             PivotControl = 0;
             PivotBlendSelect = false;
+            XSample = 16;
+            PivotXSampleEnable = false;
             PlayfieldMix = new ushort[4];
             PlayfieldColScroll = new ushort[4];
             PlayfieldAltTilemap = new bool[4];
+            PlayfieldXSampleEnable = new bool[4];
             PlayfieldXScale = new int[4];
             PlayfieldYScale = new int[4];
             PlayfieldRowScroll = new int[4];
             PlayfieldPaletteAdd = new int[4];
             SpriteMix = new ushort[4];
             SpriteBlendSelect = new bool[4];
+            SpriteXSampleEnable = new bool[4];
             Blend = new byte[4];
             Clip = new F3ClipPlane[4];
             Array.Fill(PlayfieldXScale, 0x80);
@@ -6317,15 +6394,19 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             BgPalette = 0;
             PivotControl = 0;
             PivotBlendSelect = false;
+            XSample = 16;
+            PivotXSampleEnable = false;
             Array.Clear(PlayfieldMix);
             Array.Clear(PlayfieldColScroll);
             Array.Clear(PlayfieldAltTilemap);
+            Array.Clear(PlayfieldXSampleEnable);
             Array.Fill(PlayfieldXScale, 0x80);
             Array.Clear(PlayfieldYScale);
             Array.Clear(PlayfieldRowScroll);
             Array.Clear(PlayfieldPaletteAdd);
             Array.Clear(SpriteMix);
             Array.Clear(SpriteBlendSelect);
+            Array.Clear(SpriteXSampleEnable);
             Array.Clear(Blend);
             Array.Clear(Clip);
         }
@@ -6336,15 +6417,19 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             BgPalette = source.BgPalette;
             PivotControl = source.PivotControl;
             PivotBlendSelect = source.PivotBlendSelect;
+            XSample = source.XSample;
+            PivotXSampleEnable = source.PivotXSampleEnable;
             Array.Copy(source.PlayfieldMix, PlayfieldMix, PlayfieldMix.Length);
             Array.Copy(source.PlayfieldColScroll, PlayfieldColScroll, PlayfieldColScroll.Length);
             Array.Copy(source.PlayfieldAltTilemap, PlayfieldAltTilemap, PlayfieldAltTilemap.Length);
+            Array.Copy(source.PlayfieldXSampleEnable, PlayfieldXSampleEnable, PlayfieldXSampleEnable.Length);
             Array.Copy(source.PlayfieldXScale, PlayfieldXScale, PlayfieldXScale.Length);
             Array.Copy(source.PlayfieldYScale, PlayfieldYScale, PlayfieldYScale.Length);
             Array.Copy(source.PlayfieldRowScroll, PlayfieldRowScroll, PlayfieldRowScroll.Length);
             Array.Copy(source.PlayfieldPaletteAdd, PlayfieldPaletteAdd, PlayfieldPaletteAdd.Length);
             Array.Copy(source.SpriteMix, SpriteMix, SpriteMix.Length);
             Array.Copy(source.SpriteBlendSelect, SpriteBlendSelect, SpriteBlendSelect.Length);
+            Array.Copy(source.SpriteXSampleEnable, SpriteXSampleEnable, SpriteXSampleEnable.Length);
             Array.Copy(source.Blend, Blend, Blend.Length);
             Array.Copy(source.Clip, Clip, Clip.Length);
         }
@@ -6357,16 +6442,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 BgPalette = BgPalette,
                 PivotControl = PivotControl,
                 PivotBlendSelect = PivotBlendSelect,
+                XSample = XSample,
+                PivotXSampleEnable = PivotXSampleEnable,
             };
             Array.Copy(PlayfieldMix, clone.PlayfieldMix, PlayfieldMix.Length);
             Array.Copy(PlayfieldColScroll, clone.PlayfieldColScroll, PlayfieldColScroll.Length);
             Array.Copy(PlayfieldAltTilemap, clone.PlayfieldAltTilemap, PlayfieldAltTilemap.Length);
+            Array.Copy(PlayfieldXSampleEnable, clone.PlayfieldXSampleEnable, PlayfieldXSampleEnable.Length);
             Array.Copy(PlayfieldXScale, clone.PlayfieldXScale, PlayfieldXScale.Length);
             Array.Copy(PlayfieldYScale, clone.PlayfieldYScale, PlayfieldYScale.Length);
             Array.Copy(PlayfieldRowScroll, clone.PlayfieldRowScroll, PlayfieldRowScroll.Length);
             Array.Copy(PlayfieldPaletteAdd, clone.PlayfieldPaletteAdd, PlayfieldPaletteAdd.Length);
             Array.Copy(SpriteMix, clone.SpriteMix, SpriteMix.Length);
             Array.Copy(SpriteBlendSelect, clone.SpriteBlendSelect, SpriteBlendSelect.Length);
+            Array.Copy(SpriteXSampleEnable, clone.SpriteXSampleEnable, SpriteXSampleEnable.Length);
             Array.Copy(Blend, clone.Blend, Blend.Length);
             Array.Copy(Clip, clone.Clip, Clip.Length);
             return clone;
@@ -6546,10 +6635,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                         int highOffset0 = highBitOffset >> 3;
                         if ((uint)highOffset0 < (uint)highPlanes.Length)
                         {
-                            pen |= ((highPlanes[highOffset0] >> (7 - (highBitOffset & 7))) & 1) << 4;
+                            pen |= ((highPlanes[highOffset0] >> (7 - (highBitOffset & 7))) & 1) << 5;
                             int highOffset1 = (highBitOffset + 1) >> 3;
                             if ((uint)highOffset1 < (uint)highPlanes.Length)
-                                pen |= ((highPlanes[highOffset1] >> (7 - ((highBitOffset + 1) & 7))) & 1) << 5;
+                                pen |= ((highPlanes[highOffset1] >> (7 - ((highBitOffset + 1) & 7))) & 1) << 4;
                         }
 
                         pixels[tileBase | (y << 4) | x] = (byte)pen;
