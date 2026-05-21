@@ -354,7 +354,7 @@ static void DumpVoodoo(object facade)
     int drawPackets = GetIntField(backend, "_fifoDrawPacketCount");
     int directTriangles = GetIntField(backend, "_directTriangleCommandCount");
     int setupTriangles = GetIntField(backend, "_setupTriangleCommandCount");
-    int lfbWrites = GetIntField(backend, "_lfbWriteCount");
+    long lfbWrites = GetLongField(backend, "_lfbWriteCount");
     int texWrites = GetIntField(backend, "_textureWriteCount");
     int fastFills = GetIntField(backend, "_fastFillCount");
     int swaps = GetIntField(backend, "_swapBufferCount");
@@ -408,6 +408,9 @@ static uint HashFrame(ReadOnlySpan<byte> frame, int width, int height, int strid
 
 static int GetIntField(object instance, string name)
     => (int)GetField(instance, name);
+
+static long GetLongField(object instance, string name)
+    => (long)GetField(instance, name);
 
 static void SetField(object instance, string name, object value)
 {
@@ -690,7 +693,7 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     writer.Write(GetFieldValue<int>(backend, "_fifoDrawPacketCount"));
     writer.Write(GetFieldValue<int>(backend, "_directTriangleCommandCount"));
     writer.Write(GetFieldValue<int>(backend, "_setupTriangleCommandCount"));
-    writer.Write(GetFieldValue<int>(backend, "_lfbWriteCount"));
+    writer.Write((int)Math.Clamp(GetFieldValue<long>(backend, "_lfbWriteCount"), int.MinValue, int.MaxValue));
     writer.Write(GetFieldValue<int>(backend, "_textureWriteCount"));
     writer.Write(GetFieldValue<int>(backend, "_fastFillCount"));
     writer.Write(GetFieldValue<int>(backend, "_swapBufferCount"));
@@ -724,7 +727,7 @@ static void LoadVoodoo(BinaryReader reader, object facade)
     SetField(backend, "_fifoDrawPacketCount", reader.ReadInt32());
     SetField(backend, "_directTriangleCommandCount", reader.ReadInt32());
     SetField(backend, "_setupTriangleCommandCount", reader.ReadInt32());
-    SetField(backend, "_lfbWriteCount", reader.ReadInt32());
+    SetField(backend, "_lfbWriteCount", (long)reader.ReadInt32());
     SetField(backend, "_textureWriteCount", reader.ReadInt32());
     SetField(backend, "_fastFillCount", reader.ReadInt32());
     SetField(backend, "_swapBufferCount", reader.ReadInt32());

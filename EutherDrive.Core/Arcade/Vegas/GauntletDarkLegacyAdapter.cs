@@ -13367,7 +13367,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _directTriangleCommandCount;
     private int _setupTriangleCommandCount;
     private int _statusReadCount;
-    private int _lfbWriteCount;
+    private long _lfbWriteCount;
     private int _textureWriteCount;
     private int _fastFillCount;
     private int _swapBufferCount;
@@ -13674,7 +13674,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int sweep = _renderFrame % Math.Max(1, target.Width);
         FillRect(target, sweep, y0, 4, y1 - y0, 0xff00d7ffu);
         FillRect(target, 16, target.Height - 28, Math.Min(target.Width - 32, _registerWriteCount / 32), 8, 0xff39d353u);
-        FillRect(target, 16, target.Height - 18, Math.Min(target.Width - 32, _lfbWriteCount / 64), 8, 0xfff7b955u);
+        FillRect(target, 16, target.Height - 18, Math.Min(target.Width - 32, (int)Math.Min(int.MaxValue, _lfbWriteCount / 64)), 8, 0xfff7b955u);
         FillRect(target, 16, target.Height - 8, Math.Min(target.Width - 32, (_fifoWriteCount + _fifoPacketCount * 8 + _textureWriteCount) / 256), 6, 0xffc678ddU);
         FillRect(target, target.Width - 24, 16, 8, Math.Min(target.Height - 32, _fifoDrawPacketCount * 4), 0xffff6b6bu);
         FillRect(target, target.Width - 40, 16, 8, Math.Min(target.Height - 32, _fastFillCount * 4), 0xff39d353u);
