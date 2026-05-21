@@ -2400,6 +2400,9 @@ internal sealed class MipsR5000Core
         bool diagnosticSurfaceDispatch = _gpr[4] == 0xffffffff800b4e04UL && _gpr[5] == 4;
         if (_gpr[31] != 0xffffffff800195d4UL || (!nullDispatch && !diagnosticSurfaceDispatch))
             return false;
+        // This dispatch mutates the live frame state; collapsing it traps bringup in a clear/swap surface loop.
+        if (diagnosticSurfaceDispatch)
+            return false;
         if (_memory.Read32(pc) != 0x27bdffb0U ||
             _memory.Read32(pc + 4) != 0xafa40050U ||
             _memory.Read32(pc + 8) != 0x0000202dU ||
