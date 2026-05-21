@@ -9133,6 +9133,9 @@ internal sealed class VegasMemoryMap
             return false;
         }
 
+        if (offset is >= NileInterruptStatus0Offset and < NileInterruptStatus1Offset + 8)
+            UpdateNileInterrupts();
+
         value = BinaryPrimitives.ReadUInt64LittleEndian(_nileRegisters.AsSpan((int)offset, 8));
         return true;
     }
@@ -9402,10 +9405,11 @@ internal sealed class VegasMemoryMap
                 continue;
 
             pins |= (byte)(1 << vector);
-            if ((vector & 1) == 0)
-                status0 |= 1u << i;
+            uint bit = 1u << (i + 16 * (vector & 1));
+            if ((vector / 2) == 0)
+                status0 |= bit;
             else
-                status0 |= 1u << (i + 16);
+                status1 |= bit;
         }
 
         for (int i = 0; i < 8; i++)
@@ -9418,10 +9422,11 @@ internal sealed class VegasMemoryMap
                 continue;
 
             pins |= (byte)(1 << vector);
-            if ((vector & 1) == 0)
-                status0 |= 1u << (i + 8);
+            uint bit = 1u << (i + 8 + 16 * (vector & 1));
+            if ((vector / 2) == 0)
+                status0 |= bit;
             else
-                status0 |= 1u << (i + 24);
+                status1 |= bit;
         }
 
         BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)NileInterruptStatus0Offset, 4), status0);
@@ -9494,6 +9499,11 @@ internal sealed class VegasMemoryMap
             return false;
 
         BinaryPrimitives.WriteUInt64LittleEndian(_nileRegisters.AsSpan((int)offset, 8), value);
+        if (offset == NileInterruptClearOffset)
+            _nileIrqState &= (ushort)~(value & ~0x0f00UL);
+        if (offset is >= NileInterruptControlOffset and < NileInterruptControlOffset + 8 ||
+            offset == NileInterruptClearOffset)
+            UpdateNileInterrupts();
         return true;
     }
 
@@ -10335,7 +10345,8 @@ internal sealed class VegasMemoryMap
 
     private void GenerateIoasicPicSerialData()
     {
-        const uint gauntletDarkLegacyUpper = 109;
+        // Gauntlet Dark Legacy uses the 346 security PIC in the ROM set.
+        const uint gauntletDarkLegacyUpper = 346;
         const uint serialDigit = 0;
         uint serialNumber = 123_450 + gauntletDarkLegacyUpper * 1_000_000 + (serialDigit & 0x0f);
         Span<byte> digit = stackalloc byte[9];
@@ -10806,8 +10817,7 @@ internal sealed class VegasMemoryMap
 
         return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(ParseTraceAddressFilter)
-            .Where(filter => filter.HasValue)
-            .Select(filter => filter.Value)
+            .OfType<TraceAddressFilter>()
             .ToArray();
     }
 
