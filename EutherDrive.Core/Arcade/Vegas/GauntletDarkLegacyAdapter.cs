@@ -12328,7 +12328,7 @@ internal sealed class DcsAudioDevice
 
     public void RunFrame()
     {
-        if (!_resetAsserted && _bootProgramWords > 0)
+        if (!_resetAsserted && _bootProgramWords > 0 && !_adsp.IsIdleLoop)
             _adsp.Run(60_000);
 
         int offset = 0;
@@ -12747,6 +12747,8 @@ internal sealed class DcsAdsp2104Core
     }
 
     public string DebugStatus => $"adsp pc={_pc:x4} ppc={_ppc:x4} astat={_astat:x4} mstat={_mstat:x4} imask={_imask:x4} icntl={_icntl:x4} irq2={(_irq2State ? 1 : 0)}/{(_irq2Latch ? 1 : 0)} cntr={_cntr:x4} steps={_steps}";
+
+    public bool IsIdleLoop => _pc == 0x0079 && _ppc == 0x0079 && _imask == 0 && _cntr == 0;
 
     public void Reset()
     {
