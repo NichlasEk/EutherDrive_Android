@@ -2396,7 +2396,9 @@ internal sealed class MipsR5000Core
     {
         if (pc != 0xffffffff80019224UL)
             return false;
-        if (_gpr[31] != 0xffffffff800195d4UL || _gpr[4] != 0 || (_gpr[5] & ~0x4UL) != 0)
+        bool nullDispatch = _gpr[4] == 0 && (_gpr[5] & ~0x4UL) == 0;
+        bool diagnosticSurfaceDispatch = _gpr[4] == 0xffffffff800b4e04UL && _gpr[5] == 4;
+        if (_gpr[31] != 0xffffffff800195d4UL || (!nullDispatch && !diagnosticSurfaceDispatch))
             return false;
         if (_memory.Read32(pc) != 0x27bdffb0U ||
             _memory.Read32(pc + 4) != 0xafa40050U ||
@@ -2412,7 +2414,8 @@ internal sealed class MipsR5000Core
         }
 
         _gpr[2] = 0;
-        _gpr[4] = 0;
+        if (nullDispatch)
+            _gpr[4] = 0;
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * 512UL);
         _instructionCounter += 512UL;
@@ -8396,7 +8399,7 @@ internal sealed class MipsR5000Core
     private static int ParseStepBudget()
     {
         const int defaultBudget = 2048;
-        const int bringupFastBudget = 200_000;
+        const int bringupFastBudget = 60_000;
         string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME");
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
