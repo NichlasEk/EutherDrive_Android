@@ -896,11 +896,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         BuildMameLineStates();
         InitializeMameLineBackgrounds();
 
-        bool drewAny = false;
-        drewAny |= RenderPlayfields(roms);
-        drewAny |= RenderPivotPixelLayer(roms);
-        drewAny |= RenderSprites(roms);
-        drewAny |= RenderTextLayer(roms);
+        bool drewAny = RenderMameScanlines(roms);
 
         if (!drewAny)
             ClearWithPalette(0);
@@ -908,6 +904,134 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             RenderMameMixBufferToFrame();
 
         LatchPresentFrameIfUseful(drewAny);
+    }
+
+    private bool RenderMameScanlines(TaitoF3RomSet roms)
+    {
+        ResetRenderStats();
+
+        Span<int> regSx = stackalloc int[4];
+        Span<int> regFxY = stackalloc int[4];
+        for (int layer = 0; layer < 4; layer++)
+            GetMamePlayfieldScroll(layer, out regSx[layer], out regFxY[layer]);
+
+        bool drewAny = false;
+        Span<byte> layerOrder = stackalloc byte[9]
+        {
+            PivotLayerRank,
+            Sprite0LayerRank,
+            Playfield0LayerRank,
+            Sprite3LayerRank,
+            Playfield3LayerRank,
+            Sprite2LayerRank,
+            Playfield2LayerRank,
+            Sprite1LayerRank,
+            Playfield1LayerRank
+        };
+        Span<int> layerPriority = stackalloc int[9];
+
+        for (int screenY = 0; screenY < FrameHeight; screenY++)
+        {
+            int screenLine = screenY + VisibleAreaMinY;
+            BuildMameLayerOrder(screenLine, layerOrder, layerPriority);
+
+            for (int i = 0; i < layerOrder.Length; i++)
+            {
+                drewAny |= layerOrder[i] switch
+                {
+                    PivotLayerRank => RenderPivotLine(roms, screenY),
+                    Sprite0LayerRank => RenderSpriteReefRowGroup(screenY, 0),
+                    Playfield0LayerRank => RenderPlayfieldLine(roms, 0, screenY, regSx[0], regFxY[0]),
+                    Sprite3LayerRank => RenderSpriteReefRowGroup(screenY, 3),
+                    Playfield3LayerRank => RenderPlayfieldLine(roms, 3, screenY, regSx[3], regFxY[3]),
+                    Sprite2LayerRank => RenderSpriteReefRowGroup(screenY, 2),
+                    Playfield2LayerRank => RenderPlayfieldLine(roms, 2, screenY, regSx[2], regFxY[2]),
+                    Sprite1LayerRank => RenderSpriteReefRowGroup(screenY, 1),
+                    Playfield1LayerRank => RenderPlayfieldLine(roms, 1, screenY, regSx[1], regFxY[1]),
+                    _ => false,
+                };
+            }
+
+            if (screenY != 0)
+            {
+                F3LineState line = _lineStates[screenLine & 0xff];
+                for (int layer = 0; layer < 4; layer++)
+                    regFxY[layer] += line.PlayfieldYScale[layer];
+            }
+        }
+
+        AdvanceSpriteFrame(roms);
+        return drewAny;
+    }
+
+    private void ResetRenderStats()
+    {
+        _lastPlayfieldCandidates = 0;
+        _lastPlayfieldPixels = 0;
+        _lastSpritePixels = 0;
+        if (RenderStats)
+        {
+            Array.Clear(_lastPlayfieldLayerCandidates);
+            Array.Clear(_lastPlayfieldLayerPixels);
+            Array.Clear(_lastPlayfieldBlendSelect0);
+            Array.Clear(_lastPlayfieldBlendSelect1);
+            _lastSpriteMixSource = 0;
+            _lastSpriteMixDest = 0;
+            _lastSpriteMixBehind = 0;
+            _lastSpriteMixSameBlend = 0;
+            _lastSpriteMixDisabled = 0;
+            _lastSpriteMixClipped = 0;
+        }
+    }
+
+    private void BuildMameLayerOrder(int screenLine, Span<byte> order, Span<int> priority)
+    {
+        order[0] = PivotLayerRank;
+        order[1] = Sprite0LayerRank;
+        order[2] = Playfield0LayerRank;
+        order[3] = Sprite3LayerRank;
+        order[4] = Playfield3LayerRank;
+        order[5] = Sprite2LayerRank;
+        order[6] = Playfield2LayerRank;
+        order[7] = Sprite1LayerRank;
+        order[8] = Playfield1LayerRank;
+
+        for (int i = 0; i < order.Length; i++)
+            priority[i] = ReadMameLayerPriority(screenLine, order[i]);
+
+        for (int i = 1; i < order.Length; i++)
+        {
+            byte layer = order[i];
+            int layerPriority = priority[i];
+            int j = i - 1;
+            while (j >= 0 && layerPriority > priority[j])
+            {
+                order[j + 1] = order[j];
+                priority[j + 1] = priority[j];
+                j--;
+            }
+
+            order[j + 1] = layer;
+            priority[j + 1] = layerPriority;
+        }
+    }
+
+    private int ReadMameLayerPriority(int screenLine, byte layerRank)
+    {
+        F3LineState line = _lineStates[screenLine & 0xff];
+        return layerRank switch
+        {
+            PivotLayerRank => line.PivotMix & 0x0f,
+            Sprite0LayerRank => line.SpriteMix[0] & 0x0f,
+            Playfield0LayerRank => line.PlayfieldMix[0] & 0x0f,
+            Sprite3LayerRank => line.SpriteMix[3] & 0x0f,
+            Playfield3LayerRank => line.PlayfieldMix[3] & 0x0f,
+            Sprite2LayerRank => line.SpriteMix[2] & 0x0f,
+            Playfield2LayerRank => line.PlayfieldMix[2] & 0x0f,
+            Sprite1LayerRank => line.SpriteMix[1] & 0x0f,
+            Playfield1LayerRank => line.PlayfieldMix[1] & 0x0f,
+            _ => -1,
+        };
     }
 
     private void LatchPresentFrameIfUseful(bool drewAny)
@@ -4447,58 +4571,96 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     {
         const int tileSize = 8;
         const int columns = 64;
-        const int rows = 64;
         bool drewAny = false;
 
-        for (int row = 0; row < rows; row++)
+        for (int screenY = 0; screenY < FrameHeight; screenY++)
         {
-            int screenYBase = row * tileSize;
-            if (screenYBase >= FrameHeight)
-                break;
+            int screenLine = screenY + VisibleAreaMinY;
+            if (!TryReadMixableCurrentState(screenLine, 3, 1, spriteRules: false, out int layerPriority, out int layerBlendMode, out bool layerBlendSelect))
+                continue;
+            F3LineState line = _lineStates[screenLine & 0xff];
+            if (PivotUsesPixelLayer(line))
+                continue;
+            ushort pivotMix = line.PivotMix;
 
-            for (int column = 0; column < columns; column++)
+            int sourceY = screenLine & 0x01ff;
+            int row = (sourceY >> 3) & 63;
+            int pixelY = sourceY & 7;
+            for (int screenX = 0; screenX < FrameWidth; screenX++)
             {
-                int screenXBase = column * tileSize;
-                if (screenXBase >= FrameWidth)
-                    break;
+                int sourceX = (screenX + VisibleAreaMinX) & 0x01ff;
+                if (!IsMameClipAllowed(screenLine, pivotMix, sourceX))
+                    continue;
 
+                int column = (sourceX >> 3) & 63;
+                int pixelX = sourceX & 7;
                 ushort word = _bus.ReadTextWord(row * columns + column);
                 int code = word & 0x00ff;
                 if (code == 0)
                     continue;
 
+                int drawX = (word & 0x0100) != 0 ? 7 - pixelX : pixelX;
+                int drawY = (word & 0x8000) != 0 ? 7 - pixelY : pixelY;
+                int pen = DecodeF3CharPixel(code, drawX, drawY);
+                if (pen == 0)
+                    continue;
+
                 int palette = (word >> 9) & 0x3f;
-                for (int pixelY = 0; pixelY < tileSize; pixelY++)
-                {
-                    int screenY = screenYBase + pixelY;
-                    if ((uint)screenY >= FrameHeight)
-                        continue;
-
-                    int screenLine = screenY + VisibleAreaMinY;
-                    if (!TryReadMixableCurrentState(screenLine, 3, 1, spriteRules: false, out int layerPriority, out int layerBlendMode, out bool layerBlendSelect))
-                        continue;
-                    F3LineState line = _lineStates[screenLine & 0xff];
-                    if (PivotUsesPixelLayer(line))
-                        continue;
-                    ushort pivotMix = line.PivotMix;
-
-                    for (int pixelX = 0; pixelX < tileSize; pixelX++)
-                    {
-                        int screenX = screenXBase + pixelX;
-                        if (!IsMameClipAllowed(screenLine, pivotMix, screenX + VisibleAreaMinX))
-                            continue;
-
-                        int drawX = (word & 0x0100) != 0 ? 7 - pixelX : pixelX;
-                        int drawY = (word & 0x8000) != 0 ? 7 - pixelY : pixelY;
-                        int pen = DecodeF3CharPixel(code, drawX, drawY);
-                        if (pen == 0)
-                            continue;
-
-                        WritePalettePixel(screenX, screenY, palette * 16 + pen, layerPriority, PivotLayerRank, layerBlendMode, layerBlendSelect);
-                        drewAny = true;
-                    }
-                }
+                WritePalettePixel(screenX, screenY, palette * 16 + pen, layerPriority, PivotLayerRank, layerBlendMode, layerBlendSelect);
+                drewAny = true;
             }
+        }
+
+        return drewAny;
+    }
+
+    private bool RenderPivotLine(TaitoF3RomSet roms, int screenY)
+    {
+        F3LineState line = _lineStates[(screenY + VisibleAreaMinY) & 0xff];
+        return PivotUsesPixelLayer(line)
+            ? RenderPivotPixelLine(roms, screenY)
+            : RenderTextLine(roms, screenY);
+    }
+
+    private bool RenderTextLine(TaitoF3RomSet roms, int screenY)
+    {
+        const int tileSize = 8;
+        const int columns = 64;
+        int screenLine = screenY + VisibleAreaMinY;
+        if (!TryReadMixableCurrentState(screenLine, 3, 1, spriteRules: false, out int layerPriority, out int layerBlendMode, out bool layerBlendSelect))
+            return false;
+
+        F3LineState line = _lineStates[screenLine & 0xff];
+        if (PivotUsesPixelLayer(line))
+            return false;
+
+        ushort pivotMix = line.PivotMix;
+        int sourceY = screenLine & 0x01ff;
+        int row = (sourceY >> 3) & 63;
+        bool drewAny = false;
+        int pixelY = sourceY & 7;
+        for (int screenX = 0; screenX < FrameWidth; screenX++)
+        {
+            int sourceX = (screenX + VisibleAreaMinX) & 0x01ff;
+            if (!IsMameClipAllowed(screenLine, pivotMix, sourceX))
+                continue;
+
+            int column = (sourceX >> 3) & 63;
+            int pixelX = sourceX & 7;
+            ushort word = _bus.ReadTextWord(row * columns + column);
+            int code = word & 0x00ff;
+            if (code == 0)
+                continue;
+
+            int drawX = (word & 0x0100) != 0 ? 7 - pixelX : pixelX;
+            int drawY = (word & 0x8000) != 0 ? 7 - pixelY : pixelY;
+            int pen = DecodeF3CharPixel(code, drawX, drawY);
+            if (pen == 0)
+                continue;
+
+            int palette = (word >> 9) & 0x3f;
+            WritePalettePixel(screenX, screenY, palette * 16 + pen, layerPriority, PivotLayerRank, layerBlendMode, layerBlendSelect);
+            drewAny = true;
         }
 
         return drewAny;
@@ -4533,7 +4695,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 continue;
             ushort pivotMix = line.PivotMix;
 
-            int sourceY = (screenY + scrollY) & 0x01ff;
+            int sourceY = (screenY + VisibleAreaMinY + scrollY) & 0x01ff;
             int row = (sourceY >> 3) & 31;
             int pixelY = sourceY & 7;
             if (_flipScreen)
@@ -4544,7 +4706,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 if (!IsMameClipAllowed(screenLine, pivotMix, screenX + VisibleAreaMinX))
                     continue;
 
-                int sourceX = (screenX + scrollX) & 0x01ff;
+                int sourceX = (screenX + VisibleAreaMinX + scrollX) & 0x01ff;
                 int column = (sourceX >> 3) & 63;
                 int pixelX = sourceX & 7;
                 if (_flipScreen)
@@ -4568,6 +4730,73 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 WritePalettePixel(screenX, screenY, palette * 16 + pen, layerPriority, PivotLayerRank, layerBlendMode, layerBlendSelect);
                 drewAny = true;
             }
+        }
+
+        return drewAny;
+    }
+
+    private bool RenderPivotPixelLine(TaitoF3RomSet roms, int screenY)
+    {
+        const int tileSize = 8;
+        const int columns = 64;
+        const int rows = 32;
+
+        if (_bus.PivotNonZeroWords == 0)
+            return false;
+
+        int screenLine = screenY + VisibleAreaMinY;
+        if (!TryReadMixableCurrentState(screenLine, 3, 1, spriteRules: false, out int layerPriority, out int layerBlendMode, out bool layerBlendSelect))
+            return false;
+
+        F3LineState line = _lineStates[screenLine & 0xff];
+        if (!PivotUsesPixelLayer(line))
+            return false;
+
+        int controlX = _bus.ReadControlWord(1, 4);
+        int controlY = _bus.ReadControlWord(1, 5);
+        int scrollX = _flipScreen
+            ? (controlX - 12) & 0x01ff
+            : (-controlX - 5) & 0x01ff;
+        int scrollY = _flipScreen
+            ? controlY & 0x01ff
+            : (-controlY) & 0x01ff;
+
+        ushort pivotMix = line.PivotMix;
+        int sourceY = (screenY + VisibleAreaMinY + scrollY) & 0x01ff;
+        int row = (sourceY >> 3) & 31;
+        int pixelY = sourceY & 7;
+        if (_flipScreen)
+            pixelY ^= 7;
+
+        bool drewAny = false;
+        for (int screenX = 0; screenX < FrameWidth; screenX++)
+        {
+            if (!IsMameClipAllowed(screenLine, pivotMix, screenX + VisibleAreaMinX))
+                continue;
+
+            int sourceX = (screenX + VisibleAreaMinX + scrollX) & 0x01ff;
+            int column = (sourceX >> 3) & 63;
+            int pixelX = sourceX & 7;
+            if (_flipScreen)
+                pixelX ^= 7;
+            int tileIndex = column * rows + row;
+            int attributeRow = row;
+            int yOffset = row * tileSize + controlY;
+            if (_flipScreen)
+                yOffset += 0x100;
+            if ((yOffset & 0x01ff) >= 256)
+                attributeRow += 32;
+
+            ushort word = _bus.ReadTextWord((attributeRow << 6) | column);
+            int palette = (word >> 9) & 0x3f;
+            int drawX = (word & 0x0100) != 0 ? 7 - pixelX : pixelX;
+            int drawY = (word & 0x8000) != 0 ? 7 - pixelY : pixelY;
+            int pen = DecodeF3PivotPixel(tileIndex, drawX, drawY);
+            if (pen == 0)
+                continue;
+
+            WritePalettePixel(screenX, screenY, palette * 16 + pen, layerPriority, PivotLayerRank, layerBlendMode, layerBlendSelect);
+            drewAny = true;
         }
 
         return drewAny;
@@ -4652,6 +4881,23 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (RenderStats)
             _lastVisibleSprites = drawnSpriteCount;
         return drewAny || drewIntoReef;
+    }
+
+    private void AdvanceSpriteFrame(TaitoF3RomSet roms)
+    {
+        if (!_spriteTrails)
+            ClearSpriteReefForNextFrame();
+
+        int drawnSpriteCount = _latchedSprites.Count;
+        for (int i = _latchedSprites.Count - 1; i >= 0; i--)
+            DrawSpriteToReef(roms, _latchedSprites[i]);
+
+        BuildSpriteList();
+        _latchedSprites.Clear();
+        _latchedSprites.AddRange(_sprites);
+
+        if (RenderStats)
+            _lastVisibleSprites = drawnSpriteCount;
     }
 
     private void BuildSpriteList()
@@ -4907,6 +5153,35 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return drewAny;
     }
 
+    private bool RenderSpriteReefRowGroup(int y, int spriteGroup)
+    {
+        if ((uint)y >= FrameHeight || !_spriteReefRowActive[y])
+            return false;
+
+        bool drewAny = false;
+        int screenY = y + VisibleAreaMinY;
+        F3LineState line = _lineStates[screenY & 0xff];
+        ushort spriteMix = line.SpriteMix[spriteGroup & 3];
+        int spriteState = PackSpriteCurrentState(spriteMix, line.SpriteBlendSelect[spriteGroup & 3], GetSpriteLayerRank(spriteGroup));
+        int rowOffset = y * FrameWidth;
+
+        for (int node = _spriteReefRowHead[y]; node != 0;)
+        {
+            int offset = node - 1;
+            node = _spriteReefNext[offset];
+            if ((_spriteReefGroup[offset] & 3) != spriteGroup)
+                continue;
+
+            ushort paletteIndex = _spriteReefPalette[offset];
+            if (paletteIndex == 0)
+                continue;
+
+            drewAny |= RenderSpriteReefPixelAt(offset, offset - rowOffset, paletteIndex, spriteMix, spriteState, line);
+        }
+
+        return drewAny;
+    }
+
     private static int PackSpriteCurrentState(ushort mixValue, bool blendSelect, byte rank)
     {
         int blendMode = (mixValue >> 14) & 3;
@@ -4958,8 +5233,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (RenderStats)
         {
             int currentSourcePriority = _mixSrcPriority[offset];
-            if (spritePriority > currentSourcePriority
-                || spritePriority == currentSourcePriority && spriteRank < _framePriorityRank[offset])
+            if (spritePriority > currentSourcePriority)
                 _lastSpriteMixSource++;
             else if (spritePriority >= _mixDstPriority[offset])
                 _lastSpriteMixDest++;
@@ -5001,8 +5275,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (RenderStats)
         {
             int currentSourcePriority = _mixSrcPriority[offset];
-            if (spritePriority > currentSourcePriority
-                || spritePriority == currentSourcePriority && spriteRank < _framePriorityRank[offset])
+            if (spritePriority > currentSourcePriority)
                 _lastSpriteMixSource++;
             else if (spritePriority >= _mixDstPriority[offset])
                 _lastSpriteMixDest++;
@@ -5455,8 +5728,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         int select = blendSelect ? 1 : 0;
 
         int currentSourcePriority = _mixSrcPriority[priorityOffset];
-        bool sourceWins = priority > currentSourcePriority
-            || priority == currentSourcePriority && layerRank < _framePriorityRank[priorityOffset];
+        bool sourceWins = priority > currentSourcePriority;
         if (sourceWins)
         {
             switch (blendMode)
@@ -6971,9 +7243,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             byte r = _palette[offset + 1];
             byte g = _palette[offset + 2];
             byte b = _palette[offset + 3];
-            if ((r | g | b) == 0)
-                return fallback;
-
             return 0xff000000u | ((uint)r << 16) | ((uint)g << 8) | b;
         }
 
