@@ -704,6 +704,7 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     writer.Write(GetFieldValue<int>(backend, "_cmdFifoHoles"));
     writer.Write(GetFieldValue<bool>(backend, "_cmdFifoReadPointerWritten"));
     writer.Write(GetFieldValue<bool>(backend, "_cmdFifoJumped"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
 }
 
 static void LoadVoodoo(BinaryReader reader, object facade)
@@ -737,6 +738,8 @@ static void LoadVoodoo(BinaryReader reader, object facade)
     SetField(backend, "_cmdFifoHoles", reader.ReadInt32());
     SetField(backend, "_cmdFifoReadPointerWritten", reader.ReadBoolean());
     SetField(backend, "_cmdFifoJumped", reader.ReadBoolean());
+    if (reader.BaseStream.CanSeek && reader.BaseStream.Position < reader.BaseStream.Length)
+        ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
 }
 
 static void WriteByteArray(BinaryWriter writer, byte[] values)

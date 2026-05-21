@@ -13341,6 +13341,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         new ushort[LfbPixels],
         new ushort[LfbPixels]
     ];
+    private readonly ushort[] _auxBuffer = new ushort[LfbPixels];
     private readonly List<uint> _fifoBuffer = new();
     private readonly uint[] _textureMemory = new uint[TextureWords];
     private readonly uint[] _cmdFifoRam = new uint[CmdFifoWords];
@@ -13537,6 +13538,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         int rgbaLanes = (int)((lfbMode >> 9) & 0x03u);
         bool twoPixels = IsTwoPixelLfbFormat(format);
         int pixel = GetLfbPixelOffset(offset, twoPixels, lfbMode);
+        WriteLfbDepth(value, format, pixel);
+        if (format == 15)
+        {
+            _lfbWriteCount++;
+            return;
+        }
+
         int bufferIndex = GetLfbWriteBufferIndex(lfbMode);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
@@ -14277,6 +14285,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private ushort[] GetLfbReadBuffer(uint lfbMode)
     {
         int select = (int)((lfbMode >> 6) & 0x03u);
+        if (select == 2)
+            return _auxBuffer;
+
         int bufferIndex = MapLfbBufferSelect(select);
         MaterializePendingClear(bufferIndex);
         return _colorBuffers[bufferIndex];
@@ -14331,6 +14342,22 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return 2;
+    }
+
+    private void WriteLfbDepth(uint value, int format, int pixel)
+    {
+        switch (format)
+        {
+            case 12:
+            case 13:
+            case 14:
+                _auxBuffer[pixel & (LfbPixels - 1)] = (ushort)(value >> 16);
+                break;
+            case 15:
+                _auxBuffer[pixel & (LfbPixels - 1)] = (ushort)value;
+                _auxBuffer[(pixel + 1) & (LfbPixels - 1)] = (ushort)(value >> 16);
+                break;
+        }
     }
 
     private int GetColorBufferCount()
