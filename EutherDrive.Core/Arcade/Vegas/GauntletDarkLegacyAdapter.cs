@@ -10269,7 +10269,7 @@ internal sealed class VegasMemoryMap
 
     private ushort BuildIoasicInputPort0()
     {
-        return _ioasicPort0Override ?? 0xffff;
+        return _ioasicPort0Override ?? 0x7fff;
     }
 
     private ushort BuildSystemInputPort()
