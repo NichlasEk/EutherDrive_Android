@@ -12286,6 +12286,13 @@ internal sealed class DcsAudioDevice
             _fifoWrites++;
         }
 
+        if (_transferState == 0 && _transferDcsState == 0 && IsSequentialFifoSelfTestTail(value))
+        {
+            Trace($"fifo-write selftest-tail count={_fifoCount}; draining for DCS handoff");
+            ClearFifo();
+            return;
+        }
+
         if (_transferState != 0 || _transferDcsState != 0 || (_fifoCount == 1 && (value is 0x001a or 0x002a)))
             FifoNotify();
         Trace($"fifo-w value={value:x4} count={_fifoCount}");
@@ -12508,6 +12515,24 @@ internal sealed class DcsAudioDevice
         for (int i = 0; i < FifoSize; i++)
         {
             if (_fifo[(_fifoOut + i) % FifoSize] != i + 1)
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool IsSequentialFifoSelfTestTail(ushort lastValue)
+    {
+        if (lastValue != FifoSize || _fifoCount < FifoSize - 4 || _fifoCount > FifoSize)
+            return false;
+
+        int firstExpected = FifoSize - _fifoCount + 1;
+        if (firstExpected is < 1 or > 5)
+            return false;
+
+        for (int i = 0; i < _fifoCount; i++)
+        {
+            if (_fifo[(_fifoOut + i) % FifoSize] != firstExpected + i)
                 return false;
         }
 
