@@ -10186,8 +10186,6 @@ internal sealed class VegasMemoryMap
             return _ioasicSoundInputOverride.Value;
 
         ushort value = _audio?.ReadData() ?? 0x000a;
-        _audio?.Ack();
-        UpdateIoasicIrq();
         return value;
     }
 
