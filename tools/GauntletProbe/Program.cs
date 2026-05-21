@@ -123,6 +123,7 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CODE") == "1")
     DumpCode(GetProperty(machine, "MemoryMap"));
 DumpRequestedCodeRanges(GetProperty(machine, "MemoryMap"));
 DumpRequestedByteRanges(GetProperty(machine, "MemoryMap"));
+ScanRequestedAscii(GetProperty(machine, "MemoryMap"));
 ScanRequestedPointers(GetProperty(machine, "MemoryMap"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
     ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
@@ -1125,6 +1126,37 @@ static void DumpRequestedByteRanges(object memory)
             bytes = parsedBytes;
         DumpBytes(memory, address, bytes);
     }
+}
+
+static void ScanRequestedAscii(object memory)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_ASCII");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    byte[] needle = System.Text.Encoding.ASCII.GetBytes(raw);
+    if (needle.Length == 0 || needle.Length > mainRam.Length)
+        return;
+
+    Console.WriteLine($"asciiScan needle=\"{raw}\"");
+    int matches = 0;
+    for (int offset = 0; offset <= mainRam.Length - needle.Length; offset++)
+    {
+        if (!mainRam.AsSpan(offset, needle.Length).SequenceEqual(needle))
+            continue;
+
+        ulong address = 0xffffffff80000000UL + (uint)offset;
+        Console.WriteLine($" ascii 0x{address:x16}");
+        matches++;
+        if (matches >= 64)
+        {
+            Console.WriteLine(" asciiScan truncated=64");
+            break;
+        }
+    }
+
+    Console.WriteLine($"asciiScan matches={matches}");
 }
 
 static void ScanRequestedPointers(object memory)

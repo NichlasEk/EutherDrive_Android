@@ -170,6 +170,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
 internal sealed class GauntletDarkLegacyMachine
 {
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
+    private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
     public VegasMemoryMap MemoryMap { get; } = new();
@@ -213,6 +214,8 @@ internal sealed class GauntletDarkLegacyMachine
     public void RunFrame(EutherFrameTarget target)
     {
         Sio.PulseVblank(state: true);
+        if (_enableVblankTickBridge)
+            MemoryMap.RecordRuntimeVblankTick();
         if (_splitVblankCpu)
         {
             Cpu.RunProbeSteps(_vblankCpuSteps);
@@ -491,6 +494,8 @@ internal sealed class MipsR5000Core
     private int _remainingProbeSteps;
     private int _probeStepDebt;
     private bool _isContinuingKnownRuntimeTileLoop;
+    private int _bootGlideStateEmitTraceCount;
+    private readonly bool _traceBootGlideStateEmit = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BOOT_GLIDE_STATE_EMIT") == "1";
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
     private readonly Dictionary<ulong, ulong> _hotPcCounts = [];
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
@@ -507,7 +512,7 @@ internal sealed class MipsR5000Core
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableRuntimeInterruptBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE");
-    private readonly bool _enableDiagnosticRuntimeFastPaths = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME") == "1";
+    private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
@@ -898,6 +903,7 @@ internal sealed class MipsR5000Core
             0x000653d8UL => TryFastPathKnownGlideFifoMakeRoom(pc),
             >= 0x001097c0UL and <= 0x001098c0UL => TryFastPathKnownGlideFifoMakeRoom(pc),
             0x000511c8UL => TryFastPathKnownGlideTwoWordStatePacketTail(pc),
+            0x00051298UL or 0x000512c0UL or 0x000512e0UL => TryFastPathKnownGauntletGlideBootStateEmit(pc),
             0x000526acUL => TryFastPathKnownGlideStateFlush(pc),
             0x00052bc0UL => TryFastPathKnownGlideSetupPacketHelper(pc),
             0x00053340UL => TryFastPathKnownGlideBufferSwapPacketTail(pc),
@@ -4492,6 +4498,41 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownRuntimeDiagnosticDrawEntry(ulong pc)
     {
         const ulong entry = 0xffffffff800e3decUL;
+        const ulong bootEntry = 0xffffffff80019558UL;
+        if (pc == bootEntry)
+        {
+            if (_memory.Read32(bootEntry + 0x00UL) != 0x27bdfe88U ||
+                _memory.Read32(bootEntry + 0x04UL) != 0xafb00168U ||
+                _memory.Read32(bootEntry + 0x08UL) != 0x0080802dU ||
+                _memory.Read32(bootEntry + 0x0cUL) != 0x3c03800aU ||
+                _memory.Read32(bootEntry + 0x10UL) != 0xafb1016cU ||
+                _memory.Read32(bootEntry + 0x14UL) != 0x27b10030U ||
+                _memory.Read32(bootEntry + 0x18UL) != 0x8c6260a0U ||
+                _memory.Read32(bootEntry + 0x1cUL) != 0x0220202dU ||
+                _memory.Read32(bootEntry + 0x20UL) != 0xafbf0170U ||
+                _memory.Read32(bootEntry + 0x24UL) != 0x24420001U ||
+                _memory.Read32(bootEntry + 0x28UL) != 0x0c01906fU ||
+                _memory.Read32(bootEntry + 0x30UL) != 0x0c014871U ||
+                _memory.Read32(bootEntry + 0x38UL) != 0x0c01445bU)
+            {
+                return false;
+            }
+
+            ulong bootReturnAddress = _gpr[31];
+            ulong bootReturnOffset = bootReturnAddress & 0x1fffffffUL;
+            if (bootReturnOffset is < 0x00010000UL or > 0x00110000UL)
+                return false;
+
+            _gpr[2] = 0;
+            _gpr[0] = 0;
+            AdvanceCp0Count(_cp0CountStep * 64UL);
+            _instructionCounter += 64UL;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+            Pc = bootReturnAddress;
+            return true;
+        }
+
         if (pc != entry)
             return false;
         if (_memory.Read32(entry + 0x00UL) != 0x27bdfe88U ||
@@ -4604,6 +4645,151 @@ internal sealed class MipsR5000Core
         _gpr[0] = 0;
         Pc = returnAddress;
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGauntletGlideBootStateEmit(ulong pc)
+    {
+        const ulong entry = 0xffffffff80051298UL;
+        const ulong body = 0xffffffff800512c0UL;
+        const ulong stateLoad = 0xffffffff800512e0UL;
+        bool trace = _traceBootGlideStateEmit && _bootGlideStateEmitTraceCount < 16;
+        bool atEntry = pc == entry;
+        bool atBody = pc == body;
+        bool atStateLoad = pc == stateLoad;
+        if (!atEntry && !atBody && !atStateLoad)
+            return false;
+        if (atEntry &&
+            (_memory.Read32(entry + 0x00UL) != 0x27bdffc8U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c02800bU ||
+            _memory.Read32(entry + 0x08UL) != 0xafb20018U ||
+            _memory.Read32(entry + 0x0cUL) != 0x8c524d2cU ||
+            _memory.Read32(entry + 0x10UL) != 0xafb40020U ||
+            _memory.Read32(entry + 0x18UL) != 0xafb60028U ||
+            _memory.Read32(entry + 0x20UL) != 0xafb7002cU ||
+            _memory.Read32(entry + 0x28UL) != 0xafbf0034U ||
+            _memory.Read32(entry + 0x48UL) != 0x8e550280U ||
+            _memory.Read32(entry + 0x4cUL) != 0x8e51026cU ||
+            _memory.Read32(entry + 0x50UL) != 0x8e5e0294U ||
+            _memory.Read32(entry + 0x6cUL) != 0x32220400U))
+        {
+            if (trace)
+                Console.WriteLine($"[GAUNTDL:GLIDEBOOT] reject-signature entry pc={pc:x16}");
+            _bootGlideStateEmitTraceCount++;
+            return false;
+        }
+
+        if (atBody &&
+            (_memory.Read32(body + 0x00UL) != 0xafbf0034U ||
+            _memory.Read32(body + 0x04UL) != 0xafbe0030U ||
+            _memory.Read32(body + 0x08UL) != 0xafb50024U ||
+            _memory.Read32(body + 0x0cUL) != 0xafb3001cU ||
+            _memory.Read32(body + 0x1cUL) != 0x8e550280U ||
+            _memory.Read32(body + 0x20UL) != 0x8e51026cU ||
+            _memory.Read32(body + 0x24UL) != 0x8e5e0294U ||
+            _memory.Read32(body + 0x40UL) != 0x32220400U))
+        {
+            if (trace)
+                Console.WriteLine($"[GAUNTDL:GLIDEBOOT] reject-signature body pc={pc:x16}");
+            _bootGlideStateEmitTraceCount++;
+            return false;
+        }
+
+        if (atStateLoad &&
+            (_memory.Read32(stateLoad + 0x00UL) != 0x8e550280U ||
+            _memory.Read32(stateLoad + 0x04UL) != 0x8e51026cU ||
+            _memory.Read32(stateLoad + 0x08UL) != 0x8e5e0294U ||
+            _memory.Read32(stateLoad + 0x24UL) != 0x32220400U))
+        {
+            if (trace)
+                Console.WriteLine($"[GAUNTDL:GLIDEBOOT] reject-signature state pc={pc:x16}");
+            _bootGlideStateEmitTraceCount++;
+            return false;
+        }
+
+        ulong state = atEntry ? SignExtend32(_memory.Read32(0xffffffff800b4d2cUL)) : _gpr[18];
+        if (!IsMainRamRange(state + 0x374UL, 12))
+            state = SignExtend32(_memory.Read32(0xffffffff800b4d2cUL));
+        if (!IsMainRamRange(state + 0x374UL, 12))
+        {
+            if (trace)
+                Console.WriteLine($"[GAUNTDL:GLIDEBOOT] reject-state pc={pc:x16} state={state:x16}");
+            _bootGlideStateEmitTraceCount++;
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong sp = _gpr[29];
+        if (atBody)
+        {
+            if (!IsMainRamRange(sp + 0x18UL, 0x18))
+            {
+                if (trace)
+                    Console.WriteLine($"[GAUNTDL:GLIDEBOOT] reject-stack pc={pc:x16} sp={sp:x16}");
+                _bootGlideStateEmitTraceCount++;
+                return false;
+            }
+        }
+        else if (atStateLoad)
+        {
+            if (!IsMainRamRange(sp + 0x10UL, 0x28))
+            {
+                if (trace)
+                    Console.WriteLine($"[GAUNTDL:GLIDEBOOT] reject-stack pc={pc:x16} sp={sp:x16}");
+                _bootGlideStateEmitTraceCount++;
+                return false;
+            }
+            returnAddress = SignExtend32(_memory.Read32(sp + 0x34UL));
+        }
+
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x00080000UL)
+        {
+            if (trace)
+                Console.WriteLine($"[GAUNTDL:GLIDEBOOT] reject-ra pc={pc:x16} ra={returnAddress:x16}");
+            _bootGlideStateEmitTraceCount++;
+            return false;
+        }
+
+        if (trace)
+            Console.WriteLine($"[GAUNTDL:GLIDEBOOT] hit pc={pc:x16} state={state:x16} ra={returnAddress:x16}");
+        _bootGlideStateEmitTraceCount++;
+
+        NormalizeGlideFifoState(state);
+        _gpr[2] = _memory.Read32(state + 0x37cUL);
+        if (atBody)
+        {
+            _gpr[23] = SignExtend32(_memory.Read32(sp + 0x2cUL));
+            _gpr[22] = SignExtend32(_memory.Read32(sp + 0x28UL));
+            _gpr[20] = SignExtend32(_memory.Read32(sp + 0x20UL));
+            _gpr[18] = SignExtend32(_memory.Read32(sp + 0x18UL));
+            _gpr[29] = sp + 0x38UL;
+        }
+        else if (atStateLoad)
+        {
+            _gpr[31] = returnAddress;
+            _gpr[30] = SignExtend32(_memory.Read32(sp + 0x30UL));
+            _gpr[23] = SignExtend32(_memory.Read32(sp + 0x2cUL));
+            _gpr[22] = SignExtend32(_memory.Read32(sp + 0x28UL));
+            _gpr[21] = SignExtend32(_memory.Read32(sp + 0x24UL));
+            _gpr[20] = SignExtend32(_memory.Read32(sp + 0x20UL));
+            _gpr[19] = SignExtend32(_memory.Read32(sp + 0x1cUL));
+            _gpr[18] = SignExtend32(_memory.Read32(sp + 0x18UL));
+            _gpr[17] = SignExtend32(_memory.Read32(sp + 0x14UL));
+            _gpr[16] = SignExtend32(_memory.Read32(sp + 0x10UL));
+            _gpr[29] = sp + 0x38UL;
+        }
+        else
+        {
+            _gpr[3] = state + 8UL;
+            _gpr[4] = state;
+        }
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 96UL);
+        _instructionCounter += 96UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
         return true;
     }
 
@@ -8603,6 +8789,18 @@ internal sealed class VegasMemoryMap
 
         Write32(rd0Object + 0x14UL, 0x3500U);
         Write32(rd0Child + 0x24UL, 3);
+    }
+
+    public void RecordRuntimeVblankTick()
+    {
+        const ulong ramFrameTick = 0xffffffff800b2ed8UL;
+        const ulong runtimeFrameTick = 0xffffffff80228114UL;
+        const uint frameDelta = 0xb4U;
+
+        if (IsMainRamRange(ramFrameTick, 4))
+            Write32(ramFrameTick, Read32(ramFrameTick) + frameDelta);
+        if (IsMainRamRange(runtimeFrameTick, 4))
+            Write32(runtimeFrameTick, Read32(runtimeFrameTick) + frameDelta);
     }
 
     public bool TryCompleteKnownRd0Stage4BootRead(
