@@ -126,7 +126,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
         bool mode,
         PadType padType)
     {
-        _machine.Input.SetPlayer1(up, down, left, right, attack: a, magic: b || c, start, coin: mode);
+        _machine.Input.SetPlayer1(up, down, left, right, fight: a, magic: b, turbo: c, start, coin: mode);
         _machine.Input.Service = x;
         _machine.Input.Test = y;
     }
@@ -184,6 +184,7 @@ internal sealed class GauntletDarkLegacyMachine
 
     public GauntletDarkLegacyMachine()
     {
+        MemoryMap.AttachInput(Input);
         Cpu = new MipsR5000Core(MemoryMap);
         Voodoo.SetCpuPcProvider(() => Cpu.Pc);
     }
@@ -8506,6 +8507,7 @@ internal sealed class VegasMemoryMap
     private IdeDiskDevice? _disk;
     private DcsAudioDevice? _audio;
     private VoodooFacade? _voodoo;
+    private GauntletInputPanel? _input;
     private ushort _nileIrqState;
     private byte _nileIrqPins;
     private bool _ioasicShuffleActive;
@@ -8521,8 +8523,8 @@ internal sealed class VegasMemoryMap
     private bool _fpgaConfigSeenLow;
     private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
-    private bool _ioasicPort0TraceLogged;
     private int _traceIoasicCount;
+    private int _traceIoasicInputCount;
     private int _traceIoasicPicCount;
     private readonly uint[] _ioasicReadCounts = new uint[16];
     private readonly uint[] _ioasicWriteCounts = new uint[16];
@@ -8563,6 +8565,8 @@ internal sealed class VegasMemoryMap
         _idePci.AttachDisk(disk);
         _voodooPci.AttachVoodoo(voodoo);
     }
+
+    public void AttachInput(GauntletInputPanel input) => _input = input;
 
     public void LoadMainBootRom(byte[] mainBootRom) => _mainBootRom = mainBootRom.ToArray();
 
@@ -10210,7 +10214,7 @@ internal sealed class VegasMemoryMap
 
     private ushort ReadIoasicInputPort(int port)
     {
-        return port switch
+        ushort value = port switch
         {
             0 => BuildIoasicInputPort0(),
             1 => BuildSystemInputPort(),
@@ -10218,31 +10222,68 @@ internal sealed class VegasMemoryMap
             3 => 0xffff,
             _ => 0xffff
         };
+        TraceIoasicInputRead(port, value);
+        return value;
     }
 
     private ushort BuildIoasicInputPort0()
     {
-        ushort value = _ioasicPort0Override ?? 0xffff;
-        if (_traceIoasicInputs && !_ioasicPort0TraceLogged)
-        {
-            int bootSlot = (((value >> 4) & 3) ^ 3);
-            Console.WriteLine($"[GAUNTDL:IOASIC] port0={value:x4} bootSlot={bootSlot} pc={_traceCpuPc:x16}");
-            _ioasicPort0TraceLogged = true;
-        }
-
-        return value;
+        return _ioasicPort0Override ?? 0xffff;
     }
 
     private ushort BuildSystemInputPort()
     {
         ushort value = 0xffff;
+        if (_input is null)
+            return value;
+
+        GauntletPlayerInput player1 = _input.Player1;
+        ClearActiveLowBit(ref value, 0x0001, player1.Coin);
+        ClearActiveLowBit(ref value, 0x0004, player1.Start);
+        ClearActiveLowBit(ref value, 0x0010, _input.Test);
+        ClearActiveLowBit(ref value, 0x0040, _input.Service);
         return value;
     }
 
     private ushort BuildPlayerInputPort12()
     {
         ushort value = 0xffff;
+        if (_input is null)
+            return value;
+
+        GauntletPlayerInput player1 = _input.Player1;
+        ClearActiveLowBit(ref value, 0x0001, player1.Up);
+        ClearActiveLowBit(ref value, 0x0002, player1.Down);
+        ClearActiveLowBit(ref value, 0x0004, player1.Left);
+        ClearActiveLowBit(ref value, 0x0008, player1.Right);
+        ClearActiveLowBit(ref value, 0x0010, player1.Fight);
+        ClearActiveLowBit(ref value, 0x0020, player1.Magic);
+        ClearActiveLowBit(ref value, 0x0040, player1.Turbo);
         return value;
+    }
+
+    private static void ClearActiveLowBit(ref ushort value, ushort mask, bool pressed)
+    {
+        if (pressed)
+            value = (ushort)(value & ~mask);
+    }
+
+    private void TraceIoasicInputRead(int port, ushort value)
+    {
+        if (!_traceIoasicInputs || _traceIoasicInputCount >= 64)
+            return;
+
+        if (port == 0)
+        {
+            int bootSlot = (((value >> 4) & 3) ^ 3);
+            Console.WriteLine($"[GAUNTDL:IOASIC] port{port}={value:x4} bootSlot={bootSlot} pc={_traceCpuPc:x16}");
+        }
+        else
+        {
+            Console.WriteLine($"[GAUNTDL:IOASIC] port{port}={value:x4} pc={_traceCpuPc:x16}");
+        }
+
+        _traceIoasicInputCount++;
     }
 
     private void GenerateIoasicPicSerialData()
@@ -13177,8 +13218,8 @@ internal sealed class GauntletInputPanel
     public bool Service { get; set; }
     public bool Test { get; set; }
 
-    public void SetPlayer1(bool up, bool down, bool left, bool right, bool attack, bool magic, bool start, bool coin)
-        => Player1 = new GauntletPlayerInput(up, down, left, right, attack, magic, start, coin);
+    public void SetPlayer1(bool up, bool down, bool left, bool right, bool fight, bool magic, bool turbo, bool start, bool coin)
+        => Player1 = new GauntletPlayerInput(up, down, left, right, fight, magic, turbo, start, coin);
 }
 
 internal readonly record struct GauntletPlayerInput(
@@ -13186,8 +13227,9 @@ internal readonly record struct GauntletPlayerInput(
     bool Down,
     bool Left,
     bool Right,
-    bool Attack,
+    bool Fight,
     bool Magic,
+    bool Turbo,
     bool Start,
     bool Coin);
 

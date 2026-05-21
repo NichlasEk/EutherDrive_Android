@@ -2,6 +2,7 @@ using System.Collections;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Reflection;
+using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
 string romPath = args.Length > 0 ? args[0] : "/home/nichlas/roms/MAME/Midway/Vegas/gauntd";
@@ -27,6 +28,7 @@ var totalStopwatch = Stopwatch.StartNew();
 var loadStopwatch = Stopwatch.StartNew();
 var adapter = new GauntletDarkLegacyAdapter();
 adapter.LoadRom(romPath);
+ApplyInputFromEnvironment(adapter);
 loadStopwatch.Stop();
 
 ulong? stopPc = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_STOP_PC"));
@@ -208,6 +210,30 @@ static ulong? ParseOptionalHexUlong(string? value)
     return ulong.TryParse(trimmed, System.Globalization.NumberStyles.HexNumber, null, out ulong parsed)
         ? parsed
         : null;
+}
+
+static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter)
+{
+    bool up = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_UP");
+    bool down = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_DOWN");
+    bool left = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_LEFT");
+    bool right = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_RIGHT");
+    bool fight = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_FIGHT") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_A");
+    bool magic = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MAGIC") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_B");
+    bool turbo = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TURBO") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_C");
+    bool start = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_START");
+    bool service = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE");
+    bool test = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TEST");
+    bool coin = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_COIN") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MODE");
+
+    if (up || down || left || right || fight || magic || turbo || start || service || test || coin)
+        adapter.SetInputState(up, down, left, right, fight, magic, turbo, start, service, test, z: false, coin, PadType.SixButton);
+}
+
+static bool IsEnvEnabled(string name)
+{
+    string? value = Environment.GetEnvironmentVariable(name);
+    return value == "1" || value?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
 }
 
 static int ParseWarmupFrames(int targetFrames)
