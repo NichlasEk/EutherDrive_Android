@@ -999,8 +999,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return true;
         if (TryExecuteDariusObjectAnimationStep(pc, op, out cycles))
             return true;
-        if (TryExecuteDariusPaletteLerpTable(pc, op, out cycles))
-            return true;
+        // Keep palette fades on the ROM path for now. A too-loose table
+        // fastpath can leave F3 layers with coherent tiles but bad color
+        // ramps, which shows up as red/green playfield carpets.
         if (TryExecuteDariusSpriteReefClear(pc, out cycles))
             return true;
         if (TrySkipEmptySpriteControlSlots(pc, op, out cycles))
