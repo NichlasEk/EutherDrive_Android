@@ -489,6 +489,7 @@ internal sealed class MipsR5000Core
                                              GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_RENDER_TILE_BOOT_SURFACE");
     private int _remainingProbeSteps;
     private int _probeStepDebt;
+    private bool _isContinuingKnownRuntimeTileLoop;
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
     private readonly Dictionary<ulong, ulong> _hotPcCounts = [];
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
@@ -2323,7 +2324,11 @@ internal sealed class MipsR5000Core
         _gpr[13] = counterBase;
         _gpr[14] = t6;
         if (TryFinishKnownRuntimeTwoBitTilePrepare((int)skippedInstructions, extraProbeStepDebt: 1))
+        {
+            if (Pc == 0xffffffff800194a0UL && (ulong)_remainingProbeSteps >= skippedInstructions + 192UL)
+                _ = TryFastPathKnownRuntimeTwoBitTileExpand(Pc);
             return true;
+        }
 
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * skippedInstructions);
@@ -5790,6 +5795,7 @@ internal sealed class MipsR5000Core
                 tailRowLimit,
                 tailSkippedInstructions,
                 extraProbeStepDebt: 1);
+            TryContinueKnownRuntimeTileLoopOnce();
             return true;
         }
 
@@ -5937,6 +5943,7 @@ internal sealed class MipsR5000Core
         }
 
         FinishKnownRuntimeBudgetedFastPath(skippedInstructions, 0xffffffff800194f0UL);
+        TryContinueKnownRuntimeTileLoopOnce();
         return true;
     }
 
@@ -6092,6 +6099,8 @@ internal sealed class MipsR5000Core
             return false;
 
         ulong maskResult = _gpr[20] & _gpr[17];
+        if (maskResult == 0 && TryFastPathKnownRuntimeMaskedTileSkipRun())
+            return true;
         if (maskResult == 0 && TryFinishKnownRuntimeMaskedTileSkip(2))
             return true;
         if (TryFinishKnownRuntimeTilePointerPreamble(maskResult, leadingSkippedInstructions: 2))
@@ -6099,6 +6108,49 @@ internal sealed class MipsR5000Core
 
         _gpr[2] = maskResult;
         FinishKnownRuntimeBudgetedFastPath(2, 0xffffffff80019318UL);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeMaskedTileSkipRun()
+    {
+        const ulong entry = 0xffffffff800192c8UL;
+        uint mask = (uint)_gpr[17];
+        if (mask == 0)
+            return false;
+
+        uint tileWord = (uint)_gpr[20];
+        ulong columnLimit = SignExtend32(_memory.Read32(0xffffffff800b2e24UL));
+        ulong column = _gpr[16];
+        ulong pixel = _gpr[19];
+        int skippedTiles = 0;
+        while (mask != 0)
+        {
+            ulong nextColumn = (ulong)((long)column + 1L);
+            if (unchecked((long)nextColumn) >= unchecked((long)columnLimit))
+                break;
+            if ((tileWord & mask) != 0)
+                break;
+
+            skippedTiles++;
+            column = nextColumn;
+            mask <<= 1;
+            pixel = (ulong)((long)pixel + 2L);
+        }
+
+        if (skippedTiles < 2)
+            return false;
+
+        int skippedInstructions = skippedTiles * 10;
+        if (_remainingProbeSteps < skippedInstructions)
+            return false;
+
+        _gpr[16] = column;
+        _gpr[17] = mask;
+        _gpr[4] = 0x800b0000UL;
+        _gpr[2] = 1;
+        _gpr[19] = pixel;
+        FinishKnownRuntimeBudgetedFastPath(skippedInstructions, skippedInstructions - 1, entry);
+        TryContinueKnownRuntimeTileLoopOnce();
         return true;
     }
 
@@ -6179,6 +6231,7 @@ internal sealed class MipsR5000Core
                 skippedInstructions,
                 skippedInstructions - 1 + extraProbeStepDebt,
                 0xffffffff800192c8UL);
+            TryContinueKnownRuntimeTileLoopOnce();
             return;
         }
 
@@ -6190,6 +6243,32 @@ internal sealed class MipsR5000Core
             skippedInstructions,
             skippedInstructions - 1 + extraProbeStepDebt,
             _gpr[2] != 0 ? 0xffffffff80019294UL : 0xffffffff80019528UL);
+        TryContinueKnownRuntimeTileLoopOnce();
+    }
+
+    private void TryContinueKnownRuntimeTileLoopOnce()
+    {
+        if (_isContinuingKnownRuntimeTileLoop || _remainingProbeSteps <= _probeStepDebt + 256)
+            return;
+
+        _isContinuingKnownRuntimeTileLoop = true;
+        try
+        {
+            if (Pc == 0xffffffff800192c8UL)
+            {
+                if (TryFastPathKnownRuntimeTileMaskBranch(Pc))
+                    return;
+                _ = TryFastPathKnownRuntimeEmptyTileSpan(Pc);
+                return;
+            }
+
+            if (Pc == 0xffffffff800194f0UL)
+                _ = TryFastPathKnownRuntimeTileOuterTail(Pc);
+        }
+        finally
+        {
+            _isContinuingKnownRuntimeTileLoop = false;
+        }
     }
 
     private void FinishKnownRuntimeBudgetedFastPath(int skippedInstructions, ulong nextPc)
@@ -6340,6 +6419,8 @@ internal sealed class MipsR5000Core
             skippedInstructions + leadingSkippedInstructions,
             consumedProbeSteps - 1 + leadingSkippedInstructions,
             callsitePc + 0x1cUL);
+        if (Pc == 0xffffffff80019360UL && _remainingProbeSteps > _probeStepDebt + 256)
+            _ = TryFastPathKnownGlideStatusCounterNegativeLimit(Pc);
         return true;
     }
 
@@ -13183,6 +13264,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     public virtual void WriteLfb32(uint offset, uint value)
     {
         uint lfbMode = _registers[RegLfbMode];
+        if (lfbMode == 0x00002011u)
+        {
+            WriteLfb32Mode2011(offset, value);
+            return;
+        }
+
         if (((lfbMode >> 12) & 1u) != 0)
             value = BinaryPrimitives.ReverseEndianness(value);
         if (((lfbMode >> 11) & 1u) != 0)
@@ -13200,6 +13287,25 @@ internal class VoodooBringupBackend : IVoodooBackend
             buffer[pixel & (LfbPixels - 1)] = first;
         if (twoPixels && TryExpandLfbPixel(value, format, rgbaLanes, highHalf: true, out ushort second))
             buffer[(pixel + 1) & (LfbPixels - 1)] = second;
+        _lfbWriteCount++;
+    }
+
+    private void WriteLfb32Mode2011(uint offset, uint value)
+    {
+        uint pixelOffset = ((offset & (LfbBytes - 1u)) >> 2) << 1;
+        int x = (int)(pixelOffset & (LfbRowPixels - 1));
+        int sourceY = (int)((pixelOffset >> 10) & 0x3ff);
+        int origin = (int)((_registers[RegFbiInit3] >> 22) & 0x3ff);
+        int y = (origin > 0 ? Math.Min(origin, LfbRows - 1) : 479) - sourceY;
+        if ((uint)y >= LfbRows)
+            y = y < 0 ? 0 : LfbRows - 1;
+
+        int bufferIndex = _backBufferIndex;
+        _lastFastFillValid[bufferIndex] = false;
+        ushort[] buffer = _colorBuffers[bufferIndex];
+        int pixel = y * LfbRowPixels + x;
+        buffer[pixel & (LfbPixels - 1)] = ConvertXrgb1555Lane0((ushort)value);
+        buffer[(pixel + 1) & (LfbPixels - 1)] = ConvertXrgb1555Lane0((ushort)(value >> 16));
         _lfbWriteCount++;
     }
 
@@ -14189,6 +14295,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         int r = (packed >> rShift) & 0x1f;
         int g = (packed >> gShift) & 0x1f;
         int b = (packed >> bShift) & 0x1f;
+        return (ushort)((r << 11) | ((g << 1 | g >> 4) << 5) | b);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ushort ConvertXrgb1555Lane0(ushort packed)
+    {
+        int r = (packed >> 10) & 0x1f;
+        int g = (packed >> 5) & 0x1f;
+        int b = packed & 0x1f;
         return (ushort)((r << 11) | ((g << 1 | g >> 4) << 5) | b);
     }
 
