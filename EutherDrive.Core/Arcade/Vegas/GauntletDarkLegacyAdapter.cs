@@ -5564,8 +5564,16 @@ internal sealed class MipsR5000Core
 
         // Bringup-only: this runtime helper polls the A4A0 input ports and
         // fans the result into the debounced bitfield table at 0x80262b90.
-        // Until Gauntlet reaches real Voodoo geometry, treat it as no buttons
-        // pressed so the boot path does not spend most of its frame budget here.
+        // Keep neutral frames cheap, but let the real helper run when a button
+        // is active so diagnostics/menu inputs still produce edge transitions.
+        if (_memory.Read16(0x00000000a4a00008UL) != 0x7f7f ||
+            _memory.Read16(0x00000000a4a0000aUL) != 0xffef ||
+            _memory.Read16(0x00000000a4a0000cUL) != 0xffff ||
+            _memory.Read16(0x00000000a4a0000eUL) != 0xffff)
+        {
+            return false;
+        }
+
         _gpr[2] = 0;
         _gpr[3] = 0;
         _gpr[0] = 0;
