@@ -596,7 +596,7 @@ internal sealed class MipsR5000Core
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableRuntimeInterruptBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE");
-    private readonly bool _enableDiagnosticRuntimeFastPaths = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME") == "1";
+    private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _enableVolumeNvramSyncRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
@@ -815,6 +815,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownGauntletGlideRuntimeStateSnapshotCopy(pc))
             return;
         if (TryFastPathKnownRuntimeCommandCompleteWait(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeProgressTextWait(pc))
             return;
         NormalizeKnownGlideFifoState(pc);
         if (TryFastPathKnownBootLoop(pc))
@@ -5740,7 +5742,7 @@ internal sealed class MipsR5000Core
         }
 
         ulong completionAddress = _gpr[29] + 0x2cUL;
-        if ((completionAddress & 0xffffffff80000000UL) != 0xffffffff80000000UL)
+        if (!IsMainRamRange(completionAddress, 4))
             return false;
 
         _memory.Write32(completionAddress, 1);
@@ -5753,6 +5755,41 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:BOOT] runtime-command-complete-wait pc={pc:x16} " +
                 $"completion={completionAddress:x16}");
         }
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeProgressTextWait(ulong pc)
+    {
+        const ulong loop = 0xffffffff800d2560UL;
+
+        if (pc is not (0xffffffff800d2560UL or 0xffffffff800d2564UL or 0xffffffff800d2568UL))
+            return false;
+
+        if (_memory.Read32(loop) != 0x8e22000cU ||
+            _memory.Read32(loop + 0x04UL) != 0x14400006U ||
+            _memory.Read32(loop + 0x08UL) != 0x00000000U ||
+            _memory.Read32(loop + 0x0cUL) != 0x8e240004U ||
+            _memory.Read32(loop + 0x10UL) != 0x8e250000U ||
+            _memory.Read32(loop + 0x14UL) != 0x8e270008U ||
+            _memory.Read32(loop + 0x18UL) != 0x0c038cdeU ||
+            _memory.Read32(loop + 0x1cUL) != 0x0040302dU ||
+            _memory.Read32(loop + 0x20UL) != 0x8e250008U ||
+            _memory.Read32(loop + 0x24UL) != 0x0c038c26U)
+        {
+            return false;
+        }
+
+        ulong completionAddress = _gpr[17] + 0x0cUL;
+        if (!IsMainRamRange(completionAddress, 4))
+            return false;
+
+        if (_memory.Read32(completionAddress) == 0)
+            _memory.Write32(completionAddress, 1);
+
+        _gpr[2] = 1;
+        _gpr[0] = 0;
+        Pc = 0xffffffff800d2580UL;
+        CompleteFastPathStep();
         return true;
     }
 

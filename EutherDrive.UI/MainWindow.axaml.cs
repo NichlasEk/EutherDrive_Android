@@ -865,6 +865,8 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
             Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME")))
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000");
     }
 
     private static bool IsPsxRom(string path)
