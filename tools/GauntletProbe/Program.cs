@@ -126,6 +126,7 @@ DumpRequestedByteRanges(GetProperty(machine, "MemoryMap"));
 ScanRequestedAscii(GetProperty(machine, "MemoryMap"));
 ScanRequestedPointers(GetProperty(machine, "MemoryMap"));
 ScanRequestedAddressLoads(GetProperty(machine, "MemoryMap"));
+ScanRequestedMemoryRefs(GetProperty(machine, "MemoryMap"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
     ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
 
@@ -1254,6 +1255,83 @@ static void ScanRequestedAddressLoads(object memory)
 
     Console.WriteLine($"addrLoadScan matches={matches}");
 }
+
+static void ScanRequestedMemoryRefs(object memory)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_MEM_REFS");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    uint[] needles = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(item => TryParseHexUlong(item, out ulong parsed) ? (uint)parsed : 0u)
+        .Where(item => item != 0)
+        .Distinct()
+        .ToArray();
+    if (needles.Length == 0)
+        return;
+
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    Console.WriteLine("memRefScan needles=" + string.Join(",", needles.Select(item => $"0x{item:x8}")));
+
+    int matches = 0;
+    for (int offset = 0; offset + 3 < mainRam.Length; offset += 4)
+    {
+        uint op = BinaryPrimitives.ReadUInt32LittleEndian(mainRam.AsSpan(offset, 4));
+        if ((op >> 26) != 0x0f)
+            continue;
+
+        int baseRegister = (int)((op >> 16) & 31u);
+        ushort upper = (ushort)op;
+        for (int lookAhead = 1; lookAhead <= 24 && offset + lookAhead * 4 + 3 < mainRam.Length; lookAhead++)
+        {
+            uint next = BinaryPrimitives.ReadUInt32LittleEndian(mainRam.AsSpan(offset + lookAhead * 4, 4));
+            uint opcode = next >> 26;
+            int rs = (int)((next >> 21) & 31u);
+            if (rs != baseRegister || !IsMemoryReferenceOpcode(opcode))
+                continue;
+
+            ushort lower = (ushort)next;
+            uint candidate = (uint)(((int)upper << 16) + (short)lower);
+            if (!needles.Contains(candidate))
+                continue;
+
+            ulong address = 0xffffffff80000000UL + (uint)offset;
+            Console.WriteLine($" memref 0x{address:x16} +{lookAhead * 4:x2} r{baseRegister} {MemoryReferenceMnemonic(opcode)} -> 0x{candidate:x8}");
+            matches++;
+            if (matches >= 512)
+            {
+                Console.WriteLine("memRefScan truncated=512");
+                Console.WriteLine($"memRefScan matches={matches}");
+                return;
+            }
+        }
+    }
+
+    Console.WriteLine($"memRefScan matches={matches}");
+}
+
+static bool IsMemoryReferenceOpcode(uint opcode)
+    => opcode is 0x20 or 0x21 or 0x23 or 0x24 or 0x25 or 0x27 or 0x28 or 0x29 or 0x2b or 0x2c or 0x2d or 0x2f or 0x37 or 0x3f;
+
+static string MemoryReferenceMnemonic(uint opcode)
+    => opcode switch
+    {
+        0x20 => "lb",
+        0x21 => "lh",
+        0x23 => "lw",
+        0x24 => "lbu",
+        0x25 => "lhu",
+        0x27 => "lwu",
+        0x28 => "sb",
+        0x29 => "sh",
+        0x2b => "sw",
+        0x2c => "sdl",
+        0x2d => "sdr",
+        0x2f => "cache",
+        0x37 => "ld",
+        0x3f => "sd",
+        _ => $"op{opcode:x2}"
+    };
 
 static bool TryParseHexUlong(string value, out ulong parsed)
 {
