@@ -5567,7 +5567,7 @@ internal sealed class MipsR5000Core
         // Keep neutral frames cheap, but let the real helper run when a button
         // is active so diagnostics/menu inputs still produce edge transitions.
         if (_memory.Read16(0x00000000a4a00008UL) != 0x7f7f ||
-            _memory.Read16(0x00000000a4a0000aUL) != 0xffef ||
+            _memory.Read16(0x00000000a4a0000aUL) != 0xffff ||
             _memory.Read16(0x00000000a4a0000cUL) != 0xffff ||
             _memory.Read16(0x00000000a4a0000eUL) != 0xffff)
         {
@@ -11146,14 +11146,14 @@ internal sealed class VegasMemoryMap
 
     private ushort BuildSystemInputPort()
     {
-        ushort value = 0xffef;
+        ushort value = 0xffff;
         if (_input is null)
             return value;
 
         GauntletPlayerInput player1 = _input.Player1;
         ClearActiveLowBit(ref value, 0x0001, player1.Coin);
         ClearActiveLowBit(ref value, 0x0004, player1.Start);
-        SetActiveHighBit(ref value, 0x0010, _input.Test);
+        ClearActiveLowBit(ref value, 0x0010, _input.Test);
         ClearActiveLowBit(ref value, 0x0040, _input.Service);
         return value;
     }
@@ -11179,12 +11179,6 @@ internal sealed class VegasMemoryMap
     {
         if (pressed)
             value = (ushort)(value & ~mask);
-    }
-
-    private static void SetActiveHighBit(ref ushort value, ushort mask, bool pressed)
-    {
-        if (pressed)
-            value = (ushort)(value | mask);
     }
 
     private void TraceIoasicInputRead(int port, ushort value)
