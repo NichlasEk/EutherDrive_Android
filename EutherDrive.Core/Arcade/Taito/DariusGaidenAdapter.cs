@@ -2,6 +2,8 @@ namespace EutherDrive.Core.Arcade.Taito;
 
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using EutherDrive.Core.Cpu.M68000Emu;
 using EutherDrive.Core.Cpu.MameMusashi;
@@ -58,7 +60,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly int TraceTaskCreateFromFrame = ParseEnvInt("EUTHERDRIVE_DARIUSG_TRACE_TASK_CREATE_FROM_FRAME", 0);
     private static readonly int CpuScale = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_CPU_SCALE", 1), 1, 32);
     private static readonly int RenderDivisor = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_DIVISOR", 1), 1, 8);
-    private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") == "1";
+    private static readonly int RenderPhaseTraceMs = ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_PHASE_MS", 0);
+    private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") != "0";
     private static readonly long TargetFrameTicks = Math.Max(1, (long)(Stopwatch.Frequency / TargetFps));
 
     private static readonly HashSet<string> SupportedDrivers = new(StringComparer.OrdinalIgnoreCase)
@@ -86,6 +89,68 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         "d87-16.bin",
         "d87-17.bin"
     };
+    private static readonly object HotPathPrepareLock = new();
+    private static bool _hotPathsPrepared;
+    private static readonly Type[] HotPathTypes =
+    {
+        typeof(MameMusashi68Ec020),
+        typeof(M68000),
+        typeof(InstructionExecutor),
+        typeof(TaitoF3SoundSystem),
+        typeof(F3LineState),
+        typeof(F3ClipPlane)
+    };
+    private static readonly string[] HotPathMethodNames =
+    {
+        nameof(RunFrame),
+        nameof(RenderUglyVideo),
+        nameof(RenderMameScanlines),
+        nameof(RenderMameMixBufferToFrame),
+        nameof(RenderMameMixBufferToFrameBytes),
+        nameof(BuildMameLineStates),
+        nameof(BuildMameLayerOrder),
+        nameof(InitializeMameLineBackgrounds),
+        nameof(BuildSpriteList),
+        nameof(BuildSpriteListFrom),
+        nameof(TryBuildSpriteListFromPointer),
+        nameof(RenderSpriteReefToFrame),
+        nameof(RenderSpriteReefRow),
+        nameof(RenderSpriteReefRowGroup),
+        nameof(RenderSpriteReefPixelAt),
+        nameof(RenderPlayfieldLine),
+        nameof(RenderPivotLine),
+        nameof(RenderTextLine),
+        nameof(DecodeF3CharPixel),
+        nameof(DecodeF3PivotPixel),
+        nameof(TryExecuteM68ec020ProbeInstruction),
+        nameof(TryExecuteDariusF3IrqTaskScan),
+        nameof(TryExecuteDariusF3TaskMaskScan),
+        nameof(TryExecuteDariusF3TaskDispatch),
+        nameof(TryExecuteDariusF3ZeroWait),
+        nameof(TryExecuteDariusIndexedLongCopyLoop),
+        nameof(TryExecuteDariusBytePairExpand),
+        nameof(TryExecuteDariusObjectPackLoop),
+        nameof(TryExecuteDariusSceneSpriteProlog),
+        nameof(TryExecuteDariusStaticSpriteCopyEntry),
+        nameof(TryExecuteDariusSceneSpriteRows),
+        nameof(TryExecuteDariusSceneSpriteCopy),
+        nameof(TryExecuteDariusStaticSpriteCopy),
+        nameof(TryExecuteDariusEmptySceneSpriteScan),
+        nameof(TryExecuteDariusObjectTrailShift),
+        nameof(TryExecuteDariusObjectAnimPointerLoad),
+        nameof(TryExecuteDariusTimedObjectAnimPointerLoad),
+        nameof(TryExecuteDariusObjectAnimationStep),
+        nameof(TryExecuteDariusSpriteReefClear),
+        nameof(TrySkipEmptySpriteControlSlots),
+        nameof(TryExecuteDariusWorkRamCurrent),
+        nameof(TryExecuteDariusBootRamClear),
+        nameof(TryExecuteDariusF3MemoryTide),
+        nameof(TryExecuteDariusPaletteCurrent),
+        nameof(TryExecuteF3SchedulerYieldEntry),
+        nameof(TryExecuteF3TrapSchedulerStub),
+        nameof(TryDispatchF3QueuedTask),
+        nameof(TryExecuteBtstImmediateByteDisplacement)
+    };
 
     private readonly byte[] _frameBuffer = new byte[FrameBytes];
     private readonly byte[] _presentFrameBuffer = new byte[FrameBytes];
@@ -107,6 +172,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private readonly int[] _spriteReefNext = new int[FrameWidth * FrameHeight];
     private readonly int[] _spriteReefRowHead = new int[FrameHeight];
     private readonly bool[] _spriteReefRowActive = new bool[FrameHeight];
+    private readonly byte[] _spriteReefRowGroupMask = new byte[FrameHeight];
     private readonly List<int> _spriteReefTouchedRows = new(FrameHeight);
     private readonly ushort[] _playfieldLineAttrCache = new ushort[32];
     private readonly ushort[] _playfieldLineCodeCache = new ushort[32];
@@ -125,6 +191,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private bool _loaded;
     private bool _cpuFaulted;
     private int _adaptiveRenderSkipsRemaining;
+    private int _adaptiveRenderSkipsSincePresent;
+    private long _adaptiveRenderCostTicks;
     private string _lastStopReason = "idle";
     private uint _lastRecoveredInvalidPc;
     private uint _lastPcBeforeRecoveredInvalidPc;
@@ -459,6 +527,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _loaded = true;
         _cpuFaulted = false;
         _adaptiveRenderSkipsRemaining = 0;
+        _adaptiveRenderSkipsSincePresent = 0;
+        _adaptiveRenderCostTicks = 0;
         _hasPresentFrame = false;
         _frameCounter = 0;
         InvalidateDebugSummary();
@@ -485,7 +555,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastStopReason = "reset";
         _romIdentity = new RomIdentity(_driverName, BuildRomHash(roms.MainCpu), Path.GetDirectoryName(Path.GetFullPath(path)));
         UpdateRomInfo(path);
-        RenderUglyVideo();
+        PrewarmDariusHotPaths();
+        RenderInitialFrame();
 
         Console.WriteLine($"[DARIUSG] load driver={_driverName} reset_sp=0x{_bus.ReadLong(0):X8} reset_pc=0x{_bus.ReadLong(4):X8} {MissingDevices}");
     }
@@ -499,6 +570,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _sound.Reset(asserted: true);
         _mainCpu.Reset(_bus);
         _cpuFaulted = false;
+        _adaptiveRenderSkipsRemaining = 0;
+        _adaptiveRenderSkipsSincePresent = 0;
+        _adaptiveRenderCostTicks = 0;
         _hasPresentFrame = false;
         _f3TasksEnqueued = 0;
         _f3TasksDispatched = 0;
@@ -519,7 +593,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _traceTaskCreatePcRemaining = TraceTaskCreatePcLimit;
         _f3TaskQueue.Clear();
         ResetVideoRuntime();
-        RenderUglyVideo();
+        PrewarmDariusHotPaths();
+        RenderInitialFrame();
     }
 
     private void ResetVideoRuntime()
@@ -531,11 +606,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _latchedSprites.Clear();
         Array.Clear(_spriteReefPalette);
         Array.Clear(_spriteReefGroup);
+        Array.Clear(_spriteReefNext);
         Array.Clear(_spriteReefRowActive);
+        Array.Clear(_spriteReefRowHead);
+        Array.Clear(_spriteReefRowGroupMask);
         _spriteReefOffsetCount = 0;
         _spriteReefTouchedRows.Clear();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     public void RunFrame()
     {
         if (!_loaded)
@@ -545,6 +624,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         long controlTicks = 0;
         long cpuTicks = 0;
         long renderTicks = 0;
+        long soundTicks = 0;
         long frameStartTicks = AdaptiveRenderPacing && RenderDivisor <= 1
             ? Stopwatch.GetTimestamp()
             : 0;
@@ -565,7 +645,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         int cycles = 0;
         int instructions = 0;
-        long cpuStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
+        long cpuStartTicks = (profileStartTicks != 0 || AdaptiveRenderPacing) ? Stopwatch.GetTimestamp() : 0;
         if (TracePcProfile)
             _framePcProfile.Clear();
         try
@@ -708,15 +788,22 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (controlStartTicks != 0)
             controlTicks += Stopwatch.GetTimestamp() - controlStartTicks;
 
-        bool renderedFrame = ShouldRenderThisFrame();
+        bool renderedFrame = ShouldRenderThisFrame(cpuTicks);
         if (renderedFrame)
         {
-            long renderStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
+            long renderStartTicks = (profileStartTicks != 0 || AdaptiveRenderPacing) ? Stopwatch.GetTimestamp() : 0;
             RenderUglyVideo();
             if (renderStartTicks != 0)
+            {
                 renderTicks = Stopwatch.GetTimestamp() - renderStartTicks;
+                UpdateAdaptiveRenderCost(renderTicks);
+            }
+            _adaptiveRenderSkipsSincePresent = 0;
         }
+        long soundStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
         _sound.RunFrame(!_bus.SoundCpuResetAsserted, _bus.DualPortWriteSerial);
+        if (soundStartTicks != 0)
+            soundTicks = Stopwatch.GetTimestamp() - soundStartTicks;
 
         if (frameStartTicks != 0)
             UpdateAdaptiveRenderPacing(Stopwatch.GetTimestamp() - frameStartTicks);
@@ -734,7 +821,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             double tickMs = 1000.0 / Stopwatch.Frequency;
             Console.WriteLine(
                 $"[DARIUSG-PHASE] f={_frameCounter} total={_lastFrameTotalTicks * tickMs:0.###}ms " +
-                $"cpu={cpuTicks * tickMs:0.###}ms render={renderTicks * tickMs:0.###}ms ctrl={controlTicks * tickMs:0.###}ms " +
+                $"cpu={cpuTicks * tickMs:0.###}ms render={renderTicks * tickMs:0.###}ms sound={soundTicks * tickMs:0.###}ms ctrl={controlTicks * tickMs:0.###}ms " +
                 $"instr={instructions} cycles={cycles} rendered={(renderedFrame ? 1 : 0)} stop={_lastStopReason} pc=0x{_mainCpu.Pc:X6} irq={_bus.InterruptLevel()}");
             if (TracePcProfile)
                 Console.WriteLine($"[DARIUSG-PCPROFILE] f={_frameCounter} {BuildFramePcProfileSample()}");
@@ -753,15 +840,30 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 .Select(static pair => $"0x{pair.Key:X6}:{pair.Value}"));
     }
 
-    private bool ShouldRenderThisFrame()
+    private bool ShouldRenderThisFrame(long cpuTicks)
     {
         if (RenderDivisor > 1 && _frameCounter > 3 && (_frameCounter % RenderDivisor) != 0)
             return false;
 
-        if (AdaptiveRenderPacing && RenderDivisor <= 1 && _adaptiveRenderSkipsRemaining > 0 && _hasPresentFrame)
+        if (AdaptiveRenderPacing && RenderDivisor <= 1 && _hasPresentFrame)
         {
-            _adaptiveRenderSkipsRemaining--;
-            return false;
+            long expectedRenderTicks = _lastFrameRenderTicks != 0
+                ? _lastFrameRenderTicks
+                : (_adaptiveRenderCostTicks != 0 ? _adaptiveRenderCostTicks : TargetFrameTicks / 2);
+            if (_frameCounter > 3
+                && _adaptiveRenderSkipsSincePresent < 1
+                && cpuTicks + expectedRenderTicks > TargetFrameTicks - (TargetFrameTicks / 20))
+            {
+                _adaptiveRenderSkipsSincePresent++;
+                return false;
+            }
+
+            if (_adaptiveRenderSkipsRemaining > 0)
+            {
+                _adaptiveRenderSkipsRemaining--;
+                _adaptiveRenderSkipsSincePresent++;
+                return false;
+            }
         }
 
         return true;
@@ -775,6 +877,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         long highWaterTicks = TargetFrameTicks + (TargetFrameTicks / 10);
         if (elapsedTicks > highWaterTicks)
             _adaptiveRenderSkipsRemaining = 1;
+        else if (elapsedTicks < TargetFrameTicks - (TargetFrameTicks / 4))
+            _adaptiveRenderSkipsRemaining = 0;
+    }
+
+    private void UpdateAdaptiveRenderCost(long renderTicks)
+    {
+        if (!AdaptiveRenderPacing || renderTicks <= 0)
+            return;
+
+        _adaptiveRenderCostTicks = _adaptiveRenderCostTicks == 0
+            ? renderTicks
+            : ((_adaptiveRenderCostTicks * 3) + renderTicks) / 4;
     }
 
     private void SoftResetF3Machine(string reason)
@@ -877,15 +991,74 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _sound.LoadState(reader);
         else
             _sound.SuspendLegacyState(_bus.SoundCpuResetAsserted);
+        _adaptiveRenderSkipsRemaining = 0;
+        _adaptiveRenderSkipsSincePresent = 0;
+        _adaptiveRenderCostTicks = 0;
+        PrewarmDariusHotPaths();
+        RenderInitialFrame();
+    }
+
+    private void RenderInitialFrame()
+    {
+        long renderStartTicks = AdaptiveRenderPacing ? Stopwatch.GetTimestamp() : 0;
         RenderUglyVideo();
+        if (renderStartTicks != 0)
+            UpdateAdaptiveRenderCost(Stopwatch.GetTimestamp() - renderStartTicks);
     }
 
     public void Dispose()
     {
     }
 
+    private static void PrewarmDariusHotPaths()
+    {
+        if (_hotPathsPrepared)
+            return;
+
+        lock (HotPathPrepareLock)
+        {
+            if (_hotPathsPrepared)
+                return;
+
+            try
+            {
+                PrepareMethods(typeof(DariusGaidenAdapter), HotPathMethodNames);
+                foreach (Type type in HotPathTypes)
+                    PrepareMethods(type, methodNames: null);
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException or PlatformNotSupportedException)
+            {
+                // Prewarm is an optimization only; normal JIT fallback is safe.
+            }
+
+            _hotPathsPrepared = true;
+        }
+    }
+
+    private static void PrepareMethods(Type type, string[]? methodNames)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+        foreach (MethodInfo method in type.GetMethods(flags))
+        {
+            if (method.ContainsGenericParameters)
+                continue;
+            if (methodNames != null && Array.IndexOf(methodNames, method.Name) < 0)
+                continue;
+
+            RuntimeHelpers.PrepareMethod(method.MethodHandle);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void RenderUglyVideo()
     {
+        long phaseStartTicks = RenderPhaseTraceMs > 0 ? Stopwatch.GetTimestamp() : 0;
+        long clearTicks = 0;
+        long lineTicks = 0;
+        long initTicks = 0;
+        long scanlineTicks = 0;
+        long mixTicks = 0;
+        long latchTicks = 0;
         TaitoF3RomSet? roms = _roms;
         if (roms == null)
         {
@@ -894,27 +1067,84 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
 
         ClearWithPalette(0, clearFrameBuffer: false);
+        if (phaseStartTicks != 0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            clearTicks = now - phaseStartTicks;
+            phaseStartTicks = now;
+        }
         BuildMameLineStates();
+        if (phaseStartTicks != 0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            lineTicks = now - phaseStartTicks;
+            phaseStartTicks = now;
+        }
         InitializeMameLineBackgrounds();
+        if (phaseStartTicks != 0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            initTicks = now - phaseStartTicks;
+            phaseStartTicks = now;
+        }
 
         bool drewAny = RenderMameScanlines(roms);
+        if (phaseStartTicks != 0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            scanlineTicks = now - phaseStartTicks;
+            phaseStartTicks = now;
+        }
 
         if (!drewAny)
             ClearWithPalette(0);
         else
             RenderMameMixBufferToFrame();
+        if (phaseStartTicks != 0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            mixTicks = now - phaseStartTicks;
+            phaseStartTicks = now;
+        }
 
         LatchPresentFrameIfUseful(drewAny);
+        if (phaseStartTicks != 0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            latchTicks = now - phaseStartTicks;
+            long totalTicks = clearTicks + lineTicks + initTicks + scanlineTicks + mixTicks + latchTicks;
+            long thresholdTicks = (long)(RenderPhaseTraceMs * (Stopwatch.Frequency / 1000.0));
+            if (totalTicks >= thresholdTicks)
+            {
+                double tickMs = 1000.0 / Stopwatch.Frequency;
+                Console.WriteLine(
+                    $"[DARIUSG-RENDERPHASE] f={_frameCounter} total={totalTicks * tickMs:0.###}ms " +
+                    $"clear={clearTicks * tickMs:0.###}ms line={lineTicks * tickMs:0.###}ms init={initTicks * tickMs:0.###}ms " +
+                    $"scan={scanlineTicks * tickMs:0.###}ms mix={mixTicks * tickMs:0.###}ms latch={latchTicks * tickMs:0.###}ms drew={(drewAny ? 1 : 0)}");
+            }
+        }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderMameScanlines(TaitoF3RomSet roms)
     {
+        long traceStartTicks = RenderPhaseTraceMs > 0 ? Stopwatch.GetTimestamp() : 0;
+        long orderTicks = 0;
+        long pivotTicks = 0;
+        long spriteTicks = 0;
+        long playfieldTicks = 0;
+        long advanceTicks = 0;
         ResetRenderStats();
 
         Span<int> regSx = stackalloc int[4];
         Span<int> regFxY = stackalloc int[4];
         for (int layer = 0; layer < 4; layer++)
             GetMamePlayfieldScroll(layer, out regSx[layer], out regFxY[layer]);
+
+        long advanceStartTicks = traceStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
+        RefreshCurrentSpriteFrame(roms);
+        if (advanceStartTicks != 0)
+            advanceTicks = Stopwatch.GetTimestamp() - advanceStartTicks;
 
         for (int skippedY = 1; skippedY < VisibleAreaMinY; skippedY++)
         {
@@ -941,11 +1171,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         for (int screenY = 0; screenY < FrameHeight; screenY++)
         {
             int screenLine = screenY + VisibleAreaMinY;
+            long layerStartTicks = traceStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
             BuildMameLayerOrder(screenLine, layerOrder, layerPriority);
+            if (layerStartTicks != 0)
+            {
+                long now = Stopwatch.GetTimestamp();
+                orderTicks += now - layerStartTicks;
+                layerStartTicks = now;
+            }
 
             for (int i = 0; i < layerOrder.Length; i++)
             {
-                drewAny |= layerOrder[i] switch
+                byte layer = layerOrder[i];
+                long startTicks = traceStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
+                bool layerDrew = layer switch
                 {
                     PivotLayerRank => RenderPivotLine(roms, screenY),
                     Sprite0LayerRank => RenderSpriteReefRowGroup(screenY, 0),
@@ -958,6 +1197,18 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     Playfield1LayerRank => RenderPlayfieldLine(roms, 1, screenY, regSx[1], regFxY[1]),
                     _ => false,
                 };
+                if (startTicks != 0)
+                {
+                    long now = Stopwatch.GetTimestamp();
+                    long elapsed = now - startTicks;
+                    if (layer == PivotLayerRank)
+                        pivotTicks += elapsed;
+                    else if (layer is Sprite0LayerRank or Sprite1LayerRank or Sprite2LayerRank or Sprite3LayerRank)
+                        spriteTicks += elapsed;
+                    else
+                        playfieldTicks += elapsed;
+                }
+                drewAny |= layerDrew;
             }
 
             if (screenY != 0)
@@ -968,7 +1219,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             }
         }
 
-        AdvanceSpriteFrame(roms);
+        if (traceStartTicks != 0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            long totalTicks = now - traceStartTicks;
+            long thresholdTicks = (long)(RenderPhaseTraceMs * (Stopwatch.Frequency / 1000.0));
+            if (totalTicks >= thresholdTicks)
+            {
+                double tickMs = 1000.0 / Stopwatch.Frequency;
+                Console.WriteLine(
+                    $"[DARIUSG-SCANPHASE] f={_frameCounter} total={totalTicks * tickMs:0.###}ms " +
+                    $"order={orderTicks * tickMs:0.###}ms pivot={pivotTicks * tickMs:0.###}ms " +
+                    $"sprite={spriteTicks * tickMs:0.###}ms playfield={playfieldTicks * tickMs:0.###}ms advance={advanceTicks * tickMs:0.###}ms");
+            }
+        }
         return drewAny;
     }
 
@@ -1077,83 +1341,190 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             | (_frameBuffer[offset + 3] << 24));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool TryExecuteM68ec020ProbeInstruction(uint pc, ushort op, out uint cycles)
     {
         cycles = 0;
         if (pc is 0x004d06 or 0x004d18 or 0x0050dc)
             _bus.EnsureBackupDefaults();
 
-        if (TryBypassKnownFioSelfTestFatal(pc, out cycles))
+        // Exact loop collapses for Darius' hot RAM/video routines. Keep the
+        // dispatch PC-scoped: this probe runs before every 020 instruction, and
+        // letting every candidate reread ROM on every miss shows up as CPU
+        // spikes in dense scenes.
+        switch (pc)
+        {
+            case 0x000f3c:
+            case 0x000f3e:
+                if (TryBypassKnownFioSelfTestFatal(pc, out cycles))
+                    return true;
+                break;
+            case 0x0011c4:
+            case 0x0011c6:
+            case 0x0011c8:
+            case 0x0011ca:
+            case 0x0011cc:
+            case 0x0011ce:
+            case 0x0011d0:
+            case 0x0011d2:
+            case 0x0011d4:
+            case 0x0011d6:
+            case 0x0011d8:
+            case 0x0011da:
+            case 0x0011dc:
+            case 0x0011de:
+            case 0x0011e0:
+            case 0x0011e2:
+            case 0x0011e4:
+            case 0x0011e6:
+            case 0x0011e8:
+            case 0x0011ea:
+            case 0x0011ec:
+            case 0x0011ee:
+            case 0x0011f0:
+            case 0x0011f2:
+            case 0x0011f4:
+            case 0x0011f6:
+            case 0x0011f8:
+            case 0x0011fa:
+                if (TryExecuteDariusSpriteReefClear(pc, out cycles))
+                    return true;
+                break;
+            case 0x001282:
+                if (TryExecuteDariusSceneSpriteProlog(pc, op, out cycles))
+                    return true;
+                if (TryExecuteDariusStaticSpriteCopyEntry(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x001330:
+                if (TryExecuteDariusSceneSpriteRows(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x001348:
+                if (TryExecuteDariusEmptySceneSpriteScan(pc, op, out cycles))
+                    return true;
+                if (TryExecuteDariusSceneSpriteCopy(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0013ce:
+                if (TryExecuteDariusStaticSpriteCopy(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x001540:
+                if (TryExecuteDariusPaletteCurrent(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x001648:
+                if (TryExecuteDariusIndexedLongCopyLoop(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0016b8:
+                if (TrySkipEmptySpriteControlSlots(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x00173e:
+                if (TryExecuteDariusObjectPackLoop(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x001a44:
+                if (TryExecuteDariusF3ZeroWait(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x002284:
+                if (TryExecuteDariusF3IrqTaskScan(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x004e3c:
+                if (TryForceInitialTaskBackupOk(pc, op, out cycles))
+                    return true;
+                if (TryBypassBackupRamInitReset(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x005138:
+                if (TryBypassBackupRamInitReset(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x00567c:
+                // Keep the ROM path for the tilemap RLE decompressor. The
+                // fastpath is bit-stable in short headless fingerprints but
+                // corrupts playfield graphics during longer gameplay/attract runs.
+                if (TryExecuteDariusBytePairExpand(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x01009a:
+            case 0x0100a2:
+                if (TryExecuteDariusBootRamClear(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x01017a:
+                if (TryBypassBackupSettingsGate(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x010180:
+                if (TryForceBackupCheckResult(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0104b2:
+                if (TryExecuteDariusWorkRamCurrent(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0104e2:
+            case 0x01055c:
+                if (TryExecuteDariusF3TaskMaskScan(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0104e8:
+            case 0x010562:
+                if (TryExecuteDariusF3TaskDispatch(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0c8514:
+                if (TryExecuteDariusObjectTrailShift(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0cbd52:
+                if (TryExecuteDariusObjectAnimationStep(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0cfa86:
+                if (TryExecuteDariusObjectAnimPointerLoad(pc, op, out cycles))
+                    return true;
+                break;
+            case 0x0d0690:
+                if (TryExecuteDariusTimedObjectAnimPointerLoad(pc, op, out cycles))
+                    return true;
+                break;
+        }
+
+        if ((pc is 0x000522 or 0x000554 or 0x000586
+            or 0x005880 or 0x0058ae or 0x0058da or 0x005918 or 0x005956 or 0x0059b4
+            or 0x005be8)
+            && TryExecuteDariusF3MemoryTide(pc, op, out cycles))
+        {
             return true;
-        if (TryBypassBackupSettingsGate(pc, op, out cycles))
-            return true;
-        if (TryForceBackupCheckResult(pc, op, out cycles))
-            return true;
-        if (TryForceInitialTaskBackupOk(pc, op, out cycles))
-            return true;
-        if (TryBypassBackupRamInitReset(pc, op, out cycles))
-            return true;
-        // Exact loop collapses for Darius' hot RAM/video fill routines. These
-        // keep native trap scheduling intact while avoiding thousands of tiny
-        // 020 memory operations per frame.
-        if (TryExecuteDariusF3IrqTaskScan(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusF3TaskMaskScan(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusF3ZeroWait(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusIndexedLongCopyLoop(pc, op, out cycles))
-            return true;
-        // Keep the ROM path for the tilemap RLE decompressor. The fastpath is
-        // bit-stable in short headless fingerprints but corrupts playfield
-        // graphics during longer gameplay/attract runs.
-        if (TryExecuteDariusBytePairExpand(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusObjectPackLoop(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusSceneSpriteProlog(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusStaticSpriteCopyEntry(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusSceneSpriteRows(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusSceneSpriteCopy(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusStaticSpriteCopy(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusEmptySceneSpriteScan(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusObjectTrailShift(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusObjectAnimPointerLoad(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusTimedObjectAnimPointerLoad(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusObjectAnimationStep(pc, op, out cycles))
-            return true;
-        // Keep palette fades on the ROM path for now. A too-loose table
-        // fastpath can leave F3 layers with coherent tiles but bad color
-        // ramps, which shows up as red/green playfield carpets.
-        if (TryExecuteDariusSpriteReefClear(pc, out cycles))
-            return true;
-        if (TrySkipEmptySpriteControlSlots(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusWorkRamCurrent(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusBootRamClear(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusF3MemoryTide(pc, op, out cycles))
-            return true;
-        if (TryExecuteDariusPaletteCurrent(pc, op, out cycles))
-            return true;
-        if (!UseNativeF3TrapScheduler && TryExecuteBtstImmediateByteDisplacement(pc, op, out cycles))
-            return true;
-        if (TryExecuteF3SchedulerYieldEntry(pc, op, out cycles))
-            return true;
-        if (TryExecuteF3TrapSchedulerStub(pc, op, out cycles))
-            return true;
-        if (TryDispatchF3QueuedTask(pc, op, out cycles))
-            return true;
+        }
+
+        if ((op == 0x20c1 && _bus.PeekWord(pc + 2) == 0x51c8)
+            || (op == 0x51c8 && _bus.PeekWord(pc - 2) == 0x20c1 && _bus.PeekWord(pc + 2) == 0xfffc)
+            || (op == 0x30c1 && _bus.PeekWord(pc + 2) == 0x51c8)
+            || (op == 0x32c0 && _bus.PeekWord(pc + 2) == 0x51c9)
+            || ((pc == 0x005994 || pc == 0x0059f4) && op == 0xc559 && _bus.PeekWord(pc + 2) == 0x51c8))
+        {
+            if (TryExecuteDariusF3MemoryTide(pc, op, out cycles))
+                return true;
+        }
+
+        if (!UseNativeF3TrapScheduler)
+        {
+            if (TryExecuteF3SchedulerYieldEntry(pc, op, out cycles))
+                return true;
+            if (TryExecuteF3TrapSchedulerStub(pc, op, out cycles))
+                return true;
+            if (TryDispatchF3QueuedTask(pc, op, out cycles))
+                return true;
+            if (TryExecuteBtstImmediateByteDisplacement(pc, op, out cycles))
+                return true;
+        }
 
         if (!UseNativeF3TrapScheduler)
         {
@@ -1264,12 +1635,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private bool TryExecuteDariusF3TaskMaskScan(uint pc, ushort op, out uint cycles)
     {
         cycles = 0;
-        if (pc != 0x0104e2 || op != 0x0302
+        if ((pc != 0x0104e2 && pc != 0x01055c) || op != 0x0302
             || _bus.PeekWord(pc + 2) != 0x6600
             || _bus.PeekWord(pc + 4) != 0x000e
-            || _bus.PeekWord(0x0104f4) != 0x41e8
-            || _bus.PeekWord(0x0104f6) != 0x006c
-            || _bus.PeekWord(0x0104f8) != 0x51c9)
+            || _bus.PeekWord(pc + 0x12) != 0x41e8
+            || _bus.PeekWord(pc + 0x14) != 0x006c
+            || _bus.PeekWord(pc + 0x16) != 0x51c9)
         {
             return false;
         }
@@ -1291,11 +1662,53 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         state.Address[0] = (state.Address[0] + (uint)(skipped * 0x6c)) & 0x00ff_ffff;
         state.Data[1] = (state.Data[1] & 0xffff_0000u) | (ushort)(nextBit < 0 ? 0xffff : nextBit);
         ushort sr = (ushort)(state.Sr & ~0x0004);
-        uint nextPc = nextBit < 0 ? 0x0104fcu : 0x0104e2u;
+        uint nextPc = nextBit < 0 ? pc + 0x1au : pc;
         ushort prefetch = _bus.ReadOpcodeWord(nextPc);
         _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
         _m68ec020ProbeInstructions += (ulong)(skipped * 4);
         cycles = (uint)Math.Max(34, skipped * 12);
+        return true;
+    }
+
+    private bool TryExecuteDariusF3TaskDispatch(uint pc, ushort op, out uint cycles)
+    {
+        cycles = 0;
+        if ((pc != 0x0104e8 && pc != 0x010562)
+            || op != 0x48e7
+            || _bus.PeekWord(pc + 2) != 0xe0c0
+            || _bus.PeekWord(pc + 4) != 0x2250
+            || _bus.PeekWord(pc + 6) != 0x4e91
+            || _bus.PeekWord(pc + 8) != 0x4cdf
+            || _bus.PeekWord(pc + 10) != 0x0307
+            || _bus.PeekWord(pc + 12) != 0x41e8
+            || _bus.PeekWord(pc + 14) != 0x006c)
+        {
+            return false;
+        }
+
+        var state = GetScratchMainCpuState();
+        uint a0 = state.Address[0] & 0x00ff_ffff;
+        uint target = _bus.ReadLong(a0) & 0x00ff_ffff;
+        if (target == 0 || target == pc || (target & 1u) != 0)
+            return false;
+
+        uint sp = ((state.Sr & 0x2000) != 0 ? state.Ssp : state.Usp) & 0x00ff_ffff;
+        uint savedFrame = (sp - 20u) & 0x00ff_ffff;
+        uint callSp = (savedFrame - 4u) & 0x00ff_ffff;
+        _bus.WriteLong(savedFrame, state.Data[0]);
+        _bus.WriteLong(savedFrame + 4u, state.Data[1]);
+        _bus.WriteLong(savedFrame + 8u, state.Data[2]);
+        _bus.WriteLong(savedFrame + 12u, state.Address[0]);
+        _bus.WriteLong(savedFrame + 16u, state.Address[1]);
+        _bus.WriteLong(callSp, (pc + 8u) & 0x00ff_ffff);
+
+        state.Address[1] = target;
+        uint usp = (state.Sr & 0x2000) != 0 ? state.Usp : callSp;
+        uint ssp = (state.Sr & 0x2000) != 0 ? callSp : state.Ssp;
+        ushort prefetch = _bus.ReadOpcodeWord(target);
+        _mainCpu.SetState(new M68000.M68000State(state.Data, state.Address, usp, ssp, state.Sr, target, prefetch));
+        _m68ec020ProbeInstructions += 3;
+        cycles = 54;
         return true;
     }
 
@@ -4656,19 +5069,33 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         ushort pivotMix = line.PivotMix;
         bool xSampleEnabled = line.PivotXSampleEnable;
-        int sourceY = screenLine & 0x01ff;
+        int controlX = _bus.ReadControlWord(1, 4);
+        int controlY = _bus.ReadControlWord(1, 5);
+        int scrollX = _flipScreen
+            ? (controlX - 12) & 0x01ff
+            : (-controlX - 5) & 0x01ff;
+        int scrollY = _flipScreen
+            ? controlY & 0x01ff
+            : (-controlY) & 0x01ff;
+
+        int sourceY = (screenLine + scrollY) & 0x01ff;
         int row = (sourceY >> 3) & 63;
         bool drewAny = false;
         int pixelY = sourceY & 7;
+        if (_flipScreen)
+            pixelY ^= 7;
         for (int screenX = 0; screenX < FrameWidth; screenX++)
         {
             int absoluteX = screenX + VisibleAreaMinX;
             if (!IsMameClipAllowed(screenLine, pivotMix, absoluteX))
                 continue;
 
-            int sourceX = (xSampleEnabled ? MameMosaicX(absoluteX, line.XSample) : absoluteX) & 0x01ff;
+            int sampledX = xSampleEnabled ? MameMosaicX(absoluteX, line.XSample) : absoluteX;
+            int sourceX = (sampledX + scrollX) & 0x01ff;
             int column = (sourceX >> 3) & 63;
             int pixelX = sourceX & 7;
+            if (_flipScreen)
+                pixelX ^= 7;
             ushort word = _bus.ReadTextWord(row * columns + column);
             int code = word & 0x00ff;
             if (code == 0)
@@ -4830,6 +5257,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static bool PivotUsesPixelLayer(F3LineState line)
         => (line.PivotControl & 0xa0) != 0;
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private int DecodeF3CharPixel(int code, int x, int y)
     {
         int bitOffset = code * 32 * 8 + y * 32 + GetF3CharXOffset(x);
@@ -4851,6 +5279,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return pen;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private int DecodeF3PivotPixel(int code, int x, int y)
     {
         int bitOffset = code * 32 * 8 + y * 32 + GetF3CharXOffset(x);
@@ -4920,6 +5349,23 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         BuildSpriteList();
         _latchedSprites.Clear();
         _latchedSprites.AddRange(_sprites);
+
+        if (RenderStats)
+            _lastVisibleSprites = drawnSpriteCount;
+    }
+
+    private void RefreshCurrentSpriteFrame(TaitoF3RomSet roms)
+    {
+        if (!_spriteTrails)
+            ClearSpriteReefForNextFrame();
+
+        BuildSpriteList();
+        _latchedSprites.Clear();
+        _latchedSprites.AddRange(_sprites);
+
+        int drawnSpriteCount = _latchedSprites.Count;
+        for (int i = _latchedSprites.Count - 1; i >= 0; i--)
+            DrawSpriteToReef(roms, _latchedSprites[i]);
 
         if (RenderStats)
             _lastVisibleSprites = drawnSpriteCount;
@@ -5077,6 +5523,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _lastSpriteClosestDistance = Math.Min(_lastSpriteClosestDistance, Math.Max(0, dx) + Math.Max(0, dy));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderSpriteReefToFrame()
     {
         bool drewAny = false;
@@ -5123,6 +5570,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return drewAny;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderSpriteReefPixel(int offset)
     {
         ushort paletteIndex = _spriteReefPalette[offset];
@@ -5135,6 +5583,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return RenderSpriteReefPixelAt(offset, x, y, screenY, paletteIndex);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderSpriteReefRow(int y, int rowOffset, int screenY)
     {
         bool drewAny = false;
@@ -5178,6 +5627,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return drewAny;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderSpriteReefRowGroup(int y, int spriteGroup)
     {
         if ((uint)y >= FrameHeight || !_spriteReefRowActive[y])
@@ -5186,11 +5636,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         bool drewAny = false;
         int screenY = y + VisibleAreaMinY;
         F3LineState line = _lineStates[screenY & 0xff];
-        ushort spriteMix = line.SpriteMix[spriteGroup & 3];
-        int spriteState = PackSpriteCurrentState(spriteMix, line.SpriteBlendSelect[spriteGroup & 3], GetSpriteLayerRank(spriteGroup));
+        int group = spriteGroup & 3;
+        if ((_spriteReefRowGroupMask[y] & (1 << group)) == 0)
+            return false;
+
+        ushort spriteMix = line.SpriteMix[group];
+        int spriteState = PackSpriteCurrentState(spriteMix, line.SpriteBlendSelect[group], GetSpriteLayerRank(group));
+        if ((spriteState & (1 << 16)) == 0)
+            return false;
         int rowOffset = y * FrameWidth;
 
-        if (line.SpriteXSampleEnable[spriteGroup & 3])
+        if (line.SpriteXSampleEnable[group])
         {
             for (int screenX = 0; screenX < FrameWidth; screenX++)
             {
@@ -5199,7 +5655,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     continue;
 
                 int sourceOffset = rowOffset + sampleX;
-                if ((_spriteReefGroup[sourceOffset] & 3) != spriteGroup)
+                if ((_spriteReefGroup[sourceOffset] & 3) != group)
                     continue;
 
                 ushort paletteIndex = _spriteReefPalette[sourceOffset];
@@ -5216,7 +5672,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         {
             int offset = node - 1;
             node = _spriteReefNext[offset];
-            if ((_spriteReefGroup[offset] & 3) != spriteGroup)
+            if ((_spriteReefGroup[offset] & 3) != group)
                 continue;
 
             ushort paletteIndex = _spriteReefPalette[offset];
@@ -5242,6 +5698,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return state;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderSpriteReefPixelAt(int offset, int x, int y, int screenY)
     {
         ushort paletteIndex = _spriteReefPalette[offset];
@@ -5251,6 +5708,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return RenderSpriteReefPixelAt(offset, x, y, screenY, paletteIndex);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderSpriteReefPixelAt(int offset, int x, int y, int screenY, ushort paletteIndex)
     {
         int spriteGroup = _spriteReefGroup[offset];
@@ -5292,6 +5750,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private bool RenderSpriteReefPixelAt(int offset, int x, ushort paletteIndex, ushort spriteMix, int spriteState, F3LineState line)
     {
         if ((spriteState & (1 << 16)) == 0)
@@ -5340,7 +5799,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         {
             Array.Clear(_spriteReefPalette);
             Array.Clear(_spriteReefGroup);
+            Array.Clear(_spriteReefNext);
             Array.Clear(_spriteReefRowActive);
+            Array.Clear(_spriteReefRowHead);
+            Array.Clear(_spriteReefRowGroupMask);
             _spriteReefTouchedRows.Clear();
             return;
         }
@@ -5359,6 +5821,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             int y = _spriteReefTouchedRows[i];
             _spriteReefRowActive[y] = false;
             _spriteReefRowHead[y] = 0;
+            _spriteReefRowGroupMask[y] = 0;
         }
         _spriteReefTouchedRows.Clear();
     }
@@ -5705,6 +6168,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
         _spriteReefNext[offset] = _spriteReefRowHead[y];
         _spriteReefRowHead[y] = offset + 1;
+        int group = _spriteReefGroup[offset] & 3;
+        _spriteReefRowGroupMask[y] |= (byte)(1 << group);
     }
 
     private void AddSpriteReefOffset(int offset)
@@ -5713,6 +6178,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _spriteReefOffsets[_spriteReefOffsetCount++] = offset;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private static int DecodeSpritePixel(TaitoF3RomSet roms, int code, int x, int y)
     {
         int elements = roms.SpritePixels.Length / 0x100;
@@ -5789,6 +6255,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         WritePalettePixelAtOffset(priorityOffset, (ushort)paletteIndex, priority, layerRank, blendMode, blendSelect, _lineStates[(y + VisibleAreaMinY) & 0xff]);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void WritePalettePixelAtOffset(int priorityOffset, ushort palette, int priority, byte layerRank, int blendMode, bool blendSelect, F3LineState line)
     {
         if (blendMode == _mixSrcBlendMode[priorityOffset])
@@ -5848,6 +6315,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void RenderMameMixBufferToFrame()
     {
         if (RenderStats)
@@ -5899,6 +6367,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void RenderMameMixBufferToFrameBytes(int cacheFrame)
     {
         byte[] srcBlendMode = _mixSrcBlendMode;
@@ -5993,6 +6462,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint ReadCachedPaletteColor(ushort paletteIndex, int cacheFrame)
     {
         int index = paletteIndex & 0x1fff;
@@ -6005,6 +6475,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return color;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static uint BlendFixed3(uint source, uint destination, int sourceWeight, int destinationWeight)
     {
         int b = Math.Min(255, ((((int)(source & 0xff) * sourceWeight) + ((int)(destination & 0xff) * destinationWeight)) >> 3));
@@ -6071,6 +6542,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         return 0xff000000u | ((uint)r << 16) | ((uint)g << 8) | (uint)b;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private static int DecodeTilemapPixel(TaitoF3RomSet roms, int code, int x, int y, int penMask)
     {
         int elements = roms.TilemapPixels.Length / 0x100;
@@ -7256,14 +7728,31 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             }
 
             int spriteOffset = (int)relative;
-            ushort before = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
-            _spriteRam[spriteOffset] = (byte)(value >> 8);
-            _spriteRam[spriteOffset + 1] = (byte)value;
-            ushort after = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
-            if (before == 0 && after != 0)
-                _spriteNonZeroWords++;
-            else if (before != 0 && after == 0)
-                _spriteNonZeroWords--;
+            if ((spriteOffset & 1) == 0)
+            {
+                ushort before = (ushort)((_spriteRam[spriteOffset] << 8) | _spriteRam[spriteOffset + 1]);
+                if (before == value)
+                    return;
+
+                _spriteRam[spriteOffset] = (byte)(value >> 8);
+                _spriteRam[spriteOffset + 1] = (byte)value;
+                if (before == 0 && value != 0)
+                    _spriteNonZeroWords++;
+                else if (before != 0 && value == 0)
+                    _spriteNonZeroWords--;
+            }
+            else
+            {
+                ushort before = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
+                _spriteRam[spriteOffset] = (byte)(value >> 8);
+                _spriteRam[spriteOffset + 1] = (byte)value;
+                ushort after = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
+                if (before == 0 && after != 0)
+                    _spriteNonZeroWords++;
+                else if (before != 0 && after == 0)
+                    _spriteNonZeroWords--;
+            }
+
             if (value != 0)
             {
                 LastNonZeroSpriteWritePc = CurrentCpuPc;
@@ -8072,6 +8561,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (relative < (uint)_palette.Length - 1u)
             {
                 int paletteOffset = (int)relative;
+                ushort before = (ushort)((_palette[paletteOffset] << 8) | _palette[paletteOffset + 1]);
+                if (before == value)
+                    return true;
+
                 _palette[paletteOffset] = (byte)(value >> 8);
                 _palette[paletteOffset + 1] = (byte)value;
                 PaletteWrites += 2;
@@ -8082,13 +8575,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (relative < (uint)_spriteRam.Length - 1u)
             {
                 int spriteOffset = (int)relative;
-                ushort before = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
+                ushort before = (ushort)((_spriteRam[spriteOffset] << 8) | _spriteRam[spriteOffset + 1]);
+                if (before == value)
+                    return true;
+
                 _spriteRam[spriteOffset] = (byte)(value >> 8);
                 _spriteRam[spriteOffset + 1] = (byte)value;
-                ushort after = ReadBigEndianWord(_spriteRam, spriteOffset & ~1);
-                if (before == 0 && after != 0)
+                if (before == 0 && value != 0)
                     _spriteNonZeroWords++;
-                else if (before != 0 && after == 0)
+                else if (before != 0 && value == 0)
                     _spriteNonZeroWords--;
                 if (value != 0)
                 {
@@ -8105,15 +8600,17 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             {
                 int pfOffset = (int)relative;
                 int wordOffset = pfOffset >> 1;
-                ushort before = ReadBigEndianWord(_playfieldRam, pfOffset & ~1);
+                ushort before = (ushort)((_playfieldRam[pfOffset] << 8) | _playfieldRam[pfOffset + 1]);
+                if (before == value)
+                    return true;
+
                 _playfieldRam[pfOffset] = (byte)(value >> 8);
                 _playfieldRam[pfOffset + 1] = (byte)value;
-                ushort after = ReadBigEndianWord(_playfieldRam, pfOffset & ~1);
-                if (before == 0 && after != 0)
+                if (before == 0 && value != 0)
                     _playfieldNonZeroWords++;
-                else if (before != 0 && after == 0)
+                else if (before != 0 && value == 0)
                     _playfieldNonZeroWords--;
-                UpdatePlayfieldRowUsage(wordOffset, before, after);
+                UpdatePlayfieldRowUsage(wordOffset, before, value);
                 if (value != 0)
                 {
                     LastNonZeroPlayfieldWritePc = CurrentCpuPc;
@@ -8128,13 +8625,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (relative < (uint)_textRam.Length - 1u)
             {
                 int textOffset = (int)relative;
-                ushort before = ReadBigEndianWord(_textRam, textOffset & ~1);
+                ushort before = (ushort)((_textRam[textOffset] << 8) | _textRam[textOffset + 1]);
+                if (before == value)
+                    return true;
+
                 _textRam[textOffset] = (byte)(value >> 8);
                 _textRam[textOffset + 1] = (byte)value;
-                ushort after = ReadBigEndianWord(_textRam, textOffset & ~1);
-                if (before == 0 && after != 0)
+                if (before == 0 && value != 0)
                     _textNonZeroWords++;
-                else if (before != 0 && after == 0)
+                else if (before != 0 && value == 0)
                     _textNonZeroWords--;
                 if (value != 0)
                 {
@@ -8150,6 +8649,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (relative < (uint)_charRam.Length - 1u)
             {
                 int charOffset = (int)relative;
+                ushort before = (ushort)((_charRam[charOffset] << 8) | _charRam[charOffset + 1]);
+                if (before == value)
+                    return true;
+
                 _charRam[charOffset] = (byte)(value >> 8);
                 _charRam[charOffset + 1] = (byte)value;
                 PlayfieldWrites += 2;
@@ -8160,6 +8663,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (relative < (uint)_lineRam.Length - 1u)
             {
                 int lineOffset = (int)relative;
+                ushort before = (ushort)((_lineRam[lineOffset] << 8) | _lineRam[lineOffset + 1]);
+                if (before == value)
+                    return true;
+
                 _lineRam[lineOffset] = (byte)(value >> 8);
                 _lineRam[lineOffset + 1] = (byte)value;
                 PlayfieldWrites += 2;
@@ -8170,13 +8677,15 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (relative < (uint)_pivotRam.Length - 1u)
             {
                 int pivotOffset = (int)relative;
-                ushort before = ReadBigEndianWord(_pivotRam, pivotOffset & ~1);
+                ushort before = (ushort)((_pivotRam[pivotOffset] << 8) | _pivotRam[pivotOffset + 1]);
+                if (before == value)
+                    return true;
+
                 _pivotRam[pivotOffset] = (byte)(value >> 8);
                 _pivotRam[pivotOffset + 1] = (byte)value;
-                ushort after = ReadBigEndianWord(_pivotRam, pivotOffset & ~1);
-                if (before == 0 && after != 0)
+                if (before == 0 && value != 0)
                     _pivotNonZeroWords++;
-                else if (before != 0 && after == 0)
+                else if (before != 0 && value == 0)
                     _pivotNonZeroWords--;
                 PlayfieldWrites += 2;
                 return true;
