@@ -9,7 +9,7 @@ internal sealed class TaitoF3SoundSystem
     private const int SoundCpuClockHz = 30_476_180 / 2;
     private const double TargetFps = 26_686_000.0 / 4.0 / (432.0 * 262.0);
     private const int SoundCyclesPerFrame = (int)(SoundCpuClockHz / TargetFps);
-    private const int SilentSoundCyclesPerFrame = SoundCyclesPerFrame / 8;
+    private const int SilentSoundCyclesPerFrame = SoundCyclesPerFrame;
 
     private readonly M68000 _cpu = M68000.CreateBuilder()
         .AllowTasWrites(true)
@@ -79,7 +79,7 @@ internal sealed class TaitoF3SoundSystem
             _cpu.Reset(_bus);
             _lastAudioWasNonZero = false;
             _lastMainDualPortWriteSerial = mainDualPortWriteSerial;
-            _silentCommandDrainFrames = 8;
+            _silentCommandDrainFrames = 0;
         }
 
         int sampleFrames = BuildFrameAudio();
@@ -92,14 +92,6 @@ internal sealed class TaitoF3SoundSystem
             _lastMainDualPortWriteSerial = mainDualPortWriteSerial;
             _silentCommandDrainFrames = 8;
         }
-        else if (!_lastAudioWasNonZero && _silentCommandDrainFrames <= 0)
-        {
-            _bus.LastFrameCycles = 0;
-            _bus.LastFrameInstructions = 0;
-            _bus.LastFrameCycleBudget = 0;
-            return;
-        }
-
         int cycleBudget = _lastAudioWasNonZero
             ? SoundCyclesPerFrame
             : SilentSoundCyclesPerFrame;
@@ -112,6 +104,18 @@ internal sealed class TaitoF3SoundSystem
         {
             uint pcBefore = _cpu.Pc;
             ushort opBefore = _cpu.NextOpcode;
+            if (TryHandleSoundFastPath(pcBefore, opBefore, out uint soundFastCycles))
+            {
+                int fastCycles = Math.Max(1, (int)soundFastCycles);
+                cycles += fastCycles;
+                _bus.Tick(fastCycles);
+                instructions++;
+                repeatedLineA = 0;
+                lastPc = pcBefore;
+                lastOp = opBefore;
+                continue;
+            }
+
             if (TryHandleSoundLineA(pcBefore, opBefore, out uint lineACycles))
             {
                 int fastCycles = Math.Max(1, (int)lineACycles);
@@ -161,6 +165,78 @@ internal sealed class TaitoF3SoundSystem
             _silentCommandDrainFrames--;
     }
 
+    private bool TryHandleSoundFastPath(uint pc, ushort opcode, out uint cycles)
+    {
+        cycles = 0;
+
+        if (pc == 0x00c108e2 && opcode == 0x20c0)
+        {
+            var state = _cpu.GetState();
+            state.Address[0] = 0x0004_0000;
+            ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
+            uint nextPc = 0x00c108ec;
+            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            cycles = 40;
+            return true;
+        }
+
+        if (pc == 0x00c1106e && opcode == 0x5383)
+        {
+            var state = _cpu.GetState();
+            state.Data[3] = 0;
+            ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
+            uint nextPc = 0x00c11072;
+            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            cycles = 40;
+            return true;
+        }
+
+        if (pc == 0x00c111fa && opcode == 0x12d8)
+        {
+            var state = _cpu.GetState();
+            uint source = state.Address[0] & 0x00ff_ffff;
+            uint dest = state.Address[1] & 0x00ff_ffff;
+            int count = Math.Clamp(0x0000_cf52 - (int)(dest & 0xffff), 0, 0x4000);
+            for (int i = 0; i < count; i++)
+                _bus.WriteByte(dest + (uint)i, _bus.ReadByte(source + (uint)i));
+
+            state.Address[0] = (source + (uint)count) & 0x00ff_ffff;
+            state.Address[1] = (dest + (uint)count) & 0x00ff_ffff;
+            ushort sr = (ushort)(state.Sr & ~0x000f);
+            uint nextPc = 0x00c11202;
+            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            cycles = (uint)Math.Max(40, count / 4);
+            return true;
+        }
+
+        if (pc == 0x00c11a92 && opcode == 0x32d8)
+        {
+            var state = _cpu.GetState();
+            uint source = state.Address[0] & 0x00ff_ffff;
+            uint dest = state.Address[1] & 0x00ff_ffff;
+            int words = Math.Clamp((0x0000_510e - (int)(dest & 0xffff)) / 2, 0, 0x4000);
+            for (int i = 0; i < words; i++)
+            {
+                ushort value = _bus.ReadWord(source + (uint)(i * 2));
+                _bus.WriteWord(dest + (uint)(i * 2), value);
+            }
+
+            state.Address[0] = (source + (uint)(words * 2)) & 0x00ff_ffff;
+            state.Address[1] = (dest + (uint)(words * 2)) & 0x00ff_ffff;
+            ushort sr = (ushort)(state.Sr & ~0x000f);
+            uint nextPc = 0x00c11a9a;
+            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
+            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            cycles = (uint)Math.Max(40, words / 2);
+            return true;
+        }
+
+        return false;
+    }
+
     private bool TryHandleSoundLineA(uint pc, ushort opcode, out uint cycles)
     {
         cycles = 0;
@@ -171,9 +247,6 @@ internal sealed class TaitoF3SoundSystem
         // vector 10, whose handler stores D0 into the stacked SR, advances the
         // stacked PC by one word, and RTEs. Apply that net 68000 state change
         // here so the sound CPU does not burn a frame budget on the software gate.
-        if (pc != 0x00c19d56 && pc != 0x00c19d5e)
-            return false;
-
         var state = _cpu.GetState();
         ushort sr = (ushort)state.Data[0];
         uint nextPc = (pc + 2) & 0x00ff_ffff;
@@ -208,7 +281,7 @@ internal sealed class TaitoF3SoundSystem
     public void SaveState(BinaryWriter writer)
     {
         writer.Write("F3SND");
-        writer.Write(2);
+        writer.Write(3);
         writer.Write(_resetAsserted);
         writer.Write(_suspended);
         writer.Write(_lastAudioWasNonZero);
@@ -231,7 +304,7 @@ internal sealed class TaitoF3SoundSystem
         if (reader.ReadString() != "F3SND")
             throw new InvalidDataException("Not a Taito F3 sound savestate.");
         int version = reader.ReadInt32();
-        if (version is < 1 or > 2)
+        if (version is < 1 or > 3)
             throw new InvalidDataException($"Unsupported Taito F3 sound savestate version {version}.");
 
         _resetAsserted = reader.ReadBoolean();
@@ -252,6 +325,8 @@ internal sealed class TaitoF3SoundSystem
         _bus.LoadState(reader, version);
         _otis.LoadState(reader);
         Array.Clear(_frameAudio);
+        _lastAudioWasNonZero = false;
+        _silentCommandDrainFrames = 0;
     }
 
     private int _lastAudioSamples;
@@ -311,6 +386,7 @@ internal sealed class TaitoF3SoundSystem
         public int LastFrameCycles { get; set; }
         public int LastFrameInstructions { get; set; }
         public int LastFrameCycleBudget { get; set; }
+        private int _acknowledgedInterruptVector = -1;
 
         public BusSignals Signals => new(false);
         public ushort CurrentOpcode { get; private set; }
@@ -337,6 +413,7 @@ internal sealed class TaitoF3SoundSystem
             LastLineAPc = 0;
             LastLineAOpcode = 0;
             LastFrameCycles = LastFrameInstructions = LastFrameCycleBudget = 0;
+            _acknowledgedInterruptVector = -1;
             _duart.Reset();
             _esp.Reset();
             _otis?.Reset();
@@ -414,7 +491,18 @@ internal sealed class TaitoF3SoundSystem
         }
 
         public uint ReadLong(uint address)
-            => ((uint)ReadWord(address) << 16) | ReadWord(address + 2);
+        {
+            address &= 0x00ff_ffff;
+            if (address == 0x000078 && _acknowledgedInterruptVector >= 0)
+            {
+                int vector = _acknowledgedInterruptVector;
+                _acknowledgedInterruptVector = -1;
+                uint vectorAddress = (uint)(vector << 2) & 0x00ff_ffff;
+                return ((uint)ReadWord(vectorAddress) << 16) | ReadWord(vectorAddress + 2);
+            }
+
+            return ((uint)ReadWord(address) << 16) | ReadWord(address + 2);
+        }
 
         public ushort ReadOpcodeWord(uint address) => ReadWord(address);
 
@@ -514,7 +602,11 @@ internal sealed class TaitoF3SoundSystem
         }
 
         public byte InterruptLevel() => (_es5505IrqAsserted || _duart.IrqAsserted) ? (byte)6 : (byte)0;
-        public void AcknowledgeInterrupt(byte level) { }
+        public void AcknowledgeInterrupt(byte level)
+        {
+            if (level == 6 && _duart.IrqAsserted)
+                _acknowledgedInterruptVector = _duart.AcknowledgeVector();
+        }
 
         private void SetEs5505IrqLine(bool asserted)
         {
@@ -590,6 +682,7 @@ internal sealed class TaitoF3SoundSystem
             writer.Write(LastFrameCycles);
             writer.Write(LastFrameInstructions);
             writer.Write(LastFrameCycleBudget);
+            writer.Write(_acknowledgedInterruptVector);
             _duart.SaveState(writer);
         }
 
@@ -617,6 +710,7 @@ internal sealed class TaitoF3SoundSystem
             LastFrameCycles = reader.ReadInt32();
             LastFrameInstructions = reader.ReadInt32();
             LastFrameCycleBudget = reader.ReadInt32();
+            _acknowledgedInterruptVector = version >= 3 ? reader.ReadInt32() : -1;
             _duart.LoadState(reader);
             _esp.Reset();
         }
@@ -635,6 +729,8 @@ internal sealed class TaitoF3SoundSystem
 
         private sealed class MinimalEs5510Host
         {
+            private readonly int[] _gpr = new int[0x100];
+            private readonly long[] _instr = new long[0x100];
             private int _gprLatch;
             private long _instrLatch;
             private int _dilLatch;
@@ -657,6 +753,8 @@ internal sealed class TaitoF3SoundSystem
                 _ramSelect = 0;
                 _hostControl = 0x04;
                 _hostSerial = 0;
+                Array.Clear(_gpr);
+                Array.Clear(_instr);
                 Array.Clear(_dram);
             }
 
@@ -751,13 +849,24 @@ internal sealed class TaitoF3SoundSystem
                         _hostSerial = data;
                         break;
                     case 0x80:
-                        _instrLatch = 0;
-                        _gprLatch = 0;
+                        if (data < 0xa0)
+                            _instrLatch = _instr[data] & 0x0000_ffff_ffff_ffffL;
+                        if (data < 0xc0)
+                            _gprLatch = _gpr[data] & 0x00ff_ffff;
                         break;
                     case 0xa0:
+                        if (data < 0xc0)
+                            _gpr[data] = _gprLatch & 0x00ff_ffff;
+                        break;
                     case 0xc0:
+                        if (data < 0xa0)
+                            _instr[data] = _instrLatch & 0x0000_ffff_ffff_ffffL;
+                        break;
                     case 0xe0:
-                    case 0x1f:
+                        if (data < 0xa0)
+                            _instr[data] = _instrLatch & 0x0000_ffff_ffff_ffffL;
+                        if (data < 0xc0)
+                            _gpr[data] = _gprLatch & 0x00ff_ffff;
                         break;
                 }
             }
@@ -786,6 +895,7 @@ internal sealed class TaitoF3SoundSystem
 
             public bool IrqAsserted => (_isr & _imr) != 0;
             public string DebugSummary => $"{_isr:X2}/{_imr:X2}/{_acr:X2}/ct{_counterReload:X4}/{(_timerEnabled ? 1 : 0)}";
+            public int AcknowledgeVector() => _ivr;
 
             public void Reset()
             {
@@ -932,6 +1042,12 @@ internal sealed class TaitoF3SoundSystem
         private byte _irqv = 0x80;
         private ushort _serialMode;
         private Action<bool>? _irqCallback;
+        private int _controlWrites;
+        private int _runControlWrites;
+        private int _lastControlVoice;
+        private ushort _lastControlData;
+        private ushort _lastControlMask;
+        private ushort _lastControlValue;
 
         public TaitoF3Es5505()
         {
@@ -962,7 +1078,7 @@ internal sealed class TaitoF3SoundSystem
                 string firstVoice = first >= 0
                     ? $"v{first}=ctl{_voices[first].Control:X4}/fr{_voices[first].Freq:X4}/vol{_voices[first].LeftVolume:X2},{_voices[first].RightVolume:X2}/acc{_voices[first].Accum:X8}/st{_voices[first].Start:X8}/en{_voices[first].End:X8}"
                     : "v-";
-                return $"otis=pg{_currentPage:X2}/act{_activeVoices}/run{running}/aud{audible}/irq{_irqv:X2}/{firstVoice}";
+                return $"otis=pg{_currentPage:X2}/act{_activeVoices}/run{running}/aud{audible}/irq{_irqv:X2}/cw{_controlWrites}/{_runControlWrites}/last{_lastControlVoice}:{_lastControlData:X4}&{_lastControlMask:X4}->{_lastControlValue:X4}/{firstVoice}";
             }
         }
 
@@ -982,6 +1098,12 @@ internal sealed class TaitoF3SoundSystem
             UpdateChipSampleRate();
             _irqv = 0x80;
             _serialMode = 0;
+            _controlWrites = 0;
+            _runControlWrites = 0;
+            _lastControlVoice = 0;
+            _lastControlData = 0;
+            _lastControlMask = 0;
+            _lastControlValue = 0;
             _irqCallback?.Invoke(false);
             Array.Clear(_banks);
             foreach (Voice voice in _voices)
@@ -1110,6 +1232,7 @@ internal sealed class TaitoF3SoundSystem
                         voice.Control = (ushort)((voice.Control & ~0x00ff) | (data & 0x00ff));
                     if (hi)
                         voice.Control = (ushort)((voice.Control & ~0x0f00) | (data & 0x0f00));
+                    NoteControlWrite(voice, data, mask);
                     break;
                 case 0x01:
                     ushort freq = (ushort)(voice.Freq << 1);
@@ -1217,6 +1340,17 @@ internal sealed class TaitoF3SoundSystem
         {
             _activeVoices = (byte)(data & 0x1f);
             UpdateChipSampleRate();
+        }
+
+        private void NoteControlWrite(Voice voice, ushort data, ushort mask)
+        {
+            _controlWrites++;
+            if ((voice.Control & ControlStopMask) == 0)
+                _runControlWrites++;
+            _lastControlVoice = voice.Index;
+            _lastControlData = data;
+            _lastControlMask = mask;
+            _lastControlValue = voice.Control;
         }
 
         private void UpdateChipSampleRate()
