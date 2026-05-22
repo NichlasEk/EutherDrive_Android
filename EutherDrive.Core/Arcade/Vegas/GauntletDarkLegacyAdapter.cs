@@ -775,6 +775,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeStatusMaskUpdate(pc))
             return;
+        if (TryFastPathKnownRuntimeListHeadProbeWrapperEntry(pc))
+            return;
         if (TryFastPathKnownRuntimeCountDelay(pc))
             return;
         if (TryFastPathKnownRuntimeDelayCallback(pc))
@@ -1712,6 +1714,55 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = CanonicalizeCodeAddress(returnAddress);
+    }
+
+    private bool TryFastPathKnownRuntimeListHeadProbeWrapperEntry(ulong pc)
+    {
+        const ulong wrapper = 0xffffffff800de2ccUL;
+        const ulong hookPointer = 0xffffffff80238174UL;
+        const ulong listHead = 0xffffffff80262ad0UL;
+        if (pc != wrapper)
+            return false;
+        if (_memory.Read32(wrapper + 0x00UL) != 0x27bdffe8U ||
+            _memory.Read32(wrapper + 0x04UL) != 0x3c028023U ||
+            _memory.Read32(wrapper + 0x08UL) != 0x8c428174U ||
+            _memory.Read32(wrapper + 0x0cUL) != 0x0080282dU ||
+            _memory.Read32(wrapper + 0x10UL) != 0x10400005U ||
+            _memory.Read32(wrapper + 0x14UL) != 0xafbf0010U ||
+            _memory.Read32(wrapper + 0x28UL) != 0x3c048026U ||
+            _memory.Read32(wrapper + 0x2cUL) != 0x0c03787eU ||
+            _memory.Read32(wrapper + 0x30UL) != 0x24842ad0U ||
+            _memory.Read32(wrapper + 0x34UL) != 0x8fbf0010U ||
+            _memory.Read32(wrapper + 0x38UL) != 0x03e00008U ||
+            _memory.Read32(wrapper + 0x3cUL) != 0x27bd0018U)
+        {
+            return false;
+        }
+        if (_memory.Read32(hookPointer) != 0)
+            return false;
+
+        ulong record = _gpr[4];
+        if (!IsMainRamRange(record + 4UL, 4UL) ||
+            _memory.Read32(record + 4UL) != unchecked((uint)listHead))
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        if ((returnAddress >> 32) != 0xffffffffUL)
+            return false;
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000c0000UL or > 0x00120000UL)
+            return false;
+
+        _gpr[2] = SignExtend32(unchecked((uint)listHead));
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 48UL);
+        _instructionCounter += 48UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = CanonicalizeCodeAddress(returnAddress);
+        return true;
     }
 
     private bool TryFastPathKnownRamTest(ulong pc)
@@ -5562,7 +5613,7 @@ internal sealed class MipsR5000Core
         if (atWrapper)
         {
             ulong returnOffset = returnAddress & 0x1fffffffUL;
-            if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+            if (returnOffset is < 0x000c0000UL or > 0x00110000UL)
                 return false;
         }
 
