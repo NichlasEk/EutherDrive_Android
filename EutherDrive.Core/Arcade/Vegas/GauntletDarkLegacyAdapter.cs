@@ -11,7 +11,7 @@ using SharpCompress.Archives;
 
 namespace EutherDrive.Core.Arcade.Vegas;
 
-public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
+public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
 {
     private const int FrameWidth = 640;
     private const int FrameHeight = 480;
@@ -23,6 +23,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
     private readonly GauntletDarkLegacyMachine _machine = new();
     private readonly bool _skipProbeFrameRender = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SKIP_FRAME_RENDER") == "1";
     private RomIdentity? _romIdentity;
+    private string? _picNvramPath;
+    private string? _timekeeperRamPath;
     private long _frameCounter;
     private bool _loaded;
 
@@ -66,8 +68,15 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
     public void LoadRom(string path)
     {
         GauntletRomSet romSet = GauntletRomSet.Load(path);
-        _machine.Load(romSet);
         _romIdentity = romSet.CreateIdentity();
+        string saveDirectory = ResolvePersistentSecurityDirectory(romSet.SourcePath);
+        string saveName = romSet.SetName;
+        _picNvramPath = Path.Combine(saveDirectory, $"{saveName}.picnv");
+        _timekeeperRamPath = Path.Combine(saveDirectory, $"{saveName}.timekeeper");
+        _machine.Load(
+            romSet,
+            LoadPersistentBytes(_picNvramPath, 0x100),
+            LoadPersistentBytes(_timekeeperRamPath, 0x8000));
         _loaded = true;
         Reset();
     }
@@ -84,13 +93,20 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
         if (!_loaded)
             return;
 
-        EutherFrameTarget target = _skipProbeFrameRender
-            ? new EutherFrameTarget(Array.Empty<byte>(), 0, 0, 0)
-            : new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride);
-        _machine.RunFrame(target);
-        _frameCounter++;
-        if (!_skipProbeFrameRender && !_machine.Voodoo.HasVideoActivity)
-            DrawDiagnosticFrame();
+        try
+        {
+            EutherFrameTarget target = _skipProbeFrameRender
+                ? new EutherFrameTarget(Array.Empty<byte>(), 0, 0, 0)
+                : new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride);
+            _machine.RunFrame(target);
+            _frameCounter++;
+            if (!_skipProbeFrameRender && !_machine.Voodoo.HasVideoActivity)
+                DrawDiagnosticFrame();
+        }
+        finally
+        {
+            FlushPersistentSecurityState();
+        }
     }
 
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
@@ -110,6 +126,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
         channels = AudioChannels;
         return _machine.Audio.GetFrameBuffer();
     }
+
+    public void Dispose() => FlushPersistentSecurityState(force: true);
 
     public void SetInputState(
         bool up,
@@ -165,6 +183,70 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore
             }
         }
     }
+
+    private static byte[]? LoadPersistentBytes(string path, int expectedLength)
+    {
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            byte[] data = File.ReadAllBytes(path);
+            return data.Length == expectedLength ? data : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string ResolvePersistentSecurityDirectory(string sourcePath)
+    {
+        string configured = PersistentStoragePath.ResolveSaveDirectory(sourcePath, "gauntdl");
+        if (TryCreateDirectory(configured))
+            return configured;
+
+        string fallback = Path.Combine(Directory.GetCurrentDirectory(), "saves", "gauntdl");
+        if (TryCreateDirectory(fallback))
+            return fallback;
+
+        return Directory.GetCurrentDirectory();
+    }
+
+    private static bool TryCreateDirectory(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(path);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void FlushPersistentSecurityState(bool force = false)
+    {
+        PersistSnapshotIfDirty(_picNvramPath, _machine.MemoryMap.IoasicPicNvramDirty, _machine.MemoryMap.ExportIoasicPicNvram, _machine.MemoryMap.ClearIoasicPicNvramDirty, force);
+        PersistSnapshotIfDirty(_timekeeperRamPath, _machine.MemoryMap.TimekeeperRamDirty, _machine.MemoryMap.ExportTimekeeperRam, _machine.MemoryMap.ClearTimekeeperRamDirty, force);
+    }
+
+    private static void PersistSnapshotIfDirty(string? path, bool dirty, Func<byte[]> exportSnapshot, Action clearDirty, bool force)
+    {
+        if (string.IsNullOrWhiteSpace(path) || (!dirty && !force))
+            return;
+
+        try
+        {
+            File.WriteAllBytes(path, exportSnapshot());
+            clearDirty();
+        }
+        catch
+        {
+            // Security NVRAM is helpful but save failures must not stop emulation.
+        }
+    }
 }
 
 internal sealed class GauntletDarkLegacyMachine
@@ -190,7 +272,7 @@ internal sealed class GauntletDarkLegacyMachine
         Voodoo.SetCpuPcProvider(() => Cpu.Pc);
     }
 
-    public void Load(GauntletRomSet romSet)
+    public void Load(GauntletRomSet romSet, byte[]? picNvram, byte[]? timekeeperRam)
     {
         RomLoaded = romSet.MainRom.Length == 0x80000;
         Disk.Attach(romSet.ChdPath);
@@ -198,6 +280,7 @@ internal sealed class GauntletDarkLegacyMachine
         Audio.LoadBootRom(romSet.VegasSioRom);
         MemoryMap.LoadMainBootRom(romSet.MainRom);
         MemoryMap.LoadSecurityPic(romSet.SecurityPic);
+        MemoryMap.LoadPersistentSecurityState(picNvram, timekeeperRam);
         MemoryMap.AttachDevices(Sio, Disk, Audio, Voodoo);
     }
 
@@ -8709,9 +8792,12 @@ internal sealed class VegasMemoryMap
     private byte _ioasicPicIndex;
     private byte _ioasicPicTotal;
     private byte _ioasicPicNvramAddress;
+    private byte _ioasicPicNvramOldValue;
     private byte _ioasicPicTimeIndex;
     private bool _ioasicPicTimeJustWritten;
     private bool _ioasicPicNvramInitialized;
+    private bool _ioasicPicNvramDirty;
+    private bool _timekeeperRamDirty;
     private bool _fpgaConfigSeenLow;
     private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
@@ -8763,6 +8849,36 @@ internal sealed class VegasMemoryMap
     public void LoadMainBootRom(byte[] mainBootRom) => _mainBootRom = mainBootRom.ToArray();
 
     public void LoadSecurityPic(byte[] securityPic) => _securityPic = securityPic.ToArray();
+
+    public bool IoasicPicNvramDirty => _ioasicPicNvramDirty;
+    public bool TimekeeperRamDirty => _timekeeperRamDirty;
+
+    public void LoadPersistentSecurityState(byte[]? picNvram, byte[]? timekeeperRam)
+    {
+        if (picNvram is { Length: 0x100 })
+        {
+            picNvram.CopyTo(_ioasicPicNvram, 0);
+            _ioasicPicNvramInitialized = true;
+        }
+
+        if (timekeeperRam is { Length: 0x8000 })
+        {
+            timekeeperRam.CopyTo(_timekeeperRam, 0);
+            _timekeeperInitialized = true;
+        }
+
+        _ioasicPicNvramDirty = false;
+        _timekeeperRamDirty = false;
+    }
+
+    public byte[] ExportIoasicPicNvram() => _ioasicPicNvram.ToArray();
+
+    public byte[] ExportTimekeeperRam() => _timekeeperRam.ToArray();
+
+    public void ClearIoasicPicNvramDirty() => _ioasicPicNvramDirty = false;
+
+    public void ClearTimekeeperRamDirty() => _timekeeperRamDirty = false;
+
     public string DebugStatus
         => $"bram={GetTimekeeperNonDefaultCount()} wdog={_timekeeperWatchdogFrameCountdown} " +
            $"io={GetIoasicDebugStatus()} picbram={GetIoasicPicNvramNonDefaultCount()} pic={_ioasicPicState:X2}/{_ioasicPicIndex}/{_ioasicPicTotal}";
@@ -10201,7 +10317,11 @@ internal sealed class VegasMemoryMap
     private void WriteTimekeeper(uint offset, byte value)
     {
         offset &= 0x7fff;
-        _timekeeperRam[(int)offset] = value;
+        if (_timekeeperRam[(int)offset] != value)
+        {
+            _timekeeperRam[(int)offset] = value;
+            _timekeeperRamDirty = true;
+        }
         if (offset == 0x7ff7)
             ArmTimekeeperWatchdog(value);
     }
@@ -10603,6 +10723,7 @@ internal sealed class VegasMemoryMap
         _ioasicPicIndex = 0;
         _ioasicPicTotal = 0;
         _ioasicPicNvramAddress = 0;
+        _ioasicPicNvramOldValue = 0xff;
         _ioasicPicTimeIndex = 0;
         _ioasicPicTimeJustWritten = false;
         Array.Clear(_ioasicPicBuffer);
@@ -10745,12 +10866,15 @@ internal sealed class VegasMemoryMap
         }
         else if (_ioasicPicState == 0x35)
         {
+            _ioasicPicNvramOldValue = _ioasicPicNvram[_ioasicPicNvramAddress];
             _ioasicPicNvram[_ioasicPicNvramAddress] = (byte)(_ioasicPicLatch & 0x0f);
             _ioasicPicState = 0x45;
         }
         else if (_ioasicPicState == 0x45)
         {
             _ioasicPicNvram[_ioasicPicNvramAddress] |= (byte)((_ioasicPicLatch & 0x0f) << 4);
+            if (_ioasicPicNvram[_ioasicPicNvramAddress] != _ioasicPicNvramOldValue)
+                _ioasicPicNvramDirty = true;
             _ioasicPicState = 0;
         }
     }
