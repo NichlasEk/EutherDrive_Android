@@ -41,7 +41,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         return IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST"));
     }
 
-    private static bool IsTruthy(string? value)
+    internal static bool IsTruthy(string? value)
         => value is not null &&
            (value == "1" ||
             value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
@@ -597,7 +597,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableRuntimeInterruptBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE");
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
-    private readonly bool _enableVolumeNvramSyncRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
+    private readonly bool _enableVolumeNvramSyncRepair =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC"));
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
@@ -3407,7 +3408,7 @@ internal sealed class MipsR5000Core
             0xffffffff80015a2cUL => "second-open-poll",
             0xffffffff80015a48UL => "second-unable-get-home-blocks",
             0xffffffff80015a5cUL => "home-table-parse",
-            0xffffffff80015aacUL => "home-block-version-mismatch",
+            0xffffffff80015aacUL => "home-block-status-check",
             0xffffffff80015b38UL => "boot-slot-check",
             0xffffffff80015cb0UL => "no-boot-file",
             0xffffffff80015eacUL => "boot-open-error",
@@ -3677,9 +3678,9 @@ internal sealed class MipsR5000Core
         if ((candidate0 | candidate1 | candidate2) == 0)
             return;
 
-        _memory.Write16(table + 0x04UL, 2);
+        _memory.Write16(table + 0x04UL, 3);
         _memory.Write16(table + 0x06UL, 1);
-        _memory.Write32(table + 0x64UL, 1);
+        _memory.Write32(table + 0x64UL, 0);
         foreach (ulong slotOffset in new[] { 0x50UL, 0x68UL, 0x74UL, 0x80UL })
         {
             _memory.Write32(table + slotOffset, candidate0);
