@@ -796,6 +796,8 @@ internal sealed class MipsR5000Core
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeDiagnosticDrawEntry(pc))
             return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeDiagnosticTextLineWrapper(pc))
+            return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeTextHexDrawWrapper(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeTextDrawEntry(pc))
@@ -1641,14 +1643,32 @@ internal sealed class MipsR5000Core
 
     private bool TryFastPathKnownRuntimeStatusMaskUpdateCallsite(ulong pc)
     {
-        const ulong callsite = 0xffffffff800de280UL;
-        const ulong delaySlot = callsite + 4UL;
-        const ulong returnAddress = callsite + 8UL;
         const ulong helper = 0xffffffff800111c8UL;
-        if (pc != callsite && pc != delaySlot)
+        ulong callsite;
+        ulong delaySlot;
+        ulong returnAddress;
+        ulong? delayA0;
+        if (pc is 0xffffffff800de244UL or 0xffffffff800de248UL)
+        {
+            callsite = 0xffffffff800de244UL;
+            delaySlot = 0xffffffff800de248UL;
+            returnAddress = 0xffffffff800de24cUL;
+            delayA0 = 0x7f00UL;
+        }
+        else if (pc is 0xffffffff800de280UL or 0xffffffff800de284UL)
+        {
+            callsite = 0xffffffff800de280UL;
+            delaySlot = 0xffffffff800de284UL;
+            returnAddress = 0xffffffff800de288UL;
+            delayA0 = null;
+        }
+        else
+        {
             return false;
+        }
+
         if (_memory.Read32(callsite) != 0x0c004472U ||
-            _memory.Read32(delaySlot) != 0x00000000U ||
+            _memory.Read32(delaySlot) != (delayA0.HasValue ? 0x24047f00U : 0x00000000U) ||
             _memory.Read32(helper + 0x00UL) != 0x3c028016U ||
             _memory.Read32(helper + 0x04UL) != 0x64425cecU ||
             _memory.Read32(helper + 0x08UL) != 0x8c420000U ||
@@ -1669,6 +1689,8 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        if (delayA0.HasValue)
+            _gpr[4] = delayA0.Value;
         ApplyRuntimeStatusMaskUpdate(returnAddress);
         _gpr[31] = returnAddress;
         return true;
@@ -5017,6 +5039,63 @@ internal sealed class MipsR5000Core
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * 64UL);
         _instructionCounter += 64UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeDiagnosticTextLineWrapper(ulong pc)
+    {
+        const ulong entry = 0xffffffff800df89cUL;
+        if (pc is < entry or > 0xffffffff800df958UL)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdff50U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb000a0U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080802dU ||
+            _memory.Read32(entry + 0x0cUL) != 0xafb100a4U ||
+            _memory.Read32(entry + 0x10UL) != 0x00a0882dU ||
+            _memory.Read32(entry + 0x14UL) != 0xafb200a8U ||
+            _memory.Read32(entry + 0x18UL) != 0x00c0902dU ||
+            _memory.Read32(entry + 0x1cUL) != 0xafbf00acU ||
+            _memory.Read32(entry + 0x20UL) != 0x0c037d67U ||
+            _memory.Read32(entry + 0x24UL) != 0x27a40078U ||
+            _memory.Read32(entry + 0xa8UL) != 0x8fbf00acU ||
+            _memory.Read32(entry + 0xacUL) != 0x8fb200a8U ||
+            _memory.Read32(entry + 0xb0UL) != 0x8fb100a4U ||
+            _memory.Read32(entry + 0xb4UL) != 0x8fb000a0U ||
+            _memory.Read32(entry + 0xb8UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0xbcUL) != 0x27bd00b0U)
+        {
+            return false;
+        }
+
+        ulong returnAddress;
+        if (pc == entry)
+        {
+            returnAddress = _gpr[31];
+        }
+        else
+        {
+            ulong sp = _gpr[29];
+            if (!IsMainRamRange(sp + 0xa0UL, 0x10UL))
+                return false;
+            returnAddress = SignExtend32(_memory.Read32(sp + 0xacUL));
+            _gpr[18] = SignExtend32(_memory.Read32(sp + 0xa8UL));
+            _gpr[17] = SignExtend32(_memory.Read32(sp + 0xa4UL));
+            _gpr[16] = SignExtend32(_memory.Read32(sp + 0xa0UL));
+            _gpr[31] = returnAddress;
+            _gpr[29] = sp + 0xb0UL;
+        }
+
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000d0000UL or > 0x00120000UL)
+            return false;
+
+        _gpr[2] = 4;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 128UL);
+        _instructionCounter += 128UL;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = returnAddress;
