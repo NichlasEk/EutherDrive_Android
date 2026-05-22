@@ -614,7 +614,6 @@ internal sealed class MipsR5000Core
     private int _rd0BootFileReadCount;
     private int _genericQioWaitTraceCount;
     private int _rd0QioCandidateTraceCount;
-    private int _rd0OpenPollTraceCount;
     private int _loadedBootCacheLoopTraceCount;
     private int _loadedBootCacheLoopSkipTraceCount;
     private int _bootSerialCopyLoopTraceCount;
@@ -918,10 +917,6 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeFdSlotToHandle(pc))
             return;
         if (TryCompleteKnownRuntimeGenericQioWait(pc))
-            return;
-        if (TryCompleteKnownRuntimeRd0OpenPoll(pc))
-            return;
-        if (TryCompleteKnownRuntimeRd0FollowupPoll(pc))
             return;
         if (TryKickKnownRd0AsyncCallback(pc))
             return;
@@ -3262,40 +3257,6 @@ internal sealed class MipsR5000Core
         return true;
     }
 
-    private bool TryCompleteKnownRuntimeRd0OpenPoll(ulong pc)
-    {
-        const ulong branchPc = 0xffffffff80015a2cUL;
-        const ulong rd0Object = 0xffffffff800e7810UL;
-        if (pc != branchPc || _gpr[22] != rd0Object || _gpr[6] != 0)
-            return false;
-
-        uint openState = _memory.Read32(rd0Object + 0x0cUL);
-        uint openStatus = _memory.Read32(rd0Object + 0x14UL);
-        if (openState is not (4U or 7U) || openStatus != 0)
-        {
-            if (_traceRd0Home && _rd0OpenPollTraceCount++ < 8)
-            {
-                Console.WriteLine(
-                    $"[GAUNTDL:RD0] rd0-open-poll-wait pc={pc:x16} state={openState:x8} " +
-                    $"status={openStatus:x8}");
-            }
-            return false;
-        }
-
-        const uint successStatus = 0x3500U;
-        _memory.Write32(rd0Object + 0x14UL, successStatus);
-        _gpr[6] = successStatus;
-        _gpr[0] = 0;
-        AdvanceCp0Count(_cp0CountStep * 8UL);
-        _instructionCounter += 8UL;
-        _hasPendingBranch = false;
-        _hasImmediatePcOverride = false;
-        Pc = branchPc + 0x08UL;
-        if (_traceRd0Home)
-            Console.WriteLine($"[GAUNTDL:RD0] rd0-open-poll-complete pc={pc:x16} state={openState:x8} status={successStatus:x8}");
-        return true;
-    }
-
     private bool TryCompleteKnownRuntimeGenericQioWait(ulong pc)
     {
         if (TryCompleteKnownRuntimeEarlyQioWait(pc))
@@ -3315,10 +3276,7 @@ internal sealed class MipsR5000Core
 
         uint status = _memory.Read32(_gpr[16] + 0x14UL);
         if (status == 0)
-        {
-            status = 0x3500U;
-            _memory.Write32(_gpr[16] + 0x14UL, status);
-        }
+            return false;
 
         _gpr[2] = SignExtend32(status);
         _gpr[0] = 0;
@@ -3362,10 +3320,7 @@ internal sealed class MipsR5000Core
 
         uint status = _memory.Read32(_gpr[16] + 0x14UL);
         if (status == 0)
-        {
-            status = 0x3500U;
-            _memory.Write32(_gpr[16] + 0x14UL, status);
-        }
+            return false;
 
         _gpr[2] = SignExtend32(status);
         _gpr[0] = 0;
@@ -3376,32 +3331,6 @@ internal sealed class MipsR5000Core
         Pc = loadPc + 0x0cUL;
         if (_traceRd0Home)
             Console.WriteLine($"[GAUNTDL:QIO] early-wait-complete pc={pc:x16} object={_gpr[16]:x16} status={status:x8}");
-        return true;
-    }
-
-    private bool TryCompleteKnownRuntimeRd0FollowupPoll(ulong pc)
-    {
-        const ulong loopLoadPc = 0xffffffff80022b88UL;
-        const ulong rd0Object = 0xffffffff800e7810UL;
-        if (pc != loopLoadPc || _gpr[16] != rd0Object)
-            return false;
-
-        uint openState = _memory.Read32(rd0Object + 0x0cUL);
-        uint openStatus = _memory.Read32(rd0Object + 0x14UL);
-        if (openState is not (4U or 7U) || openStatus != 0)
-            return false;
-
-        const uint successStatus = 0x3500U;
-        _memory.Write32(rd0Object + 0x14UL, successStatus);
-        _gpr[2] = successStatus;
-        _gpr[0] = 0;
-        AdvanceCp0Count(_cp0CountStep * 4UL);
-        _instructionCounter += 4UL;
-        _hasPendingBranch = false;
-        _hasImmediatePcOverride = false;
-        Pc = loopLoadPc + 0x0cUL;
-        if (_traceRd0Home)
-            Console.WriteLine($"[GAUNTDL:RD0] rd0-followup-poll-complete pc={pc:x16} state={openState:x8} status={successStatus:x8}");
         return true;
     }
 
@@ -8228,13 +8157,15 @@ internal sealed class MipsR5000Core
         if (pending == 0)
             return false;
 
-        if (_enableRuntimeInterruptBridge && IsRuntimeCodeAddress(pc))
+        if (_enableRuntimeInterruptBridge && IsRuntimeCodeAddress(pc) &&
+            (pending & ~Cp0CauseTimerInterrupt) == 0)
         {
             // The copied runtime enables Vegas interrupts before the Nile/IOASIC IRQ
-            // controller is complete. Let polling paths advance instead of entering
-            // the game's fatal "unhandled exception" path during bringup.
+            // controller is complete. Suppress only the synthetic timer source here;
+            // device IRQs must still enter the runtime handler so IDE/RD0 completions
+            // can be driven by hardware state instead of QIO status repair.
             _timerInterruptPending = false;
-            _cp0[13] &= ~Cp0CauseInterruptPendingMask;
+            _cp0[13] &= ~Cp0CauseTimerInterrupt;
             return false;
         }
 
@@ -8857,7 +8788,6 @@ internal sealed class VegasMemoryMap
     private readonly bool _traceWritesOnly = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_WRITES_ONLY") == "1";
     private readonly string? _traceTargetFilter = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_TARGET");
     private readonly TraceAddressFilter[] _traceAddressFilters = ParseTraceAddressFilters(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS"));
-    private readonly bool _enableRd0DmaQioComplete = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_DMA_QIO_COMPLETE");
     private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
     private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
     private readonly bool _traceIoasic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC") == "1";
@@ -8983,28 +8913,6 @@ internal sealed class VegasMemoryMap
            $"io={GetIoasicDebugStatus()} picbram={GetIoasicPicNvramNonDefaultCount()} pic={_ioasicPicState:X2}/{_ioasicPicIndex}/{_ioasicPicTotal}";
 
     public void SetTraceCpuPc(ulong pc) => _traceCpuPc = pc;
-
-    public void TryCompleteKnownRd0DmaQio()
-    {
-        const ulong rd0Object = 0xffffffff800e7810UL;
-        const ulong rd0Child = 0xffffffff800e7880UL;
-        const ulong homeSectorBuffer = 0xffffffff800f41e0UL;
-
-        if (!_enableRd0DmaQioComplete)
-            return;
-        if (Read32(rd0Object + 0x0cUL) != 4 ||
-            Read32(rd0Object + 0x14UL) != 0 ||
-            Read32(rd0Child + 0x1cUL) != 0x80029230U ||
-            Read32(rd0Child + 0x20UL) != 0x800e7810U ||
-            Read32(rd0Child + 0x24UL) != 2 ||
-            Read32(homeSectorBuffer) != 0xfeedf00dU)
-        {
-            return;
-        }
-
-        Write32(rd0Object + 0x14UL, 0x3500U);
-        Write32(rd0Child + 0x24UL, 3);
-    }
 
     public void RecordRuntimeVblankTick()
     {
@@ -10248,8 +10156,19 @@ internal sealed class VegasMemoryMap
 
     private bool TryWriteChipSelect64(ulong address, ulong value)
     {
-        if (!TryTranslateChipSelectWindow(address, out _, out _))
+        if (!TryTranslateChipSelectWindow(address, out int chipSelect, out uint offset))
             return false;
+
+        if (chipSelect == 4)
+        {
+            if (_cmosUnlocked)
+            {
+                for (uint i = 0; i < 8; i++)
+                    WriteTimekeeper(offset + i, (byte)(value >> (int)(i * 8)));
+                _cmosUnlocked = false;
+            }
+            return true;
+        }
 
         Write32(address, (uint)value);
         Write32(address + 4, (uint)(value >> 32));
@@ -10358,6 +10277,17 @@ internal sealed class VegasMemoryMap
 
     private void WriteChipSelect16Mapped(int chipSelect, uint offset, ushort value)
     {
+        if (chipSelect == 4)
+        {
+            if (_cmosUnlocked)
+            {
+                WriteTimekeeper(offset, (byte)value);
+                WriteTimekeeper(offset + 1, (byte)(value >> 8));
+                _cmosUnlocked = false;
+            }
+            return;
+        }
+
         if (chipSelect == 6)
         {
             uint aligned = offset & 0xfffffffeu;
@@ -11710,6 +11640,7 @@ internal sealed class VegasIdePciDevice
     private const byte PciInterruptLine = 0x0e;
     private const byte BusMasterCommandStart = 0x01;
     private const byte BusMasterCommandRead = 0x08;
+    private const byte BusMasterStatusError = 0x02;
     private const byte BusMasterStatusInterrupt = 0x04;
     private const byte BusMasterStatusSimplex = 0x80;
 
@@ -11801,7 +11732,7 @@ internal sealed class VegasIdePciDevice
 
     public byte ReadIo8(uint address)
     {
-        if (TryGetIdeRegister(address, out byte register))
+        if (TryGetIdeRegister(address, out byte register, out _))
             return register == 0 ? (byte)ReadIo16(address) : _disk?.ReadRegister8(register, clearInterrupt: register == 7) ?? 0xff;
         if (TryGetControlRegister(address))
             return _disk?.ReadRegister8(7, clearInterrupt: false) ?? 0xff;
@@ -11812,7 +11743,7 @@ internal sealed class VegasIdePciDevice
 
     public ushort ReadIo16(uint address)
     {
-        if (TryGetIdeRegister(address, out byte register) && register == 0)
+        if (TryGetIdeRegister(address, out byte register, out _) && register == 0)
             return _disk?.ReadData16() ?? 0xffff;
 
         return (ushort)(ReadIo8(address) | (ReadIo8(address + 1) << 8));
@@ -11820,7 +11751,7 @@ internal sealed class VegasIdePciDevice
 
     public uint ReadIo32(uint address)
     {
-        if (TryGetIdeRegister(address, out byte register) && register == 0)
+        if (TryGetIdeRegister(address, out byte register, out _) && register == 0)
         {
             uint low = _disk?.ReadData16() ?? 0xffffu;
             uint high = _disk?.ReadData16() ?? 0xffffu;
@@ -11838,13 +11769,13 @@ internal sealed class VegasIdePciDevice
 
     public void WriteIo8(uint address, byte value, VegasMemoryMap memory)
     {
-        if (TryGetIdeRegister(address, out byte register))
+        if (TryGetIdeRegister(address, out byte register, out uint channelBase))
         {
             if (register != 0)
             {
                 _disk?.WriteRegister8(register, value);
                 if (register == 7)
-                    TryRunPrimaryReadDma(memory);
+                    TryRunReadDma(memory, channelBase);
             }
             return;
         }
@@ -11861,7 +11792,7 @@ internal sealed class VegasIdePciDevice
 
     public void WriteIo16(uint address, ushort value, VegasMemoryMap memory)
     {
-        if (TryGetIdeRegister(address, out byte register) && register == 0)
+        if (TryGetIdeRegister(address, out byte register, out _) && register == 0)
         {
             _disk?.WriteData16(value);
             return;
@@ -11873,7 +11804,7 @@ internal sealed class VegasIdePciDevice
 
     public void WriteIo32(uint address, uint value, VegasMemoryMap memory)
     {
-        if (TryGetIdeRegister(address, out byte register) && register == 0)
+        if (TryGetIdeRegister(address, out byte register, out _) && register == 0)
         {
             _disk?.WriteData16((ushort)value);
             _disk?.WriteData16((ushort)(value >> 16));
@@ -11897,19 +11828,10 @@ internal sealed class VegasIdePciDevice
         if (offset >= _busMaster.Length)
             return;
 
-        if ((offset & 7) == 2)
-        {
-            byte keep = (byte)(BusMasterStatusInterrupt | 0x02);
-            _busMaster[offset] = (byte)((_busMaster[offset] & ~(value & keep)) | BusMasterStatusSimplex);
-        }
-        else
-        {
-            _busMaster[offset] = value;
-        }
+        WriteBusMasterRegisterByte(offset, value);
 
         Trace($"bmdma write8 off={offset:x2} value={value:x2}");
-        if ((offset & 7) == 0)
-            TryRunPrimaryReadDma(memory);
+        TryRunReadDma(memory, offset & 8u);
     }
 
     private void WriteBusMaster(uint offset, uint value, VegasMemoryMap memory)
@@ -11917,29 +11839,47 @@ internal sealed class VegasIdePciDevice
         if (offset + 3 >= _busMaster.Length)
             return;
 
-        BinaryPrimitives.WriteUInt32LittleEndian(_busMaster.AsSpan((int)offset, 4), value);
+        for (uint i = 0; i < 4; i++)
+            WriteBusMasterRegisterByte(offset + i, (byte)(value >> (int)(i * 8)));
+
         Trace($"bmdma write off={offset:x2} value={value:x8}");
-        if ((offset & 7) == 0)
-            TryRunPrimaryReadDma(memory);
+        TryRunReadDma(memory, offset & 8u);
+        if ((offset & 8u) == 0 && offset + 3 >= 8)
+            TryRunReadDma(memory, 8);
     }
 
-    private void TryRunPrimaryReadDma(VegasMemoryMap memory)
+    private void WriteBusMasterRegisterByte(uint offset, byte value)
     {
-        byte command = _busMaster[0];
+        if ((offset & 7) == 2)
+        {
+            byte clear = (byte)(value & (BusMasterStatusInterrupt | BusMasterStatusError));
+            _busMaster[offset] = (byte)((_busMaster[offset] & ~clear) | BusMasterStatusSimplex);
+            return;
+        }
+
+        _busMaster[offset] = value;
+    }
+
+    private void TryRunReadDma(VegasMemoryMap memory, uint channelBase)
+    {
+        if (channelBase + 7 >= _busMaster.Length)
+            return;
+
+        byte command = _busMaster[channelBase];
         if ((command & BusMasterCommandStart) == 0 || (command & BusMasterCommandRead) == 0)
             return;
         if (_disk?.DmaTransferReady != true)
             return;
 
-        RunPrimaryReadDma(memory);
+        RunReadDma(memory, channelBase);
     }
 
-    private void RunPrimaryReadDma(VegasMemoryMap memory)
+    private void RunReadDma(VegasMemoryMap memory, uint channelBase)
     {
         if (_disk is null)
             return;
 
-        uint prd = BinaryPrimitives.ReadUInt32LittleEndian(_busMaster.AsSpan(4, 4)) & 0xfffffffc;
+        uint prd = BinaryPrimitives.ReadUInt32LittleEndian(_busMaster.AsSpan((int)(channelBase + 4), 4)) & 0xfffffffc;
         int copied = 0;
         for (int entry = 0; entry < 256; entry++)
         {
@@ -11958,11 +11898,10 @@ internal sealed class VegasIdePciDevice
                 break;
         }
 
-        _busMaster[0] &= unchecked((byte)~BusMasterCommandStart);
-        _busMaster[2] |= BusMasterStatusInterrupt;
+        _busMaster[channelBase] &= unchecked((byte)~BusMasterCommandStart);
+        _busMaster[channelBase + 2] |= BusMasterStatusInterrupt;
         _disk.SignalInterrupt();
-        memory.TryCompleteKnownRd0DmaQio();
-        Trace($"bmdma primary read copied={copied}");
+        Trace($"bmdma channel={channelBase / 8} read copied={copied}");
     }
 
     private static uint ReadMainMemory32(VegasMemoryMap memory, uint address)
@@ -11979,23 +11918,26 @@ internal sealed class VegasIdePciDevice
         BinaryPrimitives.WriteUInt32LittleEndian(_busMaster.AsSpan((int)offset, 4), value);
     }
 
-    private bool TryGetIdeRegister(uint address, out byte register)
+    private bool TryGetIdeRegister(uint address, out byte register, out uint channelBase)
     {
         uint primaryBase = _bars[0] & 0xfffffffc;
         uint secondaryBase = _bars[2] & 0xfffffffc;
         if (address >= primaryBase && address < primaryBase + 8)
         {
             register = (byte)(address - primaryBase);
+            channelBase = 0;
             return true;
         }
 
         if (address >= secondaryBase && address < secondaryBase + 8)
         {
             register = (byte)(address - secondaryBase);
+            channelBase = 8;
             return true;
         }
 
         register = 0;
+        channelBase = 0;
         return false;
     }
 
