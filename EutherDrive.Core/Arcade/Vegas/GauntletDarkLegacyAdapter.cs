@@ -595,6 +595,7 @@ internal sealed class MipsR5000Core
     private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
+    private readonly bool _enableSelftestLatchRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_SELFTEST_LATCH");
     private readonly bool _enableRuntimeInterruptBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE");
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _enableVolumeNvramSyncRepair =
@@ -615,6 +616,8 @@ internal sealed class MipsR5000Core
     private int _rd0BootFileReadCount;
     private int _genericQioWaitTraceCount;
     private int _rd0QioCandidateTraceCount;
+    private int _selftestLatchRepairTraceCount;
+    private int _diagnosticDecimalFastPathTraceCount;
     private int _loadedBootCacheLoopTraceCount;
     private int _loadedBootCacheLoopSkipTraceCount;
     private int _bootSerialCopyLoopTraceCount;
@@ -784,6 +787,7 @@ internal sealed class MipsR5000Core
             return;
         if (TryRepairKnownRuntimeFsysQioStatus(pc))
             return;
+        ApplyKnownGauntletSelftestLatchRepair(pc);
         if (TryRepairKnownGauntletVolumeNvramSyncCheck(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeDiagnosticDrawEntry(pc))
@@ -902,6 +906,12 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownGlideLogWrite(pc))
             return;
         if (TryFastPathKnownGlideUiDispatchFromFrameLoop(pc))
+            return;
+        if (TryFastPathKnownRuntimeTimekeeperSnapshot(pc))
+            return;
+        if (TryFastPathKnownRuntimePackedDecimalToInteger(pc))
+            return;
+        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeFormatString(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeHexFormat(pc))
             return;
@@ -2587,6 +2597,233 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
         Pc = _gpr[31];
         return true;
+    }
+
+    private bool TryFastPathKnownRuntimeFormatString(ulong pc)
+    {
+        const ulong entry = 0xffffffff800fd3d0UL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdff10U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb300ccU ||
+            _memory.Read32(entry + 0x0cUL) != 0xafb400d0U ||
+            _memory.Read32(entry + 0x14UL) != 0xafb200c8U ||
+            _memory.Read32(entry + 0x44UL) != 0xafa400f0U ||
+            _memory.Read32(entry + 0x48UL) != 0xafa500f4U ||
+            _memory.Read32(entry + 0x4cUL) != 0xafa600f8U ||
+            _memory.Read32(entry + 0x50UL) != 0xafa700fcU)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+            return false;
+
+        ulong destination = _gpr[4];
+        if (IsMainRamRange(destination, 1))
+            _memory.Write8(destination, 0);
+
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 128UL);
+        _instructionCounter += 128UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimePackedDecimalToInteger(ulong pc)
+    {
+        const ulong entry = 0xffffffff800df3c8UL;
+        if (pc != entry)
+            return false;
+        uint op00 = _memory.Read32(entry + 0x00UL);
+        uint op04 = _memory.Read32(entry + 0x04UL);
+        uint op08 = _memory.Read32(entry + 0x08UL);
+        uint op0c = _memory.Read32(entry + 0x0cUL);
+        uint op10 = _memory.Read32(entry + 0x10UL);
+        uint op14 = _memory.Read32(entry + 0x14UL);
+        uint op18 = _memory.Read32(entry + 0x18UL);
+        uint op1c = _memory.Read32(entry + 0x1cUL);
+        uint op20 = _memory.Read32(entry + 0x20UL);
+        uint op24 = _memory.Read32(entry + 0x24UL);
+        uint op28 = _memory.Read32(entry + 0x28UL);
+        uint op2c = _memory.Read32(entry + 0x2cUL);
+        uint op30 = _memory.Read32(entry + 0x30UL);
+        uint op34 = _memory.Read32(entry + 0x34UL);
+        uint op38 = _memory.Read32(entry + 0x38UL);
+        uint op3c = _memory.Read32(entry + 0x3cUL);
+        uint op40 = _memory.Read32(entry + 0x40UL);
+        uint op44 = _memory.Read32(entry + 0x44UL);
+        uint op48 = _memory.Read32(entry + 0x48UL);
+        uint op4c = _memory.Read32(entry + 0x4cUL);
+        uint op50 = _memory.Read32(entry + 0x50UL);
+        uint op54 = _memory.Read32(entry + 0x54UL);
+        uint op58 = _memory.Read32(entry + 0x58UL);
+        uint op5c = _memory.Read32(entry + 0x5cUL);
+        uint op60 = _memory.Read32(entry + 0x60UL);
+        uint op64 = _memory.Read32(entry + 0x64UL);
+        if (op00 != 0x2405001cU ||
+            op04 != 0x3c060098U ||
+            op08 != 0x34c69680U ||
+            op0c != 0x10800013U ||
+            op10 != 0x0000382dU ||
+            op14 != 0x2409000fU ||
+            op18 != 0x3c08ccccU ||
+            op1c != 0x3508cccdU ||
+            op20 != 0x00a91004U ||
+            op24 != 0x00821824U ||
+            op28 != 0x00021027U ||
+            op2c != 0x00a31806U ||
+            op30 != 0x10600005U ||
+            op34 != 0x00822024U ||
+            op38 != 0x00c30018U ||
+            op3c != 0x00005012U ||
+            op40 != 0x00ea3821U ||
+            op44 != 0x00000000U ||
+            op48 != 0x00c80019U ||
+            op4c != 0x24a5fffcU ||
+            op50 != 0x00005010U ||
+            op54 != 0x1480fff2U ||
+            op58 != 0x000a30c2U ||
+            op5c != 0x03e00008U ||
+            op60 != 0x00e0102dU ||
+            op64 != 0x2407001cU)
+        {
+            TraceKnownRuntimePackedDecimalSkip(
+                "signature",
+                $"{op00:x8},{op04:x8},{op08:x8},{op0c:x8},{op10:x8},{op14:x8},{op18:x8},{op1c:x8}," +
+                $"{op20:x8},{op24:x8},{op28:x8},{op2c:x8},{op30:x8},{op34:x8},{op38:x8},{op3c:x8}," +
+                $"{op40:x8},{op44:x8},{op48:x8},{op4c:x8},{op50:x8},{op54:x8},{op58:x8},{op5c:x8}," +
+                $"{op60:x8},{op64:x8}");
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+        {
+            TraceKnownRuntimePackedDecimalSkip("return", $"{returnAddress:x16}");
+            return false;
+        }
+
+        uint packedDecimal = (uint)_gpr[4];
+        uint result = ConvertPackedDecimalToInteger(packedDecimal);
+
+        _gpr[2] = SignExtend32(result);
+        _gpr[4] = 0;
+        _gpr[5] = unchecked((ulong)-4L);
+        _gpr[6] = 0;
+        _gpr[7] = SignExtend32(result);
+        _gpr[8] = 0xcccccccdUL;
+        _gpr[9] = 0x0fUL;
+        _gpr[10] = 0;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 96UL);
+        _instructionCounter += 96UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        if (_traceRd0Home && _diagnosticDecimalFastPathTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] packed-decimal-fastpath value={packedDecimal:x8} " +
+                $"result={result} return={returnAddress:x16}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeTimekeeperSnapshot(ulong pc)
+    {
+        const ulong entry = 0xffffffff800df59cUL;
+        if (pc != entry)
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffd8U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb3001cU ||
+            _memory.Read32(entry + 0x08UL) != 0x0080982dU ||
+            _memory.Read32(entry + 0x0cUL) != 0xafbf0020U ||
+            _memory.Read32(entry + 0x10UL) != 0xafb20018U ||
+            _memory.Read32(entry + 0x14UL) != 0xafb10014U ||
+            _memory.Read32(entry + 0x18UL) != 0x1260003eU ||
+            _memory.Read32(entry + 0x1cUL) != 0xafb00010U)
+        {
+            return false;
+        }
+
+        ulong destination = _gpr[4];
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+            return false;
+
+        if (destination == 0)
+        {
+            _gpr[2] = 1;
+            Pc = returnAddress;
+            CompleteKnownRuntimeSnapshotFastPath();
+            return true;
+        }
+
+        if (!IsMainRamRange(destination, 0x24UL))
+            return false;
+
+        uint year = ConvertPackedDecimalToInteger(
+            (uint)((_memory.Read8(0x00000000a4607ff1UL) << 8) |
+                   _memory.Read8(0x00000000a4607fffUL)));
+        uint month = ConvertPackedDecimalToInteger(_memory.Read8(0x00000000a4607ffeUL));
+        uint day = ConvertPackedDecimalToInteger(_memory.Read8(0x00000000a4607ffdUL));
+        uint hour = ConvertPackedDecimalToInteger(
+            (uint)((_memory.Read8(0x00000000a4607ffcUL) << 8) |
+                   _memory.Read8(0x00000000a4607ffbUL)));
+        uint minute = ConvertPackedDecimalToInteger(_memory.Read8(0x00000000a4607ffaUL));
+        uint second = ConvertPackedDecimalToInteger(_memory.Read8(0x00000000a4607ff9UL));
+
+        _memory.Write32(destination + 0x14UL, unchecked(year - 1900U));
+        _memory.Write32(destination + 0x10UL, unchecked(month - 1U));
+        _memory.Write32(destination + 0x0cUL, day);
+        _memory.Write32(destination + 0x18UL, unchecked(hour - 1U));
+        _memory.Write32(destination + 0x08UL, minute);
+        _memory.Write32(destination + 0x04UL, second);
+        _memory.Write32(destination, second);
+        _memory.Write32(destination + 0x20UL, 0);
+        _memory.Write32(destination + 0x1cUL, 0);
+
+        _gpr[2] = 0;
+        Pc = returnAddress;
+        CompleteKnownRuntimeSnapshotFastPath();
+        return true;
+    }
+
+    private void CompleteKnownRuntimeSnapshotFastPath()
+    {
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 192UL);
+        _instructionCounter += 192UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+    }
+
+    private static uint ConvertPackedDecimalToInteger(uint packedDecimal)
+    {
+        uint multiplier = 10_000_000U;
+        uint result = 0;
+        for (int shift = 28; shift >= 0; shift -= 4)
+        {
+            uint digit = (packedDecimal >> shift) & 0x0fU;
+            result += digit * multiplier;
+            multiplier /= 10U;
+        }
+
+        return result;
+    }
+
+    private void TraceKnownRuntimePackedDecimalSkip(string reason, string detail)
+    {
+        if (_traceRd0Home && _diagnosticDecimalFastPathTraceCount++ < 8)
+            Console.WriteLine($"[GAUNTDL:BOOT] packed-decimal-skip reason={reason} detail={detail}");
     }
 
     private bool TryRepairKnownDcsBootCallbackWait(ulong pc)
@@ -4414,6 +4651,37 @@ internal sealed class MipsR5000Core
                 $"status={status:x8}->{repaired:x8}");
         }
         return true;
+    }
+
+    private void ApplyKnownGauntletSelftestLatchRepair(ulong pc)
+    {
+        const ulong selftestLatch = 0xffffffff8022814cUL;
+        const ulong fallbackSelftestRecord = 0xffffffff801535acUL;
+        if (!_enableSelftestLatchRepair ||
+            pc is not (0xffffffff800d0668UL or
+                       0xffffffff800ddebcUL or
+                       0xffffffff800cd418UL))
+        {
+            return;
+        }
+        if (_memory.Read32(selftestLatch) != 0x801535acU ||
+            _memory.Read32(fallbackSelftestRecord) != 0x800e07e8U)
+        {
+            return;
+        }
+
+        ushort port0 = _memory.Read16(0x00000000a4a00008UL);
+        ushort systemPort = _memory.Read16(0x00000000a4a0000aUL);
+        if ((port0 & 0x0080) != 0 && (systemPort & 0x0010) != 0)
+            return;
+
+        _memory.Write32(selftestLatch, 0);
+        if (_traceRd0Home && _selftestLatchRepairTraceCount++ < 4)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] clear-selftest-latch pc={pc:x16} " +
+                $"port0={port0:x4} system={systemPort:x4}");
+        }
     }
 
     private bool TryRepairKnownGauntletVolumeNvramSyncCheck(ulong pc)
@@ -10759,19 +11027,19 @@ internal sealed class VegasMemoryMap
 
     private ushort BuildIoasicInputPort0()
     {
-        return _ioasicPort0Override ?? 0x7fff;
+        return _ioasicPort0Override ?? 0x7f7f;
     }
 
     private ushort BuildSystemInputPort()
     {
-        ushort value = 0xffff;
+        ushort value = 0xffef;
         if (_input is null)
             return value;
 
         GauntletPlayerInput player1 = _input.Player1;
         ClearActiveLowBit(ref value, 0x0001, player1.Coin);
         ClearActiveLowBit(ref value, 0x0004, player1.Start);
-        ClearActiveLowBit(ref value, 0x0010, _input.Test);
+        SetActiveHighBit(ref value, 0x0010, _input.Test);
         ClearActiveLowBit(ref value, 0x0040, _input.Service);
         return value;
     }
@@ -10797,6 +11065,12 @@ internal sealed class VegasMemoryMap
     {
         if (pressed)
             value = (ushort)(value & ~mask);
+    }
+
+    private static void SetActiveHighBit(ref ushort value, ushort mask, bool pressed)
+    {
+        if (pressed)
+            value = (ushort)(value | mask);
     }
 
     private void TraceIoasicInputRead(int port, ushort value)
