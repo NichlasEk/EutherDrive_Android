@@ -125,6 +125,7 @@ DumpRequestedCodeRanges(GetProperty(machine, "MemoryMap"));
 DumpRequestedByteRanges(GetProperty(machine, "MemoryMap"));
 ScanRequestedAscii(GetProperty(machine, "MemoryMap"));
 ScanRequestedPointers(GetProperty(machine, "MemoryMap"));
+ScanRequestedAddressLoads(GetProperty(machine, "MemoryMap"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
     ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
 
@@ -1194,6 +1195,64 @@ static void ScanRequestedPointers(object memory)
     }
 
     Console.WriteLine($"pointerScan matches={matches}");
+}
+
+static void ScanRequestedAddressLoads(object memory)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_ADDR_LOADS");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    uint[] needles = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(item => TryParseHexUlong(item, out ulong parsed) ? (uint)parsed : 0u)
+        .Where(item => item != 0)
+        .Distinct()
+        .ToArray();
+    if (needles.Length == 0)
+        return;
+
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    Console.WriteLine("addrLoadScan needles=" + string.Join(",", needles.Select(item => $"0x{item:x8}")));
+
+    int matches = 0;
+    for (int offset = 0; offset + 3 < mainRam.Length; offset += 4)
+    {
+        uint op = BinaryPrimitives.ReadUInt32LittleEndian(mainRam.AsSpan(offset, 4));
+        if ((op >> 26) != 0x0f)
+            continue;
+
+        int rt = (int)((op >> 16) & 31u);
+        ushort upper = (ushort)op;
+        for (int lookAhead = 1; lookAhead <= 12 && offset + lookAhead * 4 + 3 < mainRam.Length; lookAhead++)
+        {
+            uint next = BinaryPrimitives.ReadUInt32LittleEndian(mainRam.AsSpan(offset + lookAhead * 4, 4));
+            uint opcode = next >> 26;
+            int rs = (int)((next >> 21) & 31u);
+            int nextRt = (int)((next >> 16) & 31u);
+            if (rs != rt || nextRt != rt || (opcode != 0x09 && opcode != 0x0d))
+                continue;
+
+            ushort lower = (ushort)next;
+            uint candidate = opcode == 0x09
+                ? (uint)(((int)upper << 16) + (short)lower)
+                : ((uint)upper << 16) | lower;
+            if (!needles.Contains(candidate))
+                continue;
+
+            ulong address = 0xffffffff80000000UL + (uint)offset;
+            string kind = opcode == 0x09 ? "addiu" : "ori";
+            Console.WriteLine($" addrload 0x{address:x16} +{lookAhead * 4:x2} r{rt} {kind} -> 0x{candidate:x8}");
+            matches++;
+            if (matches >= 256)
+            {
+                Console.WriteLine("addrLoadScan truncated=256");
+                Console.WriteLine($"addrLoadScan matches={matches}");
+                return;
+            }
+        }
+    }
+
+    Console.WriteLine($"addrLoadScan matches={matches}");
 }
 
 static bool TryParseHexUlong(string value, out ulong parsed)

@@ -339,6 +339,7 @@ internal sealed class GauntletDarkLegacyMachine
            target.Height > 0 &&
            target.Stride >= target.Width * 4 &&
            Cpu.TileWriteCount > 0 &&
+           !Voodoo.HasVideoActivity &&
            !Voodoo.HasDrawPackets;
 
     private void RenderCpuBootSurface(EutherFrameTarget target)
@@ -595,7 +596,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableRuntimeInterruptBridge = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE") == "1";
-    private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
+    private readonly bool _enableDiagnosticRuntimeFastPaths = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME") == "1";
+    private readonly bool _enableVolumeNvramSyncRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
@@ -781,6 +783,8 @@ internal sealed class MipsR5000Core
         if (TryRepairKnownDcsBootCallbackWait(pc))
             return;
         if (TryRepairKnownRuntimeFsysQioStatus(pc))
+            return;
+        if (TryRepairKnownGauntletVolumeNvramSyncCheck(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeDiagnosticDrawEntry(pc))
             return;
@@ -4476,6 +4480,64 @@ internal sealed class MipsR5000Core
                 $"status={status:x8}->{repaired:x8}");
         }
         return true;
+    }
+
+    private bool TryRepairKnownGauntletVolumeNvramSyncCheck(ulong pc)
+    {
+        const ulong entry = 0xffffffff8001594cUL;
+        const ulong callerReturnPc = 0xffffffff80015e54UL;
+        if (_enableVolumeNvramSyncRepair && pc == entry)
+        {
+            if (_memory.Read32(entry) != 0x27bdfb40U ||
+                _memory.Read32(entry + 0x38UL) != 0xafa404c0U ||
+                _gpr[31] != callerReturnPc ||
+                _gpr[5] == 0 ||
+                _gpr[5] > uint.MaxValue)
+            {
+                return false;
+            }
+
+            ulong destination = _gpr[4];
+            uint maxByteCount = (uint)_gpr[5];
+            if (!_memory.TryReadGauntletBootElfToMemory(
+                    destination,
+                    maxByteCount,
+                    out uint lba,
+                    out uint byteCount,
+                    out string reason))
+            {
+                if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:RD0] boot-elf-read-skip pc={pc:x16} " +
+                        $"dest={destination:x16} max={maxByteCount:x8} reason={reason}");
+                }
+                return false;
+            }
+
+            if (IsMainRamRange(_gpr[6], 8))
+            {
+                _memory.Write32(_gpr[6], 0);
+                _memory.Write32(_gpr[6] + 4UL, 0);
+            }
+            if (IsMainRamRange(_gpr[7], 8))
+            {
+                _memory.Write32(_gpr[7], 0);
+                _memory.Write32(_gpr[7] + 4UL, 0);
+            }
+
+            _gpr[2] = 0;
+            Pc = _gpr[31];
+            CompleteFastPathStep();
+            if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:RD0] boot-elf-read pc={pc:x16} " +
+                    $"lba={lba:x8} dest={destination:x16} bytes={byteCount:x8}");
+            }
+            return true;
+        }
+        return false;
     }
 
     private bool TryFastPathKnownRuntimeTextStateBlitBody(ulong pc)
@@ -9085,6 +9147,130 @@ internal sealed class VegasMemoryMap
             remaining -= (uint)count;
         }
 
+        return true;
+    }
+
+    public bool TryReadGauntletBootElfToMemory(
+        ulong destination,
+        uint maxByteCount,
+        out uint lba,
+        out uint byteCount,
+        out string reason)
+    {
+        lba = 0;
+        byteCount = 0;
+        reason = "";
+
+        if (_disk is null)
+        {
+            reason = "no-disk";
+            return false;
+        }
+        if (maxByteCount < 0x1000U)
+        {
+            reason = $"max-byte-count {maxByteCount:x8}";
+            return false;
+        }
+        if (!TryTranslatePhysical(destination, out uint physical) ||
+            physical >= _mainRam.Length)
+        {
+            reason = $"range dest={destination:x16}";
+            return false;
+        }
+
+        uint[] candidates =
+        [
+            0x000000a7U,
+            0x001979a6U,
+            0x0032f2a6U,
+        ];
+
+        foreach (uint candidate in candidates)
+        {
+            if (!TryReadBootElfSize(candidate, maxByteCount, out uint candidateByteCount, out reason))
+                continue;
+            if (candidateByteCount > _mainRam.Length - physical)
+            {
+                reason = $"range dest={destination:x16} bytes={candidateByteCount:x8}";
+                continue;
+            }
+            if (!TryReadDiskBytesToMemory(candidate, destination, candidateByteCount, out uint firstWord, out reason))
+                continue;
+            if (firstWord != 0x464c457fU)
+            {
+                reason = $"magic lba={candidate:x8} first={firstWord:x8}";
+                continue;
+            }
+
+            lba = candidate;
+            byteCount = candidateByteCount;
+            return true;
+        }
+
+        if (string.IsNullOrEmpty(reason))
+            reason = "no-boot-elf";
+        return false;
+    }
+
+    private bool TryReadBootElfSize(uint lba, uint maxByteCount, out uint byteCount, out string reason)
+    {
+        byteCount = 0;
+        reason = "";
+
+        if (!_disk!.TryReadSector(lba, out byte[] sector))
+        {
+            reason = $"sector lba={lba:x8}";
+            return false;
+        }
+        if (BinaryPrimitives.ReadUInt32LittleEndian(sector) != 0x464c457fU ||
+            sector[4] != 1 ||
+            sector[5] != 1)
+        {
+            reason = $"magic lba={lba:x8}";
+            return false;
+        }
+
+        uint programHeaderOffset = BinaryPrimitives.ReadUInt32LittleEndian(sector.AsSpan(28));
+        ushort programHeaderEntrySize = BinaryPrimitives.ReadUInt16LittleEndian(sector.AsSpan(42));
+        ushort programHeaderCount = BinaryPrimitives.ReadUInt16LittleEndian(sector.AsSpan(44));
+        if (programHeaderEntrySize < 32 ||
+            programHeaderCount == 0 ||
+            programHeaderCount > 32 ||
+            programHeaderOffset > (uint)sector.Length ||
+            programHeaderOffset + (uint)programHeaderEntrySize * programHeaderCount > (uint)sector.Length)
+        {
+            reason =
+                $"phdr lba={lba:x8} off={programHeaderOffset:x8} " +
+                $"size={programHeaderEntrySize:x4} count={programHeaderCount:x4}";
+            return false;
+        }
+
+        uint maxEnd = 0;
+        for (int index = 0; index < programHeaderCount; index++)
+        {
+            int offset = (int)(programHeaderOffset + (uint)index * programHeaderEntrySize);
+            uint type = BinaryPrimitives.ReadUInt32LittleEndian(sector.AsSpan(offset));
+            if (type != 1)
+                continue;
+
+            uint fileOffset = BinaryPrimitives.ReadUInt32LittleEndian(sector.AsSpan(offset + 4));
+            uint fileSize = BinaryPrimitives.ReadUInt32LittleEndian(sector.AsSpan(offset + 16));
+            if (fileSize == 0 || fileOffset > uint.MaxValue - fileSize)
+            {
+                reason = $"segment lba={lba:x8} off={fileOffset:x8} size={fileSize:x8}";
+                return false;
+            }
+
+            maxEnd = Math.Max(maxEnd, fileOffset + fileSize);
+        }
+
+        if (maxEnd == 0 || maxEnd > maxByteCount)
+        {
+            reason = $"elf-size lba={lba:x8} bytes={maxEnd:x8} max={maxByteCount:x8}";
+            return false;
+        }
+
+        byteCount = maxEnd;
         return true;
     }
 
