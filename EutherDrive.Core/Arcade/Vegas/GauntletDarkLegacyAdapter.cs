@@ -771,6 +771,10 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeDelayedPointerRead(pc))
             return;
+        if (TryFastPathKnownRuntimeStatusMaskUpdateCallsite(pc))
+            return;
+        if (TryFastPathKnownRuntimeStatusMaskUpdate(pc))
+            return;
         if (TryFastPathKnownRuntimeCountDelay(pc))
             return;
         if (TryFastPathKnownRuntimeDelayCallback(pc))
@@ -1584,6 +1588,108 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
         Pc = CanonicalizeCodeAddress(returnAddress);
         return true;
+    }
+
+    private bool TryFastPathKnownRuntimeStatusMaskUpdate(ulong pc)
+    {
+        const ulong entry = 0xffffffff800111c8UL;
+        if (pc is not (entry or
+                       0xffffffff800111ccUL or
+                       0xffffffff800111d0UL or
+                       0xffffffff800111d4UL or
+                       0xffffffff800111d8UL or
+                       0xffffffff800111dcUL or
+                       0xffffffff800111e0UL or
+                       0xffffffff800111e8UL or
+                       0xffffffff800111ecUL or
+                       0xffffffff800111f0UL or
+                       0xffffffff800111f4UL or
+                       0xffffffff800111f8UL or
+                       0xffffffff800111fcUL or
+                       0xffffffff80011200UL))
+            return false;
+        if (_memory.Read32(entry + 0x00UL) != 0x3c028016U ||
+            _memory.Read32(entry + 0x04UL) != 0x64425cecU ||
+            _memory.Read32(entry + 0x08UL) != 0x8c420000U ||
+            _memory.Read32(entry + 0x0cUL) != 0x10400003U ||
+            _memory.Read32(entry + 0x10UL) != 0x00000000U ||
+            _memory.Read32(entry + 0x14UL) != 0x00400008U ||
+            _memory.Read32(entry + 0x18UL) != 0x00000000U ||
+            _memory.Read32(entry + 0x1cUL) != 0x40026000U ||
+            _memory.Read32(entry + 0x20UL) != 0x3408ff07U ||
+            _memory.Read32(entry + 0x24UL) != 0x00084827U ||
+            _memory.Read32(entry + 0x28UL) != 0x00885024U ||
+            _memory.Read32(entry + 0x2cUL) != 0x01224824U ||
+            _memory.Read32(entry + 0x30UL) != 0x01495025U ||
+            _memory.Read32(entry + 0x34UL) != 0x408a6000U ||
+            _memory.Read32(entry + 0x38UL) != 0x00000000U ||
+            _memory.Read32(entry + 0x3cUL) != 0x03e00008U)
+        {
+            return false;
+        }
+        if (_memory.Read32(0xffffffff80165cecUL) != 0)
+            return false;
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00001000UL or > 0x01000000UL)
+            return false;
+
+        ApplyRuntimeStatusMaskUpdate(returnAddress);
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeStatusMaskUpdateCallsite(ulong pc)
+    {
+        const ulong callsite = 0xffffffff800de280UL;
+        const ulong delaySlot = callsite + 4UL;
+        const ulong returnAddress = callsite + 8UL;
+        const ulong helper = 0xffffffff800111c8UL;
+        if (pc != callsite && pc != delaySlot)
+            return false;
+        if (_memory.Read32(callsite) != 0x0c004472U ||
+            _memory.Read32(delaySlot) != 0x00000000U ||
+            _memory.Read32(helper + 0x00UL) != 0x3c028016U ||
+            _memory.Read32(helper + 0x04UL) != 0x64425cecU ||
+            _memory.Read32(helper + 0x08UL) != 0x8c420000U ||
+            _memory.Read32(helper + 0x0cUL) != 0x10400003U ||
+            _memory.Read32(helper + 0x1cUL) != 0x40026000U ||
+            _memory.Read32(helper + 0x20UL) != 0x3408ff07U ||
+            _memory.Read32(helper + 0x34UL) != 0x408a6000U ||
+            _memory.Read32(helper + 0x3cUL) != 0x03e00008U)
+        {
+            return false;
+        }
+        if (_memory.Read32(0xffffffff80165cecUL) != 0)
+            return false;
+        if (pc == delaySlot &&
+            CanonicalizeCodeAddress(_gpr[31]) != returnAddress &&
+            (!_hasPendingBranch || CanonicalizeCodeAddress(_pendingBranchTarget) != helper))
+        {
+            return false;
+        }
+
+        ApplyRuntimeStatusMaskUpdate(returnAddress);
+        _gpr[31] = returnAddress;
+        return true;
+    }
+
+    private void ApplyRuntimeStatusMaskUpdate(ulong returnAddress)
+    {
+        const ulong mask = 0xff07UL;
+        ulong oldStatus = _cp0[12];
+        ulong nextStatus = (_gpr[4] & mask) | (oldStatus & ~mask);
+        _gpr[2] = SignExtend32((uint)oldStatus);
+        _gpr[8] = mask;
+        _gpr[9] = ~mask;
+        _gpr[10] = nextStatus;
+        _gpr[0] = 0;
+        _cp0[12] = nextStatus;
+        AdvanceCp0Count(_cp0CountStep * 10UL);
+        _instructionCounter += 10UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = CanonicalizeCodeAddress(returnAddress);
     }
 
     private bool TryFastPathKnownRamTest(ulong pc)
