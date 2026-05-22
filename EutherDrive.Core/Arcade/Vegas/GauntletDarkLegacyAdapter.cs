@@ -3224,7 +3224,8 @@ internal sealed class MipsR5000Core
         if (!TryGetKnownRuntimeQioPollObject(pc, out ulong objectAddress, out ulong returnPc))
             return false;
 
-        if (_memory.Read32(objectAddress + 0x0cUL) != 4 ||
+        uint state = _memory.Read32(objectAddress + 0x0cUL);
+        if (state is not (4U or 7U) ||
             _memory.Read32(objectAddress + 0x14UL) != 0)
             return false;
 
@@ -3687,10 +3688,11 @@ internal sealed class MipsR5000Core
         }
 
         _rd0HomeTableParseCount++;
-        if (pc == homeReadReturnPc && _gpr[2] == 0x300bUL)
+        if (pc == homeReadReturnPc)
         {
-            _gpr[2] = 0;
-            if (IsMainRamRange(_gpr[22], 0x18) && _memory.Read32(_gpr[22] + 0x14UL) == 0x300bU)
+            if (_gpr[2] == 0x300bUL)
+                _gpr[2] = 0;
+            if (IsMainRamRange(_gpr[22], 0x18) && _memory.Read32(_gpr[22] + 0x14UL) == 0)
                 _memory.Write32(_gpr[22] + 0x14UL, 0x3500U);
         }
         if (_traceRd0Home && _rd0HomeTableParseCount <= 8)
@@ -12547,7 +12549,20 @@ internal sealed class VegasSioDevice
             2 => (byte)(_irqState & _irqEnable),
             3 => _irqState,
             4 => _ledState,
+            5 => ReadGauntletAuxInput(offset),
             _ => 0
+        };
+    }
+
+    private static byte ReadGauntletAuxInput(uint offset)
+    {
+        // Mirrors the Vegas SIO gun-input window used by Gauntlet for the
+        // extra magic/fight/run bits. Neutral arcade inputs are active-high
+        // here after the MAME bit transforms, so only the run nibbles read set.
+        return (offset & 7) switch
+        {
+            3 or 7 => 0x78,
+            _ => 0x00
         };
     }
 
