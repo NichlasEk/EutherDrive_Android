@@ -816,6 +816,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
             return;
+        if (TryFastPathKnownGauntletRuntimeGlideIdlePump(pc))
+            return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeInputPoll(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeStatusBitfieldRead(pc))
@@ -4586,7 +4588,7 @@ internal sealed class MipsR5000Core
 
         uint callback = _memory.Read32(0xffffffff802281acUL);
         bool afterIndirectCallback = pc is >= 0xffffffff800e1450UL and <= 0xffffffff800e147cUL;
-        if (callback is not (0U or 0x800d03b8U) &&
+        if (callback is not (0U or 0x800d03b8U or 0x800e12f8U) &&
             !(callback == 0x800e12f8U && afterIndirectCallback))
         {
             return false;
@@ -4604,6 +4606,12 @@ internal sealed class MipsR5000Core
         ulong returnOffset = returnAddress & 0x1fffffffUL;
         if (returnOffset is < 0x00010000UL or > 0x01000000UL)
             return false;
+
+        if (callback == 0x800e12f8U && !afterIndirectCallback &&
+            !TryApplyKnownGauntletRuntimeGlideIdlePumpEffects(out _))
+        {
+            return false;
+        }
 
         _memory.Write8(0xffffffffa4207000UL, 0);
         _gpr[2] = 0;
@@ -6046,6 +6054,94 @@ internal sealed class MipsR5000Core
         _gpr[29] = framePointer + 0x20UL;
         Pc = returnAddress;
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownGauntletRuntimeGlideIdlePump(ulong pc)
+    {
+        const ulong entry = 0xffffffff800e12f8UL;
+        if (pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffe0U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c028023U ||
+            _memory.Read32(entry + 0x08UL) != 0xafb00010U ||
+            _memory.Read32(entry + 0x0cUL) != 0x8c508114U ||
+            _memory.Read32(entry + 0x10UL) != 0xafbf001cU ||
+            _memory.Read32(entry + 0x14UL) != 0xafb20018U ||
+            _memory.Read32(entry + 0x18UL) != 0xafb10014U ||
+            _memory.Read32(entry + 0x1cUL) != 0x0c0417c4U ||
+            _memory.Read32(entry + 0x24UL) != 0x1440fffdU ||
+            _memory.Read32(entry + 0x28UL) != 0x3c038023U ||
+            _memory.Read32(entry + 0x2cUL) != 0x8c628114U ||
+            _memory.Read32(entry + 0x30UL) != 0x16020013U ||
+            _memory.Read32(entry + 0x88UL) != 0x0440001eU ||
+            _memory.Read32(entry + 0x98UL) != 0x0c0423f8U ||
+            _memory.Read32(entry + 0x9cUL) != 0x0200202dU ||
+            _memory.Read32(entry + 0xe8UL) != 0x0c040993U ||
+            _memory.Read32(entry + 0xecUL) != 0x3406ffffU ||
+            _memory.Read32(entry + 0xf0UL) != 0x26100001U ||
+            _memory.Read32(entry + 0xf4UL) != 0x1a00ffe8U ||
+            _memory.Read32(entry + 0xfcUL) != 0x0c0423f8U ||
+            _memory.Read32(entry + 0x100UL) != 0x0000202dU ||
+            _memory.Read32(entry + 0x104UL) != 0x8fbf001cU ||
+            _memory.Read32(entry + 0x108UL) != 0x8fb20018U ||
+            _memory.Read32(entry + 0x10cUL) != 0x8fb10014U ||
+            _memory.Read32(entry + 0x110UL) != 0x8fb00010U ||
+            _memory.Read32(entry + 0x114UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x118UL) != 0x27bd0020U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000e0000UL or > 0x000e2000UL)
+            return false;
+
+        if (!TryApplyKnownGauntletRuntimeGlideIdlePumpEffects(out uint room))
+            return false;
+
+        _gpr[2] = room;
+        _gpr[3] = 0xffffffff80262d64UL + 8UL;
+        _gpr[4] = 0xffffffff80262d64UL;
+        _gpr[31] = returnAddress;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 192UL);
+        _instructionCounter += 192UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryApplyKnownGauntletRuntimeGlideIdlePumpEffects(out uint room)
+    {
+        room = 0;
+        const ulong state = 0xffffffff80262d64UL;
+        if (_memory.Read32(0xffffffff8022af7cUL) != 0 ||
+            _memory.Read32(0xffffffff8022af10UL + 0x18UL) != 0 ||
+            SignExtend32(_memory.Read32(0xffffffff80262c8cUL)) != state ||
+            SignExtend32(_memory.Read32(state + 0x04UL)) != 0xffffffffa8000000UL ||
+            !IsMainRamRange(state + 0x384UL, 4))
+        {
+            return false;
+        }
+
+        // The polled helper emits a type1 write of register 0x48 to zero when
+        // the previous latch is zero. It is a no-op for this bringup backend,
+        // and the state normalization below keeps the guest FIFO room sane.
+        _memory.Write32(0xffffffff8022f5b4UL, 0);
+
+        uint tick = _memory.Read32(0xffffffff80238114UL);
+        _memory.Write32(0xffffffff80238114UL, tick + 1u);
+
+        _memory.Write32(0xffffffff80262c84UL, 0);
+        _memory.Write32(0xffffffff80262c8cUL, unchecked((uint)state));
+        uint stateWord = _memory.Read32(state + 0x08UL) + 0x00620000u;
+        _memory.Write32(0xffffffff80262c90UL, stateWord);
+        NormalizeGlideFifoState(state);
+        room = _memory.Read32(state + 0x37cUL);
         return true;
     }
 
