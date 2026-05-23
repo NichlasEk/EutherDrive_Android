@@ -5678,6 +5678,23 @@ internal sealed class MipsR5000Core
             ulong returnOffset = returnAddress & 0x1fffffffUL;
             if (returnOffset is < 0x000c0000UL or > 0x00110000UL)
                 return false;
+
+            // The runtime scheduler expects this tick/event bit to pulse; without
+            // it the diagnostic menu parks in the "IS STUCK" wait loop.
+            if (returnOffset == 0x000cda70UL && mask == 0x00140000u)
+            {
+                _gpr[2] = SignExtend32(mask);
+                _gpr[3] = 0;
+                _gpr[4] = mask;
+                _gpr[5] = mask;
+                _gpr[6] = mask;
+                _gpr[7] = table + 5UL * 28UL;
+                _gpr[8] = 0;
+                _gpr[0] = 0;
+                Pc = returnAddress;
+                CompleteFastPathStep();
+                return true;
+            }
         }
 
         if (index >= 7u)
