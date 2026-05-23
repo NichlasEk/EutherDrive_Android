@@ -826,6 +826,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGauntletGlideRuntimeTwoWordStateUpdate(pc))
             return;
+        if (TryFastPathKnownGauntletGlideRuntimeMaskPacket(pc))
+            return;
         if (TryFastPathKnownGauntletGlideRuntimeStateSnapshotCopy(pc))
             return;
         if (TryFastPathKnownRuntimeCommandCompleteWait(pc))
@@ -6137,6 +6139,120 @@ internal sealed class MipsR5000Core
         _gpr[0] = 0;
         AdvanceCp0Count(_cp0CountStep * 196UL);
         _instructionCounter += 196UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownGauntletGlideRuntimeMaskPacket(ulong pc)
+    {
+        const ulong entry = 0xffffffff8010264cUL;
+        const ulong prologueAfterSavedState = 0xffffffff80102680UL;
+        bool atEntry = pc == entry;
+        bool inEarlyPrologue = pc == prologueAfterSavedState;
+        if (!atEntry && !inEarlyPrologue)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffc8U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c028026U ||
+            _memory.Read32(entry + 0x08UL) != 0xafb20018U ||
+            _memory.Read32(entry + 0x0cUL) != 0x8c522c8cU ||
+            _memory.Read32(entry + 0x40UL) != 0xafa40038U ||
+            _memory.Read32(entry + 0x44UL) != 0x8e550280U ||
+            _memory.Read32(entry + 0x48UL) != 0x8e51026cU ||
+            _memory.Read32(entry + 0x4cUL) != 0x8e5e0294U ||
+            _memory.Read32(entry + 0xf8UL) != 0x8c830374U ||
+            _memory.Read32(entry + 0xfcUL) != 0x34428264U ||
+            _memory.Read32(entry + 0x100UL) != 0xac620000U ||
+            _memory.Read32(entry + 0x108UL) != 0xac700000U ||
+            _memory.Read32(entry + 0x158UL) != 0x3c020104U ||
+            _memory.Read32(entry + 0x15cUL) != 0x8c830374U ||
+            _memory.Read32(entry + 0x160UL) != 0x3442824cU ||
+            _memory.Read32(entry + 0x164UL) != 0xac620000U ||
+            _memory.Read32(entry + 0x16cUL) != 0x24020001U ||
+            _memory.Read32(entry + 0x170UL) != 0xac620000U ||
+            _memory.Read32(entry + 0x178UL) != 0xac750000U ||
+            _memory.Read32(entry + 0x180UL) != 0xac7e0000U ||
+            _memory.Read32(entry + 0x1c8UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x1ccUL) != 0x27bd0038U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong oldStackPointer = _gpr[29];
+        if (inEarlyPrologue)
+        {
+            ulong frame = _gpr[29];
+            if (!IsMainRamRange(frame + 0x18UL, 0x20UL))
+                return false;
+
+            _gpr[18] = SignExtend32(_memory.Read32(frame + 0x18UL));
+            _gpr[20] = SignExtend32(_memory.Read32(frame + 0x20UL));
+            _gpr[22] = SignExtend32(_memory.Read32(frame + 0x28UL));
+            _gpr[23] = SignExtend32(_memory.Read32(frame + 0x2cUL));
+            _gpr[30] = SignExtend32(_memory.Read32(frame + 0x30UL));
+            returnAddress = SignExtend32(_memory.Read32(frame + 0x34UL));
+            oldStackPointer = frame + 0x38UL;
+        }
+
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000e0000UL or > 0x00110000UL)
+            return false;
+
+        ulong state = SignExtend32(_memory.Read32(0xffffffff80262c8cUL));
+        ulong fifoState = SignExtend32(_memory.Read32(state + 0x0cUL));
+        if (state != 0xffffffff80262d64UL ||
+            !IsMainRamRange(state + 0x294UL, 4) ||
+            !IsMainRamRange(fifoState + 0x374UL, 12))
+        {
+            return false;
+        }
+
+        uint flags = _memory.Read32(state + 0x26cUL);
+        if ((flags & 0x410u) != 0 || ((flags >> 9) & 1u) != 0)
+            return false;
+
+        uint room = _memory.Read32(fifoState + 0x37cUL);
+        if (room < 28u)
+            return false;
+
+        uint fifo = _memory.Read32(fifoState + 0x374UL);
+        if ((fifo & 3u) != 0 || fifo is < 0xa8200000u or >= 0xa8300000u)
+            return false;
+
+        uint value = _memory.Read32(state + 0x280UL);
+        uint aux = _memory.Read32(state + 0x294UL);
+        uint argument = (uint)_gpr[4];
+
+        WriteSignedAddress32(fifo, 0x00208264u);
+        WriteSignedAddress32(fifo + 4u, value);
+        WriteSignedAddress32(fifo + 8u, argument);
+        fifo += 12u;
+        room -= 12u;
+        uint secondPacketStart = fifo;
+
+        WriteSignedAddress32(fifo, 0x0104824cu);
+        WriteSignedAddress32(fifo + 4u, 1u);
+        WriteSignedAddress32(fifo + 8u, value);
+        WriteSignedAddress32(fifo + 12u, aux);
+        fifo += 16u;
+        room -= 16u;
+
+        _memory.Write32(fifoState + 0x374UL, fifo);
+        _memory.Write32(fifoState + 0x37cUL, room);
+
+        _gpr[2] = SignExtend32(room);
+        _gpr[3] = 16UL;
+        _gpr[4] = fifoState;
+        _gpr[5] = SignExtend32(secondPacketStart);
+        _gpr[21] = SignExtend32(value);
+        _gpr[31] = returnAddress;
+        _gpr[29] = oldStackPointer;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 64UL);
+        _instructionCounter += 64UL;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = returnAddress;
