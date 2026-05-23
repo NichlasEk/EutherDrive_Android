@@ -1806,7 +1806,8 @@ internal sealed class MipsR5000Core
         ulong end = _gpr[5];
         ulong returnAddress = _gpr[31];
         ulong segment = start & 0xffffffffe0000000UL;
-        if (segment is not (0x0000000080000000UL or 0x00000000a0000000UL))
+        if (segment is not (0x0000000080000000UL or 0x00000000a0000000UL or
+                            0xffffffff80000000UL or 0xffffffffa0000000UL))
             return false;
         if (end < start || end - start > 0x02000000UL)
             return false;
@@ -3710,6 +3711,8 @@ internal sealed class MipsR5000Core
     {
         if (TryCompleteKnownRuntimeEarlyQioWait(pc))
             return true;
+        if (TryCompleteKnownRuntimeStatusReturnWait(pc))
+            return true;
 
         const ulong loadPc = 0xffffffff80022aa8UL;
         if (pc != loadPc && pc != 0xffffffff80022aacUL && pc != 0xffffffff80022ab0UL)
@@ -3741,6 +3744,56 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:QIO] generic-wait-complete pc={pc:x16} object={obj:x16} " +
                 $"state={_memory.Read32(obj + 0x0cUL):x8} status={status:x8} " +
                 $"next={_memory.Read32(obj + 0x18UL):x8} buf={_memory.Read32(obj + 0x2cUL):x8}");
+        }
+        return true;
+    }
+
+    private bool TryCompleteKnownRuntimeStatusReturnWait(ulong pc)
+    {
+        const ulong loadStatusPc = 0xffffffff80022f10UL;
+        if (pc is not (0xffffffff80022f10UL or 0xffffffff80022f14UL or
+                       0xffffffff80022f18UL or 0xffffffff80022f20UL or
+                       0xffffffff80022f24UL))
+        {
+            return false;
+        }
+        if (_gpr[16] == 0 || !IsMainRamRange(_gpr[16], 0x1c))
+            return false;
+        if (_memory.Read32(loadStatusPc) != 0x8c850014U ||
+            _memory.Read32(loadStatusPc + 0x04UL) != 0x8c820018U ||
+            _memory.Read32(loadStatusPc + 0x08UL) != 0x10620002U ||
+            _memory.Read32(loadStatusPc + 0x10UL) != 0x8c830018U ||
+            _memory.Read32(loadStatusPc + 0x14UL) != 0x10a0fffaU ||
+            _memory.Read32(loadStatusPc + 0x1cUL) != 0x03e00008U ||
+            _memory.Read32(loadStatusPc + 0x20UL) != 0x00a0102dU)
+        {
+            return false;
+        }
+
+        uint state = _memory.Read32(_gpr[16] + 0x0cUL);
+        uint status = _memory.Read32(_gpr[16] + 0x14UL);
+        uint next = _memory.Read32(_gpr[16] + 0x18UL);
+        if (status == 0 && next == 0 && state is >= 0x80U and <= 0x8fU)
+        {
+            status = 0x3100U;
+            _memory.Write32(_gpr[16] + 0x14UL, status);
+        }
+        if (status == 0)
+            return false;
+
+        _gpr[2] = SignExtend32(status);
+        _gpr[5] = SignExtend32(status);
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 8UL);
+        _instructionCounter += 8UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = CanonicalizeCodeAddress(_gpr[31]);
+        if (_traceRd0Home && _genericQioWaitTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:QIO] status-return-complete pc={pc:x16} object={_gpr[16]:x16} " +
+                $"state={state:x8} status={status:x8} next={next:x8}");
         }
         return true;
     }
@@ -6268,17 +6321,19 @@ internal sealed class MipsR5000Core
 
         uint changed = oldBits ^ sourceBits;
         uint toggled = previousValue ^ value;
-        uint held = value & ~toggled;
+        uint unchangedMask = ~toggled;
+        uint held = value & unchangedMask;
         uint latch = _memory.Read32(record + 0x04UL);
-        uint nextLatch = (toggled & latch) | held;
+        uint maskedToggle = toggled & latch;
+        uint nextLatch = maskedToggle | held;
         changed &= nextLatch;
-        uint delayedBits = toggled & _memory.Read32(record + 0x10UL);
+        uint delayedBits = maskedToggle & _memory.Read32(record + 0x10UL);
         _memory.Write32(record + 0x04UL, nextLatch);
 
         if (delayedBits != 0)
             return;
 
-        if ((nextLatch + _memory.Read32(record + 0x10UL)) != 0)
+        if ((nextLatch + unchangedMask) != 0)
         {
             ushort countdown = (ushort)(_memory.Read16(record + 0x14UL) - 1);
             _memory.Write16(record + 0x14UL, countdown);
@@ -8729,7 +8784,7 @@ internal sealed class MipsR5000Core
                 break;
             case 0x08:
             case 0x09:
-                _gpr[rt] = (ulong)((long)_gpr[rs] + simm);
+                _gpr[rt] = SignExtend32((uint)_gpr[rs] + (uint)simm);
                 break;
             case 0x0a:
                 _gpr[rt] = unchecked((long)_gpr[rs]) < simm ? 1UL : 0UL;
@@ -8747,7 +8802,7 @@ internal sealed class MipsR5000Core
                 _gpr[rt] = _gpr[rs] ^ uimm;
                 break;
             case 0x0f:
-                _gpr[rt] = (ulong)uimm << 16;
+                _gpr[rt] = SignExtend32((uint)uimm << 16);
                 break;
             case 0x10:
                 ExecuteCop0(op, rs, rt, rd);
@@ -8846,22 +8901,22 @@ internal sealed class MipsR5000Core
         switch (funct)
         {
             case 0x00:
-                _gpr[rd] = (uint)_gpr[rt] << sa;
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] << sa);
                 break;
             case 0x02:
-                _gpr[rd] = (uint)_gpr[rt] >> sa;
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] >> sa);
                 break;
             case 0x03:
-                _gpr[rd] = (ulong)((int)(uint)_gpr[rt] >> sa);
+                _gpr[rd] = SignExtend32((uint)((int)(uint)_gpr[rt] >> sa));
                 break;
             case 0x04:
-                _gpr[rd] = (uint)_gpr[rt] << (int)(_gpr[rs] & 0x1f);
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] << (int)(_gpr[rs] & 0x1f));
                 break;
             case 0x06:
-                _gpr[rd] = (uint)_gpr[rt] >> (int)(_gpr[rs] & 0x1f);
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] >> (int)(_gpr[rs] & 0x1f));
                 break;
             case 0x07:
-                _gpr[rd] = (ulong)((int)(uint)_gpr[rt] >> (int)(_gpr[rs] & 0x1f));
+                _gpr[rd] = SignExtend32((uint)((int)(uint)_gpr[rt] >> (int)(_gpr[rs] & 0x1f)));
                 break;
             case 0x08:
                 QueueBranch(_gpr[rs]);
@@ -8947,13 +9002,17 @@ internal sealed class MipsR5000Core
                 _gpr[rd] = SignExtend32((uint)(_gpr[rs] + _gpr[rt]));
                 break;
             case 0x21:
-            case 0x2d:
-                _gpr[rd] = _gpr[rs] + _gpr[rt];
+                _gpr[rd] = SignExtend32((uint)(_gpr[rs] + _gpr[rt]));
                 break;
             case 0x22:
                 _gpr[rd] = SignExtend32((uint)(_gpr[rs] - _gpr[rt]));
                 break;
             case 0x23:
+                _gpr[rd] = SignExtend32((uint)(_gpr[rs] - _gpr[rt]));
+                break;
+            case 0x2d:
+                _gpr[rd] = _gpr[rs] + _gpr[rt];
+                break;
             case 0x2f:
                 _gpr[rd] = _gpr[rs] - _gpr[rt];
                 break;
@@ -9244,6 +9303,15 @@ internal sealed class MipsR5000Core
         ulong pending = _cp0[13] & _cp0[12] & Cp0CauseInterruptPendingMask;
         if (pending == 0)
             return false;
+
+        if (_enableRuntimeInterruptBridge && IsRuntimeCodeAddress(pc) &&
+            _memory.SuppressOnlyNileTimerInterrupts())
+        {
+            UpdateInterruptPendingBits();
+            pending = _cp0[13] & _cp0[12] & Cp0CauseInterruptPendingMask;
+            if (pending == 0)
+                return false;
+        }
 
         if (_enableRuntimeInterruptBridge && IsRuntimeCodeAddress(pc) &&
             (pending & ~Cp0CauseTimerInterrupt) == 0)
@@ -9844,6 +9912,11 @@ internal sealed class VegasMemoryMap
     private const uint NileTimerControlBitsOffset = 0x04;
     private const uint NileTimerCounterOffset = 0x08;
     private const int NileTimerInterruptBase = 5;
+    private const ushort NileTimerInterruptMask =
+        (ushort)((1 << NileTimerInterruptBase) |
+                 (1 << (NileTimerInterruptBase + 1)) |
+                 (1 << (NileTimerInterruptBase + 2)) |
+                 (1 << (NileTimerInterruptBase + 3)));
     private const ushort NilePciInterruptC = 1 << 10;
     private const ushort NilePciInterruptD = 1 << 11;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
@@ -10373,6 +10446,23 @@ internal sealed class VegasMemoryMap
     {
         UpdateNileInterrupts();
         return (ulong)_nileIrqPins << _nileCpuIrqShift;
+    }
+
+    public bool SuppressOnlyNileTimerInterrupts()
+    {
+        UpdateNileInterrupts();
+        if (_nileIrqPins == 0 || (_nileIrqState & NileTimerInterruptMask) == 0)
+            return false;
+
+        ushort previousState = _nileIrqState;
+        _nileIrqState &= unchecked((ushort)~NileTimerInterruptMask);
+        UpdateNileInterrupts();
+        if (_nileIrqPins == 0)
+            return true;
+
+        _nileIrqState = previousState;
+        UpdateNileInterrupts();
+        return false;
     }
 
     public void AdvanceNileClock(ulong ticks)
@@ -12612,7 +12702,7 @@ internal sealed class VegasVoodooPciDevice
         if ((offset & 0x3ffu) == 0)
             return ReadStatus();
         if ((offset & 0x3ffu) == 0x204u)
-            return ++_vRetraceCounter & 0x7ffu;
+            return (_vRetraceCounter++ >> 1) & 0x7ffu;
         if ((offset & 0x3ffu) is 0x1e8u or 0x1f4u or 0x1f8u)
             return _voodoo?.ReadRegister(offset) ?? 0;
         if ((offset & 0x3ffu) == 0x240u)

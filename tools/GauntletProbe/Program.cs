@@ -28,7 +28,7 @@ var totalStopwatch = Stopwatch.StartNew();
 var loadStopwatch = Stopwatch.StartNew();
 var adapter = new GauntletDarkLegacyAdapter();
 adapter.LoadRom(romPath);
-ApplyInputFromEnvironment(adapter);
+ApplyInputFromEnvironment(adapter, frame: null);
 loadStopwatch.Stop();
 
 ulong? stopPc = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_STOP_PC"));
@@ -215,23 +215,60 @@ static ulong? ParseOptionalHexUlong(string? value)
         : null;
 }
 
-static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter)
+static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter, long? frame)
 {
-    bool up = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_UP");
-    bool down = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_DOWN");
-    bool left = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_LEFT");
-    bool right = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_RIGHT");
-    bool fight = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_FIGHT") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_A");
-    bool magic = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MAGIC") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_B");
-    bool turbo = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TURBO") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_C");
-    bool start = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_START");
-    bool service = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE");
-    bool test = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TEST");
-    bool coin = IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_COIN") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MODE");
+    bool hasInputConfiguration =
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_UP") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_DOWN") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_LEFT") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_RIGHT") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_FIGHT") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_A") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_MAGIC") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_B") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_TURBO") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_C") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_START") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_TEST") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_COIN") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_MODE");
 
-    if (up || down || left || right || fight || magic || turbo || start || service || test || coin)
+    if (!hasInputConfiguration)
+        return;
+
+    bool active = IsInputFrameActive(frame);
+    bool up = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_UP");
+    bool down = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_DOWN");
+    bool left = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_LEFT");
+    bool right = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_RIGHT");
+    bool fight = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_FIGHT") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_A"));
+    bool magic = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MAGIC") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_B"));
+    bool turbo = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TURBO") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_C"));
+    bool start = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_START");
+    bool service = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE");
+    bool test = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TEST");
+    bool coin = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_COIN") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MODE"));
+
+    if (active || frame.HasValue)
         adapter.SetInputState(up, down, left, right, fight, magic, turbo, start, service, test, z: false, coin, PadType.SixButton);
 }
+
+static bool HasEnvValue(string name)
+    => Environment.GetEnvironmentVariable(name) is { Length: > 0 };
+
+static bool IsInputFrameActive(long? frame)
+{
+    if (!frame.HasValue)
+        return true;
+
+    int startFrame = ParseOptionalInt("EUTHERDRIVE_GAUNTDL_INPUT_PRESS_FRAME", 0);
+    int releaseFrame = ParseOptionalInt("EUTHERDRIVE_GAUNTDL_INPUT_RELEASE_FRAME", -1);
+    return frame.Value >= startFrame && (releaseFrame < 0 || frame.Value < releaseFrame);
+}
+
+static int ParseOptionalInt(string name, int fallback)
+    => int.TryParse(Environment.GetEnvironmentVariable(name), out int parsed) ? parsed : fallback;
 
 static bool IsEnvEnabled(string name)
 {
@@ -252,6 +289,7 @@ static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, u
     while (adapter.FrameCounter.GetValueOrDefault() < targetFrames)
     {
         long frame = adapter.FrameCounter.GetValueOrDefault();
+        ApplyInputFromEnvironment(adapter, frame);
         adapter.RunFrame();
         if (stopPc.HasValue && TryGetCpuPc(adapter, out ulong pc) && pc == stopPc.Value)
         {
