@@ -10049,6 +10049,8 @@ internal sealed class VegasMemoryMap
     private readonly int _nileCpuIrqShift = ParseNileCpuIrqShift();
     private readonly byte[] _timekeeperRam = new byte[0x8000];
     private readonly DateTime _timekeeperEpoch = new(1999, 12, 11, 6, 12, 0);
+    private readonly bool _disableTimekeeperWatchdogReset =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_DISABLE_TIMEKEEPER_WATCHDOG_RESET");
     private ulong _traceCpuPc;
     private ulong _timekeeperReadTicks;
     private int _timekeeperWatchdogFrameCountdown;
@@ -11758,6 +11760,12 @@ internal sealed class VegasMemoryMap
         _timekeeperRam[0x7ff0] |= 0x80;
         if ((_timekeeperRam[0x7ff7] & 0x80) != 0)
         {
+            if (_disableTimekeeperWatchdogReset)
+            {
+                RefreshTimekeeperWatchdog();
+                return;
+            }
+
             _timekeeperRam[0x7ff7] = 0;
             _timekeeperWatchdogResetRequested = true;
         }
