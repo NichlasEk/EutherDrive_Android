@@ -816,11 +816,13 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
             return;
+        if (TryFastPathKnownGauntletRuntimeGlideIdleLoop(pc))
+            return;
         if (TryFastPathKnownGauntletRuntimeGlideIdlePump(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeInputPoll(pc))
             return;
-        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeStatusBitfieldRead(pc))
+        if (TryFastPathKnownRuntimeStatusBitfieldRead(pc))
             return;
         if (TryFastPathKnownRuntimeBitfieldUpdate(pc))
             return;
@@ -6115,9 +6117,79 @@ internal sealed class MipsR5000Core
         return true;
     }
 
-    private bool TryApplyKnownGauntletRuntimeGlideIdlePumpEffects(out uint room)
+    private bool TryFastPathKnownGauntletRuntimeGlideIdleLoop(ulong pc)
+    {
+        const ulong entry = 0xffffffff800dc6d0UL;
+        if (pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x0c03ae29U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c040060U ||
+            _memory.Read32(entry + 0x08UL) != 0x00501024U ||
+            _memory.Read32(entry + 0x0cUL) != 0x14400006U ||
+            _memory.Read32(entry + 0x10UL) != 0x2402ffffU ||
+            _memory.Read32(entry + 0x14UL) != 0x0c038505U ||
+            _memory.Read32(entry + 0x18UL) != 0x0000202dU ||
+            _memory.Read32(entry + 0x1cUL) != 0x080371b4U ||
+            _memory.Read32(entry + 0x20UL) != 0x00000000U)
+        {
+            return false;
+        }
+
+        uint callback = _memory.Read32(0xffffffff802281acUL);
+        if (callback != 0x800e12f8U || _gpr[16] != 0x00600000UL)
+            return false;
+
+        if (ReadRuntimeStatusBitfield(index: 5u, mask: 0x00600000u) != 0)
+            return false;
+
+        bool hasProbeBudget = _remainingProbeSteps >= 12;
+        int skippedInstructions = hasProbeBudget ? Math.Min(_remainingProbeSteps, 1024 * 1024) : 12;
+        int iterations = hasProbeBudget ? Math.Max(1, skippedInstructions / 12) : 1;
+        skippedInstructions = iterations * 12;
+        if (!TryApplyKnownGauntletRuntimeGlideIdlePumpEffects(out _, iterations))
+            return false;
+
+        _memory.Write8(0xffffffffa4207000UL, 0);
+        _gpr[2] = 0;
+        _gpr[3] = 0;
+        _gpr[4] = 0;
+        _gpr[31] = 0xffffffff800dc6ecUL;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (ulong)skippedInstructions);
+        _instructionCounter += (ulong)skippedInstructions;
+        if (hasProbeBudget)
+            _probeStepDebt += skippedInstructions - 1;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = entry;
+        return true;
+    }
+
+    private uint ReadRuntimeStatusBitfield(uint index, uint mask)
+    {
+        const ulong table = 0xffffffff80262b90UL;
+        if (index >= 7u)
+            return 0;
+
+        ulong record = table + index * 28UL;
+        uint oldBits = _memory.Read32(record + 0x08UL);
+        uint sourceBits = _memory.Read32(record + 0x0cUL);
+        uint combined = _memory.Read32(record + 0x04UL) | _memory.Read32(record);
+        uint changed = oldBits ^ sourceBits;
+        if (mask == 0)
+            return combined;
+
+        uint selected = ~changed & combined & mask;
+        return (~mask & combined) | selected;
+    }
+
+    private bool TryApplyKnownGauntletRuntimeGlideIdlePumpEffects(out uint room, int iterations = 1)
     {
         room = 0;
+        if (iterations <= 0)
+            return false;
+
         const ulong state = 0xffffffff80262d64UL;
         if (_memory.Read32(0xffffffff8022af7cUL) != 0 ||
             _memory.Read32(0xffffffff8022af10UL + 0x18UL) != 0 ||
@@ -6134,7 +6206,7 @@ internal sealed class MipsR5000Core
         _memory.Write32(0xffffffff8022f5b4UL, 0);
 
         uint tick = _memory.Read32(0xffffffff80238114UL);
-        _memory.Write32(0xffffffff80238114UL, tick + 1u);
+        _memory.Write32(0xffffffff80238114UL, tick + (uint)iterations);
 
         _memory.Write32(0xffffffff80262c84UL, 0);
         _memory.Write32(0xffffffff80262c8cUL, unchecked((uint)state));
