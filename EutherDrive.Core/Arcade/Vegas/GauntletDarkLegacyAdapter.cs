@@ -3716,19 +3716,26 @@ internal sealed class MipsR5000Core
         if (TryCompleteKnownRuntimeStatusReturnWait(pc))
             return true;
 
-        const ulong loadPc = 0xffffffff80022aa8UL;
-        if (pc != loadPc && pc != 0xffffffff80022aacUL && pc != 0xffffffff80022ab0UL)
+        ulong loadPc = pc switch
+        {
+            0xffffffff80022aa8UL or 0xffffffff80022aacUL or 0xffffffff80022ab0UL => 0xffffffff80022aa8UL,
+            0xffffffff80022b88UL or 0xffffffff80022b8cUL or 0xffffffff80022b90UL => 0xffffffff80022b88UL,
+            _ => 0
+        };
+        if (loadPc == 0)
             return false;
         if (_gpr[16] == 0 || !IsMainRamRange(_gpr[16], 0x18))
             return false;
-        if (_memory.Read32(0xffffffff80022aa0UL) != 0x14400004U ||
-            _memory.Read32(0xffffffff80022aa8UL) != 0x8e020014U ||
-            _memory.Read32(0xffffffff80022aacUL) != 0x1040fffeU)
+        if (_memory.Read32(loadPc - 0x08UL) != 0x14400004U ||
+            _memory.Read32(loadPc) != 0x8e020014U ||
+            _memory.Read32(loadPc + 0x04UL) != 0x1040fffeU)
         {
             return false;
         }
 
         uint status = _memory.Read32(_gpr[16] + 0x14UL);
+        if (status == 0 && TryCompleteKnownRd0RootOpenWait(_gpr[16], out status))
+            _memory.Write32(_gpr[16] + 0x14UL, status);
         if (status == 0)
             return false;
 
@@ -3747,6 +3754,33 @@ internal sealed class MipsR5000Core
                 $"state={_memory.Read32(obj + 0x0cUL):x8} status={status:x8} " +
                 $"next={_memory.Read32(obj + 0x18UL):x8} buf={_memory.Read32(obj + 0x2cUL):x8}");
         }
+        return true;
+    }
+
+    private bool TryCompleteKnownRd0RootOpenWait(ulong objectAddress, out uint status)
+    {
+        status = 0;
+        if (_memory.Read32(objectAddress + 0x0cUL) != 0x100U ||
+            _memory.Read32(objectAddress + 0x14UL) != 0)
+        {
+            return false;
+        }
+
+        ulong completion = objectAddress + 0x70UL;
+        if (!IsMainRamRange(completion, 0x30))
+            return false;
+        if (_memory.Read32(completion + 0x0cUL) is not (0x82U or 0x100U) ||
+            _memory.Read32(completion + 0x18UL) != 3U ||
+            _memory.Read32(completion + 0x1cUL) is not (0x80050ab4U or 0x800325a0U))
+        {
+            return false;
+        }
+
+        uint completedStatus = _memory.Read32(completion + 0x14UL);
+        if (completedStatus != 0x3100U)
+            return false;
+
+        status = completedStatus;
         return true;
     }
 
@@ -4248,10 +4282,13 @@ internal sealed class MipsR5000Core
         const ulong entry = 0xffffffff80022fb0UL;
         const ulong parserReturnPc = 0xffffffff80015ba4UL;
         const ulong rd0Object = 0xffffffff800e7810UL;
+        const ulong runtimeRd0Object = 0xffffffff800e7420UL;
 
         if (!_enableRd0BootHeaderRead || pc != entry || _gpr[31] != parserReturnPc)
             return false;
-        if (_gpr[4] != rd0Object || _gpr[7] != 0x200UL)
+        if (_gpr[4] != rd0Object && _gpr[4] != runtimeRd0Object)
+            return false;
+        if (_gpr[7] != 0x200UL)
             return false;
 
         uint lba = (uint)_gpr[5];
@@ -4287,10 +4324,13 @@ internal sealed class MipsR5000Core
         const ulong entry = 0xffffffff80022fb0UL;
         const ulong parserReturnPc = 0xffffffff80015cbcUL;
         const ulong rd0Object = 0xffffffff800e7810UL;
+        const ulong runtimeRd0Object = 0xffffffff800e7420UL;
 
         if (!_enableRd0BootFileRead || pc != entry || _gpr[31] != parserReturnPc)
             return false;
-        if (_gpr[4] != rd0Object || _gpr[5] == 0 || _gpr[7] == 0 || _gpr[7] > uint.MaxValue)
+        if (_gpr[4] != rd0Object && _gpr[4] != runtimeRd0Object)
+            return false;
+        if (_gpr[5] == 0 || _gpr[7] == 0 || _gpr[7] > uint.MaxValue)
             return false;
 
         uint lba = (uint)_gpr[5];
