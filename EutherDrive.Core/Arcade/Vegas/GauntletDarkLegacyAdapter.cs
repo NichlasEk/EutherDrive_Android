@@ -8698,15 +8698,7 @@ internal sealed class MipsR5000Core
 
     private bool TryFastPathKnownRamVoodooRetraceDeltaWait(ulong pc)
     {
-        const ulong loopStart = 0xffffffff800171dcUL;
-        if (pc is < loopStart or > 0xffffffff800171f0UL)
-            return false;
-        if (_memory.Read32(loopStart) != 0x8e220000U ||
-            _memory.Read32(loopStart + 0x04UL) != 0x8e230000U ||
-            _memory.Read32(loopStart + 0x08UL) != 0x304507ffU ||
-            _memory.Read32(loopStart + 0x0cUL) != 0x306307ffU ||
-            _memory.Read32(loopStart + 0x10UL) != 0x10a3fffbU ||
-            _memory.Read32(loopStart + 0x14UL) != 0x00c5102bU)
+        if (!TryFindVoodooRetraceDeltaWaitLoop(pc, out ulong loopStart))
             return false;
         if ((_gpr[17] & 0xffffffffUL) != 0xa8000204UL)
             return false;
@@ -8726,8 +8718,29 @@ internal sealed class MipsR5000Core
         _instructionCounter += 6UL;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
-        Pc = 0xffffffff800171f4UL;
+        Pc = loopStart + 0x18UL;
         return true;
+    }
+
+    private bool TryFindVoodooRetraceDeltaWaitLoop(ulong pc, out ulong loopStart)
+    {
+        for (ulong back = 0; back <= 0x14UL; back += 4UL)
+        {
+            ulong candidate = pc - back;
+            if (_memory.Read32(candidate) == 0x8e220000U &&
+                _memory.Read32(candidate + 0x04UL) == 0x8e230000U &&
+                _memory.Read32(candidate + 0x08UL) == 0x304507ffU &&
+                _memory.Read32(candidate + 0x0cUL) == 0x306307ffU &&
+                _memory.Read32(candidate + 0x10UL) == 0x10a3fffbU &&
+                _memory.Read32(candidate + 0x14UL) == 0x00c5102bU)
+            {
+                loopStart = candidate;
+                return true;
+            }
+        }
+
+        loopStart = 0;
+        return false;
     }
 
     private static bool IsMainRamRange(ulong address, ulong byteLength)
