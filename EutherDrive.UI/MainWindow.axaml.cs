@@ -8956,6 +8956,8 @@ public partial class MainWindow : Window
             boogwingAdapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
         else if (core is Pgm2Adapter pgm2Adapter)
             pgm2Adapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2, padType);
+        else if (core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntletAdapter)
+            gauntletAdapter.SetPad2InputState(up2, down2, left2, right2, a2, b2, c2, start2 || start, x2, y2, z2, mode2 || mode, padType);
         else if (core is SnesAdapter snesAdapter)
             snesAdapter.SetInputState2(up2, down2, left2, right2, a2, b2, c2, start2, x2, y2, z2, mode2);
         if (TracePadMapping)

@@ -145,8 +145,27 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         PadType padType)
     {
         _machine.Input.SetPlayer1(up, down, left, right, fight: a, magic: b, turbo: c, start, coin: mode);
+        _machine.Input.SetPlayer2(up: false, down: false, left: false, right: false, fight: false, magic: false, turbo: false, start, coin: mode);
         _machine.Input.Service = x;
         _machine.Input.Test = y;
+    }
+
+    public void SetPad2InputState(
+        bool up,
+        bool down,
+        bool left,
+        bool right,
+        bool a,
+        bool b,
+        bool c,
+        bool start,
+        bool x,
+        bool y,
+        bool z,
+        bool mode,
+        PadType padType)
+    {
+        _machine.Input.SetPlayer2(up, down, left, right, fight: a, magic: b, turbo: c, start, coin: mode);
     }
 
     private void DrawDiagnosticFrame()
@@ -6207,6 +6226,7 @@ internal sealed class MipsR5000Core
 
         uint tick = _memory.Read32(0xffffffff80238114UL);
         _memory.Write32(0xffffffff80238114UL, tick + (uint)iterations);
+        ApplyKnownGauntletRuntimeInputPollEffects();
 
         _memory.Write32(0xffffffff80262c84UL, 0);
         _memory.Write32(0xffffffff80262c8cUL, unchecked((uint)state));
@@ -6215,6 +6235,65 @@ internal sealed class MipsR5000Core
         NormalizeGlideFifoState(state);
         room = _memory.Read32(state + 0x37cUL);
         return true;
+    }
+
+    private void ApplyKnownGauntletRuntimeInputPollEffects()
+    {
+        const ulong table = 0xffffffff80262b90UL;
+        const ulong record5 = table + 5UL * 28UL;
+        if (!IsMainRamRange(record5, 28UL))
+            return;
+
+        uint player12AndSystem = _memory.Read16(0x00000000a4a0000cUL) |
+                                 ((uint)_memory.Read16(0x00000000a4a0000aUL) << 16);
+        uint port34And0 = _memory.Read16(0x00000000a4a0000eUL) |
+                          ((uint)_memory.Read16(0x00000000a4a00008UL) << 16);
+
+        bool invertHighHalfOnly = ((((port34And0 >> 29) ^ 1u) & 1u) != 0);
+        uint activeBits = invertHighHalfOnly
+            ? player12AndSystem ^ 0xffff0000u
+            : ~player12AndSystem;
+
+        uint previousLowBits = _memory.Read32(record5) & 0x0000ffffu;
+        uint systemBits = activeBits & 0xffff0000u;
+        UpdateRuntimeStatusBitfieldRecord(record5, previousLowBits | systemBits);
+    }
+
+    private void UpdateRuntimeStatusBitfieldRecord(ulong record, uint value)
+    {
+        uint previousValue = _memory.Read32(record);
+        uint oldBits = _memory.Read32(record + 0x08UL);
+        uint sourceBits = _memory.Read32(record + 0x0cUL);
+        _memory.Write32(record, value);
+
+        uint changed = oldBits ^ sourceBits;
+        uint toggled = previousValue ^ value;
+        uint held = value & ~toggled;
+        uint latch = _memory.Read32(record + 0x04UL);
+        uint nextLatch = (toggled & latch) | held;
+        changed &= nextLatch;
+        uint delayedBits = toggled & _memory.Read32(record + 0x10UL);
+        _memory.Write32(record + 0x04UL, nextLatch);
+
+        if (delayedBits != 0)
+            return;
+
+        if ((nextLatch + _memory.Read32(record + 0x10UL)) != 0)
+        {
+            ushort countdown = (ushort)(_memory.Read16(record + 0x14UL) - 1);
+            _memory.Write16(record + 0x14UL, countdown);
+            if (countdown == 0)
+            {
+                changed &= ~_memory.Read32(record + 0x10UL);
+                _memory.Write16(record + 0x14UL, _memory.Read16(record + 0x18UL));
+            }
+        }
+        else
+        {
+            _memory.Write16(record + 0x14UL, _memory.Read16(record + 0x16UL));
+        }
+
+        _memory.Write32(record + 0x08UL, _memory.Read32(record + 0x0cUL) ^ changed);
     }
 
     private bool TryFastPathKnownGauntletGlideRuntimeStatePayloadRead(ulong pc)
@@ -11775,9 +11854,12 @@ internal sealed class VegasMemoryMap
             return value;
 
         GauntletPlayerInput player1 = _input.Player1;
+        GauntletPlayerInput player2 = _input.Player2;
         ClearActiveLowBit(ref value, 0x0001, player1.Coin);
+        ClearActiveLowBit(ref value, 0x0002, player2.Coin);
         ClearActiveLowBit(ref value, 0x0004, player1.Start);
         ClearActiveLowBit(ref value, 0x0010, _input.Test);
+        ClearActiveLowBit(ref value, 0x0020, player2.Start);
         ClearActiveLowBit(ref value, 0x0040, _input.Service);
         return value;
     }
@@ -11789,6 +11871,7 @@ internal sealed class VegasMemoryMap
             return value;
 
         GauntletPlayerInput player1 = _input.Player1;
+        GauntletPlayerInput player2 = _input.Player2;
         ClearActiveLowBit(ref value, 0x0001, player1.Up);
         ClearActiveLowBit(ref value, 0x0002, player1.Down);
         ClearActiveLowBit(ref value, 0x0004, player1.Left);
@@ -11796,6 +11879,13 @@ internal sealed class VegasMemoryMap
         ClearActiveLowBit(ref value, 0x0010, player1.Fight);
         ClearActiveLowBit(ref value, 0x0020, player1.Magic);
         ClearActiveLowBit(ref value, 0x0040, player1.Turbo);
+        ClearActiveLowBit(ref value, 0x0100, player2.Up);
+        ClearActiveLowBit(ref value, 0x0200, player2.Down);
+        ClearActiveLowBit(ref value, 0x0400, player2.Left);
+        ClearActiveLowBit(ref value, 0x0800, player2.Right);
+        ClearActiveLowBit(ref value, 0x1000, player2.Fight);
+        ClearActiveLowBit(ref value, 0x2000, player2.Magic);
+        ClearActiveLowBit(ref value, 0x4000, player2.Turbo);
         return value;
     }
 
@@ -14820,11 +14910,15 @@ internal sealed class DcsAdsp2104Core
 internal sealed class GauntletInputPanel
 {
     public GauntletPlayerInput Player1 { get; private set; }
+    public GauntletPlayerInput Player2 { get; private set; }
     public bool Service { get; set; }
     public bool Test { get; set; }
 
     public void SetPlayer1(bool up, bool down, bool left, bool right, bool fight, bool magic, bool turbo, bool start, bool coin)
         => Player1 = new GauntletPlayerInput(up, down, left, right, fight, magic, turbo, start, coin);
+
+    public void SetPlayer2(bool up, bool down, bool left, bool right, bool fight, bool magic, bool turbo, bool start, bool coin)
+        => Player2 = new GauntletPlayerInput(up, down, left, right, fight, magic, turbo, start, coin);
 }
 
 internal readonly record struct GauntletPlayerInput(
