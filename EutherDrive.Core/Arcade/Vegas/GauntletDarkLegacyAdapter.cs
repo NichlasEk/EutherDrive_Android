@@ -4540,7 +4540,9 @@ internal sealed class MipsR5000Core
         if (!_enableBootCountDelay ||
             pc is not (0xffffffff800e1414UL or 0xffffffff800e1438UL or 0xffffffff800e1440UL or
                        0xffffffff800e1450UL or 0xffffffff800e1454UL or 0xffffffff800e1458UL or
-                       0xffffffff800e1460UL or 0xffffffff800e1464UL or 0xffffffff800e1468UL))
+                       0xffffffff800e1460UL or 0xffffffff800e1464UL or 0xffffffff800e1468UL or
+                       0xffffffff800e146cUL or 0xffffffff800e1470UL or 0xffffffff800e1474UL or
+                       0xffffffff800e1478UL or 0xffffffff800e147cUL))
         {
             return false;
         }
@@ -4575,8 +4577,12 @@ internal sealed class MipsR5000Core
         }
 
         uint callback = _memory.Read32(0xffffffff802281acUL);
-        if (callback is not (0U or 0x800d03b8U))
+        bool afterIndirectCallback = pc is >= 0xffffffff800e1450UL and <= 0xffffffff800e147cUL;
+        if (callback is not (0U or 0x800d03b8U) &&
+            !(callback == 0x800e12f8U && afterIndirectCallback))
+        {
             return false;
+        }
 
         ulong sp = _gpr[29];
         ulong returnAddress = pc == entry ? _gpr[31] : 0;
@@ -14863,6 +14869,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         _fifoPacketTypeCounts[command & 7u]++;
         RecordInterestingFifoEvent(command, wordsNeeded);
+        if (IsKnownGauntletRuntimeNoopFifoPacket(command, wordsNeeded))
+            return;
+
         switch (command & 7u)
         {
             case 0:
@@ -14886,6 +14895,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                 break;
         }
     }
+
+    private bool IsKnownGauntletRuntimeNoopFifoPacket(uint command, int wordsNeeded)
+        => command == 0x00010241U &&
+           wordsNeeded == 2 &&
+           _fifoBuffer.Count >= 2 &&
+           _fifoBuffer[1] == 0 &&
+           _registers[0x48] == 0;
 
     private void DecodeFifoType0(uint command)
     {
