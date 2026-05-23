@@ -906,6 +906,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRamFrameTickWait(pc))
             return;
+        if (TryFastPathKnownRamVoodooRetraceDeltaWait(pc))
+            return;
         if (TryFastPathKnownStdioInitErrorLoop(pc))
             return;
         if (TryFastPathKnownIoasicPicBitTestWait(pc))
@@ -8651,6 +8653,40 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = 0xffffffff80017324UL;
+        return true;
+    }
+
+    private bool TryFastPathKnownRamVoodooRetraceDeltaWait(ulong pc)
+    {
+        const ulong loopStart = 0xffffffff800171dcUL;
+        if (pc is < loopStart or > 0xffffffff800171f0UL)
+            return false;
+        if (_memory.Read32(loopStart) != 0x8e220000U ||
+            _memory.Read32(loopStart + 0x04UL) != 0x8e230000U ||
+            _memory.Read32(loopStart + 0x08UL) != 0x304507ffU ||
+            _memory.Read32(loopStart + 0x0cUL) != 0x306307ffU ||
+            _memory.Read32(loopStart + 0x10UL) != 0x10a3fffbU ||
+            _memory.Read32(loopStart + 0x14UL) != 0x00c5102bU)
+            return false;
+        if ((_gpr[17] & 0xffffffffUL) != 0xa8000204UL)
+            return false;
+
+        uint firstSample = ((uint)_gpr[5] + 1u) & 0x7ffu;
+        if (firstSample == 0)
+            firstSample = 1;
+        uint secondSample = (firstSample + 1u) & 0x7ffu;
+        if (secondSample == firstSample)
+            secondSample = (firstSample + 2u) & 0x7ffu;
+
+        _gpr[5] = firstSample;
+        _gpr[3] = secondSample;
+        _gpr[2] = _gpr[6] < _gpr[5] ? 1UL : 0UL;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * 6UL);
+        _instructionCounter += 6UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = 0xffffffff800171f4UL;
         return true;
     }
 
