@@ -631,6 +631,7 @@ internal sealed class MipsR5000Core
     private int _rd0SecondOpenPollTraceCount;
     private int _rd0SecondUnableHomeBlocksTraceCount;
     private int _rd0HomeTableParsePcTraceCount;
+    private int _rd0HomeBlockStatusRepairTraceCount;
     private int _rd0Stage4BootReadCount;
     private int _rd0Stage4BootReadTraceCount;
     private int _rd0BootHeaderReadCount;
@@ -772,10 +773,13 @@ internal sealed class MipsR5000Core
             return;
         ApplyKnownRd0SyncReadCompletion(pc);
         ApplyKnownRd0HomeTableParse(pc);
+        ApplyKnownRd0HomeBlockStatusRepair(pc);
         ApplyKnownRd0Stage4BootReadCompletion(pc);
         ApplyKnownRd0CallbackRaRestore(pc);
         TraceKnownRd0HomePc(pc);
         if (TryFastPathKnownRd0HomeCounterWait(pc))
+            return;
+        if (TryFastPathKnownRd0HomeSecondCounterWait(pc))
             return;
         if (TryFastPathKnownGauntletGlideHotPath(pc))
             return;
@@ -4196,11 +4200,15 @@ internal sealed class MipsR5000Core
     {
         const ulong homeReadReturnPc = 0xffffffff80015a20UL;
         const ulong tableCheckPc = 0xffffffff80015a5cUL;
+        const ulong homeBlockStatusCheckPc = 0xffffffff80015aacUL;
         const ulong bootSlotCheckPc = 0xffffffff80015b38UL;
         const ulong homeSectorBuffer = 0xffffffff800f41e0UL;
 
         if (!_enableRd0HomeTableParse ||
-            (pc != homeReadReturnPc && pc != tableCheckPc && pc != bootSlotCheckPc))
+            (pc != homeReadReturnPc &&
+             pc != tableCheckPc &&
+             pc != homeBlockStatusCheckPc &&
+             pc != bootSlotCheckPc))
         {
             return;
         }
@@ -4243,6 +4251,12 @@ internal sealed class MipsR5000Core
         _memory.Write32(table + 0x40UL, tableMetadata0);
         _memory.Write32(table + 0x44UL, tableMetadata1);
         _memory.Write32(table + 0x64UL, 1);
+        if (pc == homeBlockStatusCheckPc)
+        {
+            uint homeBlockIndex = Math.Clamp(tableMetadata1, 2U, 5U);
+            _memory.Write32(0xffffffff80162d94UL, homeBlockIndex);
+            _memory.Write32(0xffffffff801629e8UL, homeBlockIndex);
+        }
         if (pc == bootSlotCheckPc && repairedBootSlotTableRegister)
         {
             _gpr[16] = table;
@@ -4271,26 +4285,74 @@ internal sealed class MipsR5000Core
         }
     }
 
+    private void ApplyKnownRd0HomeBlockStatusRepair(ulong pc)
+    {
+        const ulong firstStatusLoadPc = 0xffffffff800157c8UL;
+        const ulong secondStatusLoadPc = 0xffffffff800157dcUL;
+        const ulong thirdStatusLoadPc = 0xffffffff800157f0UL;
+        const ulong statusGlobal = 0xffffffff801629e8UL;
+        const ulong blockIndexGlobal = 0xffffffff80162d94UL;
+
+        if (!_enableRd0HomeTableParse ||
+            pc is not (firstStatusLoadPc or secondStatusLoadPc or thirdStatusLoadPc))
+        {
+            return;
+        }
+
+        if (_memory.Read32(firstStatusLoadPc - 0x04UL) != 0x3c108016U ||
+            _memory.Read32(firstStatusLoadPc) != 0x8e0229e8U ||
+            _memory.Read32(firstStatusLoadPc + 0x04UL) != 0x1840000dU ||
+            _memory.Read32(secondStatusLoadPc) != 0x8e0229e8U ||
+            _memory.Read32(secondStatusLoadPc + 0x04UL) != 0x18400008U ||
+            _memory.Read32(thirdStatusLoadPc) != 0x8e0229e8U ||
+            _memory.Read32(thirdStatusLoadPc + 0x04UL) != 0x18400003U)
+        {
+            return;
+        }
+
+        uint value = _memory.Read32(blockIndexGlobal);
+        if (value is < 2U or > 5U && _gpr[5] is >= 2UL and <= 5UL)
+            value = (uint)_gpr[5];
+        if (value is < 2U or > 5U)
+        {
+            return;
+        }
+
+        _memory.Write32(blockIndexGlobal, value);
+        _memory.Write32(statusGlobal, value);
+        _gpr[2] = SignExtend32(value);
+        _gpr[5] = SignExtend32(value);
+        _gpr[0] = 0;
+
+        if (_traceRd0Home && _rd0HomeBlockStatusRepairTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] home-block-status-repair pc={pc:x16} value={value:x8}");
+        }
+    }
+
     private bool TryFastPathKnownRd0HomeCounterWait(ulong pc)
     {
-        const ulong loopLoadA = 0xffffffff800158b4UL;
-        const ulong loopLoadB = 0xffffffff800158b8UL;
-        const ulong loopBranch = 0xffffffff800158bcUL;
-        const ulong loopDelay = 0xffffffff800158c0UL;
-        const ulong loopExit = 0xffffffff800158c4UL;
+        const ulong loopMoveArgument = 0xffffffff800158b4UL;
+        const ulong loopLoadCurrent = 0xffffffff800158b8UL;
+        const ulong loopLoadTarget = 0xffffffff800158bcUL;
+        const ulong loopBranch = 0xffffffff800158c0UL;
+        const ulong loopDelay = 0xffffffff800158c4UL;
+        const ulong loopExit = 0xffffffff800158c8UL;
         const ulong currentCounter = 0xffffffff80227af0UL;
         const ulong targetCounter = 0xffffffff80227b30UL;
 
         if (!_enableRd0HomeTableParse ||
-            pc is not (loopLoadA or loopLoadB or loopBranch or loopDelay))
+            pc is not (loopMoveArgument or loopLoadCurrent or loopLoadTarget or loopBranch or loopDelay))
         {
             return false;
         }
         if (_memory.Read32(0xffffffff8001589cUL) != 0xac827af0U ||
             _memory.Read32(0xffffffff800158a0UL) != 0x8c837af0U ||
             _memory.Read32(0xffffffff800158a4UL) != 0x8ca27b30U ||
-            _memory.Read32(loopLoadA) != 0x8cc37af0U ||
-            _memory.Read32(loopLoadB) != 0x8c827b30U ||
+            _memory.Read32(loopMoveArgument) != 0x00a0202dU ||
+            _memory.Read32(loopLoadCurrent) != 0x8cc37af0U ||
+            _memory.Read32(loopLoadTarget) != 0x8c827b30U ||
             _memory.Read32(loopBranch) != 0x1462fffdU ||
             _memory.Read32(loopDelay) != 0x3c02a420U)
         {
@@ -4301,6 +4363,8 @@ internal sealed class MipsR5000Core
         _memory.Write32(targetCounter, value);
         _gpr[2] = SignExtend32(value);
         _gpr[3] = SignExtend32(value);
+        _gpr[4] = SignExtend32((uint)0x80220000U);
+        _gpr[6] = SignExtend32((uint)0x80220000U);
         _gpr[0] = 0;
         Pc = loopExit;
         CompleteFastPathStep();
@@ -4309,6 +4373,67 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:RD0] home-counter-wait pc={pc:x16} " +
                 $"counter={value:x8}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownRd0HomeSecondCounterWait(ulong pc)
+    {
+        const ulong loopPrologMove = 0xffffffff800158e0UL;
+        const ulong loopPrologBase = 0xffffffff800158e4UL;
+        const ulong loopPrologLoadThreshold = 0xffffffff800158e8UL;
+        const ulong loopHead = 0xffffffff800158ecUL;
+        const ulong loopLoadProgress = 0xffffffff800158f0UL;
+        const ulong loopSubtract = 0xffffffff800158f4UL;
+        const ulong loopStoreDelta = 0xffffffff800158f8UL;
+        const ulong loopCompare = 0xffffffff800158fcUL;
+        const ulong loopBranch = 0xffffffff80015900UL;
+        const ulong loopDelay = 0xffffffff80015904UL;
+        const ulong loopExit = 0xffffffff80015908UL;
+        const ulong thresholdCounter = 0xffffffff80227ae4UL;
+        const ulong progressCounter = 0xffffffff80227b44UL;
+        const ulong deltaCounter = 0xffffffff80227b48UL;
+
+        if (!_enableRd0HomeTableParse ||
+            pc is not (loopPrologMove or loopPrologBase or loopPrologLoadThreshold or
+                       loopHead or loopLoadProgress or loopSubtract or loopStoreDelta or loopCompare or loopBranch or loopDelay))
+        {
+            return false;
+        }
+
+        if (_memory.Read32(loopPrologMove) != 0x0060202dU ||
+            _memory.Read32(loopPrologBase) != 0x3c0c8022U ||
+            _memory.Read32(loopPrologLoadThreshold) != 0x8d837ae4U ||
+            _memory.Read32(loopHead) != 0x3c0c8022U ||
+            _memory.Read32(loopLoadProgress) != 0x8d827b44U ||
+            _memory.Read32(loopSubtract) != 0x00441023U ||
+            _memory.Read32(loopStoreDelta) != 0xaca27b48U ||
+            _memory.Read32(loopCompare) != 0x0043102aU ||
+            _memory.Read32(loopBranch) != 0x1440fffaU ||
+            _memory.Read32(loopDelay) != 0x00000000U)
+        {
+            return false;
+        }
+
+        uint threshold = _memory.Read32(thresholdCounter);
+        if (threshold == 0 || threshold > 0x100000U)
+            return false;
+
+        uint baseValue = (uint)_gpr[4];
+        uint progress = unchecked(baseValue + threshold);
+        _memory.Write32(progressCounter, progress);
+        _memory.Write32(deltaCounter, threshold);
+        _gpr[2] = 0;
+        _gpr[3] = SignExtend32(threshold);
+        _gpr[12] = SignExtend32((uint)0x80220000U);
+        _gpr[0] = 0;
+        Pc = loopExit;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _rd0HomeTableParsePcTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] home-second-counter-wait pc={pc:x16} " +
+                $"base={baseValue:x8} threshold={threshold:x8}");
         }
         return true;
     }
