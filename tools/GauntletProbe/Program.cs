@@ -231,6 +231,8 @@ static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter, long? f
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_START") ||
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE") ||
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_TEST") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_DOWN") ||
+        HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_UP") ||
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_COIN") ||
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_MODE");
 
@@ -248,10 +250,15 @@ static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter, long? f
     bool start = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_START");
     bool service = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE");
     bool test = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TEST");
+    bool volumeDown = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_DOWN");
+    bool volumeUp = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_UP");
     bool coin = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_COIN") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MODE"));
 
     if (active || frame.HasValue)
-        adapter.SetInputState(up, down, left, right, fight, magic, turbo, start, service, test, z: false, coin, PadType.SixButton);
+    {
+        adapter.SetInputState(up, down, left, right, fight, magic, turbo, start, service, test, volumeUp, coin, PadType.SixButton);
+        adapter.SetOperatorInputState(service, test, volumeDown, volumeUp);
+    }
 }
 
 static bool HasEnvValue(string name)

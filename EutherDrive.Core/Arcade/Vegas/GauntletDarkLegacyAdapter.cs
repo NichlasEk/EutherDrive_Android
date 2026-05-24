@@ -146,8 +146,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
     {
         _machine.Input.SetPlayer1(up, down, left, right, fight: a, magic: b, turbo: c, start, coin: mode);
         _machine.Input.SetPlayer2(up: false, down: false, left: false, right: false, fight: false, magic: false, turbo: false, start, coin: mode);
-        _machine.Input.Service = x;
-        _machine.Input.Test = y;
+        _machine.Input.SetOperator(service: x, test: y, volumeDown: false, volumeUp: z);
     }
 
     public void SetPad2InputState(
@@ -167,6 +166,9 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
     {
         _machine.Input.SetPlayer2(up, down, left, right, fight: a, magic: b, turbo: c, start, coin: mode);
     }
+
+    public void SetOperatorInputState(bool service, bool test, bool volumeDown, bool volumeUp)
+        => _machine.Input.SetOperator(service, test, volumeDown, volumeUp);
 
     private void DrawDiagnosticFrame()
     {
@@ -12031,7 +12033,7 @@ internal sealed class VegasMemoryMap
 
     private ushort BuildIoasicInputPort0()
     {
-        return _ioasicPort0Override ?? 0x7f7f;
+        return _ioasicPort0Override ?? 0x7fff;
     }
 
     private ushort BuildSystemInputPort()
@@ -12048,6 +12050,8 @@ internal sealed class VegasMemoryMap
         ClearActiveLowBit(ref value, 0x0010, _input.Test);
         ClearActiveLowBit(ref value, 0x0020, player2.Start);
         ClearActiveLowBit(ref value, 0x0040, _input.Service);
+        ClearActiveLowBit(ref value, 0x0800, _input.VolumeDown);
+        ClearActiveLowBit(ref value, 0x1000, _input.VolumeUp);
         return value;
     }
 
@@ -15100,12 +15104,22 @@ internal sealed class GauntletInputPanel
     public GauntletPlayerInput Player2 { get; private set; }
     public bool Service { get; set; }
     public bool Test { get; set; }
+    public bool VolumeDown { get; private set; }
+    public bool VolumeUp { get; private set; }
 
     public void SetPlayer1(bool up, bool down, bool left, bool right, bool fight, bool magic, bool turbo, bool start, bool coin)
         => Player1 = new GauntletPlayerInput(up, down, left, right, fight, magic, turbo, start, coin);
 
     public void SetPlayer2(bool up, bool down, bool left, bool right, bool fight, bool magic, bool turbo, bool start, bool coin)
         => Player2 = new GauntletPlayerInput(up, down, left, right, fight, magic, turbo, start, coin);
+
+    public void SetOperator(bool service, bool test, bool volumeDown, bool volumeUp)
+    {
+        Service = service;
+        Test = test;
+        VolumeDown = volumeDown;
+        VolumeUp = volumeUp;
+    }
 }
 
 internal readonly record struct GauntletPlayerInput(
