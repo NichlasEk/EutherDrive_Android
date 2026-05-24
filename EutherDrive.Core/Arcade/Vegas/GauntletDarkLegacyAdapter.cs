@@ -760,6 +760,9 @@ internal sealed class MipsR5000Core
             CountHotPc(pc);
         _memory.SetTraceCpuPc(pc);
         ApplyKnownRuntimeUiCommandCompletion(pc);
+        ApplyKnownRuntimeWaitForQioCompletion(pc);
+        if (TryFastPathKnownRuntimeWaitForQioReadyLoop(pc))
+            return;
         if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
             return;
         if (TryFastPathKnownBootA420Handshake(pc))
@@ -772,6 +775,8 @@ internal sealed class MipsR5000Core
         ApplyKnownRd0Stage4BootReadCompletion(pc);
         ApplyKnownRd0CallbackRaRestore(pc);
         TraceKnownRd0HomePc(pc);
+        if (TryFastPathKnownRd0HomeCounterWait(pc))
+            return;
         if (TryFastPathKnownGauntletGlideHotPath(pc))
             return;
         if (TryFastPathKnownRd0BootHeaderRead(pc))
@@ -820,6 +825,8 @@ internal sealed class MipsR5000Core
         if (TryRepairKnownRuntimeFsysQioStatus(pc))
             return;
         if (TryRepairKnownRuntimeMountQioStatus(pc))
+            return;
+        if (TryRepairKnownRuntimeWaitForQioStatus(pc))
             return;
         ApplyKnownGauntletSelftestLatchRepair(pc);
         if (TryRepairKnownGauntletVolumeNvramSyncCheck(pc))
@@ -4249,6 +4256,48 @@ internal sealed class MipsR5000Core
         }
     }
 
+    private bool TryFastPathKnownRd0HomeCounterWait(ulong pc)
+    {
+        const ulong loopLoadA = 0xffffffff800158b4UL;
+        const ulong loopLoadB = 0xffffffff800158b8UL;
+        const ulong loopBranch = 0xffffffff800158bcUL;
+        const ulong loopDelay = 0xffffffff800158c0UL;
+        const ulong loopExit = 0xffffffff800158c4UL;
+        const ulong currentCounter = 0xffffffff80227af0UL;
+        const ulong targetCounter = 0xffffffff80227b30UL;
+
+        if (!_enableRd0HomeTableParse ||
+            pc is not (loopLoadA or loopLoadB or loopBranch or loopDelay))
+        {
+            return false;
+        }
+        if (_memory.Read32(0xffffffff8001589cUL) != 0xac827af0U ||
+            _memory.Read32(0xffffffff800158a0UL) != 0x8c837af0U ||
+            _memory.Read32(0xffffffff800158a4UL) != 0x8ca27b30U ||
+            _memory.Read32(loopLoadA) != 0x8cc37af0U ||
+            _memory.Read32(loopLoadB) != 0x8c827b30U ||
+            _memory.Read32(loopBranch) != 0x1462fffdU ||
+            _memory.Read32(loopDelay) != 0x3c02a420U)
+        {
+            return false;
+        }
+
+        uint value = _memory.Read32(currentCounter);
+        _memory.Write32(targetCounter, value);
+        _gpr[2] = SignExtend32(value);
+        _gpr[3] = SignExtend32(value);
+        _gpr[0] = 0;
+        Pc = loopExit;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _rd0HomeTableParsePcTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:RD0] home-counter-wait pc={pc:x16} " +
+                $"counter={value:x8}");
+        }
+        return true;
+    }
+
     private void ApplyKnownRd0Stage4BootReadCompletion(ulong pc)
     {
         const ulong waitPc0 = 0xffffffff80022f18UL;
@@ -5076,6 +5125,172 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryRepairKnownRuntimeWaitForQioStatus(ulong pc)
+    {
+        const ulong statusReadPc = 0xffffffff800c872cUL;
+        if (!_enableFsysQioBringupRepair || pc != statusReadPc)
+            return false;
+
+        if (_memory.Read32(statusReadPc) != 0x8fc30024U ||
+            _memory.Read32(statusReadPc + 0x04UL) != 0x306200ffU ||
+            _memory.Read32(statusReadPc + 0x08UL) != 0x1040001fU ||
+            _memory.Read32(statusReadPc + 0x10UL) != 0x8fc20024U ||
+            _memory.Read32(statusReadPc + 0x14UL) != 0x2403300c)
+        {
+            return false;
+        }
+
+        ulong framePointer = _gpr[30];
+        if (!IsMainRamRange(framePointer + 0x20UL, 0x08UL))
+            return false;
+
+        ulong objectAddress = SignExtend32(_memory.Read32(framePointer + 0x20UL));
+        if (!IsMainRamRange(objectAddress, 0x18))
+            return false;
+
+        uint status = _memory.Read32(framePointer + 0x24UL);
+        if (status != _memory.Read32(objectAddress + 0x14UL) ||
+            (status & 0xffU) == 0)
+        {
+            return false;
+        }
+
+        uint repaired = status & 0xffffff00U;
+        if (repaired == 0)
+            return false;
+
+        _memory.Write32(objectAddress + 0x14UL, repaired);
+        _memory.Write32(framePointer + 0x24UL, repaired);
+        _gpr[3] = SignExtend32(repaired);
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        Pc = statusReadPc + 4UL;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:QIO] repair-waitforqio-status pc={pc:x16} object={objectAddress:x16} " +
+                $"status={status:x8}->{repaired:x8}");
+        }
+        return true;
+    }
+
+    private void ApplyKnownRuntimeWaitForQioCompletion(ulong pc)
+    {
+        if (!_enableFsysQioBringupRepair ||
+            !IsKnownRuntimeWaitForQioLoopPc(pc))
+        {
+            return;
+        }
+
+        ulong framePointer = _gpr[30];
+        if (!IsMainRamRange(framePointer + 0x20UL, 0x08UL))
+            return;
+
+        ulong objectAddress = SignExtend32(_memory.Read32(framePointer + 0x20UL));
+        if (!IsMainRamRange(objectAddress, 0x40))
+        {
+            return;
+        }
+
+        uint state = _memory.Read32(objectAddress + 0x0cUL);
+        uint status = _memory.Read32(objectAddress + 0x14UL);
+        if (status == 0 && TryCompleteKnownRuntimeMountWaitForQio(objectAddress, state, out uint mountStatus))
+            status = mountStatus;
+        if (state is not (4U or 5U) || status == 0)
+            return;
+
+        uint completedStatus = status & 0xffffff00U;
+        if (completedStatus == 0)
+            return;
+
+        _memory.Write32(objectAddress + 0x14UL, completedStatus);
+        _memory.Write32(framePointer + 0x24UL, completedStatus);
+    }
+
+    private bool TryCompleteKnownRuntimeMountWaitForQio(ulong objectAddress, uint state, out uint status)
+    {
+        status = 0;
+        const ulong mountObject = 0xffffffff80295670UL;
+
+        if (objectAddress != mountObject || state is < 5U or > 0xffU)
+            return false;
+        if (_memory.Read32(mountObject + 0x00UL) != 0x8021e88cU ||
+            _memory.Read32(mountObject + 0x20UL) != 0x80218518U ||
+            _memory.Read32(mountObject + 0x38UL) != 0x800f087cU ||
+            _memory.Read32(mountObject + 0x3cUL) != 0x80295670U)
+        {
+            return false;
+        }
+
+        status = state == 5U ? 0x0800U : 0x3000U;
+        _memory.Write32(mountObject + 0x14UL, status);
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FSYS] complete-mount-waitforqio object={mountObject:x16} " +
+                $"state={state:x8} status={status:x8}");
+        }
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeWaitForQioReadyLoop(ulong pc)
+    {
+        if (!_enableFsysQioBringupRepair ||
+            !IsKnownRuntimeWaitForQioLoopPc(pc))
+        {
+            return false;
+        }
+
+        ulong framePointer = _gpr[30];
+        if (!IsMainRamRange(framePointer + 0x20UL, 0x08UL))
+            return false;
+
+        ulong objectAddress = SignExtend32(_memory.Read32(framePointer + 0x20UL));
+        if (!IsMainRamRange(objectAddress, 0x18))
+            return false;
+
+        uint status = _memory.Read32(objectAddress + 0x14UL);
+        if (status == 0)
+            return false;
+        if ((status & 0xffU) != 0)
+            status &= 0xffffff00U;
+        if (status == 0)
+            return false;
+
+        _memory.Write32(objectAddress + 0x14UL, status);
+        _memory.Write32(framePointer + 0x24UL, status);
+        _gpr[2] = SignExtend32(status);
+        _gpr[3] = SignExtend32(status);
+        _gpr[0] = 0;
+        Pc = 0xffffffff800c872cUL;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:QIO] waitforqio-ready-loop pc={pc:x16} object={objectAddress:x16} " +
+                $"status={status:x8}");
+        }
+        return true;
+    }
+
+    private static bool IsKnownRuntimeWaitForQioLoopPc(ulong pc)
+        => pc is 0xffffffff800c86b4UL or 0xffffffff800c86b8UL or
+                 0xffffffff800c86bcUL or 0xffffffff800c86c0UL or
+                 0xffffffff800c86c4UL or 0xffffffff800c86c8UL or
+                 0xffffffff800c86ccUL or 0xffffffff800c86d0UL or
+                 0xffffffff800c86d4UL or 0xffffffff800c86d8UL or
+                 0xffffffff800c86dcUL or 0xffffffff800c86e0UL or
+                 0xffffffff800c86e4UL or 0xffffffff800c86e8UL or
+                 0xffffffff800c86ecUL or 0xffffffff800c86f0UL or
+                 0xffffffff800c86f4UL or 0xffffffff800c86f8UL or
+                 0xffffffff800c86fcUL or 0xffffffff800c8700UL or
+                 0xffffffff800c8704UL or 0xffffffff800c8708UL or
+                 0xffffffff800c870cUL or 0xffffffff800c8710UL or
+                 0xffffffff800c8714UL or 0xffffffff800c8718UL or
+                 0xffffffff800c871cUL or 0xffffffff800c8720UL or
+                 0xffffffff800c8724UL or 0xffffffff800c8728UL;
+
     private void ApplyKnownGauntletSelftestLatchRepair(ulong pc)
     {
         const ulong selftestLatch = 0xffffffff8022814cUL;
@@ -5186,7 +5401,7 @@ internal sealed class MipsR5000Core
 
         ulong returnAddress = SignExtend32(_memory.Read32(sp + 0xa4UL));
         ulong returnOffset = returnAddress & 0x1fffffffUL;
-        if (returnOffset is < 0x000e0000UL or > 0x00110000UL)
+        if (returnOffset is < 0x000c0000UL or > 0x00110000UL)
         {
             return false;
         }
@@ -5239,7 +5454,7 @@ internal sealed class MipsR5000Core
 
         ulong returnAddress = _gpr[31];
         ulong returnOffset = returnAddress & 0x1fffffffUL;
-        if (returnOffset is < 0x000d0000UL or > 0x00110000UL)
+        if (returnOffset is < 0x000c0000UL or > 0x00110000UL)
             return false;
 
         ulong text = _gpr[6];
