@@ -759,6 +759,9 @@ internal sealed class MipsR5000Core
         if (_profileHotPcs)
             CountHotPc(pc);
         _memory.SetTraceCpuPc(pc);
+        ApplyKnownRuntimeUiCommandCompletion(pc);
+        if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
+            return;
         if (TryFastPathKnownBootA420Handshake(pc))
             return;
         UpdateInterruptPendingBits();
@@ -815,6 +818,8 @@ internal sealed class MipsR5000Core
         if (TryRepairKnownDcsBootCallbackWait(pc))
             return;
         if (TryRepairKnownRuntimeFsysQioStatus(pc))
+            return;
+        if (TryRepairKnownRuntimeMountQioStatus(pc))
             return;
         ApplyKnownGauntletSelftestLatchRepair(pc);
         if (TryRepairKnownGauntletVolumeNvramSyncCheck(pc))
@@ -5029,6 +5034,48 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryRepairKnownRuntimeMountQioStatus(ulong pc)
+    {
+        const ulong statusReadPc = 0xffffffff800f5b44UL;
+        if (!_enableFsysQioBringupRepair || pc != statusReadPc)
+            return false;
+        if (_memory.Read32(statusReadPc) != 0x320200ffU ||
+            _memory.Read32(statusReadPc + 0x04UL) != 0x10400038U ||
+            _memory.Read32(statusReadPc + 0x08UL) != 0x24020810U ||
+            _memory.Read32(statusReadPc + 0x0cUL) != 0x12020036U ||
+            _memory.Read32(statusReadPc + 0x10UL) != 0x0200202dU ||
+            _memory.Read32(statusReadPc + 0x14UL) != 0x27a50058U)
+        {
+            return false;
+        }
+
+        ulong mountObject = _gpr[17];
+        if (!IsMainRamRange(mountObject, 0x18))
+            return false;
+
+        uint status = _memory.Read32(mountObject + 0x14UL);
+        if (status != (uint)_gpr[16] || (status & 0xffU) == 0)
+            return false;
+
+        uint repaired = status & 0xffffff00U;
+        if (repaired == 0)
+            return false;
+
+        _memory.Write32(mountObject + 0x14UL, repaired);
+        _gpr[16] = SignExtend32(repaired);
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        Pc = statusReadPc + 4UL;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FSYS] repair-mount-qio-status pc={pc:x16} object={mountObject:x16} " +
+                $"status={status:x8}->{repaired:x8}");
+        }
+        return true;
+    }
+
     private void ApplyKnownGauntletSelftestLatchRepair(ulong pc)
     {
         const ulong selftestLatch = 0xffffffff8022814cUL;
@@ -6910,6 +6957,64 @@ internal sealed class MipsR5000Core
                 $"completion={completionAddress:x16}");
         }
         return true;
+    }
+
+    private bool TryFastPathKnownRuntimeUiCommandCompleteWait(ulong pc)
+    {
+        const ulong entry = 0xffffffff800c83b0UL;
+        const ulong completionAddress = 0xffffffff80217c38UL;
+
+        if (!_enableBootCountDelay ||
+            pc is not (0xffffffff800c80b4UL or 0xffffffff800c80b8UL or
+                       0xffffffff800c80bcUL or 0xffffffff800c80c0UL or
+                       0xffffffff800c83ccUL or 0xffffffff800c83d0UL or
+                       0xffffffff800c83d4UL or 0xffffffff800c83d8UL or
+                       0xffffffff800c83dcUL or 0xffffffff800c83e0UL or
+                       0xffffffff800c83e4UL))
+        {
+            return false;
+        }
+
+        if (_memory.Read32(entry + 0x1cUL) != 0x0c03202dU ||
+            _memory.Read32(entry + 0x24UL) != 0x50400001U ||
+            _memory.Read32(entry + 0x28UL) != 0xa2000000U ||
+            _memory.Read32(entry + 0x2cUL) != 0x8e227c38U ||
+            _memory.Read32(entry + 0x30UL) != 0x1040fffaU)
+        {
+            return false;
+        }
+
+        if (_gpr[31] != 0xffffffff800c83d8UL)
+        {
+            return false;
+        }
+
+        _memory.Write8(0xffffffffa4207000UL, 0);
+        _memory.Write32(completionAddress, 1);
+        _gpr[2] = 1;
+        _gpr[0] = 0;
+        Pc = 0xffffffff800c83e8UL;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] runtime-ui-command-complete-wait pc={pc:x16} " +
+                $"completion={completionAddress:x16}");
+        }
+        return true;
+    }
+
+    private void ApplyKnownRuntimeUiCommandCompletion(ulong pc)
+    {
+        if (!_enableBootCountDelay ||
+            pc is not (0xffffffff800c80b4UL or 0xffffffff800c80b8UL or
+                       0xffffffff800c80bcUL or 0xffffffff800c80c0UL) ||
+            _gpr[31] != 0xffffffff800c83d8UL)
+        {
+            return;
+        }
+
+        _memory.Write32(0xffffffff80217c38UL, 1);
     }
 
     private bool TryFastPathKnownRuntimeProgressTextWait(ulong pc)
