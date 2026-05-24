@@ -4206,6 +4206,12 @@ internal sealed class MipsR5000Core
         }
 
         ulong table = _gpr[16];
+        bool repairedBootSlotTableRegister = false;
+        if (!IsMainRamRange(table, 0x90) && pc == bootSlotCheckPc)
+        {
+            table = _gpr[3];
+            repairedBootSlotTableRegister = true;
+        }
         if (!IsMainRamRange(table, 0x90))
         {
             return;
@@ -4227,12 +4233,21 @@ internal sealed class MipsR5000Core
         uint candidate0 = _memory.Read32(homeSectorBuffer + 0x48UL);
         uint candidate1 = _memory.Read32(homeSectorBuffer + 0x4cUL);
         uint candidate2 = _memory.Read32(homeSectorBuffer + 0x50UL);
+        uint tableMetadata0 = _memory.Read32(homeSectorBuffer + 0x40UL);
+        uint tableMetadata1 = _memory.Read32(homeSectorBuffer + 0x44UL);
         if ((candidate0 | candidate1 | candidate2) == 0)
             return;
 
-        _memory.Write16(table + 0x04UL, 3);
+        _memory.Write16(table + 0x04UL, 2);
         _memory.Write16(table + 0x06UL, 1);
-        _memory.Write32(table + 0x64UL, 0);
+        _memory.Write32(table + 0x40UL, tableMetadata0);
+        _memory.Write32(table + 0x44UL, tableMetadata1);
+        _memory.Write32(table + 0x64UL, 1);
+        if (pc == bootSlotCheckPc && repairedBootSlotTableRegister)
+        {
+            _gpr[16] = table;
+            _gpr[3] = table + 0x50UL;
+        }
         foreach (ulong slotOffset in new[] { 0x50UL, 0x68UL, 0x74UL, 0x80UL })
         {
             _memory.Write32(table + slotOffset, candidate0);
