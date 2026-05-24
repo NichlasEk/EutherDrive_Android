@@ -841,7 +841,7 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGauntletRuntimeGlideIdlePump(pc))
             return;
-        if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeInputPoll(pc))
+        if (TryFastPathKnownRuntimeInputPoll(pc))
             return;
         if (TryFastPathKnownRuntimeStatusBitfieldRead(pc))
             return;
@@ -5908,7 +5908,7 @@ internal sealed class MipsR5000Core
         // fans the result into the debounced bitfield table at 0x80262b90.
         // Keep neutral frames cheap, but let the real helper run when a button
         // is active so diagnostics/menu inputs still produce edge transitions.
-        if (_memory.Read16(0x00000000a4a00008UL) != 0x7f7f ||
+        if (_memory.Read16(0x00000000a4a00008UL) != 0x7fff ||
             _memory.Read16(0x00000000a4a0000aUL) != 0xffff ||
             _memory.Read16(0x00000000a4a0000cUL) != 0xffff ||
             _memory.Read16(0x00000000a4a0000eUL) != 0xffff)
