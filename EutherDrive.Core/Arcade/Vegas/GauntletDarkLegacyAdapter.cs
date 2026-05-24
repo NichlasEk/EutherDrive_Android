@@ -835,6 +835,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeAlignedQwordCopy(pc))
             return;
+        if (TryFastPathKnownRuntimeZeroQwordFillTail(pc))
+            return;
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
             return;
         if (TryFastPathKnownGauntletRuntimeGlideIdleLoop(pc))
@@ -4960,7 +4962,7 @@ internal sealed class MipsR5000Core
 
         if (!_hasPendingBranch ||
             _pendingBranchTarget != 0xffffffff800d0964UL ||
-            _gpr[17] != 8UL ||
+            _gpr[17] is not (8UL or 12UL) ||
             _gpr[21] != 0)
         {
             return false;
@@ -6069,6 +6071,42 @@ internal sealed class MipsR5000Core
         _gpr[8] = 0;
         _gpr[9] = lastValue;
         Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeZeroQwordFillTail(ulong pc)
+    {
+        const ulong loop = 0xffffffff800d1470UL;
+        if (!_enableBootCountDelay || pc != loop)
+            return false;
+
+        if (_memory.Read32(loop) != 0x2508ffffU ||
+            _memory.Read32(loop + 0x04UL) != 0xfc850000U ||
+            _memory.Read32(loop + 0x08UL) != 0x1d00fffdU ||
+            _memory.Read32(loop + 0x0cUL) != 0x24840008U ||
+            _memory.Read32(loop + 0x10UL) != 0x1000ffcfU ||
+            _memory.Read32(loop + 0x14UL) != 0x00000000U)
+        {
+            return false;
+        }
+
+        long count = unchecked((long)_gpr[8]);
+        ulong destination = _gpr[4];
+        if (count <= 0 || count > 0x100000 || _gpr[5] != 0)
+            return false;
+
+        ulong bytes = (ulong)count * 8UL;
+        if (bytes > 0x00800000UL || !IsMainRamRange(destination, bytes))
+            return false;
+
+        for (ulong offset = 0; offset < bytes; offset += 8UL)
+            _memory.Write64(destination + offset, 0);
+
+        _gpr[4] = destination + bytes;
+        _gpr[8] = 0;
+        _gpr[0] = 0;
+        Pc = 0xffffffff800d13c0UL;
         CompleteFastPathStep();
         return true;
     }
@@ -8994,6 +9032,10 @@ internal sealed class MipsR5000Core
             case 0x00:
                 _gpr[rd] = SignExtend32((uint)_gpr[rt] << sa);
                 break;
+            case 0x01:
+                if (GetCop1Condition((rt >> 2) & 0x07) == ((rt & 1) != 0))
+                    _gpr[rd] = _gpr[rs];
+                break;
             case 0x02:
                 _gpr[rd] = SignExtend32((uint)_gpr[rt] >> sa);
                 break;
@@ -9556,21 +9598,13 @@ internal sealed class MipsR5000Core
 
     private void ExecuteCop1Branch(ulong pc, int rt, short simm)
     {
-        bool condition = (_fcr[31] & (1u << 23)) != 0;
-        bool take = rt switch
-        {
-            0x00 or 0x02 => !condition,
-            0x01 or 0x03 => condition,
-            _ => false
-        };
+        bool condition = GetCop1Condition((rt >> 2) & 0x07);
+        bool take = condition == ((rt & 1) != 0);
 
         if (take)
             QueueBranch(pc + 4 + ((ulong)(long)simm << 2));
-        else if (rt is 0x02 or 0x03)
+        else if ((rt & 0x02) != 0)
             OverrideNextPc(pc + 8);
-
-        if (rt is not (0x00 or 0x01 or 0x02 or 0x03))
-            HaltUnsupported(pc, (uint)(0x11 << 26), $"bc1 {rt:x2}");
     }
 
     private void ExecuteCop1SingleFormat(ulong pc, uint op, int ft, int fs, int fd, uint funct)
@@ -9590,6 +9624,9 @@ internal sealed class MipsR5000Core
                 break;
             case 0x03: // div.s
                 _fpr[fd] = BitConverter.SingleToUInt32Bits(value / other);
+                break;
+            case 0x04: // sqrt.s
+                _fpr[fd] = BitConverter.SingleToUInt32Bits(MathF.Sqrt(value));
                 break;
             case 0x05: // abs.s
                 _fpr[fd] = (uint)_fpr[fs] & 0x7fffffffu;
@@ -9626,13 +9663,13 @@ internal sealed class MipsR5000Core
                 _fpr[fd] = unchecked((uint)(int)value);
                 break;
             case 0x32: // c.eq.s
-                SetCop1Condition(value == other);
+                SetCop1Condition((fd >> 2) & 0x07, value == other);
                 break;
             case 0x3c: // c.lt.s
-                SetCop1Condition(value < other);
+                SetCop1Condition((fd >> 2) & 0x07, value < other);
                 break;
             case 0x3e: // c.le.s
-                SetCop1Condition(value <= other);
+                SetCop1Condition((fd >> 2) & 0x07, value <= other);
                 break;
             default:
                 HaltUnsupported(pc, op, $"cop1 s-fmt {funct:x2}");
@@ -9657,6 +9694,9 @@ internal sealed class MipsR5000Core
                 break;
             case 0x03: // div.d
                 _fpr[fd] = BitConverter.DoubleToUInt64Bits(value / other);
+                break;
+            case 0x04: // sqrt.d
+                _fpr[fd] = BitConverter.DoubleToUInt64Bits(Math.Sqrt(value));
                 break;
             case 0x05: // abs.d
                 _fpr[fd] = _fpr[fs] & 0x7fffffffffffffffUL;
@@ -9693,13 +9733,13 @@ internal sealed class MipsR5000Core
                 _fpr[fd] = unchecked((uint)(int)value);
                 break;
             case 0x32: // c.eq.d
-                SetCop1Condition(value == other);
+                SetCop1Condition((fd >> 2) & 0x07, value == other);
                 break;
             case 0x3c: // c.lt.d
-                SetCop1Condition(value < other);
+                SetCop1Condition((fd >> 2) & 0x07, value < other);
                 break;
             case 0x3e: // c.le.d
-                SetCop1Condition(value <= other);
+                SetCop1Condition((fd >> 2) & 0x07, value <= other);
                 break;
             default:
                 HaltUnsupported(pc, op, $"cop1 d-fmt {funct:x2}");
@@ -9708,15 +9748,25 @@ internal sealed class MipsR5000Core
     }
 
     private void SetCop1Condition(bool condition)
+        => SetCop1Condition(0, condition);
+
+    private void SetCop1Condition(int conditionCode, bool condition)
     {
-        const uint fcc0 = 1u << 23;
-        _fcr[31] = condition ? _fcr[31] | fcc0 : _fcr[31] & ~fcc0;
+        uint mask = conditionCode == 0
+            ? 1u << 23
+            : 1u << (24 + conditionCode);
+        _fcr[31] = condition ? _fcr[31] | mask : _fcr[31] & ~mask;
     }
 
     private bool GetCop1Condition()
+        => GetCop1Condition(0);
+
+    private bool GetCop1Condition(int conditionCode)
     {
-        const uint fcc0 = 1u << 23;
-        return (_fcr[31] & fcc0) != 0;
+        uint mask = conditionCode == 0
+            ? 1u << 23
+            : 1u << (24 + conditionCode);
+        return (_fcr[31] & mask) != 0;
     }
 
     private void ExecuteCop1WordFormat(ulong pc, uint op, int fs, int fd, uint funct)
