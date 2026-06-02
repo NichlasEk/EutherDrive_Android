@@ -11308,7 +11308,10 @@ internal sealed class MipsR5000Core
     {
         const ulong worldGlobal = 0xffffffff8016c130UL;
         const ulong selectedEntryGlobal = 0xffffffff8016c13cUL;
+        const ulong staticWorldList = 0xffffffff8015bef4UL;
         const ulong fallbackTable = 0xffffffff802e1000UL;
+        const uint staticEntryStride = 0x2c;
+        const uint testWorldIndex = 12;
 
         if (!_enableRuntimeWorldSelectionExperiment)
             return;
@@ -11327,6 +11330,9 @@ internal sealed class MipsR5000Core
             return;
         }
 
+        ulong testStaticEntry = staticWorldList + testWorldIndex * staticEntryStride;
+        if (IsMainRamRange(testStaticEntry, 4) && _memory.Read32(testStaticEntry) == 0)
+            _memory.Write32(testStaticEntry, testWorldIndex + 1U);
         _memory.Write32(selectedEntryGlobal, unchecked((uint)fallbackTable));
         if (_runtimeWorldSelectionRepairTraceCount++ < 8)
         {
@@ -11448,7 +11454,12 @@ internal sealed class MipsR5000Core
                 _memory.Write32(entry + offset, 0);
 
             uint worldId = _memory.Read32(staticEntry + 0x00UL);
-            _memory.Write32(entry + 0x00UL, worldId == 0 ? worldIndex + 1U : worldId);
+            if (worldId == 0)
+            {
+                worldId = worldIndex + 1U;
+                _memory.Write32(staticEntry + 0x00UL, worldId);
+            }
+            _memory.Write32(entry + 0x00UL, worldId);
             _memory.Write32(entry + 0x04UL, 0xffffffffU);
             for (uint offset = 0; offset < staticEntryStride - 4U; offset++)
                 _memory.Write8(entry + 0x08UL + offset, _memory.Read8(staticEntry + 0x04UL + offset));
