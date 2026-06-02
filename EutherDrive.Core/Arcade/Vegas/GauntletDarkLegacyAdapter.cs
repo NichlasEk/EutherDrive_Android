@@ -274,6 +274,7 @@ internal sealed class GauntletDarkLegacyMachine
 {
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
+    private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
     public VegasMemoryMap MemoryMap { get; } = new();
@@ -320,6 +321,8 @@ internal sealed class GauntletDarkLegacyMachine
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
             MemoryMap.RecordRuntimeVblankTick();
+        if (_enableRuntimeInputPollBridge)
+            MemoryMap.RecordRuntimeInputPollEffects();
         if (_splitVblankCpu)
         {
             Cpu.RunProbeSteps(_vblankCpuSteps);
@@ -331,6 +334,8 @@ internal sealed class GauntletDarkLegacyMachine
             Cpu.RunProbeFrame();
             Sio.PulseVblank(state: false);
         }
+        if (_enableRuntimeInputPollBridge)
+            MemoryMap.RecordRuntimeInputPollEffects();
         MemoryMap.StepFrame();
         Audio.RunFrame();
         if (MemoryMap.ConsumeWatchdogResetRequest())
@@ -8424,15 +8429,9 @@ internal sealed class MipsR5000Core
 
         // Bringup-only: this runtime helper polls the A4A0 input ports and
         // fans the result into the debounced bitfield table at 0x80262b90.
-        // Keep neutral frames cheap, but let the real helper run when a button
-        // is active so diagnostics/menu inputs still produce edge transitions.
-        if (_memory.Read16(0x00000000a4a00008UL) != 0x7fff ||
-            _memory.Read16(0x00000000a4a0000aUL) != 0xffff ||
-            _memory.Read16(0x00000000a4a0000cUL) != 0xffff ||
-            _memory.Read16(0x00000000a4a0000eUL) != 0xffff)
-        {
-            return false;
-        }
+        // The IOASIC shuffle is active here, so use the logical input bridge
+        // instead of letting the guest re-read packed ports.
+        _memory.RecordRuntimeInputPollEffects();
 
         _gpr[2] = 0;
         _gpr[3] = 0;
@@ -11836,24 +11835,7 @@ internal sealed class MipsR5000Core
 
     private void ApplyKnownGauntletRuntimeInputPollEffects()
     {
-        const ulong table = 0xffffffff80262b90UL;
-        const ulong record5 = table + 5UL * 28UL;
-        if (!IsMainRamRange(record5, 28UL))
-            return;
-
-        uint player12AndSystem = _memory.Read16(0x00000000a4a0000cUL) |
-                                 ((uint)_memory.Read16(0x00000000a4a0000aUL) << 16);
-        uint port34And0 = _memory.Read16(0x00000000a4a0000eUL) |
-                          ((uint)_memory.Read16(0x00000000a4a00008UL) << 16);
-
-        bool invertHighHalfOnly = ((((port34And0 >> 29) ^ 1u) & 1u) != 0);
-        uint activeBits = invertHighHalfOnly
-            ? player12AndSystem ^ 0xffff0000u
-            : ~player12AndSystem;
-
-        uint previousLowBits = _memory.Read32(record5) & 0x0000ffffu;
-        uint systemBits = activeBits & 0xffff0000u;
-        UpdateRuntimeStatusBitfieldRecord(record5, previousLowBits | systemBits);
+        _memory.RecordRuntimeInputPollEffects();
     }
 
     private void UpdateRuntimeStatusBitfieldRecord(ulong record, uint value)
@@ -15858,6 +15840,7 @@ internal sealed class VegasMemoryMap
     private readonly TraceAddressFilter[] _traceAddressFilters = ParseTraceAddressFilters(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS"));
     private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
     private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
+    private readonly bool _traceRuntimeInputBridge = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_INPUT_BRIDGE") == "1";
     private readonly bool _traceIoasic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC") == "1";
     private readonly int _traceIoasicLimit = ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_LIMIT"), 240);
     private readonly bool _traceIoasicPic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_PIC") == "1";
@@ -15903,6 +15886,7 @@ internal sealed class VegasMemoryMap
     private int _traceIoasicCount;
     private int _traceIoasicInputCount;
     private int _traceIoasicPicCount;
+    private int _traceRuntimeInputBridgeCount;
     private readonly uint[] _ioasicReadCounts = new uint[16];
     private readonly uint[] _ioasicWriteCounts = new uint[16];
     private int _lastIoasicReadRegister = -1;
@@ -15994,6 +15978,74 @@ internal sealed class VegasMemoryMap
             Write32(ramFrameTick, Read32(ramFrameTick) + frameDelta);
         if (IsMainRamRange(runtimeFrameTick, 4))
             Write32(runtimeFrameTick, Read32(runtimeFrameTick) + frameDelta);
+    }
+
+    public void RecordRuntimeInputPollEffects()
+    {
+        const ulong table = 0xffffffff80262b90UL;
+        const ulong record5 = table + 5UL * 28UL;
+        if (!IsMainRamRange(record5, 28U))
+            return;
+
+        uint player12AndSystem = BuildPlayerInputPort12() |
+                                 ((uint)BuildSystemInputPort() << 16);
+        uint port34And0 = 0xffffu |
+                          ((uint)BuildIoasicInputPort0() << 16);
+
+        bool invertHighHalfOnly = ((((port34And0 >> 29) ^ 1u) & 1u) != 0);
+        uint activeBits = invertHighHalfOnly
+            ? player12AndSystem ^ 0xffff0000u
+            : ~player12AndSystem;
+
+        uint previousLowBits = Read32(record5) & 0x0000ffffu;
+        uint systemBits = activeBits & 0xffff0000u;
+        if (_traceRuntimeInputBridge && _traceRuntimeInputBridgeCount++ < 48)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:INPUTBRIDGE] player12={player12AndSystem & 0xffffu:x4} " +
+                $"system={(player12AndSystem >> 16) & 0xffffu:x4} port0={(port34And0 >> 16) & 0xffffu:x4} " +
+                $"active={activeBits:x8} previousLow={previousLowBits:x4} value={(previousLowBits | systemBits):x8}");
+        }
+        UpdateRuntimeInputBitfieldRecord(record5, previousLowBits | systemBits);
+    }
+
+    private void UpdateRuntimeInputBitfieldRecord(ulong record, uint value)
+    {
+        uint previousValue = Read32(record);
+        uint oldBits = Read32(record + 0x08UL);
+        uint sourceBits = Read32(record + 0x0cUL);
+        Write32(record, value);
+
+        uint changed = oldBits ^ sourceBits;
+        uint toggled = previousValue ^ value;
+        uint unchangedMask = ~toggled;
+        uint held = value & unchangedMask;
+        uint latch = Read32(record + 0x04UL);
+        uint maskedToggle = toggled & latch;
+        uint nextLatch = maskedToggle | held;
+        changed &= nextLatch;
+        uint delayedBits = maskedToggle & Read32(record + 0x10UL);
+        Write32(record + 0x04UL, nextLatch);
+
+        if (delayedBits == 0)
+        {
+            if ((nextLatch + unchangedMask) != 0)
+            {
+                ushort countdown = (ushort)(Read16(record + 0x14UL) - 1);
+                Write16(record + 0x14UL, countdown);
+                if (countdown == 0)
+                {
+                    changed &= ~Read32(record + 0x10UL);
+                    Write16(record + 0x14UL, Read16(record + 0x18UL));
+                }
+            }
+            else
+            {
+                Write16(record + 0x14UL, Read16(record + 0x16UL));
+            }
+        }
+
+        Write32(record + 0x08UL, Read32(record + 0x0cUL) ^ changed);
     }
 
     public bool TryCompleteKnownRd0Stage4BootRead(
