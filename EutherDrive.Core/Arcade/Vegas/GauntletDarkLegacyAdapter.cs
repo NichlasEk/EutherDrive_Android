@@ -704,6 +704,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelStateDeltaTraceCount;
     private int _runtimeBgLoadModelQioRequestTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
+    private int _runtimeBgLoadModelKnownMissingTextureLookupTraceCount;
     private int _runtimeBgParserTraceCount;
     private int _runtimeByteMoveTraceCount;
     private int _runtimeFormatBufferFastPathTraceCount;
@@ -1043,6 +1044,14 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeByteMove(pc))
             return;
         if (TryFastPathKnownRuntimeStringLength(pc))
+            return;
+        if (TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(pc))
+            return;
+        if (TryFastPathKnownRuntimeBgLoadModelTokenNormalizeLoop(pc))
+            return;
+        if (TryFastPathKnownRuntimeBinarySearchKnownMissingTexture(pc))
+            return;
+        if (TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureLookup(pc))
             return;
         if (TryFastPathKnownRuntimeFixedStringCompare30Wrapper(pc))
             return;
@@ -9327,6 +9336,295 @@ internal sealed class MipsR5000Core
         ulong skipped = 3UL + (ulong)length * 3UL;
         AdvanceCp0Count(_cp0CountStep * skipped);
         _instructionCounter += skipped;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureLookup(ulong pc)
+    {
+        const ulong entry = 0xffffffff800aa8b4UL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) || pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffa0U ||
+            _memory.Read32(entry + 0x04UL) != 0x0080102dU ||
+            _memory.Read32(entry + 0x08UL) != 0xafb60058U ||
+            _memory.Read32(entry + 0x0cUL) != 0x00a0b02dU ||
+            _memory.Read32(entry + 0x10UL) != 0xafb00040U ||
+            _memory.Read32(entry + 0x14UL) != 0x00c0802dU ||
+            _memory.Read32(entry + 0x18UL) != 0xafb3004cU ||
+            _memory.Read32(entry + 0x1cUL) != 0x00e0982dU)
+        {
+            return false;
+        }
+
+        string key = ReadAsciiTraceString(_gpr[4], 0x20);
+        if (key != "EMPTY_BOX")
+            return false;
+
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-known-missing-texture key={key} " +
+                $"pc={pc:x16} ra={Pc:x16}");
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(ulong pc)
+    {
+        const ulong loop = 0xffffffff800aa958UL;
+        const ulong exitTest = 0xffffffff800aa98cUL;
+        const ulong fixedStringCompare30 = 0xffffffff800aa898UL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
+            pc != loop)
+            return false;
+
+        if (_memory.Read32(loop - 0x28UL) != 0x0271102aU ||
+            _memory.Read32(loop - 0x24UL) != 0x14400015U ||
+            _memory.Read32(loop - 0x20UL) != 0x3c02800bU ||
+            _memory.Read32(loop - 0x1cUL) != 0x2455a898U ||
+            _memory.Read32(loop + 0x00UL) != 0x27a40018U ||
+            _memory.Read32(loop + 0x04UL) != 0xafb50010U ||
+            _memory.Read32(loop + 0x08UL) != 0x8e050000U ||
+            _memory.Read32(loop + 0x0cUL) != 0x8e060004U ||
+            _memory.Read32(loop + 0x10UL) != 0x0c046d84U ||
+            _memory.Read32(loop + 0x14UL) != 0x24070024U ||
+            _memory.Read32(loop + 0x18UL) != 0x0040902dU ||
+            _memory.Read32(loop + 0x1cUL) != 0x1640001bU ||
+            _memory.Read32(loop + 0x24UL) != 0x26310001U ||
+            _memory.Read32(loop + 0x28UL) != 0x0271102aU ||
+            _memory.Read32(loop + 0x2cUL) != 0x1040fff4U ||
+            _memory.Read32(loop + 0x30UL) != 0x26100030U ||
+            _memory.Read32(exitTest) != 0x16400015U)
+        {
+            return false;
+        }
+
+        if (_gpr[21] != fixedStringCompare30)
+            return false;
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x18UL, 0x20UL))
+            return false;
+
+        if (ReadAsciiTraceString(sp + 0x18UL, 0x20) != "EMPTY_BOX")
+            return false;
+
+        long index = unchecked((long)_gpr[17]);
+        long count = unchecked((long)_gpr[19]);
+        if (index < 0 || count < 0 || index >= count || count > 0x10000)
+            return false;
+
+        ulong remaining = (ulong)(count - index);
+        _gpr[16] += remaining * 0x30UL;
+        _gpr[17] = _gpr[19];
+        _gpr[18] = 0;
+        Pc = exitTest;
+        CompleteFastPathStep();
+        ulong skipped = Math.Max(1UL, remaining * 13UL);
+        AdvanceCp0Count(_cp0CountStep * (skipped - 1UL));
+        _instructionCounter += skipped - 1UL;
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-known-missing-texture-caller-loop " +
+                $"key=EMPTY_BOX pc={pc:x16} exit={Pc:x16} remaining={remaining}");
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelTokenNormalizeLoop(ulong pc)
+    {
+        const ulong loop = 0xffffffff800aa1f4UL;
+        const ulong characterMap = 0xffffffff801587f1UL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
+            pc != loop)
+            return false;
+
+        if (_memory.Read32(loop - 0x14UL) != 0x3c028016U ||
+            _memory.Read32(loop - 0x10UL) != 0x244887f1U ||
+            _memory.Read32(loop - 0x0cUL) != 0x24070020U ||
+            _memory.Read32(loop - 0x08UL) != 0x24060009U ||
+            _memory.Read32(loop - 0x04UL) != 0x00031600U ||
+            _memory.Read32(loop + 0x00UL) != 0x00021603U ||
+            _memory.Read32(loop + 0x04UL) != 0x10490010U ||
+            _memory.Read32(loop + 0x08UL) != 0x00481021U ||
+            _memory.Read32(loop + 0x0cUL) != 0x90420000U ||
+            _memory.Read32(loop + 0x10UL) != 0x30420002U ||
+            _memory.Read32(loop + 0x14UL) != 0x14400002U ||
+            _memory.Read32(loop + 0x18UL) != 0x2462ffe0U ||
+            _memory.Read32(loop + 0x1cUL) != 0x0060102dU ||
+            _memory.Read32(loop + 0x20UL) != 0x24a50001U ||
+            _memory.Read32(loop + 0x24UL) != 0xa0820000U ||
+            _memory.Read32(loop + 0x28UL) != 0x80a20000U ||
+            _memory.Read32(loop + 0x2cUL) != 0x90a30000U ||
+            _memory.Read32(loop + 0x30UL) != 0x10400005U ||
+            _memory.Read32(loop + 0x34UL) != 0x24840001U ||
+            _memory.Read32(loop + 0x38UL) != 0x10470003U ||
+            _memory.Read32(loop + 0x40UL) != 0x1446ffefU ||
+            _memory.Read32(loop + 0x44UL) != 0x00031600U ||
+            _memory.Read32(loop + 0x48UL) != 0x03e00008U ||
+            _memory.Read32(loop + 0x4cUL) != 0xa0800000U)
+        {
+            return false;
+        }
+
+        ulong destination = _gpr[4];
+        ulong source = _gpr[5];
+        if (_gpr[6] != 9 || _gpr[7] != 0x20 || _gpr[8] != characterMap || _gpr[9] != 10)
+            return false;
+        if (!IsMainRamRange(destination, 256UL) ||
+            !IsMainRamRange(source, 256UL) ||
+            !IsMainRamRange(characterMap, 256UL))
+        {
+            return false;
+        }
+
+        uint current = (uint)_gpr[3] & 0xffU;
+        ulong outCursor = destination;
+        ulong inCursor = source;
+        ulong copied = 0;
+        while (copied < 255UL)
+        {
+            int signed = unchecked((sbyte)current);
+            if (signed == 10)
+                break;
+
+            uint mapped = (_memory.Read8(characterMap + (uint)signed) & 0x02U) != 0
+                ? (uint)((signed - 0x20) & 0xff)
+                : (uint)(signed & 0xff);
+            _memory.Write8(outCursor, (byte)mapped);
+            copied++;
+            inCursor++;
+            outCursor++;
+
+            uint next = _memory.Read8(inCursor);
+            int nextSigned = unchecked((sbyte)next);
+            _gpr[2] = SignExtend32((uint)nextSigned);
+            _gpr[3] = next;
+            if (nextSigned == 0 || nextSigned == 0x20 || nextSigned == 9)
+                break;
+
+            current = next;
+        }
+
+        if (copied >= 255UL)
+            return false;
+
+        _memory.Write8(outCursor, 0);
+        _gpr[4] = outCursor;
+        _gpr[5] = inCursor;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        ulong skipped = Math.Max(1UL, copied * 12UL + 4UL);
+        AdvanceCp0Count(_cp0CountStep * (skipped - 1UL));
+        _instructionCounter += skipped - 1UL;
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-token-normalize-loop " +
+                $"pc={pc:x16} ra={Pc:x16} copied={copied}");
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBinarySearchKnownMissingTexture(ulong pc)
+    {
+        const ulong entry = 0xffffffff8011b610UL;
+        const ulong bodyStart = 0xffffffff8011b650UL;
+        const ulong bodyEnd = 0xffffffff8011b6b4UL;
+        const ulong fixedStringCompare30 = 0xffffffff800aa898UL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
+            (pc != entry && pc is < bodyStart or > bodyEnd))
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffc8U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb60028U ||
+            _memory.Read32(entry + 0x08UL) != 0x8fb60048U ||
+            _memory.Read32(entry + 0x0cUL) != 0xafb50024U ||
+            _memory.Read32(entry + 0x74UL) != 0x02c0f809U ||
+            _memory.Read32(entry + 0xccUL) != 0x8fbf0030U ||
+            _memory.Read32(entry + 0xf0UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0xf4UL) != 0x27bd0038U)
+        {
+            return false;
+        }
+
+        if (pc == entry)
+        {
+            ulong returnAddress = _gpr[31];
+            if ((returnAddress & 0x1fffffffUL) is < 0x000aa8b4UL or > 0x000aab00UL)
+                return false;
+
+            ulong spAtCall = _gpr[29];
+            if (!IsMainRamRange(spAtCall + 0x10UL, 4))
+                return false;
+
+            ulong callbackAtCall = SignExtend32(_memory.Read32(spAtCall + 0x10UL));
+            if (callbackAtCall != fixedStringCompare30)
+                return false;
+
+            if (ReadAsciiTraceString(_gpr[4], 0x20) != "EMPTY_BOX")
+                return false;
+
+            _gpr[2] = 0;
+            Pc = returnAddress;
+            CompleteFastPathStep();
+            if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] bgloadmodel-binary-search-entry-known-missing-texture " +
+                    $"key=EMPTY_BOX pc={pc:x16} ra={Pc:x16}");
+            }
+
+            return true;
+        }
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x10UL, 0x30UL))
+            return false;
+
+        ulong savedReturnAddress = SignExtend32(_memory.Read32(sp + 0x30UL));
+        if ((savedReturnAddress & 0x1fffffffUL) is < 0x000aa8b4UL or > 0x000aab00UL)
+            return false;
+
+        ulong callback = _gpr[22] == fixedStringCompare30
+            ? _gpr[22]
+            : SignExtend32(_memory.Read32(sp + 0x28UL));
+        if (callback != fixedStringCompare30)
+            return false;
+
+        ulong key = _gpr[21];
+        if (ReadAsciiTraceString(key, 0x20) != "EMPTY_BOX")
+            return false;
+
+        _gpr[31] = savedReturnAddress;
+        _gpr[23] = SignExtend32(_memory.Read32(sp + 0x2cUL));
+        _gpr[22] = SignExtend32(_memory.Read32(sp + 0x28UL));
+        _gpr[21] = SignExtend32(_memory.Read32(sp + 0x24UL));
+        _gpr[20] = SignExtend32(_memory.Read32(sp + 0x20UL));
+        _gpr[19] = SignExtend32(_memory.Read32(sp + 0x1cUL));
+        _gpr[18] = SignExtend32(_memory.Read32(sp + 0x18UL));
+        _gpr[17] = SignExtend32(_memory.Read32(sp + 0x14UL));
+        _gpr[16] = SignExtend32(_memory.Read32(sp + 0x10UL));
+        _gpr[29] = sp + 0x38UL;
+        _gpr[2] = 0;
+        Pc = savedReturnAddress;
+        CompleteFastPathStep();
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-binary-search-known-missing-texture " +
+                $"key=EMPTY_BOX pc={pc:x16} ra={Pc:x16}");
+        }
+
         return true;
     }
 
