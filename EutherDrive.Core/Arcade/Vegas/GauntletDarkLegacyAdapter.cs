@@ -653,6 +653,8 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeWorldDataFlags = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_FLAGS") == "1";
     private readonly bool _enableRuntimeWorldSelectionExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION"));
+    private readonly bool _enableRuntimeWorldStaticDataLinkRepair =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_STATIC_DATA_LINK");
     private readonly bool _traceRuntimeFormatBufferFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_FORMAT_BUFFER_FASTPATH") == "1";
     private readonly bool _traceTextureUploadProvenance = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PROVENANCE") == "1";
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
@@ -696,6 +698,7 @@ internal sealed class MipsR5000Core
     private int _runtimeWorldDataLoaderTraceCount;
     private int _runtimeWorldDataFlagsTraceCount;
     private int _runtimeWorldSelectionRepairTraceCount;
+    private int _runtimeWorldStaticDataLinkTraceCount;
     private int _runtimeBgLoadModelLoopTraceCount;
     private int _runtimeBgLoadModelRecordTraceCount;
     private int _runtimeBgLoadModelStateDeltaTraceCount;
@@ -853,6 +856,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelStateDelta(pc, "post-qio-complete");
         TraceKnownRuntimeWorldDataLoader(pc);
         TraceKnownRuntimeWorldDataFlags(pc);
+        ApplyKnownRuntimeWorldStaticDataLinkRepair(pc);
         ApplyKnownRuntimeWorldSelectionRepair(pc);
         ApplyKnownRuntimeDiagnosticOverlaySuppress(pc);
         TraceKnownRuntimeWorldDataAllocation(pc);
@@ -11301,6 +11305,64 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:FIX] world-selection pc={pc:x16} " +
                 $"selected={fallbackTable:x16} id={_memory.Read32(fallbackTable):x8} " +
                 $"mask={_memory.Read32(fallbackTable + 0x04UL):x8} name={ReadAsciiTraceString(fallbackTable + 0x08UL, 32)}");
+        }
+    }
+
+    private void ApplyKnownRuntimeWorldStaticDataLinkRepair(ulong pc)
+    {
+        const ulong branchPc = 0xffffffff8004f29cUL;
+        const ulong staticWorldList = 0xffffffff8015bef4UL;
+        const ulong testWorldDataBuffer = 0xffffffff81000000UL;
+        const ulong testWadByteOffset = 0x0f107e00UL;
+        const uint testWadBytes = 0x0358U;
+        const uint staticEntryStride = 0x2c;
+        const uint testWorldIndex = 12;
+
+        if (!_enableRuntimeWorldStaticDataLinkRepair || pc != branchPc)
+            return;
+        if (_memory.Read32(branchPc) != 0x14400003U)
+            return;
+
+        ulong staticEntry = staticWorldList + testWorldIndex * staticEntryStride;
+        if (_gpr[18] != staticEntry ||
+            _memory.Read32(staticEntry) != testWorldIndex + 1U ||
+            _memory.Read32(staticEntry + 0x10UL) != 0 ||
+            !IsMainRamRange(staticEntry, staticEntryStride) ||
+            !IsMainRamRange(testWorldDataBuffer, testWadBytes))
+        {
+            return;
+        }
+
+        string reason = "";
+        if (!_memory.TryReadDiskByteOffsetToMemory(
+                testWadByteOffset,
+                testWorldDataBuffer,
+                testWadBytes,
+                out uint firstWord,
+                out reason))
+        {
+            if (_runtimeWorldStaticDataLinkTraceCount++ < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] world-static-data-link pc={pc:x16} " +
+                    $"failed={reason}");
+            }
+            return;
+        }
+
+        uint worldRecordCount = _memory.Read32(testWorldDataBuffer + 0x04UL);
+        if (worldRecordCount == 0 || worldRecordCount > 0x100U)
+            worldRecordCount = 1;
+
+        _memory.Write32(staticEntry + 0x10UL, unchecked((uint)testWorldDataBuffer));
+        _memory.Write32(staticEntry + 0x14UL, worldRecordCount);
+        _memory.Write32(staticEntry + 0x28UL, 0);
+        if (_runtimeWorldStaticDataLinkTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] world-static-data-link pc={pc:x16} " +
+                $"entry={staticEntry:x16} data={testWorldDataBuffer:x16} " +
+                $"bytes={testWadBytes:x} first={firstWord:x8} count={worldRecordCount:x8}");
         }
     }
 
