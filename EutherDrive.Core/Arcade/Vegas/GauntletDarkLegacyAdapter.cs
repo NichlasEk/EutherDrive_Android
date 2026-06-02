@@ -10125,6 +10125,9 @@ internal sealed class MipsR5000Core
         if (_memory.Read32(requestReturnPc) != 0x8fc20020U)
             return;
 
+        if (TryApplyKnownRuntimeBgLoadModelRecordZeroQioMetadataRepair(pc))
+            return;
+
         ulong record = _gpr[17];
         if (record < recordBase || (record - recordBase) % recordStride != 0)
             return;
@@ -10166,6 +10169,77 @@ internal sealed class MipsR5000Core
                 $"index={recordIndex} record={record:x16} qio={qio:x16} object={qioObject:x16} " +
                 $"dest={destination:x16} bytes={requestedBytes:x8} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
+    }
+
+    private bool TryApplyKnownRuntimeBgLoadModelRecordZeroQioMetadataRepair(ulong pc)
+    {
+        const ulong record = 0xffffffff80252da0UL;
+        const ulong qio = 0xffffffff80217c58UL;
+        const ulong destination = 0xffffffff802e1718UL;
+        const uint requestedBytes = 0x2000U;
+        const uint callback = 0x800ab4e4U;
+        const uint objectStatus = 0x300bU;
+        const uint qioCompleteStatus = 2;
+
+        if (_gpr[16] != record || _gpr[17] != 0)
+            return false;
+
+        ulong returnSlot = _gpr[30] + 0x20UL;
+        if (!IsMainRamRange(returnSlot, 4) ||
+            _memory.Read32(returnSlot) != unchecked((uint)qio) ||
+            !IsMainRamRange(qio + 0x18UL, 0x40UL) ||
+            !IsMainRamRange(destination, requestedBytes) ||
+            !IsMainRamRange(_gpr[4] + 0x14UL, 4))
+        {
+            return false;
+        }
+
+        uint currentCallback = _memory.Read32(qio + 0x04UL);
+        uint currentDestination = _memory.Read32(qio + 0x08UL);
+        uint currentRequestBytes = _memory.Read32(qio + 0x0cUL);
+        uint currentReadBytes = _memory.Read32(qio + 0x10UL);
+        uint currentStatus = _memory.Read32(qio + 0x14UL);
+        if (currentCallback != 0 ||
+            currentDestination != 0 ||
+            currentRequestBytes != 0 ||
+            currentReadBytes != 0 ||
+            currentStatus != qioCompleteStatus)
+        {
+            return false;
+        }
+
+        ulong qioObject = _gpr[4];
+        _memory.Write32(qio + 0x00UL, unchecked((uint)qioObject));
+        _memory.Write32(qio + 0x04UL, callback);
+        _memory.Write32(qio + 0x08UL, unchecked((uint)destination));
+        _memory.Write32(qio + 0x0cUL, requestedBytes);
+        _memory.Write32(qio + 0x10UL, requestedBytes);
+
+        uint oldObjectStatus = _memory.Read32(qioObject + 0x14UL);
+        _memory.Write32(qioObject + 0x14UL, (oldObjectStatus & 0xffff0000U) | objectStatus);
+
+        string hydrationStatus = "unmapped";
+        string hydrationReason = "";
+        if (_enableRuntimeBgLoadModelQioHydration &&
+            TryHydrateKnownRuntimeBgLoadModelQio(qio, qioObject, requestedBytes, out hydrationReason))
+        {
+            hydrationStatus = $"hydrated:{hydrationReason}";
+        }
+        else if (!string.IsNullOrWhiteSpace(hydrationReason))
+        {
+            hydrationStatus = hydrationReason;
+        }
+
+        if (_runtimeBgLoadModelQioRequestMetadataTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-qio-request-metadata-slot0 pc={pc:x16} " +
+                $"record={record:x16} qio={qio:x16} object={qioObject:x16} dest={destination:x16} " +
+                $"bytes={requestedBytes:x8} status={currentStatus:x8} " +
+                $"objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8} data={hydrationStatus}");
+        }
+
+        return true;
     }
 
     private void ApplyKnownRuntimeBgLoadModelQioCreateAliasRepair(ulong pc)
@@ -10279,9 +10353,7 @@ internal sealed class MipsR5000Core
         const ulong qioStride = 0x118UL;
 
         ulong record = _gpr[17];
-        long recordIndex = -1;
-        if (record >= recordBase && (record - recordBase) % recordStride == 0)
-            recordIndex = (long)((record - recordBase) / recordStride);
+        long recordIndex = GetKnownRuntimeBgLoadModelRecordIndex(record);
 
         ulong recordQio = 0;
         if (IsMainRamRange(record + 0x08UL, 4))
@@ -10306,7 +10378,44 @@ internal sealed class MipsR5000Core
             $"a3={_gpr[7]:x16}({ReadAsciiTraceString(_gpr[7], 48)}) " +
             $"v0={_gpr[2]:x16}({ReadAsciiTraceString(_gpr[2], 48)}) " +
             $"v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s8={_gpr[30]:x16} " +
+            $"s0rec={TraceKnownRuntimeBgLoadModelRecordOneLine(_gpr[16])} " +
+            $"s1rec={TraceKnownRuntimeBgLoadModelRecordOneLine(_gpr[17])} " +
+            $"retSlot={TraceKnownRuntimeBgLoadModelReturnSlot(_gpr[30] + 0x20UL)} " +
             $"pathTable={TraceKnownRuntimeBgLoadModelPathTableSummary(recordIndex)}");
+    }
+
+    private long GetKnownRuntimeBgLoadModelRecordIndex(ulong record)
+    {
+        const ulong recordBase = 0xffffffff80252da0UL;
+        const ulong recordStride = 0x18UL;
+        if (record < recordBase || (record - recordBase) % recordStride != 0)
+            return -1;
+
+        return (long)((record - recordBase) / recordStride);
+    }
+
+    private string TraceKnownRuntimeBgLoadModelRecordOneLine(ulong record)
+    {
+        long index = GetKnownRuntimeBgLoadModelRecordIndex(record);
+        if (index < 0 || !IsMainRamRange(record + 0x14UL, 4))
+            return $"{record:x16}:range";
+
+        return $"{index}:{record:x16}:" +
+               $"{_memory.Read32(record + 0x00UL):x8}/" +
+               $"{_memory.Read32(record + 0x04UL):x8}/" +
+               $"{_memory.Read32(record + 0x08UL):x8}/" +
+               $"{_memory.Read32(record + 0x0cUL):x8}/" +
+               $"{_memory.Read32(record + 0x10UL):x8}/" +
+               $"{_memory.Read32(record + 0x14UL):x8}";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelReturnSlot(ulong slot)
+    {
+        if (!IsMainRamRange(slot, 4))
+            return $"{slot:x16}:range";
+
+        ulong qio = SignExtend32(_memory.Read32(slot));
+        return $"{slot:x16}->{qio:x16}:{TraceKnownRuntimeBgLoadModelQioOneLine(qio)}";
     }
 
     private string TraceKnownRuntimeBgLoadModelQioOneLine(ulong qio)
