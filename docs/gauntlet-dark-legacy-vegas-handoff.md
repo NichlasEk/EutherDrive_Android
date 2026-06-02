@@ -8,6 +8,10 @@ Update: 2026-05-09
 
 Update: 2026-05-15
 
+Update: 2026-05-25
+
+Update: 2026-05-31
+
 ## Scope
 
 This pass continued the Gauntlet Dark Legacy / Midway Vegas bring-up in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`.
@@ -48,6 +52,191 @@ Core builds:
 
 ```sh
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
+```
+
+## 2026-05-25 Gauntlet Dark Legacy Bring-Up Pass
+
+This pass moved the Gauntlet path past the early cold-boot terminal loops and into the loaded game runtime's `Loading Game.` screen.
+
+Changed files from this pass:
+
+- `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`
+- `docs/gauntlet-dark-legacy-vegas-handoff.md`
+
+Implemented/verified:
+
+- Added a neutral CS5/A170 window profile for the checksum probe at `0xffffffff80015d9c`; the first `0x30` bytes now read as zero instead of unmapped `0xff`, avoiding the early checksum error path.
+- Added a narrow fastpath for the post-return `break` at `0xffffffff80016eec`. This helper is immediately after a `jr ra`/`sb zero,a1007000` sequence; if execution lands on the alignment/trap word, it now verifies the signature and resumes at `ra`.
+- Fixed the boot-ELF read fastpath at `0xffffffff8001594c` for the observed `gauntdl24` prologue and enabled it under `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST`.
+- Removed the over-strict unsigned argument rejection in that boot-ELF fastpath. The MIPS runtime can pass sign-extended 32-bit values; the fastpath now casts the observed value instead of rejecting it before disk read.
+
+Build command used:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+```
+
+Result:
+
+```text
+Build succeeded.
+337 warnings, 0 errors.
+```
+
+Key progression:
+
+- Before the CS5 fix, cold boot hit repeated `special 0d` halts at `0xffffffff80016eec`.
+- After the `80016eec` fastpath, cold boot reached `0xffffffff80015ebc`, but was stuck in a boot-open error loop.
+- After enabling/fixing the `8001594c` boot-ELF fastpath, probe logs confirmed:
+
+```text
+[GAUNTDL:RD0] boot-elf-read pc=ffffffff8001594c lba=000000a7 dest=ffffffff802e73b0 bytes=00165d5c
+```
+
+Latest useful probe:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED=1 \
+EUTHERDRIVE_GAUNTDL_LOAD_WARMUP=0 \
+EUTHERDRIVE_GAUNTDL_SAVE_WARMUP=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-current-cs5-elf3-clean-f180.warm \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=1000000 \
+EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS=1 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 360
+```
+
+Latest observed status:
+
+```text
+frame=360
+pc=0xffffffff801202dc
+rtxt=16@0xffffffff800e30a0/ra=0xffffffff800e33e4 "Loading Game."
+voodoo active, fifoWords=326850, fifoPackets=110887, fastFills=674, swaps=4762
+drawPackets=0, directTriangles=30, setupTriangles=0
+packetTypes=0:3,1:40893,2:0,3:0,4:69991,5:0,6:0,7:0
+framebuffer=640x480 nonBlack=307200 colored=0
+dcs boot=128w host=10 fifo=512/0 xfer=0 state=0/0 type=0000 left=0 lc=0400 out=000a
+adsp pc=0079 ppc=0079 irq2=1/1
+```
+
+Interpretation:
+
+- The adapter now reaches the loaded game runtime and displays/maintains the `Loading Game.` path.
+- Voodoo is active and swapping; output is still fill/LFB-heavy and monochrome, with no setup/triangle packets yet.
+- The active next blocker is likely the loaded runtime's asset/sound-load dependency. DCS remains in boot idle (`xfer=0`), so no real ADSP program upload has started.
+- A traced cold run showed transient RD0 home-block repair warnings after the ELF load, but the clean 360-frame run continues through them to `Loading Game.`.
+
+## 2026-05-25 Follow-up: Loading Game Runtime Hotspots
+
+Follow-up work continued from the clean 180-frame warm snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-current-cs5-elf3-clean-f180.warm
+```
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added `TryFastPathKnownRuntimeStackRecordCopy` for the hot record-copy loop at
+  `0xffffffff800b1edc..800b1f04`.
+  - Signature-gated to the observed loop body.
+  - Limited to small aligned main-RAM ranges.
+  - This removed the previous `800b1e*` block-copy cluster from the top hot-PC list.
+- Added `TryFastPathKnownRuntimeByteMove` for the small byte move helper at
+  `0xffffffff8011df40`.
+  - Handles the entry case and the observed forward pre-loop state.
+  - Signature-gated and bounded to main RAM.
+- Added prologue/epilogue fastpaths for the `MBOX_BGLoadModel` dispatcher at
+  `0xffffffff8011d590` and `0xffffffff8011d9f4`.
+  - These only collapse register save/restore sequences; callback/body side
+    effects are still executed normally.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 Warning(s)
+0 Error(s)
+```
+
+Latest warm-snapshot profile, 180 -> 240 frames:
+
+```text
+frame=240
+pc=0xffffffff8011ce7c
+voodoo active fifoWords=295266 fifoPackets=95095 fastFills=674 swaps=814
+drawPackets=0 directTriangles=30 setupTriangles=0
+packetTypes=0:3,1:25101,2:0,3:0,4:69991,5:0,6:0,7:0
+framebuffer=640x480 nonBlack=307200 colored=0
+dcs boot=128w host=0 fifo=0/0 xfer=0 state=0/0 type=0000 left=0 lc=0c00 out=000a
+```
+
+Longer warm-snapshot profile, 180 -> 300 frames:
+
+```text
+frame=300
+pc=0xffffffff800ac4f0
+voodoo active fifoWords=314194 fifoPackets=104559 fastFills=674 swaps=3180
+drawPackets=0 directTriangles=30 setupTriangles=0
+packetTypes=0:3,1:34565,2:0,3:0,4:69991,5:0,6:0,7:0
+framebuffer=640x480 nonBlack=307200 colored=0
+```
+
+Interpretation:
+
+- The loaded runtime is progressing through `MBOX_BGLoadModel`, not sitting in a
+  pure idle wait.
+- The remaining top hot PCs are dominated by the `8011d590` dispatcher body and
+  its first status branches. `EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS=1` counts PCs
+  before fastpaths run, so entry/epilogue PCs can still appear even when their
+  save/restore bodies are collapsed.
+- Output is still fill/LFB-heavy; no type-3/type-5 geometry packets or setup
+  triangles have appeared yet.
+
+Next target:
+
+1. Inspect the `8011ce7c -> 8011d590 -> MBOX_BGLoadModel` caller path and the
+   message records on the stack around `807ffc00..807ffe00`.
+2. Avoid skipping the `MBOX_BGLoadModel` dispatcher wholesale; it is doing real
+   asset-load work and advancing Voodoo FIFO state.
+3. If optimizing further, target narrow helpers/callbacks called from the
+   dispatcher rather than the dispatcher body itself.
+
+Additional runtime/FSYS inspection from the same warm snapshot:
+
+- Frame 240 stops at `0xffffffff8011ce7c`, the wrapper immediately before
+  calling the `MBOX_BGLoadModel` dispatcher with a stack message record at
+  `807ffc00`.
+- The record contains `ResetModels Timeout  Timeout, state=5`; heap copies also
+  include `MBOX_BGLoadModelDone Timeout, state=5`.
+- FSYS/QIO objects around `802954b0` include active state-4 records with zero
+  status, plus mount status `0x300b` on `80295670`.
+- A trial status-only queue completion for those state-4 records did not change
+  the 180 -> 240 or 180 -> 360 signatures, so it was not kept. The remaining
+  blocker is likely missing model/FSYS read data or the real completion callback,
+  not just an unmasked QIO status.
+- The timeout text itself is copied through a runtime log-ring path. Address-load
+  scans for `802171b8` hit `800c80fc`, `800c8118`, and `800c8404`; that code
+  maintains the log ring at `802171b8`, not the root model-load state.
+- The adjacent `size:2147483637 max:110` string has a static copy at
+  `8013d8fb` and a heap/log copy at `802171e0`. Direct address-load scans for
+  the static copy did not find a simple lui/addiu reference, so this likely needs
+  callback/dataflow tracing rather than a direct string xref.
+- Relevant FSYS callbacks seen in active records:
+  `800d2bcc`, `800d3b64`, and the larger state machine at `800f1ad4`.
+
+Longer warm-snapshot check, 180 -> 360 frames:
+
+```text
+frame=360
+pc=0xffffffff8011ce5c
+voodoo active fifoWords=346338 fifoPackets=120631 fastFills=674 swaps=7198
+drawPackets=0 directTriangles=30 setupTriangles=0
+packetTypes=0:4,1:50636,2:0,3:0,4:69991,5:0,6:0,7:0
+framebuffer=640x480 nonBlack=307200 colored=0
 ```
 
 ## 2026-05-15 Native DCS Audio Bring-Up Pass
@@ -3665,3 +3854,2535 @@ Next target:
    new trace proves an earlier entry is safe.
 3. Continue looking for the first non-zero type-3/type-5 packet before doing
    any Voodoo raster work.
+
+## 2026-05-24 Resume After Crash: Direct Triangles Are Still Self-Test Geometry
+
+The repo was resumed after a machine crash with unrelated dirty files present.
+Gauntlet-specific files were clean at start except for this new diagnostic
+change.
+
+Implemented:
+
+- `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW=1` draw trace lines now include the
+  current CPU PC from `CpuPcProvider`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Warmup snapshot regenerated after the diagnostic build:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f300-s0-945e4914bd0d.warm
+```
+
+Key probe result:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=auto
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT=90
+```
+
+All currently observed direct triangles come from one PC:
+
+```text
+[GAUNTDL:VOODOO-DRAW] fastfill ... pc=0xffffffff8005ed54
+[GAUNTDL:VOODOO-DRAW] itri color=0xFFFF xy=(0.0,0.0)/(36.0,0.0)/(0.0,36.0) ... pc=0xffffffff8005ed54
+[GAUNTDL:VOODOO-DRAW] itri color=0xF800 xy=(0.0,0.0)/(128.0,0.0)/(128.0,128.0) ... pc=0xffffffff8005ed54
+```
+
+Interpretation:
+
+- The existing `directTriangles=68` are boot/self-test style diagnostic
+  geometry from `0xffffffff8005ed54`, not real loaded-runtime game geometry.
+- The warm 300-frame state still has no FIFO type-3/type-5 draw/setup packets:
+
+```text
+voodoo regs=64373 fifoWords=124741 fifoPackets=62369 drawPackets=0 directTriangles=68 setupTriangles=0 lfbWrites=440464 texWrites=16 fastFills=2 swaps=62352
+voodoo packetTypes=0:1,1:62365,2:0,3:0,4:3,5:0,6:0,7:0
+framebuffer=640x480 stride=2560 nonBlack=16641 colored=16641
+```
+
+Extra-step probing from the warm snapshot is dominated by a swap/status pump,
+not by new draw emission:
+
+```text
+checkpoint extra=5000001 pc=0xffffffff8005171c regs=85121 fifoWords=166235 fifoPackets=83116 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=83098 packetTypes=0:2,1:83111,2:0,3:0,4:3,5:0,6:0,7:0
+hotpcs=0xffffffff80054af0:31120,0xffffffff80054af4:31120,0xffffffff80054af8:31120,0xffffffff80054afc:31120,0xffffffff80054b00:31120,0xffffffff80054b04:31120,0xffffffff8001fa20:20748,...
+```
+
+Useful code windows dumped:
+
+```text
+mem[0xffffffff800516a0] includes the repeated swapbuffer FIFO write:
+  ae710128 ... 8e020374 34630251 ac430000 ac510004 ... ae020374 ae03037c
+
+mem[0xffffffff80054ae0] is a tiny status helper returning through
+0xffffffff80054af0..54b04.
+
+mem[0xffffffff80018370] is a vblank/status wait loop around the same status
+bit path.
+```
+
+Next target:
+
+1. Treat `directTriangles=68` as already-explained diagnostic geometry.
+2. Investigate why loaded runtime repeatedly emits only swapbuffer type-1 FIFO
+   packets from the `0xffffffff800516a0` path.
+3. The next meaningful rendering milestone is still the first real runtime
+   draw/setup packet or a new direct triangle PC other than
+   `0xffffffff8005ed54`.
+
+## 2026-05-24 Follow-up: Collapse Low Runtime Swap/Vblank Waits
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added `TryFastPathKnownRuntimeSwapbufferPump`.
+  - Catches the low runtime swapbuffer pump body at
+    `0xffffffff800516a0..0xffffffff80051744`.
+  - Signature-gated against the exact helper body at
+    `0xffffffff80051654`.
+  - Restores `s0..s3/ra/sp` and returns to the caller without repeatedly
+    emitting the same `swapbufferCMD` type-1 FIFO packet.
+- Added `TryFastPathKnownRuntimeLowVblankStatusWait`.
+  - Catches the low runtime vblank/status wait body at
+    `0xffffffff80018370..0xffffffff80018420`.
+  - Signature-gated against the exact helper body at
+    `0xffffffff80018350`.
+  - Restores `s0..s3/ra/sp` and returns the same no-counter-change result seen
+    in the trace.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Probe command:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=auto \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300 \
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=1000000,5000000,25000000 \
+EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS=1 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300
+```
+
+New warmup snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f300-s0-928173a0982a.warm
+```
+
+Progression after the two fastpaths:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff8003aabc regs=2021 fifoWords=85067 fifoPackets=42532 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=0 packetTypes=0:1,1:42528,2:0,3:0,4:3,5:0,6:0,7:0
+checkpoint extra=5000000 pc=0xffffffff80011280 regs=2021 fifoWords=106287 fifoPackets=53142 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=0 packetTypes=0:1,1:53138,2:0,3:0,4:3,5:0,6:0,7:0
+checkpoint extra=25000000 pc=0xffffffff80016df4 regs=2021 fifoWords=212387 fifoPackets=106192 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=0 packetTypes=0:3,1:106186,2:0,3:0,4:3,5:0,6:0,7:0
+```
+
+Interpretation:
+
+- The old `0xffffffff80051718` swapbuffer endpoint is gone.
+- The old `0xffffffff8001839c` vblank/status wait endpoint is gone.
+- `swaps` no longer grows during the extra-step series; the repeated
+  swapbuffer packets were bringup wait noise.
+- There is still no real runtime geometry: `drawPackets=0`,
+  `setupTriangles=0`, and `directTriangles=68` remains the earlier
+  self-test geometry from `0xffffffff8005ed54`.
+
+Current blocker:
+
+```text
+pc=0xffffffff80016df4
+lastOp=0x0c006556
+```
+
+Useful dump around the current blocker:
+
+```text
+mem[0xffffffff80016dc0]:
+  +0x000: 3c11800a 3c12800a 0c019334 0200202d
+  +0x010: 8e22371c 30420001 10400009 00000000
+  +0x020: 0c00fb2b 00000000 14400005 00000000
+  +0x030: 0c006556 0000202d 0c00fbe8 00000000
+  +0x040: 8e22371c 30420002 10400003 00000000
+  +0x050: 0c005a03 00000000 8e22371c 30420004
+  +0x060: 50400006 26100001 8e443724 0000282d
+  +0x070: 0c0144a7 3406ffff 26100001 1a00ffe2
+  +0x080: 00000000 0c019334 0000202d 8fbf001c
+```
+
+Next target:
+
+1. Inspect the scheduler/status loop at `0xffffffff80016dc0..80016e44`.
+2. The immediate call at the endpoint is `0xffffffff80019558`
+   (`0x0c006556`), with the next call at `0xffffffff8003efa0`
+   (`0x0c00fbe8`).
+3. Continue treating type-1-only FIFO growth as state/wait traffic until a
+   new direct triangle PC or a type-3/type-5 packet appears.
+
+## 2026-05-24 Follow-up: Remove Remaining Low Runtime FIFO/Status Noise
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added `TryFastPathKnownRuntimeDiagnosticDrawCallsite`.
+  - Catches the `0xffffffff80016df0/80016df4` callsite for
+    `0xffffffff80019558`.
+  - Signature-gated against the caller at `0xffffffff80016dc0` and callee at
+    `0xffffffff80019558`.
+  - Important correction: caller epilog signature is at `+0x8c..+0xa0`, not
+    `+0x90..+0xa4`.
+- Added `TryFastPathKnownRuntimeLowVoodooStatusPump`.
+  - Catches entry `0xffffffff80054b60`.
+  - Skips the repeated FIFO type-1 status-register packet
+    `cmd=0x00010241 target=0x048 value=0`.
+  - Returns `v0=0` and writes the status latch at `0xffffffff800b97f4` to
+    zero, matching the observed backend status bit.
+  - Important correction: this is an entry fastpath, so it must use the
+    current `$ra`; the prolog has not saved `ra`/`s0` to the stack yet.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Probe command:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_RAW_DISK=/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=auto \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300 \
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=1000000,5000000,25000000,100000000 \
+EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS=1 \
+EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS=1 \
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_EVENTS=1 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300
+```
+
+New warmup snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f300-s0-b7d96bcb91d9.warm
+```
+
+Progression after these fastpaths:
+
+```text
+checkpoint extra=1000000 pc=0xffffffff800512c8 regs=2021 fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=0 packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+checkpoint extra=5000000 pc=0xffffffff80051690 regs=2021 fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=0 packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+checkpoint extra=25000000 pc=0xffffffff8001683c regs=2021 fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=0 packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+checkpoint extra=100000000 pc=0xffffffff800179c0 regs=2021 fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0 fastFills=2 swaps=0 packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+```
+
+Interpretation:
+
+- The old `0xffffffff80016df4` diagnostic draw callsite blocker is gone.
+- The repeated low-runtime `0x00010241` type-1 FIFO/status pump is gone.
+- `fifoWords` is now stable across the whole extra-step series (`43`), instead
+  of climbing into hundreds of thousands.
+- There is still no real runtime geometry: `drawPackets=0`,
+  `setupTriangles=0`, and `directTriangles=68` is still the self-test geometry
+  from `0xffffffff8005ed54`.
+
+Current endpoint:
+
+```text
+pc=0xffffffff800179c0
+lastOp=0x0c019334
+hotpcs=0xffffffff80001a24:4884,0xffffffff80000fd8:1148,0xffffffff80041880:828,...
+```
+
+Useful dump around the endpoint:
+
+```text
+mem[0xffffffff80017980]:
+  +0x000: 0000202d afbf001c afb20018 afb10014
+  +0x010: 0c0065ce afb00010 0c0065ce 0040202d
+  +0x020: 0c005e38 0000882d 3c048009 248499c4
+  +0x030: 0c0059dd 24050002 0040902d 0c019334
+  +0x040: 0220202d 1a40000a 0000802d 0000202d
+  +0x050: 0080282d 0c0144a7 0080302d 0c005a03
+  +0x060: 26100001 0212102a 1440fff9 0000202d
+  +0x070: 26310001 1a20fff1 00000000 0c019334
+  +0x080: 0000202d 0c00fc0c 00000000 0c0152d8
+  +0x090: 00000000 1440fffd 00000000 8fbf001c
+  +0x0a0: 8fb20018 8fb10014 8fb00010 03e00008
+  +0x0b0: 27bd0020
+```
+
+At this stop:
+
+```text
+ra=0xffffffff800179c4
+a0=0xffffffff808101ac
+s1=0xffffffff808101ad
+s2=0xffffffff800b0000
+s3=0x50
+```
+
+Recent Voodoo events after the fastpaths are only warmup/setup residue:
+
+```text
+fifo type1 cmd=0x00010221 target=0x044 ... pc=0xffffffff80054cb4
+fifo type1 cmd=0x00010221 target=0x044 ... pc=0xffffffff800517f8
+fifo type4 cmd=0x0001828c target=0x051 ... pc=0xffffffff80051df8
+fifo type4 cmd=0x00018234 target=0x046 ... pc=0xffffffff8005199c
+```
+
+Next target:
+
+1. Inspect the scheduler path around `0xffffffff800179c0`.
+2. Dump the callers/hot helpers around `0xffffffff80001a24`,
+   `0xffffffff80000fd8`, and `0xffffffff80041880` if this endpoint repeats.
+3. Do not chase Voodoo rasterization yet; the next milestone is still the
+   first new runtime draw/setup packet or a direct triangle PC other than
+   `0xffffffff8005ed54`.
+
+## 2026-05-24 Follow-up: Make Frame Runs Continue Past Soft CPU Halts
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added `EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED`, enabled by
+  `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST`.
+  - `HaltUnsupported` still logs the bad PC/op/reason.
+  - In bringup mode it no longer leaves `_halted=true`, so `RunFrame()` keeps
+    stepping like the direct `Step()` probe path already did.
+- Added `TryFastPathKnownRuntimeFrameSwapTick`.
+  - Catches `0xffffffff8001680c`.
+  - Preserves the `800a36c0+0x1c` counter increment.
+  - Skips the already-known swapbuffer/status noise path.
+- Added `TryFastPathKnownGauntletGlideBootStateEmitAltEntry`.
+  - Catches the alternate entry `0xffffffff8005129c`, which skips the normal
+    `sp -= 0x38` prolog but still returns through an epilog with `sp += 0x38`.
+  - Normalizes the Glide FIFO state and reproduces the stack unwind.
+- Added `TryFastPathKnownRuntimeIdleRenderLoop`.
+  - Catches the `0xffffffff80017980` render/scheduler function when `s2 <= 0`,
+    which means the inner state-emission loop is skipped by guest code anyway.
+  - Restores `s0..s2/ra/sp` and returns to the caller.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 Warning(s)
+0 Error(s)
+```
+
+Before `CONTINUE_AFTER_UNSUPPORTED`, loading a 300-frame warm snapshot and
+running one more frame left the CPU halted in low ASCII/data memory:
+
+```text
+frame=301
+pc=0x0000000000000044
+lastOp=0x706f4300
+```
+
+After the soft-halt change:
+
+```text
+frame=301
+pc=0xffffffff80051674
+fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0
+```
+
+After the frame-swap and idle-render fastpaths, a high-budget post-warmup run
+moved the endpoint forward:
+
+```text
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=1000000
+frame=302
+pc=0xffffffff8001fad8
+lastOp=0x3c03a180
+fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0
+```
+
+Current endpoint dump:
+
+```text
+mem[0xffffffff8001fa90]:
+  +0x020: 8cc20004 03e00008 00000000 27bdffe8
+  +0x030: afb00010 3c10800b 8e022e50 1440001a
+  +0x040: afbf0014 3c03a180 3463000e 3c02a180
+  +0x050: 34420008 3c04800b 94630000 94450000
+  +0x060: 24843020 00052c00 0c007e88 00a32827
+  +0x070: 3c03a180 3463000c 3c02a180 3442000a
+  +0x080: 3c04800b 94630000 94450000 24843040
+  +0x090: 00052c00 0c007e88 00a32827 3c03800b
+  +0x0a0: 08007edb ac622e4c 0040f809 24040001
+  +0x0b0: 3c04800b 24843020 0c007e88 0040282d
+  +0x0c0: 8e022e50 0040f809 0000202d 3c04800b
+  +0x0d0: 24843040 0c007e88 0040282d 8fbf0014
+  +0x0e0: 8fb00010 03e00008 27bd0018
+```
+
+Register state at the endpoint:
+
+```text
+ra=0xffffffff80016d90
+sp=0xffffffff807ffea8
+s0=0xffffffff800b0000
+s1=0xffffffff800a0000
+s2=0xffffffff800b0000
+a0=0x3400ff01
+a1=0xffffffff800a74b8
+a2=0xffff
+```
+
+Interpretation:
+
+- Frame-based probing now makes forward CPU progress again instead of freezing
+  on `_halted`.
+- The 300-frame visual output is still unchanged: no new Voodoo draw/setup
+  packets and only the known self-test triangles from `0xffffffff8005ed54`.
+- Next target is the `0xffffffff8001fad8` helper. It reads `a1800008/0c/0e/0a`
+  style hardware windows and calls `0xffffffff8001fa20`; likely an analog/input
+  or small board-status helper, not Voodoo rendering.
+
+## 2026-05-24 Follow-up: Collapse Low Runtime IOASIC Input Poll
+
+Added `TryFastPathKnownRuntimeLowIoasicInputPoll` for the low runtime helper at
+`0xffffffff8001fabc`.
+
+Observed behavior:
+
+```text
+pc=0xffffffff8001fad8
+read16 ffffffffa180000e -> ffff  CS6 IOASIC packed
+read16 ffffffffa1800008 -> 7fff  CS6 IOASIC packed
+read16 ffffffffa180000c -> ffff  CS6 IOASIC packed
+read16 ffffffffa180000a -> ffff  CS6 IOASIC packed
+```
+
+The helper folds those neutral IOASIC/analog values through
+`0xffffffff8001fa20` into the two local debounce records:
+
+```text
+mem[0xffffffff800b3020]:
+  +0x000: 80000000 80000000 00000000 00000000
+mem[0xffffffff800b3040]:
+  +0x000: 00000000 00000000 00000000 00000000
+mem[0xffffffff800b2e4c]:
+  +0x000: 00000000
+```
+
+Implementation notes:
+
+- The fastpath is signature-gated against the `8001fabc` helper and its epilog.
+- It avoids re-reading `a1800008/0a/0c/0e` while stopped mid-helper, because
+  doing so perturbs the IOASIC shuffle sequence.
+- It instead requires the neutral debounce-record state above, reapplies the
+  same bitfield update, writes `800b2e4c=0`, restores `s0/ra/sp`, and returns.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+After this change, the same 300-frame warm snapshot no longer parks at
+`8001fad8`; longer probes advance through the scheduler:
+
+```text
+frame=303 pc=0xffffffff8003aaac
+frame=306 pc=0xffffffff800144b0
+frame=320 pc=0xffffffff80016e5c
+```
+
+Render status remains unchanged through frame 320:
+
+```text
+frameHash=0x35297462
+fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0
+packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+nonBlack=16641 colored=16641
+```
+
+Next target:
+
+- `0xffffffff80016e5c` is still scheduler/epilog churn, not new Voodoo work.
+- Need identify why the runtime frame loop keeps returning through
+  `80016dxx/80016exx` without reaching real game geometry submission.
+
+## 2026-05-24 Follow-up: Collapse More Neutral Scheduler Churn
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Extended `TryFastPathKnownRuntimeBitfieldUpdate` coverage with a separate
+  low-runtime bitfield updater for `0xffffffff8001fa20`.
+  - This low helper is not byte-identical to the `0xffffffff800eafdc` runtime
+    helper; it uses local debounce records at `800b3020/3040` with countdown
+    fields at `+0x10/+0x12/+0x14`.
+  - After the change, hot-PC output only shows the `8001fa20` entry, not the
+    whole body.
+- Added `TryFastPathKnownRuntimePlainStatusMaskUpdate` for
+  `0xffffffff80011270..80011290`.
+  - This is the compact CP0 `Status` mask helper used by the low scheduler lock
+    path.
+- Added `TryFastPathKnownRuntimeSchedulerCallbackEnqueue` for
+  `0xffffffff8003aaac`.
+  - It preserves the observed scheduler callback node invariant:
+    `800a74b8+0x08 = 8003aa04`, list head `800b2f60 -> 800a74b8`.
+- Extended `TryFastPathKnownRuntimeLowVblankStatusWait` to catch the prolog
+  stop at `0xffffffff80018368`, before `ra/s2/s3` have been saved.
+- Added `TryFastPathKnownRuntimeLowVblankStatusWaitCallsite` for the scheduler
+  callsite at `0xffffffff80016d70/80016d74`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Extra-step progression from the 300-frame warm snapshot:
+
+```text
+before callsite fix:
+checkpoint extra=1000000 pc=0xffffffff80016d74
+checkpoint extra=5000000 pc=0xffffffff80016d74
+
+after callsite fix:
+checkpoint extra=1000000 pc=0xffffffff80016dec
+```
+
+The old hot bodies are reduced to entry hits:
+
+```text
+hotpcs=0xffffffff8001fa20:13246,0xffffffff80064cd0:13245,
+       0xffffffff80016d88:6623,0xffffffff80016d8c:6623,...
+```
+
+Render status is still unchanged:
+
+```text
+fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0
+packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+frameHash=0x35297462
+```
+
+Current endpoint:
+
+```text
+pc=0xffffffff80016dec
+lastOp=0x14400005
+```
+
+Interpretation:
+
+- We are now deeper in the active `80016d30` scheduler flag loop.
+- The next candidate is the `0xffffffff8003ecac` branch at
+  `80016de0..80016dec`; it likely decides whether to skip the diagnostic draw
+  calls at `80016df0/80016df8`.
+- Still no evidence of real game geometry. The next rendering milestone remains
+  first type-3/type-5 packet or a new direct-triangle PC other than
+  `0xffffffff8005ed54`.
+
+## 2026-05-24 Follow-up: Diagnostic Predicate/Queue and Frame-Service Churn
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added `TryFastPathKnownRuntimeDiagnosticPredicateCallsite` for
+  `0xffffffff80016de0/80016de4/80016de8`.
+  - The callee at `0xffffffff8003ecac` is a pure
+    `Read32(800a778c) & 1` predicate.
+  - The fastpath computes the same branch target directly:
+    `80016e00` when set, otherwise `80016df0`.
+- Added `TryFastPathKnownRuntimeDiagnosticQueueDispatchCallsite` and entry/range
+  support for `0xffffffff8003efa0`.
+  - This helper drains a four-slot diagnostic queue from
+    `800a7798..800a77d8` through `8003f3ac`.
+  - In bringup-fast mode the fastpath treats it as diagnostic-only and advances
+    `800a77cc` to `800a77c8`.
+  - Important correction: the helper epilog is at `+0x78..+0x8c`.
+- Extended `TryFastPathKnownRuntimeLowIoasicInputPoll` to cover entry
+  `0xffffffff8001fabc`.
+  - Important correction: its epilog signature is at `+0xb0..+0xbc`.
+- Added an experimental `TryFastPathKnownRuntimeIdleFrameServiceEntry` for the
+  `0xffffffff80016d30` service-frame function.
+  - It models the frame-service counter increment and scheduler callback node.
+  - Current warm snapshots can still land in partial prolog/body states, so this
+    has not yet eliminated the `80016d30` hot loop.
+- Added `TryFastPathKnownRuntimeLowFrameStateCallback` for
+  `0xffffffff80064cd0`.
+  - Signature offsets are entry-relative to `80064cd0`, not the dump base
+    `80064cc0`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Progress from the 300-frame warm snapshot
+`/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f300-s0-918179e261f3.warm`:
+
+```text
+after low IOASIC entry correction:
+checkpoint extra=25000000 pc=0xffffffff8003f024
+fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0
+
+after diagnostic queue range support:
+checkpoint extra=30000000 pc=0xffffffff800512d8
+checkpoint extra=50000000 pc=0xffffffff80016d44
+```
+
+Latest 50M profile after the frame-service experiments:
+
+```text
+pc=0xffffffff80016d44
+hotpcs=0xffffffff80064cd0:925926,
+       0xffffffff8001680c:462963,
+       0xffffffff80016d30:462963,
+       0xffffffff80016d34:462963,
+       0xffffffff80016d38:462963,
+       0xffffffff80016d3c:462963,
+       0xffffffff80016d40:462963,
+       0xffffffff80016d88:462963,...
+fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0
+packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+frameHash=0x35297462
+```
+
+Interpretation:
+
+- The previous `8003f024` diagnostic queue epilog checkpoint is no longer a
+  hard endpoint once one more step is allowed.
+- We are still cycling in the low runtime service/diagnostic frame path, not
+  emitting new Voodoo geometry.
+- `directTriangles=68` is still only the known self-test geometry from
+  `0xffffffff8005ed54`.
+
+Next target:
+
+1. Fix or replace the `80016d30` service-frame fastpath so it reliably catches
+   partial prolog/body states from the warm snapshot.
+2. If that remains messy, target the specific `80016d88..80016dc4` loop and
+   `80064cd0` callback callsites rather than the full function unwind.
+3. Keep using `EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS=1`; the current top hot PCs
+   are more useful than the endpoint alone because many checkpoints land on
+   ordinary instructions rather than halts.
+
+## 2026-05-24 Follow-up: Break Self-Returning Service/Dispatcher Loops
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Corrected `TryFastPathKnownRuntimeLowFrameStateCallback` signature offsets.
+  - The previous version still mixed offsets from dump base `80064cc0` with
+    entry `80064cd0`.
+- Corrected `TryFastPathKnownRuntimeIdleFrameServiceEntry` signature offsets
+  around the low vblank/input section.
+  - The fastpath now catches partial prolog states such as `80016d48`.
+  - When the saved return address is the service entry itself
+    (`ra=80016d30`), bringup-fast mode redirects to the next dispatcher
+    function at `80016e64` instead of re-entering the same service frame.
+- Added `TryFastPathKnownRuntimeSelfDispatcherEntry` for
+  `80016e64..80016ebc`.
+  - It handles the same self-return pattern (`ra=80016e64`) by redirecting to
+    the next local function at `80016ebc`.
+- Added `TryFastPathKnownRuntimeMainIdleLoop` for the terminal
+  `80015784/80015788` idle spin.
+  - It routes the idle loop back through the dispatcher call at `8001577c`
+    instead of burning every probe step on `nop; j self`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Progression from the same 300-frame warm snapshot:
+
+```text
+before service offset fix:
+checkpoint extra=50000001 pc=0xffffffff80016d48
+
+after service offset fix:
+checkpoint extra=50000001 pc=0xffffffff80016e7c
+checkpoint extra=100000000 pc=0xffffffff80016ea8
+
+after dispatcher/self-idle handling:
+checkpoint extra=50000001 pc=0xffffffff8001577c
+checkpoint extra=150000000 pc=0xffffffff80015784
+```
+
+Latest hot-PC profile:
+
+```text
+hotpcs=0xffffffff80016e64:37489739,
+       0xffffffff8001577c:37489738,
+       0xffffffff80015780:37489738,
+       0xffffffff80015784:37489737,
+       0xffffffff8003b554:994,...
+fifoWords=43 fifoPackets=20 drawPackets=0 directTriangles=68 setupTriangles=0
+packetTypes=0:0,1:17,2:0,3:0,4:3,5:0,6:0,7:0
+frameHash=0x35297462
+```
+
+Interpretation:
+
+- The service-frame and self-dispatcher loops are now understood and can be
+  bypassed.
+- The runtime still reaches a terminal main idle pump with an empty/neutral
+  dispatcher state; repeatedly pumping it does not create new Voodoo work.
+- Rendering remains unchanged: no type-3/type-5 FIFO packets and no direct
+  triangle source other than the known self-test PC.
+
+Next target:
+
+1. Inspect why the dispatcher/list state around `800b2e2c`, `800b2f60`, and
+   related callback nodes is empty or only loops neutral work after `8001577c`.
+2. The next useful dumps are around `8003b554..8003b5b0` and
+   `8003aa5c..8003aaa0`, which are now the nontrivial hot helpers after the
+   idle pump.
+3. Do not spend more time optimizing `80015784` itself; it is now just the
+   outer idle sentinel.
+
+## 2026-05-25 Follow-up: Raw-Fed Probe and Current Model-Load Blocker
+
+The local `/tmp/eutherdrive-gauntlet-probe` and `/tmp/gauntd24.raw` artifacts
+were missing, while the actual raw sidecar is present beside the ROM set:
+
+```text
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntd24.raw
+```
+
+`tools/GauntletProbe` now auto-selects `gauntd24.raw` or `gauntdl.raw` from the
+ROM directory when `EUTHERDRIVE_GAUNTDL_RAW_DISK` is unset. This keeps the warm
+snapshot key's `raw/chd` component aligned with what the IDE device actually
+uses.
+
+New raw-fed warm snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f300-s0-89de87071a67.warm
+```
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added `TryFastPathKnownRuntimeCp0CountRead()` for the pure helper at
+  `0xffffffff80010fbc` (`mfc0 v0,Count; jr ra`). This removes the helper body
+  from the active model-load path, though hot-PC accounting still records the
+  entry before fastpaths run.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 warnings, 0 errors.
+```
+
+Baseline raw-fed cold run to frame 320:
+
+```text
+frame=320
+pc=0xffffffff80010fc8
+rtxt=16@0xffffffff800e30a0/ra=0xffffffff800e33e4 "Loading Game."
+voodoo active, fifoWords=309330, fifoPackets=102127, fastFills=674, swaps=2572
+drawPackets=0, directTriangles=30, setupTriangles=0
+packetTypes=0:3,1:32133,2:0,3:0,4:69991,5:0,6:0,7:0
+framebuffer=640x480 nonBlack=307200 colored=0
+```
+
+From the new frame-300 warm snapshot, 50M extra CPU steps with default count
+step now lands in the model/FSYS state-machine instead of the earlier
+`MBOX_BGLoadModel` dispatcher stop:
+
+```text
+pc=0xffffffff800abaac
+hotpcs=0xffffffff80010fbc:820670,
+       0xffffffff800abaa0:410336,
+       0xffffffff800ac330:410336,
+       0xffffffff800ac49c:410336,...
+voodoo fifoWords=313938 fifoPackets=104431 drawPackets=0 directTriangles=30 setupTriangles=0
+packetTypes=0:3,1:34437,2:0,3:0,4:69991,5:0,6:0,7:0
+```
+
+With `EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP=8192`, the same snapshot reaches a
+later `MBOX_BGLoadModel` state after 100M extra CPU steps:
+
+```text
+pc=0xffffffff8011d5e0
+voodoo fifoWords=332290 fifoPackets=113607 drawPackets=0 directTriangles=30 setupTriangles=0
+packetTypes=0:4,1:43612,2:0,3:0,4:69991,5:0,6:0,7:0
+```
+
+Current interpretation:
+
+- The adapter is still in the loaded runtime's `Loading Game.` path.
+- Voodoo continues to receive status/swap/type-1 traffic, but no real
+  type-3/type-5 geometry appears.
+- The active blocker is not the outer idle sentinel. It is the model-load/FSYS
+  state-machine around `800abaa0`, `800ac2b4`, `800ac330`, and
+  `MBOX_BGLoadModel`.
+- Runtime data windows checked at `80238040`, `80217a00`, and `8021f150` are
+  still zero in the failing state, while the stack/log strings still show
+  `MBOX_BGLoadModelDone Timeout, state=5` and `ResetModels Timeout`.
+
+Next target:
+
+1. Trace the state transition through `800ac2b4` and its jump table at
+   `800ac330`; identify which state leaves `80238060/80238080` and the
+   `80252da0` records empty.
+2. Avoid faking a successful `MBOX_BGLoadModel` completion until the missing
+   model/FSYS data source or completion callback is identified.
+3. Keep using the raw-fed frame-300 warm snapshot above; it is the fastest
+   current repro.
+
+## 2026-05-25 Follow-up: BGLoadModel QIO Status Repair
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added a narrow `ApplyKnownRuntimeBgLoadModelQioCompletion()` repair at
+  `0xffffffff800abaa0`. It detects the current model record at `80252da0 +
+  index * 0x28`, follows record `+0x08` to the runtime QIO object, and marks
+  QIO `+0x14` complete when QIO `+0x18` still contains a `/d0/` file path.
+- The first confirmed hit is for `/d0/static_lr/textures.rom`:
+
+```text
+[GAUNTDL:FIX] bgloadmodel qio-complete index=0 record=ffffffff80252da0 qio=ffffffff80217c58
+```
+
+Effect from the raw-fed frame-300 snapshot:
+
+```text
+record 80252da0 after 50M extra, CP0_COUNT_STEP=8192:
++0x000: 00000000 00000000 00000000 00000006
++0x010: 00000001 07606dfe ...
++0x020: 80217d70 ...
+
+qio 80217c58:
++0x010: 00000000 ffffffff "/d0/static_lr/textures.rom"
+
+next qio candidate 80217d70:
+"/d0/players/war/yel00/textures.rom"
+```
+
+This confirms the previous state-5 timeout was a missing runtime QIO completion
+signal. It does not yet make the port render geometry. After the repair the
+runtime progresses into later model/texture handling, then spends time in the
+formatting/log path around `8011fff0..80120190` and still reports timeout-like
+behavior. Voodoo remains fill/swap-heavy with no type-3/type-5 draw packets.
+
+Current next target:
+
+1. Identify the actual FSYS file payload path for the QIO object, not only its
+   status field. The QIO object carries destination-like words before the path:
+   `80295670`, `800ab4e4`, `802e1718`, `00002000`.
+2. Either wire the runtime QIO path to raw-disk file reads, or identify the
+   callback that should fill the buffer and update model metadata before state 6.
+3. Consider a fastpath for the late runtime formatting loop only as a speed aid;
+   it is not the functional blocker.
+
+## 2026-05-25 Follow-up: BGLoadModel QIO Table Scan
+
+The first BGLoadModel QIO repair was internally inconsistent and too narrow:
+
+- The QIO callback at `800ab4e4` reads QIO `+0x10` as the actual byte count.
+  The repair now writes QIO `+0x10 = qio+0x0c` before setting status `+0x14 = 2`.
+- Disassembly of `800abaa0` showed the active table stride is `index * 0x18`,
+  not `index * 0x28`.
+- The current-index latch does not always point at the pending QIO. The repair
+  now scans the first 64 BGLoadModel records at `80252da0 + index * 0x18` and
+  completes pending `/d0/` QIOs.
+
+Confirmed hits from the frame-300 warm snapshot:
+
+```text
+[GAUNTDL:FIX] bgloadmodel qio-complete index=0 record=ffffffff80252da0 qio=ffffffff80217c58 bytes=00002000
+[GAUNTDL:FIX] bgloadmodel qio-complete index=1 record=ffffffff80252db8 qio=ffffffff80217d70 bytes=00002000
+[GAUNTDL:FIX] bgloadmodel qio-complete index=2 record=ffffffff80252dd0 qio=ffffffff80217e88 bytes=00002000
+...
+```
+
+This materially changes bringup:
+
+```text
+50M extra:
+pc=0xffffffff8011d608
+fifoWords=2829696 fifoPackets=156340
+drawPackets=308 directTriangles=980 setupTriangles=475
+packetTypes=0:980,1:34829,2:0,3:308,4:82925,5:37298,6:0,7:0
+
+200M extra:
+pc=0xffffffff800c7bd4
+fifoWords=6934582 fifoPackets=248633
+drawPackets=870 directTriangles=2772 setupTriangles=1371
+packetTypes=0:2421,1:41857,2:0,3:870,4:106472,5:97013,6:0,7:0
+```
+
+The port is no longer blocked at the original BGLoadModel state-5/status-0
+stall. Voodoo now receives real type-3/type-5 draw traffic and texture writes.
+The probe framebuffer classifier still reports `colored=0`, so the next blocker
+is probably downstream in render state, framebuffer interpretation, or a later
+runtime wait around `800c7bd4`/the hot message dispatch path `8011d5xx`.
+
+## 2026-05-25 Follow-up: Runtime FSYS Status and World-Data Blocker
+
+Further inspection showed the `800c7bd4` endpoint is not a hard halt. It is in a
+runtime text/log helper, while the scratch log buffer reports:
+
+```text
+No world data: test
+Too many open files: 8
+StartFileRead: QIO error, file not open
+No valid worlds
+```
+
+The visible blocker is therefore still runtime asset/world loading, not the
+first Voodoo draw submission. The BGLoadModel QIOs at `80217c58`, `80217d70`,
+etc. point at FSYS objects starting at `80295670`, and each object carried
+status `0x300b` when the QIO completion repair fired.
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Extended `ApplyKnownRuntimeBgLoadModelQioCompletion()` so that, for the same
+  verified `/d0/` QIOs, it also clears the low error byte on the associated FSYS
+  object status (`0x300b -> 0x3000`) before marking QIO `+0x14 = 2`.
+- The repair is still bounded by the existing QIO signature checks: main-RAM
+  QIO pointer, `/d0/` path signature, nonzero byte count <= `0x20000`, and
+  pending QIO status.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Cold, raw-fed 300-frame run plus 50M extra CPU steps:
+
+```text
+pc=0xffffffff801201a8
+rtxt=16@0xffffffff800e30a0/ra=0xffffffff800e33e4 "Loading Game."
+fifoWords=6905143 fifoPackets=256856
+drawPackets=1024 directTriangles=2770 setupTriangles=1370
+packetTypes=0:4877,1:41177,2:0,3:1024,4:112760,5:97017,6:0,7:1
+framebuffer=640x480 nonBlack=307200 colored=0
+```
+
+This is forward progress compared with the older warm-snapshot checks, and it
+confirms that all eight initial BGLoadModel objects hit the `0x300b` repair.
+However, `worlds.rom` is still only present as static/runtime strings and not as
+an active QIO path in the dumped pool; `80227c94` is still zero and
+`80227cb8` remains `0xffffffff`. The next target is the world-loader open path
+around `8004d45c`/`8004d658`, not another generic Voodoo fastpath.
+
+## 2026-05-31 Follow-up: World Data Repair, Text Fastpaths, and IRQ Bridge Status
+
+Current local context:
+
+- Repo: `/home/nichlas/EutherDrive_Android`
+- Local MAME source/reference: `/home/nichlas/mame`
+- Adapter: `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`
+- Probe: `tools/GauntletProbe/Program.cs`
+- ROM path used: `/home/nichlas/roms/MAME/Midway/Vegas/gauntd`
+- Useful warm snapshot: `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm`
+
+Build command used throughout:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+```
+
+Latest build result:
+
+```text
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Important implementation state:
+
+- `ApplyKnownRuntimeWorldDataTableRepair()` now triggers at `pc=0xffffffff8004ecac`.
+- It writes a diagnostic world-data table:
+  - global `0xffffffff8016c130 + 0x18 = 13`
+  - global `0xffffffff8016c130 + 0x1c = 0x802e1000`
+  - fallback table entries at `0xffffffff802e1000`
+- Trace when active:
+
+```text
+[GAUNTDL:FIX] world-data-table pc=ffffffff8004ecac global=ffffffff8016c130 table=ffffffff802e1000 count=13
+```
+
+Runtime fastpaths added/fixed in this pass:
+
+- linked-list append tail around `800b13d4..800b13e0`
+- formatter entry fixed from wrong `80120230` to actual `80120234`
+- format-buffer entry/in-flight fastpaths
+- global `8022808c` exchange entry fixed to `800b1dc4`
+- guarded diagnostic format-line wrapper around `80121670`
+- `strncmp` fastpath at `8011fb40`
+- fixed-length compare wrapper at `800aa898`
+
+The `800aa898` wrapper was the major old hot loop. After the wrapper fix, it no
+longer dominates. It returns to `8011b68c` with `v0=0` for the observed case.
+
+Do not re-enable runtime interrupt bridge by default right now:
+
+- `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE` should not be on by default yet.
+- `BRINGUP_FAST=1` previously enabled it implicitly through `IsBringupFixEnabled`.
+- That caused execution to enter the `a0011078`/`a00cc3xx` exception/cache path and eventually run string/data regions as code.
+- The default was changed so `_enableRuntimeInterruptBridge` only checks the explicit env var:
+
+```csharp
+private readonly bool _enableRuntimeInterruptBridge =
+    GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE"));
+```
+
+Known-bad experiment that was reverted:
+
+- A narrow repair at `a0011078..a0011080` tried to resume from CP0 EPC when `a2 == 0`.
+- It moved past the local loop but was wrong: it produced unsupported opcode spam in string/data ranges such as `8012b080`, `8013be4c`, and `8015295c`.
+- That patch was reverted. Do not resurrect it without first fixing the actual interrupt/exception entry cause.
+
+Current recommended run command:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED=1 \
+EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300 \
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=5000000 \
+EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl-default-no-irq-bridge-5m.ppm \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300
+```
+
+Verified default `BRINGUP_FAST=1` result after disabling implicit runtime IRQ bridge:
+
+```text
+checkpoint extra=5000000 drained=0 pc=0xffffffff800de134 lastOp=0x8c628190
+frameHash=0x663d858b
+fifoWords=328306 fifoPackets=95009 drawPackets=497 directTriangles=30 setupTriangles=0
+fastFills=674 swaps=44
+packetTypes=0:9,1:22517,2:4,3:497,4:71627,5:351,6:0,7:4
+hotpcs=0xffffffff800de910:80838,0xffffffff800de914:80838,0xffffffff800de928:80838,
+       0xffffffff800de9ac:80837,0xffffffff800de9b0:80837,0xffffffff800de9b4:80837,
+       0xffffffff800de9b8:80837,0xffffffff800de92c:71361,
+       0xffffffff80010fbc:28430,0xffffffff800111c8:19193
+```
+
+Longer 50M run with bridge off/default:
+
+```text
+checkpoint extra=50000000 drained=0 pc=0xffffffff80013584 lastOp=0x3c028023
+frameHash=0x663d858b
+fifoWords=328306 fifoPackets=95009 drawPackets=497 directTriangles=30 setupTriangles=0
+fastFills=674 swaps=44
+hotpcs=0xffffffff800de910:807786,0xffffffff800de914:807786,0xffffffff800de928:807786,
+       0xffffffff800de9ac:807785,0xffffffff800de9b0:807785,0xffffffff800de9b4:807785,
+       0xffffffff800de9b8:807785,0xffffffff800de92c:712359
+```
+
+Interpretation:
+
+- The port is past the original first world-data failure and past the `800aa898` compare-wrapper hot loop.
+- Voodoo is still active but no new useful visual progress happened in this pass; framebuffer hash remains `0x663d858b`.
+- Current real blocker is IRQ/status polling around `800de910`/`800de9ac`, with endpoint samples at `800de134` and `80013584`.
+- The next session should inspect or fastpath the runtime IRQ/status dispatch around `800de8e0..800deafc` and related globals under `80228144`, `80228150`, `80228160`, `80228170`, `80228190`, rather than enabling the broad runtime interrupt bridge.
+
+Useful dump command for the next pass:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED=1 \
+EUTHERDRIVE_GAUNTDL_DUMP_GPRS=1 \
+EUTHERDRIVE_GAUNTDL_DUMP_CODE_RANGES=0xffffffff800de0f0:128,0xffffffff800de8e0:256,0xffffffff800d4d10:96,0xffffffff80013560:96 \
+EUTHERDRIVE_GAUNTDL_DUMP_BYTES_RANGES=0xffffffff80228000:512,0xffffffff807ffc80:192 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300 \
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=5000000 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300
+```
+
+## 2026-05-31 Continuation: Exception FPU Context and IRQ Status Dump
+
+The previous `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm`
+snapshot was not available as a late runtime state in this session. A replacement
+early snapshot was regenerated at:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-current-regenerated-f300-1m.warm
+```
+
+Regeneration command:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED=1 \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=1000000 \
+EUTHERDRIVE_GAUNTDL_SAVE_WARMUP=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-current-regenerated-f300-1m.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300
+```
+
+Result:
+
+```text
+pc=0xffffffff80014610
+voodoo idle
+frameHash=0xa9a65ac5
+```
+
+Implemented:
+
+- Added `TryFastPathKnownExceptionFpuContextBlock()` for the exception handler
+  COP1 context save/restore blocks at `800114e0..80011690`.
+- The fastpath verifies sequential `sdc1`/`ldc1` signatures and performs the
+  same main-RAM FPR stores/loads in bulk. It does not change interrupt policy.
+
+Build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 Warning(s)
+0 Error(s)
+```
+
+With the runtime interrupt bridge still off/default, extra stepping from the
+regenerated snapshot remains in the early exception/timer path:
+
+```text
+checkpoint extra=50000000 pc=0xffffffff800114f0 lastOp=0xf7a30148
+voodoo idle
+hotpcs=80014998...,80011068...,8001116c...
+```
+
+With `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE=1`, the run reaches the
+known runtime IRQ/status area quickly, but also reproduces the known-bad symptom
+where text/data are executed as code before recovery:
+
+```text
+halt pc=000000000000005c op=47206972 reason=cop1 rs=19
+halt pc=0000000000000060 op=73656d61 reason=opcode 1c
+checkpoint extra=25000000 pc=0xffffffff800de9fc lastOp=0x1462000f
+voodoo active fifoWords=5 fifoPackets=2 directTriangles=20 fastFills=2
+frameHash=0xf29eb67c
+```
+
+Relevant state at `800de9fc`:
+
+```text
+v0=1 v1=1 a0=0000fd60 a1=80260000 a2=0 a3=20
+s1=00010000 s2=2 s3=8 s4=80165d10 s5=0000fd60
+cp0 status=34007f00 cause=8000 epc=01000035
+```
+
+Relevant globals around `80228100`:
+
+```text
+80228114 = 0x00004084
+80228118 = 0x000004a5
+8022811c = 0x00000000
+80228120 = 0x807fdef8
+80228124 = 0x802947d8
+80228128 = 0x80294af0
+80228150 = 0x00000001
+80228158 = 0x000040d7
+80228160 = 0xffffffff
+80228164 = 0x000040d7
+80228168 = 0x01000035
+8022817c = 0x00004a58
+```
+
+Next target:
+
+1. Do not make `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE` default.
+2. Inspect the `800de8e0..800deb04` dispatcher and the callback pointers in
+   `80228144`, `80228150`, `80228160`, `80228170`, and `80228190`.
+3. Add a narrower repair for the timer/status path that avoids entering text/data
+   as code, then rerun from the regenerated snapshot.
+
+## 2026-05-31 Continuation: FPU Context Bounds Fixed, IRQ Dispatcher Still Hot
+
+The original late snapshot is present again:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm
+```
+
+Implemented in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Corrected `TryFastPathKnownExceptionFpuContextBlock()` block boundaries.
+  The actual exception routine layout is:
+  - save all: `800114e0..80011560`, with `f31` in the branch delay slot
+  - save even: `80011564..800115a0`
+  - load all: `800115e8..80011668`, with `f31` in the branch delay slot
+  - load even: `8001166c..800116a4`
+- Corrected FPU context load base from `sp` to `a0`. Stores still use `sp`.
+- Added a narrow `0x04400000..0x04500000` uncached RAM-code window to
+  `IsRuntimeCodeAddress()` for the observed `a044d178` copy stub.
+- Added an experimental timer-only interrupt-dispatch suppress fastpath for
+  the `800de8e0` dispatcher. As of this note it does not yet alter the
+  endpoint, so treat it as incomplete/investigative.
+
+Build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Current repro command:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED=1 \
+EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300 \
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=5000000,50000000 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300
+```
+
+Current result:
+
+```text
+checkpoint extra=5000000 pc=0xffffffffa044d178
+checkpoint extra=50000000 pc=0xffffffff800de914
+voodoo active fifoWords=5 fifoPackets=2 drawPackets=0 directTriangles=20
+hotpcs=800110c4..800110d0, 80011620, 8004d9a8...
+```
+
+State at `800de914`:
+
+```text
+v0=1 a0=34007f00 a1=80260000 a2=03e80000
+s1=00008000 s3=7 s4=80165d0c s5=0000fd60 s6=0 s7=1 s8=0800
+ra=800de9a8 sp=0000fcd8
+cp0 status=34007f00 cause=8000 epc=01000315
+80228150=1 80228160=ffffffff 80228168=01000315
+```
+
+Interpretation:
+
+- The FPU context fastpath was genuinely wrong before and is now aligned with
+  the live exception routine.
+- The persistent blocker is still the runtime interrupt/status dispatcher around
+  `800de8e0..800deb04`. It is handling a CP0 timer bit with an invalid-looking
+  EPC and then continues through the same text/data-as-code recovery symptom.
+- The next useful action is to instrument why the timer-only dispatcher fastpath
+  is not matching, or replace it with a trace-first version that reports which
+  guard fails before changing control flow.
+
+## 2026-05-31 Continuation: FPU Bases Corrected, IRQ Signature Diagnosed
+
+Follow-up implementation in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Corrected the remaining FPU context base-register mistakes:
+  - all/even stores use `sp` (`sdc1` opcodes `f7a...`)
+  - all/even loads use `a0` (`ldc1` opcodes `d48...`)
+- Corrected the `800de8e0` dispatcher signature guards to match the live copied
+  code. The old guards were offset incorrectly around `+0x20/+0x30` and also
+  expected the wrong word at `+0xf8`.
+- Added a limited diagnostic reject trace for the dispatcher suppress fastpath
+  under `EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+The signature fix changes the reject reason from `signature` to the actual state:
+
+```text
+[GAUNTDL:IRQ] suppress-reject reason=pending pc=ffffffff800de8f0
+pending=3000 status=34007f00 cause=3000 epc=ffffffff800479d8
+sp=000000000000dbb8 ra=ffffffff800de8b8
+```
+
+A broad experiment that allowed any pending interrupt when EPC was runtime code
+was tested and reverted. It increased Voodoo type-1/swap traffic but corrupted
+control flow and stack state:
+
+```text
+pc=0xffffffffffff9ecb lastOp=0xffffffff
+earlier repeated: pc=0000000000000007 op=edface34
+ra=ffffffffffffffff sp=fffffffffffffc58 epc=ffffffffffff1fa8
+fifoWords=4805 fifoPackets=2402 swaps=600
+```
+
+Current safe sanity check after reverting that broad pending rule:
+
+```text
+checkpoint extra=5000000 pc=0xffffffffa044d178
+fifoWords=5 fifoPackets=2 directTriangles=10 fastFills=1 swaps=0
+```
+
+Interpretation:
+
+- The dispatcher fastpath now reaches meaningful guards; the old "not matching"
+  problem was partly just a bad signature.
+- `pending=0x3000` cannot be blindly skipped from inside the dispatcher. The
+  handler has already built state on the stack, and forcing the epilogue return
+  from that point can jump into stack/data.
+- Next target is a narrower model of the `0x3000` dispatcher path: either
+  emulate just enough of the bit loop/callback choice to land on the normal
+  epilogue, or identify which device pending bit is spurious before the runtime
+  enters `800de8e0`.
+
+## 2026-05-31 Continuation: IRQ C/D Rejected, Early FPU Save Advanced
+
+Follow-up implementation in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added NILE interrupt diagnostics to the dispatcher reject trace. The live
+  `pending=0x3000` case decodes as NILE PCI C + PCI D:
+
+```text
+nileState=0c00 nilePins=0c nileCtl=00900000/8000ba00
+nileStatus=00000000/08000400 sio=1 ide=1
+savedRa=ffffffff800ded54 savedS0=000000000000dc40
+```
+
+- Tested suppressing PCI C/D and returning through the dispatcher epilogue. This
+  is unsafe and was reverted; it jumps into stack/text-data-like low addresses
+  (`pc=0000000000000007`, then low ASCII-looking opcodes).
+- Tested clearing C/D in place without taking the epilogue. Also not sufficient:
+  the run still falls into the same exception-context failure path.
+- Removed the C/D clearing side effect from the dispatcher fastpath. The current
+  behavior is diagnostic reject only for the non-timer `0x3000` case.
+- Added a narrow early exception FPU-store fastpath for
+  `800113ec..80011468`. This path stores the actually encoded `sdc1` register
+  range using `sp` as the context base, then exits at `8001146c`.
+- Added gated diagnostic trace for that early FPU context path under
+  `EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 Warning(s)
+0 Error(s)
+```
+
+Probe from the late warm state:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=50000000
+warmupSnapshotLoaded=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm
+[GAUNTDL:FPUCTX] store pc=ffffffff800113ec op=f7a10138 expected=f7a10138
+fpr=1 sp=000000000000fd60 opcodeOk=True contextOk=True
+checkpoint extra=50000000 pc=0xffffffff800114bc lastOp=0x03a8e821
+```
+
+Interpretation:
+
+- The earlier `80011440` stop (`sdc1 f21,0x1d8(sp)`) was a real missing FPU
+  context fastpath. The new loose path gets past it.
+- The current endpoint is now `800114bc` (`addu sp,sp,t0`), so the next blocker
+  is later in the exception context save/stack transition, not the FPU store
+  itself.
+- Hot PCs remain dominated by `800110c4..800110d0` CP0 cause access and
+  `80011620`, so the next useful target is the exception context save/restore
+  around `8001146c..80011620`, especially how `sp/k0/k1` are being transformed
+  before the return path.
+
+## 2026-05-31 Continuation: Early Even Save and Restore Boundary
+
+Additional implementation in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added an early even-FPU save fastpath for `8001146c..800114a8`, exiting at
+  `800114ac`. This covers the `sdc1 f0,f2,...,f30` block that immediately
+  follows the earlier loose save-all path.
+- Added a loose FPU-load helper that only traces/acts on actual `ldc1`
+  candidates. This avoids treating the nearby GPR restore prelude as FPU loads.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 Warning(s)
+0 Error(s)
+```
+
+Safe short probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=5000000
+[GAUNTDL:FPUCTX] load pc=ffffffff80011620 op=d48e01a0 expected=d48e01a0
+fpr=14 a0=ffffffff807ffc20 opcodeOk=True contextOk=True
+checkpoint extra=5000000 pc=0xffffffffa044d178
+fifoWords=5 fifoPackets=2 directTriangles=10 fastFills=1 swaps=0
+```
+
+Longer diagnostic result after the early even-save path:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=50000000
+checkpoint extra=50000000 pc=0xffffffff800dec24 lastOp=0xafb1001c
+hotpcs includes 80011620, but with roughly half the previous count after the
+restore-side experiment.
+```
+
+Rejected experiment:
+
+- A narrow GPR context restore fastpath for `80011610..80011688` was tested and
+  reverted. It skipped the hot `ld r1..r31,offset(k0)` block, but immediately
+  exposed a tight `80011690` syscall/low-vector loop:
+
+```text
+halt pc=ffffffff80011690 op=0000000c reason=special 0c
+status=34007f03 epc=00000000010000b9
+then repeated low-vector/text-data PCs such as 00000040, 0000005c, 00000060
+```
+
+Interpretation:
+
+- The FPU save/load fastpaths are real and useful, but the next blocker is not
+  just the GPR restore cost. The restore tail must be understood semantically:
+  `80011690` is reached with EXL still set and a low/invalid EPC, so blindly
+  fast-forwarding the GPR restore only accelerates the bad exception return.
+- Next target should be the restore tail around `80011688..80011694` and how
+  CP0 Status/EPC are supposed to be repaired before leaving the exception
+  context.
+
+## 2026-05-31 Continuation: Restore Tail Instrumentation
+
+Additional implementation in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added passive `[GAUNTDL:EXCRET]` diagnostics for the exception restore tail.
+  The trace does not alter execution. It logs CP0 status/cause/EPC, `sp/ra/k0/k1`,
+  and the restore context fields that the runtime actually uses:
+  `ctxStatus=+0x100`, `ctxHi=+0x108`, `ctxLo=+0x110`, `ctxEpc=+0x298`,
+  and `ctxRa=+0x0f8`.
+- The diagnostic covers both observed restore-tail layouts:
+  `80011728..80011738` for the normal runtime context restore from the warm
+  snapshot, and `80011680..80011688` for the later low-PC exception loop.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+First restore from the warm snapshot is valid:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_STOP_PC=ffffffff80011738
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=100000
+[GAUNTDL:FPUCTX] load pc=ffffffff80011620 op=d48e01a0 expected=d48e01a0
+fpr=14 a0=ffffffff807ffc20 opcodeOk=True contextOk=True
+[GAUNTDL:EXCRET] pc=ffffffff80011738 op=0000000f
+status=34007f03 cause=8800 epc=ffffffff800479d8
+k0=ffffffff807ffc20 ctxStatus=34007f03 ctxEpc=ffffffff800479d8
+ctxRa=ffffffff800479d8
+checkpoint extra=37 pc=0xffffffff80011738
+```
+
+Letting that same run continue reaches normal runtime:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=100000
+checkpoint extra=100000 pc=0xffffffff8004d9ac lastOp=0x3c03800b
+```
+
+The 5M sanity remains stable:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=5000000
+checkpoint extra=5000000 pc=0xffffffffa044d178 lastOp=0x24840004
+fifoWords=5 fifoPackets=2 directTriangles=10 fastFills=1 swaps=0
+```
+
+The 50M run still reaches the known IRQ-dispatch boundary:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=50000000
+checkpoint extra=50000000 pc=0xffffffff800dec24 lastOp=0xafb1001c
+fifoWords=5 fifoPackets=2 directTriangles=20 fastFills=2 swaps=0
+hotpcs=800110c4..800110d0 and 80011620
+```
+
+Important interpretation:
+
+- The initial FPU load/restore tail is not corrupt. It restores `EPC=800479d8`
+  and returns to runtime correctly.
+- The later bad loop begins after the real pending IRQ path rejects the
+  timer-only suppress fastpath at `800de8f0..800de90c` with `pending=3000`
+  (`sio=1 ide=1`), then execution falls through unsupported low-memory/text-data
+  PCs under `EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED=1`.
+- Those continued low-PC instructions generate fresh exception contexts with
+  low/increasing `ctxEpc` values:
+
+```text
+[GAUNTDL:EXCRET] pc=ffffffff80011688 op=42000018
+status=34007f03 cause=0000 epc=00000000010000b9
+k0=000000000000fd60 ctxStatus=34007f03 ctxHi=00000050
+ctxLo=ffffffb0 ctxEpc=00000000010000b9 ctxRa=0000000000000000
+```
+
+- Therefore the next target is not a generic `syscall` implementation or a GPR
+  restore skip. The next real target is the pending SIO/IDE IRQ dispatch around
+  `800de8e0..800dec24`, and specifically why it eventually returns/branches to
+  low memory before `CONTINUE_AFTER_UNSUPPORTED` starts manufacturing bogus
+  low-EPC exception frames.
+
+## 2026-06-01 Continuation: Format Fastpath Prologue Guard
+
+Additional implementation in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added passive `[GAUNTDL:LOWPC]` diagnostics for suspicious low-PC transitions.
+- Added passive `[GAUNTDL:S8DEAD]` / `[GAUNTDL:S8CHANGE]` diagnostics to track
+  the copied runtime frame pointer around the low-PC failure.
+- Fixed `TryFastPathKnownRuntimeFormatBufferInFlight()` so it cannot trigger
+  before the `80120234` format-buffer prologue has saved all callee-saved
+  registers. The old guard allowed entry at `80120258`, before `afbe00e0` and
+  related saves had executed, so the fastpath restored `s8/fp` and `s7` from
+  uninitialized stack values (`0xdead`) and later returned through `ra=0`.
+- Added `TryFastPathKnownRuntimeMountQioWaitLoop()` for the runtime mount wait
+  at `800f5b1c..800f5b38`. The guard verifies the live code signature, the
+  fixed mount object `80295670`, `+0x14 == 0`, and `+0x7c == 5` before writing
+  completion status `0x0800` and continuing at `800f5b44`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Warm-state probe after the fix:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=20000000,50000000
+checkpoint extra=20000000 pc=0xffffffff800f5b1c lastOp=0x00000000
+fifoWords=117 fifoPackets=42 directTriangles=30 fastFills=12 swaps=0
+
+checkpoint extra=50000000 pc=0xffffffff800f5b1c lastOp=0x00000000
+fifoWords=117 fifoPackets=42 directTriangles=30 fastFills=12 swaps=0
+debug rtxt="Initializing Disk..."
+```
+
+Interpretation:
+
+- The first real low return at `801152c8/801152cc` is gone after fixing the
+  format-buffer fastpath prologue timing.
+- Voodoo activity advances materially from the prior `fifoWords=5` /
+  `fifoPackets=2` / `fastFills=2` state to `fifoWords=117` /
+  `fifoPackets=42` / `fastFills=12`.
+- Current blocker is now the runtime disk initialization wait around
+  `800f5b10..800f5b1c`, sampling text `"Initializing Disk..."`.
+- The mount object at `80295670` has status `+0x14 == 0` and state `+0x7c == 5`
+  at the endpoint; completing that loop with status `0x0800` is enough to leave
+  `"Initializing Disk..."`.
+
+After adding the mount wait fastpath, the same warm-state probe reaches
+`"Loading Game."` instead of the disk-init wait:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=50000000
+checkpoint extra=50000000 pc=0xffffffff80102468 lastOp=0xae03037c
+debug rtxt="Loading Game."
+fifoWords=1960585 fifoPackets=157609 drawPackets=7792
+directTriangles=372 setupTriangles=170 fastFills=930 swaps=8179
+framebuffer=640x480 nonBlack=307200 colored=24296
+```
+
+A longer non-RD0-trace run confirms that this is not just a one-off advance:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=100000000
+[GAUNTDL:FIX] bgloadmodel qio-complete index=0 record=ffffffff80252da0
+checkpoint extra=100000000 pc=0xffffffff80103300 lastOp=0x8e110280
+debug rtxt="Loading Game."
+fifoWords=7958145 fifoPackets=502731 drawPackets=20598
+directTriangles=1464 setupTriangles=716 fastFills=1902 swaps=56158
+frameHash=0x1a2235fc
+```
+
+Endpoint note:
+
+- `80103300` is not a new tight wait. It is inside a runtime state-bit setter
+  around `801032e0`, with `s0=80262d64` and a store back to `s0+0x280`. The
+  100M sample stopped there simply because the extra-step budget expired.
+
+Remaining risk / next targets:
+
+- The game now repeatedly cycles through the RD0 home/open path while loading:
+  `first-open-error`, `first-getioq-error`, `first-no-valid-home-blocks`, and
+  `second-open-error` diagnostics repeat.
+- Runtime also reaches `bgloadmodel qio-complete`, so the next useful probe is a
+  longer runtime/visual check or a stop-on-repeat detector for whichever loader
+  PC becomes genuinely hot after 100M. The old low-PC return and
+  `"Initializing Disk..."` wait are no longer active blockers.
+
+### 200M Loading Snapshot
+
+A reusable late-loading snapshot was saved at:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-loading-200m.warm
+```
+
+Command shape:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME=1 \
+EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED=1 \
+EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-loading-200m.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=300 \
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=200000000 \
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300
+```
+
+Checkpoint:
+
+```text
+checkpoint extra=200000000 pc=0xffffffff800c7c04 lastOp=0x001028c0
+debug rtxt="Loading Game."
+fifoWords=9258107 fifoPackets=1152712 drawPackets=20598
+directTriangles=1464 setupTriangles=716 fastFills=1902 swaps=218654
+frameHash=0x1a2235fc
+```
+
+From that snapshot, a 20M extra-step probe and a real 60-frame run both show the
+same late behavior:
+
+```text
+20M extra:
+pc=0xffffffff80102524
+fifoWords=9518093 fifoPackets=1282705 drawPackets=20598
+directTriangles=1464 setupTriangles=716 fastFills=1902 swaps=251152
+hotpcs=800b1dc4,800e3378,80121670..80121698,800b1ba0..
+
+frames 300->360:
+pc=0xffffffff8010349c
+fifoWords=9304899 fifoPackets=1176108 drawPackets=20598
+directTriangles=1464 setupTriangles=716 fastFills=1902 swaps=224502
+```
+
+Interpretation:
+
+- The port is no longer stuck in BGLoadModel QIO completion; `80252da0` has
+  record 0 in state 6 and later records mostly point at an uninitialized
+  `80217d70` QIO shell.
+- After 200M, no new draw packets, triangle counts, texture writes, or frame hash
+  changes appear. Only type-1/swap traffic continues.
+- `800c7c04` / `80102524` / `8010349c` are sample PCs inside active runtime
+  render/message helpers, not a single obvious tight wait.
+- The next useful target is the late render/message pump: `800b1dc4`,
+  `800e3378`, and the callback/object path around `80121670..80121698`, rather
+  than adding more BGLoadModel QIO completions.
+
+Late render/message trace from the 200M snapshot showed that this phase is
+mostly a text/progress render pump:
+
+- `800b1dc4..800b1dd0` swaps a global color/value at `8022808c`.
+- `800b1ba0..800b1c20` walks a small render-list/scratch buffer around
+  `807ffcc0`.
+- `800e3378..800e33f0` submits runtime text, but the observed string pointers
+  were blank/empty (`80217bf8`, `802172b8`, `80217338`).
+- `80121670..801216bc` formats diagnostic/progress lines from caller
+  `800c7bc8`, with `802171a4` incrementing through the observed calls.
+
+The 200M snapshot also exposed a presentation mismatch in the bring-up Voodoo
+backend. The exported framebuffer was nearly empty because the renderer always
+copied `_frontBufferIndex == 0`, while buffer 1 contained the visible image:
+
+```text
+buf=0/1/2
+voodoo buffers=0:nz=1:white=1:colored=1 1:nz=491520:white=467224:colored=491520 2:nz=0:white=0:colored=0
+framebuffer=640x480 stride=2560 nonBlack=1 colored=0
+```
+
+Added a gated bring-up renderer fallback:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER=1
+```
+
+When enabled, the renderer keeps the normal front buffer if it contains useful
+pixels, otherwise it picks the best non-pending color buffer with more than 1024
+non-zero pixels. This is a visualization aid for the current bring-up state, not
+a final Voodoo swap-semantics fix.
+
+Verification from the same 200M snapshot:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER=1
+EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS=1
+pc=0xffffffff800c7c04
+voodoo buffers=0:nz=1:white=1:colored=1 1:nz=491520:white=467224:colored=491520 2:nz=0:white=0:colored=0
+frameHash=0x838a144e
+framebuffer=640x480 stride=2560 nonBlack=307200 colored=24296
+```
+
+Next target after this display fix: inspect why the late runtime keeps rendering
+blank progress text and only advances type-1/swap traffic after the first real
+draw batch, instead of treating the empty front buffer as proof that geometry
+never rendered.
+
+### 2026-06-01 Continuation: DCS Auto-Ack and Voodoo TMU Banks
+
+Additional implementation in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Matched MAME's Gauntlet Dark Legacy IOASIC sound behavior by auto-acking DCS
+  sound input reads. The 38M warm snapshot confirms this now emits `ack` after
+  `data-r`, but the current loading blocker is not DCS program transfer:
+
+```text
+[GAUNTDL:DCS] data-r value=000a last=0004 reset=False lc=0400
+[GAUNTDL:DCS] ack
+dcs boot=128w host=5 fifo=512/0 xfer=0 state=0/0 type=0000 left=0 lc=0c00 out=000a
+```
+
+- Added passive Voodoo TMU register tracing for FIFO targets `0x2c0/0x2c1/0x2c3`
+  and `0x4c0/0x4c1/0x4c3`.
+- Added gated TMU register-bank separation:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS=1
+```
+
+`BRINGUP_FAST=1` also enables this flag. FIFO writes with target bit `0x200`
+populate TMU0, and writes with target bit `0x400` populate TMU1. The current
+sampler reads TMU0 first, then TMU1, then the legacy collapsed register values.
+This avoids TMU1 state overwriting TMU0 state in the bring-up backend while
+preserving compatibility with old warm snapshots.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 Warning(s)
+0 Error(s)
+```
+
+Probe from the 38M warm snapshot to 50M extra steps:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER=1
+EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS=1
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-worldfail-38m.warm
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=50000000
+```
+
+Result:
+
+```text
+checkpoint extra=50000000 pc=0xffffffff80102468
+debug rtxt="Loading Game."
+tmu0=8C24100F/00002000/00000000
+tmu1=0C24100F/FF802000/00000000
+voodoo textured=tri:7794:covered:914:rejected:6880:pixels:65453119:zero:57436214
+voodoo textureMap=writes=5377000:nz=24966:zero=5352034:touched=16385:first=0x000000:last=0x015554
+voodoo buffers=0:nz=1:white=1:colored=1 1:nz=491520:white=362730:colored=491520 2:nz=0:white=0:colored=0
+frameHash=0x5c2396c6
+framebuffer=640x480 stride=2560 nonBlack=307200 colored=89238
+```
+
+Interpretation:
+
+- The guest really writes different state into the two TMU target ranges; the
+  old low-byte-only register collapse hid that distinction.
+- Separating the banks changes visible output (`colored=89238` in this 50M
+  check with display fallback), so this is a real Voodoo bring-up correction.
+- The game is still in the `Loading Game.` phase. The next blocker remains the
+  late loader/render-message path: after the first draw batch, the runtime keeps
+  emitting type-1/swap traffic while model/QIO records after the first entry
+  mostly point at the blank `80217d70` shell.
+
+### 2026-06-01 Continuation: Late Loading Hotpath Reduction
+
+Additional implementation:
+
+- Extended the Gauntlet Glide state emit fastpath to accept the observed
+  pre-mask entry at `80103f38`. The prior helper started at `80103f44`, missing
+  the live endpoint after the `200M` loading snapshot.
+- Added `TryFastPathKnownGauntletGlideRuntimeZeroStatePacketTail()` for the
+  small zero-payload packet epilogue at `80102254..80102264`.
+- Extended `TryFastPathKnownRuntimeDiagnosticFormatLineWrapper()` to handle the
+  early prologue point at `80121674`, using live `ra` before the wrapper has
+  saved it to the stack.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Progression from the 200M snapshot:
+
+```text
+Before:
+20M extra -> pc=0xffffffff80102524, statusPcs=80105ea0:32498
+
+After zero-packet tail:
+20M extra -> pc=0xffffffff80121674
+
+After early diagnostic-format wrapper:
+20M extra -> pc=0xffffffff8004ede0
+fifoWords=9527851 fifoPackets=1287584 swaps=252372
+drawPackets=20598 directTriangles=1464 setupTriangles=716
+statusPcs=80105ea0:33718
+```
+
+Current semantic blocker:
+
+- The endpoint has moved back into the runtime world-data scan around
+  `8004ed80..8004ede0`, not the render formatter.
+- `8016c130` reports `count=13` and table `802e1000`, but that table is only
+  the bring-up stub data generated by `ApplyKnownRuntimeWorldDataTableRepair()`:
+  each entry has `id=1..13`, `+0x04=1`, and the rest zero.
+- The fallback buffers used by the allocation repair (`81000000`, `81400000`,
+  `81800000`) are also effectively empty at the 200M snapshot. There is no
+  already-loaded real world table to wire up.
+- Model records are still consistent with this: record 0 is complete, and later
+  records point at the blank `80217d70` QIO shell.
+
+Next target:
+
+The next useful bring-up work is not another render fastpath. It is to replace
+the current synthetic world-table stubs with real data, or trace the disk/read
+path that should populate the world data before `ApplyKnownRuntimeWorldDataTableRepair()`
+falls back to `802e1000`.
+
+### 2026-06-01 Continuation: FSYS Worlddata Indexing and Table Stride
+
+Additional raw-disk inspection:
+
+- The `c0edbabe` FSYS directory payload format is `id24, type8, nameLen8,
+  name\0`.
+- Root directory payload at byte `0x0000d200` includes:
+  `worlddata id=0x324`, `levels id=0x1dc`, `static_lr id=0x5d`.
+- `/worlddata` is the directory with `.` id `0x324`, header/payload at
+  `LBA 0x787c5/0x787c6` (`byte 0x0f0f8a00/0x0f0f8c00`).
+- `/worlddata` entries include:
+  `mount.wad id=0x325`, `castle.wad id=0x326`, `desert.wad id=0x327`,
+  `forest.wad id=0x328`, `temple.wad id=0x329`, `hell.wad id=0x32a`,
+  `town.wad id=0x32b`, `battle.wad id=0x32c`, `ice.wad id=0x32d`,
+  `dream.wad id=0x32e`, `sky.wad id=0x32f`, `secret.wad id=0x330`,
+  and `test.wad id=0x331`.
+- Assuming sequential file headers after the `/worlddata` directory, `test.wad`
+  payload is at `LBA 0x7883f` (`byte 0x0f107e00`) with size `0x358`.
+  Its first word is `0x000002f8`.
+
+Implementation updates:
+
+- `ApplyKnownRuntimeWorldDataReadBufferRepair()` now hydrates the fallback
+  buffer `81000000` with `/worlddata/test.wad` bytes when that repair path is
+  reached.
+- `ApplyKnownRuntimeWorldDataTableRepair()` now uses the table stride the
+  runtime lookup actually uses: `index << 7`, i.e. `0x80` bytes per entry. The
+  old stub used `0x40`.
+- Stub entry `+0x04` is now `0xffffffff` instead of `1`, because the runtime
+  world lookup masks that word with a caller-provided filter before accepting an
+  entry.
+- `EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_TABLE=1` was capped on the trace path;
+  before this, already-installed stubs could flood logs because the trace count
+  only advanced on the repair branch.
+
+Disassembly notes:
+
+```text
+8004ee20 lookup:
+  global = *(8016c130)
+  start = lh(global+0x16) + 1
+  count = lh(global+0x18)
+  table = *(global+0x1c)
+  entry = table + index * 0x80
+  accept if (*(entry+0x04) & filter) != 0
+  store selected entry to 8016c13c
+```
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+12M extra from `gauntdl-gauntdl24-worldfail-38m.warm` confirms the corrected
+stub layout:
+
+```text
+world-data-table pc=ffffffff8004ecc0 global=ffffffff8016c130 table=ffffffff802e1000 count=13
+802e1000: id=1 mask=ffffffff
+802e1080: id=2 mask=ffffffff
+802e1100: id=3 mask=ffffffff
+```
+
+50M extra from the same snapshot remains visually/runtime-equivalent:
+
+```text
+pc=0xffffffff80102edc
+rtxt="Loading Game."
+fifoWords=2086242 fifoPackets=160741 drawPackets=8010
+directTriangles=372 setupTriangles=170
+frameHash=0x5c2396c6
+framebuffer=640x480 stride=2560 nonBlack=307200 colored=89238
+```
+
+Current endpoint:
+
+- `80102edc` is in a runtime render/state jump-table path, not a simple empty
+  epilogue. The local code around `80102d80..80102f70` prepares render flags,
+  stores state at offsets such as `+0x300/+0x304`, then dispatches through a
+  table at `80157aa0`.
+- `80252da0` still shows only record 0 complete; later records continue pointing
+  at the blank `80217d70` shell.
+- The stride/mask fix is real correctness work, but it does not yet advance out
+  of `Loading Game.`. The remaining blocker is still real world/model metadata
+  hydration after the synthetic world table lets the loader progress.
+
+### 2026-06-01 Continuation: Worlddata Loader State Trace
+
+Additional implementation:
+
+- Added passive `EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER=1` instrumentation
+  for the worlddata loader state around `8004d430..8004dc80`.
+- The trace is gated by live-code signatures and capped at 48 lines. It logs the
+  relevant globals `80227c90..80227cb8` plus `80236ae0/80236ae4`, and does not
+  change execution.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+338 Warning(s)
+0 Error(s)
+```
+
+Longer progression after the corrected table stride/mask still stays in the
+same loading phase:
+
+```text
+100M extra:
+pc=0xffffffff80102244
+rtxt="Loading Game."
+drawPackets=20598 directTriangles=1464 setupTriangles=716
+swaps=58770 frameHash=0x5c2396c6
+
+200M extra:
+pc=0xffffffff80102564
+rtxt="Loading Game."
+drawPackets=20598 directTriangles=1464 setupTriangles=716
+swaps=227360 frameHash=0x5c2396c6
+statusPcs=80105ea0:219867,80105eac:4688,801005b8:838,8005eda4:420
+```
+
+Static scans from the 12M checkpoint:
+
+```text
+addrLoadScan 80252da0:
+  80050f68, 80051364, 800514ec,
+  800abad4, 800abc84, 800abdb4,
+  800ac074, 800ac1f8, 800ac20c,
+  800ac220, 800ac2e8
+
+memRefScan 80227cb8:
+  8001ecdc, 8001ecec, 8001ecf8, 8001ed10,
+  8004d448, 8004d4f8, 8004d6c4, 8004da04,
+  8004da10, 8004da58, 8004dc44, 8004dc4c,
+  8004dc54, 80050a54, 80050a6c
+```
+
+Important disassembly observations:
+
+- `8004d4f8` stores a runtime allocation/read result into `80227cb8`.
+- `8004d6c4..8004d710` is the branch that consumes `80227cb8` and posts the
+  command with callback `8005d630`.
+- `8004dc44..8004dc54` clears `80227ca8`, `80227c98`, `80227cb8`, and
+  `80227cac`.
+- `80050a70..80050ac0` computes a total from `80227cb8` and `80227cac` by
+  reading pointed objects' `+0x50/+0x58` fields.
+
+Runtime probe with `EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER=1` from
+`gauntdl-gauntdl24-worldfail-38m.warm` to 12M emitted no loader trace lines.
+The loader path either already ran before the warm snapshot point or is bypassed
+after the fallback world table is installed.
+
+50M byte snapshot notes:
+
+- `80252da0` record 0 is complete (`+0x0c = 6`, `+0x10 = 1`).
+- Subsequent model records still carry only the blank QIO-shell pointer
+  `80217d70`.
+- The only hydrated BGLoadModel QIO remains record 0:
+  `qio=80217c58`, `object=80295750`, `callback=800ab4e4`,
+  `dest=802e1718`, `bytes=0x2000`.
+- `81000000` begins with the synthetic stub word `0x00000001`, not the
+  `/worlddata/test.wad` first word. That confirms the `test.wad` buffer
+  hydration path has not fired in this warm-snapshot route.
+
+Next target:
+
+- Do not spend more time on `80102edc`/`80102564`; they are sample points in
+  active render/state helpers.
+- The useful next probe is earlier than the current warm snapshot: capture or
+  trace the `8004d4f8 -> 80227cb8` allocation/read path before
+  `ApplyKnownRuntimeWorldDataTableRepair()` installs synthetic stubs, then use
+  that to replace the stub-only table with real world/model metadata.
+
+### 2026-06-01 Continuation: Static World Descriptor Copy
+
+Pre-repair stop at the actual fail-path PC from
+`gauntdl-current-regenerated-f300-1m.warm`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_STOP_PC=ffffffff8004ecc0
+checkpoint extra=8243389 pc=0xffffffff8004ecc0
+s0=8015bf24 s2=8015bef4 ra=8004efb0
+8016c130: all zero before the repair
+80227cb8: zero before the repair
+```
+
+The static list at `8015bef4` is real world metadata, not code or scratch:
+
+```text
+8015bef4 +0x00: id=1  name="castle"  tag='A' secondary="powerups"
+8015bef4 +0x2c: id=2  name="mount"   tag='B' secondary="powerups"
+8015bef4 +0x58: id=3  name="desert"  tag='C' secondary="powerups"
+...
+```
+
+Disassembly around the world helpers confirms that runtime-selected entries are
+not just id/mask pairs:
+
+- `8004ee20` still indexes the runtime table with `index << 7` and tests
+  `entry+0x04` as a filter mask.
+- `8004f450..8004f4a0` compares selected-entry bytes at `+0x08..+0x0b`
+  against caller strings.
+- `8004f0c0..8004f340` checks runtime table flag bits and also updates fields
+  in the static `8015bef4` descriptors.
+
+Implementation update:
+
+- `ApplyKnownRuntimeWorldDataTableRepair()` still builds the fallback runtime
+  table at `802e1000` with 0x80-byte entries, but now seeds each entry from the
+  static descriptor list:
+  - `entry+0x00 = static id`
+  - `entry+0x04 = 0xffffffff`
+  - `entry+0x08..+0x2f = static +0x04..+0x2b`, including both the world name and
+    secondary name such as `powerups`/`powerups2`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Table layout check:
+
+```text
+802e1000:
+  +0x000 id=1 mask=ffffffff name="castle" secondary="powerups"
+  +0x080 id=2 mask=ffffffff name="mount"
+```
+
+Progression is still equivalent at the known late cap:
+
+```text
+50M extra from worldfail-38m:
+pc=0xffffffff80102edc
+drawPackets=8010 directTriangles=372 setupTriangles=170
+
+100M extra from worldfail-38m:
+pc=0xffffffff80102244
+drawPackets=20598 directTriangles=1464 setupTriangles=716
+frameHash=0x5c2396c6
+```
+
+Interpretation:
+
+- The fallback runtime world table is no longer an id-only stub; selected-entry
+  name comparisons now have meaningful data.
+- This is correctness work, but not the current late-loading blocker. The next
+  target remains the model/load path after the first BGLoadModel QIO: only model
+  record 0 hydrates, while later records point at the blank `80217d70` shell.
+
+### 2026-06-01 Continuation: BGLoadModel Trace and Hot-PC Recheck
+
+Additional passive instrumentation in
+`EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`:
+
+- Added `EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_RECORDS=1`.
+- The trace covers the static BGLoadModel/QIO helper windows around
+  `800abaa0`, `800abc60`, `800ac040..800ac4f0`, and
+  `800c92f0..800c9820`.
+- Each line reports the core BGLoadModel globals
+  `80238060/80238068`, `8021f154..8021f184`, the first 8 model records at
+  `80252da0`, and the first 4 expected QIO shells at
+  `80217c58 + index * 0x118`.
+- This is trace-only; it does not modify execution.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+Runtime checks:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_RECORDS=1
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=12000000
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-current-regenerated-f300-1m.warm
+
+Result:
+pc=0xffffffff800bd10c
+drawPackets=526
+directTriangles=30 setupTriangles=0
+```
+
+No BGLoadModel-record trace lines were emitted in this route. A cold run to
+frame 300 with the same trace also emitted no BGLoadModel-record lines:
+
+```text
+frame=300
+pc=0xffffffff800b0af4
+drawPackets=1368
+directTriangles=30 setupTriangles=0
+```
+
+Hot-PC profiling from the 1M warm snapshot to 30M extra steps initially pointed
+at `8004d9a8..8004d9c0` and `8004e08c..8004e09c`:
+
+```text
+hotpcs=
+  80011068..80011074:29108
+  8004d9a8..8004d9c0:29065
+  8004e08c..8004e09c:29065
+```
+
+That looked like a worlddata loader loop, so `TRACE_WORLD_DATA_LOADER` was
+extended to cover those exact PCs and the relevant `80236a60` object fields.
+The follow-up stop-PC check showed this was a false lead for the current
+semantic blocker:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXTRA_STOP_PC=ffffffff8004d9a8
+checkpoint extra=13577 pc=0xffffffff8004d9a8 lastOp=0x00000000
+ra=0xffffffff8004e094
+80227c90..80227ccf: all zero
+80236a60..80236aff: all zero
+801acbd8: zero
+```
+
+Interpretation:
+
+- The early `8004d9a8` hits are not the populated worlddata loop; they occur
+  while that address still reads as zero code and before any of the relevant
+  globals are installed.
+- The old hot-PC output can be polluted by this early zero-code path. Do not use
+  `8004d9a8` as the next target unless the probe also confirms a non-zero opcode
+  and populated `80236a60` state at the same stop.
+- The model/QIO issue is still open. The useful next probe is a state-delta
+  check on `80252da0`/`80217c58` across a save point, or a broader write-source
+  trace for those RAM ranges, rather than chasing the `8004d9a8` hot-PC sample.
+
+### 2026-06-02 Continuation: BGLoadModel State Delta and QIO Alias
+
+Added a sampled passive state-delta trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STATE_DELTA=1
+```
+
+It reports changes to the BGLoadModel globals, the first model records at
+`80252da0`, and the expected QIO shells at `80217c58 + index * 0x118`. The
+regular step path samples every 4096 instructions; the post-QIO-completion path
+still checks immediately so repair-side changes are visible.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+The state-delta probe from
+`/tmp/eutherdrive-gauntlet-probe/gauntdl-current-regenerated-f300-1m.warm` to
+30M extra steps exposed the exact aliasing sequence:
+
+```text
+pc=800c9300: qio shells are initialized at 0x118 stride
+pc=800ac3c4/800ac4dc: record 0 moves through states 1..6
+pc=800abbc0: later records receive qio pointer 80217c58
+pc=800abb10: record state remains, qio0 status is reset/toggled
+```
+
+For later records, `s1` advanced through the model table:
+
+```text
+s1=80252db8 -> record 1
+s1=80252dd0 -> record 2
+s1=80252de8 -> record 3
+...
+```
+
+but each record received the same QIO pointer:
+
+```text
+record 1 +0x08 = 80217c58
+record 2 +0x08 = 80217c58
+record 3 +0x08 = 80217c58
+```
+
+Implementation update:
+
+- Added a narrow `ApplyKnownRuntimeBgLoadModelQioAliasRepair()` at the observed
+  post-alias PC `800abb10`.
+- If the live record is inside `80252da0 + index * 0x18`, `index > 0`, and
+  `record+0x08 == 80217c58`, the repair rewrites `record+0x08` to
+  `80217c58 + index * 0x118`.
+- The repair is gated by the existing BGLoadModel bring-up flag and only touches
+  records that already show the alias value.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+337 Warning(s)
+0 Error(s)
+```
+
+30M probe from the same 1M warm snapshot now logs:
+
+```text
+[GAUNTDL:FIX] bgloadmodel-qio-alias index=1 record=80252db8 old=80217c58 new=80217d70
+[GAUNTDL:FIX] bgloadmodel-qio-alias index=2 record=80252dd0 old=80217c58 new=80217e88
+[GAUNTDL:FIX] bgloadmodel-qio-alias index=3 record=80252de8 old=80217c58 new=80217fa0
+...
+```
+
+Final 30M table dump confirms the alias repair sticks:
+
+```text
+80252da0:
+  record 0: state=6, done=1
+  record 1 +0x08 = 80217d70
+  record 2 +0x08 = 80217e88
+  record 3 +0x08 = 80217fa0
+  record 4 +0x08 = 802180b8
+  record 5 +0x08 = 802181d0
+  record 6 +0x08 = 802182e8
+  record 7 +0x08 = 80218400
+```
+
+Progression at 30M is still unchanged:
+
+```text
+pc=0xffffffff800b1c38
+rtxt="Loading Game."
+drawPackets=3119 directTriangles=30 setupTriangles=0
+frameHash=0x9ac85dc5
+```
+
+100M sanity from the same warm snapshot confirms the fix does not yet advance
+past the known late-loading plateau:
+
+```text
+pc=0xffffffff800c7bec
+rtxt="Loading Game."
+drawPackets=20598 directTriangles=1464 setupTriangles=716
+texWrites=6366778
+frameHash=0x5c2396c6
+framebuffer colored=89238
+```
+
+Interpretation:
+
+- The record-pointer alias is now fixed, but the backing QIO shells after
+  `80217c58` remain blank except for their init status words.
+- The next semantic blocker is QIO-shell request hydration/population for
+  `80217d70`, `80217e88`, etc., not record-table pointer selection.
+
+### 2026-06-02 Continuation: BGLoadModel QIO Request Trace
+
+Added a passive request-side trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS=1
+```
+
+It is intentionally narrow and reports the key BGLoadModel/QIO sites:
+`800ac350`, `800c9678`, `800c9944`, `800abbc0`, and `800abb10`.
+
+The trace confirms the root of the alias one step earlier:
+
+```text
+idx=1 record=80252db8 expectedQio=80217d70 pc=800c9944 v0=80217c58
+idx=2 record=80252dd0 expectedQio=80217e88 pc=800c9944 v0=80217c58
+idx=3 record=80252de8 expectedQio=80217fa0 pc=800c9944 v0=80217c58
+```
+
+A trial repair was added behind an explicit experiment flag only:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS=1
+```
+
+That experiment rewrites the `800c9944` return slot (`s8+0x20`) from
+`80217c58` to `80217c58 + index * 0x118` before `lw v0, 0x20(s8)`.
+It is not enabled by `BRINGUP_FAST`.
+
+The experiment is informative but currently regresses progression:
+
+```text
+[GAUNTDL:FIX] bgloadmodel-qio-create-alias index=1 record=80252db8 slot=807ffd40 old=80217c58 new=80217d70
+30M result with experiment:
+  pc=0xffffffff800abaa4
+  drawPackets=0
+  record 1 +0x08 = 80217d70
+  qio 80217d70 still blank except status ffffffff
+```
+
+Baseline without the experiment is restored:
+
+```text
+30M result without experiment:
+  pc=0xffffffff800b1c38
+  drawPackets=3119
+  directTriangles=30 setupTriangles=0
+  frameHash=0x9ac85dc5
+```
+
+Interpretation:
+
+- The creator's returned pointer is wrong for records after index 0, but simply
+  returning the separate shell is too early/incomplete: the shell metadata is
+  still not populated.
+- The next useful repair is not just pointer selection. It must also populate or
+  replay the QIO request metadata for `80217d70`, `80217e88`, etc. (object,
+  callback, destination, byte count, and path/read source), then let the existing
+  completion/hydration path consume those shells.
+
+### 2026-06-02 Continuation: BGLoadModel QIO Metadata Replay
+
+Added an isolated metadata-replay experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA=1
+```
+
+At `800c9944`, before the caller reloads the aliased QIO return slot, the
+repair fills the expected per-index QIO shell:
+
+```text
+qio = 80217c58 + index * 0x118
+object = live a0, observed 80295750
+callback = 800ab4e4
+dest = 802e1718 + index * 0x2000
+bytes = 0x2000
+status = 0
+object + 0x14 low bits = 0x300b
+```
+
+This leaves the original return value alone; the existing `800abb10` alias
+repair still redirects the model record to the per-index shell after the guest
+stores the aliased pointer.
+
+30M probe from `gauntdl-current-regenerated-f300-1m.warm` confirms the important
+change:
+
+```text
+[GAUNTDL:FIX] bgloadmodel-qio-request-metadata index=1 qio=80217d70 object=80295750 dest=802e3718 bytes=00002000
+[GAUNTDL:FIX] bgloadmodel qio-complete index=1 record=80252db8 qio=80217d70 object=80295750 objectStatus=0000300b bytes=00002000 data=hydrated:@001b0830/static-lr-bgmodel-callback/base=0007d000/mapped/first=00000012
+[GAUNTDL:FIX] bgloadmodel qio-complete index=2 record=80252dd0 qio=80217e88 ...
+...
+```
+
+So the per-index QIO shells are no longer inert: completion now fires for
+records after index 0.
+
+30M progression remains equivalent:
+
+```text
+pc=0xffffffff800b1c38
+drawPackets=3119 directTriangles=30 setupTriangles=0
+frameHash=0x9ac85dc5
+```
+
+100M progression changes materially compared with the previous plateau:
+
+```text
+Before metadata replay:
+  pc=0xffffffff800c7bec
+  drawPackets=20598 directTriangles=1464 setupTriangles=716
+  frameHash=0x5c2396c6
+
+With metadata replay:
+  pc=0xffffffff8004f2a0
+  drawPackets=20620 directTriangles=1470 setupTriangles=720
+  frameHash=0xec4ad078
+  framebuffer colored=69805
+```
+
+The new endpoint is in the world-data/static-descriptor flag path, not the QIO
+poller. A stop-PC probe at `8004f2a0` with
+`EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_FLAGS=1` shows:
+
+```text
+global18=0000000d global1c=802e1000 selected=00000000
+pc=8004f240 scans s1=0..0xc over static descriptors at 8015bef4 + s1*0x2c
+pc=8004f29c v0=0 v1=0xc s2=8015bef4 selected=0
+```
+
+Interpretation:
+
+- Metadata replay is a useful correctness repair and should be kept available,
+  but it is still marked experimental because it currently uses synthetic
+  destination stride and the static-lr fallback read offset for all records.
+- The next semantic blocker has moved back to world selection/descriptor flags:
+  the fallback world table is present at `802e1000`, but `8016c13c` remains zero
+  through the scan ending at `8004f2a0`.
+- The next useful probe is either a real-path/LBA mapping for the per-index QIO
+  paths, or a targeted disassembly/trace of `8004f240..8004f2a0` to determine
+  why the static descriptor scan never selects a world entry.
+
+### 2026-06-02 Continuation: QIO Record Alias Scan and FSYS Offset Probes
+
+The 200M metadata-replay snapshot was saved at:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-qio-metadata-200m.warm
+```
+
+From that snapshot, compact state-delta tracing showed a new alias failure after
+the per-index QIO shells had completed:
+
+```text
+records=0:.../state=6;1:.../80218518/...;2:.../80218518/...;...
+qio=1:80295750/800ab4e4/802e3718/00002000/00002000/00000002
+```
+
+`80218518` is QIO slot 8 (`80217c58 + 8 * 0x118`), so records 1-7 were no
+longer pointing at their completed slots. The alias repair now scans records
+1-15 and canonicalizes any `record+0x08` pointer that is already inside the
+known QIO-shell array to `80217c58 + index * 0x118`. This fixes both the old
+base-pointer alias and the later slot-8 collapse:
+
+```text
+[GAUNTDL:FIX] bgloadmodel-qio-alias pc=ffffffff800c7c10 index=1 old=ffffffff80218518 new=ffffffff80217d70
+...
+records=1:.../80217d70/...;2:.../80217e88/...;3:.../80217fa0/...
+```
+
+A 20M resume from the 200M snapshot with the record repair still stays on the
+late text/progress pump:
+
+```text
+pc=0xffffffff80103308
+drawPackets=20620 directTriangles=1470 setupTriangles=720
+frameHash=0xec4ad078
+hotpcs=800b1dc4,800e3378,80121670,800c7c10...
+```
+
+So the record alias repair is real correctness work, but not the remaining
+semantic blocker.
+
+Raw FSYS inspection found the relevant directory chain:
+
+```text
+/players id=1128
+/players/war id=1129
+/players/war/yel00 id=1232
+/players/war/yel00/textures.rom id=1234
+```
+
+The nearby `yel00` directory payload is at `0x12b9ee00`, with adjacent candidate
+file payloads around `0x12ba5400` and `0x12baf200`. Added an isolated direct
+hydration probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_HYDRATE_DIRECT_BASE=0x...
+```
+
+For blank replayed BGLoadModel QIO paths, it reads:
+
+```text
+directBase + (qioIndex - 1) * 0x2000
+```
+
+Both tested candidates are wrong for the current replay:
+
+```text
+directBase=0x12baf200 -> pc=0xffffffffa044d178, drawPackets=0, frameHash=0xf29eb67c
+directBase=0x12ba5400 -> same low-PC/FPU exception regression
+```
+
+Keep the direct-base probe off by default. The next useful path is either
+mapping file id `0x4d2` through the real FSYS index table, or returning to the
+world-selection scan at `8004f240..8004f2a0`.
