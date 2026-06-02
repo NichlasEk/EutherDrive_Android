@@ -656,6 +656,7 @@ internal sealed class MipsR5000Core
     private readonly bool _traceTextureUploadProvenance = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PROVENANCE") == "1";
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
+    private readonly bool _traceRuntimeStatusBitfieldRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_STATUS_BITFIELD_READ") == "1";
     private readonly bool _experimentRuntimeDiagnosticOverlaySuppress =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS"));
     private readonly bool _experimentRuntimeDiagnosticTextPumpSkip =
@@ -711,6 +712,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadProvenanceTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
+    private int _runtimeStatusBitfieldReadTraceCount;
     private int _runtimeDiagnosticOverlaySuppressTraceCount;
     private int _runtimeDiagnosticTextPumpSkipTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
@@ -8391,6 +8393,15 @@ internal sealed class MipsR5000Core
             result = (~mask & combined) | selected;
         }
 
+        if (_traceRuntimeStatusBitfieldRead && _runtimeStatusBitfieldReadTraceCount++ < 128)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:STATUSBIT] pc={pc:x16} index={index} mask={mask:x8} " +
+                $"record={record:x16} value={_memory.Read32(record):x8} latch={_memory.Read32(record + 0x04UL):x8} " +
+                $"old={oldBits:x8} source={sourceBits:x8} changed={changed:x8} combined={combined:x8} result={result:x8} " +
+                $"ra={returnAddress:x16}");
+        }
+
         _gpr[2] = SignExtend32(result);
         _gpr[3] = changed;
         _gpr[4] = combined;
@@ -10946,8 +10957,8 @@ internal sealed class MipsR5000Core
         const ulong branchPc = 0xffffffff8005d6ccUL;
         const ulong worldBufferGlobal = 0xffffffff80227cb8UL;
         const ulong fallbackBuffer = 0xffffffff81000000UL;
-        const ulong gauntletWorldDataTestWadByteOffset = 0x0f107e00UL;
-        const uint gauntletWorldDataTestWadBytes = 0x358U;
+        const ulong gauntletWorldDataTestWadByteOffset = 0x0f107b68UL;
+        const uint gauntletWorldDataTestWadBytes = 0x2000U;
 
         if (!_enableRuntimeBgLoadModelDispatchFastPath || pc != branchPc)
             return;
