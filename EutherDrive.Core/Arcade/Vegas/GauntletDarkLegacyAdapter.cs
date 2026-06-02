@@ -648,6 +648,7 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeBgLoadModelStateDelta = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STATE_DELTA") == "1";
     private readonly bool _traceRuntimeBgLoadModelQioRequests = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS") == "1";
     private readonly bool _traceRuntimeWorldDataTableRepair = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_TABLE") == "1";
+    private readonly bool _traceRuntimeWorldDataAllocation = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_ALLOCATION") == "1";
     private readonly bool _traceRuntimeWorldDataLoader = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER") == "1";
     private readonly bool _traceRuntimeWorldDataFlags = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_FLAGS") == "1";
     private readonly bool _enableRuntimeWorldSelectionExperiment =
@@ -689,6 +690,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeWorldDataAllocationRepairTraceCount;
+    private int _runtimeWorldDataAllocationTraceCount;
     private int _runtimeWorldValidityRepairTraceCount;
     private int _runtimeWorldDataTableRepairTraceCount;
     private int _runtimeWorldDataLoaderTraceCount;
@@ -852,6 +854,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeWorldDataFlags(pc);
         ApplyKnownRuntimeWorldSelectionRepair(pc);
         ApplyKnownRuntimeDiagnosticOverlaySuppress(pc);
+        TraceKnownRuntimeWorldDataAllocation(pc);
         ApplyKnownRuntimeWorldDataAllocationRepair(pc);
         ApplyKnownRuntimeWorldDataReadBufferRepair(pc);
         ApplyKnownRuntimeWorldValidityBitsetRepair(pc);
@@ -11119,6 +11122,36 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:FIX] world-data-read-buffer pc={pc:x16} " +
                 $"global={worldBufferGlobal:x16} fallback={fallbackBuffer:x16} data={hydration}");
         }
+    }
+
+    private void TraceKnownRuntimeWorldDataAllocation(ulong pc)
+    {
+        if (!_traceRuntimeWorldDataAllocation || _runtimeWorldDataAllocationTraceCount >= 64)
+            return;
+
+        bool isInterestingPc = pc is
+            0xffffffff8005d4fcUL or
+            0xffffffff8005d57cUL or
+            0xffffffff8005d5f0UL or
+            0xffffffff8005d6c4UL or
+            0xffffffff8005d6c8UL or
+            0xffffffff8005d6ccUL or
+            0xffffffff8005d6d0UL;
+        if (!isInterestingPc)
+            return;
+
+        _runtimeWorldDataAllocationTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] world-data-allocation pc={pc:x16} " +
+            $"v0={_gpr[2]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
+            $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} s0={_gpr[16]:x16} ra={_gpr[31]:x16} " +
+            $"g7cb8={ReadTraceWord(0xffffffff80227cb8UL):x8} " +
+            $"g7cac={ReadTraceWord(0xffffffff80227cacUL):x8} " +
+            $"g6adc={ReadTraceWord(0xffffffff80236adcUL):x8} " +
+            $"g6ae0={ReadTraceWord(0xffffffff80236ae0UL):x8} " +
+            $"fb8100={ReadTraceWord(0xffffffff81000000UL):x8} " +
+            $"fb8140={ReadTraceWord(0xffffffff81400000UL):x8} " +
+            $"fb8180={ReadTraceWord(0xffffffff81800000UL):x8}");
     }
 
     private void TraceKnownRuntimeWorldDataLoader(ulong pc)
