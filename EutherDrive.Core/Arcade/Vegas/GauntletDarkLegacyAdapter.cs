@@ -21414,6 +21414,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _decodingCommandFifo;
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
+    private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
     private readonly bool _fixType5TextureEndian =
@@ -21424,6 +21425,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SPARSE_8BIT_TEXTURE_UPLOAD");
     private readonly bool _fixDisplayBufferSelection =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
+    private readonly bool _fixFastFillColorWriteMask =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK");
     private readonly bool _fixTmuRegisterBanks =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -21438,6 +21441,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
     private int _drawTraceCount;
+    private int _nonNeutralFastFillTraceCount;
     private int _type5PayloadTraceCount;
     private int _tmuRegisterWriteTraceCount;
     private int _recentVoodooEventSequence;
@@ -21891,6 +21895,22 @@ internal class VoodooBringupBackend : IVoodooBackend
             color = (ushort)_registers[RegZaColor];
 
         TraceDraw($"fastfill clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
+        if (_traceNonNeutralFastFill && color != 0 && color != 0xffff && _nonNeutralFastFillTraceCount++ < 64)
+        {
+            ulong pc = CpuPcProvider?.Invoke() ?? 0;
+            string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+            Console.WriteLine(
+                $"[GAUNTDL:VOODOO-FILL] clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} " +
+                $"c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} za=0x{_registers[RegZaColor]:X8} " +
+                $"fbz=0x{_registers[RegFbzMode]:X8}{pcStatus}");
+        }
+
+        if (_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0)
+        {
+            _fastFillCount++;
+            return;
+        }
+
         int bufferIndex = GetDrawBufferIndex();
         int width = x1 - x0;
         if (!IsCachedFastFill(bufferIndex, x0, x1, y0, y1, color))
