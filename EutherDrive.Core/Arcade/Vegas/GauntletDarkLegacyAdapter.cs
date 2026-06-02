@@ -9585,7 +9585,32 @@ internal sealed class MipsR5000Core
         if (returnOffset is < 0x00040000UL or > 0x01250000UL)
             return false;
 
-        _gpr[2] = 0;
+        ulong destination = _gpr[4];
+        ulong format = _gpr[5];
+        ulong varArgs = _gpr[6];
+        if (format != 0xffffffff8013d85cUL ||
+            !IsMainRamRange(destination, 65UL) ||
+            !IsMainRamRange(varArgs + 0x04UL, 4UL))
+        {
+            return false;
+        }
+
+        ulong source = SignExtend32(_memory.Read32(varArgs + 0x04UL));
+        if (!IsMainRamRange(source, 64UL))
+            return false;
+
+        int sourceLength = 0;
+        while (sourceLength < 64 && _memory.Read8(source + (uint)sourceLength) != 0)
+            sourceLength++;
+
+        for (int i = 0; i < 64; i++)
+        {
+            byte value = i < sourceLength ? _memory.Read8(source + (uint)i) : (byte)' ';
+            _memory.Write8(destination + (uint)i, value);
+        }
+        _memory.Write8(destination + 64UL, 0);
+
+        _gpr[2] = 64;
         _gpr[31] = returnAddress;
         _gpr[29] = sp + 0x70UL;
         _gpr[0] = 0;
@@ -10573,10 +10598,20 @@ internal sealed class MipsR5000Core
             return true;
         }
 
+        string indexedTextureCode = "";
+        ulong indexedTextureByteOffset = 0;
+        uint indexedTextureByteLength = 0;
+        bool hasKnownIndexedTexturePayload =
+            string.IsNullOrEmpty(path) &&
+            requestedByteCount == 0x2000U &&
+            callback == 0x800ab4e4U &&
+            qioIndex is > 0 and < 0x40 &&
+            TryGetKnownRuntimeBgLoadModelTexturePayload(qioIndex, out indexedTextureCode, out indexedTextureByteOffset, out indexedTextureByteLength);
+
         ulong mappedFileBaseLba = path switch
         {
             "/d0/static_lr/textures.rom" => 0x0007d000UL,
-            _ => requestedByteCount == 0x2000U && callback == 0x800ab4e4U ? 0x0007d000UL : 0
+            _ => requestedByteCount == 0x2000U && callback == 0x800ab4e4U && !hasKnownIndexedTexturePayload ? 0x0007d000UL : 0
         };
 
         ulong fileState = IsMainRamRange(qioObject, 4) ? SignExtend32(_memory.Read32(qioObject)) : 0;
@@ -10614,7 +10649,8 @@ internal sealed class MipsR5000Core
         }
         else if (string.IsNullOrEmpty(path) &&
                  requestedByteCount == 0x2000U &&
-                 callback == 0x800ab4e4U)
+                 callback == 0x800ab4e4U &&
+                 !hasKnownIndexedTexturePayload)
         {
             readOffset = 0x001b0830UL;
             offsetMode = "static-lr-bgmodel-callback";
@@ -10626,11 +10662,83 @@ internal sealed class MipsR5000Core
             readOffset = forcedReadOffset.Value;
             offsetMode = "forced";
         }
+
+        if (hasKnownIndexedTexturePayload)
+        {
+            if (readOffset >= indexedTextureByteLength)
+            {
+                reason = $"texture-index={qioIndex}/{indexedTextureCode}/offset-range:{readOffset:x8}/size={indexedTextureByteLength:x8}";
+                return false;
+            }
+
+            ulong availableBytes = indexedTextureByteLength - readOffset;
+            if (availableBytes < requestedByteCount)
+            {
+                for (uint offset = 0; offset < requestedByteCount; offset++)
+                    _memory.Write8(destination + offset, 0);
+
+                requestedByteCount = (uint)availableBytes;
+            }
+
+            ulong indexedDiskByteOffset = indexedTextureByteOffset + readOffset;
+            if (!_memory.TryReadDiskByteOffsetToMemory(indexedDiskByteOffset, destination, requestedByteCount, out uint indexedFirstWord, out reason))
+                return false;
+
+            reason = $"texture-index={qioIndex}/{indexedTextureCode}@{readOffset:x8}/{offsetMode}/byte={indexedDiskByteOffset:x8}/first={indexedFirstWord:x8}";
+            return true;
+        }
+
         ulong diskByteOffset = fileBaseLba * 512UL + readOffset;
         if (!_memory.TryReadDiskByteOffsetToMemory(diskByteOffset, destination, requestedByteCount, out uint firstWord, out reason))
             return false;
 
         reason = $"{path}@{readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}";
+        return true;
+    }
+
+    private static bool TryGetKnownRuntimeBgLoadModelTexturePayload(
+        ulong qioIndex,
+        out string code,
+        out ulong byteOffset,
+        out uint byteLength)
+    {
+        code = "";
+        byteOffset = 0;
+        byteLength = 0;
+
+        (string Code, ulong ByteOffset, uint ByteLength) entry = qioIndex switch
+        {
+            1 => ("gei", 0x14a6f600UL, 0x0000a13cU),
+            2 => ("snm", 0x14a54800UL, 0x000091b0U),
+            3 => ("stk", 0x15117a00UL, 0x0000a434U),
+            4 => ("kjh", 0x15130e00UL, 0x00009ae8U),
+            5 => ("pnk", 0x1514da00UL, 0x00009e80U),
+            6 => ("geb", 0x15783200UL, 0x0000b130U),
+            7 => ("nin", 0x15896000UL, 0x0000b130U),
+            8 => ("stg", 0x1585d800UL, 0x0000acccU),
+            9 => ("wtr", 0x158b0600UL, 0x0000bca4U),
+            10 => ("css", 0x158cc800UL, 0x00009194U),
+            11 => ("riz", 0x158ea800UL, 0x00009a00U),
+            16 => ("get", 0x13380000UL, 0x00008e9cU),
+            17 => ("sch", 0x13458e00UL, 0x0000b528U),
+            18 => ("cel", 0x1339d800UL, 0x00014b98U),
+            19 => ("gec", 0x12cbb200UL, 0x0000a3b8U),
+            20 => ("gem", 0x12cdb000UL, 0x0000a460U),
+            21 => ("rat", 0x12cfa600UL, 0x0000a5fcU),
+            22 => ("ga2", 0x13bb9400UL, 0x00008ad8U),
+            23 => ("gam", 0x13b9ce00UL, 0x0000b2c4U),
+            24 => ("ged", 0x13b6ac00UL, 0x000142dcU),
+            25 => ("gep", 0x13b82600UL, 0x00009550U),
+            26 => ("sum", 0x13b4b600UL, 0x0000a37cU),
+            _ => ("", 0, 0)
+        };
+
+        if (entry.ByteOffset == 0 || entry.ByteLength == 0)
+            return false;
+
+        code = entry.Code;
+        byteOffset = entry.ByteOffset;
+        byteLength = entry.ByteLength;
         return true;
     }
 
