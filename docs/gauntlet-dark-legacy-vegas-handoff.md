@@ -6386,3 +6386,39 @@ directBase=0x12ba5400 -> same low-PC/FPU exception regression
 Keep the direct-base probe off by default. The next useful path is either
 mapping file id `0x4d2` through the real FSYS index table, or returning to the
 world-selection scan at `8004f240..8004f2a0`.
+
+### 2026-06-02 Continuation: Snapshot Baseline and World Trace Gate
+
+After the commit `5298dccb`, a rerun from the regenerated f300 snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-current-regenerated-f300-1m.warm
+```
+
+regressed within 5M extra CPU steps, both with and without the world-selection
+experiment:
+
+```text
+pc=0xffffffffa044d178
+drawPackets=0 directTriangles=10 setupTriangles=0
+frameHash=0xf29eb67c
+```
+
+Do not use that snapshot as the current continuation baseline.
+
+The previously saved 200M metadata snapshot remains the good baseline. A 5M
+resume from it with metadata replay and the QIO alias scan stays on the known
+plateau:
+
+```text
+snapshot=/tmp/eutherdrive-gauntlet-probe/gauntdl-qio-metadata-200m.warm
+pc=0xffffffff800e3378
+drawPackets=20620 directTriangles=1470 setupTriangles=720
+frameHash=0xec4ad078
+framebuffer colored=69805
+```
+
+`TraceKnownRuntimeWorldDataFlags` now skips the early all-zero `global18`,
+`global1c`, and `selected` cases and allows up to 256 logged entries. This is
+diagnostic only; it prevents the trace budget from being consumed before the
+world-selection globals become meaningful.

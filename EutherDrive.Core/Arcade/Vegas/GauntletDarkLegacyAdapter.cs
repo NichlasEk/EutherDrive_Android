@@ -10798,7 +10798,7 @@ internal sealed class MipsR5000Core
 
     private void TraceKnownRuntimeWorldDataFlags(ulong pc)
     {
-        if (!_traceRuntimeWorldDataFlags || _runtimeWorldDataFlagsTraceCount >= 64)
+        if (!_traceRuntimeWorldDataFlags || _runtimeWorldDataFlagsTraceCount >= 256)
             return;
         if (pc is < 0xffffffff8004f0c0UL or > 0xffffffff8004f340UL)
             return;
@@ -10819,6 +10819,12 @@ internal sealed class MipsR5000Core
 
         const ulong worldGlobal = 0xffffffff8016c130UL;
         const ulong selectedEntry = 0xffffffff8016c13cUL;
+        uint global18 = ReadTraceWord(worldGlobal + 0x18UL);
+        uint global1c = ReadTraceWord(worldGlobal + 0x1cUL);
+        uint selected = ReadTraceWord(selectedEntry);
+        if (global18 == 0 && global1c == 0 && selected == 0)
+            return;
+
         ulong s0 = _gpr[16];
         ulong s1 = _gpr[17];
         ulong s2 = _gpr[18];
@@ -10828,8 +10834,8 @@ internal sealed class MipsR5000Core
             $"[GAUNTDL:TRACE] world-data-flags pc={pc:x16} op={_memory.Read32(pc):x8} " +
             $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
             $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} s0={s0:x16} s1={s1:x16} s2={s2:x16} s3={s3:x16} " +
-            $"ra={_gpr[31]:x16} global18={ReadTraceWord(worldGlobal + 0x18UL):x8} " +
-            $"global1c={ReadTraceWord(worldGlobal + 0x1cUL):x8} selected={ReadTraceWord(selectedEntry):x8} " +
+            $"ra={_gpr[31]:x16} global18={global18:x8} " +
+            $"global1c={global1c:x8} selected={selected:x8} " +
             $"s0w={ReadTraceWord(s0):x8}/{ReadTraceWord(s0 + 0x04UL):x8}/{ReadTraceWord(s0 + 0x08UL):x8}/{ReadTraceWord(s0 + 0x14UL):x8} " +
             $"s1w={ReadTraceWord(s1):x8}/{ReadTraceWord(s1 + 0x04UL):x8}/{ReadTraceWord(s1 + 0x08UL):x8}/{ReadTraceWord(s1 + 0x14UL):x8} " +
             $"s2w={ReadTraceWord(s2):x8}/{ReadTraceWord(s2 + 0x04UL):x8}/{ReadTraceWord(s2 + 0x08UL):x8}/{ReadTraceWord(s2 + 0x14UL):x8}");
