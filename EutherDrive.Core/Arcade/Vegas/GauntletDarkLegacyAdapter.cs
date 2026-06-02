@@ -692,6 +692,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgParserTraceCount;
     private int _runtimeByteMoveTraceCount;
     private int _runtimeFormatBufferFastPathTraceCount;
+    private int _runtimeRenderListSaturationRepairTraceCount;
     private int _runtimeInterruptSuppressTraceCount;
     private int _exceptionFpuContextTraceCount;
     private int _exceptionFpuContextLoadTraceCount;
@@ -838,6 +839,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeWorldDataAllocationRepair(pc);
         ApplyKnownRuntimeWorldDataReadBufferRepair(pc);
         ApplyKnownRuntimeWorldValidityBitsetRepair(pc);
+        ApplyKnownRuntimeRenderListSaturationRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
@@ -1249,7 +1251,9 @@ internal sealed class MipsR5000Core
             return;
 
         ulong nextPhysical = nextPc & 0x1fffffffUL;
-        bool lowTarget = nextPhysical < 0x00010000UL || nextPhysical is >= 0x007f0000UL and < 0x00810000UL;
+        bool lowTarget = nextPhysical < 0x00010000UL ||
+            nextPhysical is >= 0x007f0000UL and < 0x00810000UL ||
+            nextPhysical is >= 0x04400000UL and < 0x04500000UL;
         if (!lowTarget)
             return;
 
@@ -10432,6 +10436,38 @@ internal sealed class MipsR5000Core
             $"text=\"{text}\"");
     }
 
+    private void ApplyKnownRuntimeRenderListSaturationRepair(ulong pc)
+    {
+        if (!_enableDiagnosticRuntimeFastPaths)
+            return;
+
+        const ulong entry = 0xffffffff800b1ba0UL;
+        const ulong listCount = 0xffffffff80213600UL;
+        if (pc != entry)
+            return;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffd0U ||
+            _memory.Read32(entry + 0x08UL) != 0x3c138021U ||
+            _memory.Read32(entry + 0x0cUL) != 0x8e623600U ||
+            _memory.Read32(entry + 0x34UL) != 0x2842012bU ||
+            _memory.Read32(entry + 0x38UL) != 0x10400045U)
+        {
+            return;
+        }
+
+        uint count = _memory.Read32(listCount);
+        if (count < 0x12bU)
+            return;
+
+        _memory.Write32(listCount, 0);
+        if (_runtimeRenderListSaturationRepairTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] render-list-saturation pc={pc:x16} " +
+                $"count={count:x8}->00000000 frameTick={ReadTraceWord(0xffffffff80228114UL):x8}");
+        }
+    }
+
     private uint ReadTraceWord(ulong address)
         => IsMainRamRange(address, 4) ? _memory.Read32(address) : 0xffffffffU;
 
@@ -11785,8 +11821,8 @@ internal sealed class MipsR5000Core
         // and the state normalization below keeps the guest FIFO room sane.
         _memory.Write32(0xffffffff8022f5b4UL, 0);
 
-        uint tick = _memory.Read32(0xffffffff80238114UL);
-        _memory.Write32(0xffffffff80238114UL, tick + (uint)iterations);
+        uint tick = _memory.Read32(0xffffffff80228114UL);
+        _memory.Write32(0xffffffff80228114UL, tick + (uint)iterations);
         ApplyKnownGauntletRuntimeInputPollEffects();
 
         _memory.Write32(0xffffffff80262c84UL, 0);
