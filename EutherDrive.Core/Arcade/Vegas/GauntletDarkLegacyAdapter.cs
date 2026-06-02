@@ -656,6 +656,10 @@ internal sealed class MipsR5000Core
     private readonly bool _traceTextureUploadProvenance = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PROVENANCE") == "1";
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
+    private readonly bool _experimentRuntimeDiagnosticOverlaySuppress =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS"));
+    private readonly bool _experimentRuntimeDiagnosticTextPumpSkip =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP"));
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
     private int _rd0SyncReadCompleteCount;
@@ -707,6 +711,8 @@ internal sealed class MipsR5000Core
     private int _textureUploadProvenanceTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
+    private int _runtimeDiagnosticOverlaySuppressTraceCount;
+    private int _runtimeDiagnosticTextPumpSkipTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
     private bool _hasRd0CallbackRaRestore;
     private ulong _rd0CallbackRestorePc;
@@ -829,6 +835,8 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeUiCommandCompletion(pc);
         ApplyKnownRuntimeWaitForQioCompletion(pc);
         TraceKnownLateRenderPump(pc);
+        if (TryFastPathKnownRuntimeDiagnosticTextPumpSkip(pc))
+            return;
         if (TryFastPathKnownRuntimeWaitForQioReadyLoop(pc))
             return;
         if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
@@ -841,6 +849,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeWorldDataLoader(pc);
         TraceKnownRuntimeWorldDataFlags(pc);
         ApplyKnownRuntimeWorldSelectionRepair(pc);
+        ApplyKnownRuntimeDiagnosticOverlaySuppress(pc);
         ApplyKnownRuntimeWorldDataAllocationRepair(pc);
         ApplyKnownRuntimeWorldDataReadBufferRepair(pc);
         ApplyKnownRuntimeWorldValidityBitsetRepair(pc);
@@ -9625,6 +9634,76 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRuntimeDiagnosticTextPumpSkip(ulong pc)
+    {
+        if (!_experimentRuntimeDiagnosticTextPumpSkip)
+            return false;
+
+        const ulong entry = 0xffffffff800c812cUL;
+        const ulong loopBody = 0xffffffff800c81ecUL;
+        const ulong loopTail = 0xffffffff800c8208UL;
+        const ulong epilogue = 0xffffffff800c8210UL;
+        if (pc >= loopBody && pc <= loopTail)
+        {
+            if (_memory.Read32(loopBody + 0x00UL) != 0xafb00010U ||
+                _memory.Read32(loopBody + 0x04UL) != 0x26520001U ||
+                _memory.Read32(loopBody + 0x08UL) != 0x26310001U ||
+                _memory.Read32(loopBody + 0x0cUL) != 0x26730001U ||
+                _memory.Read32(loopBody + 0x10UL) != 0x8ea380dcU ||
+                _memory.Read32(loopBody + 0x14UL) != 0x928271b2U ||
+                _memory.Read32(loopBody + 0x18UL) != 0x0243182aU)
+            {
+                return false;
+            }
+
+            _gpr[0] = 0;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+            Pc = epilogue;
+            AdvanceCp0Count(_cp0CountStep * 16UL);
+            _instructionCounter += 16UL;
+            if (_runtimeDiagnosticTextPumpSkipTraceCount++ < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] diagnostic-text-pump-loop-skip pc={pc:x16} epilogue={epilogue:x16}");
+            }
+            return true;
+        }
+
+        if (pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffc0U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c028021U ||
+            _memory.Read32(entry + 0x08UL) != 0xafb20020U ||
+            _memory.Read32(entry + 0x0cUL) != 0x925271b0U ||
+            _memory.Read32(entry + 0x10UL) != 0x3c028016U ||
+            _memory.Read32(entry + 0x18UL) != 0xac433b10U ||
+            _memory.Read32(entry + 0x20UL) != 0xac433b14U)
+        {
+            return false;
+        }
+
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x000c0000UL or > 0x00110000UL)
+            return false;
+
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        AdvanceCp0Count(_cp0CountStep * 16UL);
+        _instructionCounter += 16UL;
+        if (_runtimeDiagnosticTextPumpSkipTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] diagnostic-text-pump-skip pc={pc:x16} ra={returnAddress:x16}");
+        }
+        return true;
+    }
+
     private bool TryFastPathKnownRuntimeFormatSpacePaddingLoop(ulong pc)
     {
         const ulong loopCall = 0xffffffff80120194UL;
@@ -10464,6 +10543,46 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FIX] render-list-saturation pc={pc:x16} " +
                 $"count={count:x8}->00000000 frameTick={ReadTraceWord(0xffffffff80228114UL):x8}");
+        }
+    }
+
+    private void ApplyKnownRuntimeDiagnosticOverlaySuppress(ulong pc)
+    {
+        if (!_experimentRuntimeDiagnosticOverlaySuppress)
+            return;
+
+        const ulong entry = 0xffffffff800c7c10UL;
+        if (pc != entry)
+            return;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x0200202dU ||
+            _memory.Read32(entry + 0x04UL) != 0x0c02c771U ||
+            _memory.Read32(entry + 0x08UL) != 0x0040802dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x12000014U)
+        {
+            return;
+        }
+
+        const ulong overlay0 = 0xffffffff80163b0cUL;
+        const ulong overlay1 = 0xffffffff80163b10UL;
+        const ulong overlay2 = 0xffffffff80163b14UL;
+        const ulong overlay3 = 0xffffffff80163b18UL;
+        uint flag0 = _memory.Read32(overlay0);
+        uint flag1 = _memory.Read32(overlay1);
+        uint flag2 = _memory.Read32(overlay2);
+        uint flag3 = _memory.Read32(overlay3);
+        if ((flag0 | flag1 | flag2 | flag3) == 0)
+            return;
+
+        _memory.Write32(overlay0, 0);
+        _memory.Write32(overlay1, 0);
+        _memory.Write32(overlay2, 0);
+        _memory.Write32(overlay3, 0);
+        if (_runtimeDiagnosticOverlaySuppressTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] diagnostic-overlay-suppress pc={pc:x16} " +
+                $"flags={flag0:x8}/{flag1:x8}/{flag2:x8}/{flag3:x8}->00000000/00000000/00000000/00000000");
         }
     }
 
