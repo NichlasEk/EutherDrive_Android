@@ -10603,16 +10603,19 @@ internal sealed class MipsR5000Core
 
     private void TraceKnownLateRenderPump(ulong pc)
     {
-        if (!_traceLateRenderPump || _lateRenderPumpTraceCount >= 96)
+        if (!_traceLateRenderPump || _lateRenderPumpTraceCount >= 192)
             return;
 
         string label = pc switch
         {
+            >= 0xffffffff800e3decUL and <= 0xffffffff800e3ea0UL => "diagnostic-draw-pump",
             >= 0xffffffff800b1dc4UL and <= 0xffffffff800b1dd0UL => "global-808c-exchange",
             >= 0xffffffff800b1ba0UL and <= 0xffffffff800b1c20UL => "render-list-walk",
             >= 0xffffffff800e3378UL and <= 0xffffffff800e33f0UL => "runtime-text-draw",
             >= 0xffffffff80121670UL and <= 0xffffffff801216bcUL => "diagnostic-format-line",
             >= 0xffffffff80102520UL and <= 0xffffffff801035c0UL => "runtime-state-bit",
+            >= 0xffffffff80103ba0UL and <= 0xffffffff80103c40UL => "runtime-state-present",
+            >= 0xffffffff801046a0UL and <= 0xffffffff80104740UL => "runtime-state-select",
             _ => ""
         };
         if (label.Length == 0)
@@ -10627,6 +10630,13 @@ internal sealed class MipsR5000Core
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
             $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s8={_gpr[30]:x16} " +
+            $"d900={ReadTraceWord(0xffffffff8022d900UL):x8} d904={ReadTraceWord(0xffffffff8022d904UL):x8} " +
+            $"g819c={ReadTraceWord(0xffffffff8023819cUL):x8} g81a4={ReadTraceWord(0xffffffff802381a4UL):x8} " +
+            $"g81b0={ReadTraceWord(0xffffffff802381b0UL):x8} g81c0={ReadTraceWord(0xffffffff802381c0UL):x8} " +
+            $"g81c4={ReadTraceWord(0xffffffff802381c4UL):x8} " +
+            $"worldSelected={ReadTraceWord(0xffffffff8016c13cUL):x8} worldCount={ReadTraceWord(0xffffffff8016c148UL):x8} " +
+            $"worldTable={ReadTraceWord(0xffffffff8016c14cUL):x8} loader08={ReadTraceWord(0xffffffff80227c98UL):x8} " +
+            $"loader18={ReadTraceWord(0xffffffff80227ca8UL):x8} loader78={ReadTraceWord(0xffffffff80227d08UL):x8} " +
             $"g808c={ReadTraceWord(0xffffffff8022808cUL):x8} g8134={ReadTraceWord(0xffffffff80228134UL):x8} " +
             $"g71a4={ReadTraceWord(0xffffffff802171a4UL):x8} g71a8={ReadTraceWord(0xffffffff802171a8UL):x8} " +
             $"g3b0c={ReadTraceWord(0xffffffff80163b0cUL):x8} g3b10={ReadTraceWord(0xffffffff80163b10UL):x8} " +
@@ -11221,7 +11231,8 @@ internal sealed class MipsR5000Core
             $"global1c={global1c:x8} selected={selected:x8} " +
             $"s0w={ReadTraceWord(s0):x8}/{ReadTraceWord(s0 + 0x04UL):x8}/{ReadTraceWord(s0 + 0x08UL):x8}/{ReadTraceWord(s0 + 0x14UL):x8} " +
             $"s1w={ReadTraceWord(s1):x8}/{ReadTraceWord(s1 + 0x04UL):x8}/{ReadTraceWord(s1 + 0x08UL):x8}/{ReadTraceWord(s1 + 0x14UL):x8} " +
-            $"s2w={ReadTraceWord(s2):x8}/{ReadTraceWord(s2 + 0x04UL):x8}/{ReadTraceWord(s2 + 0x08UL):x8}/{ReadTraceWord(s2 + 0x14UL):x8}");
+            $"s2w={ReadTraceWord(s2):x8}/{ReadTraceWord(s2 + 0x04UL):x8}/{ReadTraceWord(s2 + 0x08UL):x8}/" +
+            $"{ReadTraceWord(s2 + 0x10UL):x8}/{ReadTraceWord(s2 + 0x14UL):x8}/{ReadTraceWord(s2 + 0x28UL):x8}");
     }
 
     private void ApplyKnownRuntimeWorldSelectionRepair(ulong pc)
