@@ -14013,7 +14013,7 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownGauntletGlideStateEmit(ulong pc)
     {
         const ulong entry = 0xffffffff80103fccUL;
-        const ulong callerEntry = 0xffffffff80103e4cUL;
+        const ulong callerEntry = 0xffffffff80103e48UL;
         const ulong callerAfterPrologue = 0xffffffff80103e58UL;
 
         bool atCallerEntry = pc == callerEntry;
@@ -14041,24 +14041,23 @@ internal sealed class MipsR5000Core
                 _memory.Read32(callerEntry + 0x1cUL) != 0x8ca60264U ||
                 _memory.Read32(callerEntry + 0x20UL) != 0x8ca9026cU ||
                 _memory.Read32(callerEntry + 0x24UL) != 0x01021024U ||
-                _memory.Read32(callerEntry + 0xecUL) != 0x0c040ff3U ||
-                _memory.Read32(callerEntry + 0xf0UL) != 0xaca40258U ||
-                _memory.Read32(callerEntry + 0xf4UL) != 0x8fbf0010U ||
-                _memory.Read32(callerEntry + 0xf8UL) != 0x03e00008U ||
-                _memory.Read32(callerEntry + 0xfcUL) != 0x27bd0018U)
+                _memory.Read32(callerEntry + 0x110UL) != 0x00822024U ||
+                _memory.Read32(callerEntry + 0x114UL) != 0x0c040ff3U ||
+                _memory.Read32(callerEntry + 0x118UL) != 0xaca40258U ||
+                _memory.Read32(callerEntry + 0x11cUL) != 0x8fbf0010U ||
+                _memory.Read32(callerEntry + 0x120UL) != 0x03e00008U ||
+                _memory.Read32(callerEntry + 0x124UL) != 0x27bd0018U)
             {
                 return false;
             }
 
             ulong callerState = SignExtend32(_memory.Read32(0xffffffff80262c8cUL));
             ulong sp = atCallerAfterPrologue ? _gpr[29] : _gpr[29] - 0x18UL;
-            ulong callerReturnAddress = atCallerAfterPrologue
-                ? SignExtend32(_memory.Read32(sp + 0x10UL))
-                : _gpr[31];
+            ulong callerReturnAddress = _gpr[31];
             ulong callerReturnOffset = callerReturnAddress & 0x1fffffffUL;
             if (callerState != 0xffffffff80262d64UL ||
                 !IsMainRamRange(callerState + 0x374UL, 12) ||
-                (atCallerAfterPrologue && !IsMainRamRange(sp + 0x10UL, 4)) ||
+                !IsMainRamRange(sp, 0x18UL) ||
                 callerReturnOffset is < 0x000e0000UL or > 0x00110000UL)
             {
                 return false;
@@ -14075,8 +14074,9 @@ internal sealed class MipsR5000Core
             _gpr[31] = callerReturnAddress;
             _gpr[29] = sp + 0x18UL;
             _gpr[0] = 0;
-            AdvanceCp0Count(_cp0CountStep * 72UL);
-            _instructionCounter += 72UL;
+            ulong skippedInstructions = atCallerAfterPrologue ? 69UL : 72UL;
+            AdvanceCp0Count(_cp0CountStep * skippedInstructions);
+            _instructionCounter += skippedInstructions;
             _hasPendingBranch = false;
             _hasImmediatePcOverride = false;
             Pc = callerReturnAddress;
