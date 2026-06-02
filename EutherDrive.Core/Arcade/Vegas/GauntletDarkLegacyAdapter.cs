@@ -11632,7 +11632,7 @@ internal sealed class MipsR5000Core
         if (pc == entry)
         {
             Pc = _gpr[31];
-            _gpr[2] = 0;
+            _gpr[2] = 1;
             _gpr[0] = 0;
             CompleteFastPathStep();
             return true;
@@ -11641,14 +11641,14 @@ internal sealed class MipsR5000Core
         ulong sp = _gpr[29];
         if (!IsMainRamRange(sp + 0x18UL, 0x10UL))
         {
-            _gpr[2] = 0;
+            _gpr[2] = 1;
             _gpr[0] = 0;
             Pc = _gpr[31];
             CompleteFastPathStep();
             return true;
         }
 
-        _gpr[2] = 0;
+        _gpr[2] = 1;
         _gpr[31] = SignExtend32(_memory.Read32(sp + 0x24UL));
         _gpr[18] = SignExtend32(_memory.Read32(sp + 0x20UL));
         _gpr[17] = SignExtend32(_memory.Read32(sp + 0x1cUL));
