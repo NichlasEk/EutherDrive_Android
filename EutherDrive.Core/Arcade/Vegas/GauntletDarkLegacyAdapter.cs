@@ -21538,6 +21538,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_LINEAR_TEXTURE_DOWNLOAD_ADDRESSING"));
     private readonly bool _fixTextureTOriginFlip =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP"));
+    private readonly bool _fixTextureCoordinateClamp =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP"));
     private readonly bool _fixDisplayBufferSelection =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
     private readonly bool _fixFastFillColorWriteMask =
@@ -22777,10 +22779,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         int width = (int)GetTextureWidth();
         int height = (int)GetTextureHeight();
 
-        int x = WrapTextureCoordinate(s, width);
+        int x = TextureCoordinateToIndex(s, width);
         int y = _fixTextureTOriginFlip
-            ? WrapTextureCoordinate((height - 1) - t, height)
-            : WrapTextureCoordinate(t, height);
+            ? TextureCoordinateToIndex((height - 1) - t, height)
+            : TextureCoordinateToIndex(t, height);
         uint mode = ReadTextureRegister(RegTextureMode);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
@@ -22827,6 +22829,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             coordinate += size;
         return coordinate;
     }
+
+    private int TextureCoordinateToIndex(float value, int size)
+        => _fixTextureCoordinateClamp
+            ? Math.Clamp((int)MathF.Floor(value), 0, Math.Max(0, size - 1))
+            : WrapTextureCoordinate(value, size);
 
     private uint GetTextureWidth()
     {
