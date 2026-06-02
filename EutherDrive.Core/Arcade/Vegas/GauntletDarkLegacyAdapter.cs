@@ -10694,7 +10694,8 @@ internal sealed class MipsR5000Core
             bool knownGauntletBgLoad = requestedByteCount == 0x2000U &&
                                        callback == 0x800ab4e4U &&
                                        (objectStatus & 0xffffU) == 0x300bU;
-            if (status != 0 || (!hasPath && !knownGauntletBgLoad))
+            bool knownPendingStatus = status == 0 || (status == 0xffffffffU && knownGauntletBgLoad);
+            if (!knownPendingStatus || (!hasPath && !knownGauntletBgLoad))
                 continue;
 
             string hydrationStatus = "unmapped";
