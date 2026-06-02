@@ -13969,17 +13969,75 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownGauntletGlideStateEmit(ulong pc)
     {
         const ulong entry = 0xffffffff80103fccUL;
+        const ulong callerEntry = 0xffffffff80103e4cUL;
+        const ulong callerAfterPrologue = 0xffffffff80103e58UL;
 
+        bool atCallerEntry = pc == callerEntry;
+        bool atCallerAfterPrologue = pc == callerAfterPrologue;
         bool atEntry = pc == entry;
         bool atCallerPreMaskBlock = pc == 0xffffffff80103f38UL;
         bool atCallerMaskBlock = pc == 0xffffffff80103f44UL;
         bool atCallerEpilogue = pc == 0xffffffff80103f64UL;
         bool inMaskBody = pc == 0xffffffff80104068UL;
-        if (!atEntry && !atCallerPreMaskBlock && !atCallerMaskBlock && !atCallerEpilogue && !inMaskBody)
+        if (!atCallerEntry && !atCallerAfterPrologue && !atEntry && !atCallerPreMaskBlock && !atCallerMaskBlock && !atCallerEpilogue && !inMaskBody)
             return false;
 
         if (atEntry)
             return false;
+
+        if (atCallerEntry || atCallerAfterPrologue)
+        {
+            if (_memory.Read32(callerEntry + 0x00UL) != 0x27bdffe8U ||
+                _memory.Read32(callerEntry + 0x04UL) != 0x3c028026U ||
+                _memory.Read32(callerEntry + 0x08UL) != 0x8c452c8cU ||
+                _memory.Read32(callerEntry + 0x0cUL) != 0x3c020800U ||
+                _memory.Read32(callerEntry + 0x10UL) != 0xafbf0010U ||
+                _memory.Read32(callerEntry + 0x14UL) != 0x8ca80260U ||
+                _memory.Read32(callerEntry + 0x18UL) != 0x8ca70250U ||
+                _memory.Read32(callerEntry + 0x1cUL) != 0x8ca60264U ||
+                _memory.Read32(callerEntry + 0x20UL) != 0x8ca9026cU ||
+                _memory.Read32(callerEntry + 0x24UL) != 0x01021024U ||
+                _memory.Read32(callerEntry + 0xecUL) != 0x0c040ff3U ||
+                _memory.Read32(callerEntry + 0xf0UL) != 0xaca40258U ||
+                _memory.Read32(callerEntry + 0xf4UL) != 0x8fbf0010U ||
+                _memory.Read32(callerEntry + 0xf8UL) != 0x03e00008U ||
+                _memory.Read32(callerEntry + 0xfcUL) != 0x27bd0018U)
+            {
+                return false;
+            }
+
+            ulong callerState = SignExtend32(_memory.Read32(0xffffffff80262c8cUL));
+            ulong sp = atCallerAfterPrologue ? _gpr[29] : _gpr[29] - 0x18UL;
+            ulong callerReturnAddress = atCallerAfterPrologue
+                ? SignExtend32(_memory.Read32(sp + 0x10UL))
+                : _gpr[31];
+            ulong callerReturnOffset = callerReturnAddress & 0x1fffffffUL;
+            if (callerState != 0xffffffff80262d64UL ||
+                !IsMainRamRange(callerState + 0x374UL, 12) ||
+                (atCallerAfterPrologue && !IsMainRamRange(sp + 0x10UL, 4)) ||
+                callerReturnOffset is < 0x000e0000UL or > 0x00110000UL)
+            {
+                return false;
+            }
+
+            uint command = ComputeKnownGauntletGlideStateEmitCommand(callerState);
+            _memory.Write32(callerState + 0x258UL, command);
+            NormalizeGlideFifoState(callerState);
+
+            _gpr[2] = _memory.Read32(callerState + 0x37cUL);
+            _gpr[3] = callerState + 8UL;
+            _gpr[4] = SignExtend32(command);
+            _gpr[5] = callerState;
+            _gpr[31] = callerReturnAddress;
+            _gpr[29] = sp + 0x18UL;
+            _gpr[0] = 0;
+            AdvanceCp0Count(_cp0CountStep * 72UL);
+            _instructionCounter += 72UL;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+            Pc = callerReturnAddress;
+            return true;
+        }
 
         if (atCallerPreMaskBlock || atCallerMaskBlock)
         {
@@ -14134,6 +14192,49 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
         Pc = returnAddress;
         return true;
+    }
+
+    private uint ComputeKnownGauntletGlideStateEmitCommand(ulong state)
+    {
+        uint source260 = _memory.Read32(state + 0x260UL);
+        uint source250 = _memory.Read32(state + 0x250UL);
+        uint source264 = _memory.Read32(state + 0x264UL);
+        uint source26c = _memory.Read32(state + 0x26cUL);
+        uint command = 0;
+
+        if ((source260 & 0x08000000U) != 0)
+        {
+            uint tableIndex = _memory.Read32(state + 0x25cUL);
+            command = _memory.Read32(0xffffffff80157afcUL + ((ulong)tableIndex << 2));
+        }
+
+        if (_memory.Read32(state + 0x300UL) != 0 &&
+            _memory.Read32(state + 0x308UL) == 0)
+        {
+            command |= 0x01U;
+        }
+
+        if (_memory.Read32(state + 0x2f8UL) != 0)
+            command |= 0x02U;
+        if ((source260 & 0x60U) == 0x40U)
+            command |= 0x04U;
+
+        if ((source26c & 0x10U) != 0)
+        {
+            if ((source26c & 0x08U) == 0)
+                command |= 0x04U;
+            else
+                command |= 0x08U;
+        }
+
+        if ((command & 0x10U) != 0 && (source250 & 0x02U) == 0)
+            command &= 0xffffffefU;
+        if ((command & 0xa0U) == 0xa0U && (source250 & 0x10U) == 0)
+            command &= 0xffffff7fU;
+        if ((command & 0x40U) != 0 && (source250 & 0x08U) == 0)
+            command &= 0xffffffbfU;
+
+        return command;
     }
 
     private bool TryFastPathKnownGlideTwoWordStatePacketTail(ulong pc)
