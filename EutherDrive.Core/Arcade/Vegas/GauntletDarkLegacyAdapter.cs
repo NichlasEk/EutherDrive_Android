@@ -21414,6 +21414,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _decodingCommandFifo;
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
+    private readonly bool _traceSetupTriangles = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SETUP_TRIANGLES") == "1";
+    private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
@@ -21423,6 +21425,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SEQ8_TEXTURE_DOWNLOAD");
     private readonly bool _fixSparse8BitTextureUpload =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SPARSE_8BIT_TEXTURE_UPLOAD");
+    private readonly bool _fixLinearTextureDownloadAddressing =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_LINEAR_TEXTURE_DOWNLOAD_ADDRESSING"));
+    private readonly bool _fixTextureTOriginFlip =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP"));
     private readonly bool _fixDisplayBufferSelection =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
     private readonly bool _fixFastFillColorWriteMask =
@@ -21441,6 +21447,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
     private int _drawTraceCount;
+    private int _setupTriangleTraceCount;
+    private int _textureSampleTraceCount;
     private int _nonNeutralFastFillTraceCount;
     private int _type5PayloadTraceCount;
     private int _tmuRegisterWriteTraceCount;
@@ -21648,6 +21656,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             value = (value >> 16) | (value << 16);
 
         int bytesPerTexel = ((mode >> 8) & 0x0fu) < 8 ? 1 : 2;
+        if (_fixLinearTextureDownloadAddressing)
+        {
+            WriteTextureLinear32(wordOffset, value, bytesPerTexel);
+            _textureWriteCount++;
+            return;
+        }
+
         bool seq8Downld = ((mode >> 31) & 1u) != 0 || (_fixSequential8BitTextureDownload && bytesPerTexel == 1);
         uint tt = (wordOffset >> 7) & 0xffu;
         uint ts = (wordOffset << ((seq8Downld && bytesPerTexel == 1) ? 2 : 1)) & 0xffu;
@@ -21681,6 +21696,32 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         _textureWriteCount++;
+    }
+
+    private void WriteTextureLinear32(uint wordOffset, uint value, int bytesPerTexel)
+    {
+        uint byteOffset = (wordOffset << 2) & (TextureBytes - 1u);
+        if (bytesPerTexel == 1)
+        {
+            bool previousSuppressZero = _suppressZeroTextureBytesForCurrentWrite;
+            _suppressZeroTextureBytesForCurrentWrite = _fixSparse8BitTextureUpload;
+            try
+            {
+                WriteTextureByte(byteOffset + 0u, (byte)value);
+                WriteTextureByte(byteOffset + 1u, (byte)(value >> 8));
+                WriteTextureByte(byteOffset + 2u, (byte)(value >> 16));
+                WriteTextureByte(byteOffset + 3u, (byte)(value >> 24));
+            }
+            finally
+            {
+                _suppressZeroTextureBytesForCurrentWrite = previousSuppressZero;
+            }
+        }
+        else
+        {
+            WriteTextureUInt16(byteOffset + 0u, (ushort)value);
+            WriteTextureUInt16(byteOffset + 2u, (ushort)(value >> 16));
+        }
     }
 
     private void WriteTextureByte(uint byteOffset, byte value)
@@ -22468,6 +22509,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort color = _setupVertices[2].Color != 0 ? _setupVertices[2].Color : GetDrawColor();
         bool textured = _setupVertices[0].HasTexture || _setupVertices[1].HasTexture || _setupVertices[2].HasTexture;
         TraceDraw($"stri color=0x{color:X4} xy=({_setupVertices[0].X:F1},{_setupVertices[0].Y:F1})/({_setupVertices[1].X:F1},{_setupVertices[1].Y:F1})/({_setupVertices[2].X:F1},{_setupVertices[2].Y:F1}) st=({_setupVertices[0].S:F1},{_setupVertices[0].T:F1})/({_setupVertices[1].S:F1},{_setupVertices[1].T:F1})/({_setupVertices[2].S:F1},{_setupVertices[2].T:F1}) tex={(textured ? 1 : 0)} tmode=0x{ReadTextureRegister(RegTextureMode):X8} tbase=0x{ReadTextureRegister(RegTextureBaseAddr):X8} setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
+        TraceSetupTriangle(color, textured);
         if (textured)
             _texturedTriangleCount++;
         if (textured && FillTexturedTriangle(_setupVertices[0], _setupVertices[1], _setupVertices[2], color))
@@ -22627,7 +22669,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         int height = (int)GetTextureHeight();
 
         int x = WrapTextureCoordinate(s, width);
-        int y = WrapTextureCoordinate(t, height);
+        int y = _fixTextureTOriginFlip
+            ? WrapTextureCoordinate((height - 1) - t, height)
+            : WrapTextureCoordinate(t, height);
         uint mode = ReadTextureRegister(RegTextureMode);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
@@ -22638,25 +22682,29 @@ internal class VoodooBringupBackend : IVoodooBackend
             uint byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);
             uint word = ReadTexture32(byteAddress & ~3u);
             ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
-            return format switch
+            ushort result = format switch
             {
                 10 => ConvertRgb565Lane(packed, 0),
                 11 => ConvertXrgb1555Lane(packed, 0, hasAlphaBit: true),
                 12 => ConvertArgb4444ToRgb565(packed),
                 _ => packed
             };
+            TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress, word, packed, result);
+            return result;
         }
 
         uint byteOffset = (baseAddress + texelIndex) & (TextureBytes - 1u);
         uint source = ReadTexture32(byteOffset & ~3u);
         byte value = (byte)(source >> (int)((byteOffset & 3u) * 8u));
-        return format switch
+        ushort texel = format switch
         {
             0 => ConvertRgb332ToRgb565(value),
             3 => GrayscaleToRgb565(value),
             4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
             _ => PseudoPaletteToRgb565(value)
         };
+        TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteOffset, source, value, texel);
+        return texel;
     }
 
     private static int WrapTextureCoordinate(float value, int size)
@@ -22801,6 +22849,49 @@ internal class VoodooBringupBackend : IVoodooBackend
             string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
             Console.WriteLine($"[GAUNTDL:VOODOO-DRAW] {message}{pcStatus}");
         }
+    }
+
+    private void TraceSetupTriangle(ushort color, bool textured)
+    {
+        if (!_traceSetupTriangles || _setupTriangleTraceCount++ >= 160)
+            return;
+
+        GetClip(out int clipX0, out int clipX1, out int clipY0, out int clipY1);
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-SETUP] color=0x{color:X4} tex={(textured ? 1 : 0)} " +
+            $"xy=({_setupVertices[0].X:F3},{_setupVertices[0].Y:F3})/({_setupVertices[1].X:F3},{_setupVertices[1].Y:F3})/({_setupVertices[2].X:F3},{_setupVertices[2].Y:F3}) " +
+            $"st=({_setupVertices[0].S:F3},{_setupVertices[0].T:F3})/({_setupVertices[1].S:F3},{_setupVertices[1].T:F3})/({_setupVertices[2].S:F3},{_setupVertices[2].T:F3}) " +
+            $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} fixed=({FixedVertexCoordinate(_registers[0x99]):F3},{FixedVertexCoordinate(_registers[0x9A]):F3}) " +
+            $"clip=({clipX0},{clipY0})-({clipX1},{clipY1}) setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8}{pcStatus}");
+    }
+
+    private void TraceTextureSample(
+        float s,
+        float t,
+        int width,
+        int height,
+        int x,
+        int y,
+        uint mode,
+        uint lod,
+        uint registerBase,
+        uint resolvedBase,
+        uint byteAddress,
+        uint word,
+        uint raw,
+        ushort result)
+    {
+        if (!_traceTextureSamples || _textureSampleTraceCount++ >= 160)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXSAMPLE] st=({s:F3},{t:F3}) xy=({x},{y}) size={width}x{height} " +
+            $"mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addr=0x{byteAddress:X6} " +
+            $"word=0x{word:X8} raw=0x{raw:X4} result=0x{result:X4}{pcStatus}");
     }
 
     private static int ParseDrawTraceLimit(string name, int fallback)
