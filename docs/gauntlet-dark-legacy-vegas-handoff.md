@@ -6422,3 +6422,30 @@ framebuffer colored=69805
 `global1c`, and `selected` cases and allows up to 256 logged entries. This is
 diagnostic only; it prevents the trace budget from being consumed before the
 world-selection globals become meaningful.
+
+The existing world-selection experiment was also corrected to hook the actual
+branch instruction at `8004f29c`, not the following delay-slot/nop at
+`8004f2a0`. With:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION=1
+```
+
+the 200M snapshot now logs:
+
+```text
+[GAUNTDL:FIX] world-selection pc=ffffffff8004f29c selected=ffffffff802e1000 id=00000001 mask=ffffffff name=castle
+```
+
+A 5M resume with that experiment active remains stable but does not move past
+the current render plateau:
+
+```text
+pc=0xffffffff801035a0
+drawPackets=20620 directTriangles=1470 setupTriangles=720
+frameHash=0xec4ad078
+```
+
+Interpretation: world selection being zero was a real local defect, but not the
+remaining blocker by itself. Continue with the real FSYS/file-id mapping or the
+late text/progress pump around `800e3378` / `80102b20` / `801035a0`.

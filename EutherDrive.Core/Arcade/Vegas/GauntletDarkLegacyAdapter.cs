@@ -10843,7 +10843,7 @@ internal sealed class MipsR5000Core
 
     private void ApplyKnownRuntimeWorldSelectionRepair(ulong pc)
     {
-        const ulong branchPc = 0xffffffff8004f2a0UL;
+        const ulong branchPc = 0xffffffff8004f29cUL;
         const ulong worldGlobal = 0xffffffff8016c130UL;
         const ulong selectedEntryGlobal = 0xffffffff8016c13cUL;
         const ulong staticWorldList = 0xffffffff8015bef4UL;
