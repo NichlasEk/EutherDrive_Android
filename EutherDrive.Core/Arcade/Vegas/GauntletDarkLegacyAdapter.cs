@@ -836,6 +836,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelStateDelta(pc, "step");
         TraceSuspiciousS8DeadState(pc, "step");
         ApplyKnownRuntimeWorldDataTableRepair(pc);
+        ApplyKnownRuntimeWorldSelectedPointerRepair(pc);
         ApplyKnownRuntimeUiCommandCompletion(pc);
         ApplyKnownRuntimeWaitForQioCompletion(pc);
         TraceKnownLateRenderPump(pc);
@@ -11300,6 +11301,39 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:FIX] world-selection pc={pc:x16} " +
                 $"selected={fallbackTable:x16} id={_memory.Read32(fallbackTable):x8} " +
                 $"mask={_memory.Read32(fallbackTable + 0x04UL):x8} name={ReadAsciiTraceString(fallbackTable + 0x08UL, 32)}");
+        }
+    }
+
+    private void ApplyKnownRuntimeWorldSelectedPointerRepair(ulong pc)
+    {
+        const ulong worldGlobal = 0xffffffff8016c130UL;
+        const ulong selectedEntryGlobal = 0xffffffff8016c13cUL;
+        const ulong fallbackTable = 0xffffffff802e1000UL;
+
+        if (!_enableRuntimeWorldSelectionExperiment)
+            return;
+        if (pc is not (0xffffffff800b1dc4UL or 0xffffffff800e3decUL or 0xffffffff80102520UL or 0xffffffff80103574UL))
+            return;
+        if (_memory.Read32(worldGlobal + 0x18UL) != 13 ||
+            _memory.Read32(worldGlobal + 0x1cUL) != unchecked((uint)fallbackTable) ||
+            _memory.Read32(selectedEntryGlobal) != 0)
+        {
+            return;
+        }
+        if (!IsMainRamRange(fallbackTable, 0x80UL) ||
+            _memory.Read32(fallbackTable) != 1 ||
+            _memory.Read32(fallbackTable + 0x04UL) != 0xffffffffU)
+        {
+            return;
+        }
+
+        _memory.Write32(selectedEntryGlobal, unchecked((uint)fallbackTable));
+        if (_runtimeWorldSelectionRepairTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] world-selected-pointer pc={pc:x16} " +
+                $"selected={fallbackTable:x16} id={_memory.Read32(fallbackTable):x8} " +
+                $"name={ReadAsciiTraceString(fallbackTable + 0x08UL, 32)}");
         }
     }
 
