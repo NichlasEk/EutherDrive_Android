@@ -1048,6 +1048,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeStringLength(pc))
             return;
+        if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxOuterSlot(pc))
+            return;
         if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxModelLookupStore(pc))
             return;
         if (TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(pc))
@@ -9480,6 +9482,65 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FIX] bgloadmodel-empty-box-model-lookup-store " +
                 $"pc={pc:x16} ra={Pc:x16} dst={destination:x16}");
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelEmptyBoxOuterSlot(ulong pc)
+    {
+        const ulong entry = 0xffffffff800637bcUL;
+        const ulong tail = 0xffffffff80063808UL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
+            pc != entry)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(entry + 0x00UL) != 0x02558021U ||
+            _memory.Read32(entry + 0x04UL) != 0x3c058013U ||
+            _memory.Read32(entry + 0x08UL) != 0x8e040000U ||
+            _memory.Read32(entry + 0x0cUL) != 0x0c02c594U ||
+            _memory.Read32(entry + 0x10UL) != 0x24a50b5cU ||
+            _memory.Read32(entry + 0x14UL) != 0x8e020000U ||
+            _memory.Read32(entry + 0x18UL) != 0xa0400004U ||
+            _memory.Read32(entry + 0x1cUL) != 0x2a220008U ||
+            _memory.Read32(entry + 0x20UL) != 0x10400006U ||
+            _memory.Read32(entry + 0x2cUL) != 0x3c014280U ||
+            _memory.Read32(entry + 0x38UL) != 0xe4400010U ||
+            _memory.Read32(entry + 0x40UL) != 0x3c0142c0U ||
+            _memory.Read32(entry + 0x48UL) != 0xe4400010U ||
+            _memory.Read32(tail + 0x00UL) != 0x26520004U ||
+            _memory.Read32(tail + 0x04UL) != 0x26310001U ||
+            _memory.Read32(tail + 0x08UL) != 0x2a220010U)
+        {
+            return false;
+        }
+
+        ulong slot = _gpr[18] + _gpr[21];
+        if (!IsMainRamRange(slot, 4UL))
+            return false;
+
+        ulong record = SignExtend32(_memory.Read32(slot));
+        if (!IsMainRamRange(record, 0x14UL))
+            return false;
+
+        uint heightBits = _gpr[17] < 8UL ? 0x42800000U : 0x42c00000U;
+        _memory.Write32(record, 0);
+        _memory.Write8(record + 4UL, 0);
+        _memory.Write32(record + 0x10UL, heightBits);
+        _gpr[16] = slot;
+        _gpr[2] = SignExtend32((uint)record);
+        _gpr[0] = 0;
+        Pc = tail;
+        CompleteFastPathStep();
+        AdvanceCp0Count(_cp0CountStep * 18UL);
+        _instructionCounter += 18UL;
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-empty-box-outer-slot " +
+                $"pc={pc:x16} tail={Pc:x16} slot={slot:x16} record={record:x16}");
         }
 
         return true;
