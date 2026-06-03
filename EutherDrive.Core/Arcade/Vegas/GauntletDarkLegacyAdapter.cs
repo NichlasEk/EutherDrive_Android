@@ -9711,8 +9711,6 @@ internal sealed class MipsR5000Core
             return false;
 
         string key = ReadAsciiTraceString(sp + 0x18UL, 0x20);
-        if (key != "EMPTY_BOX")
-            return false;
 
         long index = unchecked((long)_gpr[17]);
         long count = unchecked((long)_gpr[19]);
@@ -9720,6 +9718,16 @@ internal sealed class MipsR5000Core
             return false;
 
         ulong remaining = (ulong)(count - index);
+        if (key != "EMPTY_BOX")
+        {
+            ulong cursor = _gpr[16];
+            for (ulong i = 0; i < remaining; i++, cursor += 0x30UL)
+            {
+                if (!IsMainRamRange(cursor + 0x04UL, 4) || _memory.Read32(cursor + 0x04UL) != 0)
+                    return false;
+            }
+        }
+
         _gpr[16] += remaining * 0x30UL;
         _gpr[17] = _gpr[19];
         _gpr[18] = 0;
@@ -10029,6 +10037,21 @@ internal sealed class MipsR5000Core
             ulong callbackAtCall = SignExtend32(_memory.Read32(spAtCall + 0x10UL));
             if (callbackAtCall != fixedStringCompare30)
                 return false;
+
+            if (_gpr[6] == 0 || _gpr[7] == 0)
+            {
+                _gpr[2] = 0;
+                Pc = returnAddress;
+                CompleteFastPathStep();
+                if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:FIX] bgloadmodel-binary-search-empty-range " +
+                        $"pc={pc:x16} ra={Pc:x16} count={_gpr[6]:x} stride={_gpr[7]:x}");
+                }
+
+                return true;
+            }
 
             if (ReadAsciiTraceString(_gpr[4], 0x20) != "EMPTY_BOX")
                 return false;
