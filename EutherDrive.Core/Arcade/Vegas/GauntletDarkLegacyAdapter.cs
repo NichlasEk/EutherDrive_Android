@@ -870,6 +870,8 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
         TraceKnownRuntimeBgLoadModelRecords(pc);
+        if (TryFastPathKnownRuntimeBgLoadModelLateStreamScan(pc))
+            return;
         if (TryFastPathKnownRuntimeBgLoadModelDispatchReadyRecord(pc))
             return;
         if (TryFastPathKnownRuntimeBgLoadModelStreamCopyTail(pc))
@@ -9678,8 +9680,9 @@ internal sealed class MipsR5000Core
         const ulong loop = 0xffffffff800aa958UL;
         const ulong exitTest = 0xffffffff800aa98cUL;
         const ulong fixedStringCompare30 = 0xffffffff800aa898UL;
+        bool afterEmptyLookupMiss = pc == loop + 0x1cUL;
         if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
-            pc != loop)
+            (pc != loop && !afterEmptyLookupMiss))
             return false;
 
         if (_memory.Read32(loop - 0x28UL) != 0x0271102aU ||
@@ -9705,6 +9708,11 @@ internal sealed class MipsR5000Core
 
         if (_gpr[21] != fixedStringCompare30)
             return false;
+        if (afterEmptyLookupMiss &&
+            (_gpr[18] != 0 || _gpr[2] != 0 || _gpr[31] != loop + 0x18UL))
+        {
+            return false;
+        }
 
         ulong sp = _gpr[29];
         if (!IsMainRamRange(sp + 0x18UL, 0x20UL))
@@ -9718,7 +9726,7 @@ internal sealed class MipsR5000Core
             return false;
 
         ulong remaining = (ulong)(count - index);
-        if (key != "EMPTY_BOX")
+        if (!afterEmptyLookupMiss && key != "EMPTY_BOX")
         {
             ulong cursor = _gpr[16];
             for (ulong i = 0; i < remaining; i++, cursor += 0x30UL)
@@ -11044,6 +11052,30 @@ internal sealed class MipsR5000Core
     private void TraceKnownRuntimeBgLoadModelLoop(ulong pc)
     {
         if (_traceRuntimeBgLoadModelLoop &&
+            pc is >= 0xffffffff800abec0UL and <= 0xffffffff800abf40UL &&
+            _runtimeBgLoadModelLoopTraceCount++ < 96)
+        {
+            ulong lateRecord = _gpr[16];
+            uint b0 = IsMainRamRange(lateRecord + 0x00UL, 1) ? _memory.Read8(lateRecord + 0x00UL) : 0xffU;
+            uint b1 = IsMainRamRange(lateRecord + 0x01UL, 1) ? _memory.Read8(lateRecord + 0x01UL) : 0xffU;
+            uint b2 = IsMainRamRange(lateRecord + 0x02UL, 1) ? _memory.Read8(lateRecord + 0x02UL) : 0xffU;
+            uint h4 = IsMainRamRange(lateRecord + 0x04UL, 2) ? _memory.Read16(lateRecord + 0x04UL) : 0xffffU;
+            uint h6 = IsMainRamRange(lateRecord + 0x06UL, 2) ? _memory.Read16(lateRecord + 0x06UL) : 0xffffU;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] bgloadmodel-late-stream pc={pc:x16} op={_memory.Read32(pc):x8} " +
+                $"ra={_gpr[31]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+                $"s4={_gpr[20]:x16} s5={_gpr[21]:x16} s6={_gpr[22]:x16} s7={_gpr[23]:x16} s8={_gpr[30]:x16} " +
+                $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} a0={_gpr[4]:x16} " +
+                $"rec={ReadTraceWord(lateRecord):x8}/{ReadTraceWord(lateRecord + 0x04UL):x8}/{ReadTraceWord(lateRecord + 0x08UL):x8}/" +
+                $"{ReadTraceWord(lateRecord + 0x0cUL):x8}/{ReadTraceWord(lateRecord + 0x10UL):x8} " +
+                $"b={b0:x2}/{b1:x2}/{b2:x2} h={h4:x4}/{h6:x4} " +
+                $"gf158={ReadTraceWord(0xffffffff8021f158UL):x8} gf15c={ReadTraceWord(0xffffffff8021f15cUL):x8} " +
+                $"gf178={ReadTraceWord(0xffffffff8021f178UL):x8} gf17c={ReadTraceWord(0xffffffff8021f17cUL):x8} " +
+                $"gf180={ReadTraceWord(0xffffffff8021f180UL):x8} gf184={ReadTraceWord(0xffffffff8021f184UL):x8}");
+            return;
+        }
+
+        if (_traceRuntimeBgLoadModelLoop &&
             pc is >= 0xffffffff800ab930UL and <= 0xffffffff800aba50UL &&
             _runtimeBgParserTraceCount++ < 64)
         {
@@ -11431,6 +11463,7 @@ internal sealed class MipsR5000Core
         {
             >= 0xffffffff800abaa0UL and <= 0xffffffff800abbc0UL => "qio-poll",
             >= 0xffffffff800abc60UL and <= 0xffffffff800abe40UL => "stream-dispatch",
+            >= 0xffffffff800abec0UL and <= 0xffffffff800abf40UL => "late-stream",
             >= 0xffffffff800ac040UL and <= 0xffffffff800ac13cUL => "global-init",
             >= 0xffffffff800ac1f0UL and <= 0xffffffff800ac248UL => "record-init",
             >= 0xffffffff800ac2d0UL and <= 0xffffffff800ac370UL => "model-create",
@@ -12728,6 +12761,116 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:TRACE] bgloadmodel-fastpath-reject pc={pc:x16} reason={reason} " +
             $"s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s8={_gpr[30]:x16}");
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelLateStreamScan(ulong pc)
+    {
+        const ulong loop = 0xffffffff800abf00UL;
+        const ulong exit = 0xffffffff800abf40UL;
+        const ulong globalBase = 0xffffffff80210000UL;
+        const ulong streamCurrentAddress = 0xffffffff8020f180UL;
+        const ulong streamLimitAddress = 0xffffffff8020f15cUL;
+
+        if (!_enableRuntimeBgLoadModelDispatchFastPath || pc != loop || _hasPendingBranch)
+            return false;
+
+        if (_memory.Read32(loop + 0x00UL) != 0x0c029928U ||
+            _memory.Read32(loop + 0x04UL) != 0x0200202dU ||
+            _memory.Read32(loop + 0x08UL) != 0x8e040008U ||
+            _memory.Read32(loop + 0x0cUL) != 0x8ee3f180U ||
+            _memory.Read32(loop + 0x10UL) != 0x00832023U ||
+            _memory.Read32(loop + 0x14UL) != 0x0480000aU ||
+            _memory.Read32(loop + 0x18UL) != 0x00821821U ||
+            _memory.Read32(loop + 0x1cUL) != 0x8ec2f15cU ||
+            _memory.Read32(loop + 0x20UL) != 0x0062102aU ||
+            _memory.Read32(loop + 0x24UL) != 0x10400006U ||
+            _memory.Read32(loop + 0x28UL) != 0x0223102aU ||
+            _memory.Read32(loop + 0x2cUL) != 0x0062880bU ||
+            _memory.Read32(loop + 0x30UL) != 0x26520001U ||
+            _memory.Read32(loop + 0x34UL) != 0x0254102aU ||
+            _memory.Read32(loop + 0x38UL) != 0x1440fff1U ||
+            _memory.Read32(loop + 0x3cUL) != 0x26100050U ||
+            _memory.Read32(exit + 0x00UL) != 0x3c028021U ||
+            _memory.Read32(exit + 0x04UL) != 0x8c46f15cU ||
+            _memory.Read32(exit + 0x08UL) != 0x3c108021U)
+        {
+            return false;
+        }
+
+        uint index = (uint)_gpr[18];
+        uint count = (uint)_gpr[20];
+        ulong record = _gpr[16];
+        int best = unchecked((int)(uint)_gpr[17]);
+        int current = unchecked((int)_memory.Read32(streamCurrentAddress));
+        int limit = unchecked((int)_memory.Read32(streamLimitAddress));
+
+        if (index >= count ||
+            count > 0x4000U ||
+            (record & 0x0fUL) != 0 ||
+            !IsMainRamRange(record + 0x10UL, 4))
+        {
+            return false;
+        }
+
+        uint scanned = 0;
+        while (index < count)
+        {
+            if (!IsMainRamRange(record + 0x10UL, 4))
+                return false;
+
+            int delta = unchecked((int)(_memory.Read32(record + 0x08UL) - (uint)current));
+            if (delta >= 0)
+            {
+                int extent = ComputeKnownRuntimeBgLoadModelLateStreamExtent(record);
+                int candidate = unchecked(delta + extent);
+                if (candidate < limit && best < candidate)
+                    best = candidate;
+            }
+
+            index++;
+            record += 0x50UL;
+            scanned++;
+        }
+
+        _gpr[2] = 0;
+        _gpr[3] = 0;
+        _gpr[16] = record;
+        _gpr[17] = SignExtend32(unchecked((uint)best));
+        _gpr[18] = SignExtend32(index);
+        _gpr[22] = globalBase;
+        _gpr[23] = globalBase;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = exit;
+
+        ulong skipped = Math.Max(1UL, (ulong)scanned * 24UL);
+        AdvanceCp0Count(_cp0CountStep * skipped);
+        _instructionCounter += skipped;
+
+        if (_traceRuntimeBgLoadModelLoop && _runtimeBgLoadModelFastPathRejectTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-late-stream-scan pc={pc:x16} " +
+                $"scanned={scanned} count={count:x8} best={best:x8} current={current:x8} limit={limit:x8}");
+        }
+
+        return true;
+    }
+
+    private int ComputeKnownRuntimeBgLoadModelLateStreamExtent(ulong record)
+    {
+        uint width = _memory.Read16(record + 0x04UL);
+        if (_memory.Read8(record + 0x02UL) >= 8)
+            width <<= 1;
+
+        uint height = _memory.Read16(record + 0x06UL);
+        int span = (int)_memory.Read8(record + 0x01UL) - (int)_memory.Read8(record + 0x00UL);
+        if (span < 0)
+            return 0;
+
+        uint product = unchecked(width * height);
+        return unchecked((int)(product * (uint)(span + 1)));
     }
 
     private bool TryFastPathKnownRuntimeBgLoadModelStreamCopyTail(ulong pc)
@@ -22711,6 +22854,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _texturedTriangleRejectedCount;
     private long _texturedPixelCount;
     private long _texturedZeroPixelCount;
+    private int _texturedRejectNonFiniteCount;
+    private int _texturedRejectDegenerateCount;
+    private int _texturedRejectClipCount;
+    private int _texturedRejectEmptyRasterCount;
     private int _statusReadCount;
     private long _lfbWriteCount;
     private int _textureWriteCount;
@@ -23935,12 +24082,21 @@ internal class VoodooBringupBackend : IVoodooBackend
             !float.IsFinite(b.X) || !float.IsFinite(b.Y) ||
             !float.IsFinite(c.X) || !float.IsFinite(c.Y))
         {
+            _texturedRejectNonFiniteCount++;
             return false;
         }
 
         float area = Edge(a.X, a.Y, b.X, b.Y, c.X, c.Y);
-        if (MathF.Abs(area) < 0.001f)
+        if (!float.IsFinite(area))
+        {
+            _texturedRejectNonFiniteCount++;
             return false;
+        }
+        if (MathF.Abs(area) < 0.001f)
+        {
+            _texturedRejectDegenerateCount++;
+            return false;
+        }
 
         GetClip(out int clipX0, out int clipX1, out int clipY0, out int clipY1);
         int minX = Math.Clamp((int)MathF.Floor(MathF.Min(a.X, MathF.Min(b.X, c.X))), clipX0, clipX1);
@@ -23948,7 +24104,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         int minY = Math.Clamp((int)MathF.Floor(MathF.Min(a.Y, MathF.Min(b.Y, c.Y))), clipY0, clipY1);
         int maxY = Math.Clamp((int)MathF.Ceiling(MathF.Max(a.Y, MathF.Max(b.Y, c.Y))), clipY0, clipY1);
         if (maxX <= minX || maxY <= minY)
+        {
+            _texturedRejectClipCount++;
             return false;
+        }
 
         bool positive = area > 0;
         int bufferIndex = GetDrawBufferIndex();
@@ -23993,6 +24152,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
         }
 
+        if (!coveredAny)
+            _texturedRejectEmptyRasterCount++;
         return coveredAny;
     }
 
