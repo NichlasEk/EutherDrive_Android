@@ -9748,7 +9748,9 @@ internal sealed class MipsR5000Core
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] bgloadmodel-known-missing-texture-caller-loop " +
-                $"key={(key.Length == 0 ? "<empty>" : key)} pc={pc:x16} exit={Pc:x16} remaining={remaining}");
+                $"key={(key.Length == 0 ? "<empty>" : key)} pc={pc:x16} exit={Pc:x16} " +
+                $"index={index} count={count} remaining={remaining} " +
+                $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(index)}");
         }
 
         return true;
@@ -11353,6 +11355,9 @@ internal sealed class MipsR5000Core
 
         ulong record = _gpr[17];
         long recordIndex = GetKnownRuntimeBgLoadModelRecordIndex(record);
+        long assetIndex = recordIndex >= 0 ? recordIndex :
+            _gpr[7] < 0x10000UL ? unchecked((long)_gpr[7]) :
+            _gpr[17] < 0x10000UL ? unchecked((long)_gpr[17]) : -1;
 
         ulong recordQio = 0;
         if (IsMainRamRange(record + 0x08UL, 4))
@@ -11380,7 +11385,8 @@ internal sealed class MipsR5000Core
             $"s0rec={TraceKnownRuntimeBgLoadModelRecordOneLine(_gpr[16])} " +
             $"s1rec={TraceKnownRuntimeBgLoadModelRecordOneLine(_gpr[17])} " +
             $"retSlot={TraceKnownRuntimeBgLoadModelReturnSlot(_gpr[30] + 0x20UL)} " +
-            $"pathTable={TraceKnownRuntimeBgLoadModelPathTableSummary(recordIndex)}");
+            $"pathTable={TraceKnownRuntimeBgLoadModelPathTableSummary(recordIndex)} " +
+            $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(assetIndex)}");
     }
 
     private long GetKnownRuntimeBgLoadModelRecordIndex(ulong record)
@@ -11449,6 +11455,42 @@ internal sealed class MipsR5000Core
             builder.Append(i);
             builder.Append(':');
             builder.Append(text);
+        }
+
+        return builder.ToString();
+    }
+
+    private string TraceKnownRuntimeBgLoadModelAssetTableSummary(long recordIndex)
+    {
+        const ulong candidateBase = 0xffffffff8024f9a0UL;
+        const ulong candidateStride = 0x30UL;
+
+        StringBuilder builder = new();
+        long first = recordIndex >= 1 ? recordIndex - 1 : 0;
+        for (long i = first; i < first + 6; i++)
+        {
+            ulong address = candidateBase + (ulong)i * candidateStride;
+            if (!IsMainRamRange(address + 0x2fUL, 1))
+                continue;
+
+            string text = ReadAsciiTraceString(address + 0x10UL, 24);
+            uint word0 = _memory.Read32(address + 0x00UL);
+            uint word4 = _memory.Read32(address + 0x04UL);
+            uint word8 = _memory.Read32(address + 0x08UL);
+            if (text.Length == 0 && word0 == 0 && word4 == 0 && word8 == 0)
+                continue;
+
+            if (builder.Length > 0)
+                builder.Append(';');
+            builder.Append(i);
+            builder.Append(':');
+            builder.Append(word0.ToString("x8"));
+            builder.Append('/');
+            builder.Append(word4.ToString("x8"));
+            builder.Append('/');
+            builder.Append(word8.ToString("x8"));
+            builder.Append('/');
+            builder.Append(text.Length == 0 ? "<empty>" : text);
         }
 
         return builder.ToString();
@@ -12273,12 +12315,17 @@ internal sealed class MipsR5000Core
         const ulong selectedEntryGlobal = 0xffffffff8016c13cUL;
         const ulong staticWorldList = 0xffffffff8015bef4UL;
         const ulong fallbackTable = 0xffffffff802e1000UL;
+        const uint staticEntryStride = 0x2c;
+        const uint fallbackEntryStride = 0x80;
+        const uint testWorldIndex = 12;
+        const ulong testStaticEntry = staticWorldList + testWorldIndex * staticEntryStride;
+        const ulong selectedFallbackEntry = fallbackTable + testWorldIndex * fallbackEntryStride;
 
         if (!_enableRuntimeWorldSelectionExperiment || pc != branchPc)
             return;
         if (_memory.Read32(branchPc) != 0x14400003U)
             return;
-        if (_gpr[2] != 0 || _gpr[18] != staticWorldList)
+        if (_gpr[2] != 0 || _gpr[18] != testStaticEntry)
             return;
         if (_memory.Read32(worldGlobal + 0x18UL) != 13 ||
             _memory.Read32(worldGlobal + 0x1cUL) != unchecked((uint)fallbackTable) ||
@@ -12286,18 +12333,20 @@ internal sealed class MipsR5000Core
         {
             return;
         }
-        if (!IsMainRamRange(fallbackTable, 0x80UL))
+        if (!IsMainRamRange(selectedFallbackEntry, fallbackEntryStride) ||
+            _memory.Read32(selectedFallbackEntry) != testWorldIndex + 1U)
             return;
 
-        _memory.Write32(selectedEntryGlobal, unchecked((uint)fallbackTable));
+        _memory.Write32(selectedEntryGlobal, unchecked((uint)selectedFallbackEntry));
         _gpr[2] = 1;
         _gpr[0] = 0;
         if (_runtimeWorldSelectionRepairTraceCount++ < 8)
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] world-selection pc={pc:x16} " +
-                $"selected={fallbackTable:x16} id={_memory.Read32(fallbackTable):x8} " +
-                $"mask={_memory.Read32(fallbackTable + 0x04UL):x8} name={ReadAsciiTraceString(fallbackTable + 0x08UL, 32)}");
+                $"selected={selectedFallbackEntry:x16} id={_memory.Read32(selectedFallbackEntry):x8} " +
+                $"mask={_memory.Read32(selectedFallbackEntry + 0x04UL):x8} " +
+                $"name={ReadAsciiTraceString(selectedFallbackEntry + 0x08UL, 32)}");
         }
     }
 
@@ -12305,9 +12354,6 @@ internal sealed class MipsR5000Core
     {
         const ulong branchPc = 0xffffffff8004f29cUL;
         const ulong staticWorldList = 0xffffffff8015bef4UL;
-        const ulong testWorldDataBuffer = 0xffffffff81000000UL;
-        const ulong testWadByteOffset = 0x0f107e00UL;
-        const uint testWadBytes = 0x0358U;
         const uint staticEntryStride = 0x2c;
         const uint testWorldIndex = 12;
 
@@ -12320,11 +12366,71 @@ internal sealed class MipsR5000Core
         if (_gpr[18] != staticEntry ||
             _memory.Read32(staticEntry) != testWorldIndex + 1U ||
             _memory.Read32(staticEntry + 0x10UL) != 0 ||
-            !IsMainRamRange(staticEntry, staticEntryStride) ||
-            !IsMainRamRange(testWorldDataBuffer, testWadBytes))
+            !IsMainRamRange(staticEntry, staticEntryStride))
         {
             return;
         }
+
+        TryLinkKnownRuntimeTestWorldStaticData(pc, "world-static-data-link");
+    }
+
+    private bool EnsureKnownRuntimeFallbackWorldEntry(uint worldIndex)
+    {
+        const ulong staticWorldList = 0xffffffff8015bef4UL;
+        const ulong fallbackTable = 0xffffffff802e1000UL;
+        const uint entryStride = 0x80;
+        const uint staticEntryStride = 0x2c;
+
+        ulong entry = fallbackTable + worldIndex * entryStride;
+        ulong staticEntry = staticWorldList + worldIndex * staticEntryStride;
+        if (!IsMainRamRange(entry, entryStride) ||
+            !IsMainRamRange(staticEntry, staticEntryStride))
+        {
+            return false;
+        }
+
+        uint expectedWorldId = worldIndex + 1U;
+        if (_memory.Read32(entry) == expectedWorldId &&
+            _memory.Read32(entry + 0x04UL) == 0xffffffffU)
+        {
+            return true;
+        }
+
+        for (uint offset = 0; offset < entryStride; offset += 4)
+            _memory.Write32(entry + offset, 0);
+
+        uint worldId = _memory.Read32(staticEntry + 0x00UL);
+        if (worldId == 0)
+        {
+            worldId = expectedWorldId;
+            _memory.Write32(staticEntry + 0x00UL, worldId);
+        }
+        _memory.Write32(entry + 0x00UL, worldId);
+        _memory.Write32(entry + 0x04UL, 0xffffffffU);
+        for (uint offset = 0; offset < staticEntryStride - 4U; offset++)
+            _memory.Write8(entry + 0x08UL + offset, _memory.Read8(staticEntry + 0x04UL + offset));
+
+        return true;
+    }
+
+    private bool TryLinkKnownRuntimeTestWorldStaticData(ulong pc, string traceLabel)
+    {
+        const ulong staticWorldList = 0xffffffff8015bef4UL;
+        const ulong testWorldDataBuffer = 0xffffffff81000000UL;
+        const ulong testWadByteOffset = 0x0f107e00UL;
+        const uint testWadBytes = 0x0358U;
+        const uint staticEntryStride = 0x2c;
+        const uint testWorldIndex = 12;
+
+        ulong staticEntry = staticWorldList + testWorldIndex * staticEntryStride;
+        if (!IsMainRamRange(staticEntry, staticEntryStride) ||
+            !IsMainRamRange(testWorldDataBuffer, testWadBytes))
+        {
+            return false;
+        }
+
+        if (_memory.Read32(staticEntry) == 0)
+            _memory.Write32(staticEntry, testWorldIndex + 1U);
 
         string reason = "";
         if (!_memory.TryReadDiskByteOffsetToMemory(
@@ -12337,10 +12443,10 @@ internal sealed class MipsR5000Core
             if (_runtimeWorldStaticDataLinkTraceCount++ < 8)
             {
                 Console.WriteLine(
-                    $"[GAUNTDL:FIX] world-static-data-link pc={pc:x16} " +
+                    $"[GAUNTDL:FIX] {traceLabel} pc={pc:x16} " +
                     $"failed={reason}");
             }
-            return;
+            return false;
         }
 
         uint worldRecordCount = _memory.Read32(testWorldDataBuffer + 0x04UL);
@@ -12353,10 +12459,12 @@ internal sealed class MipsR5000Core
         if (_runtimeWorldStaticDataLinkTraceCount++ < 8)
         {
             Console.WriteLine(
-                $"[GAUNTDL:FIX] world-static-data-link pc={pc:x16} " +
+                $"[GAUNTDL:FIX] {traceLabel} pc={pc:x16} " +
                 $"entry={staticEntry:x16} data={testWorldDataBuffer:x16} " +
                 $"bytes={testWadBytes:x} first={firstWord:x8} count={worldRecordCount:x8}");
         }
+
+        return true;
     }
 
     private void ApplyKnownRuntimeWorldSelectedPointerRepair(ulong pc)
@@ -12366,7 +12474,9 @@ internal sealed class MipsR5000Core
         const ulong staticWorldList = 0xffffffff8015bef4UL;
         const ulong fallbackTable = 0xffffffff802e1000UL;
         const uint staticEntryStride = 0x2c;
+        const uint fallbackEntryStride = 0x80;
         const uint testWorldIndex = 12;
+        const ulong selectedFallbackEntry = fallbackTable + testWorldIndex * fallbackEntryStride;
 
         if (!_enableRuntimeWorldSelectionExperiment)
             return;
@@ -12378,9 +12488,12 @@ internal sealed class MipsR5000Core
         {
             return;
         }
-        if (!IsMainRamRange(fallbackTable, 0x80UL) ||
-            _memory.Read32(fallbackTable) != 1 ||
-            _memory.Read32(fallbackTable + 0x04UL) != 0xffffffffU)
+        EnsureKnownRuntimeFallbackWorldEntry(testWorldIndex);
+        TryLinkKnownRuntimeTestWorldStaticData(pc, "world-selected-static-data-link");
+
+        if (!IsMainRamRange(selectedFallbackEntry, fallbackEntryStride) ||
+            _memory.Read32(selectedFallbackEntry) != testWorldIndex + 1U ||
+            _memory.Read32(selectedFallbackEntry + 0x04UL) != 0xffffffffU)
         {
             return;
         }
@@ -12388,13 +12501,13 @@ internal sealed class MipsR5000Core
         ulong testStaticEntry = staticWorldList + testWorldIndex * staticEntryStride;
         if (IsMainRamRange(testStaticEntry, 4) && _memory.Read32(testStaticEntry) == 0)
             _memory.Write32(testStaticEntry, testWorldIndex + 1U);
-        _memory.Write32(selectedEntryGlobal, unchecked((uint)fallbackTable));
+        _memory.Write32(selectedEntryGlobal, unchecked((uint)selectedFallbackEntry));
         if (_runtimeWorldSelectionRepairTraceCount++ < 8)
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] world-selected-pointer pc={pc:x16} " +
-                $"selected={fallbackTable:x16} id={_memory.Read32(fallbackTable):x8} " +
-                $"name={ReadAsciiTraceString(fallbackTable + 0x08UL, 32)}");
+                $"selected={selectedFallbackEntry:x16} id={_memory.Read32(selectedFallbackEntry):x8} " +
+                $"name={ReadAsciiTraceString(selectedFallbackEntry + 0x08UL, 32)}");
         }
     }
 
