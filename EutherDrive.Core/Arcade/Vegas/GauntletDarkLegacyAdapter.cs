@@ -1048,6 +1048,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeStringLength(pc))
             return;
+        if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxModelLookupStore(pc))
+            return;
         if (TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(pc))
             return;
         if (TryFastPathKnownRuntimeBgLoadModelTokenNormalizeInFlight(pc))
@@ -9432,6 +9434,54 @@ internal sealed class MipsR5000Core
         ulong skipped = 3UL + (ulong)length * 3UL;
         AdvanceCp0Count(_cp0CountStep * skipped);
         _instructionCounter += skipped;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelEmptyBoxModelLookupStore(ulong pc)
+    {
+        const ulong entry = 0xffffffff800b1650UL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
+            pc != entry)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffe8U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb00010U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080802dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x00a0202dU ||
+            _memory.Read32(entry + 0x10UL) != 0x0000282dU ||
+            _memory.Read32(entry + 0x14UL) != 0xafbf0014U ||
+            _memory.Read32(entry + 0x18UL) != 0x0c02aa98U ||
+            _memory.Read32(entry + 0x1cUL) != 0x24060001U ||
+            _memory.Read32(entry + 0x20UL) != 0xae020000U ||
+            _memory.Read32(entry + 0x2cUL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x30UL) != 0x27bd0018U)
+        {
+            return false;
+        }
+
+        ulong destination = _gpr[4];
+        if (!IsMainRamRange(destination, 4UL) ||
+            ReadAsciiTraceString(_gpr[5], 0x20) != "empty_box")
+        {
+            return false;
+        }
+
+        _memory.Write32(destination, 0);
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        AdvanceCp0Count(_cp0CountStep * 32UL);
+        _instructionCounter += 32UL;
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-empty-box-model-lookup-store " +
+                $"pc={pc:x16} ra={Pc:x16} dst={destination:x16}");
+        }
+
         return true;
     }
 
