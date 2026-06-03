@@ -9711,7 +9711,7 @@ internal sealed class MipsR5000Core
             return false;
 
         string key = ReadAsciiTraceString(sp + 0x18UL, 0x20);
-        if (key != "EMPTY_BOX" && key.Length != 0)
+        if (key != "EMPTY_BOX")
             return false;
 
         long index = unchecked((long)_gpr[17]);
@@ -11834,6 +11834,7 @@ internal sealed class MipsR5000Core
             string.IsNullOrEmpty(path) &&
             requestedByteCount == 0x2000U &&
             callback == 0x800ab4e4U &&
+            !GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_BGLOADMODEL_DISABLE_INDEXED_TEXTURE_PAYLOADS")) &&
             qioIndex is > 0 and < 0x40 &&
             TryGetKnownRuntimeBgLoadModelTexturePayload(qioIndex, out indexedTextureCode, out indexedTextureByteOffset, out indexedTextureByteLength);
 
