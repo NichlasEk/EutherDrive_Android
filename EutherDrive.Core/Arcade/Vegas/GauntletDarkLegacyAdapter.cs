@@ -3676,6 +3676,11 @@ internal sealed class MipsR5000Core
             NormalizeGlideFifoState(state);
             fifo = _memory.Read32(state + 0x374UL);
             room = _memory.Read32(state + 0x37cUL);
+            if (room < totalPacketBytes && totalPacketBytes <= 0x00020000UL && fifo is >= 0xa8000000U and <= 0xa83ffff8U)
+            {
+                room = (uint)totalPacketBytes;
+                _memory.Write32(state + 0x37cUL, room);
+            }
             if (room < totalPacketBytes || fifo is < 0xa8000000U or > 0xa83ffff8U)
             {
                 TraceGlideFifoOuterPayloadReject($"room room={room:x8} need={totalPacketBytes:x8} fifo={fifo:x8}");
@@ -10447,6 +10452,22 @@ internal sealed class MipsR5000Core
         ulong destination = _gpr[4];
         ulong format = _gpr[5];
         ulong varArgs = _gpr[6];
+        ulong globalDestination = pc >= entry + 0x10UL && IsMainRamRange(_gpr[7], 1UL)
+            ? _gpr[7]
+            : SignExtend32(_memory.Read32(0xffffffff80228134UL));
+        if (format != 0xffffffff8013d85cUL &&
+            TryFastPathKnownRuntimeDiagnosticLiteralLineWrapper(
+                pc,
+                entry,
+                sp,
+                returnAddress,
+                destination,
+                format,
+                globalDestination))
+        {
+            return true;
+        }
+
         if (format != 0xffffffff8013d85cUL ||
             !IsMainRamRange(destination, 65UL) ||
             !IsMainRamRange(varArgs + 0x04UL, 4UL))
@@ -10478,6 +10499,93 @@ internal sealed class MipsR5000Core
         Pc = returnAddress;
         AdvanceCp0Count(_cp0CountStep * 96UL);
         _instructionCounter += 96UL;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeDiagnosticLiteralLineWrapper(
+        ulong pc,
+        ulong entry,
+        ulong sp,
+        ulong returnAddress,
+        ulong destination,
+        ulong format,
+        ulong globalDestination)
+    {
+        const ulong callDelaySlot = 0xffffffff801216a8UL;
+        if (pc > callDelaySlot)
+        {
+            if (!IsMainRamRange(sp + 0x10UL, 4UL))
+                return false;
+
+            destination = SignExtend32(_memory.Read32(sp + 0x10UL));
+            if (IsMainRamRange(destination, 1UL))
+                _memory.Write8(destination, 0);
+
+            _gpr[31] = returnAddress;
+            _gpr[29] = sp + 0x70UL;
+            _gpr[0] = 0;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+            Pc = returnAddress;
+            AdvanceCp0Count(_cp0CountStep * 16UL);
+            _instructionCounter += 16UL;
+            return true;
+        }
+
+        if (pc >= entry + 0x28UL)
+        {
+            if (!IsMainRamRange(sp + 0x10UL, 4UL))
+                return false;
+
+            destination = SignExtend32(_memory.Read32(sp + 0x10UL));
+        }
+
+        if (!IsMainRamRange(format, 1UL) ||
+            !IsMainRamRange(globalDestination, 1UL))
+        {
+            return false;
+        }
+
+        uint length = 0;
+        while (length < 0x100U && IsMainRamRange(format + length, 1UL))
+        {
+            uint value = _memory.Read8(format + length);
+            if (value == (uint)'%')
+                return false;
+            if (value == 0)
+                break;
+            length++;
+        }
+
+        if (length == 0x100U ||
+            !IsMainRamRange(format + length, 1UL) ||
+            !IsMainRamRange(globalDestination, length + 1UL))
+        {
+            return false;
+        }
+
+        for (uint offset = 0; offset < length; offset++)
+            _memory.Write8(globalDestination + offset, _memory.Read8(format + offset));
+        _memory.Write8(globalDestination + length, 0);
+        if (IsMainRamRange(destination, 1UL))
+            _memory.Write8(destination, 0);
+
+        _gpr[2] = SignExtend32(length);
+        _gpr[31] = returnAddress;
+        _gpr[29] = sp + 0x70UL;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnAddress;
+        AdvanceCp0Count(_cp0CountStep * 96UL);
+        _instructionCounter += 96UL;
+        if (_runtimeFormatBufferFastPathTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] diagnostic-literal-line-wrapper pc={pc:x16} " +
+                $"dst={globalDestination:x16} fmt={format:x16} len={length}");
+        }
+
         return true;
     }
 
@@ -23169,6 +23277,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             int packetStart = _cmdFifoReadIndex;
             uint command = _cmdFifoRam[_cmdFifoReadIndex];
             int wordsNeeded = GetFifoPacketWordsNeeded(command);
+            if (IsKnownGauntletRuntimeMisalignedFifoWord(command, wordsNeeded))
+                wordsNeeded = 1;
             if (wordsNeeded <= 0)
                 wordsNeeded = 1;
             if (!HasCommandFifoWords(packetStart, wordsNeeded))
@@ -23245,6 +23355,12 @@ internal class VoodooBringupBackend : IVoodooBackend
            _fifoBuffer.Count >= 2 &&
            _fifoBuffer[1] == 0 &&
            _registers[0x48] == 0;
+
+    private bool IsKnownGauntletRuntimeMisalignedFifoWord(uint command, int wordsNeeded)
+        => command == _registers[0x41] &&
+           command == 0x0c482435U &&
+           (command & 7u) == 5u &&
+           wordsNeeded > 0x10000;
 
     private void DecodeFifoType0(uint command)
     {
