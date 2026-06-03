@@ -1050,6 +1050,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(pc))
             return;
+        if (TryFastPathKnownRuntimeBgLoadModelTokenNormalizeInFlight(pc))
+            return;
         if (TryFastPathKnownRuntimeBgLoadModelTokenNormalizeLoop(pc))
             return;
         if (TryFastPathKnownRuntimeBinarySearchKnownMissingTexture(pc))
@@ -9533,15 +9535,107 @@ internal sealed class MipsR5000Core
         return true;
     }
 
-    private bool TryFastPathKnownRuntimeBgLoadModelTokenNormalizeLoop(ulong pc)
+    private bool TryFastPathKnownRuntimeBgLoadModelTokenNormalizeInFlight(ulong pc)
     {
         const ulong loop = 0xffffffff800aa1f4UL;
         const ulong characterMap = 0xffffffff801587f1UL;
         if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
             pc != loop)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(loop + 0x00UL) != 0x00021603U ||
+            _memory.Read32(loop + 0x04UL) != 0x10490010U ||
+            _memory.Read32(loop + 0x08UL) != 0x00481021U ||
+            _memory.Read32(loop + 0x0cUL) != 0x90420000U ||
+            _memory.Read32(loop + 0x10UL) != 0x30420002U ||
+            _memory.Read32(loop + 0x24UL) != 0xa0820000U ||
+            _memory.Read32(loop + 0x30UL) != 0x10400005U ||
+            _memory.Read32(loop + 0x48UL) != 0x03e00008U ||
+            _memory.Read32(loop + 0x4cUL) != 0xa0800000U)
+        {
+            return false;
+        }
+
+        ulong destination = _gpr[4];
+        ulong source = _gpr[5];
+        if (!IsMainRamRange(destination, 256UL) ||
+            !IsMainRamRange(source, 256UL) ||
+            !IsMainRamRange(characterMap, 256UL))
+        {
+            return false;
+        }
+
+        ulong outCursor = destination;
+        ulong inCursor = source;
+        ulong copied = 0;
+        uint current = _memory.Read8(inCursor);
+        while (copied < 255UL && current is not (0 or 0x20U or 0x09U or 0x0aU))
+        {
+            int signed = unchecked((sbyte)current);
+            if (signed < 0)
+                return false;
+
+            uint mapped = (_memory.Read8(characterMap + (uint)signed) & 0x02U) != 0
+                ? (uint)((signed - 0x20) & 0xff)
+                : (uint)signed;
+            _memory.Write8(outCursor, (byte)mapped);
+            copied++;
+            inCursor++;
+            outCursor++;
+            current = _memory.Read8(inCursor);
+        }
+
+        if (copied >= 255UL)
             return false;
 
-        if (_memory.Read32(loop - 0x14UL) != 0x3c028016U ||
+        int nextSigned = unchecked((sbyte)current);
+        _memory.Write8(outCursor, 0);
+        _gpr[2] = SignExtend32((uint)nextSigned);
+        _gpr[3] = current;
+        _gpr[4] = outCursor;
+        _gpr[5] = inCursor;
+        _gpr[6] = SignExtend32((uint)nextSigned);
+        Pc = _gpr[31];
+        CompleteFastPathStep();
+        ulong estimatedInstructions = Math.Max(1UL, copied) * 12UL + 7UL;
+        AdvanceCp0Count(_cp0CountStep * (estimatedInstructions - 1UL));
+        _instructionCounter += estimatedInstructions - 1UL;
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-token-normalize-inflight " +
+                $"pc={pc:x16} ra={Pc:x16} copied={copied}");
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelTokenNormalizeLoop(ulong pc)
+    {
+        const ulong emptyTokenEntry = 0xffffffff800aa198UL;
+        const ulong loop = 0xffffffff800aa1f4UL;
+        const ulong characterMap = 0xffffffff801587f1UL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
+            (pc != emptyTokenEntry && pc != loop))
+            return false;
+
+        if (_memory.Read32(emptyTokenEntry + 0x00UL) != 0x80a30000U ||
+            _memory.Read32(emptyTokenEntry + 0x04UL) != 0x24020020U ||
+            _memory.Read32(emptyTokenEntry + 0x08UL) != 0x5062fffdU ||
+            _memory.Read32(emptyTokenEntry + 0x0cUL) != 0x24a50001U ||
+            _memory.Read32(emptyTokenEntry + 0x10UL) != 0x24020009U ||
+            _memory.Read32(emptyTokenEntry + 0x14UL) != 0x5062fffaU ||
+            _memory.Read32(emptyTokenEntry + 0x18UL) != 0x24a50001U ||
+            _memory.Read32(emptyTokenEntry + 0x1cUL) != 0x2402000aU ||
+            _memory.Read32(emptyTokenEntry + 0x20UL) != 0x5062fff7U ||
+            _memory.Read32(emptyTokenEntry + 0x24UL) != 0x24a50001U ||
+            _memory.Read32(emptyTokenEntry + 0x28UL) != 0x80a60000U ||
+            _memory.Read32(emptyTokenEntry + 0x2cUL) != 0x90a30000U ||
+            _memory.Read32(emptyTokenEntry + 0x30UL) != 0x10c0001cU ||
+            _memory.Read32(emptyTokenEntry + 0x34UL) != 0x24020020U ||
+            _memory.Read32(loop - 0x14UL) != 0x3c028016U ||
             _memory.Read32(loop - 0x10UL) != 0x244887f1U ||
             _memory.Read32(loop - 0x0cUL) != 0x24070020U ||
             _memory.Read32(loop - 0x08UL) != 0x24060009U ||
@@ -9569,6 +9663,72 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        if (pc != loop)
+        {
+            ulong entryDestination = _gpr[4];
+            ulong entrySource = _gpr[5];
+            if (!IsMainRamRange(entryDestination, 256UL) ||
+                !IsMainRamRange(entrySource, 256UL) ||
+                !IsMainRamRange(characterMap, 256UL))
+            {
+                return false;
+            }
+
+            ulong cursor = entrySource;
+            for (int whitespaceSkipped = 0; whitespaceSkipped < 256; whitespaceSkipped++, cursor++)
+            {
+                uint value = _memory.Read8(cursor);
+                if (value is 0x20U or 0x09U or 0x0aU)
+                    continue;
+
+                ulong entryOutCursor = entryDestination;
+                ulong entryInCursor = cursor;
+                ulong entryCopied = 0;
+                uint currentValue = value;
+                while (entryCopied < 255UL && currentValue is not (0 or 0x20U or 0x09U or 0x0aU))
+                {
+                    int signed = unchecked((sbyte)currentValue);
+                    if (signed < 0)
+                        return false;
+
+                    uint mapped = (_memory.Read8(characterMap + (uint)signed) & 0x02U) != 0
+                        ? (uint)((signed - 0x20) & 0xff)
+                        : (uint)signed;
+                    _memory.Write8(entryOutCursor, (byte)mapped);
+                    entryCopied++;
+                    entryInCursor++;
+                    entryOutCursor++;
+                    currentValue = _memory.Read8(entryInCursor);
+                }
+
+                if (entryCopied >= 255UL)
+                    return false;
+
+                int nextSigned = unchecked((sbyte)currentValue);
+                _memory.Write8(entryOutCursor, 0);
+                _gpr[2] = SignExtend32((uint)nextSigned);
+                _gpr[3] = currentValue;
+                _gpr[4] = entryOutCursor;
+                _gpr[5] = entryInCursor;
+                _gpr[6] = SignExtend32((uint)nextSigned);
+                Pc = _gpr[31];
+                CompleteFastPathStep();
+                ulong estimatedInstructions = (ulong)Math.Max(1, whitespaceSkipped) * 4UL + Math.Max(1UL, entryCopied) * 12UL + 7UL;
+                AdvanceCp0Count(_cp0CountStep * (estimatedInstructions - 1UL));
+                _instructionCounter += estimatedInstructions - 1UL;
+                if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:FIX] bgloadmodel-entry-token-normalize " +
+                        $"pc={pc:x16} ra={Pc:x16} skipped={whitespaceSkipped} copied={entryCopied}");
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
         ulong destination = _gpr[4];
         ulong source = _gpr[5];
         if (_gpr[6] != 9 || _gpr[7] != 0x20 || _gpr[8] != characterMap || _gpr[9] != 10)
@@ -9587,6 +9747,8 @@ internal sealed class MipsR5000Core
         while (copied < 255UL)
         {
             int signed = unchecked((sbyte)current);
+            if (signed < 0)
+                return false;
             if (signed == 10)
                 break;
 
