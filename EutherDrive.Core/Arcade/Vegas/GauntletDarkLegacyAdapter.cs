@@ -22724,6 +22724,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _swapBufferCount;
     private int _pendingSwapCount;
     private int _renderFrame;
+    private int _lastRenderBufferIndex = -1;
     private int _setupVertexCount;
     private int _frontBufferIndex;
     private int _backBufferIndex = 1;
@@ -23116,6 +23117,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int copyWidth = Math.Min(target.Width, 640);
         int copyHeight = Math.Min(target.Height, 480);
         int renderBufferIndex = ChooseRenderBufferIndex();
+        _lastRenderBufferIndex = renderBufferIndex;
         if (ShouldMaterializePendingClearForRender(renderBufferIndex))
             MaterializePendingClear(renderBufferIndex);
         ushort[] front = _colorBuffers[renderBufferIndex];
@@ -23144,22 +23146,31 @@ internal class VoodooBringupBackend : IVoodooBackend
             return _frontBufferIndex;
 
         int frontCount = GetBufferNonZeroCount(_frontBufferIndex);
-        if (frontCount > 1024)
+        int frontActiveCount = GetVisibleBufferActiveColorCount(_frontBufferIndex);
+        if (frontCount > 1024 && frontActiveCount > 1024)
             return _frontBufferIndex;
 
         int bestIndex = _frontBufferIndex;
         int bestCount = frontCount;
+        int bestActiveCount = frontActiveCount;
         int count = GetColorBufferCount();
         for (int i = 0; i < count; i++)
         {
-            if (i == _frontBufferIndex || IsPendingClearBuffer(i))
+            if (i == _frontBufferIndex)
                 continue;
 
             int candidateCount = GetBufferNonZeroCount(i);
-            if (candidateCount > 1024 && candidateCount > bestCount)
+            int candidateActiveCount = GetVisibleBufferActiveColorCount(i);
+            if (IsPendingClearBuffer(i) && candidateActiveCount <= 1024)
+                continue;
+
+            if (candidateCount > 1024 &&
+                candidateActiveCount > 1024 &&
+                (candidateActiveCount > bestActiveCount || bestActiveCount <= 1024 && candidateCount > bestCount))
             {
                 bestIndex = i;
                 bestCount = candidateCount;
+                bestActiveCount = candidateActiveCount;
             }
         }
 
@@ -24343,7 +24354,10 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private string GetBufferCountDebugStatus()
         => _debugBufferCounts
-            ? $"bnnz={GetBufferNonZeroCount(0)}/{GetBufferNonZeroCount(1)}/{GetBufferNonZeroCount(2)} "
+            ? $"bnnz={GetBufferNonZeroCount(0)}/{GetBufferNonZeroCount(1)}/{GetBufferNonZeroCount(2)} " +
+              $"bact={GetBufferActiveColorCount(0)}/{GetBufferActiveColorCount(1)}/{GetBufferActiveColorCount(2)} " +
+              $"bvact={GetVisibleBufferActiveColorCount(0)}/{GetVisibleBufferActiveColorCount(1)}/{GetVisibleBufferActiveColorCount(2)} " +
+              $"rbuf={_lastRenderBufferIndex} dbuf={(_fixDisplayBufferSelection ? 1 : 0)} "
             : "";
 
     private string GetTmuDebugStatus()
@@ -24383,6 +24397,44 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             if (buffer[i] != 0)
                 count++;
+        }
+
+        return count;
+    }
+
+    private int GetBufferActiveColorCount(int index)
+    {
+        if ((uint)index >= (uint)_colorBuffers.Length)
+            return 0;
+
+        int count = 0;
+        ushort[] buffer = _colorBuffers[index];
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            ushort pixel = buffer[i];
+            if (pixel != 0 && pixel != 0xffff)
+                count++;
+        }
+
+        return count;
+    }
+
+    private int GetVisibleBufferActiveColorCount(int index)
+    {
+        if ((uint)index >= (uint)_colorBuffers.Length)
+            return 0;
+
+        int count = 0;
+        ushort[] buffer = _colorBuffers[index];
+        for (int y = 0; y < 480; y++)
+        {
+            int row = y * 1024;
+            for (int x = 0; x < 640; x++)
+            {
+                ushort pixel = buffer[(row + x) & (LfbPixels - 1)];
+                if (pixel != 0 && pixel != 0xffff)
+                    count++;
+            }
         }
 
         return count;
