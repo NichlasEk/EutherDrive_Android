@@ -9705,7 +9705,8 @@ internal sealed class MipsR5000Core
         if (!IsMainRamRange(sp + 0x18UL, 0x20UL))
             return false;
 
-        if (ReadAsciiTraceString(sp + 0x18UL, 0x20) != "EMPTY_BOX")
+        string key = ReadAsciiTraceString(sp + 0x18UL, 0x20);
+        if (key != "EMPTY_BOX" && key.Length != 0)
             return false;
 
         long index = unchecked((long)_gpr[17]);
@@ -9726,7 +9727,7 @@ internal sealed class MipsR5000Core
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] bgloadmodel-known-missing-texture-caller-loop " +
-                $"key=EMPTY_BOX pc={pc:x16} exit={Pc:x16} remaining={remaining}");
+                $"key={(key.Length == 0 ? "<empty>" : key)} pc={pc:x16} exit={Pc:x16} remaining={remaining}");
         }
 
         return true;
