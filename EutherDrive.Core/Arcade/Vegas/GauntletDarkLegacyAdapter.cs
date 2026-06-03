@@ -1004,6 +1004,8 @@ internal sealed class MipsR5000Core
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeTextDrawEntry(pc))
             return;
+        if (TryFastPathKnownRuntimeFormatLiteralWrapper(pc))
+            return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeFormatBufferEntry(pc))
             return;
         if (TryFastPathKnownRuntimeFormatBufferInFlight(pc))
@@ -10182,6 +10184,82 @@ internal sealed class MipsR5000Core
         Pc = returnAddress;
         AdvanceCp0Count(_cp0CountStep * 128UL);
         _instructionCounter += 128UL;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeFormatLiteralWrapper(ulong pc)
+    {
+        const ulong entry = 0xffffffff80120204UL;
+        const ulong afterStackAdjust = entry + 0x04UL;
+        if (pc is not (entry or afterStackAdjust))
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffe8U ||
+            _memory.Read32(entry + 0x04UL) != 0x0080102dU ||
+            _memory.Read32(entry + 0x08UL) != 0x00a0182dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x00c0382dU ||
+            _memory.Read32(entry + 0x10UL) != 0xafbf0010U ||
+            _memory.Read32(entry + 0x14UL) != 0x8c440054U ||
+            _memory.Read32(entry + 0x18UL) != 0x0040282dU ||
+            _memory.Read32(entry + 0x1cUL) != 0x0c04808dU ||
+            _memory.Read32(entry + 0x20UL) != 0x0060302dU ||
+            _memory.Read32(entry + 0x24UL) != 0x8fbf0010U ||
+            _memory.Read32(entry + 0x28UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x2cUL) != 0x27bd0018U)
+        {
+            return false;
+        }
+
+        ulong frame = _gpr[4];
+        ulong format = _gpr[5];
+        if (!IsMainRamRange(frame + 0x54UL, 4UL) ||
+            !IsMainRamRange(format, 1UL))
+        {
+            return false;
+        }
+
+        ulong destination = SignExtend32(_memory.Read32(frame + 0x54UL));
+        if (!IsMainRamRange(destination, 1UL))
+            return false;
+
+        uint length = 0;
+        while (length < 0x100U && IsMainRamRange(format + length, 1UL))
+        {
+            uint value = _memory.Read8(format + length);
+            if (value == (uint)'%')
+                return false;
+            if (value == 0)
+                break;
+            length++;
+        }
+
+        if (length == 0x100U ||
+            !IsMainRamRange(format + length, 1UL) ||
+            !IsMainRamRange(destination, length + 1UL))
+        {
+            return false;
+        }
+
+        for (uint offset = 0; offset < length; offset++)
+            _memory.Write8(destination + offset, _memory.Read8(format + offset));
+        _memory.Write8(destination + length, 0);
+
+        _gpr[2] = SignExtend32(length);
+        if (pc == afterStackAdjust)
+            _gpr[29] += 0x18UL;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+        AdvanceCp0Count(_cp0CountStep * 48UL);
+        _instructionCounter += 48UL;
+        if (_runtimeFormatBufferFastPathTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] format-literal-wrapper pc={pc:x16} " +
+                $"dst={destination:x16} fmt={format:x16} len={length}");
+        }
+
         return true;
     }
 
