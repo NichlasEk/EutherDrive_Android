@@ -1050,6 +1050,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeStringLength(pc))
             return;
+        if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxZeroRun(pc))
+            return;
         if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxOuterSlot(pc))
             return;
         if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxModelLookupStore(pc))
@@ -9543,6 +9545,88 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FIX] bgloadmodel-empty-box-outer-slot " +
                 $"pc={pc:x16} tail={Pc:x16} slot={slot:x16} record={record:x16}");
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelEmptyBoxZeroRun(ulong pc)
+    {
+        const ulong entry = 0xffffffff8006376cUL;
+        const ulong loopExit = 0xffffffff8006381cUL;
+        if ((!_enableRuntimeBgLoadModelDispatchFastPath && !_enableRuntimeBgLoadModelExperimentalSkips) ||
+            pc != entry)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(entry + 0x00UL) != 0x96e20008U ||
+            _memory.Read32(entry + 0x04UL) != 0x02221007U ||
+            _memory.Read32(entry + 0x08UL) != 0x30420001U ||
+            _memory.Read32(entry + 0x0cUL) != 0x10400010U ||
+            _memory.Read32(entry + 0x10UL) != 0x27a40018U ||
+            _memory.Read32(0xffffffff800637bcUL) != 0x02558021U ||
+            _memory.Read32(0xffffffff800637d4UL) != 0xa0400004U ||
+            _memory.Read32(0xffffffff800637f4UL) != 0xe4400010U ||
+            _memory.Read32(0xffffffff80063804UL) != 0xe4400010U ||
+            _memory.Read32(0xffffffff80063808UL) != 0x26520004U ||
+            _memory.Read32(0xffffffff8006380cUL) != 0x26310001U ||
+            _memory.Read32(0xffffffff80063810UL) != 0x2a220010U ||
+            _memory.Read32(0xffffffff80063814UL) != 0x1440ffd5U ||
+            _memory.Read32(0xffffffff80063818UL) != 0x26730004U)
+        {
+            return false;
+        }
+
+        ulong maskAddress = _gpr[23] + 8UL;
+        if (!IsMainRamRange(maskAddress, 2UL))
+            return false;
+
+        uint mask = _memory.Read16(maskAddress);
+        uint index = unchecked((uint)_gpr[17]);
+        if (index >= 16U)
+            return false;
+        if (((mask >> (int)index) & 1U) != 0)
+            return false;
+
+        uint processed = 0;
+        while (index < 16U && ((mask >> (int)index) & 1U) == 0)
+        {
+            ulong slot = _gpr[18] + _gpr[21];
+            if (!IsMainRamRange(slot, 4UL))
+                break;
+
+            ulong record = SignExtend32(_memory.Read32(slot));
+            if (!IsMainRamRange(record, 0x14UL))
+                break;
+
+            uint heightBits = index < 8U ? 0x42800000U : 0x42c00000U;
+            _memory.Write32(record, 0);
+            _memory.Write8(record + 4UL, 0);
+            _memory.Write32(record + 0x10UL, heightBits);
+
+            _gpr[16] = slot;
+            _gpr[18] += 4UL;
+            _gpr[17] = SignExtend32(index + 1U);
+            _gpr[19] += 4UL;
+            index++;
+            processed++;
+        }
+
+        if (processed == 0)
+            return false;
+
+        _gpr[2] = index < 16U ? 1UL : 0UL;
+        _gpr[0] = 0;
+        Pc = index < 16U ? entry : loopExit;
+        CompleteFastPathStep();
+        AdvanceCp0Count(_cp0CountStep * Math.Max(1UL, processed * 18UL));
+        _instructionCounter += Math.Max(1UL, processed * 18UL);
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-empty-box-zero-run " +
+                $"pc={pc:x16} processed={processed} next={Pc:x16} mask={mask:x4}");
         }
 
         return true;
