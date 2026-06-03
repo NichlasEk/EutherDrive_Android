@@ -628,6 +628,7 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS");
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _enableRuntimeStackRecordCopyFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STACK_RECORD_COPY");
+    private readonly bool _enableRuntimeRenderRecordSkipFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP");
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
@@ -1038,6 +1039,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeZeroQwordFillTail(pc))
             return;
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
+            return;
+        if (TryFastPathKnownRuntimeRenderRecordSkip(pc))
             return;
         if (TryFastPathKnownRuntimeStackRecordCopy(pc))
             return;
@@ -9116,6 +9119,97 @@ internal sealed class MipsR5000Core
         _gpr[9] = SignExtend32(last1);
         _gpr[10] = SignExtend32(last2);
         Pc = exit;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeRenderRecordSkip(ulong pc)
+    {
+        const ulong entry = 0xffffffff800b1e54UL;
+        const ulong activeRecordBody = 0xffffffff800b1e7cUL;
+        const ulong scanExit = 0xffffffff800b2000UL;
+        const ulong listBase = 0xffffffff80210270UL;
+        const ulong listCount = 0xffffffff80213600UL;
+        const ulong listOwner = 0xffffffff80210000UL;
+        const ulong recordStride = 0x2cUL;
+        if (!_enableRuntimeRenderRecordSkipFastPath || pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x9602002aU ||
+            _memory.Read32(entry + 0x04UL) != 0x30420040U ||
+            _memory.Read32(entry + 0x08UL) != 0x10400005U ||
+            _memory.Read32(entry + 0x0cUL) != 0x00000000U ||
+            _memory.Read32(entry + 0x10UL) != 0x12600005U ||
+            _memory.Read32(entry + 0x14UL) != 0x3c078021U ||
+            _memory.Read32(entry + 0x18UL) != 0x0802c7fbU ||
+            _memory.Read32(entry + 0x1cUL) != 0x24130001U ||
+            _memory.Read32(entry + 0x20UL) != 0x1260005dU ||
+            _memory.Read32(entry + 0x24UL) != 0x3c078021U ||
+            _memory.Read32(0xffffffff800b1fecUL) != 0x8fc23600U ||
+            _memory.Read32(0xffffffff800b1ff0UL) != 0x26940001U ||
+            _memory.Read32(0xffffffff800b1ff4UL) != 0x0282102aU ||
+            _memory.Read32(0xffffffff800b1ff8UL) != 0x1440ff96U ||
+            _memory.Read32(0xffffffff800b1ffcUL) != 0x2610002cU)
+        {
+            return false;
+        }
+
+        if (_gpr[30] != listOwner)
+            return false;
+
+        uint count = _memory.Read32(listCount);
+        if (count == 0 || count > 0x12aU)
+            return false;
+
+        ulong record = _gpr[16];
+        ulong index = _gpr[20];
+        if (index >= count ||
+            record < listBase ||
+            (record - listBase) / recordStride != index ||
+            (record - listBase) % recordStride != 0)
+        {
+            return false;
+        }
+
+        ulong skipped = 0;
+        uint flagBit = 0;
+        while (index < count && skipped < 0x12aUL)
+        {
+            if (!IsMainRamRange(record + 0x2aUL, 2))
+                return false;
+
+            flagBit = (uint)(_memory.Read16(record + 0x2aUL) & 0x40U);
+            bool flagSet = flagBit != 0;
+            bool s3Zero = _gpr[19] == 0;
+            bool entersActiveBody = flagSet == s3Zero;
+            if (entersActiveBody)
+                break;
+
+            if (flagSet)
+                _gpr[19] = 1;
+
+            index++;
+            record += recordStride;
+            skipped++;
+        }
+
+        if (skipped == 0)
+            return false;
+
+        _gpr[7] = listOwner;
+        _gpr[16] = record;
+        _gpr[20] = index;
+        if (index >= count)
+        {
+            _gpr[2] = 0;
+            Pc = scanExit;
+        }
+        else
+        {
+            _gpr[2] = flagBit;
+            Pc = activeRecordBody;
+        }
+
         CompleteFastPathStep();
         return true;
     }
