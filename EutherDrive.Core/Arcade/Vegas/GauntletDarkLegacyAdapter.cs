@@ -10652,7 +10652,7 @@ internal sealed class MipsR5000Core
     {
         const ulong entry = 0xffffffff80121670UL;
         const ulong epilogue = 0xffffffff801216acUL;
-        if (pc < entry + 0x04UL || pc > epilogue)
+        if (pc < entry || pc > epilogue)
             return false;
 
         if (_memory.Read32(entry + 0x00UL) != 0x27bdff90U ||
@@ -10669,6 +10669,7 @@ internal sealed class MipsR5000Core
         }
 
         ulong sp = _gpr[29];
+        ulong stackAdjustment = pc == entry ? 0UL : 0x70UL;
         ulong returnAddress;
         if (pc < entry + 0x28UL)
         {
@@ -10699,7 +10700,8 @@ internal sealed class MipsR5000Core
                 returnAddress,
                 destination,
                 format,
-                globalDestination))
+                globalDestination,
+                stackAdjustment))
         {
             return true;
         }
@@ -10728,7 +10730,7 @@ internal sealed class MipsR5000Core
 
         _gpr[2] = 64;
         _gpr[31] = returnAddress;
-        _gpr[29] = sp + 0x70UL;
+        _gpr[29] = sp + stackAdjustment;
         _gpr[0] = 0;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
@@ -10745,7 +10747,8 @@ internal sealed class MipsR5000Core
         ulong returnAddress,
         ulong destination,
         ulong format,
-        ulong globalDestination)
+        ulong globalDestination,
+        ulong stackAdjustment)
     {
         const ulong callDelaySlot = 0xffffffff801216a8UL;
         if (pc > callDelaySlot)
@@ -10758,7 +10761,7 @@ internal sealed class MipsR5000Core
                 _memory.Write8(destination, 0);
 
             _gpr[31] = returnAddress;
-            _gpr[29] = sp + 0x70UL;
+            _gpr[29] = sp + stackAdjustment;
             _gpr[0] = 0;
             _hasPendingBranch = false;
             _hasImmediatePcOverride = false;
@@ -10808,7 +10811,7 @@ internal sealed class MipsR5000Core
 
         _gpr[2] = SignExtend32(length);
         _gpr[31] = returnAddress;
-        _gpr[29] = sp + 0x70UL;
+        _gpr[29] = sp + stackAdjustment;
         _gpr[0] = 0;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;

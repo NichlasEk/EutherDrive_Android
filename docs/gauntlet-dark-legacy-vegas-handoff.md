@@ -415,6 +415,13 @@ Current interpretation:
   `80121670/80121674:175464`, and `8011f7ac..8011f7e0:173818`. Voodoo counters:
   `fifoWords=7037367`, `fifoPackets=266088`, `tri=1873+897`,
   `lfbWrites=540472513`, `texWrites=6322435`.
+- The diagnostic format-line wrapper at `80121670` now also fastpaths from the
+  exact entry PC instead of requiring the first stack-adjust instruction to run.
+  A 180 -> 600 warm profile with the menu-scan experiment ended at
+  `pc=80102710`; `80121674` dropped out of the hot list, while `80121670`
+  remains a frequent fastpath-entry at `175668` hits. Voodoo counters stayed in
+  the same band: `fifoWords=7037557`, `fifoPackets=266147`, `tri=1873+897`,
+  `lfbWrites=540933313`, `texWrites=6322435`.
 
 Next target:
 
