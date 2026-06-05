@@ -151,6 +151,40 @@ So the next source-side target moved one caller level earlier than
 `800aac48`: find why the BGLoadModel caller chooses `802e1718` for slots 1..8
 instead of distinct hydrated asset descriptors.
 
+Follow-up trace extended the same opt-in parser trace with caller-side source
+selection points around `800aad40..800aae98`. A fresh 180-frame run confirms the
+collapse happens before the parser consumes `802529a0`:
+
+```text
+caller-source-table-loaded index=1 slot=802529a4:00000000 s2=8015a92c s5=1
+caller-source-selected     index=1 slot=802529a4:00000000 s2=8015a92c
+caller-after-path-lookup   index=1 v0=802e1780 s2=802e1718 s5=1
+
+caller-source-table-loaded index=7 slot=802529bc:802e1718 s2=8015a938 s5=0
+caller-source-table-store  index=7 slot=802529bc:802e1718 s2=8015a938
+caller-after-path-lookup   index=7 v0=802e1780 s2=802e1718 s5=0
+
+caller-source-table-loaded index=8 slot=802529c0:00000000 s2=8015a938 s5=1
+caller-after-path-lookup   index=8 v0=802e1780 s2=802e1718
+```
+
+Slot 9 is the first one that does not collapse to the `static_lr` payload base:
+
+```text
+caller-after-path-lookup index=9 s2=80312a08
+parser source=80312a08 asset=credits
+```
+
+Interpretation:
+
+- `800aac48` is still only the parser/consumer.
+- The earlier caller seeds from static path/name pointers such as `8015a92c`
+  and `8015a938`, then a lookup returns through `v0=802e1780` while final `s2`
+  becomes `802e1718` for slots 1..8.
+- The next useful target is the helper chain called from
+  `800aad40..800aae60`, especially the calls to `800b72fc` and `800c9088`, not
+  another mask at the parser entry.
+
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
 Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in

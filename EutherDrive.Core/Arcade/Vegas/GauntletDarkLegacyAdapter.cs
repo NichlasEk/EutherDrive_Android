@@ -11826,6 +11826,15 @@ internal sealed class MipsR5000Core
 
         string label = pc switch
         {
+            0xffffffff800aada8UL => "caller-source-lookup-call",
+            0xffffffff800aadb0UL => "caller-source-table-base",
+            0xffffffff800aadb8UL => "caller-source-table-loaded",
+            0xffffffff800aaddcUL => "caller-source-selected",
+            0xffffffff800aadf0UL => "caller-source-table-store",
+            0xffffffff800aae60UL => "caller-after-path-lookup",
+            0xffffffff800aae70UL => "caller-side-source-select",
+            0xffffffff800aae8cUL => "caller-side-store-branch",
+            0xffffffff800aae98UL => "caller-before-parser-call",
             0xffffffff800aac10UL => "source-writer-index",
             0xffffffff800aac18UL => "source-writer-source-store",
             0xffffffff800aac24UL => "source-writer-side-store",
@@ -11848,6 +11857,8 @@ internal sealed class MipsR5000Core
             ? TraceKnownRuntimeBgLoadModelAssetTableSummary((long)Math.Min(index, 0x3fUL))
             : "";
         string callerState = TraceKnownRuntimeBgLoadModelAssetParserCallerState();
+        string callerSelectState = TraceKnownRuntimeBgLoadModelAssetParserCallerSelectState(pc);
+        string callerSourceState = TraceKnownRuntimeBgLoadModelAssetParserCallerSourceState(pc);
         string writerState = TraceKnownRuntimeBgLoadModelAssetParserWriterState(pc);
 
         _runtimeBgLoadModelAssetParserTraceCount++;
@@ -11855,9 +11866,9 @@ internal sealed class MipsR5000Core
             $"[GAUNTDL:TRACE] bgloadmodel-asset-parser {label} pc={pc:x16} op={_memory.Read32(pc):x8} " +
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
             $"a0={_gpr[4]:x16} a1={source:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
-            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s5={_gpr[21]:x16} " +
             $"assetEntry={assetEntry:x16} selector={selectorWords} sourceWords={sourceWords} sourceText=\"{ReadAsciiTraceString(source, 48)}\" " +
-            $"asset={assetSummary} writer={writerState} caller={callerState}");
+            $"asset={assetSummary} source={callerSourceState} select={callerSelectState} writer={writerState} caller={callerState}");
     }
 
     private string TraceKnownRuntimeBgLoadModelAssetParserSelectorWords(ulong selector)
@@ -11906,6 +11917,36 @@ internal sealed class MipsR5000Core
             : "";
 
         return $"{recordStatus} {qioStatus}".Trim();
+    }
+
+    private string TraceKnownRuntimeBgLoadModelAssetParserCallerSelectState(ulong pc)
+    {
+        if (pc is not (0xffffffff800aae60UL or 0xffffffff800aae70UL or 0xffffffff800aae8cUL or 0xffffffff800aae98UL))
+            return "";
+
+        const ulong sideTable = 0xffffffff802549a0UL;
+        ulong index = _gpr[16] & 0xffffffffUL;
+        ulong sideSlot = index < 0x40UL ? sideTable + index * 4UL : 0;
+        string side = sideSlot != 0 ? $"{sideSlot:x16}:{ReadTraceWord(sideSlot):x8}" : "";
+        return $"index={index:x8} side={side} " +
+               $"s1Text=\"{ReadAsciiTraceString(_gpr[17], 32)}\" " +
+               $"s2Text=\"{ReadAsciiTraceString(_gpr[18], 32)}\" " +
+               $"s3Text=\"{ReadAsciiTraceString(_gpr[19], 32)}\"";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelAssetParserCallerSourceState(ulong pc)
+    {
+        if (pc is not (0xffffffff800aada8UL or 0xffffffff800aadb0UL or 0xffffffff800aadb8UL or
+                       0xffffffff800aaddcUL or 0xffffffff800aadf0UL))
+            return "";
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        ulong index = _gpr[16] & 0xffffffffUL;
+        ulong slot = index < 0x40UL ? sourceTable + index * 4UL : 0;
+        string slotText = slot != 0 ? $"{slot:x16}:{ReadTraceWord(slot):x8}" : "";
+        return $"index={index:x8} slot={slotText} " +
+               $"v0Text=\"{ReadAsciiTraceString(_gpr[2], 32)}\" " +
+               $"s2Text=\"{ReadAsciiTraceString(_gpr[18], 32)}\"";
     }
 
     private string TraceKnownRuntimeBgLoadModelAssetParserWriterState(ulong pc)
