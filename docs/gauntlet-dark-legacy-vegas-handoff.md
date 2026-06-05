@@ -247,6 +247,27 @@ caller-side population of the name argument (`a1`) and path slot (`a0`) before
 `800c9088`. Healthy slot 9 has both strings populated; slots 1..8 pass empty
 strings and then legitimately fall back to `802e1718`.
 
+Address-load scans at frame 180 found the key references:
+
+```text
+80166370 refs: 8001db68, 8001dc74, 8001dcf0, 8001de4c,
+               8001e140..8001e5d8
+8013588c refs: 80083d38, 80083d50
+```
+
+The `8001db40` cluster is the more relevant source path. It seeds `s0` with
+`80166370`, indexes the `8016a92c` pointer table by a caller-provided index,
+loads a second pointer from the `8016aa80`/`80227b2c` path, and calls the string
+format/copy helper at `8011f3c0`. Later branches around `8001e540` use
+`8016a93c` and still fall back to `80166370` when the expected table entry is
+empty. The `80083d00` cluster is the explicit healthy credits setup path using
+`8013588c("credits_font")`.
+
+Next useful trace/fix target: instrument the `8001db40..8001e5d8` cluster with
+the same slot index and output path/name registers. This should identify why the
+slot 1..8 table lookup falls back to `80166370` while slot 9 reaches the
+credits-specific setup.
+
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
 Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in
