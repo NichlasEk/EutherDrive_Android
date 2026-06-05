@@ -654,6 +654,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_FILL_ALL"));
+    private readonly int _runtimeBgLoadModelIndexedTextureQioStreamLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", 0);
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -714,6 +716,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioCreateAliasTraceCount;
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioTraceCount;
+    private int _runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
@@ -903,6 +906,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
+        ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
@@ -11898,6 +11902,52 @@ internal sealed class MipsR5000Core
         }
 
         return true;
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(ulong pc)
+    {
+        const ulong streamLimitComparePc = 0xffffffff800abe78UL;
+        const ulong stateBase = 0xffffffff80210000UL;
+        const ulong sourceCursorBase = 0xffffffff802e2158UL;
+        const ulong loadedSourceBase = 0xffffffff802e1718UL;
+        const ulong sourceStride = 0x2000UL;
+
+        if (!_enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
+            _runtimeBgLoadModelIndexedTextureQioStreamLimit <= 0 ||
+            pc != streamLimitComparePc ||
+            _gpr[16] != stateBase ||
+            _gpr[17] != stateBase ||
+            _gpr[19] != sourceCursorBase ||
+            _gpr[20] == 0 ||
+            _gpr[20] >= (ulong)_runtimeBgLoadModelIndexedTextureQioStreamLimit)
+        {
+            return;
+        }
+
+        ulong streamIndex = _gpr[3];
+        uint sourceCursor = _memory.Read32(stateBase + 0xf17cUL);
+        if (streamIndex < _gpr[20])
+            return;
+
+        ulong loadedSource = loadedSourceBase + Math.Min(streamIndex, 8UL) * sourceStride;
+        bool knownLoadedSource =
+            streamIndex <= 8UL &&
+            IsMainRamRange(loadedSource, 0x80UL) &&
+            !IsKnownRuntimeBgLoadModelSourceWindowEmpty(loadedSource);
+        if (streamIndex > 8UL || !knownLoadedSource)
+            return;
+
+        ulong oldLimit = _gpr[20];
+        _gpr[20] = (ulong)_runtimeBgLoadModelIndexedTextureQioStreamLimit;
+        _gpr[0] = 0;
+
+        if (_runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-stream-limit pc={pc:x16} " +
+                $"streamIndex={streamIndex} sourceCursor={sourceCursor} limit={oldLimit}->{_gpr[20]} " +
+                $"loadedSource={loadedSource:x16}");
+        }
     }
 
     private int HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(uint requestedBytes)

@@ -7383,3 +7383,54 @@ log/status helper family (`ra=800c81f0`, `a0=0x1000`, `a2=9/10`,
 a simple new wait loop. The next concrete target is the caller around the two
 observed `textures.rom` QIO creates (`ra=800ac014` into `800c9678`) to find
 why the stream advances only through `gei/snm`.
+
+### 2026-06-05 Continuation: Indexed Texture Stream Limit Probe
+
+Added a second opt-in indexed texture QIO probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT=9
+```
+
+This is only active with
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO=1`.
+It targets the BGLoadModel texture state-machine comparison at `800abe78`,
+where the traced path had `s4=2`. After `gei/snm`, `$v1 == 2`, so the stock
+comparison stops the stream path instead of continuing toward more indexed
+texture requests. The probe raises the register limit only when that exact
+state-machine path is about to terminate and the already-loaded source window
+for the current index is non-empty.
+
+The first broad version of the probe fired too early (`streamIndex=0`) and
+regressed the render path:
+
+```text
+frame=420 pc=0xffffffff80102ad8 frameHash=0x4a85cbfa
+drawPackets=25248 directTriangles=1646 setupTriangles=805
+texWrites=6488094 framebuffer colored=34248
+```
+
+The tightened version only fires once, after `snm`:
+
+```text
+bgloadmodel-indexed-texture-qio-stream-limit pc=ffffffff800abe78
+streamIndex=2 sourceCursor=0 limit=2->9 loadedSource=ffffffff802e5718
+```
+
+It does not produce additional `textures.rom` QIO requests by 600 frames. It
+does change the plateau PC, while preserving the indexed render statistics:
+
+```text
+frame=420 pc=0xffffffff80121684 frameHash=0x742b775c
+drawPackets=24640 directTriangles=1265 setupTriangles=615
+texWrites=6472734 framebuffer colored=307200
+
+frame=600 pc=0xffffffff800ce4c4 frameHash=0x742b775c
+drawPackets=24640 directTriangles=1265 setupTriangles=615
+texWrites=6472734 framebuffer colored=307200
+```
+
+Conclusion: the `s4=2` limit is a real branch point, but raising it alone does
+not advance to index 3 QIO. The next target is the code reached after the
+tightened probe (`80121684` at 420, `800ce4c4` at 600) or the state that
+should set a non-zero source cursor before the `800abe78` comparison.
