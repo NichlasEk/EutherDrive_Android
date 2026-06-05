@@ -7243,3 +7243,21 @@ Next target: trace the clone-enabled path around `800aa974` /
 `800aa98c` and the asset parser rewrite that replaces named entries with
 `802f*` empty entries. That should reveal what per-index payload or count/key
 state is missing, instead of blindly cloning slot0.
+
+Follow-up: clone mode now disables the local
+`bgloadmodel-known-missing-texture-caller-loop` fastpath when the key is empty,
+so the clone probe does not immediately skip eight non-zero source entries as
+known-missing textures. This removes the `key=<empty>` skip trace, but it does
+not fix the plateau:
+
+```text
+frame=420 pc=0xffffffff800c81c4 frameHash=0x81a461d7
+drawPackets=22956 directTriangles=924 setupTriangles=445
+texWrites=6521475 framebuffer colored=31854
+```
+
+The asset table is still rewritten to `802f2e70/802f4e70/...` with empty names.
+So the skip fastpath was masking part of the behavior, but the underlying issue
+is that cloned `static_lr` source data is not the correct per-index payload.
+Trace the real parser rewrite path next, likely around `800aac48..800aaee0`
+with clone enabled and the empty-key skip disabled.

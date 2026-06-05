@@ -10290,6 +10290,8 @@ internal sealed class MipsR5000Core
             return false;
 
         string key = ReadAsciiTraceString(sp + 0x18UL, 0x20);
+        if (_enableRuntimeBgLoadModelCloneDistinctSourcesExperiment && key.Length == 0)
+            return false;
 
         long index = unchecked((long)_gpr[17]);
         long count = unchecked((long)_gpr[19]);
