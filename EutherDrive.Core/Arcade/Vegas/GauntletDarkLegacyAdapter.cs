@@ -11676,11 +11676,8 @@ internal sealed class MipsR5000Core
         if (TryApplyKnownRuntimeBgLoadModelRecordZeroQioMetadataRepair(pc))
             return;
 
-        ulong record = _gpr[17];
-        if (record < recordBase || (record - recordBase) % recordStride != 0)
+        if (!TryGetKnownRuntimeBgLoadModelRecordFromRegisters(out ulong record, out ulong recordIndex, out _))
             return;
-
-        ulong recordIndex = (record - recordBase) / recordStride;
         if (recordIndex == 0 || recordIndex >= 0x20)
             return;
 
@@ -11803,11 +11800,8 @@ internal sealed class MipsR5000Core
         if (_memory.Read32(returnSlotLoadPc) != 0x8fc20020U)
             return;
 
-        ulong record = _gpr[17];
-        if (record < recordBase || (record - recordBase) % recordStride != 0)
+        if (!TryGetKnownRuntimeBgLoadModelRecordFromRegisters(out ulong record, out ulong recordIndex, out _))
             return;
-
-        ulong recordIndex = (record - recordBase) / recordStride;
         if (recordIndex == 0 || recordIndex >= 0x40)
             return;
 
@@ -12156,6 +12150,13 @@ internal sealed class MipsR5000Core
 
         ulong record = _gpr[17];
         long recordIndex = GetKnownRuntimeBgLoadModelRecordIndex(record);
+        string recordRegister = "s1";
+        if (recordIndex < 0 && TryGetKnownRuntimeBgLoadModelRecordFromRegisters(out ulong registerRecord, out ulong registerRecordIndex, out string registerName))
+        {
+            record = registerRecord;
+            recordIndex = unchecked((long)registerRecordIndex);
+            recordRegister = registerName;
+        }
         long assetIndex = recordIndex >= 0 ? recordIndex :
             _gpr[7] < 0x10000UL ? unchecked((long)_gpr[7]) :
             _gpr[17] < 0x10000UL ? unchecked((long)_gpr[17]) : -1;
@@ -12173,7 +12174,7 @@ internal sealed class MipsR5000Core
         _runtimeBgLoadModelQioRequestTraceCount++;
         Console.WriteLine(
             $"[GAUNTDL:TRACE] bgloadmodel-qio-request {phase}/{label} pc={pc:x16} op={_memory.Read32(pc):x8} " +
-            $"idx={recordIndex} record={record:x16} recordQio={recordQio:x16} expectedQio={expectedQio:x16} " +
+            $"idx={recordIndex} record={recordRegister}:{record:x16} recordQio={recordQio:x16} expectedQio={expectedQio:x16} " +
             $"qio={TraceKnownRuntimeBgLoadModelQioOneLine(qio)} " +
             $"obj={qioObject:x16}:{ReadTraceWord(qioObject):x8}/{ReadTraceWord(qioObject + 0x14UL):x8} " +
             $"dst={qioDestination:x16}:{ReadTraceWord(qioDestination):x8} " +
@@ -12198,6 +12199,39 @@ internal sealed class MipsR5000Core
             return -1;
 
         return (long)((record - recordBase) / recordStride);
+    }
+
+    private bool TryGetKnownRuntimeBgLoadModelRecordFromRegisters(
+        out ulong record,
+        out ulong recordIndex,
+        out string registerName)
+    {
+        if (TryGetKnownRuntimeBgLoadModelRecordFromRegister(_gpr[17], "s1", out record, out recordIndex, out registerName))
+            return true;
+
+        return TryGetKnownRuntimeBgLoadModelRecordFromRegister(_gpr[16], "s0", out record, out recordIndex, out registerName);
+    }
+
+    private static bool TryGetKnownRuntimeBgLoadModelRecordFromRegister(
+        ulong candidate,
+        string candidateRegisterName,
+        out ulong record,
+        out ulong recordIndex,
+        out string registerName)
+    {
+        const ulong recordBase = 0xffffffff80252da0UL;
+        const ulong recordStride = 0x18UL;
+
+        record = 0;
+        recordIndex = 0;
+        registerName = "";
+        if (candidate < recordBase || (candidate - recordBase) % recordStride != 0)
+            return false;
+
+        record = candidate;
+        recordIndex = (candidate - recordBase) / recordStride;
+        registerName = candidateRegisterName;
+        return true;
     }
 
     private string TraceKnownRuntimeBgLoadModelRecordOneLine(ulong record)

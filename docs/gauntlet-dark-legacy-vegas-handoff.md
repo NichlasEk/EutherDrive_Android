@@ -7048,3 +7048,48 @@ frameHash=0xec4ad078
 Interpretation: world selection being zero was a real local defect, but not the
 remaining blocker by itself. Continue with the real FSYS/file-id mapping or the
 late text/progress pump around `800e3378` / `80102b20` / `801035a0`.
+
+### 2026-06-05 Continuation: BGLoadModel QIO Record Register Probe
+
+`TraceKnownRuntimeBgLoadModelQioRequests` now reports which callee-saved
+register provided the record pointer. It first checks `s1` and falls back to
+`s0`, matching the active `800ac350`/`800c9944` path where the BGLoadModel
+record is often still in `s0`.
+
+The same register fallback is used by the opt-in QIO metadata and create-alias
+experiments, so future probes will not silently miss valid nonzero records if
+the guest keeps them in `s0`.
+
+240-frame verification with metadata replay:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS=1
+```
+
+Key observations:
+
+```text
+idx=0 record=s0:80252da0 at 800ac350/800c9678/800c9944
+bgloadmodel-qio-request-metadata-slot0 ... qio=80217c58 dest=802e1718
+later textures.rom create has s0=00002000, s1=188d2303, so it is not a model record
+```
+
+The run changed rendering/progression but still did not populate per-index
+BGLoadModel records or QIO shells:
+
+```text
+frame=240 pc=0xffffffff800a92b0 frameHash=0xdd724f6b
+drawPackets=18344 directTriangles=660 setupTriangles=313
+record table: only record 0 has state; records 1+ remain zero
+qio 80217d70+ remain blank/status-only
+802e3718 remains all zero
+framebuffer colored=31878
+```
+
+Interpretation: the earlier `idx=-1` trace was partly a trace blind spot, but
+not the active blocker. The current short castle path still only drives
+BGLoadModel record 0 through QIO create. The next useful target is the
+record-builder/asset-loop handoff before `800ac350`, specifically why asset
+slots 1..8 are parsed but never become live model records with distinct QIO
+requests.
