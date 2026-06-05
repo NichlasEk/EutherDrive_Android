@@ -7434,3 +7434,82 @@ Conclusion: the `s4=2` limit is a real branch point, but raising it alone does
 not advance to index 3 QIO. The next target is the code reached after the
 tightened probe (`80121684` at 420, `800ce4c4` at 600) or the state that
 should set a non-zero source cursor before the `800abe78` comparison.
+
+### 2026-06-05 Continuation: Indexed Texture Short Read Probe
+
+Added a third opt-in indexed texture QIO probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ=1
+```
+
+This is only active with
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO=1`.
+It targets the small `textures.rom` read that appears only after the tightened
+stream-limit probe:
+
+```text
+pc=800c9678 a1=8013b07c(textures.rom) a2=00018e00 a3=00000120
+s0=00000120 s1=00000120 s2=00000003 retSlot=807ffc98->80217c58
+```
+
+At the `800c9944` return-slot reload, the shared QIO object is otherwise empty
+except for status `2`. The probe hydrates only this exact short-read signature,
+uses `s2` as the indexed texture source id, copies the first `0x120` bytes of
+the known payload into the corresponding `802e1718 + index * 0x2000` source
+window, and repairs the QIO metadata as a completed `800ab4e4` callback.
+
+The probe fires for `stk`:
+
+```text
+bgloadmodel-indexed-texture-qio-short-read pc=ffffffff800c9944
+index=3 code=stk qio=ffffffff80217c58 object=ffffffff80295750
+dest=ffffffff802e7718 bytes=00000120 disk=15117a00
+```
+
+This is a real forward step. The stream path now reaches `streamIndex=3`, and
+the index 3 source window becomes non-zero:
+
+```text
+bgloadmodel-indexed-texture-qio-stream-limit pc=ffffffff800abe78
+streamIndex=3 sourceCursor=0 limit=2->9 loadedSource=ffffffff802e7718
+
+index=3 slot=ffffffff802529ac:802e1718->802e7718
+sourceWords=00=00000000,04=00000000,08=00000000,0c=00000000,
+40=f00b0001,5c=0000a3a4,60=0000001e,64=00000009,68=00000000
+```
+
+With indexed QIO + stream-limit + short-read enabled, the 420-frame signature
+is:
+
+```text
+frame=420 pc=0xffffffff801034b8 frameHash=0x08862a9a
+rtxt="Loading Game."
+drawPackets=25545 directTriangles=303 setupTriangles=134
+texWrites=6835614 framebuffer colored=271547
+```
+
+The 600-frame signature is:
+
+```text
+frame=600 pc=0xffffffff80102a88 frameHash=0x37fd72d4
+rtxt="Loading Game."
+drawPackets=25545 directTriangles=303 setupTriangles=134
+texWrites=6835614 framebuffer colored=307200
+```
+
+It still does not boot through the loading phase. A focused 260-frame QIO trace
+shows the next unhydrated request immediately after the `stk` short read:
+
+```text
+pc=800c9678 a1=8013b07c(textures.rom) a2=00000000 a3=00002000
+s0=00002000 s1=000214c0 s2=00000007 retSlot=807ffc98->80217c58
+
+pc=800c9944 s0=00002000 s1=000214c0 s2=00000007
+retSlot=807ffc98->80217c58:00000000/00000000/00000000/00000000/00000000/00000002
+```
+
+That `0x2000`/`s1=0x214c0`/`s2=7` request is the next concrete target. Do not
+treat `s2=7` as a proven texture source index yet; it may be a later state or
+stream counter. The next probe should first establish the intended destination
+and offset semantics for this second class of indexed texture stream request.
