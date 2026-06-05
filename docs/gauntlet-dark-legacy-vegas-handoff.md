@@ -221,6 +221,32 @@ Keep that experiment off by default for now. The next concrete target remains
 the real path/name source that should replace the empty `80166370` copy source,
 or the caller branch that decides to reuse `802e1718` for slots 1..8.
 
+The filtered helper trace now catches the exact `800aaddc -> 800c9088` call.
+For the empty model slots:
+
+```text
+slot 1:
+  lookup-entry a0=8024f9e0("") a1=80166371("") s2=8015a92c
+  after-path-lookup v0=802e1780 s2=802e1718
+
+slot 8:
+  lookup-entry a0=8024fb30("") a1=80166371("") s2=8015a938
+  after-path-lookup v0=802e1780 s2=802e1718
+```
+
+For the first healthy non-static slot:
+
+```text
+slot 9:
+  lookup-entry a0=8024fb60("credits") a1=8013588c("credits_font")
+  after-path-lookup v0=80312a70 s2=80312a08
+```
+
+So the strongest next target is no longer generic lookup behavior: it is the
+caller-side population of the name argument (`a1`) and path slot (`a0`) before
+`800c9088`. Healthy slot 9 has both strings populated; slots 1..8 pass empty
+strings and then legitimately fall back to `802e1718`.
+
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
 Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in
