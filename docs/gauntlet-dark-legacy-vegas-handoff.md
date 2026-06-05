@@ -7280,3 +7280,53 @@ distinct-source table write is lost; it is failing because the cloned
 `static_lr` source stream describes unnamed/generated entries for every slot.
 The next useful probe is to identify or synthesize the correct per-index
 source stream contents, not to repair asset names after this parser pass.
+
+### 2026-06-05 Continuation: Indexed Texture QIO Probe
+
+Added an opt-in probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO=1
+```
+
+The trace before this change showed that `QIO_REQUEST_METADATA` only hydrated
+slot0 (`802e1718`) from `static_lr`; the later `textures.rom` QIO create calls
+are not BGLoadModel records (`s0=0x2000`, `s1=0x188d2303`, `idx=-1`) and reuse
+the same `80217c58` return slot, so the record-indexed metadata path never
+fills `802e3718`, `802e5718`, etc.
+
+The new probe catches those blank-path texture QIO returns and hydrates the
+first empty distinct source slot from the existing indexed payload table. At
+420/600 frames it currently hydrates only:
+
+```text
+index=1 code=gei dest=802e3718 disk=14a6f600
+index=2 code=snm dest=802e5718 disk=14a54800
+```
+
+This is not boot yet, but it is a real new signature:
+
+```text
+frame=420 pc=0xffffffff800c7b88 frameHash=0x8ef9e361
+drawPackets=24640 directTriangles=1265 setupTriangles=615
+texWrites=6472734 framebuffer colored=307200
+
+frame=600 pc=0xffffffff800c7c08 frameHash=0x8ef9e361
+drawPackets=24640 directTriangles=1265 setupTriangles=615
+texWrites=6472734 framebuffer colored=307200
+```
+
+The no-indexed sanity path is unchanged at the previous best 420-frame
+signature:
+
+```text
+pc=0xffffffff800c80f0 frameHash=0x5335d5be
+drawPackets=27461 directTriangles=941 setupTriangles=453
+texWrites=6424515 framebuffer colored=286179
+```
+
+Next target: find why only two blank-path texture QIO creates are observed by
+600 frames, or synthesize the remaining indexed texture source streams as a
+controlled probe. The important improvement over the clone probe is that the
+per-index source words now match real texture payload headers (`f00b0001`,
+payload-local extents) instead of cloned `static_lr` model data.
