@@ -7261,3 +7261,22 @@ So the skip fastpath was masking part of the behavior, but the underlying issue
 is that cloned `static_lr` source data is not the correct per-index payload.
 Trace the real parser rewrite path next, likely around `800aac48..800aaee0`
 with clone enabled and the empty-key skip disabled.
+
+Parser trace with clone enabled confirms the rewrite mechanics:
+
+```text
+caller-before-parser-call index=1 s2=802e3718
+entry pc=800aac48 a1=80150000 a2=1 a3=1
+pre-index source=802e3718 sourceWords=00=12,04=2,0c=0a
+after-source-pointer-store asset[1]=802f2e70/00000000/00000000/<empty>
+caller-return asset[1]=802f2e70/00000002/00000000/<empty>
+```
+
+The source table still contains the distinct `802e*` pointers, but the parser
+emits internal `802f*` payload pointers into the asset table and leaves the
+names empty. Indexes 2..8 follow the same pattern (`802f4e70`,
+`802f6e70`, etc.). This means the clone probe is not failing because the
+distinct-source table write is lost; it is failing because the cloned
+`static_lr` source stream describes unnamed/generated entries for every slot.
+The next useful probe is to identify or synthesize the correct per-index
+source stream contents, not to repair asset names after this parser pass.
