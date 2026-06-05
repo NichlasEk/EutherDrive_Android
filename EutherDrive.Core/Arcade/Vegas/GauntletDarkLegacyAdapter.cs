@@ -662,6 +662,8 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeBgLoadModelRecords = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_RECORDS") == "1";
     private readonly bool _traceRuntimeBgLoadModelStateDelta = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STATE_DELTA") == "1";
     private readonly bool _traceRuntimeBgLoadModelQioRequests = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS") == "1";
+    private readonly int _traceRuntimeBgLoadModelQioRequestLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUEST_LIMIT", 96);
     private readonly bool _traceRuntimeBgLoadModelAssetParser = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER") == "1";
     private readonly bool _traceRuntimeWorldDataTableRepair = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_TABLE") == "1";
     private readonly bool _traceRuntimeWorldDataAllocation = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_ALLOCATION") == "1";
@@ -12288,7 +12290,7 @@ internal sealed class MipsR5000Core
 
     private void TraceKnownRuntimeBgLoadModelQioRequests(ulong pc, string phase)
     {
-        if (!_traceRuntimeBgLoadModelQioRequests || _runtimeBgLoadModelQioRequestTraceCount >= 96)
+        if (!_traceRuntimeBgLoadModelQioRequests || _runtimeBgLoadModelQioRequestTraceCount >= _traceRuntimeBgLoadModelQioRequestLimit)
             return;
 
         string label = pc switch

@@ -7352,3 +7352,34 @@ next target is the sequencing around the two real blank-path QIO creates: why
 only `gei` and `snm` are requested by 600 frames, and what condition should
 allow the remaining per-index streams to be requested without breaking the
 parser path.
+
+Follow-up added a configurable QIO request trace cap:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUEST_LIMIT=512
+```
+
+With the indexed texture QIO probe enabled and a 512-event request trace cap,
+the 600-frame run only emitted 82 `bgloadmodel-qio-request` lines. That proves
+the old default cap of 96 was not hiding later texture requests. The same run
+still showed only the two real blank-path `textures.rom` QIO-create pairs:
+
+```text
+index=1 code=gei dest=802e3718 disk=14a6f600
+index=2 code=snm dest=802e5718 disk=14a54800
+```
+
+and plateaued at the same indexed signature:
+
+```text
+frame=600 pc=0xffffffff800c7c08 frameHash=0x8ef9e361
+drawPackets=24640 directTriangles=1265 setupTriangles=615
+texWrites=6472734 framebuffer colored=307200
+```
+
+CPU tracing the plateau PC `800c7b88` showed it is in the same runtime
+log/status helper family (`ra=800c81f0`, `a0=0x1000`, `a2=9/10`,
+`a3=8013d85c`) and increments `802171a4` before calling `80021670`; it is not
+a simple new wait loop. The next concrete target is the caller around the two
+observed `textures.rom` QIO creates (`ra=800ac014` into `800c9678`) to find
+why the stream advances only through `gei/snm`.
