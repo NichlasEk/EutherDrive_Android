@@ -135,6 +135,22 @@ Interpretation:
   parser still reports asset entries based on `static_lr` and empty names after
   index 0, even on the castle-selected path.
 
+Follow-up instrumentation extended
+`EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER=1` with candidate
+source-writer points around `800aac10`, `800aac18`, and `800aac24`. A fresh
+180-frame trace showed those writer labels are not the producer for the early
+repeated source values in this path. Instead, the parser reaches `800aac48`
+directly with caller state already set:
+
+```text
+slot 1..8: s2=802e1718 source=802e1718 asset=<empty>
+slot 9:    s2=80312a08 source=80312a08 asset=credits
+```
+
+So the next source-side target moved one caller level earlier than
+`800aac48`: find why the BGLoadModel caller chooses `802e1718` for slots 1..8
+instead of distinct hydrated asset descriptors.
+
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
 Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in

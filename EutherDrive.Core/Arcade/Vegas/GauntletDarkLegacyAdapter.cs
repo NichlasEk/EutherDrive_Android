@@ -11826,6 +11826,9 @@ internal sealed class MipsR5000Core
 
         string label = pc switch
         {
+            0xffffffff800aac10UL => "source-writer-index",
+            0xffffffff800aac18UL => "source-writer-source-store",
+            0xffffffff800aac24UL => "source-writer-side-store",
             0xffffffff800aac48UL => "entry",
             0xffffffff800aac80UL => "pre-index",
             0xffffffff800aac90UL => "asset-table-base",
@@ -11845,6 +11848,7 @@ internal sealed class MipsR5000Core
             ? TraceKnownRuntimeBgLoadModelAssetTableSummary((long)Math.Min(index, 0x3fUL))
             : "";
         string callerState = TraceKnownRuntimeBgLoadModelAssetParserCallerState();
+        string writerState = TraceKnownRuntimeBgLoadModelAssetParserWriterState(pc);
 
         _runtimeBgLoadModelAssetParserTraceCount++;
         Console.WriteLine(
@@ -11853,7 +11857,7 @@ internal sealed class MipsR5000Core
             $"a0={_gpr[4]:x16} a1={source:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
             $"assetEntry={assetEntry:x16} selector={selectorWords} sourceWords={sourceWords} sourceText=\"{ReadAsciiTraceString(source, 48)}\" " +
-            $"asset={assetSummary} caller={callerState}");
+            $"asset={assetSummary} writer={writerState} caller={callerState}");
     }
 
     private string TraceKnownRuntimeBgLoadModelAssetParserSelectorWords(ulong selector)
@@ -11902,6 +11906,24 @@ internal sealed class MipsR5000Core
             : "";
 
         return $"{recordStatus} {qioStatus}".Trim();
+    }
+
+    private string TraceKnownRuntimeBgLoadModelAssetParserWriterState(ulong pc)
+    {
+        if (pc is not (0xffffffff800aac10UL or 0xffffffff800aac18UL or 0xffffffff800aac24UL))
+            return "";
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong sideTable = 0xffffffff802549a0UL;
+        ulong index = _gpr[2] & 0xffffffffUL;
+        if (index >= 0x40UL)
+            return $"index={index:x8}";
+
+        ulong sourceSlot = sourceTable + index * 4UL;
+        ulong sideSlot = sideTable + index * 4UL;
+        return $"index={index:x8} sourceSlot={sourceSlot:x16}:{ReadTraceWord(sourceSlot):x8}->{(uint)_gpr[18]:x8} " +
+               $"sideSlot={sideSlot:x16}:{ReadTraceWord(sideSlot):x8}->{(uint)_gpr[16]:x8} " +
+               $"s2Text=\"{ReadAsciiTraceString(_gpr[18], 32)}\" s0Text=\"{ReadAsciiTraceString(_gpr[16], 32)}\"";
     }
 
     private void TraceKnownRuntimeBgLoadModelQioRequests(ulong pc, string phase)
