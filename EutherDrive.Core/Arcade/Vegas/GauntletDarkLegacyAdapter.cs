@@ -644,6 +644,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_POLL");
     private readonly bool _enableRuntimeBgLoadModelAssetPointerNormalize =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE");
+    private readonly bool _enableRuntimeBgLoadModelAssetNameExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -717,6 +719,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelStateDeltaTraceCount;
     private int _runtimeBgLoadModelQioRequestTraceCount;
     private int _runtimeBgLoadModelAssetParserTraceCount;
+    private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
     private int _runtimeBgLoadModelKnownMissingTextureLookupTraceCount;
     private int _runtimeBgParserTraceCount;
@@ -886,6 +889,8 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeRenderListSaturationRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
+        ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
+        TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
@@ -1086,6 +1091,7 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxModelLookupStore(pc))
             return;
+        ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         if (TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(pc))
             return;
         if (TryFastPathKnownRuntimeBgLoadModelTokenNormalizeInFlight(pc))
@@ -10125,6 +10131,53 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private void ApplyKnownRuntimeBgLoadModelAssetNameRepair(ulong pc)
+    {
+        if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
+            pc is not (0xffffffff800aacb4UL or 0xffffffff800aa958UL))
+        {
+            return;
+        }
+
+        const ulong assetTable = 0xffffffff8024f9a0UL;
+        const ulong descriptorStride = 0x30UL;
+        const uint repeatedStaticSource = 0x802e1718U;
+
+        int repaired = 0;
+        for (ulong index = 1; index < 0x10UL; index++)
+        {
+            ulong entry = assetTable + index * descriptorStride;
+            ulong name = entry + 0x10UL;
+            if (!IsMainRamRange(entry + 0x2fUL, 1))
+                break;
+            if (_memory.Read32(entry) != repeatedStaticSource || _memory.Read8(name) != 0)
+                continue;
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out _))
+                continue;
+
+            WriteAsciiTraceString(name, code, 0x20);
+            repaired++;
+        }
+
+        if (repaired > 0 && _runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-asset-name-repair pc={pc:x16} repaired={repaired} " +
+                $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(0)}");
+        }
+    }
+
+    private void WriteAsciiTraceString(ulong address, string text, int maxLength)
+    {
+        if (!IsMainRamRange(address, (ulong)maxLength))
+            return;
+
+        int length = Math.Min(text.Length, Math.Max(0, maxLength - 1));
+        for (int i = 0; i < length; i++)
+            _memory.Write8(address + (ulong)i, (byte)text[i]);
+        _memory.Write8(address + (ulong)length, 0);
+    }
+
     private bool TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(ulong pc)
     {
         const ulong loop = 0xffffffff800aa958UL;
@@ -11869,6 +11922,70 @@ internal sealed class MipsR5000Core
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s5={_gpr[21]:x16} " +
             $"assetEntry={assetEntry:x16} selector={selectorWords} sourceWords={sourceWords} sourceText=\"{ReadAsciiTraceString(source, 48)}\" " +
             $"asset={assetSummary} source={callerSourceState} select={callerSelectState} writer={writerState} caller={callerState}");
+    }
+
+    private void TraceKnownRuntimeBgLoadModelLookupHelpers(ulong pc)
+    {
+        if (!_traceRuntimeBgLoadModelAssetParser || _runtimeBgLoadModelLookupHelperTraceCount >= 128)
+            return;
+
+        string label = pc switch
+        {
+            0xffffffff800b72fcUL => "size-alloc-entry",
+            0xffffffff800b7338UL => "size-alloc-return",
+            0xffffffff800c9088UL => "lookup-entry",
+            0xffffffff800c909cUL => "lookup-global-check",
+            0xffffffff800c90b4UL => "lookup-index-fold",
+            0xffffffff800c90d4UL => "lookup-return",
+            _ => ""
+        };
+        if (label.Length == 0)
+            return;
+        if (pc == 0xffffffff800b72fcUL &&
+            _gpr[31] is not (0xffffffff800aad84UL or 0xffffffff800aae68UL))
+        {
+            return;
+        }
+        if (pc is >= 0xffffffff800c9088UL and <= 0xffffffff800c90d4UL &&
+            _gpr[31] != 0xffffffff800aade4UL)
+        {
+            return;
+        }
+
+        _runtimeBgLoadModelLookupHelperTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-lookup-helper {label} pc={pc:x16} op={_memory.Read32(pc):x8} " +
+            $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+            $"a0={_gpr[4]:x16}({ReadAsciiTraceString(_gpr[4], 48)}) " +
+            $"a1={_gpr[5]:x16}({ReadAsciiTraceString(_gpr[5], 48)}) " +
+            $"a2={_gpr[6]:x16}({ReadAsciiTraceString(_gpr[6], 48)}) " +
+            $"a3={_gpr[7]:x16}({ReadAsciiTraceString(_gpr[7], 48)}) " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s5={_gpr[21]:x16} " +
+            $"pathSlot={TraceKnownRuntimeBgLoadModelPathSlot(_gpr[16])} " +
+            $"lookupGlobals={TraceKnownRuntimeBgLoadModelLookupGlobals()}");
+    }
+
+    private string TraceKnownRuntimeBgLoadModelPathSlot(ulong indexRegister)
+    {
+        ulong index = indexRegister & 0xffffffffUL;
+        if (index >= 0x40UL)
+            return $"index={index:x8}";
+
+        ulong pathSlot = 0xffffffff8024f9b0UL + index * 0x30UL;
+        return $"index={index:x8} {pathSlot:x16}:\"{ReadAsciiTraceString(pathSlot, 48)}\"";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelLookupGlobals()
+    {
+        const ulong baseAddress = 0xffffffff802380f0UL;
+        if (!IsMainRamRange(baseAddress, 0x20))
+            return "";
+
+        return $"80f4={_memory.Read32(baseAddress + 0x04UL):x8} " +
+               $"80f8={_memory.Read32(baseAddress + 0x08UL):x8} " +
+               $"80fc={_memory.Read32(baseAddress + 0x0cUL):x8} " +
+               $"8100={_memory.Read32(baseAddress + 0x10UL):x8} " +
+               $"8104={_memory.Read32(baseAddress + 0x14UL):x8}";
     }
 
     private string TraceKnownRuntimeBgLoadModelAssetParserSelectorWords(ulong selector)

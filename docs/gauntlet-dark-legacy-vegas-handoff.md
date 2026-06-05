@@ -185,6 +185,42 @@ Interpretation:
   `800aad40..800aae60`, especially the calls to `800b72fc` and `800c9088`, not
   another mask at the parser entry.
 
+Follow-up helper trace added `bgloadmodel-lookup-helper` logging under the same
+`EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER=1` gate. The important new
+data is that slots 1..8 are built from empty path slots before the lookup:
+
+```text
+runtime-string-copy dst=8024f9b0 src=80129c50 len=9  -> "static_lr"
+runtime-string-copy dst=8024f9e0 src=80166370 len=0
+runtime-string-copy dst=8024fa10 src=80166370 len=0
+...
+
+8024f9b0: "static_lr" ... ptr=802e1718
+8024f9e0: ""          ... ptr=802e1718
+8024fa10: ""          ... ptr=802e1718
+...
+8024fb50: "credits"   ... ptr=80312a08
+```
+
+The static table around `8015a92c` points into runtime strings such as
+`GRE/RED/BLU/YEL`, `LEFTHAND`, and inventory words, not the missing texture or
+model descriptor names. A gated experiment,
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES=1`, fills empty
+asset-table names from the existing indexed texture payload table
+(`gei/snm/stk/kjh/pnk/...`). It keeps the names visible after each parser pass,
+but a 300-frame check still reaches the same castle baseline:
+
+```text
+pc=0xffffffff8004eb08
+frameHash=0xbd71006f
+drawPackets=1024 directTriangles=2818 setupTriangles=1394
+framebuffer colored=443
+```
+
+Keep that experiment off by default for now. The next concrete target remains
+the real path/name source that should replace the empty `80166370` copy source,
+or the caller branch that decides to reuse `802e1718` for slots 1..8.
+
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
 Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in
