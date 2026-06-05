@@ -652,6 +652,7 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeBgLoadModelRecords = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_RECORDS") == "1";
     private readonly bool _traceRuntimeBgLoadModelStateDelta = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STATE_DELTA") == "1";
     private readonly bool _traceRuntimeBgLoadModelQioRequests = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS") == "1";
+    private readonly bool _traceRuntimeBgLoadModelAssetParser = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER") == "1";
     private readonly bool _traceRuntimeWorldDataTableRepair = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_TABLE") == "1";
     private readonly bool _traceRuntimeWorldDataAllocation = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_ALLOCATION") == "1";
     private readonly bool _traceRuntimeWorldDataLoader = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER") == "1";
@@ -713,6 +714,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelRecordTraceCount;
     private int _runtimeBgLoadModelStateDeltaTraceCount;
     private int _runtimeBgLoadModelQioRequestTraceCount;
+    private int _runtimeBgLoadModelAssetParserTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
     private int _runtimeBgLoadModelKnownMissingTextureLookupTraceCount;
     private int _runtimeBgParserTraceCount;
@@ -881,6 +883,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeRenderListSaturationRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
+        TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
         TraceKnownRuntimeBgLoadModelRecords(pc);
@@ -11811,6 +11814,91 @@ internal sealed class MipsR5000Core
                     $"name={ReadAsciiTraceString(entry + 0x10UL, 24)}");
             }
         }
+    }
+
+    private void TraceKnownRuntimeBgLoadModelAssetParser(ulong pc)
+    {
+        if (!_traceRuntimeBgLoadModelAssetParser || _runtimeBgLoadModelAssetParserTraceCount >= 128)
+            return;
+
+        string label = pc switch
+        {
+            0xffffffff800aac48UL => "entry",
+            0xffffffff800aac80UL => "pre-index",
+            0xffffffff800aac90UL => "asset-table-base",
+            0xffffffff800aacb4UL => "after-source-pointer-store",
+            0xffffffff800aacd0UL => "after-count-load",
+            0xffffffff800aaea8UL => "caller-return",
+            _ => ""
+        };
+        if (label.Length == 0)
+            return;
+        ulong source = _gpr[5];
+        ulong index = _gpr[7] & 0xffffffffUL;
+        ulong assetEntry = 0xffffffff8024f9a0UL + Math.Min(index, 0xffUL) * 0x30UL;
+        string selectorWords = TraceKnownRuntimeBgLoadModelAssetParserSelectorWords(_gpr[3]);
+        string sourceWords = TraceKnownRuntimeBgLoadModelAssetParserWords(source);
+        string assetSummary = IsMainRamRange(assetEntry, 0x30)
+            ? TraceKnownRuntimeBgLoadModelAssetTableSummary((long)Math.Min(index, 0x3fUL))
+            : "";
+        string callerState = TraceKnownRuntimeBgLoadModelAssetParserCallerState();
+
+        _runtimeBgLoadModelAssetParserTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-asset-parser {label} pc={pc:x16} op={_memory.Read32(pc):x8} " +
+            $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+            $"a0={_gpr[4]:x16} a1={source:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"assetEntry={assetEntry:x16} selector={selectorWords} sourceWords={sourceWords} sourceText=\"{ReadAsciiTraceString(source, 48)}\" " +
+            $"asset={assetSummary} caller={callerState}");
+    }
+
+    private string TraceKnownRuntimeBgLoadModelAssetParserSelectorWords(ulong selector)
+    {
+        if (!IsMainRamRange(selector + 0x0fUL, 1))
+            return "";
+
+        return $"{_memory.Read32(selector + 0x00UL):x8}/{_memory.Read32(selector + 0x04UL):x8}/" +
+               $"{_memory.Read32(selector + 0x08UL):x8}/{_memory.Read32(selector + 0x0cUL):x8}";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelAssetParserWords(ulong source)
+    {
+        if (!IsMainRamRange(source + 0x6fUL, 1))
+            return "";
+
+        return $"00={_memory.Read32(source + 0x00UL):x8}" +
+               $",04={_memory.Read32(source + 0x04UL):x8}" +
+               $",08={_memory.Read32(source + 0x08UL):x8}" +
+               $",0c={_memory.Read32(source + 0x0cUL):x8}" +
+               $",40={_memory.Read32(source + 0x40UL):x8}" +
+               $",5c={_memory.Read32(source + 0x5cUL):x8}" +
+               $",60={_memory.Read32(source + 0x60UL):x8}" +
+               $",64={_memory.Read32(source + 0x64UL):x8}" +
+               $",68={_memory.Read32(source + 0x68UL):x8}";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelAssetParserCallerState()
+    {
+        const ulong recordBase = 0xffffffff80252da0UL;
+        const ulong recordStride = 0x18UL;
+        const ulong qioBase = 0xffffffff80217c58UL;
+        const ulong qioStride = 0x118UL;
+
+        ulong record = _gpr[17];
+        long recordIndex = record >= recordBase && (record - recordBase) % recordStride == 0
+            ? (long)((record - recordBase) / recordStride)
+            : -1;
+        ulong qio = recordIndex >= 0 ? qioBase + (ulong)recordIndex * qioStride : 0;
+
+        string recordStatus = recordIndex >= 0 && IsMainRamRange(record + 0x17UL, 1)
+            ? $"record#{recordIndex}:{_memory.Read32(record):x8}/{_memory.Read32(record + 4UL):x8}/{_memory.Read32(record + 8UL):x8}/{_memory.Read32(record + 0x0cUL):x8}"
+            : "";
+        string qioStatus = qio != 0 && IsMainRamRange(qio + 0x30UL, 1)
+            ? $"qio:{_memory.Read32(qio + 0x14UL):x8}/{_memory.Read32(qio + 0x18UL):x8}/{_memory.Read32(qio + 0x2cUL):x8}:{ReadAsciiTraceString(qio + 0x18UL, 32)}"
+            : "";
+
+        return $"{recordStatus} {qioStatus}".Trim();
     }
 
     private void TraceKnownRuntimeBgLoadModelQioRequests(ulong pc, string phase)

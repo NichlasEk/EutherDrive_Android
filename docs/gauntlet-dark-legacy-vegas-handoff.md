@@ -132,6 +132,34 @@ float/identity data, not a plausible table offset. The next useful fix is
 therefore to identify the correct descriptor base or record stride feeding
 `800aac90`, rather than adding more pointer-bias masks.
 
+Continuation on the same trail added opt-in parser instrumentation:
+
+- `EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER=1`
+- Logs `800aac48`, `800aac80`, `800aac90`, `800aacb4`, `800aacd0`,
+  and `800aaea8`.
+- Includes caller registers, source words at descriptor offsets, the selector
+  entry around `v1`, and the current `8024f9a0` asset table slice.
+
+Key 240-frame trace result from
+`gauntdl-gauntdl24-fast-raw-f180-s200000-679903a27884.warm`:
+
+```text
+index 0 selector=802e1718/00000000/802e1718/00000000 source=802e1718
+index 1 selector=802e1718/00000000/802e1718/00000000 source=802e1718
+...
+index 8 selector=802e1718/00000000/80312a08/00000000 source=802e1718
+index 9 selector=80312998/00000000/00000000/00000000 source=80312998
+index 10 selector=80332998/00000000/00000000/00000000 source=80332998
+```
+
+So the selector list at `802551d0 + index * 8` is already populated with
+duplicate `802e1718` pointers for the early slots. `800aac48` is faithfully
+parsing what that list gives it; the next fix should chase the population of
+`802551d0`, not the parser store at `800aacb4`. The visual state remains
+pre-boot-gameplay: at 240 frames the final buffer has `nonBlack=17944`,
+`colored=0`, with `directTriangles=1873`, `setupTriangles=897`, and no type-3
+FIFO draw packets.
+
 ## 2026-05-25 Gauntlet Dark Legacy Bring-Up Pass
 
 This pass moved the Gauntlet path past the early cold-boot terminal loops and into the loaded game runtime's `Loading Game.` screen.
