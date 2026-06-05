@@ -7152,3 +7152,44 @@ signature, but the plateau is a log/progress pump over still-empty per-index
 asset buffers. Continue by tracing the caller around `ra=800c8364` together
 with the asset-source hydration path for `802e3718+`, not by patching
 `800c80f0` itself.
+
+### 2026-06-05 Continuation: Distinct Source Asset Names
+
+The `800c8364` caller trace confirms the `800c80f0` stop is a runtime
+formatter/log-ring path. It repeatedly formats diagnostic text via
+`80021670`; relevant strings include allocator/QIO messages at `8013d900`
+and `_LoadModel: > max %d models` / `textures.rom` near `8013b060`. This
+does not identify a new wait loop.
+
+Fixed the opt-in BGLoadModel asset-name repair so it accepts the distinct
+per-index source pointers produced by
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES`, not only the
+old repeated `802e1718` pointer. With asset names + distinct sources + QIO
+metadata enabled, the asset table now records:
+
+```text
+0: static_lr -> 802f0e70
+1: gei       -> 802e3718
+2: snm       -> 802e5718
+3: stk       -> 802e7718
+4: kjh       -> 802e9718
+5: pnk       -> 802eb718
+6: geb       -> 802ed718
+7: nin       -> 802ef718
+8: stg       -> 802f1718
+9: font_story
+```
+
+Verification still plateaus at the same render/progress signature:
+
+```text
+frame=420 pc=0xffffffff800c80f0 frameHash=0x5335d5be
+drawPackets=27461 directTriangles=941 setupTriangles=453
+texWrites=6424515 swaps=40386 framebuffer colored=286179
+```
+
+Interpretation: the previous "names remain empty" symptom was an experiment
+interaction, now fixed. It is not the boot blocker. The blocker remains that
+the per-index source buffers `802e3718..802f1718` are still zero-filled, so
+the next target is source-buffer hydration or the record/QIO creation path
+that should populate those buffers.

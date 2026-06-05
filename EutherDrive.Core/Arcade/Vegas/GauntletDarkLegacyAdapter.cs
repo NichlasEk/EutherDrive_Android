@@ -10154,7 +10154,10 @@ internal sealed class MipsR5000Core
             ulong name = entry + 0x10UL;
             if (!IsMainRamRange(entry + 0x2fUL, 1))
                 break;
-            if (_memory.Read32(entry) != repeatedStaticSource || _memory.Read8(name) != 0)
+
+            uint source = _memory.Read32(entry);
+            uint distinctSource = unchecked((uint)(0x802e1718UL + index * 0x2000UL));
+            if ((source != repeatedStaticSource && source != distinctSource) || _memory.Read8(name) != 0)
                 continue;
             if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out _))
                 continue;
