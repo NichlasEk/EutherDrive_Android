@@ -56,6 +56,77 @@ Core builds:
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
 ```
 
+## 2026-06-05 Continuation: Keep Runtime World Selection on Castle
+
+The runtime world-selection bring-up no longer forces the fallback `test`
+world at index 12 when the selected-world global is still empty. The normal
+runtime selected-pointer repair now fills `8016c13c` from fallback world entry
+index 0:
+
+```text
+[GAUNTDL:FIX] world-selected-pointer pc=ffffffff800e3dec selected=ffffffff802e1000 id=00000001 name=castle
+```
+
+The later `8004f29c` world-selection branch repair was aligned to the same
+index, and the narrow test-world static-data linker is now guarded so it only
+runs when the current selected entry is empty or already points at the test
+fallback entry. This prevents the old test-WAD static-data repair from
+re-entering after castle has been selected.
+
+Build verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+339 Warning(s)
+0 Error(s)
+```
+
+Fresh castle warm snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-castle-f180-s200000.warm
+```
+
+Probe results from that snapshot:
+
+```text
+frame=300
+pc=0xffffffff8004eb08
+frameHash=0xbd71006f
+drawPackets=1024 directTriangles=2818 setupTriangles=1394
+texWrites=6203075 fastFills=2580 swaps=9926
+framebuffer=640x480 nonBlack=307200 colored=443
+```
+
+The old post-300 log line is gone:
+
+```text
+[GAUNTDL:FIX] world-static-data-link ...
+```
+
+Longer 600-frame sanity remains stable but reaches a new plateau:
+
+```text
+frame=600
+pc=0xffffffff800ceb50
+frameHash=0x65d7fd5d
+drawPackets=1024 directTriangles=2818 setupTriangles=1394
+texWrites=6203075 fastFills=2580 swaps=110485
+framebuffer=640x480 nonBlack=480 colored=0
+```
+
+Interpretation:
+
+- The selected world is now consistently `castle`, not `test`.
+- The accidental test static-data relink was a real blocker and is now stopped.
+- Rendering does advance past the earlier all-white/test fallback state, but
+  draw and texture counters stop growing after the 300-frame region.
+- The next target is the world-validity helper around
+  `800cea48..800ceb80`; the existing bitset repair fills `80228668` and
+  `802286f0`, and the current plateau PC is just beyond the original guarded
+  repair range.
+
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
 Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in

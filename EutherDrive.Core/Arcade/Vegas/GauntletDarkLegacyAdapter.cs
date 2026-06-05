@@ -12894,15 +12894,15 @@ internal sealed class MipsR5000Core
         const ulong fallbackTable = 0xffffffff802e1000UL;
         const uint staticEntryStride = 0x2c;
         const uint fallbackEntryStride = 0x80;
-        const uint testWorldIndex = 12;
-        const ulong testStaticEntry = staticWorldList + testWorldIndex * staticEntryStride;
-        const ulong selectedFallbackEntry = fallbackTable + testWorldIndex * fallbackEntryStride;
+        const uint selectedWorldIndex = 0;
+        const ulong selectedStaticEntry = staticWorldList + selectedWorldIndex * staticEntryStride;
+        const ulong selectedFallbackEntry = fallbackTable + selectedWorldIndex * fallbackEntryStride;
 
         if (!_enableRuntimeWorldSelectionExperiment || pc != branchPc)
             return;
         if (_memory.Read32(branchPc) != 0x14400003U)
             return;
-        if (_gpr[2] != 0 || _gpr[18] != testStaticEntry)
+        if (_gpr[2] != 0 || _gpr[18] != selectedStaticEntry)
             return;
         if (_memory.Read32(worldGlobal + 0x18UL) != 13 ||
             _memory.Read32(worldGlobal + 0x1cUL) != unchecked((uint)fallbackTable) ||
@@ -12911,7 +12911,7 @@ internal sealed class MipsR5000Core
             return;
         }
         if (!IsMainRamRange(selectedFallbackEntry, fallbackEntryStride) ||
-            _memory.Read32(selectedFallbackEntry) != testWorldIndex + 1U)
+            _memory.Read32(selectedFallbackEntry) != selectedWorldIndex + 1U)
             return;
 
         _memory.Write32(selectedEntryGlobal, unchecked((uint)selectedFallbackEntry));
@@ -12930,8 +12930,11 @@ internal sealed class MipsR5000Core
     private void ApplyKnownRuntimeWorldStaticDataLinkRepair(ulong pc)
     {
         const ulong branchPc = 0xffffffff8004f29cUL;
+        const ulong selectedEntryGlobal = 0xffffffff8016c13cUL;
+        const ulong fallbackTable = 0xffffffff802e1000UL;
         const ulong staticWorldList = 0xffffffff8015bef4UL;
         const uint staticEntryStride = 0x2c;
+        const uint fallbackEntryStride = 0x80;
         const uint testWorldIndex = 12;
 
         if (!_enableRuntimeWorldStaticDataLinkRepair || pc != branchPc)
@@ -12940,6 +12943,11 @@ internal sealed class MipsR5000Core
             return;
 
         ulong staticEntry = staticWorldList + testWorldIndex * staticEntryStride;
+        ulong testFallbackEntry = fallbackTable + testWorldIndex * fallbackEntryStride;
+        uint selectedEntry = _memory.Read32(selectedEntryGlobal);
+        if (selectedEntry != 0 && selectedEntry != unchecked((uint)testFallbackEntry))
+            return;
+
         if (_gpr[18] != staticEntry ||
             _memory.Read32(staticEntry) != testWorldIndex + 1U ||
             _memory.Read32(staticEntry + 0x10UL) != 0 ||
@@ -13048,12 +13056,10 @@ internal sealed class MipsR5000Core
     {
         const ulong worldGlobal = 0xffffffff8016c130UL;
         const ulong selectedEntryGlobal = 0xffffffff8016c13cUL;
-        const ulong staticWorldList = 0xffffffff8015bef4UL;
         const ulong fallbackTable = 0xffffffff802e1000UL;
-        const uint staticEntryStride = 0x2c;
         const uint fallbackEntryStride = 0x80;
-        const uint testWorldIndex = 12;
-        const ulong selectedFallbackEntry = fallbackTable + testWorldIndex * fallbackEntryStride;
+        const uint selectedWorldIndex = 0;
+        const ulong selectedFallbackEntry = fallbackTable + selectedWorldIndex * fallbackEntryStride;
 
         if (!_enableRuntimeWorldSelectionExperiment)
             return;
@@ -13065,19 +13071,15 @@ internal sealed class MipsR5000Core
         {
             return;
         }
-        EnsureKnownRuntimeFallbackWorldEntry(testWorldIndex);
-        TryLinkKnownRuntimeTestWorldStaticData(pc, "world-selected-static-data-link");
+        EnsureKnownRuntimeFallbackWorldEntry(selectedWorldIndex);
 
         if (!IsMainRamRange(selectedFallbackEntry, fallbackEntryStride) ||
-            _memory.Read32(selectedFallbackEntry) != testWorldIndex + 1U ||
+            _memory.Read32(selectedFallbackEntry) != selectedWorldIndex + 1U ||
             _memory.Read32(selectedFallbackEntry + 0x04UL) != 0xffffffffU)
         {
             return;
         }
 
-        ulong testStaticEntry = staticWorldList + testWorldIndex * staticEntryStride;
-        if (IsMainRamRange(testStaticEntry, 4) && _memory.Read32(testStaticEntry) == 0)
-            _memory.Write32(testStaticEntry, testWorldIndex + 1U);
         _memory.Write32(selectedEntryGlobal, unchecked((uint)selectedFallbackEntry));
         if (_runtimeWorldSelectionRepairTraceCount++ < 8)
         {
