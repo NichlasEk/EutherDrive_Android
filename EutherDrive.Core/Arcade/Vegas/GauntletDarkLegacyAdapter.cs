@@ -669,6 +669,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP"));
     private readonly bool _experimentRuntimeDiagnosticMenuScanFastPath =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_MENU_SCAN"));
+    private readonly bool _experimentRuntimeDiagnosticStateZeroMaskFastPath =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_STATE_ZERO_MASK"));
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
     private int _rd0SyncReadCompleteCount;
@@ -727,6 +729,7 @@ internal sealed class MipsR5000Core
     private int _runtimeDiagnosticOverlaySuppressTraceCount;
     private int _runtimeDiagnosticTextPumpSkipTraceCount;
     private int _runtimeDiagnosticMenuScanFastPathTraceCount;
+    private int _runtimeDiagnosticStateZeroMaskFastPathTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
     private bool _hasRd0CallbackRaRestore;
     private ulong _rd0CallbackRestorePc;
@@ -1004,6 +1007,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeDiagnosticQueueDispatchEntry(pc))
             return;
         if (TryFastPathKnownRuntimeDiagnosticMenuScan(pc))
+            return;
+        if (TryFastPathKnownRuntimeDiagnosticStateZeroMask(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeDiagnosticTextLineWrapper(pc))
             return;
@@ -7835,6 +7840,83 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] diagnostic-menu-scan pc={pc:x16} " +
                 $"writes={writes.Count} skipped={skipped} t0={t0} s8={s8:x16}");
+        }
+
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeDiagnosticStateZeroMask(ulong pc)
+    {
+        const ulong loopEntry = 0xffffffff80019d20UL;
+        const ulong loopExit = 0xffffffff80019dbcUL;
+        if (!_experimentRuntimeDiagnosticStateZeroMaskFastPath || pc != loopEntry)
+            return false;
+
+        if (_memory.Read32(loopEntry + 0x00UL) != 0x8dc20000U ||
+            _memory.Read32(loopEntry + 0x04UL) != 0x240f0001U ||
+            _memory.Read32(loopEntry + 0x08UL) != 0x010f4804U ||
+            _memory.Read32(loopEntry + 0x0cUL) != 0x00491024U ||
+            _memory.Read32(loopEntry + 0x10UL) != 0x1040001aU ||
+            _memory.Read32(loopEntry + 0x14UL) != 0x00f72821U ||
+            _memory.Read32(loopEntry + 0x7cUL) != 0x00eb1021U ||
+            _memory.Read32(loopEntry + 0x80UL) != 0xac400000U ||
+            _memory.Read32(loopEntry + 0x84UL) != 0x00f71021U ||
+            _memory.Read32(loopEntry + 0x88UL) != 0xac400000U ||
+            _memory.Read32(loopEntry + 0x8cUL) != 0x25080001U ||
+            _memory.Read32(loopEntry + 0x90UL) != 0x2902000cU ||
+            _memory.Read32(loopEntry + 0x94UL) != 0x1440ffdaU ||
+            _memory.Read32(loopEntry + 0x98UL) != 0x24e70004U)
+        {
+            return false;
+        }
+
+        ulong t0 = _gpr[8] & 0xffffffffUL;
+        ulong a3 = _gpr[7] & 0xffffffffUL;
+        ulong t3 = _gpr[11];
+        ulong t6 = _gpr[14];
+        ulong s7 = _gpr[23];
+        if (t0 >= 12UL || a3 != t0 * 4UL)
+            return false;
+        if (!IsMainRamRange(t6, 4UL))
+            return false;
+
+        uint mask = _memory.Read32(t6);
+        if (mask != 0)
+            return false;
+
+        ulong remaining = 12UL - t0;
+        if (!IsMainRamRange(t3 + a3, remaining * 4UL) ||
+            !IsMainRamRange(s7 + a3, remaining * 4UL))
+        {
+            return false;
+        }
+
+        ulong offset = a3;
+        for (ulong i = t0; i < 12UL; i++)
+        {
+            _memory.Write32(t3 + offset, 0);
+            _memory.Write32(s7 + offset, 0);
+            offset += 4UL;
+        }
+
+        _gpr[2] = 0;
+        _gpr[7] = offset;
+        _gpr[8] = 12;
+        _gpr[9] = 0x800;
+        _gpr[15] = 1;
+        _gpr[0] = 0;
+        ulong skipped = remaining * 8UL;
+        AdvanceCp0Count(_cp0CountStep * Math.Max(1UL, skipped));
+        _instructionCounter += Math.Max(1UL, skipped);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = loopExit;
+
+        if (_runtimeDiagnosticStateZeroMaskFastPathTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] diagnostic-state-zero-mask pc={pc:x16} " +
+                $"remaining={remaining} t3={t3:x16} s7={s7:x16}");
         }
 
         return true;

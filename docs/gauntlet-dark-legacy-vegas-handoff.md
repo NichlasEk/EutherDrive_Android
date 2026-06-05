@@ -422,11 +422,24 @@ Current interpretation:
   remains a frequent fastpath-entry at `175668` hits. Voodoo counters stayed in
   the same band: `fifoWords=7037557`, `fifoPackets=266147`, `tri=1873+897`,
   `lfbWrites=540933313`, `texWrites=6322435`.
+- Added a second opt-in diagnostic experiment,
+  `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_STATE_ZERO_MASK=1`, for
+  the follow-on `80019d20..80019db8` bit scan only when the live mask at `t6`
+  is zero. It signaturizes the loop, requires `a3 == t0 * 4`, writes zeroes to
+  the remaining `t3+a3` and `s7+a3` slots, and falls back to normal CPU for any
+  nonzero mask. With both diagnostic experiments enabled, 180 -> 240 warm smoke
+  logged `diagnostic-state-zero-mask ... remaining=12` hits and kept Voodoo work
+  healthy: `fifoWords=6832777`, `fifoPackets=207390`, `tri=1873+897`,
+  `lfbWrites=104094913`, `texWrites=6306051`. The 180 -> 600 profile ended at
+  `pc=800bd3b0`, `fifoWords=7039070`, `fifoPackets=266610`, `tri=1873+897`,
+  `lfbWrites=544773313`, `texWrites=6322435`, with framebuffer `nonBlack=307200`.
 
 Next target:
 
 1. Decide whether the `80019924` menu-scan emulator is stable enough to promote
-   into `BRINGUP_FAST`; for now it remains explicitly opt-in.
+   into `BRINGUP_FAST`; for now it remains explicitly opt-in. The
+   `80019d20` zero-mask helper should stay experiment-gated until a nonzero
+   mask trace is understood.
 2. Inspect the new text/format hotspots around `8011f7ac..8011fab8` and
    `80121670`, plus the `800b1e54/800b1e7c` caller path.
 3. DCS remains boot-idle (`xfer=0`); keep audio upload as a later blocker.
