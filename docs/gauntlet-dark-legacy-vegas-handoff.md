@@ -7565,3 +7565,43 @@ Next target: trace how the game uses the `0x214c0` request result after
 `800c9944`, especially whether the requested bytes should land in another
 scratch buffer, an offset inside `802e7718`, or a table distinct from the
 indexed texture payload body.
+
+### 2026-06-05 Continuation: Short-Read Caller Trace
+
+With the stronger short-read-only flag set, a focused CPU trace over
+`800ac000..800ac520` to 260 frames (`/tmp/gauntdl-shortread-cpu-800ac000-260.log`)
+confirms the next interesting path is not the full-body destination itself.
+After the `stk` short read, the caller returns through `800ac43c` into the
+`800ac04c` helper with `a0=-1`:
+
+```text
+pc=800ac43c jal 800ac04c a0=6c5c7a80 a1=802e1718 a2=8024f9a0 a3=0
+pc=800ac440 addiu a0,-1
+pc=800ac04c ... a0=ffffffffffffffff a1=802e1718 ...
+```
+
+That helper then clears/resets BGLoadModel globals and record fields:
+
+```text
+pc=800ac068 sw zero,8021f178
+pc=800ac070 sw s4,8021f184   ; s4 is -1 on this path
+pc=800ac08c sw zero,record+4
+pc=800ac0a8 sw zero,80254da8
+pc=800ac0bc sw -1,record+0
+```
+
+The body-read negative probe proves that simply full-hydrating the previous
+`stk` source window before this path is wrong. The next higher-confidence target
+is the branch/data that decides to call `800ac43c` with `a0=-1` after the
+`0x214c0` request. In the short-read-only trace, the route just before that is:
+
+```text
+pc=800ac330 lw v1,record+0x0c
+pc=800ac334 sltiu v0,v1,7     ; v1=2 on the captured path
+pc=800ac338 beq v0,zero,...
+pc=800ac350 jr v0             ; dispatches to 800ac43c
+```
+
+So the next probe should trace or repair the state value feeding
+`record+0x0c == 2` after the indexed `stk` short read, rather than forcing the
+`0x214c0` request into the texture source window.
