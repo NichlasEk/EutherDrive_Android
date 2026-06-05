@@ -667,6 +667,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS"));
     private readonly bool _experimentRuntimeDiagnosticTextPumpSkip =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP"));
+    private readonly bool _experimentRuntimeDiagnosticMenuScanFastPath =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_MENU_SCAN"));
     private readonly ulong? _forceRd0OpenStatus = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FORCE_RD0_OPEN_STATUS");
     private int _rd0AsyncCallbackKickCount;
     private int _rd0SyncReadCompleteCount;
@@ -724,6 +726,7 @@ internal sealed class MipsR5000Core
     private int _runtimeStatusBitfieldReadTraceCount;
     private int _runtimeDiagnosticOverlaySuppressTraceCount;
     private int _runtimeDiagnosticTextPumpSkipTraceCount;
+    private int _runtimeDiagnosticMenuScanFastPathTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
     private bool _hasRd0CallbackRaRestore;
     private ulong _rd0CallbackRestorePc;
@@ -999,6 +1002,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeDiagnosticQueueDispatchCallsite(pc))
             return;
         if (TryFastPathKnownRuntimeDiagnosticQueueDispatchEntry(pc))
+            return;
+        if (TryFastPathKnownRuntimeDiagnosticMenuScan(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeDiagnosticTextLineWrapper(pc))
             return;
@@ -7636,6 +7641,202 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeDiagnosticMenuScan(ulong pc)
+    {
+        const ulong loopEntry = 0xffffffff80019924UL;
+        const ulong epilogue = 0xffffffff80019abcUL;
+        if (!_experimentRuntimeDiagnosticMenuScanFastPath || pc != loopEntry)
+            return false;
+
+        if (_memory.Read32(loopEntry + 0x00UL) != 0x8fc20004U ||
+            _memory.Read32(loopEntry + 0x04UL) != 0x8fb50054U ||
+            _memory.Read32(loopEntry + 0x08UL) != 0x54400001U ||
+            _memory.Read32(loopEntry + 0x0cUL) != 0x32b500aaU ||
+            _memory.Read32(loopEntry + 0x10UL) != 0x0160902dU ||
+            _memory.Read32(loopEntry + 0x14UL) != 0x0180b02dU ||
+            _memory.Read32(loopEntry + 0x18UL) != 0x03c0b82dU ||
+            _memory.Read32(loopEntry + 0x1cUL) != 0x8e510000U ||
+            _memory.Read32(loopEntry + 0x38UL) != 0x8c700008U ||
+            _memory.Read32(loopEntry + 0xe8UL) != 0x8c440010U ||
+            _memory.Read32(loopEntry + 0x16cUL) != 0x258c00c8U ||
+            _memory.Read32(loopEntry + 0x170UL) != 0x25080001U ||
+            _memory.Read32(loopEntry + 0x174UL) != 0x2d02000dU ||
+            _memory.Read32(loopEntry + 0x178UL) != 0x1440ffa1U ||
+            _memory.Read32(loopEntry + 0x17cUL) != 0x256b0008U ||
+            _memory.Read32(epilogue + 0x00UL) != 0x8fbf004cU ||
+            _memory.Read32(epilogue + 0x28UL) != 0x0120102dU ||
+            _memory.Read32(epilogue + 0x2cUL) != 0x03e00008U ||
+            _memory.Read32(epilogue + 0x30UL) != 0x27bd0050U)
+        {
+            return false;
+        }
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x54UL, 4UL))
+            return false;
+
+        ulong t0 = _gpr[8] & 0xffffffffUL;
+        ulong t1 = _gpr[9] & 0xffffffffUL;
+        ulong t2 = _gpr[10];
+        ulong t3 = _gpr[11];
+        ulong t4 = _gpr[12] & 0xffffffffUL;
+        ulong t5 = _gpr[13];
+        ulong s8 = _gpr[30];
+        ulong s2 = _gpr[18];
+        ulong s6 = _gpr[22];
+        ulong s7 = _gpr[23];
+        uint s0 = (uint)_gpr[16];
+        uint s1 = (uint)_gpr[17];
+        uint s3 = (uint)_gpr[19];
+        uint s4 = (uint)_gpr[20];
+        uint s5 = (uint)_gpr[21];
+        uint v0 = (uint)_gpr[2];
+        uint v1 = (uint)_gpr[3];
+        var writes = new Dictionary<ulong, uint>();
+        ulong skipped = 0;
+
+        uint ReadOverlay32(ulong address)
+            => writes.TryGetValue(address, out uint value) ? value : _memory.Read32(address);
+
+        void WriteOverlay32(ulong address, uint value)
+            => writes[address] = value;
+
+        while (t1 == 0 && t0 < 13UL && skipped < 4096UL)
+        {
+            if (!IsMainRamRange(s8 + 0x04UL, 4UL) ||
+                !IsMainRamRange(t3, 8UL))
+            {
+                return false;
+            }
+
+            v0 = _memory.Read32(s8 + 0x04UL);
+            s5 = _memory.Read32(sp + 0x54UL);
+            if (v0 != 0)
+                s5 &= 0xaau;
+
+            s2 = t3;
+            s6 = t4;
+            s7 = s8;
+
+            bool repeatEntry;
+            int entryRepeats = 0;
+            do
+            {
+                repeatEntry = false;
+                if (!IsMainRamRange(s2, 8UL))
+                    return false;
+
+                s1 = ReadOverlay32(s2 + 0x00UL);
+                if ((int)s1 >= 16)
+                    return false;
+
+                ulong tableEntry = t2 + s6 + (ulong)s1 * 12UL;
+                if (!IsMainRamRange(tableEntry + 0x10UL, 4UL))
+                    return false;
+
+                s0 = ReadOverlay32(tableEntry + 0x08UL);
+                s3 = (s0 >> 15) & 1u;
+                s4 = (s0 >> 14) & 1u;
+                s0 &= 0xffff7fffu;
+
+                bool intersects = (s5 & s0) != 0;
+                bool useCountdownPath = s5 == s0 || (s3 != 0 && intersects) || (s4 != 0 && intersects);
+                if (useCountdownPath)
+                {
+                    uint limit = ReadOverlay32(tableEntry + 0x10UL);
+                    if (limit == 0xffffffffu)
+                    {
+                        t1 = ReadOverlay32(s7 + 0x00UL);
+                        break;
+                    }
+
+                    uint counter = ReadOverlay32(s2 + 0x04UL) + 1u;
+                    WriteOverlay32(s2 + 0x04UL, counter);
+                    uint effectiveLimit = limit != 0 ? limit : 6u;
+                    if (counter > effectiveLimit)
+                    {
+                        WriteOverlay32(s2 + 0x00UL, 0);
+                        WriteOverlay32(s2 + 0x04UL, 0);
+                    }
+                }
+                else
+                {
+                    uint counter = ReadOverlay32(s2 + 0x04UL);
+                    uint limit = ReadOverlay32(tableEntry + 0x0cUL);
+                    if (counter < limit)
+                    {
+                        WriteOverlay32(s2 + 0x00UL, 0);
+                        WriteOverlay32(s2 + 0x04UL, 0);
+                    }
+                    else
+                    {
+                        uint nextState = ReadOverlay32(s2 + 0x00UL) + 1u;
+                        WriteOverlay32(s2 + 0x04UL, 0);
+                        WriteOverlay32(s2 + 0x00UL, nextState);
+                        repeatEntry = true;
+                    }
+                }
+
+                skipped += 48UL;
+            } while (repeatEntry && ++entryRepeats < 64);
+
+            if (entryRepeats >= 64)
+                return false;
+
+            s8 += 0xc8UL;
+            if (t1 != 0)
+                break;
+
+            t4 += 0xc8UL;
+            t0++;
+            t3 += 8UL;
+            skipped += 8UL;
+        }
+
+        if (t1 != 0 || t0 < 13UL)
+            return false;
+
+        foreach (KeyValuePair<ulong, uint> write in writes)
+        {
+            if (!IsMainRamRange(write.Key, 4UL))
+                return false;
+            _memory.Write32(write.Key, write.Value);
+        }
+
+        _gpr[2] = v0;
+        _gpr[3] = v1;
+        _gpr[8] = t0;
+        _gpr[9] = t1;
+        _gpr[10] = t2;
+        _gpr[11] = t3;
+        _gpr[12] = t4;
+        _gpr[13] = t5;
+        _gpr[16] = SignExtend32(s0);
+        _gpr[17] = SignExtend32(s1);
+        _gpr[18] = s2;
+        _gpr[19] = s3;
+        _gpr[20] = s4;
+        _gpr[21] = SignExtend32(s5);
+        _gpr[22] = s6;
+        _gpr[23] = s7;
+        _gpr[30] = s8;
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * Math.Max(1UL, skipped));
+        _instructionCounter += Math.Max(1UL, skipped);
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = epilogue;
+
+        if (_runtimeDiagnosticMenuScanFastPathTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] diagnostic-menu-scan pc={pc:x16} " +
+                $"writes={writes.Count} skipped={skipped} t0={t0} s8={s8:x16}");
+        }
+
         return true;
     }
 

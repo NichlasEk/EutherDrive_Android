@@ -399,14 +399,29 @@ Current interpretation:
   `80019924..80019960` still dominated at `162656` hits each, with similar
   Voodoo counters (`fifoWords=7018483`, `fifoPackets=260271`, `tri=1873+897`,
   `lfbWrites=493778113`, `texWrites=6322435`).
+- Added an opt-in exact-ish loop emulator under
+  `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_MENU_SCAN=1`. It
+  signaturizes `80019924..80019abc`, uses a local write overlay while walking
+  the 13 entries, commits only when the scan reaches the normal `t1 == 0`
+  epilogue, and bails out for the helper-call path.
+- 180 -> 240 warm smoke with the experiment enabled logged hits such as
+  `diagnostic-menu-scan ... writes=18 skipped=920 t0=13`, removed
+  `80019924` from the hot list, and moved the PC to `800b36c8`. Counters rose
+  to `fifoWords=6774225`, `fifoPackets=206364`, `tri=1799+861`,
+  `lfbWrites=104092781`, `texWrites=6249603`.
+- 180 -> 600 warm profile with the experiment enabled ended at `pc=800c7b20`.
+  `80019924..80019960` was gone from top hot PCs. New top entries were
+  `800b1dc4:280015`, `8011fab8:177322`, `800b1e54:176973`,
+  `80121670/80121674:175464`, and `8011f7ac..8011f7e0:173818`. Voodoo counters:
+  `fifoWords=7037367`, `fifoPackets=266088`, `tri=1873+897`,
+  `lfbWrites=540472513`, `texWrites=6322435`.
 
 Next target:
 
-1. Either emulate the full `80019924..80019a14` thirteen-entry diagnostic scan
-   with exact `s2+0/s2+4` side effects, or identify its higher-level caller and
-   prove the diagnostic overlay can be skipped safely.
-2. Re-run the 180 -> 600 warm profile after that change and compare Voodoo
-   counters against the values above.
+1. Decide whether the `80019924` menu-scan emulator is stable enough to promote
+   into `BRINGUP_FAST`; for now it remains explicitly opt-in.
+2. Inspect the new text/format hotspots around `8011f7ac..8011fab8` and
+   `80121670`, plus the `800b1e54/800b1e7c` caller path.
 3. DCS remains boot-idle (`xfer=0`); keep audio upload as a later blocker.
 
 ## 2026-05-15 Native DCS Audio Bring-Up Pass
