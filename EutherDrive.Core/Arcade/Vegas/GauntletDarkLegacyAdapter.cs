@@ -716,6 +716,7 @@ internal sealed class MipsR5000Core
     private int _runtimeByteMoveTraceCount;
     private int _runtimeFormatBufferFastPathTraceCount;
     private int _runtimeRenderListSaturationRepairTraceCount;
+    private int _runtimeRenderRecordNullBodyTraceCount;
     private int _runtimeInterruptSuppressTraceCount;
     private int _exceptionFpuContextTraceCount;
     private int _exceptionFpuContextLoadTraceCount;
@@ -1058,6 +1059,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
             return;
         if (TryFastPathKnownRuntimeRenderRecordSkip(pc))
+            return;
+        if (TryFastPathKnownRuntimeRenderRecordNullBody(pc))
             return;
         if (TryFastPathKnownRuntimeStackRecordCopy(pc))
             return;
@@ -9516,6 +9519,80 @@ internal sealed class MipsR5000Core
         }
 
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeRenderRecordNullBody(ulong pc)
+    {
+        const ulong body = 0xffffffff800b1e7cUL;
+        const ulong tail = 0xffffffff800b1fecUL;
+        if (!_enableRuntimeRenderRecordSkipFastPath || pc != body)
+            return false;
+
+        if (_memory.Read32(body + 0x00UL) != 0x24e7f1d8U ||
+            _memory.Read32(body + 0x04UL) != 0x8e110000U ||
+            _memory.Read32(body + 0x08UL) != 0x8e12000cU ||
+            _memory.Read32(body + 0x0cUL) != 0x8e020020U ||
+            _memory.Read32(body + 0x10UL) != 0x8e170004U ||
+            _memory.Read32(body + 0x14UL) != 0x00022880U ||
+            _memory.Read32(body + 0x18UL) != 0x00a71821U ||
+            _memory.Read32(body + 0x1cUL) != 0x92440000U ||
+            _memory.Read32(body + 0x20UL) != 0x82420000U ||
+            _memory.Read32(body + 0x24UL) != 0x8c760000U ||
+            _memory.Read32(body + 0x28UL) != 0x10400051U ||
+            _memory.Read32(body + 0x2cUL) != 0x00041600U ||
+            _memory.Read32(tail + 0x00UL) != 0x8fc23600U ||
+            _memory.Read32(tail + 0x04UL) != 0x26940001U ||
+            _memory.Read32(tail + 0x08UL) != 0x0282102aU ||
+            _memory.Read32(tail + 0x0cUL) != 0x1440ff96U ||
+            _memory.Read32(tail + 0x10UL) != 0x2610002cU)
+        {
+            return false;
+        }
+
+        ulong record = _gpr[16];
+        if (!IsMainRamRange(record, 0x24UL))
+            return false;
+
+        ulong tableBase = unchecked(_gpr[7] + 0xfffffffffffff1d8UL);
+        ulong s1 = SignExtend32(_memory.Read32(record + 0x00UL));
+        ulong s2 = SignExtend32(_memory.Read32(record + 0x0cUL));
+        ulong slotIndex = _memory.Read32(record + 0x20UL);
+        ulong s7 = SignExtend32(_memory.Read32(record + 0x04UL));
+        ulong tableOffset = (slotIndex & 0xffffffffUL) << 2;
+        ulong tableEntry = tableBase + tableOffset;
+        if (!IsMainRamRange(s2, 1UL) || !IsMainRamRange(tableEntry, 4UL))
+            return false;
+
+        uint unsignedFirst = _memory.Read8(s2);
+        int signedFirst = unchecked((sbyte)unsignedFirst);
+        ulong s6 = SignExtend32(_memory.Read32(tableEntry));
+        if (signedFirst != 0)
+            return false;
+
+        _gpr[2] = (unsignedFirst << 24) & 0xffffffffUL;
+        _gpr[3] = tableEntry;
+        _gpr[4] = unsignedFirst;
+        _gpr[5] = tableOffset;
+        _gpr[7] = tableBase;
+        _gpr[17] = s1;
+        _gpr[18] = s2;
+        _gpr[22] = s6;
+        _gpr[23] = s7;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = tail;
+
+        AdvanceCp0Count(_cp0CountStep * 12UL);
+        _instructionCounter += 12UL;
+        if (_runtimeRenderRecordNullBodyTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] render-record-null-body pc={pc:x16} " +
+                $"record={record:x16} s2={s2:x16} slot={slotIndex:x8}");
+        }
+
         return true;
     }
 

@@ -443,6 +443,17 @@ Current interpretation:
   `lfbWrites=104094913`, `texWrites=6322435`. The 180 -> 600 profile ended at
   `pc=800a67bc`, `fifoWords=7042780`, `fifoPackets=267747`, `tri=1873+897`,
   `lfbWrites=553989313`, `texWrites=6322435`, with framebuffer `nonBlack=307200`.
+- Traced the remaining `800b1e54/800b1e7c` render-record path and avoided the
+  earlier broad active-record skip regression. Added
+  `TryFastPathKnownRuntimeRenderRecordNullBody()` only for the proven
+  `800b1e7c..800b1ea8` early-exit case where `lb 0(s2)` is zero; it emulates
+  the prologue loads and jumps to the routine's own tail at `800b1fec`.
+  180 -> 240 warm smoke reached `pc=800b24cc` with healthy counters:
+  `fifoWords=6851045`, `fifoPackets=208066`, `tri=1873+897`,
+  `lfbWrites=104094913`, `texWrites=6322435`. The 180 -> 600 profile improved
+  to `pc=800c7a40`, `fps=2.39`, `fifoWords=7048093`, `fifoPackets=269375`,
+  `tri=1873+897`, `lfbWrites=567045313`, `texWrites=6322435`, framebuffer
+  `nonBlack=307200`.
 
 Next target:
 
@@ -450,9 +461,9 @@ Next target:
    into `BRINGUP_FAST`; for now it remains explicitly opt-in. The
    `80019d20` zero-mask helper should stay experiment-gated until a nonzero
    mask trace is understood.
-2. Re-profile top hot PCs after the `8011f7ac` copy helper; likely next
-   candidates are the `800b1e54/800b1e7c` caller path and remaining `80121670`
-   diagnostic line wrapper traffic.
+2. Re-profile top hot PCs after the render-record null-body helper; likely next
+   candidate is remaining diagnostic/text traffic around `80121670` or whatever
+   replaces the `800b1e` path in the 600-frame hot list.
 3. DCS remains boot-idle (`xfer=0`); keep audio upload as a later blocker.
 
 ## 2026-05-15 Native DCS Audio Bring-Up Pass
