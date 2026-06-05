@@ -433,6 +433,16 @@ Current interpretation:
   `lfbWrites=104094913`, `texWrites=6306051`. The 180 -> 600 profile ended at
   `pc=800bd3b0`, `fifoWords=7039070`, `fifoPackets=266610`, `tri=1873+897`,
   `lfbWrites=544773313`, `texWrites=6322435`, with framebuffer `nonBlack=307200`.
+- Traced `8011f7ac..8011f7e0` and identified it as a small NUL-terminated
+  string-copy routine, not format parsing. Added `TryFastPathKnownRuntimeStringCopy`
+  at `8011f7ac`; it copies through the terminating NUL, returns the original
+  destination in `v0`, advances `a1`/`v1`, and accepts RAM or KSEG0/ROM sources
+  with a 64K cap. With both diagnostic experiments enabled, 180 -> 240 warm
+  smoke logged repeated `runtime-string-copy ... len=0` hits and stayed healthy:
+  `fifoWords=6850301`, `fifoPackets=207838`, `tri=1873+897`,
+  `lfbWrites=104094913`, `texWrites=6322435`. The 180 -> 600 profile ended at
+  `pc=800a67bc`, `fifoWords=7042780`, `fifoPackets=267747`, `tri=1873+897`,
+  `lfbWrites=553989313`, `texWrites=6322435`, with framebuffer `nonBlack=307200`.
 
 Next target:
 
@@ -440,8 +450,9 @@ Next target:
    into `BRINGUP_FAST`; for now it remains explicitly opt-in. The
    `80019d20` zero-mask helper should stay experiment-gated until a nonzero
    mask trace is understood.
-2. Inspect the new text/format hotspots around `8011f7ac..8011fab8` and
-   `80121670`, plus the `800b1e54/800b1e7c` caller path.
+2. Re-profile top hot PCs after the `8011f7ac` copy helper; likely next
+   candidates are the `800b1e54/800b1e7c` caller path and remaining `80121670`
+   diagnostic line wrapper traffic.
 3. DCS remains boot-idle (`xfer=0`); keep audio upload as a later blocker.
 
 ## 2026-05-15 Native DCS Audio Bring-Up Pass

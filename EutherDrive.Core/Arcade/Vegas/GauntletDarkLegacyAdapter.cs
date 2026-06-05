@@ -730,6 +730,7 @@ internal sealed class MipsR5000Core
     private int _runtimeDiagnosticTextPumpSkipTraceCount;
     private int _runtimeDiagnosticMenuScanFastPathTraceCount;
     private int _runtimeDiagnosticStateZeroMaskFastPathTraceCount;
+    private int _runtimeStringCopyFastPathTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
     private bool _hasRd0CallbackRaRestore;
     private ulong _rd0CallbackRestorePc;
@@ -1063,6 +1064,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeByteMove(pc))
             return;
         if (TryFastPathKnownRuntimeStringLength(pc))
+            return;
+        if (TryFastPathKnownRuntimeStringCopy(pc))
             return;
         if (TryFastPathKnownRuntimeBgLoadModelEmptyBoxZeroRun(pc))
             return;
@@ -9733,6 +9736,81 @@ internal sealed class MipsR5000Core
         AdvanceCp0Count(_cp0CountStep * skipped);
         _instructionCounter += skipped;
         return true;
+    }
+
+    private bool TryFastPathKnownRuntimeStringCopy(ulong pc)
+    {
+        const ulong entry = 0xffffffff8011f7acUL;
+        if (pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x90a20000U ||
+            _memory.Read32(entry + 0x04UL) != 0x24a50001U ||
+            _memory.Read32(entry + 0x08UL) != 0xa0820000U ||
+            _memory.Read32(entry + 0x0cUL) != 0x00021600U ||
+            _memory.Read32(entry + 0x10UL) != 0x10400007U ||
+            _memory.Read32(entry + 0x14UL) != 0x24830001U ||
+            _memory.Read32(entry + 0x30UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x34UL) != 0x0080102dU)
+        {
+            return false;
+        }
+
+        ulong destination = _gpr[4];
+        ulong source = _gpr[5];
+        if ((destination & 0xffffffff00000000UL) == 0 && (destination & 0x80000000UL) != 0)
+            destination = SignExtend32((uint)destination);
+        if ((source & 0xffffffff00000000UL) == 0 && (source & 0x80000000UL) != 0)
+            source = SignExtend32((uint)source);
+        if (!IsMainRamRange(destination, 1UL) || !IsRuntimeReadableByte(source))
+            return false;
+
+        uint length = 0;
+        while (length < 0x10000U && IsRuntimeReadableByte(source + length))
+        {
+            if (_memory.Read8(source + length) == 0)
+                break;
+            length++;
+        }
+
+        if (length == 0x10000U ||
+            !IsRuntimeReadableByte(source + length) ||
+            !IsMainRamRange(destination, (ulong)length + 1UL))
+        {
+            return false;
+        }
+
+        for (uint offset = 0; offset <= length; offset++)
+            _memory.Write8(destination + offset, _memory.Read8(source + offset));
+
+        _gpr[2] = destination;
+        _gpr[3] = destination + (ulong)length + 1UL;
+        _gpr[5] = source + (ulong)length + 1UL;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+
+        ulong skipped = 8UL + (ulong)length * 5UL;
+        AdvanceCp0Count(_cp0CountStep * skipped);
+        _instructionCounter += skipped;
+        if (_runtimeStringCopyFastPathTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] runtime-string-copy pc={pc:x16} " +
+                $"dst={destination:x16} src={source:x16} len={length}");
+        }
+
+        return true;
+    }
+
+    private bool IsRuntimeReadableByte(ulong address)
+    {
+        if ((address & 0xffffffff00000000UL) == 0 && (address & 0x80000000UL) != 0)
+            address = SignExtend32((uint)address);
+
+        return IsMainRamRange(address, 1UL) ||
+            (address & 0xffffffffe0000000UL) == 0xffffffff80000000UL;
     }
 
     private bool TryFastPathKnownRuntimeBgLoadModelEmptyBoxModelLookupStore(ulong pc)
