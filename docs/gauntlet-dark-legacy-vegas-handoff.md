@@ -392,6 +392,13 @@ Current interpretation:
 - This is not a pure wait/no-op: later paths can write per-entry counters at
   `s2+0` and `s2+4`, so any fastpath should emulate those writes or move up to
   a higher-level diagnostic overlay suppression with clear evidence.
+- Testing the existing opt-in
+  `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS=1` and
+  `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP=1` did not
+  remove this hotspot. The 180 -> 600 run ended at `pc=80019d34`, but
+  `80019924..80019960` still dominated at `162656` hits each, with similar
+  Voodoo counters (`fifoWords=7018483`, `fifoPackets=260271`, `tri=1873+897`,
+  `lfbWrites=493778113`, `texWrites=6322435`).
 
 Next target:
 
