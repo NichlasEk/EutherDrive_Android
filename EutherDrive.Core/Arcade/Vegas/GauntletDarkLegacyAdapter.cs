@@ -655,7 +655,7 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeWorldDataLoader = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER") == "1";
     private readonly bool _traceRuntimeWorldDataFlags = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_FLAGS") == "1";
     private readonly bool _enableRuntimeWorldSelectionExperiment =
-        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION"));
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION");
     private readonly bool _enableRuntimeWorldStaticDataLinkRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_STATIC_DATA_LINK");
     private readonly bool _traceRuntimeFormatBufferFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_FORMAT_BUFFER_FASTPATH") == "1";

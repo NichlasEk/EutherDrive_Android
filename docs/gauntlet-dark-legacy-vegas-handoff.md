@@ -325,6 +325,83 @@ Next target:
 3. Keep the QIO poll fastpath narrow; do not enable the whole experimental
    BGLoadModel skip set by default.
 
+Same-day continuation:
+
+- Promoted the world-selection repair behind
+  `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION` into the normal
+  `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1` set.
+- With only `BRINGUP_FAST`, the runtime now logs:
+
+```text
+[GAUNTDL:FIX] world-selected-static-data-link pc=ffffffff800e3dec entry=ffffffff8015c104 data=ffffffff81000000 bytes=358 first=000002f8 count=00000008
+[GAUNTDL:FIX] world-selected-pointer pc=ffffffff800e3dec selected=ffffffff802e1600 id=0000000d name=test
+```
+
+Verification build:
+
+```text
+Build succeeded.
+458 warnings, 0 errors.
+```
+
+New warm snapshot from this promoted set:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-679903a27884.warm
+```
+
+Useful cold 420-frame check with only `BRINGUP_FAST`:
+
+```text
+frame=420
+pc=0xffffffff8004cb0c
+rtxt=16@0xffffffff800e30a0/ra=0xffffffff800e33e4 "Loading Game."
+voodoo active, fifoWords=6932591, fifoPackets=233969
+drawPackets=0, directTriangles=1873, setupTriangles=897
+packetTypes=0:5433,1:32352,2:0,3:0,4:97393,5:98789,6:0,7:2
+lfbWrites=280888513
+texture writes=6322435
+framebuffer=640x480 nonBlack=307200 colored=0
+```
+
+Useful 180 -> 600 warm profile from the new snapshot:
+
+```text
+frame=600
+pc=0xffffffff8004c954
+voodoo active, fifoWords=7016105, fifoPackets=259573
+drawPackets=0, directTriangles=1873, setupTriangles=897
+packetTypes=0:5442,1:36393,2:0,3:0,4:118940,5:98789,6:0,7:9
+lfbWrites=487787713
+texture writes=6322435
+hotpcs=0xffffffff800b1dc4:251600,0xffffffff80019924..80019960:160576 each
+```
+
+Current interpretation:
+
+- `800b1dc4` is the existing global `8022808c` exchange helper counted before
+  its fastpath returns; it is not the next stall.
+- The new warm hotspot is the diagnostic/menu bit-scan loop at
+  `80019924..80019a14`, entered from `ra=8001a270`.
+- Trace shows the loop walks 13 small entries, building pointers from
+  `8012a12c + t4`, reading status at `+0x10`, and advancing
+  `t0/t3/t4` by `1/8/0xc8`.
+- The table at `80165fc0` is small `0/1/2` state data, and the visible
+  stopped state near frame 238 has `t0=12`, `t3=80165fe8`, `t4=0x960`,
+  `s2=80165fe0`.
+- This is not a pure wait/no-op: later paths can write per-entry counters at
+  `s2+0` and `s2+4`, so any fastpath should emulate those writes or move up to
+  a higher-level diagnostic overlay suppression with clear evidence.
+
+Next target:
+
+1. Either emulate the full `80019924..80019a14` thirteen-entry diagnostic scan
+   with exact `s2+0/s2+4` side effects, or identify its higher-level caller and
+   prove the diagnostic overlay can be skipped safely.
+2. Re-run the 180 -> 600 warm profile after that change and compare Voodoo
+   counters against the values above.
+3. DCS remains boot-idle (`xfer=0`); keep audio upload as a later blocker.
+
 ## 2026-05-15 Native DCS Audio Bring-Up Pass
 
 This pass started the real/native DCS audio path for Gauntlet Dark Legacy. The important outcome is that the adapter now has an actual audio buffer path and a MAME-shaped DCS/ADSP boot skeleton, but the game still has not reached the real DCS program upload.
