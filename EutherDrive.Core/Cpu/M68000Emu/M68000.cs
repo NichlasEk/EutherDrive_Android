@@ -63,6 +63,49 @@ public sealed class M68000
     public bool AddressError => _regs.AddressError;
     public bool LastInstructionWasMulOrDiv => _regs.LastInstructionWasMulDiv;
 
+    public uint DataRegister(int index) => _regs.Data[index & 7];
+
+    public uint AddressRegister(int index)
+    {
+        index &= 7;
+        return index == 7 ? _regs.StackPointer() : _regs.Address[index];
+    }
+
+    public void SetDataRegisterLong(int index, uint value)
+    {
+        _regs.Data[index & 7] = value;
+    }
+
+    public void SetDataRegisterWord(int index, ushort value)
+    {
+        int register = index & 7;
+        _regs.Data[register] = (_regs.Data[register] & 0xffff_0000u) | value;
+    }
+
+    public void SetAddressRegister(int index, uint value)
+    {
+        index &= 7;
+        if (index == 7)
+            _regs.SetStackPointer(value);
+        else
+            _regs.Address[index] = value;
+    }
+
+    public void SetProgramCounter(uint pc, ushort prefetch)
+    {
+        _regs.Pc = pc & 0x00ff_ffff;
+        _regs.Prefetch = prefetch;
+        ClearTransientState();
+    }
+
+    public void SetProgramCounterAndStatus(uint pc, ushort sr, ushort prefetch)
+    {
+        _regs.SetStatusRegister(sr);
+        _regs.Pc = pc & 0x00ff_ffff;
+        _regs.Prefetch = prefetch;
+        ClearTransientState();
+    }
+
     public void ForceInterruptMask(byte mask)
     {
         mask &= 0x07;
@@ -122,6 +165,13 @@ public sealed class M68000
         _regs.SetStatusRegister(state.Sr);
         _regs.Pc = state.Pc;
         _regs.Prefetch = state.Prefetch;
+        _regs.AddressError = false;
+        _regs.Stopped = false;
+        _regs.Frozen = false;
+    }
+
+    private void ClearTransientState()
+    {
         _regs.AddressError = false;
         _regs.Stopped = false;
         _regs.Frozen = false;

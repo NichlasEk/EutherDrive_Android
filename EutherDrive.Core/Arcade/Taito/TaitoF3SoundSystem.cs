@@ -9,7 +9,9 @@ internal sealed class TaitoF3SoundSystem
     private const int SoundCpuClockHz = 30_476_180 / 2;
     private const double TargetFps = 26_686_000.0 / 4.0 / (432.0 * 262.0);
     private const int SoundCyclesPerFrame = (int)(SoundCpuClockHz / TargetFps);
-    private const int SilentSoundCyclesPerFrame = SoundCyclesPerFrame;
+    private const int IdleSoundCyclesPerFrame = SoundCyclesPerFrame / 8;
+    private const int SoundBootDrainFrames = 120;
+    private const int SoundCommandDrainFrames = 8;
 
     private readonly M68000 _cpu = M68000.CreateBuilder()
         .AllowTasWrites(true)
@@ -79,7 +81,7 @@ internal sealed class TaitoF3SoundSystem
             _cpu.Reset(_bus);
             _lastAudioWasNonZero = false;
             _lastMainDualPortWriteSerial = mainDualPortWriteSerial;
-            _silentCommandDrainFrames = 0;
+            _silentCommandDrainFrames = SoundBootDrainFrames;
         }
 
         int sampleFrames = BuildFrameAudio();
@@ -90,11 +92,11 @@ internal sealed class TaitoF3SoundSystem
         if (hasNewMainCommand)
         {
             _lastMainDualPortWriteSerial = mainDualPortWriteSerial;
-            _silentCommandDrainFrames = 8;
+            _silentCommandDrainFrames = Math.Max(_silentCommandDrainFrames, SoundCommandDrainFrames);
         }
-        int cycleBudget = _lastAudioWasNonZero
+        int cycleBudget = (_lastAudioWasNonZero || _silentCommandDrainFrames > 0 || _bus.InterruptLevel() != 0)
             ? SoundCyclesPerFrame
-            : SilentSoundCyclesPerFrame;
+            : IdleSoundCyclesPerFrame;
         int cycles = 0;
         int instructions = 0;
         uint lastPc = uint.MaxValue;
@@ -171,52 +173,42 @@ internal sealed class TaitoF3SoundSystem
 
         if (pc == 0x00c108e2 && opcode == 0x20c0)
         {
-            var state = _cpu.GetState();
-            state.Address[0] = 0x0004_0000;
-            ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
             uint nextPc = 0x00c108ec;
-            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
-            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            _cpu.SetAddressRegister(0, 0x0004_0000);
+            _cpu.SetProgramCounterAndStatus(nextPc, (ushort)((_cpu.StatusRegister & 0xffe0) | 0x0004), _bus.ReadOpcodeWord(nextPc));
             cycles = 40;
             return true;
         }
 
         if (pc == 0x00c1106e && opcode == 0x5383)
         {
-            var state = _cpu.GetState();
-            state.Data[3] = 0;
-            ushort sr = (ushort)((state.Sr & 0xffe0) | 0x0004);
             uint nextPc = 0x00c11072;
-            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
-            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            _cpu.SetDataRegisterLong(3, 0);
+            _cpu.SetProgramCounterAndStatus(nextPc, (ushort)((_cpu.StatusRegister & 0xffe0) | 0x0004), _bus.ReadOpcodeWord(nextPc));
             cycles = 40;
             return true;
         }
 
         if (pc == 0x00c111fa && opcode == 0x12d8)
         {
-            var state = _cpu.GetState();
-            uint source = state.Address[0] & 0x00ff_ffff;
-            uint dest = state.Address[1] & 0x00ff_ffff;
+            uint source = _cpu.AddressRegister(0) & 0x00ff_ffff;
+            uint dest = _cpu.AddressRegister(1) & 0x00ff_ffff;
             int count = Math.Clamp(0x0000_cf52 - (int)(dest & 0xffff), 0, 0x4000);
             for (int i = 0; i < count; i++)
                 _bus.WriteByte(dest + (uint)i, _bus.ReadByte(source + (uint)i));
 
-            state.Address[0] = (source + (uint)count) & 0x00ff_ffff;
-            state.Address[1] = (dest + (uint)count) & 0x00ff_ffff;
-            ushort sr = (ushort)(state.Sr & ~0x000f);
             uint nextPc = 0x00c11202;
-            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
-            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            _cpu.SetAddressRegister(0, source + (uint)count);
+            _cpu.SetAddressRegister(1, dest + (uint)count);
+            _cpu.SetProgramCounterAndStatus(nextPc, (ushort)(_cpu.StatusRegister & ~0x000f), _bus.ReadOpcodeWord(nextPc));
             cycles = (uint)Math.Max(40, count / 4);
             return true;
         }
 
         if (pc == 0x00c11a92 && opcode == 0x32d8)
         {
-            var state = _cpu.GetState();
-            uint source = state.Address[0] & 0x00ff_ffff;
-            uint dest = state.Address[1] & 0x00ff_ffff;
+            uint source = _cpu.AddressRegister(0) & 0x00ff_ffff;
+            uint dest = _cpu.AddressRegister(1) & 0x00ff_ffff;
             int words = Math.Clamp((0x0000_510e - (int)(dest & 0xffff)) / 2, 0, 0x4000);
             for (int i = 0; i < words; i++)
             {
@@ -224,18 +216,322 @@ internal sealed class TaitoF3SoundSystem
                 _bus.WriteWord(dest + (uint)(i * 2), value);
             }
 
-            state.Address[0] = (source + (uint)(words * 2)) & 0x00ff_ffff;
-            state.Address[1] = (dest + (uint)(words * 2)) & 0x00ff_ffff;
-            ushort sr = (ushort)(state.Sr & ~0x000f);
             uint nextPc = 0x00c11a9a;
-            ushort prefetch = _bus.ReadOpcodeWord(nextPc);
-            _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+            _cpu.SetAddressRegister(0, source + (uint)(words * 2));
+            _cpu.SetAddressRegister(1, dest + (uint)(words * 2));
+            _cpu.SetProgramCounterAndStatus(nextPc, (ushort)(_cpu.StatusRegister & ~0x000f), _bus.ReadOpcodeWord(nextPc));
             cycles = (uint)Math.Max(40, words / 2);
+            return true;
+        }
+
+        if (pc == 0x00c10dac && opcode == 0x3228)
+        {
+            uint a0 = _cpu.AddressRegister(0);
+            if (a0 < 0xffff_fb12u || a0 > 0xffff_fb96u)
+                return false;
+
+            cycles = ExecuteTimerSlotLoop();
+            return true;
+        }
+
+        if (pc == 0x00c10ada && opcode == 0x102a)
+        {
+            if (TryExecuteSoundSlotScanLoop(out cycles))
+                return true;
+        }
+
+        if (pc == 0x00c110d4 && opcode == 0x1081)
+        {
+            ushort d1 = (ushort)_cpu.DataRegister(1);
+            if (d1 < 4 || d1 > 16)
+                return false;
+
+            cycles = ExecuteEs5505BytePackLoop();
+            return true;
+        }
+
+        if (pc == 0x00c18f20 && opcode == 0x3698)
+        {
+            if (TryExecuteEs5505RampLoop(out cycles))
+                return true;
+        }
+
+        if (pc == 0x00c18f70 && opcode == 0x3698)
+        {
+            if (TryExecuteEs5505LinearRampBlock(11, 0x00c18fde, out cycles))
+                return true;
+        }
+
+        if (pc == 0x00c11c1a && opcode == 0x43f8)
+        {
+            if (TryExecuteSoundAddressTableLookup(out cycles))
+                return true;
+        }
+
+        if (pc == 0x00c0b5fc && opcode == 0x51c8)
+        {
+            int count = ((ushort)_cpu.DataRegister(0)) + 1;
+            uint nextPc = 0x00c0b600;
+            _cpu.SetDataRegisterWord(0, 0xffff);
+            _cpu.SetProgramCounter(nextPc, _bus.ReadOpcodeWord(nextPc));
+            cycles = (uint)Math.Max(10, count * 14);
+            return true;
+        }
+
+        if ((opcode & 0xfff8) == 0x51c8 && _bus.ReadOpcodeWord(pc + 2) == 0xfffe)
+        {
+            int register = opcode & 7;
+            int count = ((ushort)_cpu.DataRegister(register)) + 1;
+            uint nextPc = (pc + 4) & 0x00ff_ffff;
+            _cpu.SetDataRegisterWord(register, 0xffff);
+            _cpu.SetProgramCounter(nextPc, _bus.ReadOpcodeWord(nextPc));
+            cycles = (uint)Math.Max(10, count * 10);
             return true;
         }
 
         return false;
     }
+
+    private bool TryExecuteSoundAddressTableLookup(out uint cycles)
+    {
+        cycles = 0;
+        if (_bus.ReadOpcodeWord(0x00c11c1c) != 0x5daa
+            || _bus.ReadOpcodeWord(0x00c11c1e) != 0xe309
+            || _bus.ReadOpcodeWord(0x00c11c20) != 0x3271
+            || _bus.ReadOpcodeWord(0x00c11c22) != 0x1000
+            || _bus.ReadOpcodeWord(0x00c11c24) != 0xe209
+            || _bus.ReadOpcodeWord(0x00c11c26) != 0x4e75)
+            return false;
+
+        uint d1 = _cpu.DataRegister(1);
+        ushort shifted = (ushort)(d1 << 1);
+        uint tableAddress = unchecked(0x0000_5daau + (uint)(short)shifted);
+        ushort tableValue = _bus.ReadWord(tableAddress);
+        ushort result = (ushort)(shifted >> 1);
+
+        _cpu.SetAddressRegister(1, unchecked((uint)(short)tableValue));
+        _cpu.SetDataRegisterWord(1, result);
+        uint sp = _cpu.AddressRegister(7);
+        uint nextPc = _bus.ReadLong(sp) & 0x00ff_ffffu;
+        ushort status = (ushort)(_cpu.StatusRegister & 0xffe0);
+        if (result == 0)
+            status |= 0x0004;
+        _cpu.SetAddressRegister(7, sp + 4u);
+        _cpu.SetProgramCounterAndStatus(nextPc, status, _bus.ReadOpcodeWord(nextPc));
+        cycles = 54;
+        return true;
+    }
+
+    private bool TryExecuteSoundSlotScanLoop(out uint cycles)
+    {
+        cycles = 0;
+        uint a2 = _cpu.AddressRegister(2);
+        if (a2 < 0xffff_fb12u || a2 >= 0xffff_fb96u)
+            return false;
+
+        byte current = _bus.ReadByte(a2 + 2u);
+        byte latched = _bus.ReadByte(a2 + 3u);
+        if ((current ^ latched) != 0)
+            return false;
+
+        uint d0 = _cpu.DataRegister(0);
+        uint d1 = _cpu.DataRegister(1);
+        int iterations = 0;
+        do
+        {
+            current = _bus.ReadByte(a2 + 2u);
+            latched = _bus.ReadByte(a2 + 3u);
+            byte diff = (byte)(current ^ latched);
+            if (diff != 0)
+                break;
+
+            d0 = (d0 & 0xffff_ff00u) | diff;
+            d1 = (d1 & 0xffff_ff00u) | latched;
+            a2 += 0x16u;
+            iterations++;
+        }
+        while (a2 < 0xffff_fb96u && iterations < 8);
+
+        if (iterations == 0)
+            return false;
+
+        _cpu.SetAddressRegister(2, a2);
+        _cpu.SetDataRegisterLong(0, d0);
+        _cpu.SetDataRegisterLong(1, d1);
+        ushort status = BuildCompareAddressStatus(a2, 0xffff_fb96u);
+        uint nextPc = a2 < 0xffff_fb96u ? 0x00c10adau : 0x00c10b10u;
+        _cpu.SetProgramCounterAndStatus(nextPc, status, _bus.ReadOpcodeWord(nextPc));
+        cycles = (uint)Math.Max(32, iterations * 64);
+        return true;
+    }
+
+    private uint ExecuteTimerSlotLoop()
+    {
+        uint a0 = _cpu.AddressRegister(0);
+        uint d0 = _cpu.DataRegister(0);
+        ushort d1 = (ushort)_cpu.DataRegister(1);
+        int bitMask = 1 << ((int)d0 & 7);
+        int iterations = 0;
+
+        while (UnsignedLessThan(a0, 0xffff_fb96u) && iterations < 32)
+        {
+            d1 = _bus.ReadWord(a0 + 0x12u);
+            if (d1 != 0)
+            {
+                d1--;
+                _bus.WriteWord(a0 + 0x12u, d1);
+                if (d1 <= _bus.ReadWord(a0 + 0x14u))
+                {
+                    byte value = _bus.ReadByte(a0 + 2u);
+                    _bus.WriteByte(a0 + 2u, (byte)(value & ~bitMask));
+                }
+            }
+
+            a0 += 0x16u;
+            iterations++;
+        }
+
+        _cpu.SetAddressRegister(0, a0);
+        _cpu.SetDataRegisterWord(1, d1);
+        _cpu.SetProgramCounterAndStatus(0x00c10dcc, BuildCompareAddressStatus(a0, 0xffff_fb96u), _bus.ReadOpcodeWord(0x00c10dcc));
+        return (uint)Math.Max(40, iterations * 84);
+    }
+
+    private uint ExecuteEs5505BytePackLoop()
+    {
+        uint a0 = _cpu.AddressRegister(0);
+        uint d0 = _cpu.DataRegister(0);
+        ushort d1 = (ushort)_cpu.DataRegister(1);
+        int iterations = 0;
+
+        do
+        {
+            _bus.WriteByte(a0, (byte)d1);
+            _bus.WriteByte(a0 + 2u, (byte)d0);
+            d0 >>= 8;
+            d1--;
+            iterations++;
+        }
+        while (d1 >= 4 && iterations < 16);
+
+        _cpu.SetDataRegisterLong(0, d0);
+        _cpu.SetDataRegisterWord(1, d1);
+        _cpu.SetProgramCounterAndStatus(0x00c110e4, BuildCompareWordStatus(4, d1), _bus.ReadOpcodeWord(0x00c110e4));
+        return (uint)Math.Max(20, iterations * 64);
+    }
+
+    private bool TryExecuteEs5505RampLoop(out uint cycles)
+    {
+        cycles = 0;
+        uint a2 = _cpu.AddressRegister(2);
+        uint a3 = _cpu.AddressRegister(3);
+        if ((a2 & 0x00ff_ffffu) != 0x0020_0010u || (a3 & 0x00ff_ffffu) != 0x0020_001eu)
+            return false;
+
+        int groups = ((ushort)_cpu.DataRegister(7)) + 1;
+        if (groups is <= 0 or > 8)
+            return false;
+
+        uint a0 = _cpu.AddressRegister(0);
+        uint a1 = _cpu.AddressRegister(1);
+        uint d0 = _cpu.DataRegister(0);
+        int iterations = 0;
+        for (int group = 0; group < groups; group++)
+        {
+            for (int i = 0; i < 7; i++)
+            {
+                ushort page = _bus.ReadWord(a0);
+                a0 += 2u;
+                _bus.WriteWord(a3, page);
+
+                d0 = _bus.ReadLong(a1);
+                a1 += 4u;
+                d0 = unchecked(d0 + _bus.ReadLong(a1));
+                _bus.WriteLong(a2, d0);
+                _bus.WriteLong(a1, d0);
+                a1 += 4u;
+                iterations++;
+            }
+        }
+
+        _cpu.SetAddressRegister(0, a0);
+        _cpu.SetAddressRegister(1, a1);
+        _cpu.SetDataRegisterLong(0, d0);
+        _cpu.SetDataRegisterWord(7, 0xffff);
+        uint nextPc = 0x00c18f6au;
+        _cpu.SetProgramCounter(nextPc, _bus.ReadOpcodeWord(nextPc));
+        cycles = (uint)Math.Max(80, iterations * 72);
+        return true;
+    }
+
+    private bool TryExecuteEs5505LinearRampBlock(int iterations, uint nextPc, out uint cycles)
+    {
+        cycles = 0;
+        uint a2 = _cpu.AddressRegister(2);
+        uint a3 = _cpu.AddressRegister(3);
+        if ((a2 & 0x00ff_ffffu) != 0x0020_0010u || (a3 & 0x00ff_ffffu) != 0x0020_001eu)
+            return false;
+
+        uint a0 = _cpu.AddressRegister(0);
+        uint a1 = _cpu.AddressRegister(1);
+        uint d0 = _cpu.DataRegister(0);
+        for (int i = 0; i < iterations; i++)
+        {
+            ushort page = _bus.ReadWord(a0);
+            a0 += 2u;
+            _bus.WriteWord(a3, page);
+
+            d0 = _bus.ReadLong(a1);
+            a1 += 4u;
+            d0 = unchecked(d0 + _bus.ReadLong(a1));
+            _bus.WriteLong(a2, d0);
+            _bus.WriteLong(a1, d0);
+            a1 += 4u;
+        }
+
+        _cpu.SetAddressRegister(0, a0);
+        _cpu.SetAddressRegister(1, a1);
+        _cpu.SetDataRegisterLong(0, d0);
+        _cpu.SetProgramCounter(nextPc, _bus.ReadOpcodeWord(nextPc));
+        cycles = (uint)Math.Max(40, iterations * 62);
+        return true;
+    }
+
+    private ushort BuildCompareAddressStatus(uint dest, uint source)
+    {
+        uint result = dest - source;
+        bool carry = dest < source;
+        bool overflow = ((dest ^ source) & (dest ^ result) & 0x8000_0000u) != 0;
+        ushort status = (ushort)(_cpu.StatusRegister & 0xfff0);
+        if (carry)
+            status |= 0x0001;
+        if (overflow)
+            status |= 0x0002;
+        if (result == 0)
+            status |= 0x0004;
+        if ((result & 0x8000_0000u) != 0)
+            status |= 0x0008;
+        return status;
+    }
+
+    private ushort BuildCompareWordStatus(ushort source, ushort dest)
+    {
+        ushort result = (ushort)(dest - source);
+        bool carry = dest < source;
+        bool overflow = ((dest ^ source) & (dest ^ result) & 0x8000) != 0;
+        ushort status = (ushort)(_cpu.StatusRegister & 0xfff0);
+        if (carry)
+            status |= 0x0001;
+        if (overflow)
+            status |= 0x0002;
+        if (result == 0)
+            status |= 0x0004;
+        if ((result & 0x8000) != 0)
+            status |= 0x0008;
+        return status;
+    }
+
+    private static bool UnsignedLessThan(uint left, uint right) => left < right;
 
     private bool TryHandleSoundLineA(uint pc, ushort opcode, out uint cycles)
     {
@@ -247,11 +543,8 @@ internal sealed class TaitoF3SoundSystem
         // vector 10, whose handler stores D0 into the stacked SR, advances the
         // stacked PC by one word, and RTEs. Apply that net 68000 state change
         // here so the sound CPU does not burn a frame budget on the software gate.
-        var state = _cpu.GetState();
-        ushort sr = (ushort)state.Data[0];
         uint nextPc = (pc + 2) & 0x00ff_ffff;
-        ushort prefetch = _bus.ReadOpcodeWord(nextPc);
-        _cpu.SetState(new M68000.M68000State(state.Data, state.Address, state.Usp, state.Ssp, sr, nextPc, prefetch));
+        _cpu.SetProgramCounterAndStatus(nextPc, (ushort)_cpu.DataRegister(0), _bus.ReadOpcodeWord(nextPc));
         _bus.NoteLineA(pc, opcode);
         _bus.NoteFastLineA();
         cycles = 54;
@@ -363,6 +656,7 @@ internal sealed class TaitoF3SoundSystem
         private readonly MinimalDuart _duart = new();
         private readonly MinimalEs5510Host _esp = new();
         private byte[] _rom = Array.Empty<byte>();
+        private int _romBankCount = 1;
         private TaitoF3Es5505? _otis;
         private DariusGaidenAdapter.TaitoF3MainBus? _mainBus;
         private bool _es5505IrqAsserted;
@@ -394,6 +688,7 @@ internal sealed class TaitoF3SoundSystem
         public void Load(byte[] rom, TaitoF3Es5505 otis, DariusGaidenAdapter.TaitoF3MainBus mainBus)
         {
             _rom = rom;
+            _romBankCount = Math.Max(1, (_rom.Length - 0x100000) / 0x20000);
             _otis = otis;
             _otis.SetIrqCallback(SetEs5505IrqLine);
             _mainBus = mainBus;
@@ -486,6 +781,19 @@ internal sealed class TaitoF3SoundSystem
 
         public ushort ReadWord(uint address)
         {
+            address &= 0x00ff_ffff;
+            if (TryMapRam(address, out int ramOffset) && ramOffset <= 0xfffe)
+            {
+                CurrentOpcode = (ushort)((_ram[ramOffset] << 8) | _ram[ramOffset + 1]);
+                return CurrentOpcode;
+            }
+
+            if (TryReadBankedRomWord(address, out ushort romWord))
+            {
+                CurrentOpcode = romWord;
+                return CurrentOpcode;
+            }
+
             CurrentOpcode = (ushort)((ReadByte(address) << 8) | ReadByte(address + 1));
             return CurrentOpcode;
         }
@@ -575,6 +883,13 @@ internal sealed class TaitoF3SoundSystem
         public void WriteWord(uint address, ushort value)
         {
             address &= 0x00ff_ffff;
+            if (TryMapRam(address, out int ramOffset) && ramOffset <= 0xfffe)
+            {
+                _ram[ramOffset] = (byte)(value >> 8);
+                _ram[ramOffset + 1] = (byte)value;
+                return;
+            }
+
             if (address >= 0x200000 && address <= 0x20001f)
             {
                 _otis?.Write((int)((address - 0x200000) >> 1), value, 0xffff);
@@ -649,10 +964,50 @@ internal sealed class TaitoF3SoundSystem
                 return false;
             }
 
-            int max = Math.Max(1, (_rom.Length - 0x100000) / 0x20000);
-            int entry = bank % max;
+            int entry = bank % _romBankCount;
             int offset = 0x100000 + entry * 0x20000 + (int)(address & 0x1ffff);
             value = (uint)offset < (uint)_rom.Length ? _rom[offset] : (byte)0xff;
+            return true;
+        }
+
+        private bool TryReadBankedRomWord(uint address, out ushort value)
+        {
+            int bank = address switch
+            {
+                >= 0xc00000 and <= 0xc1ffff => 0,
+                >= 0xc20000 and <= 0xc3ffff => 1,
+                >= 0xc40000 and <= 0xc7ffff => 2,
+                _ => -1
+            };
+            if (bank < 0 || _rom.Length <= 0x100000)
+            {
+                value = 0xffff;
+                return false;
+            }
+
+            int local = (int)(address & 0x1ffff);
+            if (local == 0x1ffff)
+            {
+                bool highOk = TryReadBankedRom(address, out byte high);
+                bool lowOk = TryReadBankedRom(address + 1, out byte low);
+                if (highOk && lowOk)
+                {
+                    value = (ushort)((high << 8) | low);
+                    return true;
+                }
+
+                value = 0xffff;
+                return false;
+            }
+
+            int offset = 0x100000 + (bank % _romBankCount) * 0x20000 + local;
+            if ((uint)(offset + 1) >= (uint)_rom.Length)
+            {
+                value = 0xffff;
+                return true;
+            }
+
+            value = (ushort)((_rom[offset] << 8) | _rom[offset + 1]);
             return true;
         }
 

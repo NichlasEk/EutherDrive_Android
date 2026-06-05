@@ -6,6 +6,7 @@ using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
 string romPath = args.Length > 0 ? args[0] : "/home/nichlas/roms/MAME/Midway/Vegas/gauntd";
+ConfigureRawDiskSidecar(romPath);
 int frames = args.Length > 1 && int.TryParse(args[1], out int parsedFrames) ? parsedFrames : 600;
 int cpuStepsPerFrameConfig = args.Length > 2 && int.TryParse(args[2], out int cpuStepsPerFrame) && cpuStepsPerFrame > 0
     ? cpuStepsPerFrame
@@ -74,16 +75,19 @@ if (extraSeries.Length > 0)
     object probeCpu = GetProperty(probeMachine, "Cpu");
     object probeVoodoo = GetProperty(probeMachine, "Voodoo");
     Action step = GetStepAction(probeCpu);
+    ulong? extraStopPc = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_STOP_PC"));
     int currentExtra = 0;
     foreach (int targetExtra in extraSeries)
     {
         if (targetExtra < currentExtra)
             continue;
 
-        int stepped = StepCpu(step, targetExtra - currentExtra);
+        int stepped = StepCpu(step, targetExtra - currentExtra, probeCpu, extraStopPc);
         currentExtra += stepped;
         int drained = DrainHelperPcs(probeCpu, step, 4096);
         PrintCheckpoint(currentExtra, drained, probeCpu, probeVoodoo);
+        if (extraStopPc.HasValue && (ulong)GetProperty(probeCpu, "Pc") == extraStopPc.Value)
+            break;
     }
 }
 else if (extraSteps > 0)
@@ -91,7 +95,8 @@ else if (extraSteps > 0)
     object probeMachine = GetField(adapter, "_machine");
     object probeCpu = GetProperty(probeMachine, "Cpu");
     Action step = GetStepAction(probeCpu);
-    StepCpu(step, extraSteps);
+    ulong? extraStopPc = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_STOP_PC"));
+    StepCpu(step, extraSteps, probeCpu, extraStopPc);
     int drained = DrainHelperPcs(probeCpu, step, 4096);
     Console.WriteLine($"extraCpuSteps={extraSteps}");
     if (drained > 0)
@@ -101,6 +106,7 @@ else if (extraSteps > 0)
 Console.WriteLine($"rom={adapter.RomIdentity?.Name ?? "unknown"}");
 Console.WriteLine($"frame={adapter.FrameCounter}");
 PrintScoreboard(adapter, frames, runStartFrame, loadStopwatch.Elapsed, runStopwatch.Elapsed, totalStopwatch.Elapsed);
+SaveRequestedFinalSnapshot(adapter, warmupFrames, cpuStepsPerFrameConfig);
 Console.WriteLine($"debug={adapter.DebugStatus}");
 
 object machine = GetField(adapter, "_machine");
@@ -169,11 +175,15 @@ static Action GetStepAction(object cpu)
     return (Action)method.CreateDelegate(typeof(Action), cpu);
 }
 
-static int StepCpu(Action step, int count)
+static int StepCpu(Action step, int count, object? cpu = null, ulong? stopPc = null)
 {
     int stepped = 0;
     for (; stepped < count; stepped++)
+    {
+        if (stopPc.HasValue && cpu is not null && (ulong)GetProperty(cpu, "Pc") == stopPc.Value)
+            break;
         step();
+    }
     return stepped;
 }
 
@@ -281,6 +291,33 @@ static bool IsEnvEnabled(string name)
 {
     string? value = Environment.GetEnvironmentVariable(name);
     return value == "1" || value?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
+}
+
+static void ConfigureRawDiskSidecar(string romPath)
+{
+    if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RAW_DISK")))
+        return;
+
+    string? directory = Directory.Exists(romPath)
+        ? Path.GetFullPath(romPath)
+        : Path.GetDirectoryName(Path.GetFullPath(romPath));
+    if (string.IsNullOrWhiteSpace(directory))
+        return;
+
+    string[] candidates =
+    [
+        Path.Combine(directory, "gauntd24.raw"),
+        Path.Combine(directory, "gauntdl.raw")
+    ];
+
+    foreach (string candidate in candidates)
+    {
+        if (File.Exists(candidate))
+        {
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RAW_DISK", candidate);
+            return;
+        }
+    }
 }
 
 static int ParseWarmupFrames(int targetFrames)
@@ -402,6 +439,15 @@ static void DumpVoodoo(object facade)
     int drawPackets = GetIntField(backend, "_fifoDrawPacketCount");
     int directTriangles = GetIntField(backend, "_directTriangleCommandCount");
     int setupTriangles = GetIntField(backend, "_setupTriangleCommandCount");
+    int texturedTriangles = GetIntField(backend, "_texturedTriangleCount");
+    int texturedCovered = GetIntField(backend, "_texturedTriangleCoveredCount");
+    int texturedRejected = GetIntField(backend, "_texturedTriangleRejectedCount");
+    long texturedPixels = GetLongField(backend, "_texturedPixelCount");
+    long texturedZeroPixels = GetLongField(backend, "_texturedZeroPixelCount");
+    int texturedRejectNonFinite = GetIntField(backend, "_texturedRejectNonFiniteCount");
+    int texturedRejectDegenerate = GetIntField(backend, "_texturedRejectDegenerateCount");
+    int texturedRejectClip = GetIntField(backend, "_texturedRejectClipCount");
+    int texturedRejectEmptyRaster = GetIntField(backend, "_texturedRejectEmptyRasterCount");
     long lfbWrites = GetLongField(backend, "_lfbWriteCount");
     int texWrites = GetIntField(backend, "_textureWriteCount");
     int fastFills = GetIntField(backend, "_fastFillCount");
@@ -413,14 +459,80 @@ static void DumpVoodoo(object facade)
         $"directTriangles={directTriangles} setupTriangles={setupTriangles} lfbWrites={lfbWrites} texWrites={texWrites} " +
         $"fastFills={fastFills} swaps={swaps}");
     Console.WriteLine("voodoo packetTypes=" + string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}")));
+    Console.WriteLine(
+        $"voodoo textured=tri:{texturedTriangles}:covered:{texturedCovered}:rejected:{texturedRejected}:" +
+        $"pixels:{texturedPixels}:zero:{texturedZeroPixels}:" +
+        $"rejects:nf:{texturedRejectNonFinite}:deg:{texturedRejectDegenerate}:clip:{texturedRejectClip}:empty:{texturedRejectEmptyRaster}");
+    Console.WriteLine("voodoo buffers=" + FormatVoodooBufferStats((ushort[][])GetField(backend, "_colorBuffers")));
+    Console.WriteLine("voodoo texture=" + FormatTextureStats((uint[])GetField(backend, "_textureMemory")));
+    Console.WriteLine(
+        "voodoo textureMap=" +
+        $"writes={GetField(backend, "_textureMappedWriteCount")}:" +
+        $"nz={GetField(backend, "_textureMappedNonZeroWriteCount")}:" +
+        $"zero={GetField(backend, "_textureMappedZeroWriteCount")}:" +
+        $"touched={GetField(backend, "_textureTouchedWordCount")}:" +
+        $"first=0x{Math.Max((int)GetField(backend, "_textureTouchedFirstWord"), 0) * 4:x6}:" +
+        $"last=0x{Math.Max((int)GetField(backend, "_textureTouchedLastWord"), 0) * 4:x6}");
     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_EVENTS") == "1")
         Console.WriteLine("voodoo recentEvents=" + GetProperty(facade, "RecentEventStatus"));
     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1")
         Console.WriteLine("voodoo statusPcs=" + GetProperty(backend, "StatusPcProfile"));
 
     var registers = (uint[])GetField(backend, "_registers");
-    foreach (int reg in new[] { 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x40, 0x46, 0x47, 0x49, 0x4a, 0x51, 0x52, 0x83, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa8, 0xa9 })
+    foreach (int reg in new[] { 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x40, 0x41, 0x43, 0x44, 0x45, 0x46, 0x47, 0x49, 0x4a, 0x51, 0x52, 0x83, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xc0, 0xc1, 0xc3 })
         Console.WriteLine($"voodoo reg[{reg:x3}]=0x{registers[reg]:x8}");
+}
+
+static string FormatTextureStats(uint[] texture)
+{
+    int nonZero = 0;
+    int first = -1;
+    int last = -1;
+    int low64k = 0;
+    int nearFb00 = 0;
+    for (int i = 0; i < texture.Length; i++)
+    {
+        if (texture[i] == 0)
+            continue;
+
+        nonZero++;
+        if (first < 0)
+            first = i;
+        last = i;
+        uint byteOffset = (uint)i << 2;
+        if (byteOffset < 0x10000u)
+            low64k++;
+        if (byteOffset is >= 0x0000f000u and < 0x00011000u)
+            nearFb00++;
+    }
+
+    return $"nzWords={nonZero}:first=0x{Math.Max(first, 0) * 4:x6}:last=0x{Math.Max(last, 0) * 4:x6}:low64k={low64k}:nearFb00={nearFb00}";
+}
+
+static string FormatVoodooBufferStats(ushort[][] buffers)
+{
+    return string.Join(" ", buffers.Select((buffer, index) =>
+    {
+        int nonZero = 0;
+        int colored = 0;
+        int white = 0;
+        foreach (ushort pixel in buffer)
+        {
+            if (pixel == 0)
+                continue;
+
+            nonZero++;
+            if (pixel == 0xffff)
+                white++;
+            int r = ((pixel >> 11) & 0x1f) << 3;
+            int g = ((pixel >> 5) & 0x3f) << 2;
+            int b = (pixel & 0x1f) << 3;
+            if (r != g || r != b)
+                colored++;
+        }
+
+        return $"{index}:nz={nonZero}:white={white}:colored={colored}";
+    }));
 }
 
 static void PrintScoreboard(GauntletDarkLegacyAdapter adapter, int targetFrames, long runStartFrame, TimeSpan loadElapsed, TimeSpan runElapsed, TimeSpan totalElapsed)
@@ -509,6 +621,16 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     }
 
     File.Move(tempPath, path, overwrite: true);
+}
+
+static void SaveRequestedFinalSnapshot(GauntletDarkLegacyAdapter adapter, int frames, int cpuStepsPerFrame)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+
+    SaveWarmupSnapshot(adapter, path, frames, cpuStepsPerFrame);
+    Console.Error.WriteLine($"finalSnapshotSaved={path}");
 }
 
 static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, int frames, int cpuStepsPerFrame)
@@ -948,7 +1070,7 @@ static void ReadSetupVertices(BinaryReader reader, Array values)
         float x = reader.ReadSingle();
         float y = reader.ReadSingle();
         ushort color = reader.ReadUInt16();
-        object vertex = Activator.CreateInstance(elementType, x, y, color)
+        object vertex = Activator.CreateInstance(elementType, x, y, color, 0.0f, 0.0f, false)
             ?? throw new InvalidDataException("Could not construct setup vertex");
         values.SetValue(vertex, i);
     }

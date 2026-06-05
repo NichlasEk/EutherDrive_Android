@@ -640,6 +640,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA"));
     private readonly bool _enableRuntimeBgLoadModelExperimentalSkips =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL"));
+    private readonly bool _enableRuntimeBgLoadModelQioPollFastPath =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_POLL");
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -13096,7 +13098,7 @@ internal sealed class MipsR5000Core
         const ulong entry = 0xffffffff800abaa0UL;
         const ulong end = 0xffffffff800abbc0UL;
 
-        if (!_enableRuntimeBgLoadModelExperimentalSkips || pc < entry || pc > end)
+        if (!_enableRuntimeBgLoadModelQioPollFastPath || pc < entry || pc > end)
             return false;
         if (_memory.Read32(entry + 0x00UL) != 0x27bdffd8U ||
             _memory.Read32(entry + 0x04UL) != 0xafb20020U ||

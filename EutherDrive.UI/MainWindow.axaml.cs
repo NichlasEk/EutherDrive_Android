@@ -207,6 +207,7 @@ public partial class MainWindow : Window
     private readonly Action _presentOnUiAction;
     private IEmulatorCore? _pendingPresentCore;
     private int _pendingPresentQueued;
+    private long _nextPostedPresentTicks;
     private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
     private byte[] _presentSnapshotBuffer = Array.Empty<byte>();
     private TateRotation _tateRotation = TateRotation.Off;
@@ -9332,6 +9333,7 @@ public partial class MainWindow : Window
     {
         _pendingPresentCore = null;
         _pendingPresentQueued = 0;
+        _nextPostedPresentTicks = 0;
         _glSwapPresentBuffer = Array.Empty<byte>();
         _presentSnapshotBuffer = Array.Empty<byte>();
         _tateFrameBuffer = Array.Empty<byte>();
@@ -9423,12 +9425,12 @@ public partial class MainWindow : Window
         if (ShouldSnapshotFrameBufferForPresentation(core))
         {
             bool lockTaken = false;
-            bool skipIfBusy = core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
+            int lockTimeoutMs = GetPresentationCoreLockTimeoutMs(core);
             try
             {
-                if (skipIfBusy)
+                if (lockTimeoutMs >= 0)
                 {
-                    lockTaken = Monitor.TryEnter(_coreAudioLock);
+                    lockTaken = Monitor.TryEnter(_coreAudioLock, lockTimeoutMs);
                     if (!lockTaken)
                         return;
                 }
@@ -10406,7 +10408,11 @@ public partial class MainWindow : Window
             RenderFrame(core);
 
         if (Volatile.Read(ref _pendingPresentQueued) != 0)
-            Dispatcher.UIThread.Post(_presentOnUiAction, DispatcherPriority.Background);
+        {
+            var nextCore = _pendingPresentCore;
+            if (nextCore != null)
+                PostPendingPresent(nextCore);
+        }
     }
 
     private bool ShouldUsePostedPsxAcceleratedPresenter(IEmulatorCore? core)
@@ -10425,6 +10431,13 @@ public partial class MainWindow : Window
             || core is DariusGaidenAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
+
+    private static int GetPresentationCoreLockTimeoutMs(IEmulatorCore core)
+        => core is DariusGaidenAdapter
+            ? 3
+            : core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
+                ? 0
+                : -1;
 
     private static bool ShouldUseNativeDesktopPsxPresenter(IEmulatorCore? core)
     {
@@ -10451,7 +10464,56 @@ public partial class MainWindow : Window
         if (Interlocked.Exchange(ref _pendingPresentQueued, 1) != 0)
             return;
 
-        Dispatcher.UIThread.Post(_presentOnUiAction, DispatcherPriority.Render);
+        PostPendingPresent(core);
+    }
+
+    private void PostPendingPresent(IEmulatorCore core)
+    {
+        var priority = core is DariusGaidenAdapter
+            ? DispatcherPriority.Background
+            : DispatcherPriority.Render;
+        int delayMs = ComputePostedPresentDelayMs(core);
+        if (delayMs <= 0)
+        {
+            Dispatcher.UIThread.Post(_presentOnUiAction, priority);
+            return;
+        }
+
+        _ = PostPendingPresentAfterDelayAsync(delayMs, priority);
+    }
+
+    private async Task PostPendingPresentAfterDelayAsync(int delayMs, DispatcherPriority priority)
+    {
+        try
+        {
+            await Task.Delay(delayMs).ConfigureAwait(false);
+        }
+        catch (TaskCanceledException)
+        {
+            return;
+        }
+
+        if (Volatile.Read(ref _pendingPresentQueued) != 0)
+            Dispatcher.UIThread.Post(_presentOnUiAction, priority);
+    }
+
+    private int ComputePostedPresentDelayMs(IEmulatorCore core)
+    {
+        if (core is not DariusGaidenAdapter dariusg)
+            return 0;
+
+        double targetFps = Math.Clamp(dariusg.GetTargetFps(), 30.0, 60.0);
+        long intervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / targetFps));
+        long now = Stopwatch.GetTimestamp();
+        long next = Interlocked.Read(ref _nextPostedPresentTicks);
+        long scheduled = next <= now ? now : next;
+        Interlocked.Exchange(ref _nextPostedPresentTicks, scheduled + intervalTicks);
+
+        long delayTicks = scheduled - now;
+        if (delayTicks <= 0)
+            return 0;
+
+        return Math.Clamp((int)Math.Ceiling(delayTicks * 1000.0 / Stopwatch.Frequency), 1, 100);
     }
 
     private void UpdatePadTypeFromUi()

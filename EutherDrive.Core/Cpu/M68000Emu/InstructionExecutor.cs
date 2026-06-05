@@ -420,7 +420,344 @@ internal sealed partial class InstructionExecutor
             return true;
         }
 
+        if ((opcode & 0xf1f8) == 0x1028)
+        {
+            int dataRegister = (opcode >> 9) & 7;
+            uint address = ReadAddressDisplacement(opcode & 7, maskedPc + 2u);
+            byte value = _bus.ReadByte(address);
+            _registers.Data[dataRegister] = (_registers.Data[dataRegister] & 0xffff_ff00u) | value;
+            SetTestByteFlags(value);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xf1f8) == 0x3028)
+        {
+            int dataRegister = (opcode >> 9) & 7;
+            uint address = ReadAddressDisplacement(opcode & 7, maskedPc + 2u);
+            if ((address & 1) != 0)
+                return false;
+
+            ushort value = _bus.ReadWord(address);
+            _registers.Data[dataRegister] = (_registers.Data[dataRegister] & 0xffff_0000u) | value;
+            SetTestWordFlags(value);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xf1f8) == 0x1080)
+        {
+            int addressRegister = (opcode >> 9) & 7;
+            byte value = (byte)_registers.Data[opcode & 7];
+            _bus.WriteByte(ReadAddressRegister(addressRegister), value);
+            SetTestByteFlags(value);
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 8;
+            return true;
+        }
+
+        if ((opcode & 0xf1f8) == 0x1140)
+        {
+            int addressRegister = (opcode >> 9) & 7;
+            byte value = (byte)_registers.Data[opcode & 7];
+            _bus.WriteByte(ReadAddressDisplacement(addressRegister, maskedPc + 2u), value);
+            SetTestByteFlags(value);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) == 0xd0fc)
+        {
+            int addressRegister = (opcode >> 9) & 7;
+            uint source = unchecked((uint)(int)(short)ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu));
+            WriteAddressRegisterLong(addressRegister, ReadAddressRegister(addressRegister) + source);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 8;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) == 0xb0fc)
+        {
+            int addressRegister = (opcode >> 9) & 7;
+            uint source = unchecked((uint)(int)(short)ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu));
+            CompareLongWords(source, ReadAddressRegister(addressRegister), ref _registers.Ccr);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 8;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) == 0xb07c)
+        {
+            int dataRegister = (opcode >> 9) & 7;
+            ushort immediate = ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu);
+            CompareWords(immediate, (ushort)_registers.Data[dataRegister], ref _registers.Ccr);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 8;
+            return true;
+        }
+
+        if ((opcode & 0xf1f8) == 0xb100)
+        {
+            int sourceRegister = (opcode >> 9) & 7;
+            int destRegister = opcode & 7;
+            byte value = (byte)(_registers.Data[destRegister] ^ _registers.Data[sourceRegister]);
+            _registers.Data[destRegister] = (_registers.Data[destRegister] & 0xffff_ff00u) | value;
+            SetTestByteFlags(value);
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 4;
+            return true;
+        }
+
+        if ((opcode & 0xf1f8) is 0x5040 or 0x5140)
+        {
+            int dataRegister = opcode & 7;
+            int quick = (opcode >> 9) & 7;
+            if (quick == 0)
+                quick = 8;
+
+            ushort oldValue = (ushort)_registers.Data[dataRegister];
+            ushort value;
+            bool carry;
+            bool overflow;
+            if ((opcode & 0x0100) == 0)
+                (value, carry, overflow) = AddWords(oldValue, (ushort)quick, false);
+            else
+                (value, carry, overflow) = SubWords(oldValue, (ushort)quick, false);
+
+            _registers.Data[dataRegister] = (_registers.Data[dataRegister] & 0xffff_0000u) | value;
+            SetWordArithmeticFlags(value, carry, overflow);
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 4;
+            return true;
+        }
+
+        if ((opcode & 0xf1f8) == 0xe088)
+        {
+            int dataRegister = opcode & 7;
+            int shifts = (opcode >> 9) & 7;
+            if (shifts == 0)
+                shifts = 8;
+
+            uint oldValue = _registers.Data[dataRegister];
+            bool carry = ((oldValue >> (shifts - 1)) & 1u) != 0;
+            uint value = oldValue >> shifts;
+            _registers.Data[dataRegister] = value;
+            _registers.Ccr.Carry = carry;
+            _registers.Ccr.Extend = carry;
+            _registers.Ccr.Overflow = false;
+            _registers.Ccr.Zero = value == 0;
+            _registers.Ccr.Negative = value.SignBit();
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 8u + (uint)(2 * shifts);
+            return true;
+        }
+
+        if (opcode == 0x4E75)
+        {
+            uint sp = _registers.StackPointer();
+            if ((sp & 1) != 0)
+                return false;
+
+            uint target = _bus.ReadLong(sp);
+            if ((target & 1) != 0)
+                return false;
+
+            _registers.SetStackPointer((sp + 4u) & 0x00ff_ffffu);
+            SetSequentialPc(target);
+            cycles = 16;
+            return true;
+        }
+
+        if (opcode == 0x4A38)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 2u);
+            byte value = _bus.ReadByte(address);
+            SetTestByteFlags(value);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if (opcode == 0x4A78)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 2u);
+            if ((address & 1) != 0)
+                return false;
+
+            ushort value = _bus.ReadWord(address);
+            SetTestWordFlags(value);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) == 0x3038)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 2u);
+            if ((address & 1) != 0)
+                return false;
+
+            int register = (opcode >> 9) & 7;
+            ushort value = _bus.ReadWord(address);
+            _registers.Data[register] = (_registers.Data[register] & 0xffff_0000u) | value;
+            SetTestWordFlags(value);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xfff8) == 0x31c0)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 2u);
+            if ((address & 1) != 0)
+                return false;
+
+            ushort value = (ushort)_registers.Data[opcode & 7];
+            _bus.WriteWord(address, value);
+            SetTestWordFlags(value);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) == 0xb078)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 2u);
+            if ((address & 1) != 0)
+                return false;
+
+            int register = (opcode >> 9) & 7;
+            CompareWords(_bus.ReadWord(address), (ushort)_registers.Data[register], ref _registers.Ccr);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 12;
+            return true;
+        }
+
+        if (opcode == 0x0c78)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 4u);
+            if ((address & 1) != 0)
+                return false;
+
+            ushort immediate = ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu);
+            CompareWords(immediate, _bus.ReadWord(address), ref _registers.Ccr);
+            SetSequentialPc(maskedPc + 6u);
+            cycles = 16;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) is 0x5038 or 0x5138)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 2u);
+            int quick = (opcode >> 9) & 7;
+            if (quick == 0)
+                quick = 8;
+
+            byte oldValue = _bus.ReadByte(address);
+            byte value;
+            bool carry;
+            bool overflow;
+            if ((opcode & 0x0100) == 0)
+                (value, carry, overflow) = AddBytes(oldValue, (byte)quick, false);
+            else
+                (value, carry, overflow) = SubBytes(oldValue, (byte)quick, false);
+
+            _bus.WriteByte(address, value);
+            SetByteArithmeticFlags(value, carry, overflow);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 16;
+            return true;
+        }
+
+        if ((opcode & 0xf1ff) is 0x5078 or 0x5178)
+        {
+            uint address = ReadAbsoluteShortAddress(maskedPc + 2u);
+            if ((address & 1) != 0)
+                return false;
+
+            int quick = (opcode >> 9) & 7;
+            if (quick == 0)
+                quick = 8;
+
+            ushort oldValue = _bus.ReadWord(address);
+            ushort value;
+            bool carry;
+            bool overflow;
+            if ((opcode & 0x0100) == 0)
+                (value, carry, overflow) = AddWords(oldValue, (ushort)quick, false);
+            else
+                (value, carry, overflow) = SubWords(oldValue, (ushort)quick, false);
+
+            _bus.WriteWord(address, value);
+            SetWordArithmeticFlags(value, carry, overflow);
+            SetSequentialPc(maskedPc + 4u);
+            cycles = 16;
+            return true;
+        }
+
+        if ((opcode & 0xf000) == 0x6000 && (opcode & 0xff00) != 0x6100)
+        {
+            int condition = (opcode >> 8) & 0x0f;
+            bool take = condition == 0 || CheckBranchCondition(condition, _registers.Ccr);
+            byte displacement8 = (byte)opcode;
+
+            if (displacement8 == 0)
+            {
+                short displacement = (short)ReadFastOpcodeWord((maskedPc + 2u) & 0x00ff_ffffu);
+                if (take)
+                {
+                    uint target = unchecked(maskedPc + 2u + (uint)displacement) & 0x00ff_ffffu;
+                    if ((target & 1) != 0)
+                        return false;
+                    SetSequentialPc(target);
+                    cycles = 10;
+                    return true;
+                }
+
+                SetSequentialPc(maskedPc + 4u);
+                cycles = 12;
+                return true;
+            }
+
+            if (take)
+            {
+                uint target = unchecked(maskedPc + 2u + (uint)(sbyte)displacement8) & 0x00ff_ffffu;
+                if ((target & 1) != 0)
+                    return false;
+                SetSequentialPc(target);
+                cycles = 10;
+                return true;
+            }
+
+            SetSequentialPc(maskedPc + 2u);
+            cycles = 8;
+            return true;
+        }
+
         return false;
+    }
+
+    private uint ReadAbsoluteShortAddress(uint extensionAddress)
+        => unchecked((uint)(short)ReadFastOpcodeWord(extensionAddress & 0x00ff_ffffu));
+
+    private uint ReadAddressDisplacement(int register, uint extensionAddress)
+    {
+        short displacement = (short)ReadFastOpcodeWord(extensionAddress & 0x00ff_ffffu);
+        return unchecked(ReadAddressRegister(register) + (uint)displacement) & 0x00ff_ffffu;
+    }
+
+    private uint ReadAddressRegister(int register)
+        => (register & 7) == 7 ? _registers.StackPointer() : _registers.Address[register & 7];
+
+    private void WriteAddressRegisterLong(int register, uint value)
+    {
+        if ((register & 7) == 7)
+            _registers.SetStackPointer(value);
+        else
+            _registers.Address[register & 7] = value;
     }
 
     private void SetSequentialPc(uint pc)
@@ -441,12 +778,60 @@ internal sealed partial class InstructionExecutor
         _registers.Ccr.Negative = value.SignBit();
     }
 
+    private void SetTestWordFlags(ushort value)
+    {
+        _registers.Ccr.Carry = false;
+        _registers.Ccr.Overflow = false;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+    }
+
     private void SetTestLongFlags(uint value)
     {
         _registers.Ccr.Carry = false;
         _registers.Ccr.Overflow = false;
         _registers.Ccr.Zero = value == 0;
         _registers.Ccr.Negative = value.SignBit();
+    }
+
+    private void SetByteArithmeticFlags(byte value, bool carry, bool overflow)
+    {
+        _registers.Ccr.Carry = carry;
+        _registers.Ccr.Overflow = overflow;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+        _registers.Ccr.Extend = carry;
+    }
+
+    private void SetWordArithmeticFlags(ushort value, bool carry, bool overflow)
+    {
+        _registers.Ccr.Carry = carry;
+        _registers.Ccr.Overflow = overflow;
+        _registers.Ccr.Zero = value == 0;
+        _registers.Ccr.Negative = value.SignBit();
+        _registers.Ccr.Extend = carry;
+    }
+
+    private static bool CheckBranchCondition(int condition, ConditionCodes ccr)
+    {
+        return condition switch
+        {
+            2 => !ccr.Carry && !ccr.Zero,
+            3 => ccr.Carry || ccr.Zero,
+            4 => !ccr.Carry,
+            5 => ccr.Carry,
+            6 => !ccr.Zero,
+            7 => ccr.Zero,
+            8 => !ccr.Overflow,
+            9 => ccr.Overflow,
+            10 => !ccr.Negative,
+            11 => ccr.Negative,
+            12 => ccr.Negative == ccr.Overflow,
+            13 => ccr.Negative != ccr.Overflow,
+            14 => !ccr.Zero && ccr.Negative == ccr.Overflow,
+            15 => ccr.Zero || ccr.Negative != ccr.Overflow,
+            _ => false,
+        };
     }
 
     private ExecuteResult<ushort> ReadBusWord(uint address)

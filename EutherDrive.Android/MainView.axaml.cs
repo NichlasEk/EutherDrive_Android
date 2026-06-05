@@ -95,6 +95,7 @@ public partial class MainView : UserControl
     private int _presentedFrames;
     private long _latestFrameSerial;
     private long _presentedFrameSerial;
+    private long _nextPresentPostTicks;
     private long _perfWindowStartTicks;
     private int _perfWindowFrames;
     private double _perfAccumulatedEmuMs;
@@ -1767,7 +1768,37 @@ public partial class MainView : UserControl
             return;
         }
 
-        Dispatcher.UIThread.Post(ProcessQueuedPresentLatestFrame, DispatcherPriority.Background);
+        int delayMs = ComputePresentPostDelayMs();
+        if (delayMs <= 0)
+        {
+            Dispatcher.UIThread.Post(ProcessQueuedPresentLatestFrame, DispatcherPriority.Background);
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(delayMs).ConfigureAwait(false);
+            Dispatcher.UIThread.Post(ProcessQueuedPresentLatestFrame, DispatcherPriority.Background);
+        });
+    }
+
+    private int ComputePresentPostDelayMs()
+    {
+        if (_core is not EutherDrive.Core.Arcade.Taito.DariusGaidenAdapter dariusg)
+            return 0;
+
+        double targetFps = Math.Clamp(dariusg.GetTargetFps(), 30.0, 60.0);
+        long minPresentTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / targetFps));
+        long now = Stopwatch.GetTimestamp();
+        long nextAllowed = Interlocked.Read(ref _nextPresentPostTicks);
+        long scheduled = Math.Max(now, nextAllowed);
+        Interlocked.Exchange(ref _nextPresentPostTicks, scheduled + minPresentTicks);
+
+        long delayTicks = scheduled - now;
+        if (delayTicks <= 0)
+            return 0;
+
+        return Math.Clamp((int)Math.Ceiling(StopwatchTicksToMs(delayTicks)), 1, 33);
     }
 
     private void ProcessQueuedPresentLatestFrame()
@@ -1943,6 +1974,7 @@ public partial class MainView : UserControl
         _emulatedFrames = 0;
         _presentedFrameSerial = 0;
         _latestFrameSerial = 0;
+        Interlocked.Exchange(ref _nextPresentPostTicks, 0);
         _lastFrameWidth = 0;
         _lastFrameHeight = 0;
         _lastFrameStride = 0;

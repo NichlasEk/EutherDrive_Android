@@ -62,6 +62,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private static readonly int RenderDivisor = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_DIVISOR", 1), 1, 8);
     private static readonly int RenderPhaseTraceMs = ParseEnvInt("EUTHERDRIVE_DARIUSG_RENDER_PHASE_MS", 0);
     private static readonly bool AdaptiveRenderPacing = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUSG_ADAPTIVE_RENDER") != "0";
+    private static readonly int RuntimeWarmupFrames = Math.Clamp(ParseEnvInt("EUTHERDRIVE_DARIUSG_RUNTIME_WARMUP_FRAMES", 64), 0, 120);
     private static readonly long TargetFrameTicks = Math.Max(1, (long)(Stopwatch.Frequency / TargetFps));
 
     private static readonly HashSet<string> SupportedDrivers = new(StringComparer.OrdinalIgnoreCase)
@@ -190,6 +191,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     private long _frameCounter;
     private bool _loaded;
     private bool _cpuFaulted;
+    private bool _runtimeWarmupInProgress;
     private int _adaptiveRenderSkipsRemaining;
     private int _adaptiveRenderSkipsSincePresent;
     private long _adaptiveRenderCostTicks;
@@ -595,6 +597,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         ResetVideoRuntime();
         PrewarmDariusHotPaths();
         RenderInitialFrame();
+        WarmUpRuntimeFromCurrentState();
     }
 
     private void ResetVideoRuntime()
@@ -860,9 +863,14 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             if (_adaptiveRenderSkipsRemaining > 0)
             {
-                _adaptiveRenderSkipsRemaining--;
-                _adaptiveRenderSkipsSincePresent++;
-                return false;
+                if (_adaptiveRenderSkipsSincePresent < 1)
+                {
+                    _adaptiveRenderSkipsRemaining--;
+                    _adaptiveRenderSkipsSincePresent++;
+                    return false;
+                }
+
+                _adaptiveRenderSkipsRemaining = 0;
             }
         }
 
@@ -875,7 +883,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             return;
 
         long highWaterTicks = TargetFrameTicks + (TargetFrameTicks / 10);
-        if (elapsedTicks > highWaterTicks)
+        if (elapsedTicks > highWaterTicks && _adaptiveRenderSkipsSincePresent == 0)
             _adaptiveRenderSkipsRemaining = 1;
         else if (elapsedTicks < TargetFrameTicks - (TargetFrameTicks / 4))
             _adaptiveRenderSkipsRemaining = 0;
@@ -941,7 +949,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     public void SaveState(BinaryWriter writer)
     {
         writer.Write("DARIUSG");
-        writer.Write(12);
+        writer.Write(13);
         writer.Write(_frameCounter);
         writer.Write(_executedInstructions);
         writer.Write(_executedCycles);
@@ -965,7 +973,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if (reader.ReadString() != "DARIUSG")
             throw new InvalidDataException("Not a Darius Gaiden bringup savestate.");
         int version = reader.ReadInt32();
-        if (version < 3 || version > 12)
+        if (version < 3 || version > 13)
             throw new InvalidDataException($"Unsupported Darius Gaiden bringup savestate version {version}.");
 
         _frameCounter = reader.ReadInt64();
@@ -996,6 +1004,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         _adaptiveRenderCostTicks = 0;
         PrewarmDariusHotPaths();
         RenderInitialFrame();
+        WarmUpRuntimeFromCurrentState();
     }
 
     private void RenderInitialFrame()
@@ -1004,6 +1013,146 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         RenderUglyVideo();
         if (renderStartTicks != 0)
             UpdateAdaptiveRenderCost(Stopwatch.GetTimestamp() - renderStartTicks);
+    }
+
+    private void WarmUpRuntimeFromCurrentState()
+    {
+        if (RuntimeWarmupFrames == 0 || _runtimeWarmupInProgress || !_loaded)
+            return;
+
+        if (Trace || TraceSummary || TracePhaseTiming || TracePcProfile || RenderPhaseTraceMs > 0)
+            return;
+
+        _runtimeWarmupInProgress = true;
+        TaitoF3InputState savedInput = _bus.Input;
+        RenderRuntimeSnapshot? renderSnapshot = null;
+        try
+        {
+            renderSnapshot = CaptureRenderRuntime();
+            byte[] snapshot;
+            using (var memory = new MemoryStream(640 * 1024))
+            {
+                using (var writer = new BinaryWriter(memory, System.Text.Encoding.UTF8, leaveOpen: true))
+                    SaveState(writer);
+                snapshot = memory.ToArray();
+            }
+
+            for (int frame = 0; frame < RuntimeWarmupFrames; frame++)
+            {
+                _bus.Input = BuildRuntimeWarmupInput(frame);
+                RunFrame();
+            }
+
+            using var restoreMemory = new MemoryStream(snapshot, writable: false);
+            using var reader = new BinaryReader(restoreMemory, System.Text.Encoding.UTF8, leaveOpen: false);
+            LoadState(reader);
+            RestoreRenderRuntime(renderSnapshot);
+            _bus.Input = savedInput;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or EndOfStreamException)
+        {
+            _lastStopReason = $"runtime warmup skipped: {ex.Message}";
+        }
+        finally
+        {
+            _bus.Input = savedInput;
+            _runtimeWarmupInProgress = false;
+        }
+    }
+
+    private static TaitoF3InputState BuildRuntimeWarmupInput(int frame)
+    {
+        bool horizontal = (frame & 2) != 0;
+        bool vertical = (frame & 4) != 0;
+        return new TaitoF3InputState(
+            up: vertical && (frame & 8) == 0,
+            down: vertical && (frame & 8) != 0,
+            left: horizontal && (frame & 16) == 0,
+            right: horizontal && (frame & 16) != 0,
+            a: true,
+            b: true,
+            c: true,
+            start: false,
+            x: false,
+            y: false,
+            z: false,
+            coin1: false);
+    }
+
+    private RenderRuntimeSnapshot CaptureRenderRuntime()
+    {
+        return new RenderRuntimeSnapshot
+        {
+            FrameBuffer = (byte[])_frameBuffer.Clone(),
+            PresentFrameBuffer = (byte[])_presentFrameBuffer.Clone(),
+            HasPresentFrame = _hasPresentFrame,
+            AdaptiveRenderCostTicks = _adaptiveRenderCostTicks,
+            SpriteBank = _spriteBank,
+            SpriteTrails = _spriteTrails,
+            SpritePenMask = _spritePenMask,
+            Sprites = _sprites.ToArray(),
+            LatchedSprites = _latchedSprites.ToArray(),
+            SpriteReefPalette = (ushort[])_spriteReefPalette.Clone(),
+            SpriteReefGroup = (byte[])_spriteReefGroup.Clone(),
+            SpriteReefNext = (int[])_spriteReefNext.Clone(),
+            SpriteReefRowHead = (int[])_spriteReefRowHead.Clone(),
+            SpriteReefRowActive = (bool[])_spriteReefRowActive.Clone(),
+            SpriteReefRowGroupMask = (byte[])_spriteReefRowGroupMask.Clone(),
+            SpriteReefOffsets = _spriteReefOffsets.AsSpan(0, _spriteReefOffsetCount).ToArray(),
+            SpriteReefOffsetCount = _spriteReefOffsetCount,
+            SpriteReefTouchedRows = _spriteReefTouchedRows.ToArray(),
+        };
+    }
+
+    private void RestoreRenderRuntime(RenderRuntimeSnapshot snapshot)
+    {
+        Buffer.BlockCopy(snapshot.FrameBuffer, 0, _frameBuffer, 0, _frameBuffer.Length);
+        Buffer.BlockCopy(snapshot.PresentFrameBuffer, 0, _presentFrameBuffer, 0, _presentFrameBuffer.Length);
+        _hasPresentFrame = snapshot.HasPresentFrame;
+        _adaptiveRenderCostTicks = snapshot.AdaptiveRenderCostTicks;
+        _spriteBank = snapshot.SpriteBank;
+        _spriteTrails = snapshot.SpriteTrails;
+        _spritePenMask = snapshot.SpritePenMask;
+
+        _sprites.Clear();
+        _sprites.AddRange(snapshot.Sprites);
+        _latchedSprites.Clear();
+        _latchedSprites.AddRange(snapshot.LatchedSprites);
+
+        Array.Copy(snapshot.SpriteReefPalette, _spriteReefPalette, _spriteReefPalette.Length);
+        Buffer.BlockCopy(snapshot.SpriteReefGroup, 0, _spriteReefGroup, 0, _spriteReefGroup.Length);
+        Buffer.BlockCopy(snapshot.SpriteReefNext, 0, _spriteReefNext, 0, _spriteReefNext.Length * sizeof(int));
+        Buffer.BlockCopy(snapshot.SpriteReefRowHead, 0, _spriteReefRowHead, 0, _spriteReefRowHead.Length * sizeof(int));
+        Array.Copy(snapshot.SpriteReefRowActive, _spriteReefRowActive, _spriteReefRowActive.Length);
+        Buffer.BlockCopy(snapshot.SpriteReefRowGroupMask, 0, _spriteReefRowGroupMask, 0, _spriteReefRowGroupMask.Length);
+        _spriteReefOffsetCount = Math.Min(snapshot.SpriteReefOffsetCount, _spriteReefOffsets.Length);
+        Array.Clear(_spriteReefOffsets);
+        if (_spriteReefOffsetCount != 0)
+            Array.Copy(snapshot.SpriteReefOffsets, _spriteReefOffsets, _spriteReefOffsetCount);
+        _spriteReefTouchedRows.Clear();
+        _spriteReefTouchedRows.AddRange(snapshot.SpriteReefTouchedRows);
+    }
+
+    private sealed class RenderRuntimeSnapshot
+    {
+        public byte[] FrameBuffer = Array.Empty<byte>();
+        public byte[] PresentFrameBuffer = Array.Empty<byte>();
+        public bool HasPresentFrame;
+        public long AdaptiveRenderCostTicks;
+        public bool SpriteBank;
+        public bool SpriteTrails;
+        public int SpritePenMask;
+        public F3Sprite[] Sprites = Array.Empty<F3Sprite>();
+        public F3Sprite[] LatchedSprites = Array.Empty<F3Sprite>();
+        public ushort[] SpriteReefPalette = Array.Empty<ushort>();
+        public byte[] SpriteReefGroup = Array.Empty<byte>();
+        public int[] SpriteReefNext = Array.Empty<int>();
+        public int[] SpriteReefRowHead = Array.Empty<int>();
+        public bool[] SpriteReefRowActive = Array.Empty<bool>();
+        public byte[] SpriteReefRowGroupMask = Array.Empty<byte>();
+        public int[] SpriteReefOffsets = Array.Empty<int>();
+        public int SpriteReefOffsetCount;
+        public int[] SpriteReefTouchedRows = Array.Empty<int>();
     }
 
     public void Dispose()
@@ -1023,6 +1172,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             try
             {
                 PrepareMethods(typeof(DariusGaidenAdapter), HotPathMethodNames);
+                PrepareMethods(typeof(DariusGaidenAdapter), methodNames: null);
                 foreach (Type type in HotPathTypes)
                     PrepareMethods(type, methodNames: null);
             }
@@ -1045,8 +1195,21 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             if (methodNames != null && Array.IndexOf(methodNames, method.Name) < 0)
                 continue;
 
-            RuntimeHelpers.PrepareMethod(method.MethodHandle);
+            try
+            {
+                RuntimeHelpers.PrepareMethod(method.MethodHandle);
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException or PlatformNotSupportedException)
+            {
+                // Keep prewarming the rest; a rare helper failing to prepare should not leave hot paths cold.
+            }
         }
+
+        if (methodNames != null)
+            return;
+
+        foreach (Type nestedType in type.GetNestedTypes(flags))
+            PrepareMethods(nestedType, methodNames: null);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -8114,6 +8277,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             writer.Write(DestinationFunctionCode);
             writer.Write(CacheControl);
             writer.Write(CacheAddress);
+            writer.Write(_watchdogCyclesRemaining);
+            writer.Write(_watchdogSoftResetRequested);
+            writer.Write(_watchdogKicks);
+            writer.Write(_watchdogSoftResets);
         }
 
         public void LoadState(BinaryReader reader, int version)
@@ -8175,6 +8342,20 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 DestinationFunctionCode = reader.ReadUInt32();
                 CacheControl = reader.ReadUInt32();
                 CacheAddress = reader.ReadUInt32();
+                if (version >= 13)
+                {
+                    _watchdogCyclesRemaining = reader.ReadInt32();
+                    _watchdogSoftResetRequested = reader.ReadBoolean();
+                    _watchdogKicks = reader.ReadInt32();
+                    _watchdogSoftResets = reader.ReadInt32();
+                }
+                else
+                {
+                    _watchdogCyclesRemaining = F3WatchdogTimeoutCycles;
+                    _watchdogSoftResetRequested = false;
+                    _watchdogKicks = 0;
+                    _watchdogSoftResets = 0;
+                }
             }
             else
             {
@@ -8196,6 +8377,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 DestinationFunctionCode = 0;
                 CacheControl = 0;
                 CacheAddress = 0;
+                _watchdogCyclesRemaining = F3WatchdogTimeoutCycles;
+                _watchdogSoftResetRequested = false;
+                _watchdogKicks = 0;
+                _watchdogSoftResets = 0;
             }
         }
 

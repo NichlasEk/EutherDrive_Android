@@ -12,6 +12,8 @@ Update: 2026-05-25
 
 Update: 2026-05-31
 
+Update: 2026-06-05
+
 ## Scope
 
 This pass continued the Gauntlet Dark Legacy / Midway Vegas bring-up in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`.
@@ -238,6 +240,90 @@ drawPackets=0 directTriangles=30 setupTriangles=0
 packetTypes=0:4,1:50636,2:0,3:0,4:69991,5:0,6:0,7:0
 framebuffer=640x480 nonBlack=307200 colored=0
 ```
+
+## 2026-06-05 Follow-up: BGLoadModel QIO Poll Progression
+
+This pass promoted the narrow BGLoadModel QIO poll helper at
+`0xffffffff800abaa0..800abbc0` from the broad experimental skip bucket to a
+normal bring-up fix:
+
+- Added `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_POLL`.
+- It is enabled by `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1`.
+- The broader `EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL`
+  remains opt-in for unrelated risky skips.
+
+Why:
+
+- Baseline 180 -> 240 was burning almost all CPU in `800abaa0..800abd28` and
+  still reported the diagnostic text buffer as `LoadLightMaps: Timeout`.
+- Enabling only the QIO poll behavior moved execution into world-data and
+  render setup work, producing real Voodoo geometry activity.
+
+Verification:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+```
+
+Result:
+
+```text
+Build succeeded.
+340 warnings, 0 errors.
+```
+
+New warm snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-08bdce9c387f.warm
+```
+
+Useful 300-frame cold check with only `BRINGUP_FAST`:
+
+```text
+frame=300
+pc=0xffffffff800f0c24
+rtxt=16@0xffffffff800e30a0/ra=0xffffffff800e33e4 "Loading Game."
+voodoo active, fifoWords=6893391, fifoPackets=251474
+drawPackets=1024, directTriangles=2818, setupTriangles=1394
+packetTypes=0:2370,1:38376,2:0,3:1024,4:112778,5:96923,6:0,7:3
+texture writes=6203075
+framebuffer=640x480 nonBlack=307200 colored=443
+```
+
+Useful 180 -> 360 warm check:
+
+```text
+frame=360
+pc=0xffffffff800b1bdc
+voodoo active, fifoWords=6921929, fifoPackets=260931
+drawPackets=1024, directTriangles=2818, setupTriangles=1394
+packetTypes=0:2370,1:41417,2:0,3:1024,4:119194,5:96923,6:0,7:3
+textured triangles=1049 covered=1024 rejected=25
+texture writes=6203075
+framebuffer=640x480 nonBlack=307200 colored=0
+```
+
+Current interpretation:
+
+- The old `LoadLightMaps: Timeout` QIO-poll stall is bypassed under the normal
+  bring-up flag.
+- The runtime now loads/hydrates the fallback world table and reaches Voodoo
+  setup/draw packets instead of fill-only output.
+- The next blocker appears around `800b119c..800b11dc`, `800b1bdc`, and
+  `800b1dc4`. Dumps show the fallback world table at `802e1000` contains
+  `castle`, `mount`, `desert`, `forest`, `temple`, `hell`, and `town`, while
+  the runtime is also pumping menu/object diagnostic text through `802944c0`.
+- DCS is still boot-idle (`xfer=0`), so audio upload remains a later blocker.
+
+Next target:
+
+1. Disassemble/trace the `800b119c..800b11dc` loop and the branch at
+   `800b1bdc`; it may be a per-object/world scan or state wait.
+2. Use the warm snapshot above and dump `802e1000`, `802e1718`, `80262b80`,
+   and `807ffc00` when comparing future changes.
+3. Keep the QIO poll fastpath narrow; do not enable the whole experimental
+   BGLoadModel skip set by default.
 
 ## 2026-05-15 Native DCS Audio Bring-Up Pass
 
