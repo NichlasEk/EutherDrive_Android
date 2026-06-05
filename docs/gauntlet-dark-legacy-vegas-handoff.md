@@ -56,6 +56,66 @@ Core builds:
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
 ```
 
+## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
+
+Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in
+`GauntletDarkLegacyAdapter.cs`, gated by
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE` and
+therefore included in `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1`.
+
+Observed problem:
+
+```text
+8024f9a0 asset table entry 0 before repair:
+  word0 = bfae1718, name = static_lr
+
+bfae1718 - 3f800000 = 802e1718
+```
+
+That is exactly the hydrated static asset payload base plus the `1.0f` bit
+pattern. The repair only runs at the observed BGLoadModel parser point
+`800aacb4`, scans the `8024f9a0 + index * 0x30` asset descriptor table, and
+normalizes a biased pointer only when `raw - 0x3f800000` lands in main RAM.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+339 Warning(s)
+0 Error(s)
+```
+
+420-frame table dump from the standard 180-frame warm snapshot now ends with:
+
+```text
+bytes[0xffffffff8024f9a0]:
+  +0x000: 18 17 2e 80 ... static_lr
+  +0x030: 18 17 2e 80 ...
+  +0x060: 18 17 2e 80 ...
+```
+
+600-frame sanity is stable but not a visual breakthrough:
+
+```text
+frame=600
+pc=0xffffffff800c7a40
+frameHash=0x9ac85dc5
+drawPackets=0 directTriangles=1873 setupTriangles=897
+lfbWrites=567045313 texWrites=6322435
+framebuffer=640x480 nonBlack=307200 colored=0
+```
+
+Interpretation:
+
+- The `0x3f800000` asset-pointer bias is real and now repaired.
+- The game still reaches the same late diagnostic/progress helper and still
+  renders a solid white frame.
+- The next concrete target is filling the empty BGLoadModel asset descriptors:
+  the missing-texture caller still reports `key=<empty>` and asset slots after
+  `static_lr` still carry empty names/metadata even after the pointer is
+  normalized.
+
 ## 2026-05-25 Gauntlet Dark Legacy Bring-Up Pass
 
 This pass moved the Gauntlet path past the early cold-boot terminal loops and into the loaded game runtime's `Loading Game.` screen.

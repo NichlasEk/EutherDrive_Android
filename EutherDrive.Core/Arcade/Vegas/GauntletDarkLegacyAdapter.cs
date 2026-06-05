@@ -642,6 +642,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL"));
     private readonly bool _enableRuntimeBgLoadModelQioPollFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_POLL");
+    private readonly bool _enableRuntimeBgLoadModelAssetPointerNormalize =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE");
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -698,6 +700,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioCreateAliasTraceCount;
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
+    private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
     private int _runtimeWorldDataAllocationRepairTraceCount;
     private int _runtimeWorldDataAllocationTraceCount;
     private int _runtimeWorldValidityRepairTraceCount;
@@ -877,6 +880,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeWorldValidityBitsetRepair(pc);
         ApplyKnownRuntimeRenderListSaturationRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
+        ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
         TraceKnownRuntimeBgLoadModelRecords(pc);
@@ -11763,6 +11767,48 @@ internal sealed class MipsR5000Core
                 Console.WriteLine(
                     $"[GAUNTDL:FIX] bgloadmodel-qio-alias pc={pc:x16} " +
                     $"index={recordIndex} record={record:x16} old={currentQioAddress:x16} new={expectedQio:x16}");
+            }
+        }
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(ulong pc)
+    {
+        if (!_enableRuntimeBgLoadModelAssetPointerNormalize)
+            return;
+        if (pc != 0xffffffff800aacb4UL)
+            return;
+        if (_memory.Read32(0xffffffff800aa958UL) != 0x27a40018U ||
+            _memory.Read32(0xffffffff800ac350UL) != 0x00400008U)
+        {
+            return;
+        }
+
+        const ulong assetTableBase = 0xffffffff8024f9a0UL;
+        const ulong assetTableStride = 0x30UL;
+        const ulong pointerBias = 0x3f800000UL;
+
+        for (ulong index = 0; index < 0x40UL; index++)
+        {
+            ulong entry = assetTableBase + index * assetTableStride;
+            if (!IsMainRamRange(entry + 0x2fUL, 1))
+                return;
+
+            uint raw = _memory.Read32(entry);
+            if (raw < pointerBias)
+                continue;
+
+            uint normalized = unchecked(raw - (uint)pointerBias);
+            ulong normalizedAddress = SignExtend32(normalized);
+            if (!IsMainRamRange(normalizedAddress, 0x20UL))
+                continue;
+
+            _memory.Write32(entry, normalized);
+            if (_runtimeBgLoadModelAssetPointerNormalizeTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] bgloadmodel-asset-pointer-normalize pc={pc:x16} " +
+                    $"index={index} entry={entry:x16} ptr={raw:x8}->{normalized:x8} " +
+                    $"name={ReadAsciiTraceString(entry + 0x10UL, 24)}");
             }
         }
     }
