@@ -152,10 +152,26 @@ index 9 selector=80312998/00000000/00000000/00000000 source=80312998
 index 10 selector=80332998/00000000/00000000/00000000 source=80332998
 ```
 
-So the selector list at `802551d0 + index * 8` is already populated with
-duplicate `802e1718` pointers for the early slots. `800aac48` is faithfully
-parsing what that list gives it; the next fix should chase the population of
-`802551d0`, not the parser store at `800aacb4`. The visual state remains
+Follow-up code dump corrected one detail: `802551d0` is parser output, not the
+source list. `800aac48` reads `source = *(802529a0 + index * 4)`, derives the
+two selector words from `source + 0x58/0x50/0x60`, and writes them to
+`802551d0 + index * 8`.
+
+At frame 181 the relevant data tables are already:
+
+```text
+802529a0: 802e1718 802e1718 802e1718 802e1718
+802529b0: 802e1718 802e1718 802e1718 802e1718
+802529c0: 802e1718 80312a08 00000000 00000000
+
+802551d0: 802e1718 00000000 802e1718 00000000 ...
+80255210: 802e1718 00000000 80312a08 00000000
+```
+
+So `800aac48` is faithfully parsing the `802529a0` source table. If the empty
+asset slots are wrong, the next source-side target is the writer around
+`800aabfc..800aac20`, where the game stores `s2` into `802529a0 + index * 4`
+and `s0` into `802549a0 + index * 4`. The visual state remains
 pre-boot-gameplay: at 240 frames the final buffer has `nonBlack=17944`,
 `colored=0`, with `directTriangles=1873`, `setupTriangles=897`, and no type-3
 FIFO draw packets.
