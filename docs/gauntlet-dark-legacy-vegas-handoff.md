@@ -7330,3 +7330,25 @@ Next target: find why only two blank-path texture QIO creates are observed by
 controlled probe. The important improvement over the clone probe is that the
 per-index source words now match real texture payload headers (`f00b0001`,
 payload-local extents) instead of cloned `static_lr` model data.
+
+Follow-up added a second, more aggressive probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_FILL_ALL=1
+```
+
+This fills every still-empty known indexed source slot 1..8 as soon as the
+first blank-path indexed texture QIO is observed. It is a negative control, not
+a fix. At 420 frames it hydrates `fillAll=7`, but regresses hard:
+
+```text
+pc=0xffffffff800aace4 frameHash=0xf29eb67c
+drawPackets=0 directTriangles=30 setupTriangles=0
+texWrites=106189 framebuffer colored=0
+```
+
+So the missing slots cannot simply be bulk-filled at first sight. The useful
+next target is the sequencing around the two real blank-path QIO creates: why
+only `gei` and `snm` are requested by 600 frames, and what condition should
+allow the remaining per-index streams to be requested without breaking the
+parser path.

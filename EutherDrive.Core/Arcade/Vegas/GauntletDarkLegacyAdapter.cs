@@ -652,6 +652,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
+    private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_FILL_ALL"));
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -11866,20 +11868,10 @@ internal sealed class MipsR5000Core
         }
 
         if (index == 0 ||
-            !TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out ulong textureByteOffset, out uint textureByteLength))
+            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
         {
             return false;
         }
-
-        if (textureByteLength < requestedBytes)
-        {
-            for (uint offset = 0; offset < requestedBytes; offset++)
-                _memory.Write8(destination + offset, 0);
-        }
-
-        uint copyBytes = Math.Min(requestedBytes, textureByteLength);
-        if (!_memory.TryReadDiskByteOffsetToMemory(textureByteOffset, destination, copyBytes, out uint firstWord, out string reason))
-            return false;
 
         _memory.Write32(qio + 0x00UL, unchecked((uint)qioObject));
         _memory.Write32(qio + 0x04UL, callback);
@@ -11890,6 +11882,9 @@ internal sealed class MipsR5000Core
 
         uint oldObjectStatus = _memory.Read32(qioObject + 0x14UL);
         _memory.Write32(qioObject + 0x14UL, (oldObjectStatus & 0xffff0000U) | objectStatus);
+        int filledAll = 0;
+        if (_enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment)
+            filledAll = HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(requestedBytes);
 
         if (_runtimeBgLoadModelIndexedTextureQioTraceCount++ < 16)
         {
@@ -11897,10 +11892,52 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio pc={pc:x16} " +
                 $"index={index} code={code} qio={qio:x16} object={qioObject:x16} " +
                 $"dest={destination:x16} bytes={requestedBytes:x8} disk={textureByteOffset:x8} " +
-                $"first={firstWord:x8} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
+                $"first={firstWord:x8} fillAll={filledAll} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
 
         return true;
+    }
+
+    private int HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(uint requestedBytes)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        int hydrated = 0;
+        for (ulong index = 1; index <= 8UL; index++)
+        {
+            ulong destination = destinationBase + index * requestedBytes;
+            if (!IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination))
+                continue;
+            if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out _, out _, out _))
+                continue;
+
+            hydrated++;
+        }
+
+        return hydrated;
+    }
+
+    private bool TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(
+        ulong index,
+        ulong destination,
+        uint requestedBytes,
+        out string code,
+        out ulong textureByteOffset,
+        out uint firstWord)
+    {
+        code = "";
+        textureByteOffset = 0;
+        firstWord = 0;
+        if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out code, out textureByteOffset, out uint textureByteLength))
+            return false;
+
+        if (textureByteLength < requestedBytes)
+        {
+            for (uint offset = 0; offset < requestedBytes; offset++)
+                _memory.Write8(destination + offset, 0);
+        }
+
+        uint copyBytes = Math.Min(requestedBytes, textureByteLength);
+        return _memory.TryReadDiskByteOffsetToMemory(textureByteOffset, destination, copyBytes, out firstWord, out _);
     }
 
     private bool IsKnownRuntimeBgLoadModelSourceWindowEmpty(ulong source)
