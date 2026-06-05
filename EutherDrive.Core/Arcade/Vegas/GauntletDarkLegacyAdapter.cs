@@ -648,6 +648,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
+    private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -10209,6 +10211,7 @@ internal sealed class MipsR5000Core
             return;
 
         _memory.Write32(slot, (uint)source);
+        bool clonedSource = TryCloneKnownRuntimeBgLoadModelStaticSourceToDistinctSource(source);
         _gpr[18] = source;
         if (_gpr[5] == staticSource || _gpr[5] == SignExtend32(staticSource))
             _gpr[5] = source;
@@ -10218,8 +10221,29 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-distinct-source pc={pc:x16} " +
                 $"index={index} slot={slot:x16}:{current:x8}->{(uint)source:x8} " +
-                $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
+                $"cloned={clonedSource} sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
         }
+    }
+
+    private bool TryCloneKnownRuntimeBgLoadModelStaticSourceToDistinctSource(ulong destination)
+    {
+        const ulong staticSource = 0xffffffff802e1718UL;
+        const uint sourceBytes = 0x2000U;
+
+        if (!_enableRuntimeBgLoadModelCloneDistinctSourcesExperiment ||
+            destination == staticSource ||
+            !IsMainRamRange(staticSource, sourceBytes) ||
+            !IsMainRamRange(destination, sourceBytes) ||
+            _memory.Read32(staticSource) == 0 ||
+            _memory.Read32(destination) != 0)
+        {
+            return false;
+        }
+
+        for (uint offset = 0; offset < sourceBytes; offset++)
+            _memory.Write8(destination + offset, _memory.Read8(staticSource + offset));
+
+        return true;
     }
 
     private bool TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(ulong pc)

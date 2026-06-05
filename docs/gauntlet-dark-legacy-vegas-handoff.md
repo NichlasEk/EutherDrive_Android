@@ -7193,3 +7193,53 @@ interaction, now fixed. It is not the boot blocker. The blocker remains that
 the per-index source buffers `802e3718..802f1718` are still zero-filled, so
 the next target is source-buffer hydration or the record/QIO creation path
 that should populate those buffers.
+
+### 2026-06-05 Continuation: Distinct Source Clone Probe
+
+Added a separate opt-in probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES=1
+```
+
+When enabled with distinct sources, the runtime copies the hydrated slot0
+source buffer at `802e1718` into the per-index buffers before the asset parser
+uses them. This is intentionally *not* part of the default distinct-source
+experiment, because it changes progression and currently regresses the final
+visual surface.
+
+With clone enabled, source words for indexes 1..8 become non-zero:
+
+```text
+index=1 slot=802529a4:802e1718->802e3718 cloned=True
+sourceWords=00=00000012,04=00000002,0c=0000000a,5c=0000f758
+```
+
+The run no longer lands on the old `800c80f0`/`0x5335d5be` plateau:
+
+```text
+frame=420 pc=0xffffffff800c81fc frameHash=0x81a461d7
+frame=600 pc=0xffffffff800c7b78 frameHash=0x81a461d7
+drawPackets=22956 directTriangles=924 setupTriangles=445
+texWrites=6521475 swaps=103691 framebuffer colored=31854
+```
+
+Compared with the non-clone combined run, this is real behavioral movement
+and higher texture activity, but it is not boot and it is visually worse
+(`colored=31854` vs `286179`). The asset parser also rewrites entries 1..8
+to `802f2e70/802f4e70/...` with empty names, so the cloned source is probably
+a useful probe but not the correct payload for those slots.
+
+No-clone sanity after adding the flag still reproduces the previous best
+combined signature:
+
+```text
+frame=420 pc=0xffffffff800c80f0 frameHash=0x5335d5be
+drawPackets=27461 directTriangles=941 setupTriangles=453
+texWrites=6424515 framebuffer colored=286179
+```
+
+Next target: trace the clone-enabled path around `800aa974` /
+`800aa98c` and the asset parser rewrite that replaces named entries with
+`802f*` empty entries. That should reveal what per-index payload or count/key
+state is missing, instead of blindly cloning slot0.
