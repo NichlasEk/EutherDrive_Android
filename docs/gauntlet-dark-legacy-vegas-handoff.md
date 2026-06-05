@@ -7513,3 +7513,55 @@ That `0x2000`/`s1=0x214c0`/`s2=7` request is the next concrete target. Do not
 treat `s2=7` as a proven texture source index yet; it may be a later state or
 stream counter. The next probe should first establish the intended destination
 and offset semantics for this second class of indexed texture stream request.
+
+### 2026-06-05 Continuation: Indexed Texture Body Read Negative Probe
+
+Added a fourth opt-in indexed texture QIO probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ=1
+```
+
+This is only active with indexed QIO enabled. It captures the destination from
+the `800c9678` object-create point for the post-`stk` request, before the QIO
+object is cleared, then hydrates the same source window at the `800c9944`
+return-slot reload. The capture deliberately does not use `s2=7` as the
+source index; it infers the source index from the previous QIO destination:
+
+```text
+bgloadmodel-indexed-texture-qio-body-read pc=ffffffff800c9944
+index=3 code=stk key=000214c0 qio=ffffffff80217c58 object=ffffffff80295750
+dest=ffffffff802e7718 bytes=00002000 disk=15117a00
+```
+
+This is a useful negative result, not a fix. It hydrates the suspected body
+read and moves the PC, but the visual/render state regresses badly:
+
+```text
+frame=420 pc=0xffffffff8004ed14 frameHash=0xf262f878
+rtxt="Loading Game."
+drawPackets=25523 directTriangles=931 setupTriangles=449
+texWrites=6505438 framebuffer colored=25058
+
+frame=600 pc=0xffffffff8004f29c frameHash=0xf262f878
+rtxt="Loading Game."
+drawPackets=25523 directTriangles=931 setupTriangles=449
+texWrites=6505438 framebuffer colored=25058
+```
+
+The body-read probe also leaves many Voodoo registers at zero compared with
+the short-read-only run, and `lfbm` becomes `0x00000000`. Conclusion: the
+`0x2000`/`0x214c0` request is real, but blindly full-hydrating the previous
+`stk` source window is wrong or incomplete. The stronger current candidate
+remains short-read without body-read:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT=9
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ=1
+```
+
+Next target: trace how the game uses the `0x214c0` request result after
+`800c9944`, especially whether the requested bytes should land in another
+scratch buffer, an offset inside `802e7718`, or a table distinct from the
+indexed texture payload body.
