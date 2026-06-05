@@ -7093,3 +7093,62 @@ BGLoadModel record 0 through QIO create. The next useful target is the
 record-builder/asset-loop handoff before `800ac350`, specifically why asset
 slots 1..8 are parsed but never become live model records with distinct QIO
 requests.
+
+### 2026-06-05 Continuation: Combined BGLoadModel Experiments
+
+Combined these opt-in experiments:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA=1
+```
+
+This is the best visual/progression signature from the current short castle
+path, but it is still not boot:
+
+```text
+frame=300 pc=0xffffffff8004ecd0 frameHash=0x5335d5be
+drawPackets=27461 directTriangles=941 setupTriangles=453
+texWrites=6424515 framebuffer colored=286179
+```
+
+The 420-frame continuation plateaus with the same frame hash and unchanged
+geometry/texture counts:
+
+```text
+frame=420 pc=0xffffffff800c80f0 frameHash=0x5335d5be
+drawPackets=27461 directTriangles=941 setupTriangles=453
+texWrites=6424515 swaps=40386 framebuffer colored=286179
+```
+
+Memory dumps confirm the remaining BGLoadModel gap:
+
+```text
+record table 80252da0: only record 0 has state; records 1+ remain zero
+qio shells 80217d70+ remain blank/status-only
+802e3718 remains all zero
+asset table slots 1..8 point to 802e3718/802e5718/... but names remain empty
+```
+
+Stop-PC tracing at `800c80f0` with CPU range `800c80e0..800c8120` shows this is
+the runtime log-ring helper, returning the log buffer at `802171b8`, not the
+root model-load state:
+
+```text
+pc=800c80f0 op=90c371b2 lbu from 802171b2
+pc=800c8118/811c builds v0=802171b8
+ra=800c8364
+```
+
+It is hit from several callers. The most relevant late asset/source case has:
+
+```text
+s0=802e3718 s1=8013d968 s2=802e3718 s3=8013b07c a3=3
+```
+
+Interpretation: the combined experiments materially improve the rendered
+signature, but the plateau is a log/progress pump over still-empty per-index
+asset buffers. Continue by tracing the caller around `ra=800c8364` together
+with the asset-source hydration path for `802e3718+`, not by patching
+`800c80f0` itself.
