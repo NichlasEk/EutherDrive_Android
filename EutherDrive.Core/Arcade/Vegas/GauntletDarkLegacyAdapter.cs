@@ -657,6 +657,7 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeWorldDataAllocation = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_ALLOCATION") == "1";
     private readonly bool _traceRuntimeWorldDataLoader = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER") == "1";
     private readonly bool _traceRuntimeWorldDataFlags = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_FLAGS") == "1";
+    private readonly bool _traceRuntimeWorldValidity = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_VALIDITY") == "1";
     private readonly bool _enableRuntimeWorldSelectionExperiment =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION");
     private readonly bool _enableRuntimeWorldStaticDataLinkRepair =
@@ -708,6 +709,7 @@ internal sealed class MipsR5000Core
     private int _runtimeWorldDataTableRepairTraceCount;
     private int _runtimeWorldDataLoaderTraceCount;
     private int _runtimeWorldDataFlagsTraceCount;
+    private int _runtimeWorldValidityTraceCount;
     private int _runtimeWorldSelectionRepairTraceCount;
     private int _runtimeWorldStaticDataLinkTraceCount;
     private int _runtimeBgLoadModelLoopTraceCount;
@@ -873,6 +875,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelStateDelta(pc, "post-qio-complete");
         TraceKnownRuntimeWorldDataLoader(pc);
         TraceKnownRuntimeWorldDataFlags(pc);
+        TraceKnownRuntimeWorldValidity(pc);
         ApplyKnownRuntimeWorldStaticDataLinkRepair(pc);
         ApplyKnownRuntimeWorldSelectionRepair(pc);
         ApplyKnownRuntimeDiagnosticOverlaySuppress(pc);
@@ -12883,6 +12886,35 @@ internal sealed class MipsR5000Core
             $"s1w={ReadTraceWord(s1):x8}/{ReadTraceWord(s1 + 0x04UL):x8}/{ReadTraceWord(s1 + 0x08UL):x8}/{ReadTraceWord(s1 + 0x14UL):x8} " +
             $"s2w={ReadTraceWord(s2):x8}/{ReadTraceWord(s2 + 0x04UL):x8}/{ReadTraceWord(s2 + 0x08UL):x8}/" +
             $"{ReadTraceWord(s2 + 0x10UL):x8}/{ReadTraceWord(s2 + 0x14UL):x8}/{ReadTraceWord(s2 + 0x28UL):x8}");
+    }
+
+    private void TraceKnownRuntimeWorldValidity(ulong pc)
+    {
+        if (!_traceRuntimeWorldValidity || _runtimeWorldValidityTraceCount >= 160)
+            return;
+        if (pc is < 0xffffffff800cea48UL or > 0xffffffff800cebb8UL)
+            return;
+
+        bool interesting = pc is
+            0xffffffff800ceb28UL or
+            0xffffffff800ceb44UL or
+            0xffffffff800ceb50UL or
+            0xffffffff800ceb58UL or
+            0xffffffff800ceb68UL or
+            0xffffffff800ceb78UL;
+        if (!interesting)
+            return;
+
+        _runtimeWorldValidityTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] world-validity pc={pc:x16} op={_memory.Read32(pc):x8} " +
+            $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
+            $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} " +
+            $"ra={_gpr[31]:x16} selected={ReadTraceWord(0xffffffff8016c13cUL):x8} " +
+            $"table0={ReadTraceWord(0xffffffff80145a18UL):x8} " +
+            $"valid0={ReadTraceWord(0xffffffff80228668UL):x8} valid88={ReadTraceWord(0xffffffff802286f0UL):x8} " +
+            $"mark30={ReadTraceWord(0xffffffff80218e30UL):x8} mark34={ReadTraceWord(0xffffffff80218e34UL):x8} " +
+            $"mark38={ReadTraceWord(0xffffffff80218e38UL):x8} mark3c={ReadTraceWord(0xffffffff80218e3cUL):x8}");
     }
 
     private void ApplyKnownRuntimeWorldSelectionRepair(ulong pc)

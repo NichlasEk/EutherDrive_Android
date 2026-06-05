@@ -73,12 +73,17 @@ runs when the current selected entry is empty or already points at the test
 fallback entry. This prevents the old test-WAD static-data repair from
 re-entering after castle has been selected.
 
+Added a separate opt-in trace,
+`EUTHERDRIVE_GAUNTDL_TRACE_WORLD_VALIDITY=1`, for the later validity helper at
+`800ceb28..800ceb78`. This keeps it separate from the older
+`TRACE_WORLD_DATA_FLAGS` descriptor scan.
+
 Build verification:
 
 ```text
 dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
 Build succeeded.
-339 Warning(s)
+340 Warning(s)
 0 Error(s)
 ```
 
@@ -122,10 +127,13 @@ Interpretation:
 - The accidental test static-data relink was a real blocker and is now stopped.
 - Rendering does advance past the earlier all-white/test fallback state, but
   draw and texture counters stop growing after the 300-frame region.
-- The next target is the world-validity helper around
-  `800cea48..800ceb80`; the existing bitset repair fills `80228668` and
-  `802286f0`, and the current plateau PC is just beyond the original guarded
-  repair range.
+- A 360-frame validity trace shows the later helper is repeatedly called with
+  `selected=802e1000`, `valid0=ffffffff`, `valid88=ffffffff`, and
+  `mark38=01fffc06`, so the previously empty validity bitsets are not the
+  current hard blocker.
+- The next target is back on BGLoadModel source population: the descriptor
+  parser still reports asset entries based on `static_lr` and empty names after
+  index 0, even on the castle-selected path.
 
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
