@@ -268,6 +268,46 @@ the same slot index and output path/name registers. This should identify why the
 slot 1..8 table lookup falls back to `80166370` while slot 9 reaches the
 credits-specific setup.
 
+A follow-up CPU range trace over `8001db40..8001e650` did not hit during the
+active 180-frame castle path, so the address-load refs are static xrefs rather
+than the live source of the current empty slots.
+
+Added another gated experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES=1
+```
+
+It rewrites BGLoadModel source-table slots 1..8 from repeated `802e1718` to the
+same per-index destination layout used by the QIO metadata/hydration experiments:
+
+```text
+slot 1 -> 802e3718
+slot 2 -> 802e5718
+...
+slot 8 -> 802f1718
+```
+
+This successfully changes `802529a0`, but a 300-frame dump shows all sampled
+per-index buffers remain zero:
+
+```text
+802e3718: 00 00 00 ...
+802e5718: 00 00 00 ...
+802e7718: 00 00 00 ...
+802f1718: 00 00 00 ...
+
+pc=0xffffffff8004eb08
+frameHash=0xbd71006f
+drawPackets=1024 directTriangles=2818 setupTriangles=1394
+framebuffer colored=443
+```
+
+Keep this experiment off by default. The next target should be the hydration or
+file-read path for those per-index destinations; merely pointing the source
+table at the expected stride is not enough because the backing buffers are
+never populated in the current run.
+
 ## 2026-06-05 Continuation: BGLoadModel Asset Pointer Bias
 
 Added a narrow `ApplyKnownRuntimeBgLoadModelAssetPointerNormalize()` repair in

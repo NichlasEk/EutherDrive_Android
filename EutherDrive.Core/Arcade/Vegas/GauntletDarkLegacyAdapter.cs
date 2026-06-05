@@ -646,6 +646,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE");
     private readonly bool _enableRuntimeBgLoadModelAssetNameExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
+    private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -705,6 +707,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
+    private int _runtimeBgLoadModelDistinctSourcesTraceCount;
     private int _runtimeWorldDataAllocationRepairTraceCount;
     private int _runtimeWorldDataAllocationTraceCount;
     private int _runtimeWorldValidityRepairTraceCount;
@@ -890,6 +893,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
+        ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
@@ -10176,6 +10180,43 @@ internal sealed class MipsR5000Core
         for (int i = 0; i < length; i++)
             _memory.Write8(address + (ulong)i, (byte)text[i]);
         _memory.Write8(address + (ulong)length, 0);
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(ulong pc)
+    {
+        if (!_enableRuntimeBgLoadModelDistinctSourcesExperiment ||
+            pc is not (0xffffffff800aadf0UL or 0xffffffff800aae98UL or 0xffffffff800aac48UL))
+        {
+            return;
+        }
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const uint staticSource = 0x802e1718U;
+        ulong index = _gpr[16] & 0xffffffffUL;
+        if (index is 0 or > 8UL)
+            return;
+
+        ulong slot = sourceTable + index * 4UL;
+        ulong source = 0xffffffff802e1718UL + index * 0x2000UL;
+        if (!IsMainRamRange(slot, 4) || !IsMainRamRange(source, 0x80))
+            return;
+
+        uint current = _memory.Read32(slot);
+        if (current != 0 && current != staticSource)
+            return;
+
+        _memory.Write32(slot, (uint)source);
+        _gpr[18] = source;
+        if (_gpr[5] == staticSource || _gpr[5] == SignExtend32(staticSource))
+            _gpr[5] = source;
+
+        if (_runtimeBgLoadModelDistinctSourcesTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-distinct-source pc={pc:x16} " +
+                $"index={index} slot={slot:x16}:{current:x8}->{(uint)source:x8} " +
+                $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
+        }
     }
 
     private bool TryFastPathKnownRuntimeBgLoadModelKnownMissingTextureCallerLoop(ulong pc)
