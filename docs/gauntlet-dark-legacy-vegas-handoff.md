@@ -116,6 +116,22 @@ Interpretation:
   `static_lr` still carry empty names/metadata even after the pointer is
   normalized.
 
+Follow-up code dump at 260 frames narrowed the parser source:
+
+```text
+800aac90..800aacb4:
+  assetEntry = 8024f9a0 + index * 0x30
+  source = a1
+  assetEntry[0] = source + lw(source + 0x5c)
+```
+
+For the observed first descriptor, `source == 802e1718` and
+`lw(source + 0x5c) == 3f800000`, so the biased `bfae1718` is produced by the
+guest parser itself. The value at `source+0x5c` is part of the hydrated payload's
+float/identity data, not a plausible table offset. The next useful fix is
+therefore to identify the correct descriptor base or record stride feeding
+`800aac90`, rather than adding more pointer-bias masks.
+
 ## 2026-05-25 Gauntlet Dark Legacy Bring-Up Pass
 
 This pass moved the Gauntlet path past the early cold-boot terminal loops and into the loaded game runtime's `Loading Game.` screen.
