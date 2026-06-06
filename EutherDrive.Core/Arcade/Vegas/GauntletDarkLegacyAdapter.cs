@@ -14343,8 +14343,15 @@ internal sealed class MipsR5000Core
         if (span < 0)
             return 0;
 
-        uint product = unchecked(width * height);
-        return unchecked((int)(product * (uint)(span + 1)));
+        uint extent = 0;
+        for (int level = 0; level <= span; level++)
+        {
+            extent = unchecked(extent + width * height);
+            width >>= 1;
+            height >>= 1;
+        }
+
+        return unchecked((int)extent);
     }
 
     private bool TryFastPathKnownRuntimeBgLoadModelStreamCopyTail(ulong pc)

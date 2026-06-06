@@ -7865,3 +7865,20 @@ Adjacent entries explain why `0x214c0` wins: `802e2338` later produces
 replacing the cursor. The next practical probe should trace consumers after the
 `0x2000` submit with `a2=0x214c0` and stream destination `802e1718`, not retry
 full body hydration of `802e7718`.
+
+Code follow-up: `ComputeKnownRuntimeBgLoadModelLateStreamExtent()` now mirrors
+the helper loop instead of using `width * height * (span + 1)`. The runtime
+helper adds the current `width * height` once per level and shifts both
+dimensions right after each add. That is required for the `802e22e8` case to
+return `0x94dc` rather than a huge overestimate.
+
+Verification after that code fix:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded. 462 Warning(s), 0 Error(s)
+
+frame=260 pc=0xffffffff800b39c0 frameHash=0x37fd72d4
+drawPackets=21475 directTriangles=303 setupTriangles=134
+texWrites=5624478 framebuffer colored=307200
+```
