@@ -8360,3 +8360,37 @@ non-zero `fp+0x78` values (`0x800c83b4`, `0x2`, `0x18e00`), while the caller
 compare at `0x800c97e0` still consistently has `fp+0x38=0`. The branch itself is
 therefore a poor repair point; the next target remains the producer of the
 caller compare limit / argument block.
+
+Follow-up caller trace:
+
+```text
+trace range: ffffffff800abfd0..ffffffff800ac020
+```
+
+For the first indexed request (`s0=0x2000`, `s1=0x188d2303`, `s2=2`), the caller
+builds the call to `0x800c95e8` as:
+
+```text
+800abff8 8c46f180  lw a2,0xfffff180(v0)   ; a2=00000000 from 8021f180
+800ac000 8c63f154  lw v1,0xfffff154(v1)   ; v1=802e1718 destination
+800ac008 afa20014  sw v0,0x14(sp)         ; callback 800ab4e4
+800ac00c 0c03257a  jal 800c95e8
+800ac010 afa30010  sw v1,0x10(sp)         ; stack arg destination
+```
+
+At the callee prologue:
+
+```text
+800c95e8 27bdff90  addiu sp,-0x70
+800c95f8 afc40070  sw a0,0x70(fp)
+800c95fc afc50074  sw a1,0x74(fp)
+800c9600 afc60078  sw a2,0x78(fp)
+800c9604 afc7007c  sw a3,0x7c(fp)
+```
+
+No traced instruction in `0x800c95e8..0x800c9800` writes `fp+0x38`; the only
+`0x38` hits are register values or the final `lw v0,0x38(fp)`. This makes
+`fp+0x38` look like a local/output value expected from an earlier helper path,
+not an argument directly supplied by `800ac00c`. The next narrow target is the
+source of `8021f180` and the helper path before `800c97e0` that should populate
+the local compare limit.
