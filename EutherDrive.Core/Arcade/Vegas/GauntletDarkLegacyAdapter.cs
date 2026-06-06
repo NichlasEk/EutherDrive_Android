@@ -11952,10 +11952,15 @@ internal sealed class MipsR5000Core
         }
 
         ulong destination = SignExtend32(_memory.Read32(qio + 0x08UL));
+        ulong stackDestinationSlot = _gpr[30] + 0x80UL;
+        ulong stackDestination = IsMainRamRange(stackDestinationSlot, 4)
+            ? SignExtend32(_memory.Read32(stackDestinationSlot))
+            : 0;
         if (destination < destinationBase ||
             (destination - destinationBase) % sourceStride != 0 ||
             !IsMainRamRange(destination, requestedBytes) ||
-            IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination))
+            IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination) ||
+            stackDestination != destination)
         {
             return;
         }
@@ -12617,6 +12622,7 @@ internal sealed class MipsR5000Core
             $"retFile={TraceKnownRuntimeBgLoadModelQioFileState(returnQioObject)} " +
             $"argFile={TraceKnownRuntimeBgLoadModelQioFileState(_gpr[4])} " +
             $"globals={TraceKnownRuntimeBgLoadModelQioGlobals()} " +
+            $"stack={TraceKnownRuntimeBgLoadModelQioStack()} " +
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} a0={_gpr[4]:x16}({ReadAsciiTraceString(_gpr[4], 48)}) " +
             $"a1={_gpr[5]:x16}({ReadAsciiTraceString(_gpr[5], 48)}) " +
             $"a2={_gpr[6]:x16}({ReadAsciiTraceString(_gpr[6], 48)}) " +
@@ -12628,6 +12634,30 @@ internal sealed class MipsR5000Core
             $"retSlot={TraceKnownRuntimeBgLoadModelReturnSlot(returnSlot)} " +
             $"pathTable={TraceKnownRuntimeBgLoadModelPathTableSummary(recordIndex)} " +
             $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(assetIndex)}");
+    }
+
+    private string TraceKnownRuntimeBgLoadModelQioStack()
+    {
+        ulong sp = _gpr[29];
+        ulong fp = _gpr[30];
+        return $"sp+00={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x00UL)}/" +
+               $"10={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x10UL)}/" +
+               $"14={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x14UL)}/" +
+               $"18={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x18UL)}/" +
+               $"20={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x20UL)}/" +
+               $"24={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x24UL)}/" +
+               $"78={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x78UL)}/" +
+               $"7c={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x7cUL)}/" +
+               $"80={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x80UL)}/" +
+               $"84={TraceKnownRuntimeBgLoadModelStackWord(sp, 0x84UL)} " +
+               $"fp+20={TraceKnownRuntimeBgLoadModelStackWord(fp, 0x20UL)}/" +
+               $"24={TraceKnownRuntimeBgLoadModelStackWord(fp, 0x24UL)}";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelStackWord(ulong baseAddress, ulong offset)
+    {
+        ulong address = baseAddress + offset;
+        return IsMainRamRange(address, 4) ? $"{ReadTraceWord(address):x8}" : "--------";
     }
 
     private long GetKnownRuntimeBgLoadModelRecordIndex(ulong record)

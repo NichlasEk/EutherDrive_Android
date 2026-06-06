@@ -7696,3 +7696,72 @@ So the next useful trace is lower-level: follow the caller/register path that
 loads `s1=0x214c0`, probably around the `800abf80..800ac030` QIO submission
 wrapper and the `80102a60` caller loop, rather than adding another synthetic
 QIO hydration from global state.
+
+### 2026-06-06 Continuation: QIO Stack Trace
+
+Expanded `EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS=1` again with a
+compact `stack=` summary for selected words from `sp` and `s8/fp`. This maps
+the create helper arguments more clearly:
+
+```text
+sp+00 = object
+sp+78 = source/file offset copy
+sp+7c = byte count copy
+sp+80 = destination argument
+sp+84 = callback
+sp/fp+20 = return QIO slot
+```
+
+The `stk` short-read path is coherent: it submits `textures.rom` with
+`a2=0x18e00`, `a3=0x120`, `sp+78=0x18e00`, `sp+7c=0x120`, and the repair
+hydrates destination `802e7718`:
+
+```text
+pc=800c9678 a1=8013b07c(textures.rom) a2=00018e00 a3=00000120
+s0=00000120 s1=00000120 s2=00000003
+stack=.../78=00018e00/7c=00000120/80=802e1718/84=800ab4e4
+retSlot=807ffc98->80217c58:00000000/800ab4e4/802e5718/00002000/00002000/ffffffff
+
+bgloadmodel-indexed-texture-qio-short-read ... index=3 code=stk
+dest=802e7718 bytes=00000120 disk=15117a00
+```
+
+The following `0x214c0` request is a different shape and should not be treated
+as “the rest of `stk`”. At submit time it has `s2=7`, a zero file offset, and a
+stale return-slot QIO still pointing at the previous `stk` short-read:
+
+```text
+pc=800c9678 a1=8013b07c(textures.rom) a2=00000000 a3=00002000
+s0=00002000 s1=000214c0 s2=00000007
+stack=.../78=00000000/7c=00002000/80=802e1718/84=800ab4e4
+retSlot=807ffc98->80217c58:00000000/800ab4e4/802e7718/00000120/00000120/ffffffff
+```
+
+By return, the qio record is empty except status `2`:
+
+```text
+pc=800c9944 s0=00002000 s1=000214c0 s2=00000007
+retSlot=807ffc98->80217c58:00000000/00000000/00000000/00000000/00000000/00000002
+```
+
+This explains the earlier negative body-read probe: it captured the stale
+`802e7718` destination from the old qio record and full-hydrated the wrong
+conceptual request. The opt-in body-read capture now requires the submit-stack
+destination (`sp+0x80`) to match the qio-record destination before it records a
+pending body read, so the known-bad `0x214c0` case no longer fires from stale
+metadata.
+
+Build and stack-trace sanity:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded.
+343 Warning(s)
+0 Error(s)
+
+frame=260
+pc=0xffffffff800b39c0
+frameHash=0x37fd72d4
+drawPackets=21475 directTriangles=303 setupTriangles=134
+texWrites=5624478 framebuffer colored=307200
+```
