@@ -7966,3 +7966,37 @@ This moves the 620-frame endpoint away from the previous `80102ad8` display-list
 tail without changing the stable visible hash. The next target is now the
 `800c7c08` runtime loading/dispatch path reached after the FBZ-mode packet spam
 is reduced.
+
+Follow-up trace over `800c7b80..800c7c50` confirms this is the runtime progress
+/ diagnostic-format pump, not a BGLoadModel QIO wait. Repeated calls:
+
+```text
+800c7b80..800c7bb8 saves line state and increments 802171a4
+800c7bc0 jal 80121670 with a0=sp+0x10, a1=8013d85c, a2=sp+0x78
+800c7bc8..800c7bd4 checks overlay flag 80163b0c before the overlay path
+```
+
+An overlay-suppress sanity run hit the existing experiment once:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS=1
+[GAUNTDL:EXPERIMENT] diagnostic-overlay-suppress pc=ffffffff800c7c10 flags=00000001/00000001/00000001/00000001->00000000/...
+```
+
+but it is not a clear fix:
+
+```text
+frame=620
+pc=0xffffffff800c7b90
+frameHash=0x08862a9a
+drawPackets=25545 directTriangles=303 setupTriangles=134
+packetTypes=0:3908,1:616839,2:0,3:25545,4:93814,5:109640,6:1,7:4
+framebuffer colored=271547
+```
+
+Compared with the non-overlay-suppress run, it increases type-1/swap traffic and
+changes the visible hash, but does not produce new draw/setup work. Keep it as a
+diagnostic lever, not part of the best boot stack. The next useful target is a
+proper fastpath or semantic fix for the `800c7b80` progress-format caller, or
+the condition that keeps scheduling these progress lines while `Loading Game.`
+never completes.
