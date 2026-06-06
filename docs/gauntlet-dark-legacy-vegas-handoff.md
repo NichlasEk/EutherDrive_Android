@@ -7602,6 +7602,18 @@ pc=800ac338 beq v0,zero,...
 pc=800ac350 jr v0             ; dispatches to 800ac43c
 ```
 
-So the next probe should trace or repair the state value feeding
-`record+0x0c == 2` after the indexed `stk` short read, rather than forcing the
-`0x214c0` request into the texture source window.
+Follow-up disassembly corrected that interpretation. `record+0x0c == 2` is a
+normal dispatch state, not a stuck state:
+
+```text
+mem[0xffffffff8013b208]:
+ +0x000: 800ac358 800ac3d0 800ac43c 800ac460
+ +0x010: 800ac478 800ac49c 800ac4c0 20746f4e
+```
+
+The same short-read-only trace shows `800ac43c` calling `800ac04c`; when the
+helper returns non-zero, the delay-slot path stores state `3`, and the record
+then proceeds through states `3`, `4`, `5`, and `6`. So the next probe should
+not repair the state value feeding `record+0x0c == 2`. The better target remains
+the semantics of the following `0x2000`/`s1=0x214c0` request and how its result
+is consumed after `800c9944`.
