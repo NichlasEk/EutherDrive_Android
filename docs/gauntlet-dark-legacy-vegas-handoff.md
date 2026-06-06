@@ -7882,3 +7882,54 @@ frame=260 pc=0xffffffff800b39c0 frameHash=0x37fd72d4
 drawPackets=21475 directTriangles=303 setupTriangles=134
 texWrites=5624478 framebuffer colored=307200
 ```
+
+### 2026-06-06 Continuation: Loading Hotloop After 600 Frames
+
+Revalidated the best-known flag stack after the stream-helper fix:
+
+```text
+frame=600
+pc=0xffffffff80102a88
+frameHash=0x37fd72d4
+rtxt="Loading Game."
+drawPackets=25545 directTriangles=303 setupTriangles=134
+texWrites=6835614 framebuffer colored=307200
+```
+
+A focused CPU trace over `80102000..80103650` to frame 620 shows that the
+post-600 time is dominated by runtime Voodoo/display-list emission, not by the
+BGLoadModel QIO submit path. The tail repeatedly runs:
+
+```text
+80103574 -> 80103588 jal 80102174
+80102174..801021d8 status/mode check against 80262d64 + 0x268
+80102b40..80102bc0 writes command pairs through a82005c0/a82005c8
+```
+
+Representative end-state from the trace:
+
+```text
+pc=80102b40 ra=801035a0
+s0=00000000 s1=807ffc10 s2=802e3718 s3=8013b07c
+s4=ffffffff s5=00000001 s6=fffffffd
+80102b5c loads 80262d64+0x26c = 0x00000460
+80102b74 stores 0x00000460 & -3 back to 80262d64+0x26c
+80102b78 loads remaining/cursor word from 80262d64+0x37c
+80102ba4/80102ba8 write command words to a82005c0
+80102bbc/80102bc0 advance 80262d64+0x374/+0x37c by eight bytes
+```
+
+The trace reached its CPU-line cap before the loop fully unwound, but frame 620
+still ended at:
+
+```text
+pc=0xffffffff80102ad8
+frameHash=0x37fd72d4
+rtxt="Loading Game."
+drawPackets=25545 setupTriangles=134 texWrites=6835614 framebuffer colored=307200
+```
+
+Next target is this display-list emitter, especially the ring/cursor state at
+`80262d64+0x268/+0x26c/+0x374/+0x37c` and the `a82005c0` command writes. That
+path looks like the current post-load hot loop; BGLoadModel stream cursor work
+is no longer the immediate blocker at 600 frames.
