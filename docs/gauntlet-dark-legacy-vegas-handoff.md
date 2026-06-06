@@ -8494,3 +8494,29 @@ the terminal PC:
 Keep this flag off for the stable baseline, but use it for the next PC-focused
 trace. It avoids the bad sparse diagnostic path caused by `STATUS_STACK_LIMIT`
 while proving that preserving the native output pair changes later control flow.
+
+Follow-up timing/progress checks with the preserve experiment:
+
+```text
+620 preserve, 400k steps/frame:
+frameHash=0x37fd72d4 pc=800c7ba4 fps=1.03
+fifoWords=10806547 fifoPackets=1567223 drawPackets=25545 setupTriangles=134
+
+620 preserve + diagnostic-overlay-suppress + diagnostic-text-pump-skip, 200k steps/frame:
+frameHash=0x37fd72d4 pc=80102afc fps=2.01
+fifoWords=9701091 fifoPackets=1014495 drawPackets=25545 setupTriangles=134
+```
+
+The `800b1bb4` endpoint from the 200k preserve run was not a hard stop; it was
+inside the `800b1ba0` render-list builder. More budget naturally reaches later
+render/status code. The overlay/text-pump skip profile is now the better local
+iteration profile because it reaches comparable loaded/render state at 200k
+steps/frame in about half the 400k runtime.
+
+A focused trace of the new `80102afc` endpoint shows it is the epilogue of a
+Glide/Voodoo status updater around `80102ac0..80102b18`: it reads status via
+`80105ea0`, updates the counter at `80262c80+0x80`, and returns to `800c83b4`.
+Do not fast-path this blindly yet. The useful next target is the caller state
+after `800c83b4`/`Loading Game.`: determine whether the game is waiting for a
+specific Voodoo swap/status transition, a model-load completion bit, or just
+spending budget pumping the same loading-screen render path.
