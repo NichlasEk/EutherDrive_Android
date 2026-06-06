@@ -656,6 +656,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_FILL_ALL"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioShortReadExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ"));
+    private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioShortReadFillRemainingExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ_FILL_REMAINING"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioBodyReadExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ"));
     private readonly int _runtimeBgLoadModelIndexedTextureQioStreamLimit =
@@ -12027,6 +12029,9 @@ internal sealed class MipsR5000Core
 
         uint oldObjectStatus = _memory.Read32(qioObject + 0x14UL);
         _memory.Write32(qioObject + 0x14UL, (oldObjectStatus & 0xffff0000U) | objectStatus);
+        int filledRemaining = 0;
+        if (_enableRuntimeBgLoadModelIndexedTextureQioShortReadFillRemainingExperiment)
+            filledRemaining = HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(requestedBytes, sourceStride: sourceStride);
 
         if (_runtimeBgLoadModelIndexedTextureQioShortReadTraceCount++ < 16)
         {
@@ -12034,7 +12039,7 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-short-read pc={pc:x16} " +
                 $"index={index} code={code} qio={qio:x16} object={qioObject:x16} " +
                 $"dest={destination:x16} bytes={requestedBytes:x8} disk={textureByteOffset:x8} " +
-                $"first={firstWord:x8} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
+                $"first={firstWord:x8} fillRemaining={filledRemaining} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
 
         return true;
@@ -12155,13 +12160,16 @@ internal sealed class MipsR5000Core
         }
     }
 
-    private int HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(uint requestedBytes)
+    private int HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(uint requestedBytes, ulong sourceStride = 0)
     {
         const ulong destinationBase = 0xffffffff802e1718UL;
+        if (sourceStride == 0)
+            sourceStride = requestedBytes;
+
         int hydrated = 0;
         for (ulong index = 1; index <= 8UL; index++)
         {
-            ulong destination = destinationBase + index * requestedBytes;
+            ulong destination = destinationBase + index * sourceStride;
             if (!IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination))
                 continue;
             if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out _, out _, out _))

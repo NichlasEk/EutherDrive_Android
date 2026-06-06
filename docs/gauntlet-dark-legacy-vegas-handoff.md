@@ -7617,3 +7617,42 @@ then proceeds through states `3`, `4`, `5`, and `6`. So the next probe should
 not repair the state value feeding `record+0x0c == 2`. The better target remains
 the semantics of the following `0x2000`/`s1=0x214c0` request and how its result
 is consumed after `800c9944`.
+
+### 2026-06-06 Continuation: Short-Read Header Fill Negative Probe
+
+Added another opt-in indexed texture QIO probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ_FILL_REMAINING=1
+```
+
+This is only active with indexed QIO short-read enabled. Unlike the earlier
+full `0x2000` fill-all probe, it only fills the remaining empty indexed texture
+source windows with the first `0x120` bytes of each known payload. The intent
+was to test whether slots `4..8` only needed the same header fragment as the
+observed `stk` short read.
+
+The corrected probe fires and fills five remaining headers:
+
+```text
+bgloadmodel-indexed-texture-qio-short-read pc=ffffffff800c9944
+index=3 code=stk dest=ffffffff802e7718 bytes=00000120
+fillRemaining=5
+```
+
+This is also a negative result. At 420 frames it regresses similarly to the
+body-read probe:
+
+```text
+frame=420 pc=0xffffffff800aacf0 frameHash=0x4796dd5b
+rtxt="Loading Game."
+drawPackets=14319 directTriangles=586 setupTriangles=275
+texWrites=914846 framebuffer colored=631 lfbm=0x00000000
+```
+
+Conclusion: the later indexed source windows cannot be bulk-seeded, even with
+only their short headers. The current best run remains indexed QIO +
+stream-limit + `stk` short-read only, without body-read and without short-read
+fill-remaining. The next target should stay focused on the single
+`0x2000`/`s1=0x214c0` request and its caller/consumer semantics, not on
+pre-seeding later source windows.
