@@ -8520,3 +8520,13 @@ Do not fast-path this blindly yet. The useful next target is the caller state
 after `800c83b4`/`Loading Game.`: determine whether the game is waiting for a
 specific Voodoo swap/status transition, a model-load completion bit, or just
 spending budget pumping the same loading-screen render path.
+
+Trace around `800c8380..800c8460` shows a better immediate target than the
+status-return epilogue. The path at `800c843c` calls into a clear helper at
+`800c8400`; that helper walks backward by `0x40` bytes from `80217b78` to the
+`802171b8` area and writes zero bytes, then writes zero to `802171b0..802171b2`
+and stores `8` at `802380dc`. This is adjacent to the indexed cursor/output
+area that the preserve experiment keeps alive, so the next investigation should
+check whether this reset is intentionally per-frame loading-screen state or is
+erasing indexed loader completion metadata that should persist past
+`800c8450`.
