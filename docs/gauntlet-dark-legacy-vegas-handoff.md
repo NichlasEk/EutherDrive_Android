@@ -8000,3 +8000,23 @@ diagnostic lever, not part of the best boot stack. The next useful target is a
 proper fastpath or semantic fix for the `800c7b80` progress-format caller, or
 the condition that keeps scheduling these progress lines while `Loading Game.`
 never completes.
+
+Text-pump skip was retested against the same post-FBZ best stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP=1
+[GAUNTDL:EXPERIMENT] diagnostic-text-pump-loop-skip pc=ffffffff800c81ec epilogue=ffffffff800c8210
+
+frame=620
+pc=0xffffffff80103438
+frameHash=0x08862a9a
+drawPackets=25545 directTriangles=303 setupTriangles=134
+packetTypes=0:3908,1:781579,2:0,3:25545,4:93814,5:109640,6:1,7:4
+framebuffer colored=271547
+```
+
+This also is not a boot fix. It skips the local `800c812c` string pump and moves
+time into the same runtime state/display-list family around `801034xx`, with
+even more type-1 packet traffic and no new geometry. Keep
+`DIAGNOSTIC_TEXT_PUMP_SKIP` as a profiling lever only; the stable comparison
+stack should leave it off.
