@@ -7933,3 +7933,36 @@ Next target is this display-list emitter, especially the ring/cursor state at
 `80262d64+0x268/+0x26c/+0x374/+0x37c` and the `a82005c0` command writes. That
 path looks like the current post-load hot loop; BGLoadModel stream cursor work
 is no longer the immediate blocker at 600 frames.
+
+### 2026-06-06 Follow-up: Loaded FBZ Mode Packet Hotpath
+
+Added `TryFastPathKnownGauntletGlideRuntimeFbzModeClearPacket()` for the
+observed `80102b40` entry variant. It is intentionally narrow:
+
+- Matches the full `80102b40..80102bd4` packet function signature.
+- Accepts only the live `a0=0` path observed from `80103598`, which clears bit
+  `0x02` in `80262d64+0x26c`.
+- Emits the same type-1 Voodoo register packet:
+  `0x00010221, fbzMode`, then advances `80262d64+0x374/+0x37c` by eight bytes.
+- Falls back to normal emulation if FIFO room is below eight bytes or the
+  unknown `a0=1` path is reached.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded. 462 Warning(s), 0 Error(s)
+
+frame=620
+pc=0xffffffff800c7c08
+frameHash=0x37fd72d4
+rtxt="Loading Game."
+drawPackets=25545 directTriangles=303 setupTriangles=134
+texWrites=6835614 framebuffer colored=307200
+packetTypes=0:3908,1:480839,2:0,3:25545,4:93814,5:109640,6:1,7:4
+```
+
+This moves the 620-frame endpoint away from the previous `80102ad8` display-list
+tail without changing the stable visible hash. The next target is now the
+`800c7c08` runtime loading/dispatch path reached after the FBZ-mode packet spam
+is reduced.
