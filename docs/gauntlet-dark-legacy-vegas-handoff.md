@@ -8530,3 +8530,18 @@ area that the preserve experiment keeps alive, so the next investigation should
 check whether this reset is intentionally per-frame loading-screen state or is
 erasing indexed loader completion metadata that should persist past
 `800c8450`.
+
+Added a narrow trace for that helper:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOADING_RESET_HELPER=1
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOADING_RESET_HELPER_LIMIT=12
+```
+
+It signature-checks `800c8400/800c843c` and logs `802171b0..b2`, cursor words
+at `802171b8/80217338/80217738/80217b78`, and `802380dc`. A 120-frame check
+confirmed it hits without full instruction trace noise. Early calls see the
+cursor words already zero; a later pre-call sample had `b171b1=02 b171b2=02`
+while the cursor words were still zero. This points more toward byte-sized
+loading/reset state near `802171b0..b2` than the word cursor values as the next
+thing to compare before and after the indexed preserve path.

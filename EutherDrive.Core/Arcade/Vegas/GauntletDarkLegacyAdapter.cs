@@ -699,6 +699,10 @@ internal sealed class MipsR5000Core
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
     private readonly bool _traceRuntimeStatusBitfieldRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_STATUS_BITFIELD_READ") == "1";
+    private readonly bool _traceRuntimeLoadingResetHelper =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOADING_RESET_HELPER"));
+    private readonly int _traceRuntimeLoadingResetHelperLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOADING_RESET_HELPER_LIMIT", 32);
     private readonly bool _experimentRuntimeDiagnosticOverlaySuppress =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS"));
     private readonly bool _experimentRuntimeDiagnosticTextPumpSkip =
@@ -742,6 +746,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
+    private int _runtimeLoadingResetHelperTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
@@ -904,6 +909,7 @@ internal sealed class MipsR5000Core
         _memory.SetTraceCpuPc(pc);
         TraceKnownRuntimeBgLoadModelStateDelta(pc, "step");
         TraceSuspiciousS8DeadState(pc, "step");
+        TraceKnownRuntimeLoadingResetHelper(pc);
         ApplyKnownRuntimeWorldDataTableRepair(pc);
         ApplyKnownRuntimeWorldSelectedPointerRepair(pc);
         ApplyKnownRuntimeUiCommandCompletion(pc);
@@ -13278,6 +13284,59 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:FIX] render-list-saturation pc={pc:x16} " +
                 $"count={count:x8}->00000000 frameTick={ReadTraceWord(0xffffffff80228114UL):x8}");
         }
+    }
+
+    private void TraceKnownRuntimeLoadingResetHelper(ulong pc)
+    {
+        if (!_traceRuntimeLoadingResetHelper ||
+            _runtimeLoadingResetHelperTraceCount >= _traceRuntimeLoadingResetHelperLimit)
+        {
+            return;
+        }
+
+        const ulong helper = 0xffffffff800c8400UL;
+        const ulong caller = 0xffffffff800c843cUL;
+        if (pc != caller &&
+            pc != caller + 0x14UL &&
+            pc != helper + 0x20UL &&
+            pc != helper + 0x24UL &&
+            pc != helper + 0x2cUL &&
+            pc != helper + 0x38UL &&
+            pc != caller + 0x1cUL)
+        {
+            return;
+        }
+
+        if (_memory.Read32(helper + 0x00UL) != 0x24030027U ||
+            _memory.Read32(helper + 0x08UL) != 0x244271b8U ||
+            _memory.Read32(helper + 0x10UL) != 0xa0400000U ||
+            _memory.Read32(helper + 0x18UL) != 0x0461fffdU ||
+            _memory.Read32(helper + 0x24UL) != 0xa04071b0U ||
+            _memory.Read32(helper + 0x2cUL) != 0xa04071b1U ||
+            _memory.Read32(helper + 0x38UL) != 0xa04071b2U ||
+            _memory.Read32(caller + 0x00UL) != 0x27bdffe8U ||
+            _memory.Read32(caller + 0x0cUL) != 0x0c032100U ||
+            _memory.Read32(caller + 0x14UL) != 0x3c038023U ||
+            _memory.Read32(caller + 0x1cUL) != 0x24020008U)
+        {
+            return;
+        }
+
+        uint ReadByteOrSentinel(ulong address)
+            => IsMainRamRange(address, 1) ? _memory.Read8(address) : 0xffU;
+
+        _runtimeLoadingResetHelperTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] loading-reset-helper pc={pc:x16} " +
+            $"ra={_gpr[31]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+            $"b171b0={ReadByteOrSentinel(0xffffffff802171b0UL):x2} " +
+            $"b171b1={ReadByteOrSentinel(0xffffffff802171b1UL):x2} " +
+            $"b171b2={ReadByteOrSentinel(0xffffffff802171b2UL):x2} " +
+            $"w171b8={ReadTraceWord(0xffffffff802171b8UL):x8} " +
+            $"w17338={ReadTraceWord(0xffffffff80217338UL):x8} " +
+            $"w17738={ReadTraceWord(0xffffffff80217738UL):x8} " +
+            $"w17b78={ReadTraceWord(0xffffffff80217b78UL):x8} " +
+            $"w380dc={ReadTraceWord(0xffffffff802380dcUL):x8}");
     }
 
     private void ApplyKnownRuntimeDiagnosticOverlaySuppress(ulong pc)
