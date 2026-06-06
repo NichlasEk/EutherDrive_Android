@@ -8314,3 +8314,49 @@ For the indexed request, both compared values are zero, so `slt` returns zero
 and the branch is taken. Next concrete target: trace writes to the caller stack
 slots `fp+0x38` and `fp+0x78` for indexed calls, then repair the missing count or
 limit metadata at the producer rather than forcing the branch directly.
+
+Added an explicit negative experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STATUS_STACK_LIMIT=1
+```
+
+At `0x800c97e0`, for the known indexed signatures only, this fills an empty
+caller compare limit slot `fp+0x38` with the request size from `s0` when both
+`fp+0x38` and `fp+0x78` are zero. The goal was to let the native `slt`/`beq`
+fall through without directly patching the branch.
+
+The experiment does flip the branch:
+
+```text
+bgloadmodel-indexed-status-stack-limit pc=ffffffff800c97e0 ... limit=...:00000000->00002000 cursor=...:00000000
+caller-empty-branch pc=ffffffff800c97f4 ... v0=00000001 v1=00002000 fp38=00002000 fp78=00000000
+```
+
+But it is not a valid boot path. A 260-frame probe regressed to a sparse
+diagnostic path:
+
+```text
+frame=260
+pc=0xffffffff800c806c
+frameHash=0xf29eb67c
+drawPackets=0 directTriangles=30 setupTriangles=0
+framebuffer nonBlack=703 colored=0
+```
+
+Keep this flag off. A follow-up 260-frame probe without the stack-limit
+experiment, but with the expanded trace, returned to the stable baseline:
+
+```text
+frame=260
+pc=0xffffffff800af7dc
+frameHash=0x37fd72d4
+drawPackets=21475 directTriangles=303 setupTriangles=134
+framebuffer colored=307200
+```
+
+The expanded trace also shows that the status-check helper frames may have
+non-zero `fp+0x78` values (`0x800c83b4`, `0x2`, `0x18e00`), while the caller
+compare at `0x800c97e0` still consistently has `fp+0x38=0`. The branch itself is
+therefore a poor repair point; the next target remains the producer of the
+caller compare limit / argument block.
