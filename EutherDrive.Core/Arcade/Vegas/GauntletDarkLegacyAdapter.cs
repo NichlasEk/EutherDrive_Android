@@ -747,6 +747,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelAssetParserTraceCount;
     private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
+    private int _runtimeBgLoadModelLateStreamScanTraceCount;
     private int _runtimeBgLoadModelKnownMissingTextureLookupTraceCount;
     private int _runtimeBgParserTraceCount;
     private int _runtimeByteMoveTraceCount;
@@ -14322,7 +14323,7 @@ internal sealed class MipsR5000Core
         AdvanceCp0Count(_cp0CountStep * skipped);
         _instructionCounter += skipped;
 
-        if (_traceRuntimeBgLoadModelLoop && _runtimeBgLoadModelFastPathRejectTraceCount++ < 16)
+        if (_traceRuntimeBgLoadModelLoop && _runtimeBgLoadModelLateStreamScanTraceCount++ < 16)
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] bgloadmodel-late-stream-scan pc={pc:x16} " +
