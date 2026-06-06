@@ -7656,3 +7656,25 @@ stream-limit + `stk` short-read only, without body-read and without short-read
 fill-remaining. The next target should stay focused on the single
 `0x2000`/`s1=0x214c0` request and its caller/consumer semantics, not on
 pre-seeding later source windows.
+
+### 2026-06-06 Continuation: QIO File-State Trace
+
+Expanded `EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS=1` output with
+`file=`, `retFile=`, and `argFile=` summaries. These decode the QIO object or
+`a0` object pointer into the backing file-state pointer plus words around
+`+0x114/+0x118`.
+
+The focused short-read-only trace confirms that the `0x214c0` request is not
+explained by the file-state current offset:
+
+```text
+pc=800c9944 s0=00002000 s1=000214c0 s2=00000007
+retSlot=807ffc98->80217c58:00000000/00000000/00000000/00000000/00000000/00000002
+argFile=ffffffff8021e88c:off=00000000/lba=00000000/w110=00000000/w11c=00000000
+```
+
+At `800c9678`, the same request still has the previous `stk` short-read QIO
+metadata in the return slot, but by `800c9944` the QIO object is empty except
+for status `2`. The object passed in `a0` is valid, but its file-state offset
+and LBA are zero. That makes `s1=0x214c0` more likely to be caller/source-data
+derived state than a recoverable file current-offset value.

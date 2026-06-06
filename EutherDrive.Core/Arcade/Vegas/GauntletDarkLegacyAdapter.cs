@@ -12602,6 +12602,9 @@ internal sealed class MipsR5000Core
             IsMainRamRange(expectedQio + 0x18UL, 4) ? expectedQio : 0;
         ulong qioObject = IsMainRamRange(qio, 4) ? SignExtend32(_memory.Read32(qio)) : 0;
         ulong qioDestination = IsMainRamRange(qio + 0x08UL, 4) ? SignExtend32(_memory.Read32(qio + 0x08UL)) : 0;
+        ulong returnSlot = _gpr[30] + 0x20UL;
+        ulong returnQio = IsMainRamRange(returnSlot, 4) ? SignExtend32(_memory.Read32(returnSlot)) : 0;
+        ulong returnQioObject = IsMainRamRange(returnQio, 4) ? SignExtend32(_memory.Read32(returnQio)) : 0;
 
         _runtimeBgLoadModelQioRequestTraceCount++;
         Console.WriteLine(
@@ -12609,7 +12612,10 @@ internal sealed class MipsR5000Core
             $"idx={recordIndex} record={recordRegister}:{record:x16} recordQio={recordQio:x16} expectedQio={expectedQio:x16} " +
             $"qio={TraceKnownRuntimeBgLoadModelQioOneLine(qio)} " +
             $"obj={qioObject:x16}:{ReadTraceWord(qioObject):x8}/{ReadTraceWord(qioObject + 0x14UL):x8} " +
+            $"file={TraceKnownRuntimeBgLoadModelQioFileState(qioObject)} " +
             $"dst={qioDestination:x16}:{ReadTraceWord(qioDestination):x8} " +
+            $"retFile={TraceKnownRuntimeBgLoadModelQioFileState(returnQioObject)} " +
+            $"argFile={TraceKnownRuntimeBgLoadModelQioFileState(_gpr[4])} " +
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} a0={_gpr[4]:x16}({ReadAsciiTraceString(_gpr[4], 48)}) " +
             $"a1={_gpr[5]:x16}({ReadAsciiTraceString(_gpr[5], 48)}) " +
             $"a2={_gpr[6]:x16}({ReadAsciiTraceString(_gpr[6], 48)}) " +
@@ -12618,7 +12624,7 @@ internal sealed class MipsR5000Core
             $"v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s8={_gpr[30]:x16} " +
             $"s0rec={TraceKnownRuntimeBgLoadModelRecordOneLine(_gpr[16])} " +
             $"s1rec={TraceKnownRuntimeBgLoadModelRecordOneLine(_gpr[17])} " +
-            $"retSlot={TraceKnownRuntimeBgLoadModelReturnSlot(_gpr[30] + 0x20UL)} " +
+            $"retSlot={TraceKnownRuntimeBgLoadModelReturnSlot(returnSlot)} " +
             $"pathTable={TraceKnownRuntimeBgLoadModelPathTableSummary(recordIndex)} " +
             $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(assetIndex)}");
     }
@@ -12702,6 +12708,22 @@ internal sealed class MipsR5000Core
                $"{_memory.Read32(qio + 0x10UL):x8}/" +
                $"{_memory.Read32(qio + 0x14UL):x8}/" +
                $"{ReadAsciiTraceString(qio + 0x18UL, 48)}";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelQioFileState(ulong qioObject)
+    {
+        if (!IsMainRamRange(qioObject, 4))
+            return "range";
+
+        ulong fileState = SignExtend32(_memory.Read32(qioObject));
+        if (!IsMainRamRange(fileState + 0x118UL, 4))
+            return $"{fileState:x16}:range";
+
+        return $"{fileState:x16}:" +
+               $"off={_memory.Read32(fileState + 0x114UL):x8}/" +
+               $"lba={_memory.Read32(fileState + 0x118UL):x8}/" +
+               $"w110={_memory.Read32(fileState + 0x110UL):x8}/" +
+               $"w11c={_memory.Read32(fileState + 0x11cUL):x8}";
     }
 
     private string TraceKnownRuntimeBgLoadModelPathTableSummary(long recordIndex)
