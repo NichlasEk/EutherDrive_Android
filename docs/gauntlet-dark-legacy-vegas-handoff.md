@@ -8270,3 +8270,47 @@ unrelated helper returns. Next useful implementation target is a targeted
 `bgloadmodel-indexed-status-helper-continuation` trace gated on the three indexed
 signatures above, including caller `ra`, `sp+0x14/0x24`, and the post-helper
 branch operands at `0x800c97e0..0x800c97f4`.
+
+Added the narrow trace as:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_STATUS_HELPER=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_STATUS_HELPER_LIMIT=80
+```
+
+It is gated on the three known indexed request signatures and emits only the
+helper return/status-load and caller branch PCs. A 260-frame probe with the
+current stable flags remained stable:
+
+```text
+frame=260
+pc=0xffffffff800af7dc
+frameHash=0x37fd72d4
+drawPackets=21475 directTriangles=303 setupTriangles=134
+```
+
+The trace confirms the pre-status repair is effective, but the next branch is
+driven by caller stack fields rather than `object+0x20`:
+
+```text
+helper-return a1=300b v1=ffffffff80218518 obj20=80218518
+helper-status-load v0=00003000 v1=00003000 obj14=00003000 obj20=80218518
+caller-after-helper pc=800c97e0 v0=00003000 v1=00003000 fp24=802171b8
+caller-empty-branch pc=800c97f4 v0=00000000 v1=00000000 obj20=80218518
+```
+
+A focused PC trace of `0x800c97e0..0x800c97f8` shows the exact caller sequence:
+
+```text
+800c97e0 8fc20038  lw v0,0x38(fp)
+800c97e4 afc2001c  sw v0,0x1c(fp)
+800c97e8 8fc20078  lw v0,0x78(fp)
+800c97ec 8fc3001c  lw v1,0x1c(fp)
+800c97f0 0043102a  slt v0,v0,v1
+800c97f4 10400048  beq v0,zero,...
+```
+
+For the indexed request, both compared values are zero, so `slt` returns zero
+and the branch is taken. Next concrete target: trace writes to the caller stack
+slots `fp+0x38` and `fp+0x78` for indexed calls, then repair the missing count or
+limit metadata at the producer rather than forcing the branch directly.
