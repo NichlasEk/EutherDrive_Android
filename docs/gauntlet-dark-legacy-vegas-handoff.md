@@ -7765,3 +7765,103 @@ frameHash=0x37fd72d4
 drawPackets=21475 directTriangles=303 setupTriangles=134
 texWrites=5624478 framebuffer colored=307200
 ```
+
+### 2026-06-06 Continuation: QIO Stream Cursor Trace
+
+The next CPU trace bracketed the submit wrapper before the `800c9678` create
+call. The wrapper does not invent the `0x214c0` request from the QIO file-state
+record; `s1=0x214c0` is already live before the submit helper:
+
+```text
+#56105612 pc=ffffffff800ac00c jal
+a0=8024f9b0 a1=8013b07c a2=00000000 a3=00002000
+s0=00002000 s1=000214c0 s2=00000007 s3=802e2158 s4=00000009
+```
+
+In that wrapper:
+
+```text
+800abff8 loads a2 from 8021f180, which is zero for this request.
+800ac000 loads the destination base from 8021f154, which becomes 802e1718.
+s4=9, s3=802e2158, s2=7, s1=214c0 are already established.
+```
+
+A wider trace over `800abe00..800abfc0` shows where the cursor comes from. The
+loop at `800abf08..800abf38` scans source entries, calls helper `800a64a0`,
+builds candidate end offsets, and keeps the maximum candidate below global
+`8021f15c` (`0x30200`). The key candidate is:
+
+```text
+entry s0=802e22e8
+entry+8=00017fe4
+global 8021f180=00000000
+helper 800a64a0 return=000094dc
+candidate end=00017fe4 + 000094dc = 000214c0
+```
+
+The loop then stores that cursor into `8021f158` and reloads it for the submit
+path:
+
+```text
+pc=800abf54 sw ... s0=ffffffff80210000 s1=000214c0 s2=00000007
+pc=800abf70 lw ... s0=ffffffff80210000 s1=000214c0
+pc=800abf74 lw ... s0=000214c0 s1=000214c0 a0=ffffffff
+pc=800abf84 lui ... s0=00002000 s1=000214c0
+```
+
+So `0x214c0` is a stream cursor/end offset derived from the parsed source-entry
+table, not a stale QIO record field and not the remainder of the prior `stk`
+short-read. The next bringup target is the `802e2158` source-entry table and
+the helper at `800a64a0`: decode why entry `802e22e8` reports base `0x17fe4`
+and length `0x94dc`, then decide whether the following `0x2000` read should be
+hydrated into the stream destination at `802e1718` or represented by a more
+precise state update.
+
+The RAM/code dump at the same 260-frame baseline verifies the source-entry
+bytes and preserves the helper body for later decoding:
+
+```text
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 260 200000 0
+
+EUTHERDRIVE_GAUNTDL_DUMP_CODE_RANGES=0xffffffff800a64a0:64
+EUTHERDRIVE_GAUNTDL_DUMP_BYTES_RANGES=0xffffffff802e2158:768
+
+frame=260
+pc=0xffffffff800b39c0
+frameHash=0x37fd72d4
+```
+
+Helper `800a64a0` starts with:
+
+```text
+800a64a0: 94850004 90820002 94860006 2c420008
+800a64b0: 14400002 0000382d 00052840 90830001
+800a64c0: 90820000 00621023 0440000a 0000202d
+800a64d0: 0040182d 00a60018 00052843 00063043
+800a64e0: 24840001 0064102a 00004012 1040fff9
+800a64f0: 00e83821 03e00008 00e0102d 2c820007
+```
+
+Entry `802e22e8` is dump base `802e2158 + 0x190`:
+
+```text
+802e22e8: 10 90 01 00 dc 94 01 00 e4 7f 01 00 12 0e 00 00
+802e22f8: 0b 00 00 00 00 00 00 00 00 00 e1 40 01 00 00 00
+```
+
+The CPU trace confirms this exact entry is the accepted max candidate:
+
+```text
+pc=800abf00 jal helper, s0=802e22e8
+pc=800abf08 helper returned v0=000094dc
+pc=800abf0c a0=00017fe4 from lw 8(s0)
+pc=800abf1c v1=000214c0 after a0 + v0
+pc=800abf30 s1=000214c0 after movn
+```
+
+Adjacent entries explain why `0x214c0` wins: `802e2338` later produces
+`0x0e6e + 0x7f98`, and later entries overshoot the `0x30200` cap instead of
+replacing the cursor. The next practical probe should trace consumers after the
+`0x2000` submit with `a2=0x214c0` and stream destination `802e1718`, not retry
+full body hydration of `802e7718`.
