@@ -7678,3 +7678,21 @@ metadata in the return slot, but by `800c9944` the QIO object is empty except
 for status `2`. The object passed in `a0` is valid, but its file-state offset
 and LBA are zero. That makes `s1=0x214c0` more likely to be caller/source-data
 derived state than a recoverable file current-offset value.
+
+Follow-up trace also added `globals=` for the BGLoadModel QIO globals
+`8021f154/f178/f17c/f180/f184`. They are all zero on the `0x214c0` path:
+
+```text
+pc=800c9678 a1=textures.rom a2=00000000 a3=00002000
+s0=00002000 s1=000214c0 s2=00000007
+globals=f154=00000000/f178=00000000/f17c=00000000/f180=00000000/f184=00000000
+
+pc=800c9944 s0=00002000 s1=000214c0 s2=00000007
+argFile=ffffffff8021e88c:off=00000000/lba=00000000/w110=00000000/w11c=00000000
+globals=f154=00000000/f178=00000000/f17c=00000000/f180=00000000/f184=00000000
+```
+
+So the next useful trace is lower-level: follow the caller/register path that
+loads `s1=0x214c0`, probably around the `800abf80..800ac030` QIO submission
+wrapper and the `80102a60` caller loop, rather than adding another synthetic
+QIO hydration from global state.

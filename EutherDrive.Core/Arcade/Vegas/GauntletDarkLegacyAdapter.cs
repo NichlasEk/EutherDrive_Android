@@ -12616,6 +12616,7 @@ internal sealed class MipsR5000Core
             $"dst={qioDestination:x16}:{ReadTraceWord(qioDestination):x8} " +
             $"retFile={TraceKnownRuntimeBgLoadModelQioFileState(returnQioObject)} " +
             $"argFile={TraceKnownRuntimeBgLoadModelQioFileState(_gpr[4])} " +
+            $"globals={TraceKnownRuntimeBgLoadModelQioGlobals()} " +
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} a0={_gpr[4]:x16}({ReadAsciiTraceString(_gpr[4], 48)}) " +
             $"a1={_gpr[5]:x16}({ReadAsciiTraceString(_gpr[5], 48)}) " +
             $"a2={_gpr[6]:x16}({ReadAsciiTraceString(_gpr[6], 48)}) " +
@@ -12724,6 +12725,16 @@ internal sealed class MipsR5000Core
                $"lba={_memory.Read32(fileState + 0x118UL):x8}/" +
                $"w110={_memory.Read32(fileState + 0x110UL):x8}/" +
                $"w11c={_memory.Read32(fileState + 0x11cUL):x8}";
+    }
+
+    private string TraceKnownRuntimeBgLoadModelQioGlobals()
+    {
+        const ulong baseAddress = 0xffffffff80210000UL;
+        return $"f154={ReadTraceWord(baseAddress + 0xf154UL):x8}/" +
+               $"f178={ReadTraceWord(baseAddress + 0xf178UL):x8}/" +
+               $"f17c={ReadTraceWord(baseAddress + 0xf17cUL):x8}/" +
+               $"f180={ReadTraceWord(baseAddress + 0xf180UL):x8}/" +
+               $"f184={ReadTraceWord(baseAddress + 0xf184UL):x8}";
     }
 
     private string TraceKnownRuntimeBgLoadModelPathTableSummary(long recordIndex)
