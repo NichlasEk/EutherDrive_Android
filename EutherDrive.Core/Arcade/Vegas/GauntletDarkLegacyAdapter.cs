@@ -899,6 +899,7 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
             return;
+        ApplyKnownRuntimeBgLoadModelIndexedTextureQioPreStatusMetadataRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioRequestMetadataRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioCreateAliasRepair(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "pre-qio-complete");
@@ -11925,6 +11926,31 @@ internal sealed class MipsR5000Core
         }
 
         return true;
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelIndexedTextureQioPreStatusMetadataRepair(ulong pc)
+    {
+        const ulong statusHelperCallPc = 0xffffffff800c97d8UL;
+        const ulong qioObject = 0xffffffff80295750UL;
+        const uint objectStatus = 0x300bU;
+
+        if (!_enableRuntimeBgLoadModelQioRequestMetadataExperiment ||
+            !_enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
+            pc != statusHelperCallPc ||
+            _gpr[4] != qioObject ||
+            _gpr[5] != objectStatus)
+        {
+            return;
+        }
+
+        bool knownIndexedRequest =
+            (_gpr[16] == 0x2000UL && _gpr[17] == 0x188d2303UL && _gpr[18] == 0x02UL) ||
+            (_gpr[16] == 0x0120UL && _gpr[17] == 0x0120UL && _gpr[18] is >= 3UL and <= 8UL) ||
+            (_gpr[16] == 0x2000UL && _gpr[17] == 0x214c0UL && _gpr[18] == 0x07UL);
+        if (!knownIndexedRequest)
+            return;
+
+        EnsureKnownRuntimeBgLoadModelIndexedTextureQioObjectMetadata(pc, qioObject, "pre-status");
     }
 
     private void CaptureKnownRuntimeBgLoadModelIndexedTextureQioBodyReadRequest(ulong pc)

@@ -8169,3 +8169,63 @@ the 620-frame PC beyond the prior stable point. Next target is to re-run the
 RA-filtered helper trace with the metadata repair active and check whether
 `800c86a0` now reads `80218518`, and whether the branch at `800c97f4` still
 takes the empty-complete path.
+
+## 2026-06-06 Indexed QIO Pre-Status Metadata Repair
+
+The post-return metadata repair was too late for the branch under investigation:
+the status helper at `0x800c8684` had already loaded `object+0x20` as zero. Added
+a pre-status repair at the callsite `0xffffffff800c97d8`, guarded to the known
+indexed texture request signatures:
+
+```text
+s0=00002000 s1=188d2303 s2=00000002
+s0=00000120 s1=00000120 s2=00000003..00000008
+s0=00002000 s1=000214c0 s2=00000007
+```
+
+The repair writes `80218518` to `qioObject+0x20` only when the slot is empty or
+already has that value. RA-filtered helper trace now confirms the helper reads
+the repaired metadata before the `80010fbc` call:
+
+```text
+bgloadmodel-indexed-texture-qio-object-metadata pc=ffffffff800c97d8 phase=pre-status object=ffffffff80295750 obj20=00000000->80218518
+
+pc=800c86a0 lw v1,object+0x20
+pc=800c86a4 ... v1=ffffffff80218518
+```
+
+The same trace showed the `short-read` path and the `s1=0x214c0/s2=7` path both
+getting `v1=ffffffff80218518` at `0x800c86a4`.
+
+Verified build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded: 462 warnings, 0 errors
+```
+
+Verified 260-frame RA-filtered probe remained stable:
+
+```text
+frame=260
+pc=0xffffffff800af7dc
+frameHash=0x37fd72d4
+drawPackets=21475 directTriangles=303 setupTriangles=134
+```
+
+Verified 620-frame probe remained on the current stable profile:
+
+```text
+frame=620
+pc=0xffffffff800c7c08
+frameHash=0x37fd72d4
+drawPackets=25545 directTriangles=303 setupTriangles=134
+texWrites=6835614 framebuffer colored=307200
+packetTypes=0:3908,1:480839,2:0,3:25545,4:93814,5:109640,6:1,7:4
+```
+
+The metadata input to the helper is now fixed. Since the 620-frame PC did not
+advance, the next concrete target is the helper continuation after `80010fbc`
+and the branch at `800c97f4`: trace `0x800c86b0..0x800c872c` without the
+`ra=800c97e0` filter, or add a narrower return-site trace for `ra=800c86b0`, to
+see why the helper still returns the value that drives the empty-complete path.
