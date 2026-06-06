@@ -8020,3 +8020,69 @@ time into the same runtime state/display-list family around `801034xx`, with
 even more type-1 packet traffic and no new geometry. Keep
 `DIAGNOSTIC_TEXT_PUMP_SKIP` as a profiling lever only; the stable comparison
 stack should leave it off.
+
+Follow-up returned to the stronger BGLoadModel texture path instead of the
+cosmetic progress/text pump. A 620-frame hot-PC profile with the current best
+stack stayed on the same stable endpoint:
+
+```text
+frame=620
+pc=0xffffffff800c7c08
+frameHash=0x37fd72d4
+hotpcs=0xffffffff80001a24:4884,0xffffffff80000fd8:1148,0xffffffff80041880:828,...
+```
+
+The hot-PC list is dominated by low-level helper paths after the fastpaths and
+does not identify a new runtime wait. The visible/debug signature still points
+back to loader scheduling, not to the local progress text work.
+
+Retested the old full indexed texture fill-all control briefly. It still fires
+too early and is not part of the best stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_FILL_ALL=1
+bgloadmodel-indexed-texture-qio pc=ffffffff800c9944 index=1 code=gei ... fillAll=7
+```
+
+The live log again showed later slots being bulk-seeded before the parser has
+requested them; slot data diverges from the clean `f00b0001` header pattern.
+This confirms the earlier negative result: do not bulk-fill slots `4..8`, even
+though their payload offsets are known.
+
+Focused QIO request trace at 260 frames:
+
+```text
+/tmp/gauntdl-qio-214c0-260.log
+
+pc=800c9678 a1=8013b07c(textures.rom) a2=00000000 a3=00002000
+s0=00002000 s1=000214c0 s2=00000007 retSlot=807ffc98->80217c58
+
+pc=800c9944 s0=00002000 s1=000214c0 s2=00000007
+retSlot=807ffc98->80217c58:00000000/00000000/00000000/00000000/00000000/00000002
+```
+
+Then CPU-traced the QIO helper with a full 64-bit PC range. Use the full
+`ffffffff...` addresses; passing `800c9600` alone traces the wrong low range.
+
+```text
+/tmp/gauntdl-qio-create-cpu-fullpc-260.log
+trace range: ffffffff800c9600..ffffffff800c9950
+
+800c96f4 sw v0,sp+0x20        ; ret slot = 80217c58
+800c9704 jal 800d13a0         ; clear/setup QIO struct
+800c9734 jal 8011f3c0         ; path/log helper with a3=textures.rom
+...
+800c97d8 jal 800c8684         ; object/status helper
+800c97e0..800c97f4 checks object/status result
+800c97f4 beq v0,zero,800c9918 ; taken for the 0x214c0 request
+800c9918 jal 800edda4
+800c9940 sw 2,qio+0x14        ; complete status
+800c9948 sw zero,qio+0x00     ; clear object pointer
+```
+
+That explains the body-read negative result: the `0x2000/s1=0x214c0/s2=7`
+request is not currently a normal completed QIO body copy into the previous
+`stk` source window. The helper takes an error/empty-complete path, marks the
+shared QIO complete, and clears the object pointer. Next target is the branch
+condition feeding `800c97f4` or the object/status helper result, not another
+payload bulk-fill.
