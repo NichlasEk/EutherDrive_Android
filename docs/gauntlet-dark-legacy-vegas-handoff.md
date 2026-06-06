@@ -8106,3 +8106,66 @@ registers, but the QIO object metadata slot read at `object+0x20` is empty. The
 next concrete patch target is to trace or repair the producer of
 `80295750+0x20`, then retest whether `800c97f4` stops taking the empty-complete
 path. Keep the current best flags unchanged until that branch result changes.
+
+## 2026-06-06 Indexed QIO Object Metadata Repair
+
+Traced writes to the failing metadata slot with:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_MEM=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_WRITES_ONLY=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff80295770:4
+```
+
+The slot is not permanently uninitialized. It is repeatedly cleared by
+`0x800d1470`, and the normal writer paths at `0x800c88d8`,
+`0x800c8b98`, and `0x800c8ebc` restore `80218518`. Around the fabricated
+indexed texture QIO path, however, the clear happens just before the repair
+creates the synthetic completion:
+
+```text
+write64 ffffffff80295770 00000000 pc=ffffffff800d1470
+bgloadmodel-indexed-texture-qio pc=ffffffff800c9944 index=...
+```
+
+Added a narrow repair to the indexed texture QIO metadata paths so the synthetic
+QIO completions also restore `qioObject+0x20` to `80218518` when that slot is
+empty. It refuses to overwrite any other nonzero value. New trace lines:
+
+```text
+bgloadmodel-indexed-texture-qio-object-metadata pc=ffffffff800c9944 phase=indexed object=ffffffff80295750 obj20=00000000->80218518
+bgloadmodel-indexed-texture-qio-object-metadata pc=ffffffff800c9944 phase=short-read object=ffffffff80295750 obj20=00000000->80218518
+```
+
+Verified build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded: 462 warnings, 0 errors
+```
+
+Verified 260-frame probe with the current best flags:
+
+```text
+frame=260
+pc=0xffffffff800af7dc
+frameHash=0x37fd72d4
+drawPackets=21475 directTriangles=303 setupTriangles=134
+```
+
+Verified 620-frame probe stayed on the previous stable profile:
+
+```text
+frame=620
+pc=0xffffffff800c7c08
+frameHash=0x37fd72d4
+drawPackets=25545 directTriangles=303 setupTriangles=134
+texWrites=6835614 framebuffer colored=307200
+packetTypes=0:3908,1:480839,2:0,3:25545,4:93814,5:109640,6:1,7:4
+```
+
+This patch fixes the local metadata inconsistency, but does not by itself move
+the 620-frame PC beyond the prior stable point. Next target is to re-run the
+RA-filtered helper trace with the metadata repair active and check whether
+`800c86a0` now reads `80218518`, and whether the branch at `800c97f4` still
+takes the empty-complete path.
