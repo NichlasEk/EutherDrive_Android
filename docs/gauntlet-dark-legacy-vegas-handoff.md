@@ -8229,3 +8229,44 @@ advance, the next concrete target is the helper continuation after `80010fbc`
 and the branch at `800c97f4`: trace `0x800c86b0..0x800c872c` without the
 `ra=800c97e0` filter, or add a narrower return-site trace for `ra=800c86b0`, to
 see why the helper still returns the value that drives the empty-complete path.
+
+Follow-up continuation trace used:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_RA=ffffffff800c86b0
+trace range: ffffffff800c86b0..ffffffff800c872c
+```
+
+The trace is too broad for regular use, but it pinned down the next failure
+surface. For indexed signatures, the helper continuation sees the repaired
+metadata pointer and still normalizes the helper return into status values:
+
+```text
+s0=00002000 s1=188d2303 s2=00000002
+pc=800c86b0 ... v1=ffffffff80218518
+pc=800c872c ... v0=00003000 v1=00003000
+
+s0=00000120 s1=00000120 s2=00000003
+pc=800c86b0 ... v1=ffffffff80218518
+pc=800c872c ... v0=00003000 v1=00003000
+
+s0=00002000 s1=000214c0 s2=00000007
+pc=800c86b0 ... v1=ffffffff80218518
+pc=800c872c ... v0=00003000 v1=00003000
+```
+
+The alternate status-check subpath still produces `0x1c00` for `a1=0x1c01`;
+the load path we care about produces `0x3000` for `a1=0x300b`. The 260-frame
+continuation trace remained stable at:
+
+```text
+frame=260
+pc=0xffffffff800af7dc
+frameHash=0x37fd72d4
+```
+
+Do not re-run the broad `ra=800c86b0` trace unless needed; it emits thousands of
+unrelated helper returns. Next useful implementation target is a targeted
+`bgloadmodel-indexed-status-helper-continuation` trace gated on the three indexed
+signatures above, including caller `ra`, `sp+0x14/0x24`, and the post-helper
+branch operands at `0x800c97e0..0x800c97f4`.
