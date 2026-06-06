@@ -668,6 +668,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_STATUS_HELPER"));
     private readonly int _traceRuntimeBgLoadModelIndexedStatusHelperLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_STATUS_HELPER_LIMIT", 80);
+    private readonly bool _traceRuntimeBgLoadModelIndexedPrepareHelper =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_PREPARE_HELPER"));
+    private readonly int _traceRuntimeBgLoadModelIndexedPrepareHelperLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_PREPARE_HELPER_LIMIT", 80);
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -734,6 +738,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioStatusStackLimitTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
+    private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
@@ -910,6 +915,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioPreStatusMetadataRepair(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStatusStackLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelIndexedStatusHelper(pc);
+        TraceKnownRuntimeBgLoadModelIndexedPrepareHelper(pc);
         ApplyKnownRuntimeBgLoadModelQioRequestMetadataRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioCreateAliasRepair(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "pre-qio-complete");
@@ -12027,6 +12033,48 @@ internal sealed class MipsR5000Core
             $"sp14={ReadTraceWord(_gpr[29] + 0x14UL):x8} sp24={ReadTraceWord(_gpr[29] + 0x24UL):x8} " +
             $"fp14={ReadTraceWord(_gpr[30] + 0x14UL):x8} fp24={ReadTraceWord(_gpr[30] + 0x24UL):x8} " +
             $"fp38={ReadTraceWord(_gpr[30] + 0x38UL):x8} fp78={ReadTraceWord(_gpr[30] + 0x78UL):x8}");
+    }
+
+    private void TraceKnownRuntimeBgLoadModelIndexedPrepareHelper(ulong pc)
+    {
+        if (!_traceRuntimeBgLoadModelIndexedPrepareHelper ||
+            _runtimeBgLoadModelIndexedPrepareHelperTraceCount >= _traceRuntimeBgLoadModelIndexedPrepareHelperLimit ||
+            !IsKnownRuntimeBgLoadModelIndexedTextureQioStatusSignature())
+        {
+            return;
+        }
+
+        string label = pc switch
+        {
+            0xffffffff800c979cUL => "prepare-call",
+            0xffffffff800c97a4UL => "prepare-return",
+            0xffffffff800c97b0UL => "status-check-call",
+            0xffffffff800c97b8UL => "after-status-check",
+            0xffffffff800c97c4UL => "prepare-detail-call",
+            0xffffffff800c97ccUL => "prepare-detail-return",
+            0xffffffff800c97e0UL => "before-compare",
+            _ => string.Empty
+        };
+        if (label.Length == 0)
+            return;
+
+        ulong obj = 0xffffffff80295750UL;
+        ulong output = _gpr[30] + 0x28UL;
+        _runtimeBgLoadModelIndexedPrepareHelperTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-indexed-prepare-helper {label} pc={pc:x16} op={_memory.Read32(pc):x8} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} " +
+            $"s3={_gpr[19]:x16} s4={_gpr[20]:x16} ra={_gpr[31]:x16} sp={_gpr[29]:x16} fp={_gpr[30]:x16} " +
+            $"fp10={ReadTraceWord(_gpr[30] + 0x10UL):x8} fp14={ReadTraceWord(_gpr[30] + 0x14UL):x8} " +
+            $"fp1c={ReadTraceWord(_gpr[30] + 0x1cUL):x8} fp20={ReadTraceWord(_gpr[30] + 0x20UL):x8} " +
+            $"fp24={ReadTraceWord(_gpr[30] + 0x24UL):x8} fp28={ReadTraceWord(_gpr[30] + 0x28UL):x8} " +
+            $"fp38={ReadTraceWord(_gpr[30] + 0x38UL):x8} fp70={ReadTraceWord(_gpr[30] + 0x70UL):x8} " +
+            $"fp74={ReadTraceWord(_gpr[30] + 0x74UL):x8} fp78={ReadTraceWord(_gpr[30] + 0x78UL):x8} " +
+            $"fp7c={ReadTraceWord(_gpr[30] + 0x7cUL):x8} obj14={ReadTraceWord(obj + 0x14UL):x8} " +
+            $"obj20={ReadTraceWord(obj + 0x20UL):x8} obj34={ReadTraceWord(obj + 0x34UL):x8} " +
+            $"out00={ReadTraceWord(output + 0x00UL):x8} out04={ReadTraceWord(output + 0x04UL):x8} " +
+            $"out10={ReadTraceWord(output + 0x10UL):x8} out18={ReadTraceWord(output + 0x18UL):x8}");
     }
 
     private void CaptureKnownRuntimeBgLoadModelIndexedTextureQioBodyReadRequest(ulong pc)

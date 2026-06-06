@@ -8415,3 +8415,47 @@ No runtime write to `8021f180` occurs before the indexed caller reads it as
 target is the helper path between `800c979c` and the return at
 `800c97a4..800c97cc`, which should explain why local `fp+0x38` stays zero before
 the compare at `800c97e0`.
+
+Added a narrow opt-in prepare-helper trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_PREPARE_HELPER=1
+```
+
+It is gated on the same indexed request signatures and traces the call chain
+around `0x800c979c..0x800c97e0`. The important result is that the caller does
+have non-zero source/output words before the detail helper:
+
+```text
+prepare-detail-call pc=800c97c4 ... fp28=802171b8 fp38=802171b8
+prepare-detail-return pc=800c97cc ... v0=300b fp28=00000000 fp38=00000000 obj14=300b
+before-compare pc=800c97e0 ... v0=3000 fp28=00000000 fp38=00000000 fp78=00000000
+```
+
+The target of `jal 0c03b09a` is `0xffffffff800ec268` (not `800ce268`). An
+RA-filtered trace for `ra=0xffffffff800c97cc` shows why the output is cleared:
+
+```text
+800ec268 entry: a0=80295750 a1=807ffdb0 ra=800c97cc
+800ec288 lw v0,0x34(s0) -> 0
+800ec294 sw zero,0x18(s0)
+800ec2ac jal 800d13a0 with a0=output, a1=0 ; clears output structure
+800ec2b4 lw a0,0x0c(s0) -> ffffffff
+800ec2b8 jal 800ebacc
+800ec2c0 beql v0,zero,...
+800ec2c4 v0=300b
+800ec304 sw v0,0x14(s0)
+```
+
+So the indexed failure is not because `fp+0x38` lacks any producer. It is
+produced earlier, then the detail helper intentionally clears the output because
+the synthetic object/file state still looks empty or closed (`obj+0x0c` reads as
+`0xffffffff`, and `obj+0x34` reads as zero on entry).
+
+The previous `STATUS_STACK_LIMIT` experiment remains a confirmed negative
+control. It forces the branch past `0x800c97f4`, but diverts into a bad sparse
+diagnostic path and must stay off for the baseline. Next implementation target:
+repair the indexed QIO object's native file-state metadata before
+`0x800ec268`, or emulate the `800ec268` detail helper narrowly enough to preserve
+the existing `fp+0x28/fp+0x38` output only for the known indexed request
+signatures.
