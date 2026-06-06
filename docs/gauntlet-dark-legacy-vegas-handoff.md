@@ -8394,3 +8394,24 @@ No traced instruction in `0x800c95e8..0x800c9800` writes `fp+0x38`; the only
 not an argument directly supplied by `800ac00c`. The next narrow target is the
 source of `8021f180` and the helper path before `800c97e0` that should populate
 the local compare limit.
+
+Memory watchpoint on the argument/global block:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_MEM=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_WRITES_ONLY=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff8021f140:96
+```
+
+Result: the whole `8021f140..8021f19c` window is only zero-initialized early:
+
+```text
+pc=80005b18 write64 8021f140..8021f198 = 0
+pc=800103a4 write32 8021f140..8021f19c = 0
+```
+
+No runtime write to `8021f180` occurs before the indexed caller reads it as
+`a2=0`. This makes `8021f180` a bad direct repair target. The remaining narrow
+target is the helper path between `800c979c` and the return at
+`800c97a4..800c97cc`, which should explain why local `fp+0x38` stays zero before
+the compare at `800c97e0`.
