@@ -8086,3 +8086,23 @@ request is not currently a normal completed QIO body copy into the previous
 shared QIO complete, and clears the object pointer. Next target is the branch
 condition feeding `800c97f4` or the object/status helper result, not another
 payload bulk-fill.
+
+Follow-up RA-filtered the status helper to avoid exhausting the trace budget on
+other callers:
+
+```text
+/tmp/gauntdl-qio-status-helper-ra97e0-260.log
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_RA=ffffffff800c97e0
+trace range: ffffffff800c8640..ffffffff800c86d0
+
+pc=800c8684 a0=80295750 a1=0000300b a2=0000007f a3=807ffca0
+s0=00002000 s1=000214c0 s2=00000007 s4=00000009 ra=800c97e0
+pc=800c86a0 lw v1,object+0x20 -> 00000000
+pc=800c86a8 jal 80010fbc
+```
+
+So the failing `0x214c0` path reaches the helper with the expected stream
+registers, but the QIO object metadata slot read at `object+0x20` is empty. The
+next concrete patch target is to trace or repair the producer of
+`80295750+0x20`, then retest whether `800c97f4` stops taking the empty-complete
+path. Keep the current best flags unchanged until that branch result changes.
