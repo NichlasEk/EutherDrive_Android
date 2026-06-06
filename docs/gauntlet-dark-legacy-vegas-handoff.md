@@ -8459,3 +8459,38 @@ repair the indexed QIO object's native file-state metadata before
 `0x800ec268`, or emulate the `800ec268` detail helper narrowly enough to preserve
 the existing `fp+0x28/fp+0x38` output only for the known indexed request
 signatures.
+
+Added the opt-in detail-helper preserve experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE=1
+```
+
+This intercepts the native `0x800c97c4 -> 0x800ec268` call only for known
+indexed request signatures, only when `fp+0x28/fp+0x38` are already non-zero. It
+returns `0x300b` to `0x800c97cc` and preserves the caller's existing output pair
+instead of letting `800ec268` clear it because `obj+0x0c == 0xffffffff` and
+`obj+0x34 == 0`.
+
+Observed first hit:
+
+```text
+bgloadmodel-indexed-prepare-detail-preserve pc=ffffffff800c97c4
+object=ffffffff80295750 output=ffffffff807ffdb0
+cursor=802171b8 limit=802171b8 obj0c=ffffffff obj34=00000000
+objectStatus=00001c00->0000300b
+```
+
+This is not yet a visible boot breakthrough, but it is non-regressive and moves
+the terminal PC:
+
+```text
+260 baseline off: frameHash=0x37fd72d4 pc=800af7dc drawPackets=21475 setupTriangles=134 colored=307200
+260 preserve on:  frameHash=0x37fd72d4 pc=800a50e4 drawPackets=21475 setupTriangles=134 colored=307200
+620 baseline off: frameHash=0x37fd72d4 pc=800c7c08 drawPackets=25545 setupTriangles=134 colored=307200
+620 preserve on:  frameHash=0x37fd72d4 pc=800b1bb4 drawPackets=25545 setupTriangles=134 colored=307200
+```
+
+Keep this flag off for the stable baseline, but use it for the next PC-focused
+trace. It avoids the bad sparse diagnostic path caused by `STATUS_STACK_LIMIT`
+while proving that preserving the native output pair changes later control flow.

@@ -662,6 +662,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioStatusStackLimitExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STATUS_STACK_LIMIT"));
+    private readonly bool _enableRuntimeBgLoadModelIndexedPrepareDetailPreserveExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE"));
     private readonly int _runtimeBgLoadModelIndexedTextureQioStreamLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", 0);
     private readonly bool _traceRuntimeBgLoadModelIndexedStatusHelper =
@@ -737,6 +739,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedTextureQioObjectMetadataTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioStatusStackLimitTraceCount;
+    private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
@@ -916,6 +919,8 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStatusStackLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelIndexedStatusHelper(pc);
         TraceKnownRuntimeBgLoadModelIndexedPrepareHelper(pc);
+        if (TryFastPathKnownRuntimeBgLoadModelIndexedPrepareDetailPreserve(pc))
+            return;
         ApplyKnownRuntimeBgLoadModelQioRequestMetadataRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioCreateAliasRepair(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "pre-qio-complete");
@@ -12000,6 +12005,53 @@ internal sealed class MipsR5000Core
                 $"fp={_gpr[30]:x16} limit={limitSlot:x16}:{oldLimit:x8}->{requestBytes:x8} " +
                 $"cursor={cursorSlot:x16}:{oldCursor:x8} s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16}");
         }
+    }
+
+    private bool TryFastPathKnownRuntimeBgLoadModelIndexedPrepareDetailPreserve(ulong pc)
+    {
+        const ulong callPc = 0xffffffff800c97c4UL;
+        const ulong returnPc = 0xffffffff800c97ccUL;
+        const ulong qioObject = 0xffffffff80295750UL;
+        const uint objectStatus = 0x300bU;
+
+        if (!_enableRuntimeBgLoadModelQioRequestMetadataExperiment ||
+            !_enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
+            !_enableRuntimeBgLoadModelIndexedPrepareDetailPreserveExperiment ||
+            pc != callPc ||
+            _hasPendingBranch ||
+            _memory.Read32(callPc) != 0x0c03b09aU ||
+            _memory.Read32(callPc + 0x04UL) != 0x00000000U ||
+            !IsKnownRuntimeBgLoadModelIndexedTextureQioStatusSignature() ||
+            _gpr[4] != qioObject ||
+            _gpr[5] != _gpr[30] + 0x28UL ||
+            !IsMainRamRange(_gpr[30] + 0x38UL, 4) ||
+            !IsMainRamRange(qioObject + 0x34UL, 4))
+        {
+            return false;
+        }
+
+        uint outputCursor = _memory.Read32(_gpr[30] + 0x28UL);
+        uint outputLimit = _memory.Read32(_gpr[30] + 0x38UL);
+        if (outputCursor == 0 || outputLimit == 0)
+            return false;
+
+        uint oldStatus = _memory.Read32(qioObject + 0x14UL);
+        _memory.Write32(qioObject + 0x14UL, (oldStatus & 0xffff0000U) | objectStatus);
+        _gpr[2] = objectStatus;
+        _gpr[31] = returnPc;
+        Pc = returnPc;
+        CompleteFastPathStep();
+
+        if (_runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-prepare-detail-preserve pc={pc:x16} " +
+                $"object={qioObject:x16} output={_gpr[5]:x16} cursor={outputCursor:x8} limit={outputLimit:x8} " +
+                $"obj0c={ReadTraceWord(qioObject + 0x0cUL):x8} obj34={ReadTraceWord(qioObject + 0x34UL):x8} " +
+                $"objectStatus={oldStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
+        }
+
+        return true;
     }
 
     private void TraceKnownRuntimeBgLoadModelIndexedStatusHelper(ulong pc)
