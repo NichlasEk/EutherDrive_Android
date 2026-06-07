@@ -664,6 +664,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STATUS_STACK_LIMIT"));
     private readonly bool _enableRuntimeBgLoadModelIndexedPrepareDetailPreserveExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE"));
+    private readonly bool _enableRuntimeBgLoadModelIndexedPrepareDetailPreservePartialExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE_PARTIAL"));
     private readonly int _runtimeBgLoadModelIndexedTextureQioStreamLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", 0);
     private readonly bool _traceRuntimeBgLoadModelIndexedStatusHelper =
@@ -12044,8 +12046,18 @@ internal sealed class MipsR5000Core
 
         uint outputCursor = _memory.Read32(_gpr[30] + 0x28UL);
         uint outputLimit = _memory.Read32(_gpr[30] + 0x38UL);
-        if (outputCursor == 0 || outputLimit == 0)
+        if (outputCursor == 0)
             return false;
+        bool repairedPartialLimit = false;
+        if (outputLimit == 0)
+        {
+            if (!_enableRuntimeBgLoadModelIndexedPrepareDetailPreservePartialExperiment)
+                return false;
+
+            outputLimit = outputCursor;
+            _memory.Write32(_gpr[30] + 0x38UL, outputLimit);
+            repairedPartialLimit = true;
+        }
 
         uint oldStatus = _memory.Read32(qioObject + 0x14UL);
         _memory.Write32(qioObject + 0x14UL, (oldStatus & 0xffff0000U) | objectStatus);
@@ -12062,7 +12074,7 @@ internal sealed class MipsR5000Core
                 $"obj0c={ReadTraceWord(qioObject + 0x0cUL):x8} obj34={ReadTraceWord(qioObject + 0x34UL):x8} " +
                 $"b171b0={ReadTraceByte(0xffffffff802171b0UL):x2} b171b1={ReadTraceByte(0xffffffff802171b1UL):x2} " +
                 $"b171b2={ReadTraceByte(0xffffffff802171b2UL):x2} g380dc={ReadTraceWord(0xffffffff802380dcUL):x8} " +
-                $"objectStatus={oldStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
+                $"partialLimit={repairedPartialLimit} objectStatus={oldStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
 
         return true;

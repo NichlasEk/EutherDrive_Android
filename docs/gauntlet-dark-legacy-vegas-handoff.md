@@ -8662,3 +8662,65 @@ populated for this synthetic indexed path. A blind metadata fill before
 current preserve helper is therefore the safer narrow emulation surface: it
 keeps the already-produced caller output pair and returns the expected low
 status without pretending the native file handle is still open.
+
+A 420-frame object-state run shows this applies beyond the first indexed
+request, but also exposes a second class:
+
+```text
+s0=2000 s1=188d2303 s2=2:
+fp28=80217338 fp38=80217338 -> preserve fires
+
+s0=0120 s1=0120 s2=3:
+fp28=80217338 fp38=00000000 fp78=00018e00
+native helper clears fp28/fp38 and output
+
+s0=2000 s1=000214c0 s2=7:
+fp28=802e1838 fp38=00000000 fp78=00000000
+native helper clears fp28/fp38 and output
+```
+
+The run still reaches the loaded/rendering plateau:
+
+```text
+420 preserve + object-state trace:
+pc=800d13dc frameHash=0x37fd72d4 drawPackets=25545 directTriangles=303 setupTriangles=134 colored=307200
+```
+
+Added a follow-up experiment for the short/partial indexed detail class:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE_PARTIAL=1
+```
+
+This only applies when the main preserve experiment is already enabled and
+`fp+0x28` is non-zero while `fp+0x38` is zero. It writes `fp+0x38 = fp+0x28`
+before returning `0x300b`, preserving pointer-pair semantics without inventing
+an open `obj+0x0c` handle or a non-zero `obj+0x34`.
+
+Verification with partial preserve enabled:
+
+```text
+220 preserve + partial:
+partial hits:
+  cursor=80217338 limit=80217338 partialLimit=True
+  cursor=802e1838 limit=802e1838 partialLimit=True
+pc=800b0c54 frameHash=0x37fd72d4
+drawPackets=17039 directTriangles=303 setupTriangles=134 colored=307200
+
+420 preserve + partial:
+pc=80103360 frameHash=0x37fd72d4
+drawPackets=25545 directTriangles=303 setupTriangles=134 colored=307200
+fifoWords=8787867 fifoPackets=557883
+```
+
+Compared with the 420 preserve-only object-state run:
+
+```text
+420 preserve only:     pc=800d13dc frameHash=0x37fd72d4 drawPackets=25545 directTriangles=303 setupTriangles=134
+420 preserve+partial:  pc=80103360 frameHash=0x37fd72d4 drawPackets=25545 directTriangles=303 setupTriangles=134
+```
+
+So partial preserve does not change the loaded/rendering plateau by 420 frames,
+but it does move later control flow. Keep it as an experiment for the next
+620-frame comparison and inspect the new `80103360` endpoint before promoting
+it into the default indexed preserve profile.
