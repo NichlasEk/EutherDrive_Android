@@ -8724,3 +8724,25 @@ So partial preserve does not change the loaded/rendering plateau by 420 frames,
 but it does move later control flow. Keep it as an experiment for the next
 620-frame comparison and inspect the new `80103360` endpoint before promoting
 it into the default indexed preserve profile.
+
+620-frame comparison:
+
+```text
+620 preserve + overlay/text skip:
+pc=80102afc frameHash=0x37fd72d4
+drawPackets=25545 directTriangles=31 setupTriangles=134
+fifoWords=9701091 fifoPackets=1014495
+
+620 preserve + partial + overlay/text skip:
+pc=8012027c frameHash=0x37fd72d4
+drawPackets=25545 directTriangles=303 setupTriangles=134
+fifoWords=9701091 fifoPackets=1014495
+colored=307200
+```
+
+This is the best indexed detail result so far: same loaded framebuffer and FIFO
+plateau, but later control flow and more direct triangles than the preserve-only
+620 profile. Next target is the new `8012027c` endpoint and the remaining
+empty indexed source slots 4..8; partial preserve fixes the short/partial detail
+output clearing, but it does not synthesize the still-empty later source
+headers.
