@@ -8565,3 +8565,100 @@ split: both paths see the same early reset behavior. The bytes at
 fastpath fires they have advanced to `01/01`, while an earlier reset phase had
 `02/02`. The preserve trace now logs those bytes directly so future indexed
 runs can compare phase state without enabling the reset-helper trace.
+
+A focused write trace on `802171b0..b2` confirms those bytes are phase/progress
+state, not the indexed asset completion metadata:
+
+```text
+pc=80005b18 write64 802171b0 00000000
+pc=800103a4 write32 802171b0 00000000
+pc=800c8424 write8  802171b0 0
+pc=800c842c write8  802171b1 0
+pc=800c8438 write8  802171b2 0
+pc=800c80d8 write8  802171b1 1..8
+pc=800c80e8 write8  802171b1 0
+pc=800c8108 write8  802171b2 1..8
+pc=800c8110 write8  802171b0 1..8
+```
+
+The preserve run still ends at the same 120-frame render signature
+(`frameHash=0x9ac85dc5`, `drawPackets=9581`, `setupTriangles=0`) while the
+terminal PC moves from `801093c8` to `80106b04`. The bytes are useful as a
+loading-screen phase marker, but the real indexed split remains the synthetic
+QIO object's native file state: before `800ec268`, the caller has an output
+pair, while object fields still say `obj+0x0c=ffffffff` and `obj+0x34=0`.
+
+Added a narrow object-state trace for the next run:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_QIO_OBJECT_STATE=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_QIO_OBJECT_STATE_LIMIT=80
+```
+
+It is gated on the known indexed signatures and logs `80295750` fields
+`0x00/0x0c/0x14/0x18/0x20/0x34`, the `80217c58` QIO record, derived file-state
+summary, stack output slots, and the `802171b0..b2` phase bytes at
+`800c9678`, `800c97b0`, `800c97b8`, `800c97c4`, `800c97cc`, `800c97d8`,
+`800c97e0`, `800abe78`, and `800c9944`. Use this before adding another repair:
+the question is now whether to set native file-state metadata earlier than
+`800ec268`, or to keep the preserve helper as a narrow emulation of that call.
+
+First 120-frame object-state trace with preserve enabled:
+
+```text
+request-create-object:
+obj00=8021e88c obj0c=ffffffff obj14=0000300b obj18=00000000 obj20=00000000 obj34=00000000
+qio=80217c58:00000000/800ab4e4/802e1718/00002000/00002000/ffffffff
+fp20=80102a60 fp28=802171b8 fp38=802171b8
+
+status-check-call:
+obj00=8021e88c obj0c=ffffffff obj14=00001c01 obj18=00000000 obj20=00000000 obj34=00000000
+qio=80217c58:00000000/00000000/00000000/00000000/00000000/00000000
+fp20=80217c58 fp28=802171b8 fp38=802171b8
+
+prepare-detail-call:
+obj00=8021e88c obj0c=ffffffff obj14=00001c00 obj18=00000000 obj20=00000000 obj34=00000000
+qio=80217c58:00000000/00000000/00000000/00000000/00000000/00000000
+fp20=80217c58 fp28=802171b8 fp38=802171b8
+
+prepare-detail-return after preserve:
+obj00=8021e88c obj0c=ffffffff obj14=0000300b obj18=00000000 obj20=00000000 obj34=00000000
+fp20=80217c58 fp28=802171b8 fp38=802171b8
+
+pre-status-call after obj20 repair:
+obj00=8021e88c obj0c=ffffffff obj14=0000300b obj18=00000000 obj20=80218518 obj34=00000000
+
+before-compare:
+obj00=8021e88c obj0c=ffffffff obj14=00003000 obj18=00000000 obj20=80218518 obj34=00000000
+
+qio-callback:
+obj00=8021e88c obj0c=ffffffff obj14=00003000 obj18=00000000 obj20=80218518 obj34=00000000
+qio=80217c58:00000000/00000000/00000000/00000000/00000000/00000002
+```
+
+The corresponding 120-frame result remains unchanged:
+
+```text
+pc=80106b04 frameHash=0x9ac85dc5 drawPackets=9581 directTriangles=31 setupTriangles=0
+```
+
+Follow-up memory traces:
+
+```text
+80295750+0x0c:
+pc=800ebd34 write32 ffffffff
+pc=800ec790 write32 ffffffff
+pc=800ec828 write32 00000006, 00000086, 00000106, ... increasing transient handles
+pc=800f0c4c write32 ffffffff
+
+80295750+0x34:
+no writes observed before the 120-frame indexed preserve window
+```
+
+Conclusion: `obj+0x0c` is a transient native handle that has already been closed
+back to `ffffffff` when the indexed detail helper runs, and `obj+0x34` is never
+populated for this synthetic indexed path. A blind metadata fill before
+`800ec268` would invent native state that the game has not established. The
+current preserve helper is therefore the safer narrow emulation surface: it
+keeps the already-produced caller output pair and returns the expected low
+status without pretending the native file handle is still open.
