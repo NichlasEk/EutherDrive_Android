@@ -8836,3 +8836,36 @@ the increased geometry/texture traffic proves the remaining parser path can see
 those slots. The next target should be why real indexed source headers push the
 render path into this alternate framebuffer signature instead of preserving the
 `0x37fd72d4` loaded-screen plateau.
+
+Added a mask for bisecting that experiment without recompiling:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK=0x...
+```
+
+The mask uses bit positions matching slot numbers, so `0x4` enables only slot 2
+and `0x80` enables only slot 7. Two 420-frame checks:
+
+```text
+mask=0x4:
+pc=80102a2c frameHash=0x1bd7b4a1
+drawPackets=27321 directTriangles=1129 setupTriangles=546
+fifoWords=8848487 fifoPackets=536670
+texWrites=6908961 textureMapTouched=56247
+colored=125378 nonBlack=146399
+
+mask=0x80:
+pc=80103360 frameHash=0xb1d3ec77
+drawPackets=23870 directTriangles=1913 setupTriangles=937
+fifoWords=9950803 fifoPackets=562913
+texWrites=7889841 textureMapTouched=74737
+colored=128905 nonBlack=133602
+```
+
+These runs are useful because they show different failure signatures. With
+`mask=0x4`, early slot-2 seeding makes the main indexed QIO fill slot 3 next;
+with `mask=0x80`, the normal QIO/short-read flow fills slots 2 and 3 while only
+slot 7 is added early. Both paths produce more geometry than the current
+partial-only baseline but reduce framebuffer coverage. Continue by tracing the
+Voodoo state emit around the first divergent texture/state packet rather than
+trying more broad header hydration.

@@ -652,6 +652,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER"));
+    private readonly ulong? _runtimeBgLoadModelDistinctSourceIndexedHeaderMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK");
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment =
@@ -10299,6 +10301,8 @@ internal sealed class MipsR5000Core
 
         if (!_enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment ||
             !_enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
+            (_runtimeBgLoadModelDistinctSourceIndexedHeaderMask.HasValue &&
+             (_runtimeBgLoadModelDistinctSourceIndexedHeaderMask.Value & (1UL << (int)index)) == 0) ||
             !IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination) ||
             !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
         {
@@ -10310,7 +10314,7 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-distinct-source-indexed-header " +
                 $"index={index} code={code} dest={destination:x16} bytes={requestedBytes:x8} " +
-                $"disk={textureByteOffset:x8} first={firstWord:x8} " +
+                $"disk={textureByteOffset:x8} first={firstWord:x8} mask={_runtimeBgLoadModelDistinctSourceIndexedHeaderMask?.ToString("x") ?? "all"} " +
                 $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(destination)}");
         }
 
