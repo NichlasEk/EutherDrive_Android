@@ -13727,7 +13727,7 @@ internal sealed class MipsR5000Core
             3 => ("stk", 0x15117a00UL, 0x0000a434U),
             4 => ("kjh", 0x15130e00UL, 0x00009ae8U),
             5 => ("pnk", 0x1514da00UL, 0x00009e80U),
-            6 => ("geb", 0x15783200UL, 0x0000b130U),
+            6 => ("geb", 0x15781600UL, 0x0000b130U),
             7 => ("nin", 0x15896000UL, 0x0000b130U),
             8 => ("stg", 0x1585d800UL, 0x0000acccU),
             9 => ("wtr", 0x158b0600UL, 0x0000bca4U),

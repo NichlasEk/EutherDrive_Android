@@ -8746,3 +8746,53 @@ plateau, but later control flow and more direct triangles than the preserve-only
 empty indexed source slots 4..8; partial preserve fixes the short/partial detail
 output clearing, but it does not synthesize the still-empty later source
 headers.
+
+Follow-up on remaining indexed source slots:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ_FILL_REMAINING=1
+```
+
+Before fixing the payload table, bulk filling the remaining 0x120-byte source
+headers showed that slots 4/5 contained the expected `f00b0001` marker, but slot
+6 contained float-like data. A raw disk scan for little-endian `f00b0001` found
+the actual slot-6 header at `0x15781640`, meaning the slot-6 payload base should
+be `0x15781600` instead of `0x15783200`.
+
+With the corrected `geb` base, a 420-frame partial+fill run produced coherent
+headers for all remaining source slots:
+
+```text
+slot4: first=f00b0001 len=00009a58 w60=0000001e w64=0000000d
+slot5: first=f00b0001 len=00009df0 w60=0000001e w64=0000000d
+slot6: first=f00b0001 len=0000b330 w60=0000001f w64=00000017
+slot7: first=f00b0001 len=0000b0c4 w60=00000020 w64=00000013
+slot8: first=f00b0001 len=0000ac60 w60=00000020 w64=00000010
+```
+
+Verification after the offset fix:
+
+```text
+420 preserve + partial + fillRemaining:
+pc=80104690 frameHash=0x939a9769
+drawPackets=25631 directTriangles=728 setupTriangles=345
+fifoWords=10692571 fifoPackets=586086
+texWrites=8577630 textureMapTouched=159552
+colored=123720 nonBlack=307200
+
+620 preserve + partial + fillRemaining:
+pc=80102584 frameHash=0x939a9769
+drawPackets=25631 directTriangles=728 setupTriangles=345
+fifoWords=11605801 fifoPackets=1042701
+texWrites=8577630 textureMapTouched=159552
+colored=123720 nonBlack=307200
+```
+
+This confirms the slot-6 table entry was wrong and that all slots 1..8 can now
+hydrate sane indexed headers. Do not promote `SHORT_READ_FILL_REMAINING` into
+the stable profile yet: it increases geometry and texture upload activity, but
+it changes the framebuffer hash and lowers the fully colored-pixel count
+compared with the current best partial-only profile. The next useful experiment
+is earlier/selective seeding of the empty indexed source headers at the
+distinct-source repair point, instead of late bulk hydration after a short-read
+request has already progressed.
