@@ -8545,3 +8545,23 @@ cursor words already zero; a later pre-call sample had `b171b1=02 b171b2=02`
 while the cursor words were still zero. This points more toward byte-sized
 loading/reset state near `802171b0..b2` than the word cursor values as the next
 thing to compare before and after the indexed preserve path.
+
+Follow-up comparison at 120 frames:
+
+```text
+preserve off + loading-reset trace:
+pre-reset b171b0=00 b171b1=02 b171b2=02
+post-byte0-write b171b0=00 b171b1=00 b171b2=02
+pc=801093c8 frameHash=0x9ac85dc5
+
+preserve on, clean indexed preserve log:
+bgloadmodel-indexed-prepare-detail-preserve ... b171b0=00 b171b1=01 b171b2=01 g380dc=00000000
+pc=80106b04 frameHash=0x9ac85dc5
+```
+
+This rules out the `800c8400` clear helper as the direct preserve-vs-baseline
+split: both paths see the same early reset behavior. The bytes at
+`802171b1..b2` still look meaningful, but by the time the indexed preserve
+fastpath fires they have advanced to `01/01`, while an earlier reset phase had
+`02/02`. The preserve trace now logs those bytes directly so future indexed
+runs can compare phase state without enabling the reset-helper trace.

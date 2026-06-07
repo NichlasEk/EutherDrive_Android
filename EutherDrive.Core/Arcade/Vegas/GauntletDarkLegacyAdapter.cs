@@ -12054,6 +12054,8 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-prepare-detail-preserve pc={pc:x16} " +
                 $"object={qioObject:x16} output={_gpr[5]:x16} cursor={outputCursor:x8} limit={outputLimit:x8} " +
                 $"obj0c={ReadTraceWord(qioObject + 0x0cUL):x8} obj34={ReadTraceWord(qioObject + 0x34UL):x8} " +
+                $"b171b0={ReadTraceByte(0xffffffff802171b0UL):x2} b171b1={ReadTraceByte(0xffffffff802171b1UL):x2} " +
+                $"b171b2={ReadTraceByte(0xffffffff802171b2UL):x2} g380dc={ReadTraceWord(0xffffffff802380dcUL):x8} " +
                 $"objectStatus={oldStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
 
@@ -13322,16 +13324,13 @@ internal sealed class MipsR5000Core
             return;
         }
 
-        uint ReadByteOrSentinel(ulong address)
-            => IsMainRamRange(address, 1) ? _memory.Read8(address) : 0xffU;
-
         _runtimeLoadingResetHelperTraceCount++;
         Console.WriteLine(
             $"[GAUNTDL:TRACE] loading-reset-helper pc={pc:x16} " +
             $"ra={_gpr[31]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
-            $"b171b0={ReadByteOrSentinel(0xffffffff802171b0UL):x2} " +
-            $"b171b1={ReadByteOrSentinel(0xffffffff802171b1UL):x2} " +
-            $"b171b2={ReadByteOrSentinel(0xffffffff802171b2UL):x2} " +
+            $"b171b0={ReadTraceByte(0xffffffff802171b0UL):x2} " +
+            $"b171b1={ReadTraceByte(0xffffffff802171b1UL):x2} " +
+            $"b171b2={ReadTraceByte(0xffffffff802171b2UL):x2} " +
             $"w171b8={ReadTraceWord(0xffffffff802171b8UL):x8} " +
             $"w17338={ReadTraceWord(0xffffffff80217338UL):x8} " +
             $"w17738={ReadTraceWord(0xffffffff80217738UL):x8} " +
@@ -13381,6 +13380,9 @@ internal sealed class MipsR5000Core
 
     private uint ReadTraceWord(ulong address)
         => IsMainRamRange(address, 4) ? _memory.Read32(address) : 0xffffffffU;
+
+    private uint ReadTraceByte(ulong address)
+        => IsMainRamRange(address, 1) ? _memory.Read8(address) : 0xffU;
 
     private bool TryFastPathKnownRuntimeBgLoadModelDispatchPrologue(ulong pc)
     {
