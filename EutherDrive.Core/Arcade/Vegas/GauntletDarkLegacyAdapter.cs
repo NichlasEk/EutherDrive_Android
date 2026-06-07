@@ -650,6 +650,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
+    private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment =
@@ -757,6 +759,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
+    private int _runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount;
     private int _runtimeWorldDataAllocationRepairTraceCount;
     private int _runtimeWorldDataAllocationTraceCount;
     private int _runtimeWorldValidityRepairTraceCount;
@@ -10274,7 +10277,8 @@ internal sealed class MipsR5000Core
             return;
 
         _memory.Write32(slot, (uint)source);
-        bool clonedSource = TryCloneKnownRuntimeBgLoadModelStaticSourceToDistinctSource(source);
+        bool seededIndexedHeader = TrySeedKnownRuntimeBgLoadModelDistinctSourceIndexedHeader(index, source);
+        bool clonedSource = !seededIndexedHeader && TryCloneKnownRuntimeBgLoadModelStaticSourceToDistinctSource(source);
         _gpr[18] = source;
         if (_gpr[5] == staticSource || _gpr[5] == SignExtend32(staticSource))
             _gpr[5] = source;
@@ -10284,8 +10288,33 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-distinct-source pc={pc:x16} " +
                 $"index={index} slot={slot:x16}:{current:x8}->{(uint)source:x8} " +
-                $"cloned={clonedSource} sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
+                $"cloned={clonedSource} seededIndexedHeader={seededIndexedHeader} " +
+                $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
         }
+    }
+
+    private bool TrySeedKnownRuntimeBgLoadModelDistinctSourceIndexedHeader(ulong index, ulong destination)
+    {
+        const uint requestedBytes = 0x120U;
+
+        if (!_enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment ||
+            !_enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
+            !IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination) ||
+            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
+        {
+            return false;
+        }
+
+        if (_runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-distinct-source-indexed-header " +
+                $"index={index} code={code} dest={destination:x16} bytes={requestedBytes:x8} " +
+                $"disk={textureByteOffset:x8} first={firstWord:x8} " +
+                $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(destination)}");
+        }
+
+        return true;
     }
 
     private bool TryCloneKnownRuntimeBgLoadModelStaticSourceToDistinctSource(ulong destination)

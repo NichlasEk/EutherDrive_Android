@@ -8796,3 +8796,43 @@ compared with the current best partial-only profile. The next useful experiment
 is earlier/selective seeding of the empty indexed source headers at the
 distinct-source repair point, instead of late bulk hydration after a short-read
 request has already progressed.
+
+Added that selective early-seeding experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER=1
+```
+
+It runs inside the existing distinct-source repair, only for indexed slots 1..8,
+only when the destination source window is still empty, and hydrates only the
+0x120-byte indexed header. This avoids the late `SHORT_READ_FILL_REMAINING`
+bulk path while making the parser see real headers for slots 2..8 before the
+stream-limit helper needs them. Slot 1 is normally already filled by the indexed
+QIO read and is not rewritten.
+
+Verification:
+
+```text
+420 preserve + partial + early distinct-source indexed headers:
+pc=801035a8 frameHash=0x5da1211e
+drawPackets=28166 directTriangles=634 setupTriangles=299
+fifoWords=13394500 fifoPackets=641818
+texWrites=11100775 textureMapTouched=145408
+colored=115420 nonBlack=307200
+
+620 preserve + partial + early distinct-source indexed headers:
+pc=80102558 frameHash=0x5da1211e
+drawPackets=28166 directTriangles=634 setupTriangles=299
+fifoWords=14307726 fifoPackets=1098431
+texWrites=11100775 textureMapTouched=145408
+colored=115420 nonBlack=307200
+```
+
+This is not better than the current best partial-only profile for visible boot
+progress because it still changes the framebuffer hash and keeps fewer colored
+pixels. It is, however, a cleaner diagnostic than bulk fill: all indexed headers
+are present early and deterministically, the slot-6 `geb` header is correct, and
+the increased geometry/texture traffic proves the remaining parser path can see
+those slots. The next target should be why real indexed source headers push the
+render path into this alternate framebuffer signature instead of preserving the
+`0x37fd72d4` loaded-screen plateau.
