@@ -10536,12 +10536,20 @@ drawPackets=196 direct/setup=44/0
 packetTypes=0:23095,1:28028,2:0,3:196,4:81147,5:55494,6:0,7:3148
 framebuffer colored=980
 cmdstop=depth/0x0001828c
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SKIP_INVALID_STORAGE=1
+frameHash=0xf3562103
+drawPackets=354 direct/setup=44/0
+packetTypes=0:6456,1:29484,2:0,3:354,4:84855,5:45229,6:0,7:3
+framebuffer colored=643
+cmdstop=depth/0x0001828c
 ```
 
 `REQUIRE_VALID_STORAGE` is a weak positive signal because it reduces stale zero
 drain enough to raise colored pixels from 695 to 4772, but it also stalls on an
 invalid storage slot with millions of depth. Resyncing that invalid slot to
-`addressMin` is negative and reintroduces a type-7 storm. Continue by fixing
-the MAME depth/address-min accounting so read pointer, valid storage, and
-available depth describe the same FIFO window instead of treating depth alone
-as packet readiness.
+`addressMin` is negative and reintroduces a type-7 storm. Skipping invalid
+storage slots is also negative: it reduces the type-0 storm, but it collapses
+draw packet count and stays white. Continue by fixing the MAME
+depth/address-min accounting so read pointer, valid storage, and available
+depth describe the same FIFO window before decode readiness is evaluated.
