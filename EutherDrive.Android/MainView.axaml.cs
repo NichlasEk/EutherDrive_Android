@@ -1551,6 +1551,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter cps1 => cps1.GetTargetFps(),
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter cps2 => cps2.GetTargetFps(),
             EutherDrive.Core.Arcade.System32.System32Adapter system32 => system32.GetTargetFps(),
+            EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntlet => gauntlet.GetTargetFps(),
             EutherDrive.Core.Arcade.Snk.NeoGeoAdapter neoGeo => neoGeo.GetTargetFps(),
             EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter outZone => outZone.GetTargetFps(),
             EutherDrive.Core.Arcade.Toaplan.BatsugunAdapter batsugun => batsugun.GetTargetFps(),
@@ -2580,7 +2581,7 @@ public partial class MainView : UserControl
             {
                 var folders = await storageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
                 {
-                    Title = "Choose the folder containing arcade parent ROM zips",
+                    Title = "Choose the folder containing arcade parent ROM zips and disk sidecars",
                     AllowMultiple = false
                 });
 
@@ -2791,6 +2792,9 @@ public partial class MainView : UserControl
             return true;
 
         string ext = Path.GetExtension(fileName).ToLowerInvariant();
+        if ((ext is ".chd" or ".raw" or ".img") && IsGauntletDiskSidecarName(fileName))
+            return true;
+
         if (ext is not ".zip" and not ".7z" and not ".bin")
             return false;
 
@@ -2811,7 +2815,8 @@ public partial class MainView : UserControl
             return false;
 
         string pseudoPath = Path.Combine("/__eutherdrive_probe__", fileName);
-        return fileName.Equals("hshavoc.zip", StringComparison.OrdinalIgnoreCase)
+        return EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsSupportedPath(pseudoPath)
+            || fileName.Equals("hshavoc.zip", StringComparison.OrdinalIgnoreCase)
             || EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.System32.System32Adapter.IsSupportedArchive(pseudoPath)
@@ -2821,6 +2826,14 @@ public partial class MainView : UserControl
             || EutherDrive.Core.Arcade.Igs.Pgm2Adapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.Igs.KovPgmAdapter.IsSupportedArchive(pseudoPath)
             || EutherDrive.Core.Arcade.McsArcadeAdapter.IsLikelyArcadeArchive(pseudoPath);
+    }
+
+    private static bool IsGauntletDiskSidecarName(string fileName)
+    {
+        string name = Path.GetFileNameWithoutExtension(fileName);
+        return name.Equals("gauntdl", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("gauntdl24", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("gauntd24", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> PickSystemFileAsync(string key, string title, string[] patterns)
@@ -4492,6 +4505,7 @@ public partial class MainView : UserControl
             EutherDrive.Core.Arcade.Cps1.Cps1DinoAdapter => "Arcade",
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter => "Arcade CPS2",
             EutherDrive.Core.Arcade.System32.System32Adapter => "Sega System 32",
+            EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter => "Gauntlet Dark Legacy",
             EutherDrive.Core.Arcade.DataEast.Hshavoc.HshavocAdapter => "Data East HSHavoc",
             EutherDrive.Core.Arcade.Snk.NeoGeoAdapter => "Neo Geo",
             EutherDrive.Core.Arcade.Toaplan.OutZoneAdapter => "Toaplan Out Zone",

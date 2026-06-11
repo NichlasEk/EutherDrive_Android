@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using EutherDrive.Core.Savestates;
+using ProjectPSX.IO;
 using SharpCompress.Archives;
 
 namespace EutherDrive.Core.Arcade.Vegas;
@@ -31,6 +32,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _loaded ? _frameCounter : null;
     public string DebugStatus => _machine.GetDebugStatus();
+    public double GetTargetFps() => 60.0;
 
     internal static bool IsBringupFixEnabled(string name)
     {
@@ -57,12 +59,12 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         if (name is "gauntdl" or "gauntdl24")
             return true;
 
-        if (!Directory.Exists(path))
+        if (!VirtualFileSystem.DirectoryExists(path))
             return false;
 
-        return File.Exists(Path.Combine(path, "gauntdl.zip")) ||
-               File.Exists(Path.Combine(path, "gauntdl24.7z")) ||
-               File.Exists(Path.Combine(path, "gauntdl24.zip"));
+        return VirtualFileSystem.Exists(Path.Combine(path, "gauntdl.zip")) ||
+               VirtualFileSystem.Exists(Path.Combine(path, "gauntdl24.7z")) ||
+               VirtualFileSystem.Exists(Path.Combine(path, "gauntdl24.zip"));
     }
 
     public void LoadRom(string path)
@@ -475,7 +477,7 @@ internal sealed class GauntletRomSet
         stream.Write(VegasSioRom);
         stream.Write(SecurityPic);
 
-        if (!string.IsNullOrWhiteSpace(ChdPath) && File.Exists(ChdPath))
+        if (!string.IsNullOrWhiteSpace(ChdPath) && VirtualFileSystem.Exists(ChdPath))
         {
             byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(Path.GetFileName(ChdPath));
             stream.Write(pathBytes);
@@ -487,10 +489,10 @@ internal sealed class GauntletRomSet
 
     private static string ResolveArchivePath(string path)
     {
-        if (File.Exists(path))
+        if (VirtualFileSystem.Exists(path))
             return Path.GetFullPath(path);
 
-        if (!Directory.Exists(path))
+        if (!VirtualFileSystem.DirectoryExists(path))
             throw new FileNotFoundException("Gauntlet Dark Legacy ROM archive or directory not found.", path);
 
         string[] candidates =
@@ -502,7 +504,7 @@ internal sealed class GauntletRomSet
 
         foreach (string candidate in candidates)
         {
-            if (File.Exists(candidate))
+            if (VirtualFileSystem.Exists(candidate))
                 return Path.GetFullPath(candidate);
         }
 
@@ -552,7 +554,7 @@ internal sealed class GauntletRomSet
 
         foreach (string candidate in candidates)
         {
-            if (File.Exists(candidate) &&
+            if (VirtualFileSystem.Exists(candidate) &&
                 !string.Equals(Path.GetFullPath(candidate), primaryFullPath, StringComparison.OrdinalIgnoreCase))
             {
                 yield return candidate;
@@ -575,11 +577,11 @@ internal sealed class GauntletRomSet
         if (DiskBySet.TryGetValue(setName, out string? expected))
         {
             string expectedPath = Path.Combine(directory, expected);
-            if (File.Exists(expectedPath))
+            if (VirtualFileSystem.Exists(expectedPath))
                 return expectedPath;
         }
 
-        return Directory.EnumerateFiles(directory, "*.chd").FirstOrDefault();
+        return VirtualFileSystem.GetFiles(directory, "*.chd").FirstOrDefault();
     }
 }
 
@@ -23545,19 +23547,19 @@ internal static class DiskImageFactory
 
     private static bool IsUsableRaw(string path, DiskGeometry geometry)
     {
-        if (!File.Exists(path))
+        if (!VirtualFileSystem.Exists(path))
             return false;
 
         long expectedLength = checked((long)(geometry.TotalSectors * (ulong)geometry.BytesPerSector));
-        return new FileInfo(path).Length >= expectedLength;
+        return VirtualFileSystem.GetLength(path) >= expectedLength;
     }
 }
 
 internal sealed class RawDiskImage : IDiskImage
 {
-    private readonly FileStream _stream;
+    private readonly Stream _stream;
 
-    private RawDiskImage(string path, FileStream stream, DiskGeometry geometry)
+    private RawDiskImage(string path, Stream stream, DiskGeometry geometry)
     {
         Path = path;
         _stream = stream;
@@ -23569,7 +23571,7 @@ internal sealed class RawDiskImage : IDiskImage
 
     public static RawDiskImage Open(string path)
     {
-        var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        Stream stream = VirtualFileSystem.OpenRead(path);
         const int bytesPerSector = 512;
         ulong totalSectors = (ulong)(stream.Length / bytesPerSector);
         var geometry = new DiskGeometry(
@@ -23583,7 +23585,7 @@ internal sealed class RawDiskImage : IDiskImage
 
     public static RawDiskImage Open(string path, DiskGeometry geometry)
     {
-        var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        Stream stream = VirtualFileSystem.OpenRead(path);
         return new RawDiskImage(path, stream, geometry);
     }
 
@@ -23624,7 +23626,7 @@ internal sealed class ChdDiskImage : IDiskImage
 
     public static ChdDiskImage Open(string path)
     {
-        using FileStream stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using Stream stream = VirtualFileSystem.OpenRead(path);
         Span<byte> header = stackalloc byte[124];
         ReadExact(stream, header);
 
@@ -23678,7 +23680,7 @@ internal sealed class ChdDiskImage : IDiskImage
         return int.Parse(metadata[start..end], System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static string? ReadMetadataString(FileStream stream, ulong firstOffset, uint wantedTag)
+    private static string? ReadMetadataString(Stream stream, ulong firstOffset, uint wantedTag)
     {
         ulong offset = firstOffset;
         Span<byte> header = stackalloc byte[16];
