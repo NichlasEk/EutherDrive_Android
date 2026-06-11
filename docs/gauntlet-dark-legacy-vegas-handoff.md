@@ -11471,6 +11471,28 @@ before state/render packets." The follow-on service still consumes the same bad
 phase. Readiness needs to prevent the phase from being exposed in the first
 place, not merely shift it to a nearby call site.
 
+A `cmdrdy=` readiness profile was added to split MAME command FIFO readiness by
+CPU PC and reason. The important result is that default MAME readiness has no
+window/generation rejection at all in the f260 failure. It is only:
+
+- `ready`: `_cmdFifoDepth > 0`
+- `depth0`: `_cmdFifoDepth <= 0`
+
+```text
+MAME FIFO f260:
+frameHash=0x1e212a0b
+framebuffer colored=695
+cmdrdy 800fe5fc=1827011/y1794510/n32501/r1794510-32501-0-0-0-0-0
+cmdrdy 800fe5d4=92937/y92872/n65/r92872-65-0-0-0-0-0
+cmdrdy 800fe5f8=28088/y28041/n47/r28041-47-0-0-0-0-0
+cmdrdy 800fe5e8=28085/y28041/n44/r28041-44-0-0-0-0-0
+```
+
+The `r` slots are `ready-depth0-readWindow-storageGeneration-skipInvalid-invalidStorage-other`.
+This confirms that the current default MAME model exposes the bad phase solely
+because depth is positive. The next useful implementation target is therefore a
+phase-aware readiness rule, not another yield-after-decode rule.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that

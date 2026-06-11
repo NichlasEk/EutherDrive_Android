@@ -25412,6 +25412,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly Dictionary<ulong, CommandFifoWritePcStats> _commandFifoWritePcStats = [];
     private readonly Dictionary<ulong, CommandFifoRegisterReadPcStats> _commandFifoRegisterReadPcStats = [];
     private readonly Dictionary<ulong, CommandFifoRegisterWritePcStats> _commandFifoRegisterWritePcStats = [];
+    private readonly Dictionary<ulong, CommandFifoReadyPcStats> _commandFifoReadyPcStats = [];
     private readonly Dictionary<string, CommandFifoDecodeTriggerStats> _commandFifoDecodeTriggerStats = [];
     private string _commandFifoDecodeTrigger = "direct";
     private int _drawTraceCount;
@@ -26628,13 +26629,17 @@ internal class VoodooBringupBackend : IVoodooBackend
             return _cmdFifoValid[_cmdFifoReadIndex & CmdFifoMask];
 
         if (_cmdFifoDepth <= 0)
+        {
+            CountCommandFifoReadyPc(false, "depth0");
             return false;
+        }
 
         if (_experimentMameCommandFifoRequireReadInAddressWindow &&
             _cmdFifoAddressMin >= _cmdFifoRamBase &&
             !IsMameCommandFifoReadInsideAddressWindow())
         {
             TraceCommandFifoDecodeStop("read-outside-window", PeekCommandFifoWord(), 1);
+            CountCommandFifoReadyPc(false, "read-window");
             return false;
         }
 
@@ -26642,6 +26647,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             !IsCommandFifoWordValidForRead(_cmdFifoReadIndex))
         {
             TraceCommandFifoDecodeStop("storage-generation", PeekCommandFifoWord(), 1);
+            CountCommandFifoReadyPc(false, "storage-generation");
             return false;
         }
 
@@ -26672,6 +26678,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             if (_cmdFifoDepth <= 0 || !IsCommandFifoWordValidForRead(_cmdFifoReadIndex))
             {
                 TraceCommandFifoDecodeStop("skip-invalid-storage", PeekCommandFifoWord(), 1);
+                CountCommandFifoReadyPc(false, "skip-invalid");
                 return false;
             }
         }
@@ -26690,9 +26697,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
 
             TraceCommandFifoDecodeStop("invalid-storage", PeekCommandFifoWord(), 1);
+            CountCommandFifoReadyPc(false, "invalid-storage");
             return false;
         }
 
+        CountCommandFifoReadyPc(true, "ready");
         return true;
     }
 
@@ -27329,7 +27338,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_profileCommandFifoPacketPcs)
             return "";
 
-        return $"cmdpc={FormatCommandFifoPacketPcStats()} cmdw={FormatCommandFifoWritePcStats()} cmdreg={FormatCommandFifoRegisterReadPcStats()} cmdwr={FormatCommandFifoRegisterWritePcStats()} ";
+        return $"cmdpc={FormatCommandFifoPacketPcStats()} cmdw={FormatCommandFifoWritePcStats()} cmdreg={FormatCommandFifoRegisterReadPcStats()} cmdwr={FormatCommandFifoRegisterWritePcStats()} cmdrdy={FormatCommandFifoReadyPcStats()} ";
     }
 
     private string FormatCommandFifoPacketPcStats()
@@ -27505,6 +27514,61 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"/dw{pair.Value.DepthWrites}:lastd{pair.Value.LastDepthValue}:maxd{pair.Value.MaxDepthValue}" +
                 $"/last{pair.Value.LastRegister:X}:0x{pair.Value.LastValue:X}:rd{pair.Value.LastReadIndex:X}" +
                 $":a{pair.Value.LastAddressMin:X}-{pair.Value.LastAddressMax:X}:d{pair.Value.LastDepth}:h{pair.Value.LastHoles}"));
+    }
+
+    private void CountCommandFifoReadyPc(bool ready, string reason)
+    {
+        if (!_profileCommandFifoPacketPcs)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        if (!_commandFifoReadyPcStats.TryGetValue(pc, out CommandFifoReadyPcStats? stats))
+        {
+            stats = new CommandFifoReadyPcStats();
+            _commandFifoReadyPcStats[pc] = stats;
+        }
+
+        stats.Total++;
+        if (ready)
+            stats.Ready++;
+        else
+            stats.NotReady++;
+        stats.LastReason = reason;
+        stats.LastCommand = PeekCommandFifoWord();
+        stats.LastReadIndex = _cmdFifoReadIndex;
+        stats.LastDepth = _cmdFifoDepth;
+        stats.LastHoles = _cmdFifoHoles;
+        stats.LastValid = _cmdFifoValid[CommandFifoStorageIndex(_cmdFifoReadIndex)];
+        int reasonSlot = reason switch
+        {
+            "ready" => 0,
+            "depth0" => 1,
+            "read-window" => 2,
+            "storage-generation" => 3,
+            "skip-invalid" => 4,
+            "invalid-storage" => 5,
+            _ => 6
+        };
+        stats.ReasonCounts[reasonSlot]++;
+    }
+
+    private string FormatCommandFifoReadyPcStats()
+    {
+        if (_commandFifoReadyPcStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _commandFifoReadyPcStats
+            .OrderByDescending(pair => pair.Value.Total)
+            .ThenByDescending(pair => pair.Value.Ready)
+            .ThenBy(pair => pair.Key)
+            .Take(10)
+            .Select(pair =>
+                $"0x{pair.Key:x16}:{pair.Value.Total}/y{pair.Value.Ready}/n{pair.Value.NotReady}" +
+                $"/r{string.Join('-', pair.Value.ReasonCounts)}" +
+                $"/last{pair.Value.LastReason}:0x{pair.Value.LastCommand:X8}:rd{pair.Value.LastReadIndex:X}:d{pair.Value.LastDepth}:h{pair.Value.LastHoles}:v{(pair.Value.LastValid ? 1 : 0)}"));
     }
 
     private void CountCommandFifoDecodeCallPc(
@@ -27754,6 +27818,20 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int LastAddressMax;
         public int LastDepth;
         public int LastHoles;
+    }
+
+    private sealed class CommandFifoReadyPcStats
+    {
+        public int Total;
+        public int Ready;
+        public int NotReady;
+        public readonly int[] ReasonCounts = new int[7];
+        public string LastReason = "";
+        public uint LastCommand;
+        public int LastReadIndex;
+        public int LastDepth;
+        public int LastHoles;
+        public bool LastValid;
     }
 
     private sealed class CommandFifoDecodeCallPcStats
