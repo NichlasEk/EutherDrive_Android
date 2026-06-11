@@ -25305,6 +25305,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_RENDER_WORK"));
     private readonly bool _experimentMameCommandFifoYieldOnType5Boundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_YIELD_ON_TYPE5_BOUNDARY"));
+    private readonly bool _experimentMameCommandFifoDeferWriteDecode =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DEFER_WRITE_DECODE"));
     private readonly bool _experimentMameCommandFifoWrapClear =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR"));
     private readonly bool _experimentMameCommandFifoWrapClearInvalidRead =
@@ -25692,8 +25694,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoReadPointerWritten = true;
         }
 
-        if (_cmdFifoBulkWriteDepth == 0)
+        if (_cmdFifoBulkWriteDepth == 0 &&
+            (!_fixMameCommandFifoModel || !_experimentMameCommandFifoDeferWriteDecode))
+        {
             DecodeCommandFifoPacketsIfNotPending("write");
+        }
     }
 
     private int GetMameCommandFifoLogicalWriteIndex(int localIndex, int storageIndex)

@@ -11185,6 +11185,29 @@ FIFO packets from each command FIFO word write. Let bulk-end, status, and
 register-triggered services drive the decode instead, then see whether the
 `800fe5fc` write path stops stealing texture/control packets.
 
+That defer experiment was negative. Enabling
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DEFER_WRITE_DECODE=1`
+does remove the huge `800fe5fc` write-triggered decode site, but the bulk-end
+service then consumes even more mixed FIFO traffic at `800fe5d4` and the frame
+does not recover:
+
+```text
+MAME FIFO + defer write decode:
+frameHash=0xfa0f01b3
+drawPackets=552 direct/setup=44/0
+packetTypes=0:9930,1:29567,2:0,3:552,4:90941,5:89538,6:0,7:3
+framebuffer colored=725
+cmdpc 800fe5d4=130099 packets, types=9925-6900-0-552-23184-89538-0-0
+cmdcall 800fe5d4=251 calls / 130099 packets / max2048 / c5=1 / mix=250 / empty=0
+cmdtrig bulk-end@800fe5d4=251 calls / 130099 packets / c5=1 / mix=250 / empty=0
+cmd=190444/0/65536/0x9D4C/0x9D4C
+```
+
+So `800fe5fc` is a symptom of the MAME-depth readiness model exposing
+partially ready texture data to write-triggered decode, but simply deferring
+write-triggered service pushes the same structural issue into the next
+bulk-end service.
+
 A bulk-window control was also negative. Enabling the existing
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
 FIFO made the frame slightly worse:
