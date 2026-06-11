@@ -11095,6 +11095,36 @@ MAME-depth path, the same PC decodes a mixed control/render stream, and
 failure look less like a missing payload word or final depth leak and more like
 decode readiness crossing into the wrong logical service phase.
 
+An added `cmdcall=` profile groups whole `DecodeCommandFifoPackets()` calls by
+CPU PC. The important fields are calls, total packets, max packets in one call,
+type-5-only calls, mixed type5+other calls, non-type5 calls, and empty calls.
+The standard path at `800fe5d4` has many empty service polls and a limited
+number of mixed calls:
+
+```text
+standard:
+frameHash=0x8e14c17e
+framebuffer colored=307199
+cmdcall 800fe5d4=1663 calls / 83191 packets / max256 / c5=286 / mix=72 / other=0 / empty=1305
+```
+
+Default MAME FIFO instead makes almost every productive `800fe5d4` service call
+a mixed type5+control/render decode:
+
+```text
+MAME FIFO:
+frameHash=0x1e212a0b
+framebuffer colored=695
+cmdcall 800fe5d4=251 calls / 92686 packets / max482 / c5=1 / mix=250 / other=0 / empty=0
+cmdcall 800fe5fc=1794510 calls / 32501 packets / max1 / c5=27785 / mix=0 / other=4716 / empty=1762009
+```
+
+This is the best current behavioral split. The MAME path is not just decoding
+more packets; it is allowing the outer texture-payload service to cross into
+state/render packet traffic during almost every effective service call. The
+good path has idle/empty service polls and keeps most state/render updates in
+single-packet helper calls.
+
 A bulk-window control was also negative. Enabling the existing
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
 FIFO made the frame slightly worse:
