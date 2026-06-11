@@ -25297,6 +25297,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
+    private readonly bool _experimentMameCommandFifoBulkLogicalWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_LOGICAL_WINDOW"));
     private readonly bool _experimentMameCommandFifoYieldOnWork =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_WORK"));
     private readonly bool _experimentMameCommandFifoYieldOnRenderWork =
@@ -25632,10 +25634,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             if (!_cmdFifoBulkSawWrite)
             {
-                _cmdFifoBulkStartIndex = storageIndex;
+                _cmdFifoBulkStartIndex = UseMameCommandFifoBulkLogicalWindow() ? logicalWriteIndex : storageIndex;
                 _cmdFifoBulkSawWrite = true;
             }
-            _cmdFifoBulkLastIndex = storageIndex;
+            _cmdFifoBulkLastIndex = UseMameCommandFifoBulkLogicalWindow() ? logicalWriteIndex : storageIndex;
             _cmdFifoBulkWriteWordCount++;
         }
 
@@ -25869,7 +25871,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _experimentRewindCommandFifoOnBulkWrite &&
             _cmdFifoBulkSawWrite &&
             IsCommandFifoReadIndexInsideBulkWrite() &&
-            IsType5TexturePacketHeader(_cmdFifoRam[_cmdFifoBulkStartIndex]))
+            IsType5TexturePacketHeader(_cmdFifoRam[CommandFifoStorageIndex(_cmdFifoBulkStartIndex)]))
         {
             _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
         }
@@ -25885,7 +25887,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoBulkWriteDepth == 0 &&
             _experimentCommandFifoBulkDecodeWindow &&
             _cmdFifoBulkSawWrite &&
-            IsType5TexturePacketHeader(_cmdFifoRam[_cmdFifoBulkStartIndex]))
+            IsType5TexturePacketHeader(_cmdFifoRam[CommandFifoStorageIndex(_cmdFifoBulkStartIndex)]))
         {
             _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
             _cmdFifoBulkDecodeRemainingWords = _cmdFifoBulkWriteWordCount;
@@ -25900,10 +25902,15 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         if (!_cmdFifoBulkSawWrite)
             return false;
+        if (UseMameCommandFifoBulkLogicalWindow())
+            return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex && _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
         if (_cmdFifoBulkStartIndex <= _cmdFifoBulkLastIndex)
             return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex && _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
         return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex || _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
     }
+
+    private bool UseMameCommandFifoBulkLogicalWindow()
+        => _fixMameCommandFifoModel && _experimentMameCommandFifoBulkLogicalWindow;
 
     private static bool IsType5TexturePacketHeader(uint command)
         => (command & 7u) == 5u && (command >> 30) == 3u && ((command >> 3) & 0x7ffffu) > 0;

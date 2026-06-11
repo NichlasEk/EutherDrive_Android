@@ -11095,6 +11095,26 @@ MAME-depth path, the same PC decodes a mixed control/render stream, and
 failure look less like a missing payload word or final depth leak and more like
 decode readiness crossing into the wrong logical service phase.
 
+A bulk-window control was also negative. Enabling the existing
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
+FIFO made the frame slightly worse:
+
+```text
+MAME FIFO + bulk decode window:
+frameHash=0x14ab5007
+drawPackets=607 direct/setup=44/0
+packetTypes=0:40041,1:32664,2:0,3:607,4:95584,5:91608,6:0,7:173
+framebuffer colored=609
+cmd=37/0/32768/0x9D4C/0x9D4C
+cmdstop=depth/0xC0000205/66/37/.../pc=0xFFFFFFFF801031A8
+```
+
+Adding `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_LOGICAL_WINDOW=1`
+to store the bulk start/end as MAME logical write indices, rather than masked
+storage indices, produced the same signature. So the bulk helper's start index
+alone is not the active f260 divergence. The issue remains that readiness is
+being granted to a plausible but temporally wrong stream.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
