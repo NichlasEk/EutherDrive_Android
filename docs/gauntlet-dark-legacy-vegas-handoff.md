@@ -11208,6 +11208,39 @@ partially ready texture data to write-triggered decode, but simply deferring
 write-triggered service pushes the same structural issue into the next
 bulk-end service.
 
+A `cmdw=` profile now groups MAME FIFO writes by CPU PC and records total
+calls, net depth delta, net holes delta, and write-accounting modes. The
+important result is that holes are not the f260 problem: the large writers are
+almost entirely normal append writes and `hd0`.
+
+```text
+MAME FIFO cmdw:
+800fe5d4=4214496 writes / depth +4214496 / holes +0 / append 4214233 / before-min 263
+800fe5fc=1794510 writes / depth +1794510 / holes +0 / append 1794486 / before-min 24
+800fe5e8=28041 writes / depth +28041 / holes +0 / append 28041
+800fe5f8=28041 writes / depth +28041 / holes +0 / append 28041
+```
+
+This moves suspicion away from gap/hole accounting and toward readiness/service
+granularity. A `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_PACKET_LIMIT=256`
+control, matching the standard path's observed max `800fe5d4` call size, was
+also neutral:
+
+```text
+MAME FIFO + decode packet limit 256:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+cmdcall 800fe5d4=251 calls / 64189 packets / max256 / c5=1 / mix=250 / empty=0
+cmdcall 800fe850=359 calls / 28503 packets / max226 / c5=79 / mix=169 / empty=111
+cmdcall 800fe5fc=1794510 calls / 32501 packets / max1 / c5=27785 / other=4716 / empty=1762009
+```
+
+So limiting per-call packet count reproduces one surface property of the
+standard path but not the timing/ownership of which service PC should consume
+the mixed stream.
+
 A bulk-window control was also negative. Enabling the existing
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
 FIFO made the frame slightly worse:

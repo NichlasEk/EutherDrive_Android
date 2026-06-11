@@ -25404,6 +25404,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
     private readonly Dictionary<ulong, CommandFifoPacketPcStats> _commandFifoPacketPcStats = [];
     private readonly Dictionary<ulong, CommandFifoDecodeCallPcStats> _commandFifoDecodeCallPcStats = [];
+    private readonly Dictionary<ulong, CommandFifoWritePcStats> _commandFifoWritePcStats = [];
     private readonly Dictionary<string, CommandFifoDecodeTriggerStats> _commandFifoDecodeTriggerStats = [];
     private string _commandFifoDecodeTrigger = "direct";
     private int _drawTraceCount;
@@ -25782,17 +25783,27 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void TrackMameCommandFifoWrite(int address, uint value)
     {
         if (!_experimentMameCommandFifoTrackWriteGeneration && (uint)address >= (uint)_cmdFifoRamEnd)
+        {
+            CountCommandFifoWritePc(0, 0, 0, address, value);
             return;
+        }
         if (((_registers[RegFbiInit7] >> 10) & 1u) != 0)
+        {
+            CountCommandFifoWritePc(1, 0, 0, address, value);
             return;
+        }
         if (_cmdFifoDepth == 0 && _cmdFifoHoles == 0 && _cmdFifoAddressMin < _cmdFifoRamBase)
         {
             _cmdFifoAddressMin = address - 4;
             _cmdFifoAddressMax = address - 4;
         }
 
+        int depthBefore = _cmdFifoDepth;
+        int holesBefore = _cmdFifoHoles;
+        int mode;
         if (_cmdFifoHoles == 0 && address == _cmdFifoAddressMin + 4)
         {
+            mode = 2;
             _cmdFifoAddressMin = address;
             _cmdFifoAddressMax = address;
             _cmdFifoDepth++;
@@ -25800,6 +25811,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
         else if (address < _cmdFifoAddressMin)
         {
+            mode = 3;
             _cmdFifoHoles += _experimentMameCommandFifoExactHoleAccounting
                 ? (address - _cmdFifoRamBase) / 4
                 : Math.Max(0, (address - _cmdFifoRamBase) / 4);
@@ -25810,6 +25822,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
         else if (address < _cmdFifoAddressMax)
         {
+            mode = 4;
             if (_experimentMameCommandFifoExactHoleAccounting || _cmdFifoHoles > 0)
                 _cmdFifoHoles--;
             if (_cmdFifoHoles == 0)
@@ -25825,11 +25838,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
         else
         {
+            mode = 5;
             _cmdFifoHoles += _experimentMameCommandFifoExactHoleAccounting
                 ? (address - _cmdFifoAddressMax) / 4 - 1
                 : Math.Max(0, (address - _cmdFifoAddressMax) / 4 - 1);
             _cmdFifoAddressMax = address;
         }
+        CountCommandFifoWritePc(mode, _cmdFifoDepth - depthBefore, _cmdFifoHoles - holesBefore, address, value);
         if (_traceCommandFifoModelStorageOffsets.Length == 0)
             TraceCommandFifoModel($"write addr=0x{address:x5} value=0x{value:x8}", value);
         TraceCommandFifoStorageWrite(address, value);
@@ -27287,7 +27302,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_profileCommandFifoPacketPcs)
             return "";
 
-        return $"cmdpc={FormatCommandFifoPacketPcStats()} ";
+        return $"cmdpc={FormatCommandFifoPacketPcStats()} cmdw={FormatCommandFifoWritePcStats()} ";
     }
 
     private string FormatCommandFifoPacketPcStats()
@@ -27305,6 +27320,50 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"/t{string.Join('-', pair.Value.TypeCounts)}" +
                 $"/g{pair.Value.GenerationMatches}-{pair.Value.GenerationMismatches}" +
                 $"/last0x{pair.Value.LastCommand:X8}:{pair.Value.LastWordsNeeded}:rd{pair.Value.LastPacketStart:X}:st{pair.Value.LastStorageIndex:X}:lg{pair.Value.LastStoredLogicalIndex:X}:d{pair.Value.LastDepthBefore}:h{pair.Value.LastHolesBefore}"));
+    }
+
+    private void CountCommandFifoWritePc(int mode, int depthDelta, int holesDelta, int address, uint value)
+    {
+        if (!_profileCommandFifoPacketPcs)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        if (!_commandFifoWritePcStats.TryGetValue(pc, out CommandFifoWritePcStats? stats))
+        {
+            stats = new CommandFifoWritePcStats();
+            _commandFifoWritePcStats[pc] = stats;
+        }
+
+        stats.Total++;
+        stats.DepthDelta += depthDelta;
+        stats.HolesDelta += holesDelta;
+        if ((uint)mode < (uint)stats.ModeCounts.Length)
+            stats.ModeCounts[mode]++;
+        stats.LastAddress = address;
+        stats.LastValue = value;
+        stats.LastDepth = _cmdFifoDepth;
+        stats.LastHoles = _cmdFifoHoles;
+        stats.LastAddressMin = _cmdFifoAddressMin;
+        stats.LastAddressMax = _cmdFifoAddressMax;
+    }
+
+    private string FormatCommandFifoWritePcStats()
+    {
+        if (_commandFifoWritePcStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _commandFifoWritePcStats
+            .OrderByDescending(pair => pair.Value.DepthDelta)
+            .ThenByDescending(pair => pair.Value.Total)
+            .ThenBy(pair => pair.Key)
+            .Take(10)
+            .Select(pair =>
+                $"0x{pair.Key:x16}:{pair.Value.Total}/dd{pair.Value.DepthDelta}/hd{pair.Value.HolesDelta}" +
+                $"/m{string.Join('-', pair.Value.ModeCounts)}" +
+                $"/last0x{pair.Value.LastAddress:X}:0x{pair.Value.LastValue:X8}:d{pair.Value.LastDepth}:h{pair.Value.LastHoles}:a{pair.Value.LastAddressMin:X}-{pair.Value.LastAddressMax:X}"));
     }
 
     private void CountCommandFifoDecodeCallPc(
@@ -27510,6 +27569,20 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int GenerationMismatches;
         public int LastStorageIndex;
         public int LastStoredLogicalIndex;
+    }
+
+    private sealed class CommandFifoWritePcStats
+    {
+        public int Total;
+        public long DepthDelta;
+        public long HolesDelta;
+        public readonly int[] ModeCounts = new int[6];
+        public int LastAddress;
+        public uint LastValue;
+        public int LastDepth;
+        public int LastHoles;
+        public int LastAddressMin;
+        public int LastAddressMax;
     }
 
     private sealed class CommandFifoDecodeCallPcStats
