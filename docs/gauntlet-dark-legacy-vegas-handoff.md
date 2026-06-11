@@ -10716,6 +10716,28 @@ larger than another read-pointer heuristic: the bring-up backend should test a
 full framebuffer-sized command FIFO storage/mask, or share storage with the
 Voodoo framebuffer RAM model, before trusting depth/window traces.
 
+The first framebuffer-sized storage probe is available but negative:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE=1
+frameHash=0xbd71006f
+drawPackets=44 direct/setup=44/0
+packetTypes=0:5843023,1:25611,2:0,3:44,4:71836,5:5326,6:0,7:3
+framebuffer colored=443
+cmdstop=depth/0xC0000205/66/65/0x143FFDC/0x3FFDC/0x0000DA00/0x00000000/pc=0xFFFFFFFF800FE5FC/187730
+```
+
+This follows MAME's larger storage mask more closely, but by itself it exposes
+an even larger stale zero/NOP drain. The f260 default MAME run was rechecked
+after the opt-in backing-array change and stayed unchanged:
+
+```text
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
