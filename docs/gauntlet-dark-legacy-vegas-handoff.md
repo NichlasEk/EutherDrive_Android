@@ -10688,6 +10688,34 @@ packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
 framebuffer colored=695
 ```
 
+Another opt-in guard tested whether the existing `addressMin/addressMax` values
+can be used as the authoritative decode window:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_READ_IN_ADDRESS_WINDOW=1
+frameHash=0x2d1c35fc
+drawPackets=4 direct/setup=44/0
+packetTypes=0:40,1:22717,2:0,3:4,4:67925,5:672,6:0,7:3
+framebuffer colored=0
+cmd=6170432/0/65536/0x9D4C/0x9D4C
+cmdstop=read-outside-window/0x00000000/1/6170432/0x40050/0x50/0x00000000/0x00000000/pc=0xFFFFFFFF801031A8/2001340
+```
+
+This stops in the expected class of failure, but it is not a fix: the current
+`addressMin/addressMax` accounting collapses the useful stream to almost no
+draw packets. It confirms the window model is internally inconsistent rather
+than giving a reliable readiness predicate.
+
+MAME reference checked from current upstream `src/devices/video/voodoo_2.*` and
+`voodoo_banshee.*`: `voodoo::command_fifo` stores command FIFO words in the
+device framebuffer RAM and masks reads with the framebuffer RAM mask (`m_mask`),
+not a standalone 64K command array. The Voodoo2 direct command-FIFO window still
+uses a 16-bit write offset, but `peek_next()`/`read_next()` use
+`m_ram[m_read_index & m_mask]`. This makes the next useful implementation probe
+larger than another read-pointer heuristic: the bring-up backend should test a
+full framebuffer-sized command FIFO storage/mask, or share storage with the
+Voodoo framebuffer RAM model, before trusting depth/window traces.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

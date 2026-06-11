@@ -25313,6 +25313,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_CONSUME_WRAP_GAP_INVALID_READ"));
     private readonly bool _experimentMameCommandFifoTrackWriteGeneration =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRACK_WRITE_GENERATION"));
+    private readonly bool _experimentMameCommandFifoRequireReadInAddressWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_READ_IN_ADDRESS_WINDOW"));
     private readonly bool _experimentMameCommandFifoResyncAddressMinOnPartialType5 =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_AMIN_ON_PARTIAL_TYPE5"));
     private readonly bool _experimentMameCommandFifoSpace0Endian =
@@ -26339,6 +26341,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoDepth <= 0)
             return false;
 
+        if (_experimentMameCommandFifoRequireReadInAddressWindow &&
+            _cmdFifoAddressMin >= _cmdFifoRamBase &&
+            !IsMameCommandFifoReadInsideAddressWindow())
+        {
+            TraceCommandFifoDecodeStop("read-outside-window", PeekCommandFifoWord(), 1);
+            return false;
+        }
+
         if ((_experimentMameCommandFifoSkipWrapGapInvalidRead ||
              _experimentMameCommandFifoConsumeWrapGapInvalidRead) &&
             !_cmdFifoValid[_cmdFifoReadIndex & CmdFifoMask])
@@ -26388,6 +26398,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return true;
+    }
+
+    private bool IsMameCommandFifoReadInsideAddressWindow()
+    {
+        int readByte = _cmdFifoReadIndex * 4;
+        if (_cmdFifoAddressMin <= _cmdFifoAddressMax)
+            return readByte >= _cmdFifoAddressMin && readByte <= _cmdFifoAddressMax;
+
+        int readStorageByte = (_cmdFifoReadIndex & CmdFifoMask) * 4;
+        int minStorageByte = ((_cmdFifoAddressMin >> 2) & CmdFifoMask) * 4;
+        int maxStorageByte = ((_cmdFifoAddressMax >> 2) & CmdFifoMask) * 4;
+        return readStorageByte >= minStorageByte || readStorageByte <= maxStorageByte;
     }
 
     private bool TryResyncMameCommandFifoOnPartialType5(uint command, int packetStart, int wordsNeeded)
