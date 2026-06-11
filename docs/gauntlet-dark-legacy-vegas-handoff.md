@@ -10496,3 +10496,52 @@ So the `NaN` setup trace is expected for this packet shape and is not unique to
 MAME. The white-screen divergence is more likely due to which state/fill/swap
 packets MAME chooses to drain around these valid type-3 packets, especially
 when the unmasked read pointer/depth climbs through large outer-payload bursts.
+
+Type-0/local-jump tracing (`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS=1`)
+rules out local jumps as the immediate cause of the `0xffffffff800fe5d4`
+fill/swap divergence. At f260, the traced type-0 packets around that PC are
+plain no-op zero words in both models:
+
+```text
+standard:
+cmd=0x00000000 fn=0 rdBefore=0x00000000.. mame=0
+frameHash=0x8e14c17e colored=307199
+
+MAME FIFO:
+cmd=0x00000000 fn=0 rdBefore=0x001000d0.. mame=1
+frameHash=0x1e212a0b colored=695
+```
+
+The important difference is that the standard model repeatedly drains from the
+low ring slots while the MAME model drains stale zero packets through large
+unmasked read indices (`0x001000d0`, `0x0010cc00`, `0x0038de34`, etc.) even
+when `addressMin` points elsewhere. `lj=0` in the baseline MAME run, so
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_LOCAL_JUMP=1` is not a
+useful recovery path for this case.
+
+Two storage-validity experiments are available but not fixes:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE=1
+frameHash=0x4c332cd2
+drawPackets=216 direct/setup=44/0
+packetTypes=0:56983,1:27763,2:0,3:216,4:78942,5:26800,6:0,7:588
+framebuffer colored=4772
+cmdstop=invalid-storage
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN=1
+frameHash=0x6c05a33c
+drawPackets=196 direct/setup=44/0
+packetTypes=0:23095,1:28028,2:0,3:196,4:81147,5:55494,6:0,7:3148
+framebuffer colored=980
+cmdstop=depth/0x0001828c
+```
+
+`REQUIRE_VALID_STORAGE` is a weak positive signal because it reduces stale zero
+drain enough to raise colored pixels from 695 to 4772, but it also stalls on an
+invalid storage slot with millions of depth. Resyncing that invalid slot to
+`addressMin` is negative and reintroduces a type-7 storm. Continue by fixing
+the MAME depth/address-min accounting so read pointer, valid storage, and
+available depth describe the same FIFO window instead of treating depth alone
+as packet readiness.

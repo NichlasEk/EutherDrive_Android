@@ -25256,6 +25256,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceSetupTriangles = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SETUP_TRIANGLES") == "1";
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
+    private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
+    private readonly int _traceType0PacketsLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS_LIMIT"), 240);
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
@@ -25283,6 +25286,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR"));
     private readonly bool _experimentMameCommandFifoMaskReadIndex =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX"));
+    private readonly bool _experimentMameCommandFifoMaskLocalJump =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_LOCAL_JUMP"));
+    private readonly bool _experimentMameCommandFifoRequireValidStorage =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE"));
+    private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN"));
     private readonly bool _experimentMameCommandFifoResyncAddressMinOnPartialType5 =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_AMIN_ON_PARTIAL_TYPE5"));
     private readonly bool _experimentMameCommandFifoSpace0Endian =
@@ -25324,6 +25333,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER"));
     private readonly ulong[] _traceFastFillSwapOrderPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_PCS"));
+    private readonly int _traceFastFillSwapOrderLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_LIMIT"), 240);
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
@@ -25331,6 +25342,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
     private int _nonNeutralFastFillTraceCount;
+    private int _type0PacketTraceCount;
     private int _type3PacketTraceCount;
     private int _type5PayloadTraceCount;
     private int _oddFifoPacketTraceCount;
@@ -26213,9 +26225,32 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private bool IsCommandFifoPacketReady()
-        => _fixMameCommandFifoModel
-            ? _cmdFifoDepth > 0
-            : _cmdFifoValid[_cmdFifoReadIndex];
+    {
+        if (!_fixMameCommandFifoModel)
+            return _cmdFifoValid[_cmdFifoReadIndex];
+
+        if (_cmdFifoDepth <= 0)
+            return false;
+
+        if (_experimentMameCommandFifoRequireValidStorage && !_cmdFifoValid[_cmdFifoReadIndex & CmdFifoMask])
+        {
+            if (_experimentMameCommandFifoResyncInvalidStorageToAddressMin && _cmdFifoAddressMin >= _cmdFifoRamBase)
+            {
+                int addressMinIndex = DecodeCommandFifoReadIndex(_cmdFifoAddressMin >> 2);
+                if (_cmdFifoValid[addressMinIndex & CmdFifoMask])
+                {
+                    TraceCommandFifoDecodeStop("invalid-storage-resync-amin", PeekCommandFifoWord(), 1);
+                    _cmdFifoReadIndex = addressMinIndex;
+                    return true;
+                }
+            }
+
+            TraceCommandFifoDecodeStop("invalid-storage", PeekCommandFifoWord(), 1);
+            return false;
+        }
+
+        return true;
+    }
 
     private bool TryResyncMameCommandFifoOnPartialType5(uint command, int packetStart, int wordsNeeded)
     {
@@ -26378,13 +26413,39 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void DecodeFifoType0(uint command)
     {
         int function = (int)((command >> 3) & 7u);
+        int target = (int)((command >> 6) & 0x7fffffu);
+        int readBefore = _cmdFifoReadIndex;
+        int readAfter = readBefore;
         if (function == 3)
         {
-            int target = (int)((command >> 6) & 0x7fffffu);
-            _cmdFifoReadIndex = DecodeCommandFifoReadIndex(target);
+            readAfter = DecodeCommandFifoLocalJumpTarget(target);
+            _cmdFifoReadIndex = readAfter;
             _cmdFifoJumped = true;
             _cmdFifoLocalJumpCount++;
         }
+
+        TraceType0Packet(command, function, target, readBefore, readAfter);
+    }
+
+    private int DecodeCommandFifoLocalJumpTarget(int target)
+        => _fixMameCommandFifoModel && _experimentMameCommandFifoMaskLocalJump
+            ? target & CmdFifoMask
+            : DecodeCommandFifoReadIndex(target);
+
+    private void TraceType0Packet(uint command, int function, int target, int readBefore, int readAfter)
+    {
+        if (!_traceType0Packets || _type0PacketTraceCount++ >= _traceType0PacketsLimit)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE0] n={_type0PacketTraceCount} cmd=0x{command:x8} fn={function} " +
+            $"target=0x{target:x6} rdBefore=0x{readBefore * 4:x8} rdAfter=0x{readAfter * 4:x8} " +
+            $"storageBefore=0x{(readBefore & CmdFifoMask) * 4:x5} storageAfter=0x{(readAfter & CmdFifoMask) * 4:x5} " +
+            $"mame={(_fixMameCommandFifoModel ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"base=0x{_cmdFifoRamBase:x5} amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} " +
+            $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
     }
 
     private void DecodeFifoType1(uint command)
@@ -26622,7 +26683,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceFastFillSwapOrder(string kind, uint register, uint value)
     {
-        if (!_traceFastFillSwapOrder || _fastFillSwapOrderTraceCount >= 240)
+        if (!_traceFastFillSwapOrder || _fastFillSwapOrderTraceCount >= _traceFastFillSwapOrderLimit)
             return;
 
         if (kind == "reg" && !IsFastFillSwapOrderRegister(register))
