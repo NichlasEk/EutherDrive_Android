@@ -10613,6 +10613,22 @@ pointer to the just-written bulk start when the old read storage is invalid;
 it slightly raises colored pixels but collapses draw packet count and
 introduces type-7 packets. Treat both as negative diagnostics.
 
+A narrower wrap-gap skip was also tested:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SKIP_WRAP_GAP_INVALID_READ=1
+frameHash=0xf02ebb13
+drawPackets=615 direct/setup=44/0
+packetTypes=0:18075,1:32764,2:0,3:615,4:95864,5:91924,6:0,7:8
+framebuffer colored=699
+lj=1
+```
+
+This only skips invalid read storage when the read pointer is within 64 words
+of the ring end and storage slot 0 is already valid, without decrementing
+depth. It is still negative: it does not recover the black clear/swap sequence
+and it introduces a local-jump path that baseline MAME did not take.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
