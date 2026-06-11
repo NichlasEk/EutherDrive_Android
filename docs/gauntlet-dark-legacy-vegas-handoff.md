@@ -10886,6 +10886,23 @@ window model, not a usable authoritative readiness predicate. Packet-window
 validation should only become useful after the producer/read window is tracked
 coherently.
 
+A register-side decode probe called the command FIFO decoder after
+`addressMin`, `addressMax`, `depth`, and `holes` register writes, matching the
+possibility that MAME's command-FIFO register path can invoke
+`execute_if_ready()` after visible FIFO accounting changes. The f260 signature
+was unchanged:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_ON_REG_WRITE=1
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
+So the current failure is not from missing decode attempts after CPU-visible
+FIFO accounting register writes.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

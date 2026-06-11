@@ -25323,6 +25323,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_READ_IN_ADDRESS_WINDOW"));
     private readonly bool _experimentMameCommandFifoRequirePacketInAddressWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_PACKET_IN_ADDRESS_WINDOW"));
+    private readonly bool _experimentMameCommandFifoDecodeOnRegisterWrite =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_ON_REG_WRITE"));
     private readonly bool _experimentMameCommandFifoFramebufferStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE"));
     private readonly bool _experimentMameCommandFifoMirrorLfbWrites =
@@ -25506,6 +25508,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 else
                     _cmdFifoAddressMin = (int)value;
                 TraceCommandFifoModel($"reg amin value=0x{value:x8}");
+                DecodeCommandFifoAfterRegisterWrite();
                 break;
             case RegCmdFifoAddressMax:
                 if (_fixMameCommandFifoModel && _experimentMameCommandFifoRegisterWindow)
@@ -25513,18 +25516,21 @@ internal class VoodooBringupBackend : IVoodooBackend
                 else
                     _cmdFifoAddressMax = (int)value;
                 TraceCommandFifoModel($"reg amax value=0x{value:x8}");
+                DecodeCommandFifoAfterRegisterWrite();
                 break;
             case RegCmdFifoDepth:
                 _cmdFifoDepth = _fixMameCommandFifoModel && _experimentMameCommandFifoFullDepthHolesRegisters
                     ? unchecked((int)value)
                     : (int)(value & 0xffffu);
                 TraceCommandFifoModel($"reg depth value=0x{value:x8}");
+                DecodeCommandFifoAfterRegisterWrite();
                 break;
             case RegCmdFifoHoles:
                 _cmdFifoHoles = _fixMameCommandFifoModel && _experimentMameCommandFifoFullDepthHolesRegisters
                     ? unchecked((int)value)
                     : (int)(value & 0xffffu);
                 TraceCommandFifoModel($"reg holes value=0x{value:x8}");
+                DecodeCommandFifoAfterRegisterWrite();
                 break;
             case 0xa8u:
                 MarkCommandFifoRenderWork();
@@ -25534,6 +25540,18 @@ internal class VoodooBringupBackend : IVoodooBackend
                 BeginSetupTriangle();
                 break;
         }
+    }
+
+    private void DecodeCommandFifoAfterRegisterWrite()
+    {
+        if (!_fixMameCommandFifoModel ||
+            !_experimentMameCommandFifoDecodeOnRegisterWrite ||
+            _decodingCommandFifo)
+        {
+            return;
+        }
+
+        DecodeCommandFifoPacketsIfNotPending();
     }
 
     private void ApplyMameCommandFifoRegisterWindow()
