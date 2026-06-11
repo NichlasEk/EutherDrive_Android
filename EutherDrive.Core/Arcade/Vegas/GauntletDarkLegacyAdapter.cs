@@ -25224,6 +25224,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _cmdFifoReadIndex;
     private int _cmdFifoDepth;
     private int _cmdFifoHoles;
+    private int _cmdFifoValidCount;
     private bool _cmdFifoReadPointerWritten;
     private bool _cmdFifoJumped;
     private bool _decodingCommandFifo;
@@ -25272,18 +25273,26 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE"));
     private readonly int _traceCommandFifoModelLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_LIMIT"), 240);
+    private readonly bool _traceCommandFifoValidity =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_VALIDITY"));
+    private readonly int _traceCommandFifoValidityLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_VALIDITY_LIMIT"), 240);
     private readonly bool _experimentResetCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
     private readonly bool _experimentRewindCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_REWIND"));
     private readonly bool _experimentCommandFifoBulkDecodeWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW"));
+    private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
     private readonly bool _experimentMameCommandFifoYieldOnWork =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_WORK"));
     private readonly bool _experimentMameCommandFifoWrapClear =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR"));
+    private readonly bool _experimentMameCommandFifoWrapClearInvalidRead =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR_INVALID_READ"));
     private readonly bool _experimentMameCommandFifoMaskReadIndex =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX"));
     private readonly bool _experimentMameCommandFifoMaskLocalJump =
@@ -25366,6 +25375,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _currentCommandFifoPacketStart;
     private int _currentCommandFifoWordsNeeded;
     private int _fastFillSwapOrderTraceCount;
+    private int _commandFifoValidityTraceCount;
     private int _recentVoodooEventSequence;
 
     public Func<ulong>? CpuPcProvider { get; set; }
@@ -25388,7 +25398,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"ffs={_fastFillSuppressedWhiteCount}/{_fastFillSuppressedBlackCount}/{_fastFillSuppressedOtherCount} " +
            $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
            GetFastFillSwapPcDebugStatus() +
-           $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
+           $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/{_cmdFifoValidCount}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
            GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
            $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
@@ -25492,6 +25502,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoBulkFirstWritePending)
         {
             Array.Clear(_cmdFifoValid);
+            _cmdFifoValidCount = 0;
             _cmdFifoReadIndex = _fixMameCommandFifoModel ? DecodeCommandFifoReadIndex(address >> 2) : storageIndex;
             _cmdFifoDepth = 0;
             _cmdFifoHoles = 0;
@@ -25510,13 +25521,19 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoBulkWriteWordCount++;
         }
 
+        bool mameWrapInvalidRead =
+            _fixMameCommandFifoModel &&
+            _experimentMameCommandFifoWrapClearInvalidRead &&
+            !_cmdFifoValid[_cmdFifoReadIndex & CmdFifoMask];
         if ((!_fixMameCommandFifoModel ||
-             _experimentMameCommandFifoWrapClear) &&
+             _experimentMameCommandFifoWrapClear ||
+             mameWrapInvalidRead) &&
             storageIndex == 0 &&
             _cmdFifoReadPointerWritten &&
             _cmdFifoReadIndex != 0)
         {
             Array.Clear(_cmdFifoValid);
+            _cmdFifoValidCount = 0;
             _cmdFifoReadIndex = _fixMameCommandFifoModel ? address >> 2 : 0;
             _cmdFifoDepth = 0;
             _cmdFifoHoles = 0;
@@ -25526,12 +25543,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         _cmdFifoRam[storageIndex] = value;
+        bool storageWasValid = _cmdFifoValid[storageIndex];
         if (_fixMameCommandFifoModel)
             TrackMameCommandFifoWrite(address, value);
-        else if (!_cmdFifoValid[storageIndex])
+        else if (!storageWasValid)
             _cmdFifoDepth = Math.Min(0xffff, _cmdFifoDepth + 1);
+        if (!storageWasValid)
+            _cmdFifoValidCount++;
         _cmdFifoValid[storageIndex] = true;
         _fifoWriteCount++;
+        TraceCommandFifoValidity("write", storageIndex);
 
         if (!_cmdFifoReadPointerWritten)
         {
@@ -25563,8 +25584,35 @@ internal class VoodooBringupBackend : IVoodooBackend
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-CMDFIFO] {message} " +
             $"base=0x{_cmdFifoRamBase:x5} end=0x{_cmdFifoRamEnd:x5} rd=0x{_cmdFifoReadIndex * 4:x5} " +
-            $"amin=0x{_cmdFifoAddressMin:x5} amax=0x{_cmdFifoAddressMax:x5} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"amin=0x{_cmdFifoAddressMin:x5} amax=0x{_cmdFifoAddressMax:x5} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
             $"fbi7=0x{_registers[RegFbiInit7]:x8}{pcStatus}");
+    }
+
+    private void TraceCommandFifoValidity(string reason, int storageIndex)
+    {
+        if (!_traceCommandFifoValidity || !_fixMameCommandFifoModel)
+            return;
+
+        int readStorage = _cmdFifoReadIndex & CmdFifoMask;
+        bool readValid = _cmdFifoValid[readStorage];
+        int excessDepth = _cmdFifoDepth - _cmdFifoValidCount;
+        if (_cmdFifoDepth == 0 && _cmdFifoValidCount == 0)
+            return;
+        if (!readValid && _cmdFifoDepth <= 0)
+            return;
+        if (readValid && excessDepth <= 64)
+            return;
+        if (_commandFifoValidityTraceCount++ >= _traceCommandFifoValidityLimit)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO-VALID] n={_commandFifoValidityTraceCount} reason={reason} " +
+            $"rd=0x{_cmdFifoReadIndex * 4:x8} storage=0x{readStorage * 4:x5} readValid={(readValid ? 1 : 0)} " +
+            $"touched=0x{(storageIndex & CmdFifoMask) * 4:x5} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} excess={excessDepth} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} " +
+            $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
     }
 
     private void TrackMameCommandFifoWrite(int address, uint value)
@@ -25632,7 +25680,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"[GAUNTDL:VOODOO-CMDFIFO] storage-write storage=0x{storageByteOffset:x5} " +
             $"addr=0x{address:x8} value=0x{value:x8} " +
             $"base=0x{_cmdFifoRamBase:x5} end=0x{_cmdFifoRamEnd:x5} rd=0x{_cmdFifoReadIndex * 4:x8} " +
-            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
             $"fbi7=0x{_registers[RegFbiInit7]:x8}{pcStatus}");
     }
 
@@ -25660,6 +25708,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoBulkSawWrite &&
             IsCommandFifoReadIndexInsideBulkWrite() &&
             IsType5TexturePacketHeader(_cmdFifoRam[_cmdFifoBulkStartIndex]))
+        {
+            _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
+        }
+        if (_cmdFifoBulkWriteDepth == 0 &&
+            _fixMameCommandFifoModel &&
+            _experimentMameCommandFifoBulkResyncInvalidRead &&
+            _cmdFifoBulkSawWrite &&
+            _cmdFifoDepth > 0 &&
+            !_cmdFifoValid[_cmdFifoReadIndex & CmdFifoMask])
         {
             _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
         }
@@ -26210,8 +26267,16 @@ internal class VoodooBringupBackend : IVoodooBackend
             _fifoPacketCount++;
             decodedThisCall++;
             for (int i = 0; i < wordsNeeded; i++)
-                _cmdFifoValid[(packetStart + i) & CmdFifoMask] = false;
+            {
+                int validIndex = (packetStart + i) & CmdFifoMask;
+                if (_cmdFifoValid[validIndex])
+                {
+                    _cmdFifoValid[validIndex] = false;
+                    _cmdFifoValidCount = Math.Max(0, _cmdFifoValidCount - 1);
+                }
+            }
             _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - wordsNeeded);
+            TraceCommandFifoValidity("decode", packetStart & CmdFifoMask);
             if (_cmdFifoBulkDecodeRemainingWords > 0)
                 _cmdFifoBulkDecodeRemainingWords = Math.Max(0, _cmdFifoBulkDecodeRemainingWords - wordsNeeded);
             if (!_cmdFifoJumped)
@@ -26339,7 +26404,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-CMDFIFO] stop reason={reason} cmd=0x{command:x8} type={command & 7u} " +
             $"words={wordsNeeded} rd=0x{_cmdFifoReadIndex * 4:x8} storage=0x{readStorage * 4:x5} " +
-            $"next=0x{next1:x8}/0x{next2:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"next=0x{next1:x8}/0x{next2:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
             $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} " +
             $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
     }

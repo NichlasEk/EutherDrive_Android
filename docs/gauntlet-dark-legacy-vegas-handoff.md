@@ -10553,3 +10553,68 @@ storage slots is also negative: it reduces the type-0 storm, but it collapses
 draw packet count and stays white. Continue by fixing the MAME
 depth/address-min accounting so read pointer, valid storage, and available
 depth describe the same FIFO window before decode readiness is evaluated.
+
+## 2026-06-11 Checkpoint: MAME FIFO Validity Window
+
+Added command-FIFO storage-validity accounting and a targeted trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_VALIDITY=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_VALIDITY_LIMIT=...
+```
+
+`DebugStatus` now reports `cmd=depth/holes/valid/amin/amax`, and the existing
+command-FIFO model/stop traces include `valid=...`. This made the f260 MAME
+failure more precise. The first useful validity trace fires at
+`pc=0xffffffff800fe5d4`:
+
+```text
+rd=0x000fffc8 storage=0x3ffc8 readValid=0
+depth=12620 holes=0 valid=12620 excess=0
+amin=0x0000c5fc amax=0x0000c5fc
+fifoPackets=100002 drawPackets=28
+```
+
+So the immediate issue is not missing words (`depth == valid`), but a read
+pointer aimed at stale/invalid storage while the current contiguous write
+window is elsewhere.
+
+A PC-filtered command-FIFO trace around `0xffffffff800fe5d4` shows the same
+thing at the producer boundary. When the outer-payload loop wraps and starts
+writing address `0x00000`, the MAME path still has `rd=0xfffc8` and grows
+`depth` from the old tail:
+
+```text
+write addr=0x00000 value=0xc0000205 rd=0xfffc8 depth=15 valid=14
+write addr=0x00004 value=0x00008000 rd=0xfffc8 depth=16 valid=15
+...
+```
+
+Two narrower recovery probes are available, but both are negative as fixes:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR_INVALID_READ=1
+frameHash=0xf802f22b
+drawPackets=598 direct/setup=44/0
+packetTypes=0:15426,1:32536,2:0,3:598,4:95104,5:77834,6:0,7:3
+framebuffer colored=699
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ=1
+frameHash=0x04cfe08b
+drawPackets=444 direct/setup=44/0
+packetTypes=0:24851,1:30622,2:0,3:444,4:88721,5:92314,6:0,7:21
+framebuffer colored=889
+```
+
+`WRAP_CLEAR_INVALID_READ` is less destructive than the old blanket
+`MAME_FIFO_WRAP_CLEAR`, but it still leaves the white-screen signature.
+`BULK_RESYNC_INVALID_READ` keeps the valid map intact and only moves the read
+pointer to the just-written bulk start when the old read storage is invalid;
+it slightly raises colored pixels but collapses draw packet count and
+introduces type-7 packets. Treat both as negative diagnostics.
+
+Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
+tracking with a coherent command-FIFO window model. The useful invariant from
+the new trace is that decode readiness must not be true when `depth` and
+`valid` are nonzero but `_cmdFifoReadIndex & CmdFifoMask` is outside the
+current producer generation.
