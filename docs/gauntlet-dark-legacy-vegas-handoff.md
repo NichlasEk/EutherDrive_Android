@@ -588,6 +588,30 @@ for the packet at `cmdrd=0x6B735C`. Next useful target is the producer around
 `80103190..801031a8` and the FIFO room/state that makes it stop after the third
 word in the MAME-depth path.
 
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX=1` remains
+neutral at f400 after the fastfill-mask change. It only changes displayed
+`cmdrd` from `0x6B735C` to `0x735C`; the hash, white framebuffer, and
+`cmdstop=depth/0x00059604/4/3/...` remain unchanged.
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRUNCATE_PARTIAL_TYPE4=1` is
+a negative control. It proves that simply consuming the partial packet is not a
+valid repair:
+
+```text
+MAME_CMD_FIFO_MODEL + TRUNCATE_PARTIAL_TYPE4 f400:
+frameHash=0x9ac85dc5
+drawPackets=1046 direct/setup=46/0
+texWrites=6555139 fastFills=1761 swaps=1186
+packetTypes=0:57921,1:40547,2:0,3:1046,4:122631,5:102424,6:0,7:6169
+framebuffer colored=0
+cmdstop=partial-type4-truncate/0x00059604/4/2/0x1ADCD70/pc=0xFFFFFFFF8010319C/2071355
+```
+
+The experiment removes the final depth stop but causes thousands of type-7
+packets and no visual progress, so the correct next step is not decoder
+tolerance. Keep the investigation on why the MAME-depth model reaches a partial
+`0x00059604` packet in the first place.
+
 ```text
 MAME-wrap f400:
 frameHash=0xcff92b39

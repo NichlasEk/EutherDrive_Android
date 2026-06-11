@@ -25279,6 +25279,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SPACE0_ENDIAN"));
     private readonly bool _experimentMameCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
+    private readonly bool _experimentMameCommandFifoTruncatePartialType4 =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRUNCATE_PARTIAL_TYPE4"));
     private readonly bool _fixType5TextureEndian =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN");
     private readonly bool _fixSequential8BitTextureDownload =
@@ -26102,11 +26104,16 @@ internal class VoodooBringupBackend : IVoodooBackend
                 wordsNeeded = 1;
             if (_fixMameCommandFifoModel && _cmdFifoDepth < wordsNeeded)
             {
+                if (TryTruncateMameCommandFifoPartialType4(command, wordsNeeded, out int truncatedWordsNeeded))
+                    wordsNeeded = truncatedWordsNeeded;
+                else
+                {
                 if (TryResyncMameCommandFifoOnPartialType5(command, packetStart, wordsNeeded))
                     continue;
 
                 TraceCommandFifoDecodeStop("depth", command, wordsNeeded);
                 return;
+                }
             }
             if (_cmdFifoBulkDecodeRemainingWords > 0 && wordsNeeded > _cmdFifoBulkDecodeRemainingWords)
             {
@@ -26170,6 +26177,22 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         TraceCommandFifoDecodeStop("partial-type5-resync-amin", command, wordsNeeded);
         _cmdFifoReadIndex = DecodeCommandFifoReadIndex(addressMinIndex);
+        return true;
+    }
+
+    private bool TryTruncateMameCommandFifoPartialType4(uint command, int wordsNeeded, out int truncatedWordsNeeded)
+    {
+        truncatedWordsNeeded = wordsNeeded;
+        if (!_experimentMameCommandFifoTruncatePartialType4 ||
+            (command & 7u) != 4u ||
+            _cmdFifoDepth <= 1 ||
+            _cmdFifoDepth >= wordsNeeded)
+        {
+            return false;
+        }
+
+        truncatedWordsNeeded = _cmdFifoDepth;
+        TraceCommandFifoDecodeStop("partial-type4-truncate", command, wordsNeeded);
         return true;
     }
 
