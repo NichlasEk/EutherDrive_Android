@@ -27220,6 +27220,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         stats.LastPacketStart = packetStart;
         stats.LastDepthBefore = _cmdFifoDepth;
         stats.LastHolesBefore = _cmdFifoHoles;
+        if (_fixMameCommandFifoModel)
+        {
+            int storageIndex = CommandFifoStorageIndex(packetStart);
+            int storedLogicalIndex = _cmdFifoStorageLogicalIndex[storageIndex];
+            if (storedLogicalIndex == packetStart)
+                stats.GenerationMatches++;
+            else
+                stats.GenerationMismatches++;
+            stats.LastStorageIndex = storageIndex;
+            stats.LastStoredLogicalIndex = storedLogicalIndex;
+        }
     }
 
     private string GetCommandFifoPacketPcDebugStatus()
@@ -27243,7 +27254,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             .Select(pair =>
                 $"0x{pair.Key:x16}:{pair.Value.Total}/w{pair.Value.Words}" +
                 $"/t{string.Join('-', pair.Value.TypeCounts)}" +
-                $"/last0x{pair.Value.LastCommand:X8}:{pair.Value.LastWordsNeeded}:rd{pair.Value.LastPacketStart:X}:d{pair.Value.LastDepthBefore}:h{pair.Value.LastHolesBefore}"));
+                $"/g{pair.Value.GenerationMatches}-{pair.Value.GenerationMismatches}" +
+                $"/last0x{pair.Value.LastCommand:X8}:{pair.Value.LastWordsNeeded}:rd{pair.Value.LastPacketStart:X}:st{pair.Value.LastStorageIndex:X}:lg{pair.Value.LastStoredLogicalIndex:X}:d{pair.Value.LastDepthBefore}:h{pair.Value.LastHolesBefore}"));
     }
 
     private void CountStatusPc()
@@ -27329,6 +27341,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int LastPacketStart;
         public int LastDepthBefore;
         public int LastHolesBefore;
+        public int GenerationMatches;
+        public int GenerationMismatches;
+        public int LastStorageIndex;
+        public int LastStoredLogicalIndex;
     }
 
     private static bool IsInterestingEventRegister(uint register)

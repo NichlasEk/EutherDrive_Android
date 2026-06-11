@@ -11115,6 +11115,35 @@ storage indices, produced the same signature. So the bulk helper's start index
 alone is not the active f260 divergence. The issue remains that readiness is
 being granted to a plausible but temporally wrong stream.
 
+The `cmdpc=` profile now also includes `gMATCH-MISMATCH`, comparing the active
+unmasked read index against the logical write index stored for the same storage
+slot. Default MAME FIFO shows large generation mismatches at the bad service
+PCs:
+
+```text
+MAME FIFO generation profile:
+frameHash=0x1e212a0b
+framebuffer colored=695
+cmdpc 800fe5d4=.../g0-92686/... rd5C3F26:st3F26:lg3F26
+cmdpc 800fe5fc=.../g481-32020/... rd5F259B:st259B:lg259B
+```
+
+However, forcing `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX=1`
+only changes the reported read indices and generation counts:
+
+```text
+MAME FIFO + mask read index:
+frameHash=0x1e212a0b
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+cmdpc 800fe5d4=.../g92686-0/... rd3F26:st3F26:lg3F26
+cmdpc 800fe5fc=.../g32501-0/... rd259B:st259B:lg259B
+```
+
+So the unmasked/stored generation mismatch is not by itself the rendering bug.
+The bad frame still comes from decoding the same plausible mixed stream at the
+wrong phase/timing, not from the numeric value of `_cmdFifoReadIndex` alone.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
