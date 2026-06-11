@@ -25328,6 +25328,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_AMIN_ON_PARTIAL_TYPE5"));
     private readonly bool _experimentMameCommandFifoSpace0Endian =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SPACE0_ENDIAN"));
+    private readonly bool _experimentMameCommandFifoType5Streaming =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TYPE5_STREAMING"));
     private readonly bool _experimentMameCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoTruncatePartialType4 =
@@ -26335,6 +26337,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentCommandFifoCommand = command;
             _currentCommandFifoPacketStart = packetStart;
             _currentCommandFifoWordsNeeded = wordsNeeded;
+            bool packetConsumedByHandler = false;
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoType5Streaming &&
+                (command & 7u) == 5u)
+            {
+                _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + 1);
+                _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
+                packetConsumedByHandler = true;
+            }
             DecodeFifoPacket(command, wordsNeeded);
             _currentCommandFifoCommand = 0;
             _currentCommandFifoPacketStart = 0;
@@ -26351,11 +26362,12 @@ internal class VoodooBringupBackend : IVoodooBackend
                     _cmdFifoValidCount = Math.Max(0, _cmdFifoValidCount - 1);
                 }
             }
-            _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - wordsNeeded);
+            if (!packetConsumedByHandler)
+                _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - wordsNeeded);
             TraceCommandFifoValidity("decode", CommandFifoStorageIndex(packetStart));
             if (_cmdFifoBulkDecodeRemainingWords > 0)
                 _cmdFifoBulkDecodeRemainingWords = Math.Max(0, _cmdFifoBulkDecodeRemainingWords - wordsNeeded);
-            if (!_cmdFifoJumped)
+            if (!_cmdFifoJumped && !packetConsumedByHandler)
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + wordsNeeded);
             if (_fixMameCommandFifoModel && _experimentMameCommandFifoYieldOnRenderWork && _commandFifoPacketIssuedRenderWork)
                 return;
@@ -26545,6 +26557,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return true;
+    }
+
+    private uint ReadCommandFifoStreamingWord()
+    {
+        uint value = _cmdFifoRam[CommandFifoStorageIndex(_cmdFifoReadIndex)];
+        _cmdFifoReadIndex = DecodeCommandFifoReadIndex(_cmdFifoReadIndex + 1);
+        _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
+        return value;
     }
 
     private static bool IsCommandFifoPacketWork(uint command)
@@ -27183,14 +27203,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (count <= 0 || wordsNeeded < 2 + count)
             return;
 
-        uint target = _fifoBuffer[1] / 4u;
+        bool streaming = _fixMameCommandFifoModel && _experimentMameCommandFifoType5Streaming;
+        uint target = (streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[1]) / 4u;
         uint space = command >> 30;
         _fifoType5SpaceCounts[space & 3u]++;
         _fifoType5SpaceWordCounts[space & 3u] += count;
         TraceType5Payload(command, target, space, count);
         for (int i = 0; i < count; i++, target++)
         {
-            uint value = _fifoBuffer[2 + i];
+            uint value = streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[2 + i];
             if (space == 3)
             {
                 if (_fixType5TextureEndian)

@@ -10770,6 +10770,35 @@ This is exactly the same f260 signature as the default MAME command-FIFO model,
 so per-render-packet yielding is not the missing behavior in the current
 bring-up path.
 
+A type 5 streaming probe tested another MAME semantic difference: upstream
+`packet_type_5()` consumes command FIFO source words with `read_next()` while it
+writes space 0 payloads back into `m_ram`, so the read pointer/depth move during
+the payload copy rather than after the packet handler returns. The standalone
+streaming run was unchanged:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TYPE5_STREAMING=1
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
+Combining the same streaming consumption with framebuffer-sized command FIFO
+storage was also unchanged from framebuffer storage alone:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TYPE5_STREAMING=1
+frameHash=0xbd71006f
+drawPackets=44 direct/setup=44/0
+packetTypes=0:5843023,1:25611,2:0,3:44,4:71836,5:5326,6:0,7:3
+framebuffer colored=443
+```
+
+So the gap is not explained by type 5 source/destination overlap timing in the
+current warm-snapshot phase.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
