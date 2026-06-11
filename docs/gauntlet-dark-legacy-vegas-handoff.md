@@ -11418,6 +11418,33 @@ that lead to `cmdtrigc ... depth` are being treated as FIFO storage traffic,
 then decoded at the wrong time, rather than arriving as external command FIFO
 register updates.
 
+Upstream MAME's generic Voodoo FIFO path (`src/devices/video/voodoo.cpp`) uses
+ordered memory FIFO entries for PCI/LFB/texture writes, so an opt-in write-order
+queue was tested for our MAME command FIFO path:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRITE_QUEUE=1
+```
+
+This is a negative control for Gauntlet's Glide command FIFO stream. Treating
+incoming `WriteFifo` calls as append-only producer order destroys the render
+instead of fixing the bad phase:
+
+```text
+MAME FIFO + WRITE_QUEUE f260:
+frameHash=0x9ac85dc5
+drawPackets=2 direct/setup=44/0
+packetTypes=0:9,1:28493,2:0,3:2,4:81020,5:112,6:0,7:3
+framebuffer colored=0
+cmdio=65536/65536/0
+cmdstop=depth/0xC0000205/66/3/.../pc=0xFFFFFFFF800FE5FC
+```
+
+So the command FIFO window offset still matters for this path; the problem is
+not solved by replacing the ring/window model with a blind append queue. The
+next fix should keep address-window placement but make readiness stricter about
+which packet phase may consume texture payload/control words.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
