@@ -10799,6 +10799,23 @@ framebuffer colored=443
 So the gap is not explained by type 5 source/destination overlap timing in the
 current warm-snapshot phase.
 
+A command-FIFO register window probe matched MAME's shared `reg_cmdfifo_w`
+side effect more directly: every base/AMin/AMax write refreshed base, end,
+AMin, and AMax from the stored register set, and the command FIFO end was no
+longer clamped to the legacy 64K storage size in that model. The f260 signature
+was still unchanged:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REGISTER_WINDOW=1
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
+So the current failure is not coming from base/end/AMin/AMax register update
+ordering in the warm-snapshot path.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

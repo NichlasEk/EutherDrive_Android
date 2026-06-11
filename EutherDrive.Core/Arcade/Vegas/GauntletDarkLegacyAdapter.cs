@@ -25330,6 +25330,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SPACE0_ENDIAN"));
     private readonly bool _experimentMameCommandFifoType5Streaming =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TYPE5_STREAMING"));
+    private readonly bool _experimentMameCommandFifoRegisterWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REGISTER_WINDOW"));
     private readonly bool _experimentMameCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoTruncatePartialType4 =
@@ -25455,8 +25457,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         switch (register)
         {
             case RegCmdFifoBaseAddr:
-                _cmdFifoRamBase = (int)((value & 0x000003ffu) << 12);
-                _cmdFifoRamEnd = Math.Clamp((int)((((value >> 16) & 0x000003ffu) + 1u) << 12), 4, CmdFifoWords * 4);
+                if (_fixMameCommandFifoModel && _experimentMameCommandFifoRegisterWindow)
+                    ApplyMameCommandFifoRegisterWindow();
+                else
+                {
+                    _cmdFifoRamBase = (int)((value & 0x000003ffu) << 12);
+                    _cmdFifoRamEnd = Math.Clamp((int)((((value >> 16) & 0x000003ffu) + 1u) << 12), 4, CmdFifoWords * 4);
+                }
                 _cmdFifoWriteGenerationBase = 0;
                 _cmdFifoLastWriteStorageIndex = -1;
                 TraceCommandFifoModel($"reg base value=0x{value:x8}");
@@ -25485,11 +25492,17 @@ internal class VoodooBringupBackend : IVoodooBackend
                     DecodeCommandFifoPackets();
                 break;
             case RegCmdFifoAddressMin:
-                _cmdFifoAddressMin = (int)value;
+                if (_fixMameCommandFifoModel && _experimentMameCommandFifoRegisterWindow)
+                    ApplyMameCommandFifoRegisterWindow();
+                else
+                    _cmdFifoAddressMin = (int)value;
                 TraceCommandFifoModel($"reg amin value=0x{value:x8}");
                 break;
             case RegCmdFifoAddressMax:
-                _cmdFifoAddressMax = (int)value;
+                if (_fixMameCommandFifoModel && _experimentMameCommandFifoRegisterWindow)
+                    ApplyMameCommandFifoRegisterWindow();
+                else
+                    _cmdFifoAddressMax = (int)value;
                 TraceCommandFifoModel($"reg amax value=0x{value:x8}");
                 break;
             case RegCmdFifoDepth:
@@ -25508,6 +25521,15 @@ internal class VoodooBringupBackend : IVoodooBackend
                 BeginSetupTriangle();
                 break;
         }
+    }
+
+    private void ApplyMameCommandFifoRegisterWindow()
+    {
+        uint baseValue = _registers[RegCmdFifoBaseAddr];
+        _cmdFifoRamBase = (int)((baseValue & 0x000003ffu) << 12);
+        _cmdFifoRamEnd = (int)((((baseValue >> 16) & 0x000003ffu) + 1u) << 12);
+        _cmdFifoAddressMin = (int)_registers[RegCmdFifoAddressMin];
+        _cmdFifoAddressMax = (int)_registers[RegCmdFifoAddressMax];
     }
 
     private void MarkCommandFifoRenderWork()
