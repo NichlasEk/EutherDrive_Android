@@ -10960,6 +10960,27 @@ worse and the same type4 depth stall remains. The missing behavior is therefore
 not simply "trust valid storage when depth is short"; the depth/window model
 itself needs to stop drifting.
 
+A depth I/O accounting probe added `cmdio=added/decoded/streamed` to the Voodoo
+debug status. The default MAME FIFO f260 signature stayed unchanged:
+
+```text
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+cmd=0/0/0/0x9D4C/0x9D4C
+cmdio=6215585/6215585/0
+cmdstop=depth/0x0001828C/3/2/0x17C9D44/0x9D44/0xFFFFFFFF/0x00000000/pc=0xFFFFFFFF8010319C/1948084
+```
+
+That rules out a simple cumulative depth leak: by the end of the f260 probe the
+model has added and decoded the same number of FIFO words. The repeated
+`cmdstop=depth` is a transient short-packet wait that later drains, not the
+primary end-state cause of the bad frame. The useful next probe is to compare
+the content/register side of the packet stream against the good direct FIFO
+path, especially why MAME FIFO reaches only 44 direct triangles and no setup
+triangles despite decoding many packets.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

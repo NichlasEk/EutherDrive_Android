@@ -25247,6 +25247,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _cmdFifoBulkDecodeRemainingWords;
     private bool _cmdFifoBulkSawWrite;
     private int _cmdFifoLocalJumpCount;
+    private long _cmdFifoDepthWordsAdded;
+    private long _cmdFifoDepthWordsDecoded;
+    private long _cmdFifoDepthWordsStreamed;
     private int _swapDontSwapCount;
     private readonly int[] _fastFillBufferCounts = new int[3];
     private readonly int[] _fastFillWhiteBufferCounts = new int[3];
@@ -25442,6 +25445,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
            GetFastFillSwapPcDebugStatus() +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/{_cmdFifoValidCount}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
+           $"cmdio={_cmdFifoDepthWordsAdded}/{_cmdFifoDepthWordsDecoded}/{_cmdFifoDepthWordsStreamed} " +
            GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
            $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
@@ -25612,6 +25616,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoReadIndex = _fixMameCommandFifoModel ? DecodeCommandFifoReadIndex(logicalWriteIndex) : storageIndex;
             _cmdFifoDepth = 0;
             _cmdFifoHoles = 0;
+            _cmdFifoDepthWordsAdded = 0;
+            _cmdFifoDepthWordsDecoded = 0;
+            _cmdFifoDepthWordsStreamed = 0;
             _cmdFifoWriteGenerationBase = logicalWriteIndex & ~CmdFifoMask;
             _cmdFifoLastWriteStorageIndex = storageIndex;
             _cmdFifoReadPointerWritten = true;
@@ -25645,6 +25652,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoReadIndex = _fixMameCommandFifoModel ? address >> 2 : 0;
             _cmdFifoDepth = 0;
             _cmdFifoHoles = 0;
+            _cmdFifoDepthWordsAdded = 0;
+            _cmdFifoDepthWordsDecoded = 0;
+            _cmdFifoDepthWordsStreamed = 0;
             _cmdFifoAddressMin = _cmdFifoRamBase - 4;
             _cmdFifoAddressMax = _cmdFifoRamBase - 4;
             _cmdFifoWriteGenerationBase = 0;
@@ -25770,6 +25780,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoAddressMin = address;
             _cmdFifoAddressMax = address;
             _cmdFifoDepth++;
+            _cmdFifoDepthWordsAdded++;
         }
         else if (address < _cmdFifoAddressMin)
         {
@@ -25779,6 +25790,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoAddressMin = _cmdFifoRamBase;
             _cmdFifoAddressMax = address;
             _cmdFifoDepth++;
+            _cmdFifoDepthWordsAdded++;
         }
         else if (address < _cmdFifoAddressMax)
         {
@@ -25787,6 +25799,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             if (_cmdFifoHoles == 0)
             {
                 _cmdFifoDepth += _experimentMameCommandFifoExactHoleAccounting
+                    ? (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4
+                    : Math.Max(0, (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4);
+                _cmdFifoDepthWordsAdded += _experimentMameCommandFifoExactHoleAccounting
                     ? (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4
                     : Math.Max(0, (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4);
                 _cmdFifoAddressMin = _cmdFifoAddressMax;
@@ -26449,6 +26464,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + 1);
                 _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
+                _cmdFifoDepthWordsStreamed++;
                 packetConsumedByHandler = true;
             }
             DecodeFifoPacket(command, wordsNeeded);
@@ -26468,7 +26484,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
             }
             if (!packetConsumedByHandler)
+            {
                 _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - wordsNeeded);
+                _cmdFifoDepthWordsDecoded += wordsNeeded;
+            }
             TraceCommandFifoValidity("decode", CommandFifoStorageIndex(packetStart));
             if (_cmdFifoBulkDecodeRemainingWords > 0)
                 _cmdFifoBulkDecodeRemainingWords = Math.Max(0, _cmdFifoBulkDecodeRemainingWords - wordsNeeded);
@@ -26715,6 +26734,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint value = _cmdFifoRam[CommandFifoStorageIndex(_cmdFifoReadIndex)];
         _cmdFifoReadIndex = DecodeCommandFifoReadIndex(_cmdFifoReadIndex + 1);
         _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
+        _cmdFifoDepthWordsStreamed++;
         return value;
     }
 
