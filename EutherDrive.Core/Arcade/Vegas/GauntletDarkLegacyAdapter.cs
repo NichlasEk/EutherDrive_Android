@@ -25332,6 +25332,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TYPE5_STREAMING"));
     private readonly bool _experimentMameCommandFifoRegisterWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REGISTER_WINDOW"));
+    private readonly bool _experimentMameCommandFifoFullDepthHolesRegisters =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FULL_DEPTH_HOLES_REGS"));
     private readonly bool _experimentMameCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoTruncatePartialType4 =
@@ -25506,11 +25508,15 @@ internal class VoodooBringupBackend : IVoodooBackend
                 TraceCommandFifoModel($"reg amax value=0x{value:x8}");
                 break;
             case RegCmdFifoDepth:
-                _cmdFifoDepth = (int)(value & 0xffffu);
+                _cmdFifoDepth = _fixMameCommandFifoModel && _experimentMameCommandFifoFullDepthHolesRegisters
+                    ? unchecked((int)value)
+                    : (int)(value & 0xffffu);
                 TraceCommandFifoModel($"reg depth value=0x{value:x8}");
                 break;
             case RegCmdFifoHoles:
-                _cmdFifoHoles = (int)(value & 0xffffu);
+                _cmdFifoHoles = _fixMameCommandFifoModel && _experimentMameCommandFifoFullDepthHolesRegisters
+                    ? unchecked((int)value)
+                    : (int)(value & 0xffffu);
                 TraceCommandFifoModel($"reg holes value=0x{value:x8}");
                 break;
             case 0xa8u:
@@ -25544,8 +25550,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         return register switch
         {
             RegCmdFifoRdPtr => (uint)(_cmdFifoReadIndex << 2),
-            RegCmdFifoDepth => (uint)Math.Clamp(_cmdFifoDepth, 0, 0xffff),
-            RegCmdFifoHoles => (uint)Math.Clamp(_cmdFifoHoles, 0, 0xffff),
+            RegCmdFifoDepth => _fixMameCommandFifoModel && _experimentMameCommandFifoFullDepthHolesRegisters
+                ? unchecked((uint)_cmdFifoDepth)
+                : (uint)Math.Clamp(_cmdFifoDepth, 0, 0xffff),
+            RegCmdFifoHoles => _fixMameCommandFifoModel && _experimentMameCommandFifoFullDepthHolesRegisters
+                ? unchecked((uint)_cmdFifoHoles)
+                : (uint)Math.Clamp(_cmdFifoHoles, 0, 0xffff),
             _ => _registers[register]
         };
     }

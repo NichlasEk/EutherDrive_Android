@@ -10816,6 +10816,22 @@ framebuffer colored=695
 So the current failure is not coming from base/end/AMin/AMax register update
 ordering in the warm-snapshot path.
 
+A depth/holes register-width probe matched another MAME difference: upstream
+stores and returns full 32-bit `cmdFifoDepth`/`cmdFifoHoles` values, while the
+bring-up backend had masked writes and clamped reads to 16 bits. Making those
+register paths full-width under MAME command FIFO mode was also unchanged:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FULL_DEPTH_HOLES_REGS=1
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
+So CPU-visible depth/holes register width is not the missing behavior in the
+current f260 warm-snapshot path.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
