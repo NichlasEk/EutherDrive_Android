@@ -25324,6 +25324,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE"));
     private readonly bool _experimentMameCommandFifoRequireValidPacketWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_PACKET_WINDOW"));
+    private readonly bool _experimentMameCommandFifoRequireValidType5PacketWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_TYPE5_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN"));
     private readonly bool _experimentMameCommandFifoSkipInvalidStorage =
@@ -26530,6 +26532,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "invalid-packet-window");
                 TraceCommandFifoDecodeStop("invalid-packet-window", command, wordsNeeded);
+                return;
+            }
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoRequireValidType5PacketWindow &&
+                (command & 7u) == 5u &&
+                !HasCommandFifoWords(packetStart, wordsNeeded))
+            {
+                CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "invalid-type5-window");
+                TraceCommandFifoDecodeStop("invalid-type5-window", command, wordsNeeded);
                 return;
             }
             if (!_fixMameCommandFifoModel && !HasCommandFifoWords(packetStart, wordsNeeded))

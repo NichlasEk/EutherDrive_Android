@@ -11493,6 +11493,32 @@ This confirms that the current default MAME model exposes the bad phase solely
 because depth is positive. The next useful implementation target is therefore a
 phase-aware readiness rule, not another yield-after-decode rule.
 
+A narrower validity gate was tested after the global valid-packet-window
+control proved too broad:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_TYPE5_PACKET_WINDOW=1
+```
+
+This only requires a complete valid storage window for type-5 packets. It is
+also negative. The run decodes fewer packets, builds a huge depth backlog, and
+still leaves the white/blank MAME signature:
+
+```text
+MAME FIFO + REQUIRE_VALID_TYPE5_PACKET_WINDOW f260:
+frameHash=0x32bb3bbf
+drawPackets=226 direct/setup=44/0
+packetTypes=0:32187,1:27870,2:0,3:226,4:79408,5:27733,6:0,7:15
+framebuffer colored=451
+cmdio=6215585/1918052/0
+cmdstop=invalid-type5-window/0xC0000205/66/4297533/.../pc=0xFFFFFFFF801031A8
+```
+
+So a hard stop on incomplete/stale type-5 windows is not enough; it merely
+accumulates depth and stalls future services on the same texture command. The
+fix needs to resync or classify the stale phase before it becomes the read
+head, rather than waiting until the type-5 packet is already at the head.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
