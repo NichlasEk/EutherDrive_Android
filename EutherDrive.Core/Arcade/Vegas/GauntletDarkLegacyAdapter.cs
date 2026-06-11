@@ -25231,6 +25231,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _cmdFifoJumped;
     private bool _decodingCommandFifo;
     private bool _commandFifoPacketIssuedRenderWork;
+    private bool _commandFifoOperationPending;
     private int _cmdFifoRamBase;
     private int _cmdFifoRamEnd = CmdFifoWords * 4;
     private int _cmdFifoAddressMin = -4;
@@ -25334,6 +25335,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REGISTER_WINDOW"));
     private readonly bool _experimentMameCommandFifoFullDepthHolesRegisters =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FULL_DEPTH_HOLES_REGS"));
+    private readonly bool _experimentMameCommandFifoOperationPendingGate =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_OPERATION_PENDING_GATE"));
     private readonly bool _experimentMameCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoTruncatePartialType4 =
@@ -25544,6 +25547,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             _commandFifoPacketIssuedRenderWork = true;
     }
 
+    private bool IsCommandFifoOperationPending()
+        => _fixMameCommandFifoModel &&
+           _experimentMameCommandFifoOperationPendingGate &&
+           _commandFifoOperationPending;
+
     public virtual uint ReadRegister(uint address)
     {
         uint register = (address >> 2) & 0xffu;
@@ -25634,7 +25642,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         if (_cmdFifoBulkWriteDepth == 0)
-            DecodeCommandFifoPackets();
+            DecodeCommandFifoPacketsIfNotPending();
     }
 
     private int GetMameCommandFifoLogicalWriteIndex(int localIndex, int storageIndex)
@@ -25818,7 +25826,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoBulkDecodeRemainingWords = _cmdFifoBulkWriteWordCount;
         }
         if (_cmdFifoBulkWriteDepth == 0)
-            DecodeCommandFifoPackets();
+            DecodeCommandFifoPacketsIfNotPending();
         if (_cmdFifoBulkWriteDepth == 0)
             _cmdFifoBulkDecodeRemainingWords = 0;
     }
@@ -25839,6 +25847,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         _statusReadCount++;
         CountStatusPc();
+        if (IsCommandFifoOperationPending())
+        {
+            _commandFifoOperationPending = false;
+            DecodeCommandFifoPacketsIfNotPending();
+        }
         if (vblank && _pendingSwapCount > 0)
         {
             _pendingSwapCount--;
@@ -26401,6 +26414,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _cmdFifoBulkDecodeRemainingWords = Math.Max(0, _cmdFifoBulkDecodeRemainingWords - wordsNeeded);
             if (!_cmdFifoJumped && !packetConsumedByHandler)
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + wordsNeeded);
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoOperationPendingGate &&
+                _commandFifoPacketIssuedRenderWork)
+            {
+                _commandFifoOperationPending = true;
+                return;
+            }
             if (_fixMameCommandFifoModel && _experimentMameCommandFifoYieldOnRenderWork && _commandFifoPacketIssuedRenderWork)
                 return;
             if (_fixMameCommandFifoModel && _experimentMameCommandFifoYieldOnWork && packetDidWork)
@@ -26411,6 +26431,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             _decodingCommandFifo = false;
         }
+    }
+
+    private void DecodeCommandFifoPacketsIfNotPending()
+    {
+        if (IsCommandFifoOperationPending())
+            return;
+
+        DecodeCommandFifoPackets();
     }
 
     private bool IsCommandFifoPacketReady()
