@@ -11147,6 +11147,44 @@ does not restore the standard path. The remaining divergence is earlier or more
 structural: the MAME-depth readiness model still exposes the wrong stream to
 service PCs even when type5 runs are cut short.
 
+A `cmdtrig=` / `cmdtrigc=` profile now splits `cmdcall=` by the source that
+called `DecodeCommandFifoPackets()` (`write`, `bulk-end`, `status`,
+`reg-rdptr`, or `reg-write`). The packet-sorted profile confirms that the major
+`800fe5d4` texture service is a `bulk-end` decode in both models:
+
+```text
+standard:
+frameHash=0x8e14c17e
+framebuffer colored=307199
+cmdtrig bulk-end@800fe5d4=381 calls / 83191 packets / c5=286 / mix=72 / empty=23
+
+MAME FIFO:
+frameHash=0x1e212a0b
+framebuffer colored=695
+cmdtrig bulk-end@800fe5d4=251 calls / 92686 packets / c5=1 / mix=250 / empty=0
+```
+
+The call-sorted profile exposes a second, stronger split: MAME turns
+`800fe5fc` into a huge write-triggered decode site while standard mostly
+rejects incomplete write-triggered windows through the normal validity path.
+
+```text
+standard cmdtrigc:
+write@80106a74=22904 calls / 5726 packets / empty=17178
+write@800c4e5c=14516 calls / 764 packets / empty=13752
+write@80106438=11454 calls / 0 packets / empty=11454 / invalid-standard-window
+
+MAME FIFO cmdtrigc:
+write@800fe5fc=1794510 calls / 32501 packets / c5=27785 / other=4716 / empty=1762009
+write@800fe5f8=28041 calls / 47 packets / empty=27994 / depth
+write@800fe5e8=28041 calls / 44 packets / empty=27997 / depth
+```
+
+That makes the next useful experiment explicit: do not immediately service MAME
+FIFO packets from each command FIFO word write. Let bulk-end, status, and
+register-triggered services drive the decode instead, then see whether the
+`800fe5fc` write path stops stealing texture/control packets.
+
 A bulk-window control was also negative. Enabling the existing
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
 FIFO made the frame slightly worse:

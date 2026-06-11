@@ -25402,6 +25402,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
     private readonly Dictionary<ulong, CommandFifoPacketPcStats> _commandFifoPacketPcStats = [];
     private readonly Dictionary<ulong, CommandFifoDecodeCallPcStats> _commandFifoDecodeCallPcStats = [];
+    private readonly Dictionary<string, CommandFifoDecodeTriggerStats> _commandFifoDecodeTriggerStats = [];
+    private string _commandFifoDecodeTrigger = "direct";
     private int _drawTraceCount;
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
@@ -25520,7 +25522,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _cmdFifoReadPointerWritten = true;
                 TraceCommandFifoModel($"reg rdptr value=0x{value:x8}");
                 if (!_decodingCommandFifo)
-                    DecodeCommandFifoPackets();
+                    DecodeCommandFifoPackets("reg-rdptr");
                 break;
             case RegCmdFifoAddressMin:
                 if (_fixMameCommandFifoModel && _experimentMameCommandFifoRegisterWindow)
@@ -25571,7 +25573,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         }
 
-        DecodeCommandFifoPacketsIfNotPending();
+        DecodeCommandFifoPacketsIfNotPending("reg-write");
     }
 
     private void ApplyMameCommandFifoRegisterWindow()
@@ -25691,7 +25693,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         if (_cmdFifoBulkWriteDepth == 0)
-            DecodeCommandFifoPacketsIfNotPending();
+            DecodeCommandFifoPacketsIfNotPending("write");
     }
 
     private int GetMameCommandFifoLogicalWriteIndex(int localIndex, int storageIndex)
@@ -25897,7 +25899,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoBulkDecodeRemainingWords = _cmdFifoBulkWriteWordCount;
         }
         if (_cmdFifoBulkWriteDepth == 0)
-            DecodeCommandFifoPacketsIfNotPending();
+            DecodeCommandFifoPacketsIfNotPending("bulk-end");
         if (_cmdFifoBulkWriteDepth == 0)
             _cmdFifoBulkDecodeRemainingWords = 0;
     }
@@ -25926,7 +25928,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (IsCommandFifoOperationPending())
         {
             _commandFifoOperationPending = false;
-            DecodeCommandFifoPacketsIfNotPending();
+            DecodeCommandFifoPacketsIfNotPending("status");
         }
         if (vblank && _pendingSwapCount > 0)
         {
@@ -26388,12 +26390,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         _lfbWriteCount += Math.Max(1, (width * (y1 - y0) + 1) / 2);
     }
 
-    private void DecodeCommandFifoPackets()
+    private void DecodeCommandFifoPackets(string trigger = "direct")
     {
         if (_decodingCommandFifo)
             return;
 
         _decodingCommandFifo = true;
+        string previousTrigger = _commandFifoDecodeTrigger;
+        _commandFifoDecodeTrigger = trigger;
         try
         {
         int guard = 0;
@@ -26558,16 +26562,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
         finally
         {
+            _commandFifoDecodeTrigger = previousTrigger;
             _decodingCommandFifo = false;
         }
     }
 
-    private void DecodeCommandFifoPacketsIfNotPending()
+    private void DecodeCommandFifoPacketsIfNotPending(string trigger = "direct")
     {
         if (IsCommandFifoOperationPending())
             return;
 
-        DecodeCommandFifoPackets();
+        DecodeCommandFifoPackets(trigger);
     }
 
     private bool IsCommandFifoPacketReady()
@@ -27336,6 +27341,25 @@ internal class VoodooBringupBackend : IVoodooBackend
         stats.LastLastCommand = lastCommand;
         stats.LastTypeMask = typeMask;
         stats.LastStopReason = stopReason;
+
+        string triggerKey = $"{_commandFifoDecodeTrigger}@0x{pc:x16}";
+        if (!_commandFifoDecodeTriggerStats.TryGetValue(triggerKey, out CommandFifoDecodeTriggerStats? triggerStats))
+        {
+            triggerStats = new CommandFifoDecodeTriggerStats();
+            _commandFifoDecodeTriggerStats[triggerKey] = triggerStats;
+        }
+        triggerStats.Calls++;
+        triggerStats.Packets += decodedPackets;
+        if (decodedPackets <= 0)
+            triggerStats.EmptyCalls++;
+        else if (typeMask == (1u << 5))
+            triggerStats.Type5OnlyCalls++;
+        else if ((typeMask & ~(1u << 5)) != 0 && (typeMask & (1u << 5)) != 0)
+            triggerStats.MixedWithType5Calls++;
+        else
+            triggerStats.NonType5Calls++;
+        triggerStats.LastPackets = decodedPackets;
+        triggerStats.LastStopReason = stopReason;
     }
 
     private string GetCommandFifoDecodeCallPcDebugStatus()
@@ -27343,7 +27367,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_profileCommandFifoPacketPcs)
             return "";
 
-        return $"cmdcall={FormatCommandFifoDecodeCallPcStats()} ";
+        return $"cmdcall={FormatCommandFifoDecodeCallPcStats()} cmdtrig={FormatCommandFifoDecodeTriggerStats()} cmdtrigc={FormatCommandFifoDecodeTriggerCallStats()} ";
     }
 
     private string FormatCommandFifoDecodeCallPcStats()
@@ -27360,6 +27384,38 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"0x{pair.Key:x16}:{pair.Value.Calls}/p{pair.Value.Packets}/max{pair.Value.MaxPackets}" +
                 $"/c5{pair.Value.Type5OnlyCalls}/mix{pair.Value.MixedWithType5Calls}/oth{pair.Value.NonType5Calls}/empty{pair.Value.EmptyCalls}" +
                 $"/last{pair.Value.LastPackets}:rd{pair.Value.LastStartReadIndex:X}->{pair.Value.LastEndReadIndex:X}:d{pair.Value.LastStartDepth}:m{pair.Value.LastTypeMask:X}:f{pair.Value.LastFirstCommand:X8}:l{pair.Value.LastLastCommand:X8}:{pair.Value.LastStopReason}"));
+    }
+
+    private string FormatCommandFifoDecodeTriggerStats()
+    {
+        if (_commandFifoDecodeTriggerStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _commandFifoDecodeTriggerStats
+            .OrderByDescending(pair => pair.Value.Packets)
+            .ThenByDescending(pair => pair.Value.Calls)
+            .ThenBy(pair => pair.Key)
+            .Take(8)
+            .Select(pair =>
+                $"{pair.Key}:{pair.Value.Calls}/p{pair.Value.Packets}" +
+                $"/c5{pair.Value.Type5OnlyCalls}/mix{pair.Value.MixedWithType5Calls}/oth{pair.Value.NonType5Calls}/empty{pair.Value.EmptyCalls}" +
+                $"/last{pair.Value.LastPackets}:{pair.Value.LastStopReason}"));
+    }
+
+    private string FormatCommandFifoDecodeTriggerCallStats()
+    {
+        if (_commandFifoDecodeTriggerStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _commandFifoDecodeTriggerStats
+            .OrderByDescending(pair => pair.Value.Calls)
+            .ThenByDescending(pair => pair.Value.Packets)
+            .ThenBy(pair => pair.Key)
+            .Take(8)
+            .Select(pair =>
+                $"{pair.Key}:{pair.Value.Calls}/p{pair.Value.Packets}" +
+                $"/c5{pair.Value.Type5OnlyCalls}/mix{pair.Value.MixedWithType5Calls}/oth{pair.Value.NonType5Calls}/empty{pair.Value.EmptyCalls}" +
+                $"/last{pair.Value.LastPackets}:{pair.Value.LastStopReason}"));
     }
 
     private void CountStatusPc()
@@ -27467,6 +27523,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         public uint LastFirstCommand;
         public uint LastLastCommand;
         public uint LastTypeMask;
+        public string LastStopReason = "";
+    }
+
+    private sealed class CommandFifoDecodeTriggerStats
+    {
+        public int Calls;
+        public long Packets;
+        public int Type5OnlyCalls;
+        public int MixedWithType5Calls;
+        public int NonType5Calls;
+        public int EmptyCalls;
+        public int LastPackets;
         public string LastStopReason = "";
     }
 
