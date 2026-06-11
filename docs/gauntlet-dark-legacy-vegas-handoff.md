@@ -10654,6 +10654,40 @@ tests the same 64-word ring-end skip while also decrementing depth, but it
 keeps the same white-screen signature and increases type-7 packets. These
 results point away from more read-side resync heuristics.
 
+An opt-in producer-generation reconstruction was added:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRACK_WRITE_GENERATION=1
+frameHash=0x383411ef
+drawPackets=542 direct/setup=44/0
+packetTypes=0:6870,1:31836,2:0,3:542,4:92925,5:86684,6:0,7:3
+framebuffer colored=499
+cmd=0/1671418/65536/0x0/0x7C9D4C
+cmdstop=depth/0xC0000205/66/2/0x165FFFC/0x1FFFC/0x0000A400/0x00000000/pc=0xFFFFFFFF800FE5FC/387117
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRACK_WRITE_GENERATION=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE=1
+frameHash=0xfa153031
+drawPackets=198 direct/setup=44/0
+packetTypes=0:56004,1:27531,2:0,3:198,4:78180,5:24380,6:0,7:493
+framebuffer colored=33
+cmd=3201041/1671418/3767/0x0/0x7C9D4C
+cmdstop=invalid-storage/0x00000000/1/3201041/0x289D50/0x9D50/0x00000000/0x00000000/pc=0xFFFFFFFF801031A8/1740907
+```
+
+This reconstructs a logical write generation when the storage index wraps from
+the ring tail to the head, but it is not enough. The standalone run fills the
+valid map and creates a huge hole count, and combining it with valid-storage
+gating is worse than the earlier valid-storage-only probe. Default MAME f260
+was re-run after adding the opt-in code and remained unchanged:
+
+```text
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
