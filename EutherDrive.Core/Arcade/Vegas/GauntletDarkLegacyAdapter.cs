@@ -25405,6 +25405,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly Dictionary<ulong, CommandFifoPacketPcStats> _commandFifoPacketPcStats = [];
     private readonly Dictionary<ulong, CommandFifoDecodeCallPcStats> _commandFifoDecodeCallPcStats = [];
     private readonly Dictionary<ulong, CommandFifoWritePcStats> _commandFifoWritePcStats = [];
+    private readonly Dictionary<ulong, CommandFifoRegisterReadPcStats> _commandFifoRegisterReadPcStats = [];
     private readonly Dictionary<string, CommandFifoDecodeTriggerStats> _commandFifoDecodeTriggerStats = [];
     private string _commandFifoDecodeTrigger = "direct";
     private int _drawTraceCount;
@@ -25602,7 +25603,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public virtual uint ReadRegister(uint address)
     {
         uint register = (address >> 2) & 0xffu;
-        return register switch
+        uint value = register switch
         {
             RegCmdFifoRdPtr => (uint)(_cmdFifoReadIndex << 2),
             RegCmdFifoDepth => _fixMameCommandFifoModel && _experimentMameCommandFifoFullDepthHolesRegisters
@@ -25613,6 +25614,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 : (uint)Math.Clamp(_cmdFifoHoles, 0, 0xffff),
             _ => _registers[register]
         };
+        CountCommandFifoRegisterReadPc(register, value);
+        return value;
     }
 
     public virtual void WriteFifo(uint wordOffset, uint value)
@@ -27302,7 +27305,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_profileCommandFifoPacketPcs)
             return "";
 
-        return $"cmdpc={FormatCommandFifoPacketPcStats()} cmdw={FormatCommandFifoWritePcStats()} ";
+        return $"cmdpc={FormatCommandFifoPacketPcStats()} cmdw={FormatCommandFifoWritePcStats()} cmdreg={FormatCommandFifoRegisterReadPcStats()} ";
     }
 
     private string FormatCommandFifoPacketPcStats()
@@ -27364,6 +27367,56 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"0x{pair.Key:x16}:{pair.Value.Total}/dd{pair.Value.DepthDelta}/hd{pair.Value.HolesDelta}" +
                 $"/m{string.Join('-', pair.Value.ModeCounts)}" +
                 $"/last0x{pair.Value.LastAddress:X}:0x{pair.Value.LastValue:X8}:d{pair.Value.LastDepth}:h{pair.Value.LastHoles}:a{pair.Value.LastAddressMin:X}-{pair.Value.LastAddressMax:X}"));
+    }
+
+    private void CountCommandFifoRegisterReadPc(uint register, uint value)
+    {
+        if (!_profileCommandFifoPacketPcs ||
+            register is not (RegCmdFifoRdPtr or RegCmdFifoDepth or RegCmdFifoHoles))
+        {
+            return;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        if (!_commandFifoRegisterReadPcStats.TryGetValue(pc, out CommandFifoRegisterReadPcStats? stats))
+        {
+            stats = new CommandFifoRegisterReadPcStats();
+            _commandFifoRegisterReadPcStats[pc] = stats;
+        }
+
+        stats.Total++;
+        int slot = register == RegCmdFifoRdPtr ? 0 : register == RegCmdFifoDepth ? 1 : 2;
+        stats.RegisterCounts[slot]++;
+        stats.LastRegister = register;
+        stats.LastValue = value;
+        stats.LastReadIndex = _cmdFifoReadIndex;
+        stats.LastDepth = _cmdFifoDepth;
+        stats.LastHoles = _cmdFifoHoles;
+        if (register == RegCmdFifoDepth)
+        {
+            stats.DepthReads++;
+            stats.LastDepthValue = value;
+            stats.MaxDepthValue = Math.Max(stats.MaxDepthValue, value);
+        }
+    }
+
+    private string FormatCommandFifoRegisterReadPcStats()
+    {
+        if (_commandFifoRegisterReadPcStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _commandFifoRegisterReadPcStats
+            .OrderByDescending(pair => pair.Value.Total)
+            .ThenByDescending(pair => pair.Value.DepthReads)
+            .ThenBy(pair => pair.Key)
+            .Take(10)
+            .Select(pair =>
+                $"0x{pair.Key:x16}:{pair.Value.Total}/r{string.Join('-', pair.Value.RegisterCounts)}" +
+                $"/dr{pair.Value.DepthReads}:lastd{pair.Value.LastDepthValue}:maxd{pair.Value.MaxDepthValue}" +
+                $"/last{pair.Value.LastRegister:X}:0x{pair.Value.LastValue:X}:rd{pair.Value.LastReadIndex:X}:d{pair.Value.LastDepth}:h{pair.Value.LastHoles}"));
     }
 
     private void CountCommandFifoDecodeCallPc(
@@ -27583,6 +27636,20 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int LastHoles;
         public int LastAddressMin;
         public int LastAddressMax;
+    }
+
+    private sealed class CommandFifoRegisterReadPcStats
+    {
+        public int Total;
+        public readonly int[] RegisterCounts = new int[3];
+        public int DepthReads;
+        public uint LastRegister;
+        public uint LastValue;
+        public uint LastDepthValue;
+        public uint MaxDepthValue;
+        public int LastReadIndex;
+        public int LastDepth;
+        public int LastHoles;
     }
 
     private sealed class CommandFifoDecodeCallPcStats

@@ -11370,6 +11370,35 @@ black clear/swap phase. The outer-payload fastpath is not the sole source of
 the bad phase; disabling it changes where the bad stream is serviced rather
 than restoring the standard service pattern.
 
+An external FIFO-register read profile was added as `cmdreg=` under
+`EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FIFO_PACKET_PCS=1`. The f260 warm snapshot
+showed no command FIFO rdptr/depth/holes reads on the Voodoo register read path
+in either standard or MAME mode:
+
+```text
+standard f260:
+frameHash=0x8e14c17e
+drawPackets=764 direct/setup=2594/1282
+framebuffer colored=307199
+cmdpc 800fe5d4=83191 packets, types=2268-0-0-0-0-80923-0-0
+cmdreg=none
+
+MAME FIFO f260:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+framebuffer colored=695
+cmdpc 800fe5d4=92686 packets, types=8438-4875-0-390-16380-62603-0-0
+cmdpc 800fe5fc=32501 packets, types=141-1047-0-84-3444-27785-0-0
+cmdreg=none
+```
+
+So the current MAME FIFO divergence is not caused by the game polling depth,
+holes, or read-pointer values differently through that external register path
+during this window. The active difference remains in our write-side accounting
+and decode scheduling: MAME mode exposes plausible packet content as ready to
+the wrong service PC/phase, while standard mode preserves many idle/empty
+windows around the same workload.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
