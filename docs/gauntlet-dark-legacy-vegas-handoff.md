@@ -11125,6 +11125,28 @@ state/render packet traffic during almost every effective service call. The
 good path has idle/empty service polls and keeps most state/render updates in
 single-packet helper calls.
 
+A type-5 boundary yield control was negative. Enabling
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_YIELD_ON_TYPE5_BOUNDARY=1`
+makes a MAME FIFO decode call return after a type-5-only run if the next ready
+packet is not type 5. It changes attribution, but not the bad frame signature:
+
+```text
+MAME FIFO + type5 boundary yield:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8576,1:34284,2:0,3:738,4:100986,5:91713,6:0,7:3
+framebuffer colored=695
+cmdpc 800fe5d4=45457 packets, types=5927-700-0-56-2352-36422-0-0
+cmdpc 800fe850=47226 packets, types=2499-4175-0-334-14031-26187-0-0
+cmdcall 800fe5d4=251 calls / 45457 packets / max482 / c5=190 / mix=61 / other=0 / empty=0
+cmdcall 800fe850=359 calls / 47226 packets / max396 / c5=2 / mix=189 / other=0 / empty=168
+```
+
+So simply yielding when the texture payload service reaches a non-type5 packet
+does not restore the standard path. The remaining divergence is earlier or more
+structural: the MAME-depth readiness model still exposes the wrong stream to
+service PCs even when type5 runs are cut short.
+
 A bulk-window control was also negative. Enabling the existing
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
 FIFO made the frame slightly worse:
