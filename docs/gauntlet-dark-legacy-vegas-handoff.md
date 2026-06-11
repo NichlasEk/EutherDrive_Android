@@ -11445,6 +11445,32 @@ not solved by replacing the ring/window model with a blind append queue. The
 next fix should keep address-window placement but make readiness stricter about
 which packet phase may consume texture payload/control words.
 
+Another targeted timing control allowed a MAME decode call to continue through
+type-0/type-5 texture-batch work, but yield before later type-1/type-3/type-4
+state/render packets:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_YIELD_AFTER_TEXTURE_BATCH=1
+```
+
+This redistributed the bad `800fe5d4` service into `800fe850`, but the frame
+signature was unchanged:
+
+```text
+MAME FIFO + YIELD_AFTER_TEXTURE_BATCH f260:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+cmdpc 800fe5d4=46991 packets, types=6850-0-0-0-0-40141-0-0
+cmdpc 800fe850=45701 packets, types=1588-4875-0-390-16380-22468-0-0
+```
+
+So the missing standard behavior is not just "stop the outer payload service
+before state/render packets." The follow-on service still consumes the same bad
+phase. Readiness needs to prevent the phase from being exposed in the first
+place, not merely shift it to a nearby call site.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that

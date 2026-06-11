@@ -25308,6 +25308,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_RENDER_WORK"));
     private readonly bool _experimentMameCommandFifoYieldOnType5Boundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_YIELD_ON_TYPE5_BOUNDARY"));
+    private readonly bool _experimentMameCommandFifoYieldAfterTextureBatch =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_YIELD_AFTER_TEXTURE_BATCH"));
     private readonly bool _experimentMameCommandFifoDeferWriteDecode =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DEFER_WRITE_DECODE"));
     private readonly bool _experimentMameCommandFifoWrapClear =
@@ -26458,6 +26460,15 @@ internal class VoodooBringupBackend : IVoodooBackend
                 (command & 7u) != 5u)
             {
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "type5-boundary");
+                return;
+            }
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoYieldAfterTextureBatch &&
+                decodedThisCall > 0 &&
+                (decodeCallTypeMask & (1u << 5)) != 0 &&
+                (command & 7u) is 1u or 3u or 4u)
+            {
+                CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "texture-batch");
                 return;
             }
             if (decodedThisCall == 0)
