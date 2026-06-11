@@ -25332,6 +25332,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _lastCommandFifoDecodeStopWordsNeeded;
     private int _lastCommandFifoDecodeStopDepth;
     private int _lastCommandFifoDecodeStopReadIndex;
+    private int _lastCommandFifoDecodeStopStorageIndex;
+    private uint _lastCommandFifoDecodeStopNext1;
+    private uint _lastCommandFifoDecodeStopNext2;
     private ulong _lastCommandFifoDecodeStopPc;
     private int _commandFifoDecodeStopCount;
     private uint _currentCommandFifoCommand;
@@ -25378,7 +25381,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         return
             $"cmdstop={_lastCommandFifoDecodeStopReason}/0x{_lastCommandFifoDecodeStopCommand:X8}/" +
             $"{_lastCommandFifoDecodeStopWordsNeeded}/{_lastCommandFifoDecodeStopDepth}/" +
-            $"0x{_lastCommandFifoDecodeStopReadIndex * 4:X}{pcStatus}/{_commandFifoDecodeStopCount} ";
+            $"0x{_lastCommandFifoDecodeStopReadIndex * 4:X}/0x{_lastCommandFifoDecodeStopStorageIndex * 4:X}/" +
+            $"0x{_lastCommandFifoDecodeStopNext1:X8}/0x{_lastCommandFifoDecodeStopNext2:X8}{pcStatus}/" +
+            $"{_commandFifoDecodeStopCount} ";
     }
 
     public virtual void WriteRegister(uint address, uint value)
@@ -26222,6 +26227,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         _lastCommandFifoDecodeStopWordsNeeded = wordsNeeded;
         _lastCommandFifoDecodeStopDepth = _cmdFifoDepth;
         _lastCommandFifoDecodeStopReadIndex = _cmdFifoReadIndex;
+        _lastCommandFifoDecodeStopStorageIndex = _cmdFifoReadIndex & CmdFifoMask;
+        _lastCommandFifoDecodeStopNext1 = _cmdFifoRam[(_lastCommandFifoDecodeStopStorageIndex + 1) & CmdFifoMask];
+        _lastCommandFifoDecodeStopNext2 = _cmdFifoRam[(_lastCommandFifoDecodeStopStorageIndex + 2) & CmdFifoMask];
         _lastCommandFifoDecodeStopPc = pc;
         _commandFifoDecodeStopCount++;
 

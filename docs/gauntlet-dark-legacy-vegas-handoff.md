@@ -10389,3 +10389,24 @@ Next target: track why the MAME depth/address-min model repeatedly decodes
 type-4 packets that set `RegColor0`/`RegColor1` to `0xffffffff` and stalls on
 the same packet class with only two of three words available. The fastfill code
 itself is behaving consistently with the register state it receives.
+
+`cmdstop` now also records the masked storage offset and the next two FIFO RAM
+words at the stopped read pointer:
+
+```text
+cmdstop=reason/cmd/needed/depth/readByte/storageByte/next1/next2/pc/count
+```
+
+The first f260 check with the extra fields confirms the partial packet is a
+real missing/stale payload word in the ring, not merely a misleading unmasked
+read pointer:
+
+```text
+MAME FIFO f260:
+cmdstop=depth/0x0001828C/3/2/0x17C9D44/0x9D44/0xFFFFFFFF/0x00000000/pc=0xFFFFFFFF8010319C/1948084
+```
+
+For `0x0001828c`, type 4 needs header plus two payload words for
+`RegColor0`/`RegColor1`. At the stopped storage offset the first payload is
+present (`0xffffffff`) and the second is still zero/stale. Continue by tracing
+the writes to the missing payload slot, not by relaxing packet decode.
