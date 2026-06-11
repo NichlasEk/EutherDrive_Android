@@ -10754,6 +10754,22 @@ This is byte-for-byte the same f260 signature as framebuffer storage alone, so
 the stale zero/NOP drain is not caused by ordinary LFB writes missing from the
 command FIFO backing store in this warm-snapshot phase.
 
+Another MAME cycle-behavior probe yielded after command FIFO packets that
+performed rendering work, matching MAME's `execute_if_ready()` pattern where a
+packet handler can return nonzero cycles:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_RENDER_WORK=1
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
+This is exactly the same f260 signature as the default MAME command-FIFO model,
+so per-render-packet yielding is not the missing behavior in the current
+bring-up path.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

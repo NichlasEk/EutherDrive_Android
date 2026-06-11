@@ -25230,6 +25230,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _cmdFifoReadPointerWritten;
     private bool _cmdFifoJumped;
     private bool _decodingCommandFifo;
+    private bool _commandFifoPacketIssuedRenderWork;
     private int _cmdFifoRamBase;
     private int _cmdFifoRamEnd = CmdFifoWords * 4;
     private int _cmdFifoAddressMin = -4;
@@ -25293,6 +25294,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
     private readonly bool _experimentMameCommandFifoYieldOnWork =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_WORK"));
+    private readonly bool _experimentMameCommandFifoYieldOnRenderWork =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_RENDER_WORK"));
     private readonly bool _experimentMameCommandFifoWrapClear =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR"));
     private readonly bool _experimentMameCommandFifoWrapClearInvalidRead =
@@ -25457,15 +25460,19 @@ internal class VoodooBringupBackend : IVoodooBackend
                 TraceCommandFifoModel($"reg base value=0x{value:x8}");
                 break;
             case RegTriangleCommand:
+                MarkCommandFifoRenderWork();
                 DrawIntegerTriangle();
                 break;
             case RegFtriangleCommand:
+                MarkCommandFifoRenderWork();
                 DrawFloatTriangle();
                 break;
             case RegFastfillCommand:
+                MarkCommandFifoRenderWork();
                 FastFill();
                 break;
             case RegSwapbufferCommand:
+                MarkCommandFifoRenderWork();
                 SwapBuffers(value);
                 break;
             case RegCmdFifoRdPtr:
@@ -25492,12 +25499,19 @@ internal class VoodooBringupBackend : IVoodooBackend
                 TraceCommandFifoModel($"reg holes value=0x{value:x8}");
                 break;
             case 0xa8u:
+                MarkCommandFifoRenderWork();
                 DrawSetupTriangle();
                 break;
             case 0xa9u:
                 BeginSetupTriangle();
                 break;
         }
+    }
+
+    private void MarkCommandFifoRenderWork()
+    {
+        if (_decodingCommandFifo)
+            _commandFifoPacketIssuedRenderWork = true;
     }
 
     public virtual uint ReadRegister(uint address)
@@ -26317,6 +26331,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
 
             _cmdFifoJumped = false;
+            _commandFifoPacketIssuedRenderWork = false;
             _currentCommandFifoCommand = command;
             _currentCommandFifoPacketStart = packetStart;
             _currentCommandFifoWordsNeeded = wordsNeeded;
@@ -26342,6 +26357,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _cmdFifoBulkDecodeRemainingWords = Math.Max(0, _cmdFifoBulkDecodeRemainingWords - wordsNeeded);
             if (!_cmdFifoJumped)
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + wordsNeeded);
+            if (_fixMameCommandFifoModel && _experimentMameCommandFifoYieldOnRenderWork && _commandFifoPacketIssuedRenderWork)
+                return;
             if (_fixMameCommandFifoModel && _experimentMameCommandFifoYieldOnWork && packetDidWork)
                 return;
         }
@@ -26553,6 +26570,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 DecodeFifoType2(command);
                 break;
             case 3:
+                MarkCommandFifoRenderWork();
                 _fifoDrawPacketCount++;
                 DecodeFifoType3(command, wordsNeeded);
                 break;
