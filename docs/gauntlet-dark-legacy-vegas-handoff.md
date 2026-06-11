@@ -11171,6 +11171,22 @@ Clearing valid/depth state on ring wrap is worse and drops a large amount of
 type-5 texture traffic. That rules out a simple "old valid bits survive wrap"
 explanation.
 
+Disabling the outer-payload CPU fastpath was also negative:
+
+```text
+MAME FIFO + DISABLE_OUTER_PAYLOAD_FASTPATH:
+frameHash=0x967bd23f
+drawPackets=635 direct/setup=69/0
+packetTypes=0:992,1:33010,2:0,3:635,4:96697,5:81256,6:0,7:5
+framebuffer colored=635
+cmdpc 800fe5fc=82250 packets, types=987-2-0-0-3-81256-0-2
+```
+
+That moves most type-5 servicing to `800fe5fc` and still fails to reach the
+black clear/swap phase. The outer-payload fastpath is not the sole source of
+the bad phase; disabling it changes where the bad stream is serviced rather
+than restoring the standard service pattern.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
