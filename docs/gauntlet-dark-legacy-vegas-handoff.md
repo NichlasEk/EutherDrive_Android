@@ -10981,6 +10981,52 @@ the content/register side of the packet stream against the good direct FIFO
 path, especially why MAME FIFO reaches only 44 direct triangles and no setup
 triangles despite decoding many packets.
 
+A fresh final-register comparison showed that standard and MAME FIFO end with
+nearly identical dumped Voodoo state at f260; the obvious dump delta is
+`reg[02a]` (`0xc0000205` standard, `0x00000000` MAME), but the visible
+divergence is temporal rather than a single final register:
+
+```text
+standard: frameHash=0x8e14c17e direct/setup=2594/1282 fastFills=2338 swaps=2086 colored=307199
+MAME FIFO: frameHash=0x1e212a0b direct/setup=44/0 fastFills=1045 swaps=806 colored=695
+```
+
+Fastfill/swap PC profiling confirms the temporal failure. In the standard path,
+`0xffffffff800fe5d4` contributes 1282 fastfills with 1168 black and 91 other
+colors. In MAME FIFO it contributes only 195 fastfills, all white. MAME FIFO
+also executes a small `0xffffffff800fe5fc` fastfill/swap path that the standard
+summary does not need:
+
+```text
+standard ffpc=800fe5d4:1282/w23/k1168/o91 ... swpc=800fe5d4:1258
+MAME FIFO ffpc=800fe5d4:195/w195/k0/o0,800fe5fc:44/w44/k0/o0 ... swpc=800fe5fc:2
+```
+
+A targeted command-FIFO model trace at `0xffffffff800fe5fc` shows that MAME
+FIFO does build valid type-5 packets there: a `0xc0000205` header is followed by
+sequential payload writes until `depth=66`, then decode advances to the next
+packet. The issue is therefore not a missing type-5 payload word in this late
+window. The trace also shows the local `addressMin` field following the latest
+contiguous write (`0x20a14`, `0x20a18`, ...), which makes the current
+`addressMin/addressMax` names misleading for readiness decisions; default MAME
+FIFO does not currently use that window to gate decode.
+
+Combining producer-generation reconstruction with exact hole accounting was a
+negative control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRACK_WRITE_GENERATION=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_EXACT_HOLE_ACCOUNTING=1
+frameHash=0x9ac85dc5
+drawPackets=30 direct/setup=44/0
+packetTypes=0:115,1:25436,2:0,3:30,4:71248,5:3631,6:0,7:3
+framebuffer colored=0
+cmd=0/-3915776/65536/0x0/0x7C9D4C
+```
+
+So the producer-generation path is not merely missing raw MAME hole arithmetic;
+when made more literal, it collapses useful rendering even further.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
