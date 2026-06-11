@@ -10851,6 +10851,23 @@ status-read approximation is not the missing MAME behavior. A real fix would
 need cycle/time-based `operation_pending()` semantics, not just a one-status-read
 gate.
 
+An exact hole-accounting probe removed the bring-up backend's defensive
+clamping around the MAME-style `holes/depth/addressMin/addressMax` write tracker,
+letting the same raw signed deltas MAME's command FIFO model would produce flow
+through the local accounting path. The f260 signature was byte-for-byte unchanged
+from the MAME command FIFO baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_EXACT_HOLE_ACCOUNTING=1
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+```
+
+So the warm-snapshot failure is not explained by the remaining clamped
+hole/depth arithmetic in the local write tracker.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

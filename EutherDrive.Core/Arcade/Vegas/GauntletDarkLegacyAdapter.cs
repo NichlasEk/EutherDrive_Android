@@ -25337,6 +25337,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FULL_DEPTH_HOLES_REGS"));
     private readonly bool _experimentMameCommandFifoOperationPendingGate =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_OPERATION_PENDING_GATE"));
+    private readonly bool _experimentMameCommandFifoExactHoleAccounting =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_EXACT_HOLE_ACCOUNTING"));
     private readonly bool _experimentMameCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoTruncatePartialType4 =
@@ -25732,24 +25734,30 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
         else if (address < _cmdFifoAddressMin)
         {
-            _cmdFifoHoles += Math.Max(0, (address - _cmdFifoRamBase) / 4);
+            _cmdFifoHoles += _experimentMameCommandFifoExactHoleAccounting
+                ? (address - _cmdFifoRamBase) / 4
+                : Math.Max(0, (address - _cmdFifoRamBase) / 4);
             _cmdFifoAddressMin = _cmdFifoRamBase;
             _cmdFifoAddressMax = address;
             _cmdFifoDepth++;
         }
         else if (address < _cmdFifoAddressMax)
         {
-            if (_cmdFifoHoles > 0)
+            if (_experimentMameCommandFifoExactHoleAccounting || _cmdFifoHoles > 0)
                 _cmdFifoHoles--;
             if (_cmdFifoHoles == 0)
             {
-                _cmdFifoDepth += Math.Max(0, (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4);
+                _cmdFifoDepth += _experimentMameCommandFifoExactHoleAccounting
+                    ? (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4
+                    : Math.Max(0, (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4);
                 _cmdFifoAddressMin = _cmdFifoAddressMax;
             }
         }
         else
         {
-            _cmdFifoHoles += Math.Max(0, (address - _cmdFifoAddressMax) / 4 - 1);
+            _cmdFifoHoles += _experimentMameCommandFifoExactHoleAccounting
+                ? (address - _cmdFifoAddressMax) / 4 - 1
+                : Math.Max(0, (address - _cmdFifoAddressMax) / 4 - 1);
             _cmdFifoAddressMax = address;
         }
         if (_traceCommandFifoModelStorageOffsets.Length == 0)
