@@ -10868,6 +10868,24 @@ framebuffer colored=695
 So the warm-snapshot failure is not explained by the remaining clamped
 hole/depth arithmetic in the local write tracker.
 
+A stricter packet address-window probe moved the existing address-window guard
+from the packet start word to the full decoded packet range after `wordsNeeded`
+is known. It stopped even harder than the earlier start-word guard:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_PACKET_IN_ADDRESS_WINDOW=1
+frameHash=0x9ac85dc5
+drawPackets=0 direct/setup=44/0
+packetTypes=0:618,1:22667,2:0,3:0,4:67757,5:0,6:0,7:3
+framebuffer colored=0
+cmdstop=packet-outside-window/0xC0000205/66/6214972/0x14860/0x14860/0x0001B800/0x00000000/pc=0xFFFFFFFF801031A8/2001340
+```
+
+This confirms that `addressMin/addressMax` are currently a symptom of the bad
+window model, not a usable authoritative readiness predicate. Packet-window
+validation should only become useful after the producer/read window is tracked
+coherently.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

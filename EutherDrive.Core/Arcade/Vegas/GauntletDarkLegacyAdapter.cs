@@ -25321,6 +25321,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRACK_WRITE_GENERATION"));
     private readonly bool _experimentMameCommandFifoRequireReadInAddressWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_READ_IN_ADDRESS_WINDOW"));
+    private readonly bool _experimentMameCommandFifoRequirePacketInAddressWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_PACKET_IN_ADDRESS_WINDOW"));
     private readonly bool _experimentMameCommandFifoFramebufferStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE"));
     private readonly bool _experimentMameCommandFifoMirrorLfbWrites =
@@ -26369,6 +26371,14 @@ internal class VoodooBringupBackend : IVoodooBackend
                 return;
             }
             if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoRequirePacketInAddressWindow &&
+                _cmdFifoAddressMin >= _cmdFifoRamBase &&
+                !IsMameCommandFifoPacketInsideAddressWindow(packetStart, wordsNeeded))
+            {
+                TraceCommandFifoDecodeStop("packet-outside-window", command, wordsNeeded);
+                return;
+            }
+            if (_fixMameCommandFifoModel &&
                 _experimentMameCommandFifoRequireValidPacketWindow &&
                 !HasCommandFifoWords(packetStart, wordsNeeded))
             {
@@ -26517,12 +26527,26 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private bool IsMameCommandFifoReadInsideAddressWindow()
+        => IsMameCommandFifoWordInsideAddressWindow(_cmdFifoReadIndex);
+
+    private bool IsMameCommandFifoPacketInsideAddressWindow(int start, int wordsNeeded)
     {
-        int readByte = _cmdFifoReadIndex * 4;
+        for (int i = 0; i < wordsNeeded; i++)
+        {
+            if (!IsMameCommandFifoWordInsideAddressWindow(start + i))
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool IsMameCommandFifoWordInsideAddressWindow(int wordIndex)
+    {
+        int readByte = wordIndex * 4;
         if (_cmdFifoAddressMin <= _cmdFifoAddressMax)
             return readByte >= _cmdFifoAddressMin && readByte <= _cmdFifoAddressMax;
 
-        int readStorageByte = CommandFifoStorageIndex(_cmdFifoReadIndex) * 4;
+        int readStorageByte = CommandFifoStorageIndex(wordIndex) * 4;
         int minStorageByte = CommandFifoStorageIndex(_cmdFifoAddressMin >> 2) * 4;
         int maxStorageByte = CommandFifoStorageIndex(_cmdFifoAddressMax >> 2) * 4;
         return readStorageByte >= minStorageByte || readStorageByte <= maxStorageByte;
