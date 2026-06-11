@@ -33,6 +33,7 @@ ApplyInputFromEnvironment(adapter, frame: null);
 loadStopwatch.Stop();
 
 ulong? stopPc = ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_STOP_PC"));
+int[] frameCheckpoints = ParseFrameCheckpoints(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS"));
 string? warmupSnapshotPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_WARMUP_STATE");
 int warmupFrames = ParseWarmupFrames(frames);
 warmupSnapshotPath = ResolveWarmupSnapshotPath(warmupSnapshotPath, adapter, warmupFrames, cpuStepsPerFrameConfig);
@@ -53,7 +54,7 @@ long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
 var runStopwatch = Stopwatch.StartNew();
 if (!loadedWarmupSnapshot)
 {
-    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames, stopPc);
+    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames, stopPc, frameCheckpoints);
 
     if (!string.IsNullOrWhiteSpace(warmupSnapshotPath))
     {
@@ -62,7 +63,7 @@ if (!loadedWarmupSnapshot)
     }
 }
 
-RunUntilFrame(adapter, frames, stopPc);
+RunUntilFrame(adapter, frames, stopPc, frameCheckpoints);
 runStopwatch.Stop();
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
@@ -106,7 +107,7 @@ else if (extraSteps > 0)
 Console.WriteLine($"rom={adapter.RomIdentity?.Name ?? "unknown"}");
 Console.WriteLine($"frame={adapter.FrameCounter}");
 PrintScoreboard(adapter, frames, runStartFrame, loadStopwatch.Elapsed, runStopwatch.Elapsed, totalStopwatch.Elapsed);
-SaveRequestedFinalSnapshot(adapter, warmupFrames, cpuStepsPerFrameConfig);
+SaveRequestedFinalSnapshot(adapter, frames, cpuStepsPerFrameConfig);
 Console.WriteLine($"debug={adapter.DebugStatus}");
 
 object machine = GetField(adapter, "_machine");
@@ -129,6 +130,7 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CODE") == "1")
     DumpCode(GetProperty(machine, "MemoryMap"));
 DumpRequestedCodeRanges(GetProperty(machine, "MemoryMap"));
 DumpRequestedByteRanges(GetProperty(machine, "MemoryMap"));
+DumpRenderRecords(GetProperty(machine, "MemoryMap"));
 ScanRequestedAscii(GetProperty(machine, "MemoryMap"));
 ScanRequestedPointers(GetProperty(machine, "MemoryMap"));
 ScanRequestedAddressLoads(GetProperty(machine, "MemoryMap"));
@@ -328,13 +330,14 @@ static int ParseWarmupFrames(int targetFrames)
     return Math.Min(parsed, targetFrames);
 }
 
-static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, ulong? stopPc)
+static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, ulong? stopPc, int[] frameCheckpoints)
 {
     while (adapter.FrameCounter.GetValueOrDefault() < targetFrames)
     {
         long frame = adapter.FrameCounter.GetValueOrDefault();
         ApplyInputFromEnvironment(adapter, frame);
         adapter.RunFrame();
+        PrintFrameCheckpointIfRequested(adapter, frameCheckpoints);
         if (stopPc.HasValue && TryGetCpuPc(adapter, out ulong pc) && pc == stopPc.Value)
         {
             Console.Error.WriteLine($"stopPc=0x{pc:x16} frame={adapter.FrameCounter.GetValueOrDefault()}");
@@ -343,6 +346,47 @@ static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, u
         if (frame > 0 && frame % ParseProgressInterval() == 0)
             Console.Error.WriteLine($"progress frame={frame}");
     }
+}
+
+static int[] ParseFrameCheckpoints(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw))
+        return [];
+
+    return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(item => int.TryParse(item, out int value) ? value : -1)
+        .Where(value => value > 0)
+        .Distinct()
+        .Order()
+        .ToArray();
+}
+
+static void PrintFrameCheckpointIfRequested(GauntletDarkLegacyAdapter adapter, int[] frameCheckpoints)
+{
+    if (frameCheckpoints.Length == 0)
+        return;
+
+    long frame = adapter.FrameCounter.GetValueOrDefault();
+    if (Array.BinarySearch(frameCheckpoints, (int)frame) < 0)
+        return;
+
+    uint frameHash = HashFrame(adapter.GetFrameBuffer(out int width, out int height, out int stride), width, height, stride);
+    object machine = GetField(adapter, "_machine");
+    object cpu = GetProperty(machine, "Cpu");
+    object voodoo = GetProperty(machine, "Voodoo");
+    object backend = GetField(voodoo, "_backend");
+    var packetTypes = (int[])GetField(backend, "_fifoPacketTypeCounts");
+
+    Console.WriteLine(
+        $"checkpoint frame={frame} pc=0x{GetProperty(cpu, "Pc"):x16} frameHash=0x{frameHash:x8} " +
+        $"drawPackets={GetIntField(backend, "_fifoDrawPacketCount")} " +
+        $"directTriangles={GetIntField(backend, "_directTriangleCommandCount")} " +
+        $"setupTriangles={GetIntField(backend, "_setupTriangleCommandCount")} " +
+        $"lfbWrites={GetLongField(backend, "_lfbWriteCount")} " +
+        $"texWrites={GetIntField(backend, "_textureWriteCount")} " +
+        $"fastFills={GetIntField(backend, "_fastFillCount")} " +
+        $"swaps={GetIntField(backend, "_swapBufferCount")} " +
+        $"packetTypes={string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}"))}");
 }
 
 static bool TryGetCpuPc(GauntletDarkLegacyAdapter adapter, out ulong pc)
@@ -606,7 +650,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(2);
+        writer.Write(3);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -639,7 +683,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version is not (1 or 2))
+    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3))
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -657,7 +701,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     LoadMemoryMap(reader, GetProperty(machine, "MemoryMap"), version);
     LoadDisk(reader, GetProperty(machine, "Disk"));
     LoadSio(reader, GetProperty(machine, "Sio"));
-    LoadVoodoo(reader, GetProperty(machine, "Voodoo"));
+    LoadVoodoo(reader, GetProperty(machine, "Voodoo"), version);
 
     if (stream.Position != stream.Length)
         throw new InvalidDataException($"Warmup snapshot has {stream.Length - stream.Position} trailing bytes");
@@ -877,18 +921,22 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     writer.Write(GetFieldValue<int>(backend, "_cmdFifoHoles"));
     writer.Write(GetFieldValue<bool>(backend, "_cmdFifoReadPointerWritten"));
     writer.Write(GetFieldValue<bool>(backend, "_cmdFifoJumped"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoRamBase"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoRamEnd"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoAddressMin"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoAddressMax"));
     WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
 }
 
-static void LoadVoodoo(BinaryReader reader, object facade)
+static void LoadVoodoo(BinaryReader reader, object facade, int version)
 {
     object backend = GetField(facade, "_backend");
     ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_registers"));
     ReadUShortArrayArrayInto(reader, GetFieldValue<ushort[][]>(backend, "_colorBuffers"));
     ReadUIntList(reader, GetFieldValue<IList>(backend, "_fifoBuffer"));
     ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_textureMemory"));
-    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_cmdFifoRam"));
-    ReadBoolArrayInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoValid"));
+    ReadUIntArrayPrefixInto(reader, GetFieldValue<uint[]>(backend, "_cmdFifoRam"));
+    ReadBoolArrayPrefixInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoValid"));
     ReadSetupVertices(reader, (Array)GetField(backend, "_setupVertices"));
     ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_fifoPacketTypeCounts"));
     SetField(backend, "_registerWriteCount", reader.ReadInt32());
@@ -911,6 +959,13 @@ static void LoadVoodoo(BinaryReader reader, object facade)
     SetField(backend, "_cmdFifoHoles", reader.ReadInt32());
     SetField(backend, "_cmdFifoReadPointerWritten", reader.ReadBoolean());
     SetField(backend, "_cmdFifoJumped", reader.ReadBoolean());
+    if (version >= 3)
+    {
+        SetField(backend, "_cmdFifoRamBase", reader.ReadInt32());
+        SetField(backend, "_cmdFifoRamEnd", reader.ReadInt32());
+        SetField(backend, "_cmdFifoAddressMin", reader.ReadInt32());
+        SetField(backend, "_cmdFifoAddressMax", reader.ReadInt32());
+    }
     if (reader.BaseStream.CanSeek && reader.BaseStream.Position < reader.BaseStream.Length)
         ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
 }
@@ -984,6 +1039,20 @@ static void ReadUIntArrayInto(BinaryReader reader, uint[] values)
         values[i] = reader.ReadUInt32();
 }
 
+static void ReadUIntArrayPrefixInto(BinaryReader reader, uint[] values)
+{
+    int length = reader.ReadInt32();
+    if (length < 0)
+        throw new InvalidDataException($"UInt32 array length mismatch: snapshot={length} runtime={values.Length}");
+
+    Array.Clear(values);
+    int copyLength = Math.Min(length, values.Length);
+    for (int i = 0; i < copyLength; i++)
+        values[i] = reader.ReadUInt32();
+    for (int i = copyLength; i < length; i++)
+        _ = reader.ReadUInt32();
+}
+
 static void WriteULongArray(BinaryWriter writer, ulong[] values)
 {
     writer.Write(values.Length);
@@ -1030,6 +1099,20 @@ static void ReadBoolArrayInto(BinaryReader reader, bool[] values)
         throw new InvalidDataException($"Boolean array length mismatch: snapshot={length} runtime={values.Length}");
     for (int i = 0; i < values.Length; i++)
         values[i] = reader.ReadBoolean();
+}
+
+static void ReadBoolArrayPrefixInto(BinaryReader reader, bool[] values)
+{
+    int length = reader.ReadInt32();
+    if (length < 0)
+        throw new InvalidDataException($"Boolean array length mismatch: snapshot={length} runtime={values.Length}");
+
+    Array.Clear(values);
+    int copyLength = Math.Min(length, values.Length);
+    for (int i = 0; i < copyLength; i++)
+        values[i] = reader.ReadBoolean();
+    for (int i = copyLength; i < length; i++)
+        _ = reader.ReadBoolean();
 }
 
 static void WriteUIntList(BinaryWriter writer, IList values)
@@ -1148,6 +1231,9 @@ static byte ReadMem8(object memory, ulong address)
     return (byte)(aligned >> (int)((address & 3UL) * 8));
 }
 
+static ushort ReadMem16(object memory, ulong address)
+    => (ushort)(ReadMem8(memory, address) | (ReadMem8(memory, address + 1UL) << 8));
+
 static void DumpBytes(object memory, ulong address, int bytes)
 {
     Console.WriteLine($" bytes[0x{address:x16}]:");
@@ -1172,6 +1258,96 @@ static void DumpBytes(object memory, ulong address, int bytes)
         }
         Console.WriteLine();
     }
+}
+
+static void DumpRenderRecords(object memory)
+{
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_RENDER_RECORDS") != "1")
+        return;
+
+    const ulong listBase = 0xffffffff80210270UL;
+    const ulong listCount = 0xffffffff80213600UL;
+    const ulong allocCountAddress = 0xffffffff80228088UL;
+    const ulong allocBase = 0xffffffff80255f20UL;
+    const ulong recordStride = 0x2cUL;
+    const ulong allocStride = 0x50UL;
+
+    uint count = ReadMem32(memory, listCount);
+    uint countLimit = Math.Min(count, 0x12aU);
+    int flag40 = 0;
+    int nullBody = 0;
+    int nonZeroToken = 0;
+    int outOfRangeBody = 0;
+    Dictionary<uint, int> slotCounts = [];
+    List<string> firstRecords = [];
+    List<string> nonSlotZeroRecords = [];
+
+    for (uint index = 0; index < countLimit; index++)
+    {
+        ulong record = listBase + index * recordStride;
+        uint s1 = ReadMem32(memory, record + 0x00UL);
+        uint s7 = ReadMem32(memory, record + 0x04UL);
+        uint s2 = ReadMem32(memory, record + 0x0cUL);
+        uint slot = ReadMem32(memory, record + 0x20UL);
+        ushort flags = ReadMem16(memory, record + 0x2aUL);
+        if ((flags & 0x40U) != 0)
+            flag40++;
+
+        uint token = 0xffffffffU;
+        if (s2 is >= 0x80000000U and < 0x80800000U)
+        {
+            token = ReadMem8(memory, 0xffffffff00000000UL | s2);
+            if (token == 0)
+                nullBody++;
+            else
+                nonZeroToken++;
+        }
+        else
+        {
+            outOfRangeBody++;
+        }
+
+        slotCounts[slot] = slotCounts.TryGetValue(slot, out int current) ? current + 1 : 1;
+        string summary =
+            $"{index}:{record:x16}/s1={s1:x8}/s2={s2:x8}/tok={token:x2}/slot={slot:x}/flags={flags:x4}/s7={s7:x8}";
+        if (firstRecords.Count < 16)
+        {
+            firstRecords.Add(summary);
+        }
+
+        if (slot != 0 && nonSlotZeroRecords.Count < 48)
+        {
+            nonSlotZeroRecords.Add(summary);
+        }
+    }
+
+    uint allocCount = ReadMem32(memory, allocCountAddress);
+    uint allocLimit = Math.Min(allocCount, 0x17fU);
+    int allocActive2 = 0;
+    int allocFree = 0;
+    Dictionary<uint, int> allocBodyCounts = [];
+    for (uint index = 0; index < allocLimit; index++)
+    {
+        ulong record = allocBase + index * allocStride;
+        byte status = ReadMem8(memory, record + 0x04UL);
+        if (status == 2)
+            allocActive2++;
+        if (status == 0)
+            allocFree++;
+
+        uint body = ReadMem32(memory, record + 0x4cUL);
+        allocBodyCounts[body] = allocBodyCounts.TryGetValue(body, out int current) ? current + 1 : 1;
+    }
+
+    Console.WriteLine(
+        "renderRecords " +
+        $"count={count} scanned={countLimit} flag40={flag40} nullBody={nullBody} " +
+        $"nonZeroToken={nonZeroToken} outOfRangeBody={outOfRangeBody} " +
+        $"allocCount={allocCount} allocActive2={allocActive2} allocFree={allocFree}");
+    Console.WriteLine("renderRecords slots=" + string.Join(",", slotCounts.OrderBy(item => item.Key).Select(item => $"{item.Key:x}:{item.Value}")));
+    Console.WriteLine("renderRecords first=" + string.Join(";", firstRecords));
+    Console.WriteLine("renderRecords nonSlot0=" + string.Join(";", nonSlotZeroRecords));
+    Console.WriteLine("renderRecords allocBodies=" + string.Join(",", allocBodyCounts.OrderByDescending(item => item.Value).Take(12).Select(item => $"{item.Key:x8}:{item.Value}")));
 }
 
 static bool IsDrainableHelperPc(ulong pc)

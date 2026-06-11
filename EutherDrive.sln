@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EutherDrive.UI", "EutherDri
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EutherDrive.Audio", "EutherDrive.Audio\EutherDrive.Audio.csproj", "{F9AE9821-7E15-4A66-8FF8-E5589D6431D4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EutherDrive.OpenRA", "EutherDrive.OpenRA\EutherDrive.OpenRA.csproj", "{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -55,6 +57,18 @@ Global
 		{F9AE9821-7E15-4A66-8FF8-E5589D6431D4}.Release|x64.Build.0 = Release|Any CPU
 		{F9AE9821-7E15-4A66-8FF8-E5589D6431D4}.Release|x86.ActiveCfg = Release|Any CPU
 		{F9AE9821-7E15-4A66-8FF8-E5589D6431D4}.Release|x86.Build.0 = Release|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Debug|x64.Build.0 = Debug|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Debug|x86.Build.0 = Debug|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Release|x64.ActiveCfg = Release|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Release|x64.Build.0 = Release|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Release|x86.ActiveCfg = Release|Any CPU
+		{88EA2A3E-C781-46D8-9EED-FFD0E9CCD1FD}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

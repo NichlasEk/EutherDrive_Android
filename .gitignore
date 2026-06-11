@@ -41,6 +41,12 @@ nvram/
 .ambient-music-cache/
 .machine-room-cover-cache/
 
+# Local OpenRA engine/content. These may contain GPL source checkouts and
+# separately licensed Westwood/EA game assets, so keep them outside git.
+external/OpenRA/
+external/openra-content/
+data/openra-content/
+
 # Local media selections/playlists
 *.m3u
 *.m3u8

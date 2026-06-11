@@ -632,6 +632,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
+    private readonly bool _fixVoodooMameCommandFifoModel =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
     private readonly bool _enableRuntimeBgLoadModelQioHydration =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_HYDRATE");
     private readonly bool _enableRuntimeBgLoadModelQioCreateAliasExperiment =
@@ -648,6 +650,18 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
+    private readonly bool _enableRuntimeBgLoadModelIndexedSourceHeadersRepair =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_HEADERS"));
+    private readonly bool _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS"));
+    private readonly bool _enableRuntimeBgLoadModelPartialIndexedSourceHeadersExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_HEADERS"));
+    private readonly bool _enableRuntimeBgLoadModelFullIndexedSourcePayloadsExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS"));
+    private readonly bool _enableRuntimeBgLoadModelMinimumIndexedSourcePayloadExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_MIN_INDEXED_SOURCE_PAYLOAD"));
+    private readonly ulong? _runtimeBgLoadModelIndexedSourcePayloadBytesOverride =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES");
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -709,6 +723,7 @@ internal sealed class MipsR5000Core
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
     private readonly bool _traceRuntimeStatusBitfieldRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_STATUS_BITFIELD_READ") == "1";
+    private readonly bool _traceRuntimeRecordScanAllocate = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RECORD_SCAN_ALLOCATE") == "1";
     private readonly bool _traceRuntimeLoadingResetHelper =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOADING_RESET_HELPER"));
     private readonly int _traceRuntimeLoadingResetHelperLimit =
@@ -788,6 +803,8 @@ internal sealed class MipsR5000Core
     private int _runtimeFormatBufferFastPathTraceCount;
     private int _runtimeRenderListSaturationRepairTraceCount;
     private int _runtimeRenderRecordNullBodyTraceCount;
+    private int _runtimeRecordScanAllocateTraceCount;
+    private int _runtimeRecordScanAllocateRejectTraceCount;
     private int _runtimeInterruptSuppressTraceCount;
     private int _exceptionFpuContextTraceCount;
     private int _exceptionFpuContextLoadTraceCount;
@@ -1147,6 +1164,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeRenderRecordSkip(pc))
             return;
         if (TryFastPathKnownRuntimeRenderRecordNullBody(pc))
+            return;
+        if (TryFastPathKnownRuntimeRecordScanAllocate(pc))
             return;
         if (TryFastPathKnownRuntimeStackRecordCopy(pc))
             return;
@@ -3803,26 +3822,61 @@ internal sealed class MipsR5000Core
             ? (uint)_gpr[17]
             : unchecked(sourceBase + index * 0x200U);
         uint fifoBase = _memory.Read32(state + 0x08UL);
+        uint fifoRingBase = _memory.Read32(state + 0x378UL);
+        uint fifoRingBytes = _memory.Read32(state + 0x380UL);
+        if (_fixVoodooMameCommandFifoModel &&
+            ((fifoRingBase & 3U) != 0 ||
+             fifoRingBytes < 0x100U ||
+             (fifoRingBytes & 3U) != 0 ||
+             fifo < fifoRingBase ||
+             fifo >= unchecked(fifoRingBase + fifoRingBytes)))
+        {
+            TraceGlideFifoOuterPayloadReject($"ring fifo={fifo:x8} base={fifoRingBase:x8} bytes={fifoRingBytes:x8}");
+            return false;
+        }
+
         uint header = 0xc0000005U | (payloadWords << 3);
         uint mask = 0x01ffffffU;
         ulong skippedInstructions = 0;
 
-        for (uint packet = 0; packet < packets; packet++, index++)
+        _memory.BeginVoodooCommandFifoBulkWrite();
+        try
         {
-            uint packetSourceAddress = unchecked(currentPacketAddress + packet * 0x200U);
-            _memory.Write32(fifo, header);
-            fifo += 4U;
-            _memory.Write32(fifo, unchecked(packetSourceAddress - fifoBase) & mask);
-            fifo += 4U;
-
-            for (uint word = 0; word < payloadWords; word++)
+            for (uint packet = 0; packet < packets; packet++, index++)
             {
-                _memory.Write32(fifo, _memory.Read32(source));
-                fifo += 4U;
-                source = SignExtend32((uint)(source + 4UL));
-            }
+                uint packetSourceAddress = unchecked(currentPacketAddress + packet * 0x200U);
+                TraceGlideFifoOuterPayloadOddWords(packet, packetSourceAddress, source, payloadWords, header);
+                if (_fixVoodooMameCommandFifoModel)
+                {
+                    WriteGlideFifoWord(ref fifo, header, fifoRingBase, fifoRingBytes);
+                    WriteGlideFifoWord(ref fifo, unchecked(packetSourceAddress - fifoBase) & mask, fifoRingBase, fifoRingBytes);
+                }
+                else
+                {
+                    _memory.Write32(fifo, header);
+                    fifo += 4U;
+                    _memory.Write32(fifo, unchecked(packetSourceAddress - fifoBase) & mask);
+                    fifo += 4U;
+                }
 
-            skippedInstructions += 30UL + (ulong)(payloadWords / 2U) * 9UL;
+                for (uint word = 0; word < payloadWords; word++)
+                {
+                    if (_fixVoodooMameCommandFifoModel)
+                        WriteGlideFifoWord(ref fifo, _memory.Read32(source), fifoRingBase, fifoRingBytes);
+                    else
+                    {
+                        _memory.Write32(fifo, _memory.Read32(source));
+                        fifo += 4U;
+                    }
+                    source = SignExtend32((uint)(source + 4UL));
+                }
+
+                skippedInstructions += 30UL + (ulong)(payloadWords / 2U) * 9UL;
+            }
+        }
+        finally
+        {
+            _memory.EndVoodooCommandFifoBulkWrite();
         }
 
         uint updatedRoom = room - (uint)totalPacketBytes;
@@ -3848,6 +3902,24 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private void WriteGlideFifoWord(ref uint fifo, uint value, uint ringBase, uint ringBytes)
+    {
+        fifo = WrapGlideFifoPointer(fifo, ringBase, ringBytes);
+        _memory.Write32(fifo, value);
+        fifo = WrapGlideFifoPointer(unchecked(fifo + 4U), ringBase, ringBytes);
+    }
+
+    private static uint WrapGlideFifoPointer(uint fifo, uint ringBase, uint ringBytes)
+    {
+        if (ringBytes == 0)
+            return fifo;
+
+        uint offset = unchecked(fifo - ringBase);
+        if (offset >= ringBytes)
+            offset %= ringBytes;
+        return unchecked(ringBase + offset);
+    }
+
     private void TraceGlideFifoOuterPayloadReject(string reason)
     {
         if (!_traceTextureUploadProvenance || _textureUploadProvenanceTraceCount++ >= 32)
@@ -3857,6 +3929,35 @@ internal sealed class MipsR5000Core
             $"[GAUNTDL:FIFO-OUTER] reject {reason} pc={Pc:x16} " +
             $"s0={_gpr[16]:x16} s2={_gpr[18]:x16} s4={_gpr[20]:x16} s6={_gpr[22]:x16} " +
             $"a0={_gpr[4]:x16} sp={_gpr[29]:x16}");
+    }
+
+    private void TraceGlideFifoOuterPayloadOddWords(
+        uint packet,
+        uint packetSourceAddress,
+        ulong source,
+        uint payloadWords,
+        uint header)
+    {
+        if (!_traceVertexFifoFastPath || _vertexFifoFastPathTraceCount >= 64)
+            return;
+
+        for (uint word = 0; word < payloadWords && word < 64U; word++)
+        {
+            uint value = _memory.Read32(source + word * 4UL);
+            uint type = value & 7U;
+            if (type is not (2U or 6U or 7U))
+                continue;
+
+            uint next0 = word + 1U < payloadWords ? _memory.Read32(source + (word + 1U) * 4UL) : 0;
+            uint next1 = word + 2U < payloadWords ? _memory.Read32(source + (word + 2U) * 4UL) : 0;
+            Console.WriteLine(
+                $"[GAUNTDL:VERTEX-FIFO] odd-payload packet={packet} packetSource=0x{packetSourceAddress:x8} " +
+                $"source=0x{source:x16} word={word} value=0x{value:x8} type={type} " +
+                $"next=0x{next0:x8}/0x{next1:x8} payloadWords={payloadWords} header=0x{header:x8} " +
+                $"s2={_gpr[18]:x16} limit={_memory.Read32(_gpr[29] + 0x74UL):x8}");
+            _vertexFifoFastPathTraceCount++;
+            return;
+        }
     }
 
     private void TraceTextureUploadProvenance(ulong pc, ulong destination, ulong source, uint count, uint limit, uint remainingPairs)
@@ -9686,6 +9787,140 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRuntimeRecordScanAllocate(ulong pc)
+    {
+        const ulong prologue = 0xffffffff800b1264UL;
+        const ulong entry = 0xffffffff800b1268UL;
+        const ulong loopStart = 0xffffffff800b128cUL;
+        const ulong loopEnd = 0xffffffff800b12a4UL;
+        const ulong countAddress = 0xffffffff80228088UL;
+        const ulong tableBase = 0xffffffff80255f20UL;
+        const ulong recordStride = 0x50UL;
+        const uint maxRecords = 0x17fU;
+        bool inLoop = pc >= loopStart && pc <= loopEnd;
+        if (!_enableRuntimeRenderRecordSkipFastPath || (pc != prologue && pc != entry && !inLoop))
+            return false;
+
+        if (_memory.Read32(prologue) != 0x27bdffe8U ||
+            _memory.Read32(entry + 0x00UL) != 0x3c028023U ||
+            _memory.Read32(entry + 0x04UL) != 0x8c428088U ||
+            _memory.Read32(entry + 0x08UL) != 0x0000282dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x1840000cU ||
+            _memory.Read32(entry + 0x10UL) != 0xafbf0010U ||
+            _memory.Read32(entry + 0x14UL) != 0x24060002U ||
+            _memory.Read32(entry + 0x18UL) != 0x0040202dU ||
+            _memory.Read32(entry + 0x1cUL) != 0x3c028025U ||
+            _memory.Read32(entry + 0x20UL) != 0x24435f20U ||
+            _memory.Read32(0xffffffff800b12dcUL) != 0xac828088U ||
+            _memory.Read32(0xffffffff800b12ecUL) != 0x3c028025U ||
+            _memory.Read32(0xffffffff800b12f0UL) != 0x24425f20U ||
+            _memory.Read32(0xffffffff800b12f4UL) != 0x00621021U ||
+            _memory.Read32(0xffffffff800b12f8UL) != 0x8fbf0010U ||
+            _memory.Read32(0xffffffff800b12fcUL) != 0x03e00008U ||
+            _memory.Read32(0xffffffff800b1300UL) != 0x27bd0018U)
+        {
+            TraceKnownRuntimeRecordScanAllocateReject(
+                pc,
+                $"signature p={_memory.Read32(prologue):x8} e0={_memory.Read32(entry):x8} e20={_memory.Read32(entry + 0x20UL):x8} " +
+                $"dc={_memory.Read32(0xffffffff800b12dcUL):x8} ec={_memory.Read32(0xffffffff800b12ecUL):x8} " +
+                $"f0={_memory.Read32(0xffffffff800b12f0UL):x8} f4={_memory.Read32(0xffffffff800b12f4UL):x8} " +
+                $"f8={_memory.Read32(0xffffffff800b12f8UL):x8} fc={_memory.Read32(0xffffffff800b12fcUL):x8} " +
+                $"1300={_memory.Read32(0xffffffff800b1300UL):x8}");
+            return false;
+        }
+
+        uint count = _memory.Read32(countAddress);
+        uint startIndex = 0;
+        if (inLoop)
+        {
+            if (_gpr[6] != 2)
+            {
+                TraceKnownRuntimeRecordScanAllocateReject(pc, $"a2={_gpr[6]:x16}");
+                return false;
+            }
+
+            uint registerCount = (uint)_gpr[4];
+            startIndex = (uint)_gpr[5];
+            if (registerCount != count || startIndex > count)
+            {
+                TraceKnownRuntimeRecordScanAllocateReject(pc, $"state registerCount={registerCount} memoryCount={count} start={startIndex}");
+                return false;
+            }
+        }
+
+        if (count > maxRecords)
+        {
+            TraceKnownRuntimeRecordScanAllocateReject(pc, $"count={count}");
+            return false;
+        }
+
+        uint selectedIndex = count;
+        bool foundActive = false;
+        for (uint index = startIndex; index < count; index++)
+        {
+            ulong record = tableBase + index * recordStride;
+            if (!IsMainRamRange(record + 4UL, 1UL))
+            {
+                TraceKnownRuntimeRecordScanAllocateReject(pc, $"range record={record:x16}");
+                return false;
+            }
+
+            if (unchecked((sbyte)_memory.Read8(record + 4UL)) == 2)
+            {
+                selectedIndex = index;
+                foundActive = true;
+                break;
+            }
+        }
+
+        if (!foundActive)
+        {
+            if (count >= maxRecords)
+            {
+                TraceKnownRuntimeRecordScanAllocateReject(pc, "full");
+                return false;
+            }
+
+            _memory.Write32(countAddress, count + 1U);
+        }
+
+        ulong offset = selectedIndex * recordStride;
+        ulong result = tableBase + offset;
+        _gpr[2] = SignExtend32((uint)result);
+        _gpr[3] = SignExtend32((uint)offset);
+        _gpr[4] = 0xffffffff80230000UL;
+        _gpr[5] = selectedIndex;
+        _gpr[6] = 2;
+        if (pc == entry || inLoop)
+            _gpr[29] = unchecked(_gpr[29] + 0x18UL);
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+
+        ulong scannedInstructions = count == 0 ? 24UL : 24UL + Math.Min(count, maxRecords) * 7UL;
+        AdvanceCp0Count(_cp0CountStep * scannedInstructions);
+        _instructionCounter += scannedInstructions;
+        if (_runtimeRecordScanAllocateTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] record-scan-allocate pc={pc:x16} " +
+                $"start={startIndex} count={count} selected={selectedIndex} foundActive={foundActive} result={result:x16}");
+        }
+
+        return true;
+    }
+
+    private void TraceKnownRuntimeRecordScanAllocateReject(ulong pc, string reason)
+    {
+        if (!_traceRuntimeRecordScanAllocate || _runtimeRecordScanAllocateRejectTraceCount++ >= 16)
+            return;
+
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] record-scan-allocate-reject pc={pc:x16} reason={reason} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} v1={_gpr[3]:x16} count={_memory.Read32(0xffffffff80228088UL)}");
+    }
+
     private bool TryFastPathKnownRuntimeByteMove(ulong pc)
     {
         const ulong entry = 0xffffffff8011df40UL;
@@ -10227,12 +10462,22 @@ internal sealed class MipsR5000Core
 
             uint source = _memory.Read32(entry);
             uint distinctSource = unchecked((uint)(0x802e1718UL + index * 0x2000UL));
-            if ((source != repeatedStaticSource && source != distinctSource) || _memory.Read8(name) != 0)
+            if (_memory.Read8(name) != 0)
                 continue;
-            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out _))
+            if (source == repeatedStaticSource || source == distinctSource)
+            {
+                if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out _))
+                    continue;
+
+                WriteAsciiTraceString(name, code, 0x20);
+                repaired++;
+                continue;
+            }
+
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayloadForAssetSource(source, out string bodyCode))
                 continue;
 
-            WriteAsciiTraceString(name, code, 0x20);
+            WriteAsciiTraceString(name, bodyCode, 0x20);
             repaired++;
         }
 
@@ -10255,9 +10500,39 @@ internal sealed class MipsR5000Core
         _memory.Write8(address + (ulong)length, 0);
     }
 
+    private bool TryGetKnownRuntimeBgLoadModelTexturePayloadForAssetSource(
+        uint source,
+        out string code)
+    {
+        code = "";
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        const ulong sourceStride = 0x2000UL;
+
+        for (ulong index = 1; index <= 8UL; index++)
+        {
+            ulong sourceBase = destinationBase + index * sourceStride;
+            if (!IsMainRamRange(sourceBase + 0x5cUL, 4UL))
+                continue;
+
+            uint bodyOffset = _memory.Read32(sourceBase + 0x5cUL);
+            if (bodyOffset == 0)
+                continue;
+
+            ulong body = sourceBase + bodyOffset;
+            if ((uint)body != source)
+                continue;
+
+            return TryGetKnownRuntimeBgLoadModelTexturePayload(index, out code, out _, out _);
+        }
+
+        return false;
+    }
+
     private void ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(ulong pc)
     {
-        if (!_enableRuntimeBgLoadModelDistinctSourcesExperiment ||
+        if ((!_enableRuntimeBgLoadModelDistinctSourcesExperiment &&
+             !_enableRuntimeBgLoadModelIndexedSourceHeadersRepair &&
+             !_enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair) ||
             pc is not (0xffffffff800aadf0UL or 0xffffffff800aae98UL or 0xffffffff800aac48UL))
         {
             return;
@@ -10278,8 +10553,13 @@ internal sealed class MipsR5000Core
         if (current != 0 && current != staticSource)
             return;
 
-        _memory.Write32(slot, (uint)source);
         bool seededIndexedHeader = TrySeedKnownRuntimeBgLoadModelDistinctSourceIndexedHeader(index, source);
+        if ((_enableRuntimeBgLoadModelIndexedSourceHeadersRepair ||
+             _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair) &&
+            !seededIndexedHeader)
+            return;
+
+        _memory.Write32(slot, (uint)source);
         bool clonedSource = !seededIndexedHeader && TryCloneKnownRuntimeBgLoadModelStaticSourceToDistinctSource(source);
         _gpr[18] = source;
         if (_gpr[5] == staticSource || _gpr[5] == SignExtend32(staticSource))
@@ -10287,8 +10567,12 @@ internal sealed class MipsR5000Core
 
         if (_runtimeBgLoadModelDistinctSourcesTraceCount++ < 16)
         {
+            string traceKind = (_enableRuntimeBgLoadModelIndexedSourceHeadersRepair ||
+                                _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair)
+                ? "FIX"
+                : "EXPERIMENT";
             Console.WriteLine(
-                $"[GAUNTDL:EXPERIMENT] bgloadmodel-distinct-source pc={pc:x16} " +
+                $"[GAUNTDL:{traceKind}] bgloadmodel-distinct-source pc={pc:x16} " +
                 $"index={index} slot={slot:x16}:{current:x8}->{(uint)source:x8} " +
                 $"cloned={clonedSource} seededIndexedHeader={seededIndexedHeader} " +
                 $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
@@ -10297,13 +10581,38 @@ internal sealed class MipsR5000Core
 
     private bool TrySeedKnownRuntimeBgLoadModelDistinctSourceIndexedHeader(ulong index, ulong destination)
     {
-        const uint requestedBytes = 0x120U;
+        bool indexedHeaderEnabled = _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment ||
+                                    _enableRuntimeBgLoadModelIndexedSourceHeadersRepair ||
+                                    _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair;
+        bool indexedTexturePayloadEnabled = _enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
+                                            _enableRuntimeBgLoadModelIndexedSourceHeadersRepair ||
+                                            _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair;
+        bool partialSeedabilityEnabled = _enableRuntimeBgLoadModelPartialIndexedSourceHeadersExperiment ||
+                                         _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair;
+        uint requestedBytes = 0x120U;
+        if (_runtimeBgLoadModelIndexedSourcePayloadBytesOverride.HasValue)
+        {
+            requestedBytes = (uint)Math.Min(_runtimeBgLoadModelIndexedSourcePayloadBytesOverride.Value, uint.MaxValue);
+        }
+        else if (_enableRuntimeBgLoadModelFullIndexedSourcePayloadsExperiment &&
+            TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out uint textureByteLength))
+        {
+            requestedBytes = textureByteLength;
+        }
+        else if (partialSeedabilityEnabled ||
+                 _enableRuntimeBgLoadModelMinimumIndexedSourcePayloadExperiment)
+        {
+            requestedBytes = 0x9f60U;
+        }
 
-        if (!_enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment ||
-            !_enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
-            (_runtimeBgLoadModelDistinctSourceIndexedHeaderMask.HasValue &&
-             (_runtimeBgLoadModelDistinctSourceIndexedHeaderMask.Value & (1UL << (int)index)) == 0) ||
-            !IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination) ||
+        ulong indexedHeaderMask = _runtimeBgLoadModelDistinctSourceIndexedHeaderMask ??
+            (_enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair ? 0x2UL : ulong.MaxValue);
+        if (!indexedHeaderEnabled ||
+            !indexedTexturePayloadEnabled ||
+            (indexedHeaderMask & (1UL << (int)index)) == 0 ||
+            !(partialSeedabilityEnabled
+                ? IsKnownRuntimeBgLoadModelIndexedSourceHeaderSeedable(destination)
+                : IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination)) ||
             !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
         {
             return false;
@@ -10311,10 +10620,14 @@ internal sealed class MipsR5000Core
 
         if (_runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount++ < 16)
         {
+            string traceKind = (_enableRuntimeBgLoadModelIndexedSourceHeadersRepair ||
+                                _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair)
+                ? "FIX"
+                : "EXPERIMENT";
             Console.WriteLine(
-                $"[GAUNTDL:EXPERIMENT] bgloadmodel-distinct-source-indexed-header " +
+                $"[GAUNTDL:{traceKind}] bgloadmodel-distinct-source-indexed-header " +
                 $"index={index} code={code} dest={destination:x16} bytes={requestedBytes:x8} " +
-                $"disk={textureByteOffset:x8} first={firstWord:x8} mask={_runtimeBgLoadModelDistinctSourceIndexedHeaderMask?.ToString("x") ?? "all"} " +
+                $"disk={textureByteOffset:x8} first={firstWord:x8} mask={indexedHeaderMask:x} " +
                 $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(destination)}");
         }
 
@@ -12560,6 +12873,20 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool IsKnownRuntimeBgLoadModelIndexedSourceHeaderSeedable(ulong source)
+    {
+        if (!IsMainRamRange(source, 0x80UL))
+            return false;
+
+        for (ulong offset = 0; offset < 0x40UL; offset += 4UL)
+        {
+            if (_memory.Read32(source + offset) != 0)
+                return false;
+        }
+
+        return true;
+    }
+
     private void ApplyKnownRuntimeBgLoadModelQioCreateAliasRepair(ulong pc)
     {
         const ulong returnSlotLoadPc = 0xffffffff800c9944UL;
@@ -14106,6 +14433,7 @@ internal sealed class MipsR5000Core
         const ulong staticWorldList = 0xffffffff8015bef4UL;
         const uint staticEntryStride = 0x2c;
         const uint fallbackEntryStride = 0x80;
+        const uint castleWorldIndex = 0;
         const uint testWorldIndex = 12;
 
         if (!_enableRuntimeWorldStaticDataLinkRepair || pc != branchPc)
@@ -14113,9 +14441,29 @@ internal sealed class MipsR5000Core
         if (_memory.Read32(branchPc) != 0x14400003U)
             return;
 
+        ulong castleStaticEntry = staticWorldList + castleWorldIndex * staticEntryStride;
+        ulong castleFallbackEntry = fallbackTable + castleWorldIndex * fallbackEntryStride;
+        uint selectedEntry = _memory.Read32(selectedEntryGlobal);
+        if (_gpr[18] == castleStaticEntry &&
+            selectedEntry == unchecked((uint)castleFallbackEntry) &&
+            _memory.Read32(castleStaticEntry) == castleWorldIndex + 1U &&
+            _memory.Read32(castleStaticEntry + 0x10UL) == 0 &&
+            IsMainRamRange(castleStaticEntry, staticEntryStride) &&
+            TryLinkKnownRuntimeWorldStaticData(
+                pc,
+                "world-selected-static-data-link",
+                castleWorldIndex,
+                0xffffffff81000000UL,
+                0x0f100000UL,
+                0x0a04U))
+        {
+            _gpr[2] = SignExtend32(_memory.Read32(castleStaticEntry + 0x10UL));
+            _gpr[0] = 0;
+            return;
+        }
+
         ulong staticEntry = staticWorldList + testWorldIndex * staticEntryStride;
         ulong testFallbackEntry = fallbackTable + testWorldIndex * fallbackEntryStride;
-        uint selectedEntry = _memory.Read32(selectedEntryGlobal);
         if (selectedEntry != 0 && selectedEntry != unchecked((uint)testFallbackEntry))
             return;
 
@@ -14127,7 +14475,17 @@ internal sealed class MipsR5000Core
             return;
         }
 
-        TryLinkKnownRuntimeTestWorldStaticData(pc, "world-static-data-link");
+        if (TryLinkKnownRuntimeWorldStaticData(
+                pc,
+                "world-static-data-link",
+                testWorldIndex,
+                0xffffffff81000000UL,
+                0x0f107e00UL,
+                0x0358U))
+        {
+            _gpr[2] = SignExtend32(_memory.Read32(staticEntry + 0x10UL));
+            _gpr[0] = 0;
+        }
     }
 
     private bool EnsureKnownRuntimeFallbackWorldEntry(uint worldIndex)
@@ -14169,30 +14527,32 @@ internal sealed class MipsR5000Core
         return true;
     }
 
-    private bool TryLinkKnownRuntimeTestWorldStaticData(ulong pc, string traceLabel)
+    private bool TryLinkKnownRuntimeWorldStaticData(
+        ulong pc,
+        string traceLabel,
+        uint worldIndex,
+        ulong worldDataBuffer,
+        ulong wadByteOffset,
+        uint wadBytes)
     {
         const ulong staticWorldList = 0xffffffff8015bef4UL;
-        const ulong testWorldDataBuffer = 0xffffffff81000000UL;
-        const ulong testWadByteOffset = 0x0f107e00UL;
-        const uint testWadBytes = 0x0358U;
         const uint staticEntryStride = 0x2c;
-        const uint testWorldIndex = 12;
 
-        ulong staticEntry = staticWorldList + testWorldIndex * staticEntryStride;
+        ulong staticEntry = staticWorldList + worldIndex * staticEntryStride;
         if (!IsMainRamRange(staticEntry, staticEntryStride) ||
-            !IsMainRamRange(testWorldDataBuffer, testWadBytes))
+            !IsMainRamRange(worldDataBuffer, wadBytes))
         {
             return false;
         }
 
         if (_memory.Read32(staticEntry) == 0)
-            _memory.Write32(staticEntry, testWorldIndex + 1U);
+            _memory.Write32(staticEntry, worldIndex + 1U);
 
         string reason = "";
         if (!_memory.TryReadDiskByteOffsetToMemory(
-                testWadByteOffset,
-                testWorldDataBuffer,
-                testWadBytes,
+                wadByteOffset,
+                worldDataBuffer,
+                wadBytes,
                 out uint firstWord,
                 out reason))
         {
@@ -14205,19 +14565,19 @@ internal sealed class MipsR5000Core
             return false;
         }
 
-        uint worldRecordCount = _memory.Read32(testWorldDataBuffer + 0x04UL);
+        uint worldRecordCount = _memory.Read32(worldDataBuffer + 0x04UL);
         if (worldRecordCount == 0 || worldRecordCount > 0x100U)
             worldRecordCount = 1;
 
-        _memory.Write32(staticEntry + 0x10UL, unchecked((uint)testWorldDataBuffer));
+        _memory.Write32(staticEntry + 0x10UL, unchecked((uint)worldDataBuffer));
         _memory.Write32(staticEntry + 0x14UL, worldRecordCount);
         _memory.Write32(staticEntry + 0x28UL, 0);
         if (_runtimeWorldStaticDataLinkTraceCount++ < 8)
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] {traceLabel} pc={pc:x16} " +
-                $"entry={staticEntry:x16} data={testWorldDataBuffer:x16} " +
-                $"bytes={testWadBytes:x} first={firstWord:x8} count={worldRecordCount:x8}");
+                $"index={worldIndex} entry={staticEntry:x16} data={worldDataBuffer:x16} " +
+                $"offset={wadByteOffset:x} bytes={wadBytes:x} first={firstWord:x8} count={worldRecordCount:x8}");
         }
 
         return true;
@@ -19485,6 +19845,10 @@ internal sealed class VegasMemoryMap
 
     public void LoadSecurityPic(byte[] securityPic) => _securityPic = securityPic.ToArray();
 
+    public void BeginVoodooCommandFifoBulkWrite() => _voodoo?.BeginCommandFifoBulkWrite();
+
+    public void EndVoodooCommandFifoBulkWrite() => _voodoo?.EndCommandFifoBulkWrite();
+
     public bool IoasicPicNvramDirty => _ioasicPicNvramDirty;
     public bool TimekeeperRamDirty => _timekeeperRamDirty;
 
@@ -22193,6 +22557,8 @@ internal sealed class VegasVoodooPciDevice
     private const int RegDacData = 0x22c >> 2;
     private readonly bool _traceEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO") == "1";
     private readonly int _traceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_PCI_LIMIT", 512);
+    private readonly bool _experimentStrictCommandFifoEnable =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_CMD_FIFO_STRICT_ENABLE"));
     private IVoodooBackend? _voodoo;
     private uint _bar0 = 0xff000000u;
     private bool _bar0Probe;
@@ -22307,7 +22673,8 @@ internal sealed class VegasVoodooPciDevice
 
         if (offset < 0x00400000u)
         {
-            if (offset >= 0x00200000u && (IsCommandFifoEnabled || IsGlideCommandFifoWindow(offset)))
+            if (offset >= 0x00200000u &&
+                (IsCommandFifoEnabled || (!_experimentStrictCommandFifoEnable && IsGlideCommandFifoWindow(offset))))
             {
                 _voodoo?.WriteFifo((offset >> 2) & 0xffffu, value);
                 Trace($"fifo write off={offset:x6} value={value:x8}");
@@ -24724,6 +25091,17 @@ internal sealed class VoodooFacade : IVoodooBackend
     public uint ReadTexture32(uint offset) => _backend.ReadTexture32(offset);
     public void WriteTexture32(uint offset, uint value) => _backend.WriteTexture32(offset, value);
     public void RenderFrame(EutherFrameTarget target) => _backend.RenderFrame(target);
+    public void BeginCommandFifoBulkWrite()
+    {
+        if (_backend is VoodooBringupBackend bringup)
+            bringup.BeginCommandFifoBulkWrite();
+    }
+
+    public void EndCommandFifoBulkWrite()
+    {
+        if (_backend is VoodooBringupBackend bringup)
+            bringup.EndCommandFifoBulkWrite();
+    }
 
     private void ApplyCpuPcProvider()
     {
@@ -24753,7 +25131,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegZaColor = 0x130 >> 2;
     private const int RegColor0 = 0x144 >> 2;
     private const int RegColor1 = 0x148 >> 2;
+    private const int RegCmdFifoBaseAddr = 0x1e0 >> 2;
     private const int RegCmdFifoRdPtr = 0x1e8 >> 2;
+    private const int RegCmdFifoAddressMin = 0x1ec >> 2;
+    private const int RegCmdFifoAddressMax = 0x1f0 >> 2;
     private const int RegCmdFifoDepth = 0x1f4 >> 2;
     private const int RegCmdFifoHoles = 0x1f8 >> 2;
     private const int RegTextureMode = 0x300 >> 2;
@@ -24762,6 +25143,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const uint RegBltSrcBaseAddr = 0x2c0u >> 2;
     private const int RegFbiInit2 = 0x218 >> 2;
     private const int RegFbiInit3 = 0x21c >> 2;
+    private const int RegFbiInit7 = 0x24c >> 2;
 
     private readonly uint[] _registers = new uint[0x400];
     private readonly ushort[][] _colorBuffers =
@@ -24788,6 +25170,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoWords];
     private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
     private readonly int[] _fifoPacketTypeCounts = new int[8];
+    private readonly int[] _fifoType5SpaceCounts = new int[4];
+    private readonly long[] _fifoType5SpaceWordCounts = new long[4];
     private readonly bool[] _lastFastFillValid = new bool[3];
     private readonly int[] _lastFastFillX0 = new int[3];
     private readonly int[] _lastFastFillX1 = new int[3];
@@ -24838,13 +25222,63 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _cmdFifoReadPointerWritten;
     private bool _cmdFifoJumped;
     private bool _decodingCommandFifo;
+    private int _cmdFifoRamBase;
+    private int _cmdFifoRamEnd = CmdFifoWords * 4;
+    private int _cmdFifoAddressMin = -4;
+    private int _cmdFifoAddressMax = -4;
+    private int _cmdFifoBulkWriteDepth;
+    private bool _cmdFifoBulkFirstWritePending;
+    private int _cmdFifoBulkStartIndex;
+    private int _cmdFifoBulkLastIndex;
+    private int _cmdFifoBulkWriteWordCount;
+    private int _cmdFifoBulkDecodeRemainingWords;
+    private bool _cmdFifoBulkSawWrite;
+    private int _cmdFifoLocalJumpCount;
+    private int _swapDontSwapCount;
+    private readonly int[] _fastFillBufferCounts = new int[3];
+    private readonly int[] _fastFillWhiteBufferCounts = new int[3];
+    private readonly int[] _fastFillBlackBufferCounts = new int[3];
+    private readonly int[] _fastFillOtherBufferCounts = new int[3];
+    private int _fastFillSuppressedWhiteCount;
+    private int _fastFillSuppressedBlackCount;
+    private int _fastFillSuppressedOtherCount;
+    private int _swapClearBackBufferCount;
+    private uint _lastSwapCommand;
+    private readonly Dictionary<ulong, FastFillPcStats> _fastFillPcStats = [];
+    private readonly Dictionary<ulong, SwapPcStats> _swapPcStats = [];
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
     private readonly bool _traceSetupTriangles = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SETUP_TRIANGLES") == "1";
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
+    private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
+    private readonly bool _traceCommandFifoModel = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL") == "1";
+    private readonly ulong[] _traceCommandFifoModelPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_PCS"));
+    private readonly ulong[] _traceCommandFifoModelCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_COMMANDS"));
+    private readonly bool _experimentResetCommandFifoOnBulkWrite =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
+    private readonly bool _experimentRewindCommandFifoOnBulkWrite =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_REWIND"));
+    private readonly bool _experimentCommandFifoBulkDecodeWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW"));
+    private readonly bool _fixMameCommandFifoModel =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
+    private readonly bool _experimentMameCommandFifoYieldOnWork =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_WORK"));
+    private readonly bool _experimentMameCommandFifoWrapClear =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR"));
+    private readonly bool _experimentMameCommandFifoMaskReadIndex =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX"));
+    private readonly bool _experimentMameCommandFifoResyncAddressMinOnPartialType5 =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_AMIN_ON_PARTIAL_TYPE5"));
+    private readonly bool _experimentMameCommandFifoSpace0Endian =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SPACE0_ENDIAN"));
+    private readonly bool _experimentMameCommandFifoStopOnUnknown =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _fixType5TextureEndian =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN");
     private readonly bool _fixSequential8BitTextureDownload =
@@ -24860,7 +25294,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _fixDisplayBufferSelection =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
     private readonly bool _fixFastFillColorWriteMask =
-        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK");
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK"));
     private readonly bool _fixTmuRegisterBanks =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -24871,6 +25305,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
     private readonly bool _profileStatusPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1";
+    private readonly bool _profileFastFillSwapPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS") == "1";
+    private readonly bool _traceFastFillSwapOrder =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER"));
+    private readonly ulong[] _traceFastFillSwapOrderPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_PCS"));
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
@@ -24879,7 +25318,15 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _textureSampleTraceCount;
     private int _nonNeutralFastFillTraceCount;
     private int _type5PayloadTraceCount;
+    private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
+    private int _commandFifoModelTraceCount;
+    private int _commandFifoModelStallTraceCount;
+    private int _commandFifoRegisterValueTraceCount;
+    private uint _currentCommandFifoCommand;
+    private int _currentCommandFifoPacketStart;
+    private int _currentCommandFifoWordsNeeded;
+    private int _fastFillSwapOrderTraceCount;
     private int _recentVoodooEventSequence;
 
     public Func<ulong>? CpuPcProvider { get; set; }
@@ -24892,19 +25339,39 @@ internal class VoodooBringupBackend : IVoodooBackend
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
-           $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
+           $"t5={_fifoType5SpaceCounts[0]}:{_fifoType5SpaceWordCounts[0]}/{_fifoType5SpaceCounts[1]}:{_fifoType5SpaceWordCounts[1]}/" +
+           $"{_fifoType5SpaceCounts[2]}:{_fifoType5SpaceWordCounts[2]}/{_fifoType5SpaceCounts[3]}:{_fifoType5SpaceWordCounts[3]} " +
+           $"lj={_cmdFifoLocalJumpCount} dswap={_swapDontSwapCount} " +
+           $"ffb={_fastFillBufferCounts[0]}/{_fastFillBufferCounts[1]}/{_fastFillBufferCounts[2]} " +
+           $"ffw={_fastFillWhiteBufferCounts[0]}/{_fastFillWhiteBufferCounts[1]}/{_fastFillWhiteBufferCounts[2]} " +
+           $"ffk={_fastFillBlackBufferCounts[0]}/{_fastFillBlackBufferCounts[1]}/{_fastFillBlackBufferCounts[2]} " +
+           $"ffo={_fastFillOtherBufferCounts[0]}/{_fastFillOtherBufferCounts[1]}/{_fastFillOtherBufferCounts[2]} " +
+           $"ffs={_fastFillSuppressedWhiteCount}/{_fastFillSuppressedBlackCount}/{_fastFillSuppressedOtherCount} " +
+           $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
+           GetFastFillSwapPcDebugStatus() +
+           $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
+           $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
+           $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
+
+    private uint PeekCommandFifoWord() => _cmdFifoRam[_cmdFifoReadIndex & CmdFifoMask];
 
     public virtual void WriteRegister(uint address, uint value)
     {
         uint register = (address >> 2) & 0xffu;
         _registers[register] = value;
         _registerWriteCount++;
+        TraceFastFillSwapOrder("reg", register, value);
         if (IsInterestingEventRegister(register))
             RecordVoodooEvent($"reg[{register:x3}]=0x{value:x8}");
         switch (register)
         {
+            case RegCmdFifoBaseAddr:
+                _cmdFifoRamBase = (int)((value & 0x000003ffu) << 12);
+                _cmdFifoRamEnd = Math.Clamp((int)((((value >> 16) & 0x000003ffu) + 1u) << 12), 4, CmdFifoWords * 4);
+                TraceCommandFifoModel($"reg base value=0x{value:x8}");
+                break;
             case RegTriangleCommand:
                 DrawIntegerTriangle();
                 break;
@@ -24918,16 +25385,27 @@ internal class VoodooBringupBackend : IVoodooBackend
                 SwapBuffers(value);
                 break;
             case RegCmdFifoRdPtr:
-                _cmdFifoReadIndex = (int)((value >> 2) & CmdFifoMask);
+                _cmdFifoReadIndex = DecodeCommandFifoReadIndex((int)(value >> 2));
                 _cmdFifoReadPointerWritten = true;
+                TraceCommandFifoModel($"reg rdptr value=0x{value:x8}");
                 if (!_decodingCommandFifo)
                     DecodeCommandFifoPackets();
                 break;
+            case RegCmdFifoAddressMin:
+                _cmdFifoAddressMin = (int)value;
+                TraceCommandFifoModel($"reg amin value=0x{value:x8}");
+                break;
+            case RegCmdFifoAddressMax:
+                _cmdFifoAddressMax = (int)value;
+                TraceCommandFifoModel($"reg amax value=0x{value:x8}");
+                break;
             case RegCmdFifoDepth:
                 _cmdFifoDepth = (int)(value & 0xffffu);
+                TraceCommandFifoModel($"reg depth value=0x{value:x8}");
                 break;
             case RegCmdFifoHoles:
                 _cmdFifoHoles = (int)(value & 0xffffu);
+                TraceCommandFifoModel($"reg holes value=0x{value:x8}");
                 break;
             case 0xa8u:
                 DrawSetupTriangle();
@@ -24953,29 +25431,177 @@ internal class VoodooBringupBackend : IVoodooBackend
     public virtual void WriteFifo(uint wordOffset, uint value)
     {
         int index = (int)(wordOffset & CmdFifoMask);
-        if (index == 0 && _cmdFifoReadPointerWritten && _cmdFifoReadIndex != 0)
+        int address = _cmdFifoRamBase + index * 4;
+        int storageIndex = _fixMameCommandFifoModel
+            ? (address >> 2) & CmdFifoMask
+            : index;
+        if (_cmdFifoBulkFirstWritePending)
         {
             Array.Clear(_cmdFifoValid);
-            _cmdFifoReadIndex = 0;
+            _cmdFifoReadIndex = _fixMameCommandFifoModel ? DecodeCommandFifoReadIndex(address >> 2) : storageIndex;
             _cmdFifoDepth = 0;
             _cmdFifoHoles = 0;
+            _cmdFifoReadPointerWritten = true;
+            _cmdFifoJumped = false;
+            _cmdFifoBulkFirstWritePending = false;
+        }
+        if (_cmdFifoBulkWriteDepth > 0)
+        {
+            if (!_cmdFifoBulkSawWrite)
+            {
+                _cmdFifoBulkStartIndex = storageIndex;
+                _cmdFifoBulkSawWrite = true;
+            }
+            _cmdFifoBulkLastIndex = storageIndex;
+            _cmdFifoBulkWriteWordCount++;
+        }
+
+        if ((!_fixMameCommandFifoModel ||
+             _experimentMameCommandFifoWrapClear) &&
+            storageIndex == 0 &&
+            _cmdFifoReadPointerWritten &&
+            _cmdFifoReadIndex != 0)
+        {
+            Array.Clear(_cmdFifoValid);
+            _cmdFifoReadIndex = _fixMameCommandFifoModel ? address >> 2 : 0;
+            _cmdFifoDepth = 0;
+            _cmdFifoHoles = 0;
+            _cmdFifoAddressMin = _cmdFifoRamBase - 4;
+            _cmdFifoAddressMax = _cmdFifoRamBase - 4;
             _cmdFifoJumped = false;
         }
 
-        _cmdFifoRam[index] = value;
-        if (!_cmdFifoValid[index])
+        _cmdFifoRam[storageIndex] = value;
+        if (_fixMameCommandFifoModel)
+            TrackMameCommandFifoWrite(address);
+        else if (!_cmdFifoValid[storageIndex])
             _cmdFifoDepth = Math.Min(0xffff, _cmdFifoDepth + 1);
-        _cmdFifoValid[index] = true;
+        _cmdFifoValid[storageIndex] = true;
         _fifoWriteCount++;
 
         if (!_cmdFifoReadPointerWritten)
         {
-            _cmdFifoReadIndex = index;
+            _cmdFifoReadIndex = _fixMameCommandFifoModel ? DecodeCommandFifoReadIndex(address >> 2) : storageIndex;
             _cmdFifoReadPointerWritten = true;
         }
 
-        DecodeCommandFifoPackets();
+        if (_cmdFifoBulkWriteDepth == 0)
+            DecodeCommandFifoPackets();
     }
+
+    private void TraceCommandFifoModel(string message)
+    {
+        if (!_traceCommandFifoModel)
+            return;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceCommandFifoModelPcs.Length != 0 && !_traceCommandFifoModelPcs.Contains(pc))
+            return;
+        if (_commandFifoModelTraceCount++ >= 240)
+            return;
+
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO] {message} " +
+            $"base=0x{_cmdFifoRamBase:x5} end=0x{_cmdFifoRamEnd:x5} rd=0x{_cmdFifoReadIndex * 4:x5} " +
+            $"amin=0x{_cmdFifoAddressMin:x5} amax=0x{_cmdFifoAddressMax:x5} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"fbi7=0x{_registers[RegFbiInit7]:x8}{pcStatus}");
+    }
+
+    private void TrackMameCommandFifoWrite(int address)
+    {
+        if ((uint)address >= (uint)_cmdFifoRamEnd)
+            return;
+        if (((_registers[RegFbiInit7] >> 10) & 1u) != 0)
+            return;
+        if (_cmdFifoDepth == 0 && _cmdFifoHoles == 0 && _cmdFifoAddressMin < _cmdFifoRamBase)
+        {
+            _cmdFifoAddressMin = address - 4;
+            _cmdFifoAddressMax = address - 4;
+        }
+
+        if (_cmdFifoHoles == 0 && address == _cmdFifoAddressMin + 4)
+        {
+            _cmdFifoAddressMin = address;
+            _cmdFifoAddressMax = address;
+            _cmdFifoDepth++;
+        }
+        else if (address < _cmdFifoAddressMin)
+        {
+            _cmdFifoHoles += Math.Max(0, (address - _cmdFifoRamBase) / 4);
+            _cmdFifoAddressMin = _cmdFifoRamBase;
+            _cmdFifoAddressMax = address;
+            _cmdFifoDepth++;
+        }
+        else if (address < _cmdFifoAddressMax)
+        {
+            if (_cmdFifoHoles > 0)
+                _cmdFifoHoles--;
+            if (_cmdFifoHoles == 0)
+            {
+                _cmdFifoDepth += Math.Max(0, (_cmdFifoAddressMax - _cmdFifoAddressMin) / 4);
+                _cmdFifoAddressMin = _cmdFifoAddressMax;
+            }
+        }
+        else
+        {
+            _cmdFifoHoles += Math.Max(0, (address - _cmdFifoAddressMax) / 4 - 1);
+            _cmdFifoAddressMax = address;
+        }
+        TraceCommandFifoModel($"write addr=0x{address:x5}");
+    }
+
+    public void BeginCommandFifoBulkWrite()
+    {
+        if (_cmdFifoBulkWriteDepth++ == 0 && _experimentResetCommandFifoOnBulkWrite)
+            _cmdFifoBulkFirstWritePending = true;
+        if (_cmdFifoBulkWriteDepth == 1)
+        {
+            _cmdFifoBulkSawWrite = false;
+            _cmdFifoBulkStartIndex = 0;
+            _cmdFifoBulkLastIndex = 0;
+            _cmdFifoBulkWriteWordCount = 0;
+        }
+    }
+
+    public void EndCommandFifoBulkWrite()
+    {
+        if (_cmdFifoBulkWriteDepth > 0)
+            _cmdFifoBulkWriteDepth--;
+        if (_cmdFifoBulkWriteDepth == 0)
+            _cmdFifoBulkFirstWritePending = false;
+        if (_cmdFifoBulkWriteDepth == 0 &&
+            _experimentRewindCommandFifoOnBulkWrite &&
+            _cmdFifoBulkSawWrite &&
+            IsCommandFifoReadIndexInsideBulkWrite() &&
+            IsType5TexturePacketHeader(_cmdFifoRam[_cmdFifoBulkStartIndex]))
+        {
+            _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
+        }
+        if (_cmdFifoBulkWriteDepth == 0 &&
+            _experimentCommandFifoBulkDecodeWindow &&
+            _cmdFifoBulkSawWrite &&
+            IsType5TexturePacketHeader(_cmdFifoRam[_cmdFifoBulkStartIndex]))
+        {
+            _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
+            _cmdFifoBulkDecodeRemainingWords = _cmdFifoBulkWriteWordCount;
+        }
+        if (_cmdFifoBulkWriteDepth == 0)
+            DecodeCommandFifoPackets();
+        if (_cmdFifoBulkWriteDepth == 0)
+            _cmdFifoBulkDecodeRemainingWords = 0;
+    }
+
+    private bool IsCommandFifoReadIndexInsideBulkWrite()
+    {
+        if (!_cmdFifoBulkSawWrite)
+            return false;
+        if (_cmdFifoBulkStartIndex <= _cmdFifoBulkLastIndex)
+            return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex && _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
+        return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex || _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
+    }
+
+    private static bool IsType5TexturePacketHeader(uint command)
+        => (command & 7u) == 5u && (command >> 30) == 3u && ((command >> 3) & 0x7ffffu) > 0;
 
     public uint ReadStatus(bool vblank)
     {
@@ -25251,7 +25877,9 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int frontCount = GetBufferNonZeroCount(_frontBufferIndex);
         int frontActiveCount = GetVisibleBufferActiveColorCount(_frontBufferIndex);
-        if (frontCount > 1024 && frontActiveCount > 1024)
+        int frontWhiteCount = GetVisibleBufferWhiteCount(_frontBufferIndex);
+        bool frontIsWhiteClearDominated = frontWhiteCount > 240_000 && frontActiveCount < 32_000;
+        if (!frontIsWhiteClearDominated && frontCount > 1024 && frontActiveCount > 1024)
             return _frontBufferIndex;
 
         int bestIndex = _frontBufferIndex;
@@ -25270,11 +25898,14 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             if (candidateCount > 1024 &&
                 candidateActiveCount > 1024 &&
-                (candidateActiveCount > bestActiveCount || bestActiveCount <= 1024 && candidateCount > bestCount))
+                (candidateActiveCount > bestActiveCount ||
+                 bestActiveCount <= 1024 && candidateCount > bestCount ||
+                 frontIsWhiteClearDominated && candidateActiveCount >= bestActiveCount * 3 / 4))
             {
                 bestIndex = i;
                 bestCount = candidateCount;
                 bestActiveCount = candidateActiveCount;
+                frontIsWhiteClearDominated = false;
             }
         }
 
@@ -25386,11 +26017,32 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         if (_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0)
         {
+            TraceFastFillSwapOrder("fastfill-suppressed", RegFastfillCommand, color);
+            if (color == 0xffff)
+                _fastFillSuppressedWhiteCount++;
+            else if (color == 0)
+                _fastFillSuppressedBlackCount++;
+            else
+                _fastFillSuppressedOtherCount++;
+            CountFastFillPc(color, suppressed: true, bufferIndex: -1);
             _fastFillCount++;
             return;
         }
 
         int bufferIndex = GetDrawBufferIndex();
+        TraceFastFillSwapOrder("fastfill", RegFastfillCommand, color);
+        CountFastFillPc(color, suppressed: false, bufferIndex);
+        if ((uint)bufferIndex < (uint)_fastFillBufferCounts.Length)
+        {
+            _fastFillBufferCounts[bufferIndex]++;
+            if (color == 0xffff)
+                _fastFillWhiteBufferCounts[bufferIndex]++;
+            else if (color == 0)
+                _fastFillBlackBufferCounts[bufferIndex]++;
+            else
+                _fastFillOtherBufferCounts[bufferIndex]++;
+        }
+
         int width = x1 - x0;
         if (!IsCachedFastFill(bufferIndex, x0, x1, y0, y1, color))
         {
@@ -25411,16 +26063,37 @@ internal class VoodooBringupBackend : IVoodooBackend
         try
         {
         int guard = 0;
-        while (guard++ < 2048 && _cmdFifoValid[_cmdFifoReadIndex])
+        while (guard++ < 2048 && IsCommandFifoPacketReady())
         {
             int packetStart = _cmdFifoReadIndex;
-            uint command = _cmdFifoRam[_cmdFifoReadIndex];
+            uint command = _cmdFifoRam[packetStart & CmdFifoMask];
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoStopOnUnknown &&
+                (command & 7u) > 5u)
+            {
+                TraceCommandFifoDecodeStop("unknown", command, 1);
+                return;
+            }
+
             int wordsNeeded = GetFifoPacketWordsNeeded(command);
             if (IsKnownGauntletRuntimeMisalignedFifoWord(command, wordsNeeded))
                 wordsNeeded = 1;
             if (wordsNeeded <= 0)
                 wordsNeeded = 1;
-            if (!HasCommandFifoWords(packetStart, wordsNeeded))
+            if (_fixMameCommandFifoModel && _cmdFifoDepth < wordsNeeded)
+            {
+                if (TryResyncMameCommandFifoOnPartialType5(command, packetStart, wordsNeeded))
+                    continue;
+
+                TraceCommandFifoDecodeStop("depth", command, wordsNeeded);
+                return;
+            }
+            if (_cmdFifoBulkDecodeRemainingWords > 0 && wordsNeeded > _cmdFifoBulkDecodeRemainingWords)
+            {
+                TraceCommandFifoDecodeStop("bulk-window", command, wordsNeeded);
+                return;
+            }
+            if (!_fixMameCommandFifoModel && !HasCommandFifoWords(packetStart, wordsNeeded))
                 return;
 
             _fifoBuffer.Clear();
@@ -25431,19 +26104,83 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
 
             _cmdFifoJumped = false;
+            _currentCommandFifoCommand = command;
+            _currentCommandFifoPacketStart = packetStart;
+            _currentCommandFifoWordsNeeded = wordsNeeded;
             DecodeFifoPacket(command, wordsNeeded);
+            _currentCommandFifoCommand = 0;
+            _currentCommandFifoPacketStart = 0;
+            _currentCommandFifoWordsNeeded = 0;
+            bool packetDidWork = IsCommandFifoPacketWork(command);
             _fifoPacketCount++;
             for (int i = 0; i < wordsNeeded; i++)
                 _cmdFifoValid[(packetStart + i) & CmdFifoMask] = false;
             _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - wordsNeeded);
+            if (_cmdFifoBulkDecodeRemainingWords > 0)
+                _cmdFifoBulkDecodeRemainingWords = Math.Max(0, _cmdFifoBulkDecodeRemainingWords - wordsNeeded);
             if (!_cmdFifoJumped)
-                _cmdFifoReadIndex = (packetStart + wordsNeeded) & CmdFifoMask;
+                _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + wordsNeeded);
+            if (_fixMameCommandFifoModel && _experimentMameCommandFifoYieldOnWork && packetDidWork)
+                return;
         }
         }
         finally
         {
             _decodingCommandFifo = false;
         }
+    }
+
+    private bool IsCommandFifoPacketReady()
+        => _fixMameCommandFifoModel
+            ? _cmdFifoDepth > 0
+            : _cmdFifoValid[_cmdFifoReadIndex];
+
+    private bool TryResyncMameCommandFifoOnPartialType5(uint command, int packetStart, int wordsNeeded)
+    {
+        if (!_experimentMameCommandFifoResyncAddressMinOnPartialType5 ||
+            !IsType5TexturePacketHeader(command) ||
+            _cmdFifoAddressMin < _cmdFifoRamBase)
+        {
+            return false;
+        }
+
+        int addressMinIndex = _cmdFifoAddressMin >> 2;
+        if ((addressMinIndex & CmdFifoMask) == (packetStart & CmdFifoMask))
+            return false;
+
+        TraceCommandFifoDecodeStop("partial-type5-resync-amin", command, wordsNeeded);
+        _cmdFifoReadIndex = DecodeCommandFifoReadIndex(addressMinIndex);
+        return true;
+    }
+
+    private int DecodeCommandFifoReadIndex(int value)
+        => _fixMameCommandFifoModel && !_experimentMameCommandFifoMaskReadIndex
+            ? value
+            : value & CmdFifoMask;
+
+    private void TraceCommandFifoDecodeStop(string reason, uint command, int wordsNeeded)
+    {
+        if (!_traceCommandFifoModel)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceCommandFifoModelPcs.Length != 0 && !_traceCommandFifoModelPcs.Contains(pc))
+            return;
+        if (_traceCommandFifoModelCommands.Length != 0 && !_traceCommandFifoModelCommands.Contains(command))
+            return;
+        if (_commandFifoModelStallTraceCount++ >= 160)
+            return;
+
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        int readStorage = _cmdFifoReadIndex & CmdFifoMask;
+        uint next1 = _cmdFifoRam[(readStorage + 1) & CmdFifoMask];
+        uint next2 = _cmdFifoRam[(readStorage + 2) & CmdFifoMask];
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO] stop reason={reason} cmd=0x{command:x8} type={command & 7u} " +
+            $"words={wordsNeeded} rd=0x{_cmdFifoReadIndex * 4:x8} storage=0x{readStorage * 4:x5} " +
+            $"next=0x{next1:x8}/0x{next2:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} " +
+            $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
     }
 
     private bool HasCommandFifoWords(int start, int count)
@@ -25457,9 +26194,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         return true;
     }
 
+    private static bool IsCommandFifoPacketWork(uint command)
+        => (command & 7u) is 1u or 2u or 3u or 4u or 5u;
+
     private void DecodeFifoPacket(uint command, int wordsNeeded)
     {
         _fifoPacketTypeCounts[command & 7u]++;
+        TraceOddFifoPacket(command, wordsNeeded);
         RecordInterestingFifoEvent(command, wordsNeeded);
         if (IsKnownGauntletRuntimeNoopFifoPacket(command, wordsNeeded))
             return;
@@ -25488,6 +26229,30 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
     }
 
+    private void TraceOddFifoPacket(uint command, int wordsNeeded)
+    {
+        uint type = command & 7u;
+        if (!_traceOddFifoPackets || type is not (2u or 6u or 7u) || _oddFifoPacketTraceCount++ >= 96)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        uint w1 = _fifoBuffer.Count > 1 ? _fifoBuffer[1] : 0;
+        uint w2 = _fifoBuffer.Count > 2 ? _fifoBuffer[2] : 0;
+        uint w3 = _fifoBuffer.Count > 3 ? _fifoBuffer[3] : 0;
+        uint w4 = _fifoBuffer.Count > 4 ? _fifoBuffer[4] : 0;
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-ODD-FIFO] n={_oddFifoPacketTraceCount} type={type} " +
+            $"cmd=0x{command:x8} words={wordsNeeded} rd=0x{_cmdFifoReadIndex:x4} " +
+            $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount} " +
+            $"w=0x{w1:x8}/0x{w2:x8}/0x{w3:x8}/0x{w4:x8} " +
+            $"mame={(_fixMameCommandFifoModel ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"base=0x{_cmdFifoRamBase:x5} amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} " +
+            $"fbz=0x{_registers[RegFbzMode]:x8} lfb=0x{_registers[RegLfbMode]:x8} " +
+            $"tmode=0x{ReadTextureRegister(RegTextureMode):x8} tlod=0x{ReadTextureRegister(RegTextureLod):x8} " +
+            $"tbase=0x{ReadTextureRegister(RegTextureBaseAddr):x8}{pcStatus}");
+    }
+
     private bool IsKnownGauntletRuntimeNoopFifoPacket(uint command, int wordsNeeded)
         => command == 0x00010241U &&
            wordsNeeded == 2 &&
@@ -25506,8 +26271,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         int function = (int)((command >> 3) & 7u);
         if (function == 3)
         {
-            _cmdFifoReadIndex = (int)((command >> 6) & 0x7fffffu) & CmdFifoMask;
+            int target = (int)((command >> 6) & 0x7fffffu);
+            _cmdFifoReadIndex = DecodeCommandFifoReadIndex(target);
             _cmdFifoJumped = true;
+            _cmdFifoLocalJumpCount++;
         }
     }
 
@@ -25554,6 +26321,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void WriteCmdFifoRegister(uint target, uint value)
     {
         uint register = target & 0xffu;
+        TraceCommandFifoRegisterValue(target, value);
         if (_traceTmuRegisterWrites &&
             _tmuRegisterWriteTraceCount < 160 &&
             IsTmuTextureRegister(register))
@@ -25568,6 +26336,26 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         WriteRegister(register << 2, value);
+    }
+
+    private void TraceCommandFifoRegisterValue(uint target, uint value)
+    {
+        if (!_traceCommandFifoModel ||
+            _traceCommandFifoModelCommands.Length == 0 ||
+            !_traceCommandFifoModelCommands.Contains(value) ||
+            _commandFifoRegisterValueTraceCount++ >= 80)
+        {
+            return;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO] reg-value target=0x{target:x3} reg=0x{target & 0xffu:x2} " +
+            $"value=0x{value:x8} packet=0x{_currentCommandFifoCommand:x8} " +
+            $"packetType={_currentCommandFifoCommand & 7u} packetStart=0x{_currentCommandFifoPacketStart * 4:x8} " +
+            $"words={_currentCommandFifoWordsNeeded} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8}{pcStatus}");
     }
 
     private bool TryWriteTmuRegister(uint target, uint value)
@@ -25687,6 +26475,141 @@ internal class VoodooBringupBackend : IVoodooBackend
         return string.Join(" | ", Enumerable.Range(0, count).Select(i => _recentVoodooEvents[(start + i) & (_recentVoodooEvents.Length - 1)]));
     }
 
+    private void CountFastFillPc(ushort color, bool suppressed, int bufferIndex)
+    {
+        if (!_profileFastFillSwapPcs)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        if (!_fastFillPcStats.TryGetValue(pc, out FastFillPcStats? stats))
+        {
+            stats = new FastFillPcStats();
+            _fastFillPcStats[pc] = stats;
+        }
+
+        stats.Total++;
+        if (suppressed)
+            stats.Suppressed++;
+        if (color == 0xffff)
+            stats.White++;
+        else if (color == 0)
+            stats.Black++;
+        else
+            stats.Other++;
+        if ((uint)bufferIndex < (uint)stats.BufferCounts.Length)
+            stats.BufferCounts[bufferIndex]++;
+        stats.LastColor = color;
+        stats.LastFbzMode = _registers[RegFbzMode];
+        stats.LastColor0 = _registers[RegColor0];
+        stats.LastColor1 = _registers[RegColor1];
+        stats.LastZaColor = _registers[RegZaColor];
+        stats.LastCommandFifoReadIndex = _cmdFifoReadIndex;
+        stats.LastBufferIndex = bufferIndex;
+        stats.LastSuppressed = suppressed;
+    }
+
+    private void TraceFastFillSwapOrder(string kind, uint register, uint value)
+    {
+        if (!_traceFastFillSwapOrder || _fastFillSwapOrderTraceCount >= 240)
+            return;
+
+        if (kind == "reg" && !IsFastFillSwapOrderRegister(register))
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceFastFillSwapOrderPcs.Length != 0 && !_traceFastFillSwapOrderPcs.Contains(pc))
+            return;
+
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-FILL-SWAP] n={++_fastFillSwapOrderTraceCount} kind={kind} " +
+            $"pc=0x{pc:x16} reg=0x{register:x3} value=0x{value:x8} " +
+            $"c0=0x{_registers[RegColor0]:x8} c1=0x{_registers[RegColor1]:x8} za=0x{_registers[RegZaColor]:x8} " +
+            $"fbz=0x{_registers[RegFbzMode]:x8} lfb=0x{_registers[RegLfbMode]:x8} " +
+            $"front={_frontBufferIndex} back={_backBufferIndex} rd=0x{_cmdFifoReadIndex:x6} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} fifoPackets={_fifoPacketCount} draws={_fifoDrawPacketCount} " +
+            $"fills={_fastFillCount} swaps={_swapBufferCount}");
+    }
+
+    private static bool IsFastFillSwapOrderRegister(uint register)
+        => register is RegFbzMode or RegLfbMode or RegFastfillCommand or RegSwapbufferCommand or
+            RegZaColor or RegColor0 or RegColor1 or RegClipLeftRight or RegClipLowYHighY;
+
+    private static ulong[] ParseOptionalHexUlongList(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => item.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? item[2..] : item)
+            .Select(item => ulong.TryParse(item, System.Globalization.NumberStyles.HexNumber, null, out ulong value) ? value : 0)
+            .Where(value => value != 0)
+            .Distinct()
+            .ToArray();
+    }
+
+    private void CountSwapPc(uint command, bool dontSwap, bool clearBackBuffer)
+    {
+        if (!_profileFastFillSwapPcs)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        if (!_swapPcStats.TryGetValue(pc, out SwapPcStats? stats))
+        {
+            stats = new SwapPcStats();
+            _swapPcStats[pc] = stats;
+        }
+
+        stats.Total++;
+        if (clearBackBuffer)
+            stats.Clear++;
+        if (dontSwap)
+            stats.DontSwap++;
+        stats.LastCommand = command;
+    }
+
+    private string GetFastFillSwapPcDebugStatus()
+    {
+        if (!_profileFastFillSwapPcs)
+            return "";
+
+        return $"ffpc={FormatFastFillPcStats()} swpc={FormatSwapPcStats()} ";
+    }
+
+    private string FormatFastFillPcStats()
+    {
+        if (_fastFillPcStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _fastFillPcStats
+            .OrderByDescending(pair => pair.Value.Black + pair.Value.Suppressed)
+            .ThenByDescending(pair => pair.Value.Total)
+            .ThenBy(pair => pair.Key)
+            .Take(8)
+            .Select(pair =>
+                $"0x{pair.Key:x16}:{pair.Value.Total}/w{pair.Value.White}/k{pair.Value.Black}/o{pair.Value.Other}/s{pair.Value.Suppressed}/b{pair.Value.BufferCounts[0]}-{pair.Value.BufferCounts[1]}-{pair.Value.BufferCounts[2]}" +
+                $"/last{pair.Value.LastColor:X4}:{(pair.Value.LastSuppressed ? 1 : 0)}:{pair.Value.LastBufferIndex}:fbz{pair.Value.LastFbzMode:X8}:c{pair.Value.LastColor0:X8}-{pair.Value.LastColor1:X8}:za{pair.Value.LastZaColor:X8}:rd{pair.Value.LastCommandFifoReadIndex:X}"));
+    }
+
+    private string FormatSwapPcStats()
+    {
+        if (_swapPcStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _swapPcStats
+            .OrderByDescending(pair => pair.Value.Clear)
+            .ThenByDescending(pair => pair.Value.Total)
+            .ThenBy(pair => pair.Key)
+            .Take(8)
+            .Select(pair =>
+                $"0x{pair.Key:x16}:{pair.Value.Total}/c{pair.Value.Clear}/d{pair.Value.DontSwap}/last0x{pair.Value.LastCommand:X8}"));
+    }
+
     private void CountStatusPc()
     {
         if (!_profileStatusPcs)
@@ -25732,6 +26655,32 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return false;
+    }
+
+    private sealed class FastFillPcStats
+    {
+        public int Total;
+        public int White;
+        public int Black;
+        public int Other;
+        public int Suppressed;
+        public readonly int[] BufferCounts = new int[3];
+        public ushort LastColor;
+        public uint LastFbzMode;
+        public uint LastColor0;
+        public uint LastColor1;
+        public uint LastZaColor;
+        public int LastCommandFifoReadIndex;
+        public int LastBufferIndex;
+        public bool LastSuppressed;
+    }
+
+    private sealed class SwapPcStats
+    {
+        public int Total;
+        public int Clear;
+        public int DontSwap;
+        public uint LastCommand;
     }
 
     private static bool IsInterestingEventRegister(uint register)
@@ -25827,6 +26776,8 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         uint target = _fifoBuffer[1] / 4u;
         uint space = command >> 30;
+        _fifoType5SpaceCounts[space & 3u]++;
+        _fifoType5SpaceWordCounts[space & 3u] += count;
         TraceType5Payload(command, target, space, count);
         for (int i = 0; i < count; i++, target++)
         {
@@ -25836,6 +26787,12 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (_fixType5TextureEndian)
                     value = BinaryPrimitives.ReverseEndianness(value);
                 WriteTexturePort32(target, value);
+            }
+            else if (space == 0 && _fixMameCommandFifoModel)
+            {
+                if (_experimentMameCommandFifoSpace0Endian)
+                    value = BinaryPrimitives.ReverseEndianness(value);
+                _cmdFifoRam[(int)target & CmdFifoMask] = value;
             }
             else if (space is 0 or 2)
                 WriteLfb32(target << 2, value);
@@ -26558,6 +27515,26 @@ internal class VoodooBringupBackend : IVoodooBackend
         return count;
     }
 
+    private int GetVisibleBufferWhiteCount(int index)
+    {
+        if ((uint)index >= (uint)_colorBuffers.Length)
+            return 0;
+
+        int count = 0;
+        ushort[] buffer = _colorBuffers[index];
+        for (int y = 0; y < 480; y++)
+        {
+            int row = y * 1024;
+            for (int x = 0; x < 640; x++)
+            {
+                if (buffer[(row + x) & (LfbPixels - 1)] == 0xffff)
+                    count++;
+            }
+        }
+
+        return count;
+    }
+
     private void SwapBuffers(uint command)
     {
         if ((command & 1u) != 0)
@@ -26572,21 +27549,34 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void ExecuteSwapBuffers(uint command)
     {
         _swapBufferCount++;
+        _lastSwapCommand = command;
 
-        int count = GetColorBufferCount();
-        if (count >= 3)
+        bool dontSwap = _fixMameCommandFifoModel && ((command >> 9) & 1u) != 0;
+        bool clearBackBuffer = ((command >> 6) & 1u) != 0;
+        TraceFastFillSwapOrder(clearBackBuffer ? "swap-clear" : "swap", RegSwapbufferCommand, command);
+        CountSwapPc(command, dontSwap, clearBackBuffer);
+        if (dontSwap)
         {
-            _frontBufferIndex = (_frontBufferIndex + 1) % 3;
-            _backBufferIndex = (_frontBufferIndex + 1) % 3;
+            _swapDontSwapCount++;
         }
         else
         {
-            _frontBufferIndex = _backBufferIndex == 0 ? 0 : 1;
-            _backBufferIndex = 1 - _frontBufferIndex;
+            int count = GetColorBufferCount();
+            if (count >= 3)
+            {
+                _frontBufferIndex = (_frontBufferIndex + 1) % 3;
+                _backBufferIndex = (_frontBufferIndex + 1) % 3;
+            }
+            else
+            {
+                _frontBufferIndex = _backBufferIndex == 0 ? 0 : 1;
+                _backBufferIndex = 1 - _frontBufferIndex;
+            }
         }
 
-        if (((command >> 6) & 1u) != 0)
+        if (clearBackBuffer)
         {
+            _swapClearBackBufferCount++;
             SetPendingClear(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
             CacheFastFill(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
         }

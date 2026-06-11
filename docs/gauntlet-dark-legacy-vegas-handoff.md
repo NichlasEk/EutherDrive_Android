@@ -14,6 +14,10 @@ Update: 2026-05-31
 
 Update: 2026-06-05
 
+Update: 2026-06-10
+
+Update: 2026-06-11
+
 ## Scope
 
 This pass continued the Gauntlet Dark Legacy / Midway Vegas bring-up in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`.
@@ -24,6 +28,580 @@ The working strategy is still:
 - Use MAME `vegas.cpp` as the hardware map and expected behavior reference.
 - Fast-path expensive BIOS loops where they are deterministic and only affect bring-up speed.
 - Keep risky hardware guesses uncommitted unless they are proven by probe output.
+
+## 2026-06-11 Checkpoint Probe: Indexed Header Default Regression
+
+`tools/GauntletProbe/Program.cs` now supports compact per-frame checkpoints:
+
+```text
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=190,200,210,220
+```
+
+Each checkpoint prints frame, PC, framebuffer hash, draw/triangle counts,
+LFB/texture/fill/swap counters, and FIFO packet-type counts. This is intended
+for comparing BGLoadModel/Voodoo divergences without enabling the full FIFO
+trace.
+
+The important result from the castle f180 warm snapshot is that broad indexed
+source header repair is not safe as a `BRINGUP_FAST` default. With
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_HEADERS=0`, the
+420-frame baseline is:
+
+```text
+frame=420 pc=800b1b38 frameHash=0x4f22cd71
+drawPackets=11250 directTriangles=1361 setupTriangles=656
+texWrites=8659569 lfbWrites=216898724
+framebuffer nonBlack=307200 colored=305702
+packetTypes=0:3842,1:42543,2:0,3:11250,4:124525,5:139698,6:0,7:3
+```
+
+With the broad indexed-header repair implicitly enabled by `BRINGUP_FAST`, the
+same run regresses coverage and changes the render signature:
+
+```text
+frame=420 pc=80120264 frameHash=0xc155c141
+drawPackets=10846 directTriangles=1839 setupTriangles=893
+texWrites=10835075 lfbWrites=281953990
+framebuffer nonBlack=281698 colored=279140
+packetTypes=0:6210,1:42101,2:30,3:10846,4:122398,5:169312,6:12,7:23
+```
+
+The repair was changed back to explicit opt-in:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_HEADERS=1
+```
+
+The narrower slot-2 early-header probe (`mask=0x4`) is useful but still
+diverges from baseline. It keeps final coverage high but changes the hash and
+introduces type-2/type-6/type-7 FIFO packets early:
+
+```text
+mask=0x4 frame=220:
+pc=800b0c64 frameHash=0x94623c72
+drawPackets=3507 directTriangles=313 setupTriangles=141
+texWrites=2751573 lfbWrites=117026084
+packetTypes=0:2689,1:27736,2:24,3:3507,4:83705,5:44906,6:14,7:15
+
+baseline frame=220:
+pc=800b1ff0 frameHash=0x8004b9d5
+drawPackets=3616 directTriangles=503 setupTriangles=235
+texWrites=2653525 lfbWrites=105873089
+packetTypes=0:1152,1:29185,2:0,3:3616,4:84128,5:43349,6:0,7:3
+```
+
+The divergence starts before frame 220, after the alternative indexed QIO
+sequence. At frame 190 the slot-2 run already has packet types 2/6/7 and much
+lower triangle counts:
+
+```text
+baseline f190: hash=0x18c7a740 direct/setup=283/125 packetTypes 2/6/7=0/0/3
+mask=0x4 f190: hash=0x07f3bc2f direct/setup=93/31 packetTypes 2/6/7=24/14/15
+```
+
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO=1` mapped those extra packet classes
+back to the Glide FIFO outer payload fastpath at `0xffffffff800fe5d4`, not to a
+new CPU renderer. The suspicious commands were payload words being consumed as
+packet headers around synthetic type-5 texture uploads (`0xc0000205`). Added:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO=1
+```
+
+The producer trace confirms the fastpath emits type-5 packets with
+`payloadWords=64` and arbitrary payload words whose low bits can look like FIFO
+types 2/6/7. A default decode bulk section now brackets the fastpath writes so
+the command FIFO decoder only runs after the synthetic batch is complete. This
+keeps the known baseline unchanged:
+
+```text
+baseline f220 after bulk bracket:
+pc=800b1ff0 frameHash=0x8004b9d5
+drawPackets=3418 direct/setup=503/235
+packetTypes=0:1638,1:28960,2:0,3:3418,4:83372,5:39562,6:0,7:3
+framebuffer nonBlack=13628 colored=11630
+```
+
+There is also an opt-in diagnostic reset for stale command FIFO valid slots:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_REWIND=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1
+```
+
+With slot-2 early headers (`mask=0x4`) this reduced f220 odd packet counts from
+`2/6/7=24/14/15` to `6/0/5` and cleared the `reg[0c0]=0xc0000205` style TMU
+leak, but it also changes baseline rendering if promoted. Keep it as a probe
+only.
+
+Follow-up probes:
+
+```text
+mask=0x4 + FIFO_BULK_REWIND f220:
+frameHash=0x37636bf4
+drawPackets=2191 direct/setup=312/141
+packetTypes=2/6/7=8/0/9
+
+mask=0x4 + FIFO_BULK_DECODE_WINDOW f220:
+frameHash=0xb99c9697
+drawPackets=3152 direct/setup=312/141
+packetTypes=2/6/7=0/0/4
+
+baseline + FIFO_BULK_DECODE_WINDOW f220:
+frameHash=0xf48be87e
+drawPackets=3154 direct/setup=368/168
+packetTypes=2/6/7=0/0/3
+
+baseline default sanity f220:
+frameHash=0x8004b9d5
+drawPackets=3418 direct/setup=503/235
+packetTypes=2/6/7=0/0/3
+```
+
+Added an opt-in closer MAME-style command FIFO model:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL=1
+```
+
+This tracks `cmdFifoBaseAddr`, `cmdFifoAddressMin`, `cmdFifoAddressMax`,
+`cmdFifoDepth`, and `cmdFifoHoles` instead of using only the local `valid[]`
+ring. The warm f180 snapshot does not restore meaningful `address_min/max`
+state; the first observed FIFO write can start at `0x13ecc`, so the model has a
+warm-state guard that seeds min/max from the first post-restore write rather
+than creating a huge artificial hole range. The old `storageIndex == 0`
+wrap-clear heuristic is also gated off while this MAME model is active.
+
+Current f220 probe results:
+
+```text
+baseline + MAME_CMD_FIFO_MODEL:
+frameHash=0x8004b9d5
+drawPackets=550 direct/setup=368/168
+packetTypes=0:1645,1:25702,2:0,3:550,4:72412,5:6161,6:0,7:3
+framebuffer nonBlack=13628 colored=11630
+
+mask=0x4 + MAME_CMD_FIFO_MODEL:
+frameHash=0x07a00a21
+drawPackets=206 direct/setup=312/141
+packetTypes=0:1623,1:24000,2:0,3:206,4:71135,5:5935,6:0,7:3
+framebuffer nonBlack=105085 colored=101438
+```
+
+Further MAME-model probes:
+
+```text
+baseline + MAME_CMD_FIFO_MODEL after unmasked read-index experiment:
+frameHash=0x8004b9d5
+drawPackets=550 direct/setup=368/168
+packetTypes=0:1645,1:25702,2:0,3:550,4:72412,5:6161,6:0,7:3
+
+cold start to f220 + MAME_CMD_FIFO_MODEL:
+pc=0xffffffff80108048
+frameHash=0x30e41dc5
+drawPackets=19249 direct/setup=33/0
+packetTypes=0:53730,1:22825,2:6,3:19249,4:68388,5:4490,6:8,7:1
+framebuffer nonBlack=0 colored=0
+
+cold start to f220 + MAME_CMD_FIFO_MODEL after type5-space0 local-RAM fix:
+pc=0xffffffff80108048
+frameHash=0x30e41dc5
+drawPackets=19238 direct/setup=33/0
+packetTypes=0:53732,1:22810,2:6,3:19238,4:68338,5:4492,6:9,7:1
+framebuffer nonBlack=0 colored=0
+
+baseline + MAME_CMD_FIFO_MODEL + MAME_CMD_FIFO_YIELD_ON_WORK:
+frameHash=0x8004b9d5
+drawPackets=506 direct/setup=368/168
+packetTypes=0:1645,1:25652,2:0,3:506,4:72244,5:5620,6:0,7:3
+
+baseline + MAME_CMD_FIFO_MODEL + strict command-FIFO enable:
+frameHash=0x6934c1b5
+drawPackets=0 direct/setup=32/0
+packetTypes=0:8,1:23286,2:0,3:0,4:69743,5:0,6:0,7:3
+
+baseline + MAME_CMD_FIFO_MODEL + framebuffer-sized command-FIFO RAM mask:
+frameHash=0x8004b9d5
+drawPackets=295 direct/setup=368/168
+packetTypes=0:196318,1:25412,2:0,3:295,4:71446,5:3345,6:0,7:3
+
+cold start to f220 + MAME_CMD_FIFO_MODEL + framebuffer-sized command-FIFO RAM mask:
+pc=0xffffffff8010805c
+frameHash=0x30e41dc5
+drawPackets=0 direct/setup=33/0
+packetTypes=0:770422,1:1,2:0,3:0,4:1,5:1384,6:0,7:0
+framebuffer nonBlack=0 colored=0
+
+baseline + MAME_CMD_FIFO_MODEL after runtime FIFO-ring wrap in the vertex FIFO fastpath:
+frameHash=0x08bc7d55
+drawPackets=2926 direct/setup=39/0
+packetTypes=0:2896,1:28402,2:0,3:2926,4:81484,5:40855,6:0,7:3
+type5-space3=40855 packets / 2493906 words
+
+same at f260:
+frameHash=0xafbe6460
+drawPackets=6424 direct/setup=45/0
+packetTypes=0:6796,1:32375,2:0,3:6424,4:94839,5:88451,6:0,7:3
+type5-space3=88451 packets / 5540050 words
+buffers=0:nz=307200:white=295259:colored=307200 1:nz=13985:white=1998:colored=13985
+
+same after white-dominated front-buffer avoidance:
+f220 frameHash=0xdbcda991 framebuffer nonBlack=13732 colored=11734 rbuf=1
+f260 frameHash=0xafbe6460 framebuffer nonBlack=13985 colored=11987 rbuf=1
+f260 counters: ffb=50/0/0 ffw=50/0/0 ffk=0/0/0 ffs=271/0/0 swc=0
+
+same + MAME_CMD_FIFO_YIELD_ON_WORK f220:
+frameHash=0xa4fafa4d
+drawPackets=2926 direct/setup=39/0
+packetTypes=0:2676,1:28402,2:0,3:2926,4:81544,5:40855,6:0,7:3
+framebuffer nonBlack=307200 colored=11746
+```
+
+The cold-start result proves the MAME path can consume a large amount of FIFO
+traffic, but it is still not semantically correct: odd packet classes return
+and the run is in a different load-state than the f180 warm continuation. The
+`TRACE_VOODOO_CMD_FIFO_MODEL` stop trace mostly shows normal `depth < words`
+pauses while the game writes a multi-word packet one word at a time; that is not
+by itself the stall. MAME-correcting type-5 space 0 to write local command
+RAM/framebuffer RAM instead of immediate LFB does not materially change f220.
+The `MAME_CMD_FIFO_YIELD_ON_WORK` timing experiment is also negative; it
+under-executes warm f220 further. Two more controls should also stay diagnostic
+only: strict FIFO enable routes current synthetic fastpath payload words into
+register writes and kills draws, and making the command FIFO backing mask match
+the full framebuffer RAM size causes NOP/type-0 dominance. The active MAME probe
+therefore remains on the 64K-word command FIFO storage mask for now.
+
+The next concrete MAME-FIFO issue was found at warm f220: without wrapping the
+synthetic vertex FIFO fastpath's write pointer, the MAME model stops on
+`peek=0xc0000205` (`66` words needed) with only `62` words of depth near the
+runtime FIFO ring end. Wrapping the fastpath writes inside the runtime
+`state+0x378/state+0x380` FIFO ring is gated to `FIX_VOODOO_MAME_CMD_FIFO_MODEL`
+and restores texture-packet throughput (`40855` type-5 packets vs baseline
+`39562`). It is still not correct: the frame hash changes and setup/direct draw
+work collapses, so the next target is register/setup sequencing after wrapped
+texture FIFO replay, not more type-5 payload depth.
+
+Follow-up draw traces show the "direct/setup collapse" is not the best primary
+signal. Baseline also executes some clearly synthetic/stale register-draw noise
+around `pc=0xffffffff800fe5d4`, while MAME-wrap mainly replays type-3 setup
+triangles from `pc=0xffffffff800c4e5c`. By f260 MAME-wrap has more texture
+traffic than baseline but fewer swaps/fills and leaves color buffer 0 almost
+entirely white while buffer 1 remains plausible. `MAME_CMD_FIFO_YIELD_ON_WORK`
+does not fix ordering; it makes the white buffer become the selected framebuffer.
+The next useful target is therefore swap/fastfill/buffer selection ordering
+under the wrapped MAME FIFO replay.
+
+MAME's Voodoo `swapbufferCMD` bit 9 (`dont_swap`) was added under the MAME FIFO
+path, but current probes show `dswap=0`, so it is correct cleanup rather than
+the visible issue. The visible whiteout was the display-buffer chooser accepting
+a front buffer that was almost entirely white because it still had enough
+non-white active pixels. The chooser now treats a visible front buffer with more
+than ~240k white pixels and fewer than 32k active non-white pixels as
+white-clear-dominated, allowing a comparable back/alternate buffer to win. This
+leaves default f220 unchanged and makes MAME-wrap f220/f260 render from buffer 1
+instead of the white front buffer.
+
+Fastfill/swap counters narrow the remaining ordering issue:
+
+```text
+default f260:
+ffb=34/12/0 ffw=23/0/0 ffk=11/12/0 ffo=0/0/0
+ffs=359/304/32 swc=1
+framebuffer nonBlack=13628 colored=11630
+
+MAME-wrap f260:
+ffb=50/0/0 ffw=50/0/0 ffk=0/0/0 ffo=0/0/0
+ffs=271/0/0 swc=0
+framebuffer nonBlack=13985 colored=11987
+
+MAME-wrap f260 with FASTFILL_COLOR_MASK disabled:
+ffb=208/113/0 ffw=208/113/0 ffk=0/0/0 ffo=0/0/0
+ffs=0/0/0
+framebuffer nonBlack=307200 colored=11941
+```
+
+So the remaining delta is not fixed by allowing masked fastfills through; that
+just makes both visible buffers white-dominated. MAME-wrap currently does not
+see the black fastfills/swap-clear pattern that the baseline path sees. The
+next target should be FIFO/timing/order before fastfill emission, especially
+why baseline reaches `ffk` and `swc` events that MAME-wrap does not.
+
+Added an opt-in compact PC profile for this exact issue:
+
+```text
+EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS=1
+```
+
+It adds `ffpc=` and `swpc=` to the Voodoo debug line, grouped by CPU PC, with
+white/black/other/suppressed counts plus the latest `color0/color1/za/fbz` and
+command-FIFO read index seen by each fastfill PC.
+
+Profiled f260 comparison:
+
+```text
+default:
+ffpc=0xffffffff800fe5d4:379/w25/k322/o32/s356/b11-12-0/last0000:1:-1:fbz00000000:c00000000-00000000:za00000000:rd0,
+     0xffffffff801027cc:362/w357/k5/o0/s339/b23-0-0/lastFFFF:1:-1:fbz00000000:cFFFFFFFF-00000000:za00FFFFFF:rd58EE
+swpc=0xffffffff800fe5d4:375/c1/d0/last0x00000000,
+     0xffffffff80102a80:212/c0/d0/last0x00000000,
+     0xffffffff80102ab4:212/c0/d0/last0x00000000
+
+MAME-wrap:
+ffpc=0xffffffff800fe5d4:107/w107/k0/o0/s106/b1-0-0/lastFFFF:1:-1:fbz00000000:cFFFFFFFF-00000000:za00FFFFFF:rd5ABFA2,
+     0xffffffff800fe5fc:99/w99/k0/o0/s85/b14-0-0/lastFFFF:1:-1:fbz00000000:cFFFFFFFF-FFFFFFFF:zaFFFFFFFF:rd57FFF2,
+     0xffffffff801027cc:113/w113/k0/o0/s78/b35-0-0/lastFFFF:1:-1:fbz00000000:cFFFFFFFF-00000000:za00FFFFFF:rd5B3FEB
+swpc=0xffffffff80102a80:212/c0/d0/last0x00000000,
+     0xffffffff80102ab4:212/c0/d0/last0x00000000,
+     0xffffffff800fe5fc:7/c0/d0/last0x00000000
+```
+
+This is the strongest current lead. Both paths reach `pc=0xffffffff800fe5d4`,
+but baseline sees the expected black clear state there (`last0000`,
+`color0/color1/za=0`) and one clear-swap, while MAME-wrap sees white
+under suppressed color writes (`lastFFFF`, `color0=FFFFFFFF`, `za=00FFFFFF`)
+and no clear-swap from that PC. Continue by tracing the register packet order
+around the `800fe5d4` fastfill sequence, especially `color0/color1/za`,
+`fbzMode`, and `swapbufferCMD`, rather than changing the fastfill mask.
+
+Added a narrower order trace for that sequence:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_PCS=ffffffff800fe5d4,ffffffff800fe5fc,ffffffff801027cc
+```
+
+The PC list is optional; without it the trace is too noisy because the early
+`801031a8` color-state loop fills the trace budget before the useful sequence.
+
+Rechecked f260 after adding the trace:
+
+```text
+baseline f260:
+frameHash=0x8004b9d5
+drawPackets=7466 direct/setup=789/378
+fastFills=1393 swaps=1187 ffb=34/12/0 ffw=23/0/0 ffk=11/12/0 swc=1
+
+MAME-wrap f260:
+frameHash=0xafbe6460
+drawPackets=6424 direct/setup=45/0
+fastFills=973 swaps=815 ffb=50/0/0 ffw=50/0/0 ffk=0/0/0 swc=0
+```
+
+The trace sharpens the failure mode. In baseline, the `800fe5d4` sequence drains
+to local command-FIFO state `rd=0/depth=0`, applies black state
+(`c0/c1/za/fbz=0`), emits repeated suppressed black fastfills, and executes
+swap commands from the same PC. One trace window also shows the stale
+`c1=0xc0000205` word being overwritten back to zero before the stable black
+sequence continues:
+
+```text
+baseline around 800fe5d4:
+kind=fastfill-suppressed value=0x00000000 c0=0 c1=0 za=0 fbz=0 rd=0 depth=0
+kind=swap value=0x00000000 c0=0 c1=0 za=0 fbz=0 rd=0 depth=0
+```
+
+In the MAME-wrap path, the comparable `800fe5d4/800fe5fc` region is still
+decoding from a live command FIFO window with thousands of words remaining
+(`depth` roughly `4.5k -> 4.2k` in the sampled window), and it mostly applies
+white `color0/color1` state. The only fastfills captured at the filtered PCs are
+white:
+
+```text
+MAME-wrap around 800fe5fc:
+kind=fastfill value=0x0000ffff c0=ffffffff c1=00000000 za=00ffffff fbz=00000460 depth=4
+...
+kind=reg reg=0x051/0x052 value=ffffffff c0=ffffffff c1=ffffffff za=ffffffff fbz=00000460
+```
+
+So the next target should not be display-buffer choice or fastfill color masks.
+It is the command-FIFO read/drain model around the transition from the
+texture-heavy replay back to the `800fe5d4` clear/swap service. Baseline's old
+valid-slot model effectively reaches an empty local FIFO at that point; the
+MAME-depth model is still consuming a backlog and never reaches the black
+clear/swap state before f260.
+
+Two narrow MAME-FIFO controls were tested after that:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX=1
+```
+
+`MAME_FIFO_WRAP_CLEAR` reintroduced the old `storageIndex == 0` clear behavior
+under the MAME path. It is not safe: it finds some black/swap state, but clears
+too early and destroys legitimate texture/draw traffic.
+
+```text
+MAME-wrap + WRAP_CLEAR f220:
+frameHash=0x7418c5eb
+drawPackets=14 direct/setup=174/67
+texWrites=122645 fastFills=747 swaps=879
+
+MAME-wrap + WRAP_CLEAR f260:
+frameHash=0x4f665194
+drawPackets=26 direct/setup=180/67
+texWrites=251477 fastFills=752 swaps=882
+framebuffer colored=0
+```
+
+`MAME_FIFO_MASK_READ_INDEX` masks read-pointer register writes, type-0 jumps,
+and packet advancement to the local 64K-word storage ring. It is neutral: f220
+and f260 match the unmasked MAME-wrap results exactly except for the displayed
+`cmdrd` formatting.
+
+```text
+MAME-wrap + MASK_READ_INDEX f260:
+frameHash=0xafbe6460
+drawPackets=6424 direct/setup=45/0
+texWrites=5540053 fastFills=973 swaps=815
+ffk=0/0/0 swc=0
+```
+
+Conclusion from these controls: the missing black/swap sequence is not fixed by
+blindly restoring the old wrap clear, and it is not caused by the unbounded
+read-index display/advance alone. The next useful probe should inspect
+MAME-style `cmdFifoDepth/cmdFifoHoles/cmdFifoAMin/cmdFifoAMax` updates against
+the real producer writes around the ring end, likely with a targeted trace that
+captures only late FIFO address-window transitions instead of the early startup
+traffic.
+
+Additional MAME-FIFO probes on 2026-06-11:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_AMIN_ON_PARTIAL_TYPE5=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_WORK=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SPACE0_ENDIAN=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN=1
+```
+
+`RESYNC_AMIN_ON_PARTIAL_TYPE5` was a bad control. It did not restore black
+clears and pushed the final image toward a full white framebuffer:
+
+```text
+MAME-wrap + RESYNC_AMIN_ON_PARTIAL_TYPE5 f260:
+frameHash=0xf20bcaf3
+drawPackets=7848 direct/setup=45/0
+texWrites=3274310 fastFills=1097 swaps=881
+ffk=0/0/0 swc=0
+framebuffer nonBlack=307200 colored=892
+```
+
+`MAME_CMD_FIFO_YIELD_ON_WORK` matches MAME's stop-after-positive-cycles shape
+more closely, but it does not fix the clear state:
+
+```text
+MAME-wrap + YIELD_ON_WORK f260:
+frameHash=0x77e2a3d8
+drawPackets=6424 direct/setup=45/0
+texWrites=5540053 fastFills=1021 swaps=815
+ffk=0/0/0 swc=0
+```
+
+`MAME_FIFO_SPACE0_ENDIAN` was neutral at f220/f260 and matched the unmodified
+MAME-wrap result. Removing the internal `0xffff` clamp from MAME-style
+`_cmdFifoDepth/_cmdFifoHoles` was also neutral at f220/f260, but is closer to
+MAME's internal `u32` counters; register reads remain clamped.
+
+The useful new instrumentation is:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_PCS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_COMMANDS=...
+```
+
+The PC filter now applies to decode-stop traces as well, so startup stalls no
+longer consume the whole trace budget. A targeted trace for command
+`0xc0000205` showed that it is not false header data: it is a real 66-word
+type-5 texture packet produced at `800fe7a0..800fe7cc`. The MAME-depth model
+waits correctly while depth rises from partial to complete, then consumes it.
+By f400, however, the model is out of packet phase again:
+
+Fastfill color-mask control on 2026-06-11:
+
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK` was removed from the
+implicit `BRINGUP_FAST` set and is now explicit opt-in only. On the current
+warm snapshot, default `BRINGUP_FAST` suppressed the black clear sequence when
+`fbzMode` color writes were disabled and left the visible framebuffer dominated
+by white:
+
+```text
+BRINGUP_FAST f260:
+frameHash=0xbd71006f
+ffb=36/0/0 ffw=36/0/0 ffk=0/0/0
+ffs=388/1171/91
+framebuffer nonBlack=307200 colored=443
+```
+
+With `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK=0`, those clears are
+applied again:
+
+```text
+BRINGUP_FAST + FASTFILL_COLOR_MASK=0 f260:
+frameHash=0x8e14c17e
+ffb=1044/642/0 ffw=405/19/0 ffk=636/535/0
+ffs=0/0/0
+buffer1 nonBlack=307200 white=1 colored=307200
+```
+
+The color-mask behavior still may be useful as a later accuracy fix, but it is
+too broad for bringup because Gauntlet's current state frequently issues
+important clear commands while the emulated color-write bit is not set.
+
+```text
+MAME-wrap f400:
+frameHash=0xcff92b39
+drawPackets=10504 direct/setup=49/0
+texWrites=7339121 fastFills=1144 swaps=1215
+ffk=0/0/0 swc=0
+cmdrd=0x90EC5C cmd=76456/0/0x25C0C/0x25C0C
+peek=0x40E28DD5:283068
+reg[026]=0xc0000205
+
+MAME-wrap + STOP_ON_UNKNOWN f400:
+frameHash=0xafbe6460
+drawPackets=10381 direct/setup=49/0
+texWrites=7246641 fastFills=3465 swaps=2002
+ffk=0/0/0 swc=0
+cmdrd=0x9131F2 cmd=58642/0/0x25C0C/0x25C0C
+peek=0x3B4C55B5:101048
+reg[026]=0xc0000205
+```
+
+`STOP_ON_UNKNOWN` removes type-6 consumption but still ends with a data word
+misread as a huge type-5 header, so the remaining bug is still read-pointer /
+packet-boundary phase, not a specific type-6/7 fallback.
+
+`tools/GauntletProbe` now writes warmup snapshot version 3 and includes the
+MAME command FIFO address fields:
+
+```text
+_cmdFifoRamBase
+_cmdFifoRamEnd
+_cmdFifoAddressMin
+_cmdFifoAddressMax
+```
+
+Loading existing v1/v2 warm snapshots remains supported. This does not make the
+old f180 snapshot a valid MAME-FIFO state, but future snapshots created while
+probing this model will no longer silently drop the new address-window state.
+
+The important conclusion is that the odd packet classes are a symptom of the
+simplified `valid[]` command FIFO model, not a type-5 length bug: MAME's
+`voodoo_2.cpp` confirms type 5 is `2 + N` words. The decode-window experiment
+removes type-2/type-6 and most type-7 noise, but it suppresses legitimate draw
+work in both baseline and slot-2 runs. The MAME-style model also removes the
+odd packet classes, but it currently under-executes legitimate type-5 and draw
+work. The next target is to find why its `depth/holes/address_min/address_max`
+accounting stalls relative to the old baseline, likely around warm snapshot
+register state, read-pointer jumps, or bulk fastpath write boundaries.
+
+Do not promote broad indexed headers, `SHORT_READ_FILL_REMAINING`, all-index
+hydration, FIFO bulk reset, FIFO bulk rewind, or FIFO bulk decode-window until
+that packet-class change is explained. Do not promote
+`FIX_VOODOO_MAME_CMD_FIFO_MODEL` yet either; keep it as a probe/trace path.
 
 ## Relevant Local Paths
 
@@ -55,6 +633,752 @@ Core builds:
 ```sh
 dotnet build EutherDrive.Core/EutherDrive.Core.csproj --no-restore /clp:ErrorsOnly
 ```
+
+Probe builds:
+
+```sh
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+```
+
+Last verified in this pass: core build succeeded with 343 warnings and 0 errors;
+probe release build succeeded with 344 warnings and 0 errors.
+
+## 2026-06-10 Handoff At Break: Minimum Safe Indexed Payload
+
+Current safest payload stack is:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES=1
+```
+
+This is intentionally more conservative than the earlier all-index source
+header fix. `BRINGUP_FAST` by itself does not enable the partial indexed
+payload repair. The new repair hydrates only BGLoadModel index 1 (`gei`) by
+default (`mask=2`) with `0x9f60` bytes. This preserves the known-good frame
+hash and avoids the wider all-index texture churn until we know which later
+assets are actually needed.
+
+Warm snapshot used for the latest probes:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-indexed-src-f600-s200000.warm
+```
+
+Run it with `EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180`. The saved snapshot's
+internal frame counter is 600, but `tools/GauntletProbe/Program.cs` now saves
+future final snapshots with the requested target frame count instead of the
+warmup-frame count.
+
+Known-good f620 result with the minimum safe stack:
+
+```text
+frame=620
+pc=0xffffffff800b1ae0
+frameHash=0x27001f2f
+texWrites=9257493
+textureMap=writes=105032:nz=58084:zero=46948:touched=9573
+fastFills=3080 swaps=111498 colored=9125
+voodoo reg[02a]=0xc0000205
+voodoo reg[09a]=0x00000000
+```
+
+Known-good f900 result with the same stack:
+
+```text
+frame=900
+pc=0xffffffff8004cb0c
+frameHash=0x27001f2f
+texWrites=9257493
+textureMap=writes=105032:nz=58084:zero=46948:touched=9573
+fastFills=5252 swaps=111498 colored=9125
+voodoo reg[09a]=0x00000000
+```
+
+Plain `BRINGUP_FAST` remains unchanged and is still useful as a control:
+
+```text
+frame=620 pc=0xffffffff800af764 frameHash=0x27001f2f
+texWrites=9231235 textureMap=writes=0 fastFills=3088 colored=9125
+```
+
+Wider masks were tested but should stay experimental:
+
+- Mask `40` (`geb` only) regressed the visible hash at f620
+  (`frameHash=0x2f5d8900`, `colored=8709`).
+- Mask `42` (`gei+geb`) matched the all-index behavior at f900: good hash,
+  but higher texture work (`texWrites=9273039`, `textureMap=writes=167216`).
+- All-index `0x9f60` held the good hash through f1500 in earlier probes, but
+  it creates more texture writes than the minimum stack and is not the safest
+  default.
+- Runtime diagnostic menu scan experiments are not safe here. They regressed
+  f620 to `frameHash=0x2f5d8900` even with the same `gei` texture writes.
+
+`GauntletProbe` now has `EUTHERDRIVE_GAUNTDL_DUMP_RENDER_RECORDS=1`. The dump
+prints render-list counts, slot distribution, first records, non-slot-0
+records, and allocator body histograms. This confirmed that the current
+render-list entries are still loading/UI text records, not real model-body
+records:
+
+```text
+f620 minimum stack:
+renderRecords count=43 flag40=30 nullBody=43 nonZeroToken=0
+renderRecords slots=0:30,6:1,7:9,8:3
+
+f660 minimum stack:
+renderRecords count=53 flag40=30 nullBody=53 nonZeroToken=0
+renderRecords slots=0:30,1:2,6:1,7:15,8:5
+
+f900 minimum stack:
+renderRecords count=37 flag40=30 nullBody=37 nonZeroToken=0
+renderRecords slots=0:30,6:1,7:5,8:1
+
+f1200 minimum stack:
+frameHash=0x27001f2f pc=0xffffffff800b1a6c
+renderRecords count=41 flag40=30 nullBody=41 nonZeroToken=0
+renderRecords slots=0:30,6:1,7:8,8:2
+```
+
+The f620 difference versus plain `BRINGUP_FAST` was only timing: by f660 the
+minimum stack reaches the same 53-record loading/UI list shape as plain f620.
+All sampled `s2` pointers are sequential bytes in the `8020f268..8020f29c`
+text/layout buffer. A byte dump around `8020f260` showed NULs followed by
+space padding, so `TryFastPathKnownRuntimeRenderRecordNullBody()` is still
+handling the intended null-text-record case. `807ffc58`, the repeated source
+for the string-copy fast path, points into a structure-like area; the copied
+record-token bytes are zero because the render-list is still drawing/loading
+text placeholders.
+
+Important interpretation at break:
+
+- The minimum `gei` payload is safe and gives real texture-map writes.
+- It does not yet unlock real model-body render records (`nonZeroToken` stays
+  0 through f1200).
+- `800b1dc4` remains a hot helper on the render path, but it is not the next
+  correctness bug; the body token data is still intentionally null/empty.
+- The next target should be load progression and asset/source-table state,
+  not another render null-body fast path.
+
+Suggested next probe:
+
+1. Dump BGLoadModel asset/source tables at f900 and compare plain
+   `BRINGUP_FAST` vs the minimum stack, especially entries 1..8 and any
+   selected model/material globals near the `800aa958/800aacb4/800aae98`
+   path.
+2. Trace why later assets are still normalized back to `802e1718` after `gei`
+   is hydrated; current logs show names repaired, then later pointer-normalize
+   calls still collapse slots 2..8 to static source.
+3. Only after identifying the next required source index, raise the mask
+   narrowly. Do not jump back to all-index by default.
+
+## 2026-06-10 Continuation: Promote Indexed BGLoadModel Source Headers
+
+The previously experimental combination for BGLoadModel source slots 1..8 is
+now a normal bring-up fast fix:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_HEADERS=1
+```
+
+It is enabled by `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1`. The repair runs at the
+same caller/parser points as the older distinct-source experiment, but only
+writes `802529a0 + index * 4` when the per-index source header was actually
+hydrated from the known indexed texture payload table. This avoids the earlier
+failed state where the table pointed at empty per-index buffers.
+
+300-frame verification from the castle warm snapshot:
+
+```sh
+env EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1 \
+    EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-castle-f180-s200000.warm \
+    EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180 \
+    EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+    dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+      /home/nichlas/roms/MAME/Midway/Vegas/gauntd 300 200000 0
+```
+
+Result:
+
+```text
+frame=300
+pc=0xffffffff800c8138
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=2973 swaps=7681
+framebuffer=640x480 nonBlack=28727 colored=9125
+```
+
+Baseline immediately before this fix, with the same castle snapshot and only
+the older fast fixes:
+
+```text
+frameHash=0xbd71006f
+drawPackets=1024 directTriangles=2818 setupTriangles=1394
+texWrites=6203075 framebuffer colored=443
+```
+
+The source table now has distinct hydrated headers:
+
+```text
+802529a0: 802e1718 802e3718 802e5718 802e7718
+802529b0: 802e9718 802eb718 802ed718 802ef718
+802529c0: 802f1718 80312998 80332998 ...
+```
+
+The asset table entries for slots 1..8 now contain non-static pointers/counts
+instead of repeated `802e1718/0` empty descriptors. The missing-texture loop
+still sees empty names, but it is no longer parsing a completely collapsed
+source list. Next target: identify whether the empty names are harmless runtime
+labels or still blocking later material/model lookup, then trace from the new
+PC plateau around `800c8138`.
+
+600-frame sanity with the same settings remained stable:
+
+```text
+frame=600
+pc=0xffffffff8004ed68
+frameHash=0x2f5d8900
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=2973 swaps=110922
+framebuffer=640x480 nonBlack=307200 colored=8709
+```
+
+The Voodoo draw/texture counters stop growing after the new source-header
+repair has done its work, while swap/status traffic continues. The next blocker
+therefore appears to be a later runtime wait/state decision rather than another
+early BGLoadModel source-table collapse.
+
+Follow-up probes after the source-header fix:
+
+- Pressing player FIRE 3 / TURBO for frames 220..280 did not leave the visible
+  diagnostic/menu pump. It reproduced the same `frameHash=0x2f5d8900`,
+  `pc=0xffffffff8004ed68`, and draw/texture counters.
+- `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS=1` plus
+  `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP=1` changed
+  the sampled PC to `0xffffffff801034c8` and increased type-1/swap traffic, but
+  did not increase draw packets, triangle counts, texture writes, or the final
+  frame hash. Keep those experiments off the best stack.
+- A saved f600 continuation snapshot now exists at:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-indexed-src-f600-s200000.warm
+```
+
+Because the probe harness used warmup-frame metadata for final snapshots, this
+specific file currently loads with `EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180`
+despite containing `frameCounter=600`. `tools/GauntletProbe/Program.cs` has
+been corrected so future `EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE` files store the
+actual target frame count.
+
+Continuing from that f600 snapshot to frame 900 is stable but confirms the same
+plateau:
+
+```text
+frame=900
+pc=0xffffffff800c7b94
+frameHash=0x2f5d8900
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=2973 swaps=214164
+framebuffer=640x480 nonBlack=307200 colored=8709
+hotpcs=800e3378,800b1dc4,80121670,800c7b68..800c7b90,800c81a8..
+```
+
+The current best next target is the `800c7b68..800c8210` progress/text pump and
+the loaded Glide state at `80262d64`, especially the fields around
+`+0x250..+0x37c`. At f600, the state includes `fbzMode=00000460`, FIFO room
+tracking around `+0x374/+0x37c`, and queued type-1/state words, but no further
+geometry or texture upload work is being generated.
+
+### Castle Worlddata Static Link
+
+The f600 plateau still had `8016c13c=802e1000`, so the selected runtime world
+was castle, but the matching static world entry at `8015bef4` had no worlddata
+link:
+
+```text
+8015bef4+0x10 = 00000000
+```
+
+Raw FSYS inspection of `gauntd24.raw` verified the `/worlddata` headers:
+
+```text
+/worlddata directory header  byte=0x0f0f8a00 lba=0x787c5
+/worlddata directory payload byte=0x0f0f8c00 lba=0x787c6
+castle.wad id=0x326
+castle.wad header  byte=0x0f0ffe00 lba=0x787ff size=0x0a04
+castle.wad payload byte=0x0f100000 lba=0x78800 first=0x000009a4 count=8
+```
+
+`ApplyKnownRuntimeWorldStaticDataLinkRepair()` now links selected castle static
+data at the existing `8004f29c` scan point, hydrating `81000000` from
+`/worlddata/castle.wad`, storing it in `8015bef4+0x10`, storing count `8` in
+`+0x14`, and setting `v0` so the already-loaded branch condition sees the new
+pointer immediately:
+
+```text
+[GAUNTDL:FIX] world-selected-static-data-link pc=ffffffff8004f29c index=0 entry=ffffffff8015bef4 data=ffffffff81000000 offset=f100000 bytes=a04 first=000009a4 count=00000008
+```
+
+Short f600 -> f601 verification:
+
+```text
+pc=0xffffffff800c7bd0
+frameHash=0x2f5d8900
+8015bef4+0x10=81000000 +0x14=00000008
+81000000: a4 09 00 00 08 00 00 00 ...
+```
+
+This is not a new-geometry fix by itself, but it does unlock additional runtime
+work after f600. The previous f600 -> f900 run stayed in the `800c7b94` progress
+pump with no BGLoadModel activity. With the castle worlddata link, the run emits
+new BGLoadModel and render-record traces after frame 600:
+
+```text
+bgloadmodel-known-missing-texture-caller-loop key=<empty> pc=ffffffff800aa958 ...
+render-record-null-body pc=ffffffff800b1e7c record=ffffffff80210d18 ...
+```
+
+f600 -> f900 with the castle link now ends at a different plateau:
+
+```text
+frame=900
+pc=0xffffffff80013a3c
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=5253 swaps=111498
+lfbWrites=461061927
+framebuffer=640x480 nonBlack=28727 colored=9125
+hotpcs=800b1dc4,80121670,8011fab8,8011f7ac,80120204..80120230
+```
+
+Important delta versus the pre-castle-link f600 -> f900 plateau:
+
+```text
+old pc=0xffffffff800c7b94
+old frameHash=0x2f5d8900
+old fastFills=2973 swaps=214164 lfbWrites=110853927
+new pc=0xffffffff80013a3c
+new frameHash=0x27001f2f
+new fastFills=5253 swaps=111498 lfbWrites=461061927
+```
+
+Next target moved from the old `800c7b68..800c8210` progress pump to the new
+`80013a3c` service path and its hot text/string helpers:
+`8011f7ac`, `8011fab8`, and `80120204..80120230`. The recurring
+`bgloadmodel-known-missing-texture-caller-loop` still shows empty asset names
+for entries 1..8, so the next useful split is whether the new `80013a3c`
+plateau is a text/progress service delay or still caused by missing BGLoadModel
+asset names/material descriptors.
+
+### Runtime Record Scan/Allocate Fastpath
+
+The new hot loop after the castle static-data link was the small record
+allocator at `800b1264..800b1300`. It reads the record count through signed
+offset `0x8088(0x80230000)`, so the real count global is `80228088`, not
+`80238088`. The table is `80255f20`, stride `0x50`, max `0x17f`; records with
+signed byte `record+4 == 2` are reused, otherwise the count increments and the
+next slot is returned.
+
+`TryFastPathKnownRuntimeRecordScanAllocate()` now handles both the function
+entry and the in-flight scan loop `800b128c..800b12a4`, preserving the count
+write and normal return stack adjustment. Verification from the f600 snapshot:
+
+```text
+record-scan-allocate pc=ffffffff800b1264 start=0 count=0 selected=0 result=ffffffff80255f20
+...
+record-scan-allocate pc=ffffffff800b1264 start=0 count=7 selected=7 result=ffffffff80256150
+```
+
+f600 -> f620 after this fastpath:
+
+```text
+frame=620
+pc=0xffffffff800af764
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=3088 swaps=111498
+lfbWrites=128517927
+hotpcs=800b1dc4,80121670,8011fab8,8011f7ac,80120204..80120230
+```
+
+The previous `800b128c..800b12a4` hot group is gone. f600 -> f900 remains on
+the same framebuffer hash and moves the sampled PC from the previous
+`80013a3c` plateau into the render-record/service path:
+
+```text
+frame=900
+pc=0xffffffff800b1ba0
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=5263 swaps=111498
+lfbWrites=462597927
+hotpcs=800b1dc4,80121670,8011fab8,8011f7ac,80120204..80120230
+```
+
+The next target is now `800b1dc4` / nearby render-record traversal, with the
+diagnostic format/string-copy family still a major secondary cost.
+
+### Partial Indexed Source Header Probe
+
+Default f600 -> f620/f900 was rechecked after the record-scan fastpath and still
+matches the previous best visual baseline:
+
+```text
+f620 default:
+pc=0xffffffff800af764
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=3088 swaps=111498
+framebuffer colored=9125
+
+f900 default:
+pc=0xffffffff800b1ba0
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9231235 fastFills=5263 swaps=111498
+```
+
+The f620 dumps showed why the promoted indexed-source repair does not fire
+after the f600 continuation point: source-table slots 1..8 collapse back to
+`802e1718`, while the per-index windows have a zero header prefix but nonzero
+loader metadata beginning around `+0x40`. The old guard required the whole
+`0x80` window to be zero before hydrating the known indexed payload header.
+
+Added an explicit opt-in experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_HEADERS=1
+```
+
+With that enabled, `TrySeedKnownRuntimeBgLoadModelDistinctSourceIndexedHeader()`
+allows hydration when only the first `0x40` bytes are clear. This restores the
+distinct source table after f600:
+
+```text
+802529a0: 802e1718 802e3718 802e5718 802e7718
+802529b0: 802e9718 802eb718 802ed718 802ef718
+802529c0: 802f1718 ...
+```
+
+It is real runtime progress, but not a visual win yet:
+
+```text
+f620 partial-indexed-header experiment:
+pc=0xffffffff800b1c78
+frameHash=0x9ac85dc5
+drawPackets=1174 directTriangles=4439 setupTriangles=2197
+texWrites=12253059 textureMapWrites=12087296
+framebuffer colored=0
+
+f900 partial-indexed-header experiment:
+pc=0xffffffff800b22a0
+frameHash=0x9ac85dc5
+drawPackets=1174 directTriangles=4439 setupTriangles=2197
+texWrites=12253059 fastFills=5671 swaps=111915
+framebuffer colored=0
+```
+
+Negative controls:
+
+- `EUTHERDRIVE_GAUNTDL_PRESERVE_NONZERO_TEXTURE_BYTES=1` did not change the
+  white-frame result.
+- `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES=1` also did not
+  change it when it only repaired empty names. A later correction made this
+  repair map asset-table body pointers back to the per-index source window via
+  `sourceBase + header[0x5c]`, so `802f1abc` now correctly resolves to `stk`
+  instead of being misidentified by address range. This keeps labels such as
+  `gei/snm/stk/kjh/pnk` stable, but still does not by itself fix the white
+  frame.
+
+Follow-up mask probes used
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK`
+with the new partial-header experiment. The mask parser is hexadecimal, so
+single-index masks are `2`, `4`, `8`, `10`, `20`, `40`, `80`, and `100` for
+indexes 1..8.
+
+```text
+f620 single-index partial headers:
+index 1 mask=2   frameHash=0xc00c5e9f pc=0xffffffff80019a3c colored=8810
+index 2 mask=4   frameHash=0x0246527a pc=0xffffffff800b2a3c colored=9105
+index 3 mask=8   frameHash=0x5dd6db19 pc=0xffffffff8012169c colored=9101
+index 4 mask=10  frameHash=0x27001f2f pc=0xffffffff800c7a70 colored=9125
+index 5 mask=20  frameHash=0x17db0316 pc=0xffffffff80106b58 colored=8812
+index 6 mask=40  frameHash=0x7647fcce pc=0xffffffff800b1bd8 colored=9091
+index 7 mask=80  frameHash=0x27001f2f pc=0xffffffff8004c950 colored=9125
+index 8 mask=100 frameHash=0xf932733a pc=0xffffffff8012023c colored=9604
+```
+
+At f900, index 1 alone remains colored (`frameHash=0xc00c5e9f`,
+`colored=8810`), while index 2 alone and the `1+2+3` combination both collapse
+to white (`frameHash=0x9ac85dc5`, `colored=0`). The `1+2+3` probe also leaves
+`0xc0000205` in a setup/vertex register, matching the earlier Voodoo trace where
+type-5 texture command words leaked into register/fastfill interpretation.
+
+Keep the partial indexed-header probe off `BRINGUP_FAST` for now. It proves the
+late per-index source windows can be hydrated and pushes the CPU/Voodoo counters
+forward, but all-index hydration is too broad. The next concrete target is the
+BGLoadModel body/name side: find why the later asset table still shows
+`<empty>` names for the indexed records and why multiple partial headers cause
+type-5 command words such as `0xc0000205` to be consumed as render/setup state.
+
+Follow-up asset-parser traces showed the first actionable split: `mask=e`
+(`1+2+3`) parses `stk` correctly into asset entry `802f1abc/4`, but the
+header-only source then exposes a side selector from the same index:
+
+```text
+index=3 source=802e7718
+selector=802f17ec/0000001e/802f2ea0/0000001e
+asset=3:802f1abc/00000004/.../stk
+caller-after-path-lookup v0=802e87e8 v1=0000001e
+```
+
+That was the missing piece: `0x120` bytes is enough to rebuild the asset-table
+entry, but not enough to make all side/list data referenced by the indexed
+source safe. Added another explicit experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS=1
+```
+
+When this is enabled, the indexed source seeding uses the known payload length
+from `TryGetKnownRuntimeBgLoadModelTexturePayload()` instead of only `0x120`
+bytes. It is still opt-in and not part of `BRINGUP_FAST`.
+
+Results with partial headers + full payloads + asset names:
+
+```text
+mask=e f620:
+pc=0xffffffff800b1ae0
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9257493 fastFills=3080 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+
+mask=e f900:
+pc=0xffffffff8004cb0c
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9257493 fastFills=5252 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+
+all-index f620:
+pc=0xffffffff800d51c4
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9275037 fastFills=3074 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+```
+
+This confirms the white-out was caused by incomplete indexed source payloads,
+not empty asset names. The current best next target is to decide whether full
+payload seeding can be narrowed/promoted safely, because it restores correct
+visual output but also changes texture-upload volume and PC plateaus versus the
+default f600 continuation.
+
+Minimum-payload sweep:
+
+```text
+mask=e f620:
+0x2000 -> frameHash=0x2f5d8900 colored=8709
+0x8000 -> frameHash=0x2f5d8900 colored=8709
+0x9000 -> frameHash=0x2f5d8900 colored=8709
+0x9f00 -> frameHash=0x2f5d8900 colored=8709
+0x9f40 -> frameHash=0x2f5d8900 colored=8709
+0x9f60 -> frameHash=0x27001f2f colored=9125 reg[09a]=00000000
+0x9f80 -> frameHash=0x27001f2f colored=9125 reg[09a]=00000000
+0xa000 -> frameHash=0x27001f2f colored=9125 reg[09a]=00000000
+0xa0d0 -> frameHash=0x27001f2f colored=9125 reg[09a]=00000000
+```
+
+`0x9f60` is therefore the current smallest verified practical extent. It is
+still a contiguous arena-style extent from the first indexed source, not an
+isolated per-slot payload, because these source records deliberately reference
+data beyond the nominal `0x2000` stride. Added:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_MIN_INDEXED_SOURCE_PAYLOAD=1
+```
+
+This selects `0x9f60` without needing the generic
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES`
+override.
+
+The partial-header path now defaults to this `0x9f60` minimum extent whenever
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_HEADERS=1`
+is active. The generic byte override still wins first, and the full-payload
+experiment still wins when no explicit byte override is present.
+
+Verification:
+
+```text
+mask=e f900 with min payload:
+pc=0xffffffff8004cb0c
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9257493 fastFills=5252 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+
+all-index f620 with min payload:
+pc=0xffffffff80106a34
+frameHash=0x27001f2f
+drawPackets=1080 directTriangles=3605 setupTriangles=1784
+texWrites=9273039 fastFills=3077 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+```
+
+Regression after making `0x9f60` the partial-header default:
+
+```text
+default BRINGUP_FAST f620:
+pc=0xffffffff800af764
+frameHash=0x27001f2f
+texWrites=9231235 fastFills=3088 swaps=111498
+framebuffer colored=9125
+
+default BRINGUP_FAST f900:
+pc=0xffffffff800b1ba0
+frameHash=0x27001f2f
+texWrites=9231235 fastFills=5263 swaps=111498
+framebuffer colored=9125
+
+partial mask=e f620:
+pc=0xffffffff800b1ae0
+bytes=00009f60
+frameHash=0x27001f2f
+texWrites=9257493 fastFills=3080 swaps=111498
+framebuffer colored=9125
+
+partial mask=e f900:
+pc=0xffffffff8004cb0c
+bytes=00009f60
+frameHash=0x27001f2f
+texWrites=9257493 fastFills=5252 swaps=111498
+framebuffer colored=9125
+
+partial all-index f620:
+pc=0xffffffff80106a34
+bytes=00009f60
+frameHash=0x27001f2f
+texWrites=9273039 fastFills=3077 swaps=111498
+framebuffer colored=9125
+
+partial all-index f900:
+pc=0xffffffff800a9298
+bytes=00009f60
+frameHash=0x27001f2f
+texWrites=9273039 fastFills=5249 swaps=111498
+framebuffer colored=9125
+```
+
+Default `BRINGUP_FAST` remains unchanged because the partial-header seedability
+path is still explicit. Since all-index f900 now holds, the next promotion
+candidate is to decide whether `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_HEADERS`
+should use the partial seedability + `0x9f60` extent by default after f600.
+
+Longer all-index soak with the `0x9f60` extent:
+
+```text
+all-index f1200:
+pc=0xffffffff80106a3c
+frameHash=0x27001f2f
+texWrites=9273039 fastFills=7576 swaps=111498
+framebuffer colored=9125
+reg[02a]=c0000205 reg[09a]=00000000
+
+all-index f1500:
+pc=0xffffffff800b1ffc
+frameHash=0x27001f2f
+texWrites=9273039 fastFills=9903 swaps=111498
+framebuffer colored=9125
+reg[02a]=c0000205 reg[09a]=00000000
+```
+
+`reg[02a]=c0000205` also appears in good minimum/full-payload runs; the bad
+white-out signature was `reg[09a]=c0000205`, which stays clear here.
+
+Added a narrower opt-in repair flag:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS=1
+```
+
+This flag enables the partial seedability check and the `0x9f60` source extent
+without requiring the experiment flags. It intentionally uses truthy parsing
+rather than `IsBringupFixEnabled`, so plain `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1`
+does not enable it yet. The repair path also keeps the source-table write gated
+on successful indexed-source hydration, so it cannot silently fall back to the
+old clone/static-source behavior if the payload seed fails.
+
+Follow-up comparison showed why this should stay narrower than all-index by
+default:
+
+```text
+plain BRINGUP_FAST f620:
+frameHash=0x27001f2f
+texWrites=9231235 textureMapWrites=0
+hotpcs=800b1dc4,80121670,8011fab8,8011f7ac,80120204..
+
+all-index partial payload f620:
+frameHash=0x27001f2f
+texWrites=9273039 textureMapWrites=167216
+hotpcs=800fe7bc..800fe7e0,800b1dc4,80121670..
+
+mask=2/index-1 gei f620:
+frameHash=0x27001f2f
+texWrites=9257493 textureMapWrites=105032
+hotpcs=800b1dc4,800fe7bc..800fe7e0,80121670..
+
+mask=40/index-6 geb f620:
+frameHash=0x2f5d8900
+texWrites=9246781 textureMapWrites=62184
+framebuffer colored=8709
+```
+
+So `gei`/index 1 is the smallest currently verified partial-payload promotion
+point. The opt-in repair now defaults to mask `0x2` when no explicit
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK`
+is set. Explicit masks still work for broader experiments such as `0x42` or
+all-index.
+
+Verification after adding the opt-in repair:
+
+```text
+BRINGUP_FAST + PARTIAL_INDEXED_SOURCE_PAYLOADS f900:
+bytes=00009f60
+mask=00000002
+pc=0xffffffff8004cb0c
+frameHash=0x27001f2f
+texWrites=9257493 textureMapWrites=105032 fastFills=5252 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+
+plain BRINGUP_FAST f620:
+pc=0xffffffff800af764
+frameHash=0x27001f2f
+texWrites=9231235 fastFills=3088 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+
+BRINGUP_FAST + PARTIAL_INDEXED_SOURCE_PAYLOADS f620 after the stricter guard:
+bytes=00009f60
+mask=00000002
+pc=0xffffffff800b1ae0
+frameHash=0x27001f2f
+texWrites=9257493 textureMapWrites=105032 fastFills=3080 swaps=111498
+framebuffer colored=9125
+reg[09a]=00000000
+```
+
+So the current safe next boot stack is plain `BRINGUP_FAST` plus the explicit
+partial indexed source payload repair, with its default index-1 mask. Keep it
+explicit until we have a cleaner explanation for the remaining extra
+texture-download work and PC plateau versus plain default.
 
 ## 2026-06-05 Continuation: Keep Runtime World Selection on Castle
 
