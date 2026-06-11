@@ -11260,6 +11260,24 @@ cmdcall 800fe5fc=1794510 calls / 32501 packets / max1 / c5=27785 / other=4716 / 
 So stopping after render-affecting packets does not restore the missing
 standard-path idle/invalid windows either.
 
+The broader `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_WORK=1`
+control is not useful either. It leaves the screen essentially blank
+(`colored=695`) and changes the frame signature while reducing draw packets:
+
+```text
+MAME FIFO + yield on any packet work:
+frameHash=0x717c31c3
+drawPackets=648 direct/setup=44/0
+packetTypes=0:9564,1:33339,2:0,3:648,4:98322,5:91893,6:0,7:3
+framebuffer colored=695
+cmdcall 800fe5fc=1794510 calls / 32501 packets / max1 / c5=27785 / other=4716 / empty=1762009
+cmdcall 80106a74=21672 calls / 15368 packets / max62 / c5=9803 / mix=19 / other=5099 / empty=6751
+cmdcall 80106448=10838 calls / 9432 packets / max55 / c5=4622 / mix=6 / other=4585 / empty=1625
+```
+
+That over-yields into many small write-triggered service sites and does not
+recover the standard path's texture-service ownership.
+
 A bulk-window control was also negative. Enabling the existing
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
 FIFO made the frame slightly worse:
