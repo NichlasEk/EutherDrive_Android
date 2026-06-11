@@ -10255,3 +10255,108 @@ slot 7 is added early. Both paths produce more geometry than the current
 partial-only baseline but reduce framebuffer coverage. Continue by tracing the
 Voodoo state emit around the first divergent texture/state packet rather than
 trying more broad header hydration.
+
+## 2026-06-11 Checkpoint Probe: MAME FIFO White-Clear Failure
+
+The MAME-style Voodoo command FIFO model remains an opt-in diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL=1
+```
+
+The latest probes moved the failure from a vague "white framebuffer" symptom to
+a specific command stream problem. Standard mode at f400 after the fastfill mask
+default change still renders the castle plateau:
+
+```text
+standard f400:
+frameHash=0x8e14c17e
+drawPackets=1024 direct/setup=2818/1394
+texWrites=5431619 fastFills=3399 swaps=2774
+packetTypes=0:2422,1:42639,2:0,3:1024,4:125877,5:84869,6:0,7:6
+framebuffer colored=307199
+ffk=692/581/0
+```
+
+The MAME FIFO model reaches roughly the same workload envelope but clears both
+visible buffers white and loses setup triangles:
+
+```text
+MAME FIFO f400:
+frameHash=0x9ac85dc5
+drawPackets=1046 direct/setup=46/0
+texWrites=6555139 fastFills=1762 swaps=1382
+packetTypes=0:9943,1:42142,2:0,3:1046,4:122690,5:102424,6:0,7:3
+framebuffer colored=0
+cmdstop=depth/0x00059604/4/3/0x1ADCD70/pc=0xFFFFFFFF801031A8/2087871
+ffk=0/0/0
+```
+
+Running to f500 did not recover, so this is not just a frame-boundary partial
+packet. Masking the MAME FIFO read index is neutral. Truncating partial type-4
+packets is explicitly negative:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRUNCATE_PARTIAL_TYPE4=1
+
+f400:
+packetTypes=0:57921,1:40547,2:0,3:1046,4:122631,5:102424,6:0,7:6169
+framebuffer colored=0
+cmdstop=partial-type4-truncate/0x00059604/4/2/0x1ADCD70/pc=0xFFFFFFFF8010319C/2071355
+```
+
+Do not promote partial type-4 tolerance; it creates a type-7 storm and no visual
+win.
+
+Added filtered command-FIFO tracing so
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_COMMANDS` can filter both FIFO
+writes and register-value traces by value. This made it easy to isolate the
+recurring `0xffffffff` writes that keep the fastfill color white.
+
+Important traces:
+
+```text
+0x00059604 producers:
+pc=0xffffffff80106a74
+pc=0xffffffff800bd18c
+
+MAME FIFO f260 with value filter 0xffffffff:
+packet=0x0001828c packetType=4 target=0x051/0x052 value=0xffffffff
+packet=0x0104824c packetType=4 target=0x04c/0x052 value=0xffffffff
+```
+
+Fastfill/swap PC profiles now show the actual color divergence:
+
+```text
+standard f260:
+frameHash=0x8e14c17e
+direct/setup=2594/1282
+fastFills=2338 swaps=2086
+ffk=636/535/0
+framebuffer colored=307199
+
+MAME FIFO f260:
+frameHash=0x1e212a0b
+direct/setup=44/0
+fastFills=1045 swaps=806
+ffw=373/20/0 ffk=0/0/0
+cmdstop=depth/0x0001828C/3/2/0x17C9D44/pc=0xFFFFFFFF8010319C/1948084
+framebuffer colored=695
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` on top of the
+MAME model is also negative at f400. It keeps the framebuffer white, reduces
+draw packets, and introduces type-7 packets:
+
+```text
+MAME FIFO + FIFO_BULK_DECODE_WINDOW f400:
+frameHash=0x9ac85dc5
+drawPackets=897 direct/setup=46/0
+packetTypes=0:44398,1:40298,2:0,3:897,4:116552,5:102325,6:0,7:197
+framebuffer colored=0
+```
+
+Next target: track why the MAME depth/address-min model repeatedly decodes
+type-4 packets that set `RegColor0`/`RegColor1` to `0xffffffff` and stalls on
+the same packet class with only two of three words available. The fastfill code
+itself is behaving consistently with the register state it receives.

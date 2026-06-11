@@ -25495,7 +25495,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         _cmdFifoRam[storageIndex] = value;
         if (_fixMameCommandFifoModel)
-            TrackMameCommandFifoWrite(address);
+            TrackMameCommandFifoWrite(address, value);
         else if (!_cmdFifoValid[storageIndex])
             _cmdFifoDepth = Math.Min(0xffff, _cmdFifoDepth + 1);
         _cmdFifoValid[storageIndex] = true;
@@ -25511,13 +25511,19 @@ internal class VoodooBringupBackend : IVoodooBackend
             DecodeCommandFifoPackets();
     }
 
-    private void TraceCommandFifoModel(string message)
+    private void TraceCommandFifoModel(string message, uint? value = null)
     {
         if (!_traceCommandFifoModel)
             return;
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         if (_traceCommandFifoModelPcs.Length != 0 && !_traceCommandFifoModelPcs.Contains(pc))
             return;
+        if (value.HasValue &&
+            _traceCommandFifoModelCommands.Length != 0 &&
+            !_traceCommandFifoModelCommands.Contains(value.Value))
+        {
+            return;
+        }
         if (_commandFifoModelTraceCount++ >= 240)
             return;
 
@@ -25529,7 +25535,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"fbi7=0x{_registers[RegFbiInit7]:x8}{pcStatus}");
     }
 
-    private void TrackMameCommandFifoWrite(int address)
+    private void TrackMameCommandFifoWrite(int address, uint value)
     {
         if ((uint)address >= (uint)_cmdFifoRamEnd)
             return;
@@ -25569,7 +25575,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoHoles += Math.Max(0, (address - _cmdFifoAddressMax) / 4 - 1);
             _cmdFifoAddressMax = address;
         }
-        TraceCommandFifoModel($"write addr=0x{address:x5}");
+        TraceCommandFifoModel($"write addr=0x{address:x5} value=0x{value:x8}", value);
     }
 
     public void BeginCommandFifoBulkWrite()
