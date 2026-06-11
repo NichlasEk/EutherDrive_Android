@@ -11027,6 +11027,39 @@ cmd=0/-3915776/65536/0x0/0x7C9D4C
 So the producer-generation path is not merely missing raw MAME hole arithmetic;
 when made more literal, it collapses useful rendering even further.
 
+Targeted register-value tracing for `0xffffffff` showed that both standard and
+MAME FIFO execute the same repeated white-state type-4 packets early:
+
+```text
+packet=0x0001828c target=0x051/0x052 value=0xffffffff pc=0xffffffff801031a8
+packet=0x0104824c target=0x04c/0x052 value=0xffffffff pc=0xffffffff801027cc
+```
+
+Those writes are normal; the divergence is what happens later at the
+`0xffffffff800fe5d4` clear/swap service. A trace filtered only to that PC shows
+standard reaches an empty local FIFO and then loops black/zero clears and swaps:
+
+```text
+standard 800fe5d4:
+first service: fastfill value=0xffff rd=0x00eff6 depth=4106
+then: reg[051]=0 reg[052]=0 rd=0 depth=0
+then: repeated fastfill value=0x0000 and swap value=0x00000000 rd=0 depth=0
+```
+
+The MAME FIFO path instead stays in a live backlog and keeps applying white
+state:
+
+```text
+MAME FIFO 800fe5d4:
+fastfill value=0xffff rd=0x046780 depth=3455
+then repeated reg[051]/reg[052]=0xffffffff while depth remains roughly 3k
+```
+
+This is the clearest current failure statement: the useful old path reaches an
+empty local-FIFO service phase; the MAME-depth path remains inside the queued
+outer-payload stream and therefore does not reach the black clear/swap phase
+often enough before f260.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
