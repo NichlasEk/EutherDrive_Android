@@ -25324,6 +25324,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE"));
     private readonly bool _experimentMameCommandFifoRequireValidPacketWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_PACKET_WINDOW"));
+    private readonly bool _experimentMameCommandFifoReadyValidPacketWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_READY_VALID_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoRequireValidType5PacketWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_TYPE5_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoDropInvalidType5Header =
@@ -26662,6 +26664,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             CountCommandFifoReadyPc(false, "depth0");
             return false;
+        }
+
+        if (_experimentMameCommandFifoReadyValidPacketWindow)
+        {
+            uint command = PeekCommandFifoWord();
+            int wordsNeeded = GetFifoPacketWordsNeeded(command);
+            if (IsKnownGauntletRuntimeMisalignedFifoWord(command, wordsNeeded))
+                wordsNeeded = 1;
+            if (wordsNeeded <= 0)
+                wordsNeeded = 1;
+            if (!HasCommandFifoWords(_cmdFifoReadIndex, wordsNeeded))
+            {
+                CountCommandFifoReadyPc(false, "packet-window");
+                return false;
+            }
         }
 
         if (_experimentMameCommandFifoRequireReadInAddressWindow &&

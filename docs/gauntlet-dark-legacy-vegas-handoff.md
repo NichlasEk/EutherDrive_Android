@@ -11262,6 +11262,31 @@ every write into a new readable one-word window, and write-triggered decode can
 consume mid-stream state before the producer has completed the logical packet
 span.
 
+Moving the valid-packet-window check into readiness was also tested:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_READY_VALID_PACKET_WINDOW=1
+```
+
+This returns "not ready" when the current read-head packet is not fully valid,
+instead of entering decode and stopping there. It matches the earlier hard
+`REQUIRE_VALID_PACKET_WINDOW` failure: the read-head is already wrong, so
+waiting for that exact packet window just accumulates backlog.
+
+```text
+MAME FIFO + READY_VALID_PACKET_WINDOW f260:
+frameHash=0x719aedfb
+drawPackets=232 direct/setup=44/0
+packetTypes=0:2792,1:27961,2:0,3:232,4:79725,5:29814,6:0,7:10
+framebuffer colored=515
+cmd=4188042/0/10120/0x9D4C/0x9D4C
+cmdrdy 800fe5fc=1829017/y34507/n1794510/.../lastpacket-window
+cmdio=6215585/2027543/0
+```
+
+So readiness needs a resync anchor before this check, not just a stricter
+window test at the current read pointer.
+
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_RENDER_WORK=1`
 was also neutral. It redistributes some packets out of `800fe5d4`, but the
 frame signature is unchanged:
