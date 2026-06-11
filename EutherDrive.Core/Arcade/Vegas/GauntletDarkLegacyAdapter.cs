@@ -25386,6 +25386,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
     private readonly bool _profileStatusPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1";
     private readonly bool _profileFastFillSwapPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS") == "1";
+    private readonly bool _profileCommandFifoPacketPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FIFO_PACKET_PCS") == "1";
     private readonly bool _traceFastFillSwapOrder =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER"));
     private readonly ulong[] _traceFastFillSwapOrderPcs =
@@ -25395,6 +25396,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
+    private readonly Dictionary<ulong, CommandFifoPacketPcStats> _commandFifoPacketPcStats = [];
     private int _drawTraceCount;
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
@@ -25444,6 +25446,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"ffs={_fastFillSuppressedWhiteCount}/{_fastFillSuppressedBlackCount}/{_fastFillSuppressedOtherCount} " +
            $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
            GetFastFillSwapPcDebugStatus() +
+           GetCommandFifoPacketPcDebugStatus() +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/{_cmdFifoValidCount}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
            $"cmdio={_cmdFifoDepthWordsAdded}/{_cmdFifoDepthWordsDecoded}/{_cmdFifoDepthWordsStreamed} " +
            GetCommandFifoDecodeStopDebugStatus() +
@@ -26457,6 +26460,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentCommandFifoCommand = command;
             _currentCommandFifoPacketStart = packetStart;
             _currentCommandFifoWordsNeeded = wordsNeeded;
+            CountCommandFifoPacketPc(command, wordsNeeded, packetStart);
             bool packetConsumedByHandler = false;
             if (_fixMameCommandFifoModel &&
                 _experimentMameCommandFifoType5Streaming &&
@@ -27184,6 +27188,57 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"0x{pair.Key:x16}:{pair.Value.Total}/c{pair.Value.Clear}/d{pair.Value.DontSwap}/last0x{pair.Value.LastCommand:X8}"));
     }
 
+    private void CountCommandFifoPacketPc(uint command, int wordsNeeded, int packetStart)
+    {
+        if (!_profileCommandFifoPacketPcs)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        if (!_commandFifoPacketPcStats.TryGetValue(pc, out CommandFifoPacketPcStats? stats))
+        {
+            stats = new CommandFifoPacketPcStats();
+            _commandFifoPacketPcStats[pc] = stats;
+        }
+
+        uint type = command & 7u;
+        stats.Total++;
+        stats.Words += wordsNeeded;
+        if (type < stats.TypeCounts.Length)
+            stats.TypeCounts[type]++;
+        stats.LastCommand = command;
+        stats.LastWordsNeeded = wordsNeeded;
+        stats.LastPacketStart = packetStart;
+        stats.LastDepthBefore = _cmdFifoDepth;
+        stats.LastHolesBefore = _cmdFifoHoles;
+    }
+
+    private string GetCommandFifoPacketPcDebugStatus()
+    {
+        if (!_profileCommandFifoPacketPcs)
+            return "";
+
+        return $"cmdpc={FormatCommandFifoPacketPcStats()} ";
+    }
+
+    private string FormatCommandFifoPacketPcStats()
+    {
+        if (_commandFifoPacketPcStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _commandFifoPacketPcStats
+            .OrderByDescending(pair => pair.Value.TypeCounts[4] + pair.Value.TypeCounts[5])
+            .ThenByDescending(pair => pair.Value.Total)
+            .ThenBy(pair => pair.Key)
+            .Take(10)
+            .Select(pair =>
+                $"0x{pair.Key:x16}:{pair.Value.Total}/w{pair.Value.Words}" +
+                $"/t{string.Join('-', pair.Value.TypeCounts)}" +
+                $"/last0x{pair.Value.LastCommand:X8}:{pair.Value.LastWordsNeeded}:rd{pair.Value.LastPacketStart:X}:d{pair.Value.LastDepthBefore}:h{pair.Value.LastHolesBefore}"));
+    }
+
     private void CountStatusPc()
     {
         if (!_profileStatusPcs)
@@ -27255,6 +27310,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int Clear;
         public int DontSwap;
         public uint LastCommand;
+    }
+
+    private sealed class CommandFifoPacketPcStats
+    {
+        public int Total;
+        public long Words;
+        public readonly int[] TypeCounts = new int[8];
+        public uint LastCommand;
+        public int LastWordsNeeded;
+        public int LastPacketStart;
+        public int LastDepthBefore;
+        public int LastHolesBefore;
     }
 
     private static bool IsInterestingEventRegister(uint register)

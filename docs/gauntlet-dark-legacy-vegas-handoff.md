@@ -11060,11 +11060,46 @@ empty local-FIFO service phase; the MAME-depth path remains inside the queued
 outer-payload stream and therefore does not reach the black clear/swap phase
 often enough before f260.
 
+An added `EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FIFO_PACKET_PCS=1` profile makes
+the service-phase split more explicit. It appends `cmdpc=` to the Voodoo debug
+line, grouped by CPU PC, with total decoded packets, decoded words, type counts
+`t0-t7`, and the last command/read/depth state seen at each PC. Standard f260
+still matches the previous good signature:
+
+```text
+standard:
+frameHash=0x8e14c17e
+drawPackets=764 direct/setup=2594/1282
+packetTypes=0:2273,1:34609,2:0,3:764,4:102075,5:80923,6:0,7:3
+framebuffer colored=307199
+cmdpc 800fe5d4=83191 packets, types=2268-0-0-0-0-80923-0-0
+```
+
+MAME FIFO still matches the bad visual signature, but the packet-PC profile is
+very different:
+
+```text
+MAME FIFO:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+cmdpc 800fe5d4=92686 packets, types=8438-4875-0-390-16380-62603-0-0
+cmdpc 800fe5fc=32501 packets, types=141-1047-0-84-3444-27785-0-0
+```
+
+This is stronger than the earlier fastfill profile alone. In the useful path,
+`0xffffffff800fe5d4` mostly services type-5 texture payload packets. In the
+MAME-depth path, the same PC decodes a mixed control/render stream, and
+`0xffffffff800fe5fc` also becomes a large mixed decoder site. That makes the
+failure look less like a missing payload word or final depth leak and more like
+decode readiness crossing into the wrong logical service phase.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
-tracking with a coherent command-FIFO window model. The useful invariant from
-the new trace is that decode readiness must not be true when `depth` and
-`valid` are nonzero but `_cmdFifoReadIndex & CmdFifoMask` is outside the
-current producer generation. The likely implementation direction is to preserve
-or reconstruct logical producer generation when writes wrap, because the
-current write path often hands the Voodoo backend only a masked local storage
-offset while the MAME read pointer is still unmasked.
+tracking with a coherent command-FIFO window/generation model. Decode readiness
+must not be true merely because `depth` is positive; it also has to prove that
+the current unmasked read pointer belongs to the producer generation intended
+for the active service phase. The current write path often receives only a
+masked local storage offset while the MAME read pointer remains unmasked, which
+is enough to let the decoder consume plausible but temporally wrong packet
+content.
