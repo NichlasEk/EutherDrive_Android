@@ -864,6 +864,13 @@ public partial class MainWindow : Window
 
     private static void ConfigureGauntletDarkLegacyUiBringup()
     {
+        if (EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsTruthy(
+                Environment.GetEnvironmentVariable(EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.BaselineBringupPresetEnvironmentVariable)))
+        {
+            EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.ApplyBaselineBringupPreset();
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
             Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME")))

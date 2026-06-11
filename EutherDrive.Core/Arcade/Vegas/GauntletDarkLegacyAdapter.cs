@@ -14,11 +14,36 @@ namespace EutherDrive.Core.Arcade.Vegas;
 
 public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
 {
+    public const string BaselineBringupPresetEnvironmentVariable = "EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE";
     private const int FrameWidth = 640;
     private const int FrameHeight = 480;
     private const int FrameStride = FrameWidth * 4;
     private const int AudioSampleRate = 44_100;
     private const int AudioChannels = 2;
+
+    private static readonly (string Name, string Value)[] BaselineBringupEnvironment =
+    [
+        ("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1"),
+        ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "9"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_STATIC_DATA_LINK", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_HYDRATE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP", "1"),
+    ];
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
     private readonly GauntletDarkLegacyMachine _machine = new();
@@ -34,6 +59,29 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
     public string DebugStatus => _machine.GetDebugStatus();
     public double GetTargetFps() => 60.0;
 
+    static GauntletDarkLegacyAdapter()
+    {
+        ApplyBaselineBringupPresetIfRequested();
+    }
+
+    public static void ApplyBaselineBringupPreset()
+    {
+        foreach ((string name, string value) in BaselineBringupEnvironment)
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)))
+                Environment.SetEnvironmentVariable(name, value);
+        }
+    }
+
+    private static bool ApplyBaselineBringupPresetIfRequested()
+    {
+        if (!IsTruthy(Environment.GetEnvironmentVariable(BaselineBringupPresetEnvironmentVariable)))
+            return false;
+
+        ApplyBaselineBringupPreset();
+        return true;
+    }
+
     internal static bool IsBringupFixEnabled(string name)
     {
         string? specific = Environment.GetEnvironmentVariable(name);
@@ -43,7 +91,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         return IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST"));
     }
 
-    internal static bool IsTruthy(string? value)
+    public static bool IsTruthy(string? value)
         => value is not null &&
            (value == "1" ||
             value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
@@ -26272,6 +26320,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         int bestIndex = _frontBufferIndex;
         int bestCount = frontCount;
         int bestActiveCount = frontActiveCount;
+        int fallbackIndex = _backBufferIndex;
+        int fallbackActiveCount = 0;
+        int fallbackNonWhiteCount = 0;
         int count = GetColorBufferCount();
         for (int i = 0; i < count; i++)
         {
@@ -26280,8 +26331,18 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             int candidateCount = GetBufferNonZeroCount(i);
             int candidateActiveCount = GetVisibleBufferActiveColorCount(i);
+            int candidateWhiteCount = GetVisibleBufferWhiteCount(i);
+            int candidateNonWhiteCount = Math.Max(0, candidateCount - candidateWhiteCount);
             if (IsPendingClearBuffer(i) && candidateActiveCount <= 1024)
                 continue;
+
+            if (candidateActiveCount > fallbackActiveCount ||
+                candidateActiveCount == fallbackActiveCount && candidateNonWhiteCount > fallbackNonWhiteCount)
+            {
+                fallbackIndex = i;
+                fallbackActiveCount = candidateActiveCount;
+                fallbackNonWhiteCount = candidateNonWhiteCount;
+            }
 
             if (candidateCount > 1024 &&
                 candidateActiveCount > 1024 &&
@@ -26295,6 +26356,9 @@ internal class VoodooBringupBackend : IVoodooBackend
                 frontIsWhiteClearDominated = false;
             }
         }
+
+        if (frontIsWhiteClearDominated && bestIndex == _frontBufferIndex)
+            return fallbackActiveCount > 0 || fallbackNonWhiteCount > 0 ? fallbackIndex : _backBufferIndex;
 
         return bestIndex;
     }

@@ -930,13 +930,25 @@ class Program
             if (useGauntletDarkLegacy)
             {
                 Console.WriteLine("[HEADLESS] Using Midway Vegas Gauntlet Dark Legacy core");
-                if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
+                if (GauntletDarkLegacyAdapter.IsTruthy(
+                        Environment.GetEnvironmentVariable(GauntletDarkLegacyAdapter.BaselineBringupPresetEnvironmentVariable)))
+                {
+                    GauntletDarkLegacyAdapter.ApplyBaselineBringupPreset();
+                }
+                else if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
+                {
                     Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
+                }
 
                 var gauntlet = new GauntletDarkLegacyAdapter();
                 gauntlet.LoadRom(romPath);
 
                 bool traceFrames = Environment.GetEnvironmentVariable("EUTHERDRIVE_HEADLESS_TRACE_FRAMES") == "1";
+                int traceInterval = Math.Max(1, ParseOptionalIntEnv("EUTHERDRIVE_GAUNTDL_HEADLESS_TRACE_INTERVAL") ?? 60);
+                HashSet<int> gauntletDumpFrames = ParseFrameSetEnv("EUTHERDRIVE_GAUNTDL_HEADLESS_DUMP_FRAMES", "EUTHERDRIVE_HEADLESS_DUMP_FRAMES");
+                int? gauntletDumpFrameSingle = ParseOptionalIntEnv("EUTHERDRIVE_GAUNTDL_HEADLESS_DUMP_FRAME") ?? ParseOptionalIntEnv("EUTHERDRIVE_HEADLESS_DUMP_FRAME");
+                if (gauntletDumpFrameSingle.HasValue)
+                    gauntletDumpFrames.Add(gauntletDumpFrameSingle.Value);
                 ReadOnlySpan<byte> fbIn = gauntlet.GetFrameBuffer(out int wIn, out int hIn, out int sIn);
                 ulong lastFingerprint = ComputeFrameFingerprint(fbIn, wIn, hIn, sIn);
                 int unchangedFrames = 0;
@@ -953,7 +965,9 @@ class Program
                     runTicksMin = Math.Min(runTicksMin, runTicks);
                     runTicksMax = Math.Max(runTicksMax, runTicks);
 
-                    if (frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % 60) == 0)
+                    bool isDefaultTraceFrame = frame == 0 || frame == 5 || frame == 10 || ((frame + 1) % traceInterval) == 0;
+                    bool shouldDumpFrame = traceFrames || isDefaultTraceFrame && frame <= 10 || gauntletDumpFrames.Contains(frame);
+                    if (isDefaultTraceFrame || gauntletDumpFrames.Contains(frame))
                     {
                         ReadOnlySpan<byte> fb = gauntlet.GetFrameBuffer(out int w, out int h, out int s);
                         var stats = GetFrameStats(fb, w, h, s);
@@ -961,7 +975,7 @@ class Program
                         unchangedFrames = fingerprint == lastFingerprint ? unchangedFrames + 1 : 0;
                         lastFingerprint = fingerprint;
                         Console.WriteLine($"[HEADLESS] Frame {frame}: gauntdl_fb_has_content={stats.HasContent} nonzero_pixels={stats.NonZeroPixels} first_nonzero=({stats.FirstX},{stats.FirstY}) fp=0x{fingerprint:X16} unchanged={unchangedFrames} frameCounter={gauntlet.FrameCounter ?? -1} {gauntlet.DebugStatus}");
-                        if (traceFrames || frame == 0 || frame == 5 || frame == 10)
+                        if (shouldDumpFrame)
                             DumpBgraToPpm(fb, w, h, s, Path.Combine(dumpDir, $"headless_gauntdl_frame{frame}.ppm"));
                     }
                 }
