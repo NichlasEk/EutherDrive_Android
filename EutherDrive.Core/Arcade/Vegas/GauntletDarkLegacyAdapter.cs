@@ -25320,6 +25320,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_CONSUME_WRAP_GAP_INVALID_READ"));
     private readonly bool _experimentMameCommandFifoTrackWriteGeneration =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRACK_WRITE_GENERATION"));
+    private readonly bool _experimentMameCommandFifoAlignWritesToReadGeneration =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_ALIGN_WRITES_TO_READ_GENERATION"));
     private readonly bool _experimentMameCommandFifoRequireReadInAddressWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_READ_IN_ADDRESS_WINDOW"));
     private readonly bool _experimentMameCommandFifoRequirePacketInAddressWindow =
@@ -25673,8 +25675,19 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private int GetMameCommandFifoLogicalWriteIndex(int localIndex, int storageIndex)
     {
+        int baseLocalIndex = (_cmdFifoRamBase >> 2) + localIndex;
+        if (_fixMameCommandFifoModel &&
+            _experimentMameCommandFifoAlignWritesToReadGeneration &&
+            _cmdFifoReadPointerWritten &&
+            baseLocalIndex < _cmdFifoReadIndex)
+        {
+            int generationDelta = _cmdFifoReadIndex - baseLocalIndex;
+            int generations = (generationDelta + CmdFifoWords - 1) / CmdFifoWords;
+            return baseLocalIndex + generations * CmdFifoWords;
+        }
+
         if (!_fixMameCommandFifoModel || !_experimentMameCommandFifoTrackWriteGeneration)
-            return (_cmdFifoRamBase >> 2) + localIndex;
+            return baseLocalIndex;
 
         if (_cmdFifoLastWriteStorageIndex >= 0 &&
             storageIndex < _cmdFifoLastWriteStorageIndex &&
@@ -25684,7 +25697,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         _cmdFifoLastWriteStorageIndex = storageIndex;
-        return (_cmdFifoRamBase >> 2) + _cmdFifoWriteGenerationBase + localIndex;
+        return baseLocalIndex + _cmdFifoWriteGenerationBase;
     }
 
     private void TraceCommandFifoModel(string message, uint? value = null)

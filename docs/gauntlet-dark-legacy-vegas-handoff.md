@@ -10920,6 +10920,27 @@ This confirms that stale valid storage slots are being mistaken for the current
 read generation, but a strict generation gate alone is not a fix because the
 producer/read generation model still collapses the useful command stream.
 
+A write-generation alignment probe tried to reconstruct each 16-bit FIFO write
+offset against the current logical read generation: if the local write index was
+behind `_cmdFifoReadIndex`, it was promoted by whole 64K generations until it
+was at or beyond the read pointer. This changed the trace, but collapsed useful
+rendering:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_ALIGN_WRITES_TO_READ_GENERATION=1
+frameHash=0x9ac85dc5
+drawPackets=4 direct/setup=44/0
+packetTypes=0:68,1:25111,2:0,3:4,4:70156,5:480,6:0,7:3
+framebuffer colored=0
+cmd=0/65474/65536/0x0/0x3FF08
+cmdstop=depth/0xC0000205/66/62/0x3FF08/0x3FF08/0x0001C000/0x00000000/pc=0xFFFFFFFF800FE5FC/105280
+```
+
+So generation reconstruction cannot simply promote every local write behind the
+read pointer. The useful model needs to preserve contiguous producer windows and
+only advance generation when the producer actually wraps the command FIFO
+stream, not merely when a local offset compares below the current read pointer.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
