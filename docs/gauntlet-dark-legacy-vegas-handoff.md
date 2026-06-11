@@ -10356,6 +10356,35 @@ packetTypes=0:44398,1:40298,2:0,3:897,4:116552,5:102325,6:0,7:197
 framebuffer colored=0
 ```
 
+Added a decode-throttle diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_PACKET_LIMIT=1
+```
+
+This limits each `DecodeCommandFifoPackets()` call to one packet in MAME FIFO
+mode only, testing whether the failure is caused by draining too much FIFO
+synchronously after each write. It is also negative:
+
+```text
+MAME FIFO + DECODE_PACKET_LIMIT=1 f260:
+frameHash=0x3a91e1cf
+drawPackets=648 direct/setup=44/0
+fastFills=1059 swaps=806
+ffw=386/21/0 ffk=0/0/0
+framebuffer colored=739
+
+MAME FIFO + DECODE_PACKET_LIMIT=1 f400:
+frameHash=0x9ac85dc5
+drawPackets=944 direct/setup=46/0
+packetTypes=0:10827,1:41586,2:0,3:944,4:121133,5:102539,6:0,7:3
+ffw=1103/25/0 ffk=0/0/0
+framebuffer colored=0
+```
+
+The same white-clear signature remains, so simple decode throttling is not the
+missing timing behavior.
+
 Next target: track why the MAME depth/address-min model repeatedly decodes
 type-4 packets that set `RegColor0`/`RegColor1` to `0xffffffff` and stalls on
 the same packet class with only two of three words available. The fastfill code

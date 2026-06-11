@@ -25281,6 +25281,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoTruncatePartialType4 =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRUNCATE_PARTIAL_TYPE4"));
+    private readonly int _experimentMameCommandFifoDecodePacketLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_PACKET_LIMIT"), 0);
     private readonly bool _fixType5TextureEndian =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN");
     private readonly bool _fixSequential8BitTextureDownload =
@@ -26091,7 +26093,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         try
         {
         int guard = 0;
-        while (guard++ < 2048 && IsCommandFifoPacketReady())
+        int decodedThisCall = 0;
+        int packetLimit = _fixMameCommandFifoModel && _experimentMameCommandFifoDecodePacketLimit > 0
+            ? _experimentMameCommandFifoDecodePacketLimit
+            : 2048;
+        while (guard++ < 2048 && decodedThisCall < packetLimit && IsCommandFifoPacketReady())
         {
             int packetStart = _cmdFifoReadIndex;
             uint command = _cmdFifoRam[packetStart & CmdFifoMask];
@@ -26146,6 +26152,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentCommandFifoWordsNeeded = 0;
             bool packetDidWork = IsCommandFifoPacketWork(command);
             _fifoPacketCount++;
+            decodedThisCall++;
             for (int i = 0; i < wordsNeeded; i++)
                 _cmdFifoValid[(packetStart + i) & CmdFifoMask] = false;
             _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - wordsNeeded);
@@ -26606,6 +26613,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             .Distinct()
             .ToArray();
     }
+
+    private static int ParseOptionalPositiveInt(string? raw, int fallback)
+        => int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
 
     private void CountSwapPc(uint command, bool dontSwap, bool clearBackBuffer)
     {
