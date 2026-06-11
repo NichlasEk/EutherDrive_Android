@@ -25175,6 +25175,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     ];
     private readonly uint[] _cmdFifoRam = new uint[CmdFifoFramebufferWords];
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoFramebufferWords];
+    private readonly int[] _cmdFifoStorageLogicalIndex = new int[CmdFifoFramebufferWords];
     private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
     private readonly int[] _fifoPacketTypeCounts = new int[8];
     private readonly int[] _fifoType5SpaceCounts = new int[4];
@@ -25325,6 +25326,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_PACKET_IN_ADDRESS_WINDOW"));
     private readonly bool _experimentMameCommandFifoDecodeOnRegisterWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_ON_REG_WRITE"));
+    private readonly bool _experimentMameCommandFifoRequireStorageGeneration =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_STORAGE_GENERATION"));
     private readonly bool _experimentMameCommandFifoFramebufferStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE"));
     private readonly bool _experimentMameCommandFifoMirrorLfbWrites =
@@ -25646,6 +25649,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         _cmdFifoRam[storageIndex] = value;
+        _cmdFifoStorageLogicalIndex[storageIndex] = logicalWriteIndex;
         bool storageWasValid = _cmdFifoValid[storageIndex];
         if (_fixMameCommandFifoModel)
             TrackMameCommandFifoWrite(address, value);
@@ -26493,15 +26497,22 @@ internal class VoodooBringupBackend : IVoodooBackend
             return false;
         }
 
+        if (_experimentMameCommandFifoRequireStorageGeneration &&
+            !IsCommandFifoWordValidForRead(_cmdFifoReadIndex))
+        {
+            TraceCommandFifoDecodeStop("storage-generation", PeekCommandFifoWord(), 1);
+            return false;
+        }
+
         if ((_experimentMameCommandFifoSkipWrapGapInvalidRead ||
              _experimentMameCommandFifoConsumeWrapGapInvalidRead) &&
-            !_cmdFifoValid[CommandFifoStorageIndex(_cmdFifoReadIndex)])
+            !IsCommandFifoWordValidForRead(_cmdFifoReadIndex))
         {
             int readStorage = CommandFifoStorageIndex(_cmdFifoReadIndex);
             int gapToBase = CmdFifoWords - readStorage;
             if (readStorage != 0 &&
                 gapToBase <= 64 &&
-                _cmdFifoValid[0])
+                IsCommandFifoWordValidForRead(_cmdFifoReadIndex + gapToBase))
             {
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(_cmdFifoReadIndex + gapToBase);
                 if (_experimentMameCommandFifoConsumeWrapGapInvalidRead)
@@ -26512,24 +26523,24 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_experimentMameCommandFifoSkipInvalidStorage)
         {
             int skipped = 0;
-            while (_cmdFifoDepth > 0 && !_cmdFifoValid[CommandFifoStorageIndex(_cmdFifoReadIndex)] && skipped++ < CommandFifoStorageWords())
+            while (_cmdFifoDepth > 0 && !IsCommandFifoWordValidForRead(_cmdFifoReadIndex) && skipped++ < CommandFifoStorageWords())
             {
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(_cmdFifoReadIndex + 1);
                 _cmdFifoDepth--;
             }
-            if (_cmdFifoDepth <= 0 || !_cmdFifoValid[CommandFifoStorageIndex(_cmdFifoReadIndex)])
+            if (_cmdFifoDepth <= 0 || !IsCommandFifoWordValidForRead(_cmdFifoReadIndex))
             {
                 TraceCommandFifoDecodeStop("skip-invalid-storage", PeekCommandFifoWord(), 1);
                 return false;
             }
         }
 
-        if (_experimentMameCommandFifoRequireValidStorage && !_cmdFifoValid[CommandFifoStorageIndex(_cmdFifoReadIndex)])
+        if (_experimentMameCommandFifoRequireValidStorage && !IsCommandFifoWordValidForRead(_cmdFifoReadIndex))
         {
             if (_experimentMameCommandFifoResyncInvalidStorageToAddressMin && _cmdFifoAddressMin >= _cmdFifoRamBase)
             {
                 int addressMinIndex = DecodeCommandFifoReadIndex(_cmdFifoAddressMin >> 2);
-                if (_cmdFifoValid[CommandFifoStorageIndex(addressMinIndex)])
+                if (IsCommandFifoWordValidForRead(addressMinIndex))
                 {
                     TraceCommandFifoDecodeStop("invalid-storage-resync-amin", PeekCommandFifoWord(), 1);
                     _cmdFifoReadIndex = addressMinIndex;
@@ -26662,11 +26673,21 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         for (int i = 0; i < count; i++)
         {
-            if (!_cmdFifoValid[CommandFifoStorageIndex(start + i)])
+            if (!IsCommandFifoWordValidForRead(start + i))
                 return false;
         }
 
         return true;
+    }
+
+    private bool IsCommandFifoWordValidForRead(int logicalIndex)
+    {
+        int storageIndex = CommandFifoStorageIndex(logicalIndex);
+        if (!_cmdFifoValid[storageIndex])
+            return false;
+        return !_fixMameCommandFifoModel ||
+               !_experimentMameCommandFifoRequireStorageGeneration ||
+               _cmdFifoStorageLogicalIndex[storageIndex] == logicalIndex;
     }
 
     private uint ReadCommandFifoStreamingWord()

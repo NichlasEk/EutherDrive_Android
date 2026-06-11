@@ -10903,6 +10903,23 @@ framebuffer colored=695
 So the current failure is not from missing decode attempts after CPU-visible
 FIFO accounting register writes.
 
+A storage-generation validity probe tagged each command FIFO storage slot with
+the logical write index that produced it, then required reads to match that same
+logical generation. It stopped on the expected alias class:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_STORAGE_GENERATION=1
+frameHash=0x9ac85dc5
+drawPackets=4 direct/setup=44/0
+packetTypes=0:5,1:25111,2:0,3:4,4:70156,5:481,6:0,7:3
+framebuffer colored=0
+cmdstop=storage-generation/0x00000000/1/6170448/0x40010/0x10/0x00000000/0x00000000/pc=0xFFFFFFFF801031A8/1996012
+```
+
+This confirms that stale valid storage slots are being mistaken for the current
+read generation, but a strict generation gate alone is not a fix because the
+producer/read generation model still collapses the useful command stream.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
