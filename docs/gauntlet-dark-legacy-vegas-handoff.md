@@ -10738,6 +10738,22 @@ packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
 framebuffer colored=695
 ```
 
+A follow-up shared-storage probe mirrored raw LFB writes into the command FIFO
+backing array while framebuffer-sized command storage was active:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MIRROR_LFB_WRITES=1
+frameHash=0xbd71006f
+drawPackets=44 direct/setup=44/0
+packetTypes=0:5843023,1:25611,2:0,3:44,4:71836,5:5326,6:0,7:3
+framebuffer colored=443
+```
+
+This is byte-for-byte the same f260 signature as framebuffer storage alone, so
+the stale zero/NOP drain is not caused by ordinary LFB writes missing from the
+command FIFO backing store in this warm-snapshot phase.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and

@@ -25319,6 +25319,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_READ_IN_ADDRESS_WINDOW"));
     private readonly bool _experimentMameCommandFifoFramebufferStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE"));
+    private readonly bool _experimentMameCommandFifoMirrorLfbWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MIRROR_LFB_WRITES"));
     private readonly bool _experimentMameCommandFifoResyncAddressMinOnPartialType5 =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_AMIN_ON_PARTIAL_TYPE5"));
     private readonly bool _experimentMameCommandFifoSpace0Endian =
@@ -25822,6 +25824,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public virtual void WriteLfb32(uint offset, uint value)
     {
+        MirrorLfbWriteToCommandFifoStorage(offset, value);
         uint lfbMode = _registers[RegLfbMode];
         if (lfbMode == 0x00002011u)
         {
@@ -25873,6 +25876,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         buffer[pixel & (LfbPixels - 1)] = ConvertXrgb1555Lane0((ushort)value);
         buffer[(pixel + 1) & (LfbPixels - 1)] = ConvertXrgb1555Lane0((ushort)(value >> 16));
         _lfbWriteCount++;
+    }
+
+    private void MirrorLfbWriteToCommandFifoStorage(uint offset, uint value)
+    {
+        if (!_fixMameCommandFifoModel ||
+            !_experimentMameCommandFifoFramebufferStorage ||
+            !_experimentMameCommandFifoMirrorLfbWrites)
+        {
+            return;
+        }
+
+        _cmdFifoRam[CommandFifoStorageIndex((int)(offset >> 2))] = value;
     }
 
     public virtual void WriteTexture32(uint offset, uint value)
