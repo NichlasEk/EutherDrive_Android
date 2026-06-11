@@ -10629,8 +10629,36 @@ of the ring end and storage slot 0 is already valid, without decrementing
 depth. It is still negative: it does not recover the black clear/swap sequence
 and it introduces a local-jump path that baseline MAME did not take.
 
+Two follow-up validity-window probes are also negative:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_PACKET_WINDOW=1
+frameHash=0x719aedfb
+drawPackets=232 direct/setup=44/0
+packetTypes=0:2792,1:27961,2:0,3:232,4:79725,5:29814,6:0,7:10
+framebuffer colored=515
+cmdstop=invalid-packet-window/0xC0000205/66/4188042/0x7CFF28/0xFF28/0x00012A00/0x00000000/pc=0xFFFFFFFF801031A8/1991659
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_CONSUME_WRAP_GAP_INVALID_READ=1
+frameHash=0xbe8d5453
+drawPackets=636 direct/setup=44/0
+packetTypes=0:22514,1:33014,2:0,3:636,4:96713,5:91746,6:0,7:41
+framebuffer colored=683
+cmdstop=depth/0xC0000205/66/38/0xF604E4/0x204E4/0x00011A00/0x00000000/pc=0xFFFFFFFF801031A8/1947438
+```
+
+`REQUIRE_VALID_PACKET_WINDOW` proves that simply requiring all packet words to
+be valid storage blocks too much useful work once the MAME read pointer has
+already diverged from the producer window. `CONSUME_WRAP_GAP_INVALID_READ`
+tests the same 64-word ring-end skip while also decrementing depth, but it
+keeps the same white-screen signature and increases type-7 packets. These
+results point away from more read-side resync heuristics.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
 `valid` are nonzero but `_cmdFifoReadIndex & CmdFifoMask` is outside the
-current producer generation.
+current producer generation. The likely implementation direction is to preserve
+or reconstruct logical producer generation when writes wrap, because the
+current write path often hands the Voodoo backend only a masked local storage
+offset while the MAME read pointer is still unmasked.

@@ -25299,12 +25299,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_LOCAL_JUMP"));
     private readonly bool _experimentMameCommandFifoRequireValidStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE"));
+    private readonly bool _experimentMameCommandFifoRequireValidPacketWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN"));
     private readonly bool _experimentMameCommandFifoSkipInvalidStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SKIP_INVALID_STORAGE"));
     private readonly bool _experimentMameCommandFifoSkipWrapGapInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SKIP_WRAP_GAP_INVALID_READ"));
+    private readonly bool _experimentMameCommandFifoConsumeWrapGapInvalidRead =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_CONSUME_WRAP_GAP_INVALID_READ"));
     private readonly bool _experimentMameCommandFifoResyncAddressMinOnPartialType5 =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_AMIN_ON_PARTIAL_TYPE5"));
     private readonly bool _experimentMameCommandFifoSpace0Endian =
@@ -26247,6 +26251,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                 TraceCommandFifoDecodeStop("bulk-window", command, wordsNeeded);
                 return;
             }
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoRequireValidPacketWindow &&
+                !HasCommandFifoWords(packetStart, wordsNeeded))
+            {
+                TraceCommandFifoDecodeStop("invalid-packet-window", command, wordsNeeded);
+                return;
+            }
             if (!_fixMameCommandFifoModel && !HasCommandFifoWords(packetStart, wordsNeeded))
                 return;
 
@@ -26301,7 +26312,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoDepth <= 0)
             return false;
 
-        if (_experimentMameCommandFifoSkipWrapGapInvalidRead &&
+        if ((_experimentMameCommandFifoSkipWrapGapInvalidRead ||
+             _experimentMameCommandFifoConsumeWrapGapInvalidRead) &&
             !_cmdFifoValid[_cmdFifoReadIndex & CmdFifoMask])
         {
             int readStorage = _cmdFifoReadIndex & CmdFifoMask;
@@ -26311,6 +26323,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _cmdFifoValid[0])
             {
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(_cmdFifoReadIndex + gapToBase);
+                if (_experimentMameCommandFifoConsumeWrapGapInvalidRead)
+                    _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - gapToBase);
             }
         }
 
