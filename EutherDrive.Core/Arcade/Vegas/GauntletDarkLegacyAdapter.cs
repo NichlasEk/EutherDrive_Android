@@ -25330,6 +25330,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_ON_REG_WRITE"));
     private readonly bool _experimentMameCommandFifoRequireStorageGeneration =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_STORAGE_GENERATION"));
+    private readonly bool _experimentMameCommandFifoAllowValidPacketDepthShort =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_ALLOW_VALID_PACKET_DEPTH_SHORT"));
     private readonly bool _experimentMameCommandFifoFramebufferStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_FRAMEBUFFER_STORAGE"));
     private readonly bool _experimentMameCommandFifoMirrorLfbWrites =
@@ -26391,6 +26393,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 if (TryTruncateMameCommandFifoPartialType4(command, wordsNeeded, out int truncatedWordsNeeded))
                     wordsNeeded = truncatedWordsNeeded;
+                else if (_experimentMameCommandFifoAllowValidPacketDepthShort &&
+                         HasCommandFifoWords(packetStart, wordsNeeded))
+                {
+                    TraceCommandFifoDecodeStop("depth-short-valid-window", command, wordsNeeded);
+                }
                 else
                 {
                 if (TryResyncMameCommandFifoOnPartialType5(command, packetStart, wordsNeeded))

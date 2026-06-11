@@ -10941,6 +10941,25 @@ read pointer. The useful model needs to preserve contiguous producer windows and
 only advance generation when the producer actually wraps the command FIFO
 stream, not merely when a local offset compares below the current read pointer.
 
+A depth-short override probe tested the final f260 stall directly: when
+`cmdFifoDepth < wordsNeeded`, it allowed decode to continue if the full packet
+window was valid in local storage. This changed execution, but not in the right
+direction:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_ALLOW_VALID_PACKET_DEPTH_SHORT=1
+frameHash=0xdb8223ab
+drawPackets=726 direct/setup=44/0
+packetTypes=0:7424,1:34632,2:0,3:726,4:102424,5:107534,6:0,7:3
+framebuffer colored=651
+cmdstop=depth/0x0001828C/3/2/0x1BC9D44/0x9D44/0xFFFFFFFF/0x00000000/pc=0xFFFFFFFF8010319C/1951887
+```
+
+The override does let some short-depth packets through, but the signature is
+worse and the same type4 depth stall remains. The missing behavior is therefore
+not simply "trust valid storage when depth is short"; the depth/window model
+itself needs to stop drifting.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window model. The useful invariant from
 the new trace is that decode readiness must not be true when `depth` and
