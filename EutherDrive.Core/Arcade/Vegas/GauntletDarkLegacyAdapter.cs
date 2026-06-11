@@ -25326,6 +25326,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoRequireValidType5PacketWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_TYPE5_PACKET_WINDOW"));
+    private readonly bool _experimentMameCommandFifoDropInvalidType5Header =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DROP_INVALID_TYPE5_HEADER"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN"));
     private readonly bool _experimentMameCommandFifoSkipInvalidStorage =
@@ -26542,6 +26544,23 @@ internal class VoodooBringupBackend : IVoodooBackend
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "invalid-type5-window");
                 TraceCommandFifoDecodeStop("invalid-type5-window", command, wordsNeeded);
                 return;
+            }
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoDropInvalidType5Header &&
+                (command & 7u) == 5u &&
+                !HasCommandFifoWords(packetStart, wordsNeeded))
+            {
+                int validIndex = CommandFifoStorageIndex(packetStart);
+                if (_cmdFifoValid[validIndex])
+                {
+                    _cmdFifoValid[validIndex] = false;
+                    _cmdFifoValidCount = Math.Max(0, _cmdFifoValidCount - 1);
+                }
+                _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
+                _cmdFifoDepthWordsDecoded++;
+                _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + 1);
+                TraceCommandFifoDecodeStop("drop-invalid-type5", command, wordsNeeded);
+                continue;
             }
             if (!_fixMameCommandFifoModel && !HasCommandFifoWords(packetStart, wordsNeeded))
             {

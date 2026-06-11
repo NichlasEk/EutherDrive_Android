@@ -11519,6 +11519,31 @@ accumulates depth and stalls future services on the same texture command. The
 fix needs to resync or classify the stale phase before it becomes the read
 head, rather than waiting until the type-5 packet is already at the head.
 
+Dropping invalid type-5 headers was also tested:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DROP_INVALID_TYPE5_HEADER=1
+```
+
+This tries to resync by consuming only the stale type-5 header when its full
+packet window is not valid. It is worse than default. It explodes type-0 packet
+traffic, hits guard/depth stops, and still does not recover setup rendering:
+
+```text
+MAME FIFO + DROP_INVALID_TYPE5_HEADER f260:
+frameHash=0xfa22391f
+drawPackets=966 direct/setup=44/0
+packetTypes=0:4219807,1:38279,2:0,3:966,4:111703,5:26167,6:0,7:1146
+framebuffer colored=467
+cmdcall 800fe5d4=251 calls / 493752 packets / max2019 / guard
+cmdstop=depth/0xC0000205/66/19/.../pc=0xFFFFFFFF801031A8
+```
+
+So the invalid type-5 head is not disposable in isolation. Dropping it advances
+the decoder into payload/control words and creates a much larger misdecode.
+The resync point has to be anchored to a known producer boundary, not guessed
+from the stale type-5 header alone.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
