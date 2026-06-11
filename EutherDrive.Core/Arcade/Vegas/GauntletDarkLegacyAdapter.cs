@@ -25256,6 +25256,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceSetupTriangles = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SETUP_TRIANGLES") == "1";
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
+    private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
@@ -25330,6 +25331,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
     private int _nonNeutralFastFillTraceCount;
+    private int _type3PacketTraceCount;
     private int _type5PayloadTraceCount;
     private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
@@ -26801,6 +26803,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void DecodeFifoType3(uint command, int wordsNeeded)
     {
+        TraceType3Packet(command, wordsNeeded);
         int count = (int)((command >> 6) & 0xfu);
         int code = (int)((command >> 3) & 7u);
         ushort fallbackColor = GetDrawColor();
@@ -26876,6 +26879,31 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             PushSetupVertex(new SetupVertex(x, y, color, s, t, hasTexture), code, vertex, ((command >> 22) & 1u) != 0);
         }
+    }
+
+    private void TraceType3Packet(uint command, int wordsNeeded)
+    {
+        if (!_traceType3Packets || _type3PacketTraceCount++ >= 96)
+            return;
+
+        int count = Math.Min(wordsNeeded, Math.Min(_fifoBuffer.Count, 16));
+        Span<char> wordBuffer = stackalloc char[16 * 11];
+        int offset = 0;
+        for (int i = 0; i < count; i++)
+        {
+            if (i != 0)
+                wordBuffer[offset++] = '/';
+            _fifoBuffer[i].TryFormat(wordBuffer[offset..], out int written, "x8");
+            offset += written;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE3] cmd=0x{command:x8} words={wordsNeeded} count={(command >> 6) & 0xfu} " +
+            $"code={(command >> 3) & 7u} flags=0x{(command >> 10) & 0xffffu:x4} " +
+            $"rd=0x{_cmdFifoReadIndex * 4:x8} mame={(_fixMameCommandFifoModel ? 1 : 0)} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} packet=0x{wordBuffer[..offset].ToString()}{pcStatus}");
     }
 
     private void DecodeFifoType5(uint command, int wordsNeeded)

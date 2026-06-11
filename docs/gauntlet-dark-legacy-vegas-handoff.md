@@ -10469,3 +10469,30 @@ framebuffer colored=307199
 Continue by comparing MAME vs standard type-3 packet buffers and the writes to
 setup registers `0x98..0xa9`; avoid spending more time on type-4
 `0x0001828c` missing-word tolerance unless a fresh trace shows it is current.
+
+Type-3 packet tracing (`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS=1`)
+shows the first runtime setup packets are not payload-corrupt under the MAME
+model. Standard and MAME both decode the same repeated packet:
+
+```text
+cmd=0x0180a8cb words=19 count=3 code=1 flags=0x602a
+packet=0x0180a8cb/00000000/bf800000/437f0000/3f800000/ffc00000/43800000/44000000/43bf8000/437f0000/3f800000/ffc00000/00000000/00000000/43bf8000/437f0000
+```
+
+The visible difference is FIFO model state, not the type-3 packet words:
+
+```text
+standard type3 trace:
+rd=0x00020908 mame=0 depth=19 holes=0 pc=0xffffffff800c4e5c
+
+MAME type3 trace:
+rd=0x00020908 mame=1 depth=19 holes=0 pc=0xffffffff800c4e5c
+...
+rd=0x0011a2dc mame=1 depth=3144 holes=0 pc=0xffffffff800fe5d4
+rd=0x0031aab8 mame=1 depth=13909 holes=0 pc=0xffffffff800fe5d4
+```
+
+So the `NaN` setup trace is expected for this packet shape and is not unique to
+MAME. The white-screen divergence is more likely due to which state/fill/swap
+packets MAME chooses to drain around these valid type-3 packets, especially
+when the unmasked read pointer/depth climbs through large outer-payload bursts.
