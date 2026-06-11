@@ -11598,3 +11598,74 @@ for the active service phase. The current write path often receives only a
 masked local storage offset while the MAME read pointer remains unmasked, which
 is enough to let the decoder consume plausible but temporally wrong packet
 content.
+
+Follow-up probes added two more negative controls and one better diagnostic.
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_ACCUMULATE_ADDRESS_WINDOW=1`
+keeps the tracked address window open across sequential mode-2 appends instead
+of collapsing `addressMin` to each write address. By itself it still has the
+bad white/blank f260 signature:
+
+```text
+MAME FIFO + ACCUMULATE_ADDRESS_WINDOW f260:
+frameHash=0x840c20eb
+drawPackets=596 direct/setup=44/0
+framebuffer colored=793
+```
+
+Combining that accumulated window with
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_READ_IN_ADDRESS_WINDOW=1`
+and a resync-to-`addressMin` attempt is worse:
+
+```text
+MAME FIFO + ACCUMULATE_ADDRESS_WINDOW + REQUIRE_READ_IN_ADDRESS_WINDOW f260:
+frameHash=0x2d1c35fc
+drawPackets=708 direct/setup=44/0
+framebuffer nonBlack=33 colored=0
+```
+
+So the larger address window does not identify the missing producer boundary.
+It can hide the stale-read condition or resync to the wrong phase.
+
+A stricter generation gate with
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRACK_WRITE_GENERATION=1` and
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_STORAGE_GENERATION=1`
+also collapses useful output:
+
+```text
+MAME FIFO + TRACK_WRITE_GENERATION + REQUIRE_STORAGE_GENERATION f260:
+frameHash=0x9ac85dc5
+drawPackets=30 direct/setup=44/0
+framebuffer colored=0
+```
+
+The new `cmdtgt=` target-register profile counts command-FIFO-decoded register
+targets by PC. It corrected a misleading earlier hypothesis: standard mode also
+shows no setup-target register writes through the command FIFO target profile
+(`su0`), even though it renders with 1282 setup triangles. MAME mode likewise
+shows `su0`. The missing setup work is therefore not a direct absence of
+`0xa8/0xa9` command-FIFO target writes. The failure sits earlier in the global
+FIFO/render phase that determines which state and vertex packets are visible to
+the decoder.
+
+For user-facing Gauntlet bringup, the standard/default path remains the runnable
+one:
+
+```text
+standard f260:
+frameHash=0x8e14c17e
+drawPackets=764 direct/setup=2594/1282
+packetTypes=0:2273,1:34609,2:0,3:764,4:102075,5:80923,6:0,7:3
+framebuffer colored=307199
+
+MAME FIFO f260:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+framebuffer colored=695
+```
+
+`ConfigureGauntletDarkLegacyUiBringup()` now clears
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL` for the app/web UI unless
+`EUTHERDRIVE_GAUNTDL_ALLOW_UI_MAME_CMD_FIFO_MODEL=1` is explicitly set. That
+keeps accidental shell environment leakage from launching the broken MAME-FIFO
+experiment in the browser-facing path while preserving the experiment for
+terminal probes.

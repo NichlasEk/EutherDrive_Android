@@ -4363,6 +4363,14 @@ public partial class MainView : UserControl
             Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME")))
             Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000");
+        string? allowMameCommandFifo = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_ALLOW_UI_MAME_CMD_FIFO_MODEL");
+        if (string.IsNullOrWhiteSpace(allowMameCommandFifo) ||
+            allowMameCommandFifo == "0" ||
+            allowMameCommandFifo.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+            allowMameCommandFifo.Equals("no", StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL", null);
+        }
     }
 
     private static (IEmulatorCore Core, string ConsoleLabel) LoadCoreForRom(string romPath)

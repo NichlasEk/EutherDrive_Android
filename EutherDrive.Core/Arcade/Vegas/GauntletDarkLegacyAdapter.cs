@@ -25326,6 +25326,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoReadyValidPacketWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_READY_VALID_PACKET_WINDOW"));
+    private readonly bool _experimentMameCommandFifoAccumulateAddressWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_ACCUMULATE_ADDRESS_WINDOW"));
     private readonly bool _experimentMameCommandFifoRequireValidType5PacketWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_TYPE5_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoDropInvalidType5Header =
@@ -25418,6 +25420,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly Dictionary<ulong, CommandFifoWritePcStats> _commandFifoWritePcStats = [];
     private readonly Dictionary<ulong, CommandFifoRegisterReadPcStats> _commandFifoRegisterReadPcStats = [];
     private readonly Dictionary<ulong, CommandFifoRegisterWritePcStats> _commandFifoRegisterWritePcStats = [];
+    private readonly Dictionary<ulong, CommandFifoTargetRegisterPcStats> _commandFifoTargetRegisterPcStats = [];
     private readonly Dictionary<ulong, CommandFifoReadyPcStats> _commandFifoReadyPcStats = [];
     private readonly Dictionary<string, CommandFifoDecodeTriggerStats> _commandFifoDecodeTriggerStats = [];
     private string _commandFifoDecodeTrigger = "direct";
@@ -25829,7 +25832,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoHoles == 0 && address == _cmdFifoAddressMin + 4)
         {
             mode = 2;
-            _cmdFifoAddressMin = address;
+            if (!_experimentMameCommandFifoAccumulateAddressWindow)
+                _cmdFifoAddressMin = address;
             _cmdFifoAddressMax = address;
             _cmdFifoDepth++;
             _cmdFifoDepthWordsAdded++;
@@ -26685,6 +26689,12 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoAddressMin >= _cmdFifoRamBase &&
             !IsMameCommandFifoReadInsideAddressWindow())
         {
+            if (_experimentMameCommandFifoAccumulateAddressWindow &&
+                TryResyncMameCommandFifoReadToAddressMin("read-window-resync"))
+            {
+                CountCommandFifoReadyPc(true, "read-window-resync");
+                return true;
+            }
             TraceCommandFifoDecodeStop("read-outside-window", PeekCommandFifoWord(), 1);
             CountCommandFifoReadyPc(false, "read-window");
             return false;
@@ -26754,6 +26764,22 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private bool IsMameCommandFifoReadInsideAddressWindow()
         => IsMameCommandFifoWordInsideAddressWindow(_cmdFifoReadIndex);
+
+    private bool TryResyncMameCommandFifoReadToAddressMin(string reason)
+    {
+        if (_cmdFifoAddressMin < _cmdFifoRamBase)
+            return false;
+
+        int addressMinIndex = DecodeCommandFifoReadIndex(_cmdFifoAddressMin >> 2);
+        if (addressMinIndex == _cmdFifoReadIndex)
+            return false;
+        if (!IsCommandFifoWordValidForRead(addressMinIndex))
+            return false;
+
+        TraceCommandFifoDecodeStop(reason, PeekCommandFifoWord(), 1);
+        _cmdFifoReadIndex = addressMinIndex;
+        return true;
+    }
 
     private bool IsMameCommandFifoPacketInsideAddressWindow(int start, int wordsNeeded)
     {
@@ -27050,6 +27076,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void WriteCmdFifoRegister(uint target, uint value)
     {
         uint register = target & 0xffu;
+        CountCommandFifoTargetRegisterPc(register, value);
         TraceCommandFifoRegisterValue(target, value);
         if (_traceTmuRegisterWrites &&
             _tmuRegisterWriteTraceCount < 160 &&
@@ -27385,7 +27412,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_profileCommandFifoPacketPcs)
             return "";
 
-        return $"cmdpc={FormatCommandFifoPacketPcStats()} cmdw={FormatCommandFifoWritePcStats()} cmdreg={FormatCommandFifoRegisterReadPcStats()} cmdwr={FormatCommandFifoRegisterWritePcStats()} cmdrdy={FormatCommandFifoReadyPcStats()} ";
+        return $"cmdpc={FormatCommandFifoPacketPcStats()} cmdw={FormatCommandFifoWritePcStats()} cmdreg={FormatCommandFifoRegisterReadPcStats()} cmdwr={FormatCommandFifoRegisterWritePcStats()} cmdtgt={FormatCommandFifoTargetRegisterPcStats()} cmdrdy={FormatCommandFifoReadyPcStats()} ";
     }
 
     private string FormatCommandFifoPacketPcStats()
@@ -27590,6 +27617,69 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"/last{pair.Value.LastRegister:X}:0x{pair.Value.LastValue:X}:rd{pair.Value.LastReadIndex:X}" +
                 $":a{pair.Value.LastAddressMin:X}-{pair.Value.LastAddressMax:X}:d{pair.Value.LastDepth}:h{pair.Value.LastHoles}"));
     }
+
+    private void CountCommandFifoTargetRegisterPc(uint register, uint value)
+    {
+        if (!_profileCommandFifoPacketPcs)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (pc == 0)
+            return;
+
+        if (!_commandFifoTargetRegisterPcStats.TryGetValue(pc, out CommandFifoTargetRegisterPcStats? stats))
+        {
+            stats = new CommandFifoTargetRegisterPcStats();
+            _commandFifoTargetRegisterPcStats[pc] = stats;
+        }
+
+        stats.Total++;
+        stats.LastRegister = register;
+        stats.LastValue = value;
+        if (IsInterestingEventRegister(register))
+            stats.Interesting++;
+        if (register is 0xa8u or 0xa9u)
+            stats.Setup++;
+        if (register is RegTriangleCommand or RegFtriangleCommand)
+            stats.Triangle++;
+        if (register == RegFastfillCommand)
+            stats.FastFill++;
+        if (register == RegSwapbufferCommand)
+            stats.Swap++;
+        if (IsTmuTextureRegister(register))
+            stats.Texture++;
+        if (register is RegCmdFifoBaseAddr or RegCmdFifoRdPtr or RegCmdFifoAddressMin or RegCmdFifoAddressMax or RegCmdFifoDepth or RegCmdFifoHoles)
+            stats.CommandFifo++;
+        if (register < stats.LowRegisterCounts.Length)
+            stats.LowRegisterCounts[register]++;
+    }
+
+    private string FormatCommandFifoTargetRegisterPcStats()
+    {
+        if (_commandFifoTargetRegisterPcStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _commandFifoTargetRegisterPcStats
+            .OrderByDescending(pair => pair.Value.Setup + pair.Value.Triangle + pair.Value.FastFill + pair.Value.Swap)
+            .ThenByDescending(pair => pair.Value.Interesting)
+            .ThenByDescending(pair => pair.Value.Total)
+            .ThenBy(pair => pair.Key)
+            .Take(10)
+            .Select(pair =>
+                $"0x{pair.Key:x16}:{pair.Value.Total}/i{pair.Value.Interesting}/su{pair.Value.Setup}/tri{pair.Value.Triangle}" +
+                $"/ff{pair.Value.FastFill}/sw{pair.Value.Swap}/tex{pair.Value.Texture}/cf{pair.Value.CommandFifo}" +
+                $"/top{FormatTopCommandFifoTargetRegisters(pair.Value)}" +
+                $"/last{pair.Value.LastRegister:X}:0x{pair.Value.LastValue:X8}"));
+    }
+
+    private static string FormatTopCommandFifoTargetRegisters(CommandFifoTargetRegisterPcStats stats)
+        => string.Join("-", stats.LowRegisterCounts
+            .Select((count, register) => (count, register))
+            .Where(item => item.count != 0)
+            .OrderByDescending(item => item.count)
+            .ThenBy(item => item.register)
+            .Take(4)
+            .Select(item => $"{item.register:X}:{item.count}"));
 
     private void CountCommandFifoReadyPc(bool ready, string reason)
     {
@@ -27901,6 +27991,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int LastAddressMax;
         public int LastDepth;
         public int LastHoles;
+    }
+
+    private sealed class CommandFifoTargetRegisterPcStats
+    {
+        public int Total;
+        public int Interesting;
+        public int Setup;
+        public int Triangle;
+        public int FastFill;
+        public int Swap;
+        public int Texture;
+        public int CommandFifo;
+        public readonly int[] LowRegisterCounts = new int[256];
+        public uint LastRegister;
+        public uint LastValue;
     }
 
     private sealed class CommandFifoReadyPcStats
