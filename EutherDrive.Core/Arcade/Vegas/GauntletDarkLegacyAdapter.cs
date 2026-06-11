@@ -27408,6 +27408,32 @@ internal class VoodooBringupBackend : IVoodooBackend
         stats.HolesDelta += holesDelta;
         if ((uint)mode < (uint)stats.ModeCounts.Length)
             stats.ModeCounts[mode]++;
+        if (!stats.HasAddress)
+        {
+            stats.HasAddress = true;
+            stats.FirstAddress = address;
+            stats.MinAddress = address;
+            stats.MaxAddress = address;
+            stats.LastAddressMin = _cmdFifoAddressMin;
+            stats.LastAddressMax = _cmdFifoAddressMax;
+        }
+        else
+        {
+            int delta = address - stats.LastAddress;
+            if (delta == 4)
+                stats.SequentialWrites++;
+            else if (delta < 0)
+                stats.BackwardJumps++;
+            else if (delta > 4)
+                stats.ForwardGaps++;
+            if (_cmdFifoAddressMin != stats.LastAddressMin ||
+                _cmdFifoAddressMax != stats.LastAddressMax)
+            {
+                stats.WindowChanges++;
+            }
+            stats.MinAddress = Math.Min(stats.MinAddress, address);
+            stats.MaxAddress = Math.Max(stats.MaxAddress, address);
+        }
         stats.LastAddress = address;
         stats.LastValue = value;
         stats.LastDepth = _cmdFifoDepth;
@@ -27429,6 +27455,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             .Select(pair =>
                 $"0x{pair.Key:x16}:{pair.Value.Total}/dd{pair.Value.DepthDelta}/hd{pair.Value.HolesDelta}" +
                 $"/m{string.Join('-', pair.Value.ModeCounts)}" +
+                $"/span{pair.Value.FirstAddress:X}-{pair.Value.LastAddress:X}:{pair.Value.MinAddress:X}-{pair.Value.MaxAddress:X}" +
+                $"/seq{pair.Value.SequentialWrites}:back{pair.Value.BackwardJumps}:gap{pair.Value.ForwardGaps}:win{pair.Value.WindowChanges}" +
                 $"/last0x{pair.Value.LastAddress:X}:0x{pair.Value.LastValue:X8}:d{pair.Value.LastDepth}:h{pair.Value.LastHoles}:a{pair.Value.LastAddressMin:X}-{pair.Value.LastAddressMax:X}"));
     }
 
@@ -27812,6 +27840,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         public long DepthDelta;
         public long HolesDelta;
         public readonly int[] ModeCounts = new int[6];
+        public bool HasAddress;
+        public int FirstAddress;
+        public int MinAddress;
+        public int MaxAddress;
+        public int SequentialWrites;
+        public int BackwardJumps;
+        public int ForwardGaps;
+        public int WindowChanges;
         public int LastAddress;
         public uint LastValue;
         public int LastDepth;

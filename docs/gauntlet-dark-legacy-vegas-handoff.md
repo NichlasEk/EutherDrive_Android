@@ -11241,6 +11241,27 @@ So limiting per-call packet count reproduces one surface property of the
 standard path but not the timing/ownership of which service PC should consume
 the mixed stream.
 
+The `cmdw=` profile was later extended with address spans and intra-PC write
+shape. The bad MAME FIFO f260 signature stayed unchanged, but the write stream
+shows that `hd0` is only the net result. The major producers still contain many
+forward gaps/backward jumps while the model keeps making positive depth ready:
+
+```text
+MAME FIFO f260 + cmdw span profile:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+framebuffer colored=695
+cmdw 800fe5d4=4214496 writes / dd4214496 / hd0 /
+     span0-FD9C:0-FFFC / seq4213989 / back262 / gap244 / win4214495
+cmdw 800fe5fc=1794510 writes / dd1794510 / hd0 /
+     span20A14-9770:0-3FFFC / seq1766445 / back31 / gap28033 / win1794509
+```
+
+So the issue is not just final hole count. The current tracker collapses almost
+every write into a new readable one-word window, and write-triggered decode can
+consume mid-stream state before the producer has completed the logical packet
+span.
+
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_RENDER_WORK=1`
 was also neutral. It redistributes some packets out of `800fe5d4`, but the
 frame signature is unchanged:
