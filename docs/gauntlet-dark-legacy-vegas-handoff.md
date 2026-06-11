@@ -11399,6 +11399,25 @@ and decode scheduling: MAME mode exposes plausible packet content as ready to
 the wrong service PC/phase, while standard mode preserves many idle/empty
 windows around the same workload.
 
+A companion external FIFO-register write profile (`cmdwr=`) grouped writes to
+`cmdFifoBase/RdPtr/AddressMin/AddressMax/Depth/Holes` by CPU PC. Standard mode
+shows the expected repeated register programming from the outer payload
+fastpath, but the MAME FIFO f260 path records none:
+
+```text
+standard f260:
+cmdwr 800fe5d4=7692 writes, slots base/rdptr/amin/amax/depth/holes = 1282 each
+
+MAME FIFO f260:
+cmdwr=none
+```
+
+This is another negative control against a CPU register-I/O explanation. The
+MAME failure is still inside the command FIFO write/readiness path: the writes
+that lead to `cmdtrigc ... depth` are being treated as FIFO storage traffic,
+then decoded at the wrong time, rather than arriving as external command FIFO
+register updates.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
