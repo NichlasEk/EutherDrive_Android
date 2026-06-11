@@ -10397,9 +10397,8 @@ words at the stopped read pointer:
 cmdstop=reason/cmd/needed/depth/readByte/storageByte/next1/next2/pc/count
 ```
 
-The first f260 check with the extra fields confirms the partial packet is a
-real missing/stale payload word in the ring, not merely a misleading unmasked
-read pointer:
+The first f260 check with the extra fields appeared to show a missing/stale
+payload word in the ring:
 
 ```text
 MAME FIFO f260:
@@ -10407,6 +10406,66 @@ cmdstop=depth/0x0001828C/3/2/0x17C9D44/0x9D44/0xFFFFFFFF/0x00000000/pc=0xFFFFFFF
 ```
 
 For `0x0001828c`, type 4 needs header plus two payload words for
-`RegColor0`/`RegColor1`. At the stopped storage offset the first payload is
-present (`0xffffffff`) and the second is still zero/stale. Continue by tracing
-the writes to the missing payload slot, not by relaxing packet decode.
+`RegColor0`/`RegColor1`.
+
+Follow-up storage tracing corrected that interpretation. With
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE=0x9d44,0x9d48,0x9d4c`
+and `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_LIMIT=5000`, the final
+targeted writes are:
+
+```text
+storage=0x09d44 value=0x0001828c pc=0xffffffff80103190 depth=1
+storage=0x09d48 value=0xffffffff pc=0xffffffff8010319c depth=2
+storage=0x09d4c value=0xffffffff pc=0xffffffff801031a8 depth=3
+```
+
+So the `cmdstop` snapshot in the score line is a stale "last stop", not proof
+that the third word was never written. The MAME FIFO failure should now be
+treated as an ordering/depth/read-index problem that corrupts later state, not
+as a simple missing payload slot.
+
+Additional negative diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISABLE_OUTER_PAYLOAD_FASTPATH=1
+
+MAME FIFO f260:
+frameHash=0x967bd23f
+drawPackets=635 direct/setup=69/0
+fastFills=1010 swaps=822
+packetTypes=0:992,1:33010,2:0,3:635,4:96697,5:81256,6:0,7:5
+framebuffer colored=635
+```
+
+Disabling the `0xffffffff800fe5d4` outer-payload fastpath does not recover the
+scene, so that fastpath is not the primary cause.
+
+The current strongest lead is bad setup/type-3 state under the MAME FIFO model.
+Normal MAME FIFO f260 does reach setup tracing, but the setup vertices are
+degenerate and texture coordinates are often `NaN`, leaving almost the entire
+frame white:
+
+```text
+MAME FIFO f260 + TRACE_VOODOO_SETUP_TRIANGLES=1:
+setup trace pc=0xffffffff800c4e5c / 0xffffffff800fe5d4
+xy=(0,-1)/(512,383)/(0,383)
+st=(NaN,256)/(NaN,0)/(NaN,0)
+fbz transitions from 0x00000460 to 0x00000000
+framebuffer colored=695
+```
+
+By contrast, the old valid-slot model at the same f260 baseline still produces
+the colored scene:
+
+```text
+standard f260:
+frameHash=0x8e14c17e
+drawPackets=764 direct/setup=2594/1282
+fastFills=2338 swaps=2086
+packetTypes=0:2273,1:34609,2:0,3:764,4:102075,5:80923,6:0,7:3
+framebuffer colored=307199
+```
+
+Continue by comparing MAME vs standard type-3 packet buffers and the writes to
+setup registers `0x98..0xa9`; avoid spending more time on type-4
+`0x0001828c` missing-word tolerance unless a fresh trace shows it is current.

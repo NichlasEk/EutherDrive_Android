@@ -632,6 +632,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
+    private readonly bool _experimentDisableOuterPayloadFastPath =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISABLE_OUTER_PAYLOAD_FASTPATH"));
     private readonly bool _fixVoodooMameCommandFifoModel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
     private readonly bool _enableRuntimeBgLoadModelQioHydration =
@@ -3711,6 +3713,9 @@ internal sealed class MipsR5000Core
 
     private bool TryFastPathKnownGlideFifoOuterPayloadLoopTail(ulong pc)
     {
+        if (_experimentDisableOuterPayloadFastPath)
+            return false;
+
         const ulong roomReadyEntry = 0xffffffff800fe5d4UL;
         const ulong packetEntry = 0xffffffff800fe5e8UL;
         const ulong compare = 0xffffffff800fe654UL;
@@ -25259,6 +25264,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_PCS"));
     private readonly ulong[] _traceCommandFifoModelCommands =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_COMMANDS"));
+    private readonly ulong[] _traceCommandFifoModelStorageOffsets =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE"));
+    private readonly int _traceCommandFifoModelLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_LIMIT"), 240);
     private readonly bool _experimentResetCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
     private readonly bool _experimentRewindCommandFifoOnBulkWrite =
@@ -25531,7 +25540,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             return;
         }
-        if (_commandFifoModelTraceCount++ >= 240)
+        if (_commandFifoModelTraceCount++ >= _traceCommandFifoModelLimit)
             return;
 
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
@@ -25582,7 +25591,33 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoHoles += Math.Max(0, (address - _cmdFifoAddressMax) / 4 - 1);
             _cmdFifoAddressMax = address;
         }
-        TraceCommandFifoModel($"write addr=0x{address:x5} value=0x{value:x8}", value);
+        if (_traceCommandFifoModelStorageOffsets.Length == 0)
+            TraceCommandFifoModel($"write addr=0x{address:x5} value=0x{value:x8}", value);
+        TraceCommandFifoStorageWrite(address, value);
+    }
+
+    private void TraceCommandFifoStorageWrite(int address, uint value)
+    {
+        if (!_traceCommandFifoModel || _traceCommandFifoModelStorageOffsets.Length == 0)
+            return;
+
+        int storageByteOffset = ((address >> 2) & CmdFifoMask) * 4;
+        if (!_traceCommandFifoModelStorageOffsets.Contains((ulong)storageByteOffset))
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceCommandFifoModelPcs.Length != 0 && !_traceCommandFifoModelPcs.Contains(pc))
+            return;
+        if (_commandFifoModelTraceCount++ >= _traceCommandFifoModelLimit)
+            return;
+
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO] storage-write storage=0x{storageByteOffset:x5} " +
+            $"addr=0x{address:x8} value=0x{value:x8} " +
+            $"base=0x{_cmdFifoRamBase:x5} end=0x{_cmdFifoRamEnd:x5} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"fbi7=0x{_registers[RegFbiInit7]:x8}{pcStatus}");
     }
 
     public void BeginCommandFifoBulkWrite()
