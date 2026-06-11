@@ -550,6 +550,44 @@ The color-mask behavior still may be useful as a later accuracy fix, but it is
 too broad for bringup because Gauntlet's current state frequently issues
 important clear commands while the emulated color-write bit is not set.
 
+Fresh f400 comparison after the fastfill color-mask change:
+
+```text
+BRINGUP_FAST f400:
+frameHash=0x8e14c17e
+drawPackets=1024 direct/setup=2818/1394
+texWrites=5431619 fastFills=3399 swaps=2774
+ffk=692/581/0 ffs=0/0/0
+packetTypes=0:2422,1:42639,2:0,3:1024,4:125877,5:84869,6:0,7:6
+framebuffer colored=307199
+
+BRINGUP_FAST + MAME_CMD_FIFO_MODEL f400:
+frameHash=0x9ac85dc5
+drawPackets=1046 direct/setup=46/0
+texWrites=6555139 fastFills=1762 swaps=1382
+ffk=0/0/0 ffs=0/0/0
+packetTypes=0:9943,1:42142,2:0,3:1046,4:122690,5:102424,6:0,7:3
+framebuffer colored=0
+cmdrd=0x6B735C cmd=3/0/0x2CD78/0x2CD78
+peek=0x00059604:4
+```
+
+The MAME-FIFO path no longer shows the old type-6/huge-type-5 phase failure at
+f400, and it no longer depends on fastfill suppression, but it still misses the
+black clear/swap progression. The current failure is a late partial type-4
+packet. `DebugStatus` now includes the most recent command FIFO decode stop:
+
+```text
+cmdstop=depth/0x00059604/4/3/0x1ADCD70/pc=0xFFFFFFFF801031A8/2087871
+```
+
+A targeted trace for `0x00059604` showed the same packet is normally produced
+as four consecutive words and the depth stalls at 1/2/3 clear once the next
+word arrives. The final f400 state is different: only three words have arrived
+for the packet at `cmdrd=0x6B735C`. Next useful target is the producer around
+`80103190..801031a8` and the FIFO room/state that makes it stop after the third
+word in the MAME-depth path.
+
 ```text
 MAME-wrap f400:
 frameHash=0xcff92b39

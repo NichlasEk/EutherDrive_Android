@@ -25323,6 +25323,13 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoModelTraceCount;
     private int _commandFifoModelStallTraceCount;
     private int _commandFifoRegisterValueTraceCount;
+    private string _lastCommandFifoDecodeStopReason = "";
+    private uint _lastCommandFifoDecodeStopCommand;
+    private int _lastCommandFifoDecodeStopWordsNeeded;
+    private int _lastCommandFifoDecodeStopDepth;
+    private int _lastCommandFifoDecodeStopReadIndex;
+    private ulong _lastCommandFifoDecodeStopPc;
+    private int _commandFifoDecodeStopCount;
     private uint _currentCommandFifoCommand;
     private int _currentCommandFifoPacketStart;
     private int _currentCommandFifoWordsNeeded;
@@ -25350,12 +25357,25 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
            GetFastFillSwapPcDebugStatus() +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
+           GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
            $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
 
     private uint PeekCommandFifoWord() => _cmdFifoRam[_cmdFifoReadIndex & CmdFifoMask];
+
+    private string GetCommandFifoDecodeStopDebugStatus()
+    {
+        if (_commandFifoDecodeStopCount == 0)
+            return "";
+
+        string pcStatus = _lastCommandFifoDecodeStopPc != 0 ? $"/pc=0x{_lastCommandFifoDecodeStopPc:X}" : "";
+        return
+            $"cmdstop={_lastCommandFifoDecodeStopReason}/0x{_lastCommandFifoDecodeStopCommand:X8}/" +
+            $"{_lastCommandFifoDecodeStopWordsNeeded}/{_lastCommandFifoDecodeStopDepth}/" +
+            $"0x{_lastCommandFifoDecodeStopReadIndex * 4:X}{pcStatus}/{_commandFifoDecodeStopCount} ";
+    }
 
     public virtual void WriteRegister(uint address, uint value)
     {
@@ -26160,10 +26180,18 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceCommandFifoDecodeStop(string reason, uint command, int wordsNeeded)
     {
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        _lastCommandFifoDecodeStopReason = reason;
+        _lastCommandFifoDecodeStopCommand = command;
+        _lastCommandFifoDecodeStopWordsNeeded = wordsNeeded;
+        _lastCommandFifoDecodeStopDepth = _cmdFifoDepth;
+        _lastCommandFifoDecodeStopReadIndex = _cmdFifoReadIndex;
+        _lastCommandFifoDecodeStopPc = pc;
+        _commandFifoDecodeStopCount++;
+
         if (!_traceCommandFifoModel)
             return;
 
-        ulong pc = CpuPcProvider?.Invoke() ?? 0;
         if (_traceCommandFifoModelPcs.Length != 0 && !_traceCommandFifoModelPcs.Contains(pc))
             return;
         if (_traceCommandFifoModelCommands.Length != 0 && !_traceCommandFifoModelCommands.Contains(command))
