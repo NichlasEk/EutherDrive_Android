@@ -11241,6 +11241,25 @@ So limiting per-call packet count reproduces one surface property of the
 standard path but not the timing/ownership of which service PC should consume
 the mixed stream.
 
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_CMD_FIFO_YIELD_ON_RENDER_WORK=1`
+was also neutral. It redistributes some packets out of `800fe5d4`, but the
+frame signature is unchanged:
+
+```text
+MAME FIFO + yield on render work:
+frameHash=0x1e212a0b
+drawPackets=738 direct/setup=44/0
+packetTypes=0:8588,1:34284,2:0,3:738,4:100983,5:91713,6:0,7:3
+framebuffer colored=695
+cmdcall 800fe5d4=251 calls / 47576 packets / max382 / c5=1 / mix=250 / empty=0
+cmdcall 800fe87c=359 calls / 25809 packets / max294 / mix=195 / empty=164
+cmdcall 800fe850=359 calls / 19112 packets / max98 / c5=2 / other=195 / empty=162
+cmdcall 800fe5fc=1794510 calls / 32501 packets / max1 / c5=27785 / other=4716 / empty=1762009
+```
+
+So stopping after render-affecting packets does not restore the missing
+standard-path idle/invalid windows either.
+
 A bulk-window control was also negative. Enabling the existing
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW=1` with MAME
 FIFO made the frame slightly worse:
