@@ -11144,6 +11144,33 @@ So the unmasked/stored generation mismatch is not by itself the rendering bug.
 The bad frame still comes from decoding the same plausible mixed stream at the
 wrong phase/timing, not from the numeric value of `_cmdFifoReadIndex` alone.
 
+Two timing/ring controls narrowed this further:
+
+```text
+MAME FIFO + DECODE_PACKET_LIMIT=1:
+frameHash=0x3a91e1cf
+drawPackets=648 direct/setup=44/0
+packetTypes=0:9147,1:33793,2:0,3:648,4:99588,5:91819,6:0,7:3
+framebuffer colored=739
+```
+
+Limiting decode to one packet per call changes scheduling and improves the
+colored count only slightly. It still leaves the same white-fill/no-setup
+signature, so over-draining per call is not the primary bug.
+
+```text
+MAME FIFO + WRAP_CLEAR:
+frameHash=0xa2eb2b4f
+drawPackets=696 direct/setup=44/0
+packetTypes=0:9622,1:33759,2:0,3:696,4:99219,5:64527,6:0,7:3
+framebuffer colored=459
+cmdio=10068/10068/0
+```
+
+Clearing valid/depth state on ring wrap is worse and drops a large amount of
+type-5 texture traffic. That rules out a simple "old valid bits survive wrap"
+explanation.
+
 Next target: replace the ad hoc MAME `depth/holes/addressMin/addressMax`
 tracking with a coherent command-FIFO window/generation model. Decode readiness
 must not be true merely because `depth` is positive; it also has to prove that
