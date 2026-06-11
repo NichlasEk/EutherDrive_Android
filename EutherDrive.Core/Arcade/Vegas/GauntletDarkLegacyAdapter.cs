@@ -26358,7 +26358,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         if (frontIsWhiteClearDominated && bestIndex == _frontBufferIndex)
-            return fallbackActiveCount > 0 || fallbackNonWhiteCount > 0 ? fallbackIndex : _backBufferIndex;
+            return fallbackActiveCount > 0 || fallbackNonWhiteCount > 0 ? fallbackIndex : _frontBufferIndex;
 
         return bestIndex;
     }
@@ -26637,6 +26637,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             if (!_fixMameCommandFifoModel && !HasCommandFifoWords(packetStart, wordsNeeded))
             {
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "invalid-standard-window");
+                TraceCommandFifoDecodeStop("invalid-standard-window", command, wordsNeeded);
                 return;
             }
 
