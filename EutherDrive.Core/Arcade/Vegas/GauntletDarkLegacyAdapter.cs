@@ -33,7 +33,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_FILL_ALL", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "9"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "27"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ_FILL_REMAINING", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE", "1"),
@@ -640,6 +640,8 @@ internal sealed class GauntletRomSet
 
 internal sealed class MipsR5000Core
 {
+    private const ulong KnownRuntimeBgLoadModelTexturePayloadMaxIndex = 26;
+
     private readonly VegasMemoryMap _memory;
     private readonly ulong[] _gpr = new ulong[32];
     private readonly ulong[] _cp0 = new ulong[32];
@@ -10513,7 +10515,7 @@ internal sealed class MipsR5000Core
         const uint repeatedStaticSource = 0x802e1718U;
 
         int repaired = 0;
-        for (ulong index = 1; index < 0x10UL; index++)
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
             ulong entry = assetTable + index * descriptorStride;
             ulong name = entry + 0x10UL;
@@ -10568,7 +10570,7 @@ internal sealed class MipsR5000Core
         const ulong destinationBase = 0xffffffff802e1718UL;
         const ulong sourceStride = 0x2000UL;
 
-        for (ulong index = 1; index <= 8UL; index++)
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
             ulong sourceBase = destinationBase + index * sourceStride;
             if (!IsMainRamRange(sourceBase + 0x5cUL, 4UL))
@@ -10601,7 +10603,7 @@ internal sealed class MipsR5000Core
         const ulong sourceTable = 0xffffffff802529a0UL;
         const uint staticSource = 0x802e1718U;
         ulong index = _gpr[16] & 0xffffffffUL;
-        if (index is 0 or > 8UL)
+        if (index is 0 || index > KnownRuntimeBgLoadModelTexturePayloadMaxIndex)
             return;
 
         ulong slot = sourceTable + index * 4UL;
@@ -12322,7 +12324,7 @@ internal sealed class MipsR5000Core
 
         ulong index = 0;
         ulong destination = 0;
-        for (ulong candidate = 1; candidate <= 8UL; candidate++)
+        for (ulong candidate = 1; candidate <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; candidate++)
         {
             ulong candidateDestination = destinationBase + candidate * requestedBytes;
             if (!IsMainRamRange(candidateDestination, requestedBytes) ||
@@ -12392,7 +12394,8 @@ internal sealed class MipsR5000Core
 
     private bool IsKnownRuntimeBgLoadModelIndexedTextureQioStatusSignature()
         => (_gpr[16] == 0x2000UL && _gpr[17] == 0x188d2303UL && _gpr[18] == 0x02UL) ||
-           (_gpr[16] == 0x0120UL && _gpr[17] == 0x0120UL && _gpr[18] is >= 3UL and <= 8UL) ||
+           (_gpr[16] == 0x0120UL && _gpr[17] == 0x0120UL &&
+            _gpr[18] >= 3UL && _gpr[18] <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex) ||
            (_gpr[16] == 0x2000UL && _gpr[17] == 0x214c0UL && _gpr[18] == 0x07UL);
 
     private void ApplyKnownRuntimeBgLoadModelIndexedTextureQioStatusStackLimitRepair(ulong pc)
@@ -12651,7 +12654,8 @@ internal sealed class MipsR5000Core
         }
 
         ulong index = (destination - destinationBase) / sourceStride;
-        if (index is < 3UL or > 8UL ||
+        if (index < 3UL ||
+            index > KnownRuntimeBgLoadModelTexturePayloadMaxIndex ||
             !TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out _))
         {
             return;
@@ -12676,7 +12680,7 @@ internal sealed class MipsR5000Core
             !_enableRuntimeBgLoadModelIndexedTextureQioShortReadExperiment ||
             _gpr[16] != requestedBytes ||
             _gpr[17] != requestedBytes ||
-            _gpr[18] is < 3UL or > 8UL)
+            (_gpr[18] < 3UL || _gpr[18] > KnownRuntimeBgLoadModelTexturePayloadMaxIndex))
         {
             return false;
         }
@@ -12853,12 +12857,12 @@ internal sealed class MipsR5000Core
         if (streamIndex < _gpr[20])
             return;
 
-        ulong loadedSource = loadedSourceBase + Math.Min(streamIndex, 8UL) * sourceStride;
+        ulong loadedSource = loadedSourceBase + streamIndex * sourceStride;
         bool knownLoadedSource =
-            streamIndex <= 8UL &&
+            streamIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex &&
             IsMainRamRange(loadedSource, 0x80UL) &&
             !IsKnownRuntimeBgLoadModelSourceWindowEmpty(loadedSource);
-        if (streamIndex > 8UL || !knownLoadedSource)
+        if (streamIndex > KnownRuntimeBgLoadModelTexturePayloadMaxIndex || !knownLoadedSource)
             return;
 
         ulong oldLimit = _gpr[20];
@@ -12881,7 +12885,7 @@ internal sealed class MipsR5000Core
             sourceStride = requestedBytes;
 
         int hydrated = 0;
-        for (ulong index = 1; index <= 8UL; index++)
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
             ulong destination = destinationBase + index * sourceStride;
             if (!IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination))
@@ -13000,7 +13004,7 @@ internal sealed class MipsR5000Core
             return;
 
         ulong qioArrayLimit = qioBase + qioStride * 0x40UL;
-        for (ulong recordIndex = 1; recordIndex < 0x10UL; recordIndex++)
+        for (ulong recordIndex = 1; recordIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; recordIndex++)
         {
             ulong record = recordBase + recordIndex * recordStride;
             if (!IsMainRamRange(record + 0x08UL, 4))
