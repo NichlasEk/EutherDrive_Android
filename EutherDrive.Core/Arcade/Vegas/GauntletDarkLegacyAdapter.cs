@@ -26337,8 +26337,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int frontActiveCount = GetVisibleBufferActiveColorCount(_frontBufferIndex);
         int frontWhiteCount = GetVisibleBufferWhiteCount(_frontBufferIndex);
         bool frontIsWhiteClearDominated = frontWhiteCount > 240_000 && frontActiveCount < 32_000;
-        if (!frontIsWhiteClearDominated && frontCount > 1024 && frontActiveCount > 1024)
-            return _frontBufferIndex;
+        bool frontIsUsable = !frontIsWhiteClearDominated && frontCount > 1024 && frontActiveCount > 1024;
 
         int bestIndex = _frontBufferIndex;
         int bestCount = frontCount;
@@ -26346,7 +26345,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int fallbackIndex = _backBufferIndex;
         int fallbackActiveCount = 0;
         int fallbackNonWhiteCount = 0;
-        int count = GetColorBufferCount();
+        int count = _colorBuffers.Length;
         for (int i = 0; i < count; i++)
         {
             if (i == _frontBufferIndex)
@@ -26369,7 +26368,9 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             if (candidateCount > 1024 &&
                 candidateActiveCount > 1024 &&
-                (candidateActiveCount > bestActiveCount ||
+                (!frontIsUsable ||
+                 candidateActiveCount > bestActiveCount + 32_768 ||
+                 candidateActiveCount >= bestActiveCount * 2 ||
                  bestActiveCount <= 1024 && candidateCount > bestCount ||
                  frontIsWhiteClearDominated && candidateActiveCount >= bestActiveCount * 3 / 4))
             {
