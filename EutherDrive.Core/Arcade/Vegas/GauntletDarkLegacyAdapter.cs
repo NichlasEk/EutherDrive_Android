@@ -43,6 +43,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP", "1"),
+        ("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK", "1"),
     ];
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
@@ -25251,6 +25252,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _texturedTriangleCount;
     private int _texturedTriangleCoveredCount;
     private int _texturedTriangleRejectedCount;
+    private long _solidRasterPixelCount;
+    private long _texturedRasterPixelCount;
+    private long _texturedFallbackPixelCount;
     private long _texturedPixelCount;
     private long _texturedZeroPixelCount;
     private int _texturedRejectNonFiniteCount;
@@ -25270,6 +25274,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _swapBufferCount;
     private int _pendingSwapCount;
     private int _renderFrame;
+    private int _lastDrawBufferIndex = -1;
     private int _lastRenderBufferIndex = -1;
     private int _setupVertexCount;
     private int _frontBufferIndex;
@@ -25306,6 +25311,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _fastFillWhiteBufferCounts = new int[3];
     private readonly int[] _fastFillBlackBufferCounts = new int[3];
     private readonly int[] _fastFillOtherBufferCounts = new int[3];
+    private readonly long[] _rasterBufferPixelCounts = new long[3];
     private int _fastFillSuppressedWhiteCount;
     private int _fastFillSuppressedBlackCount;
     private int _fastFillSuppressedOtherCount;
@@ -25446,10 +25452,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK"));
     private readonly bool _fixTmuRegisterBanks =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS");
+    private readonly bool _fixTexturePerspectiveDivide =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE");
     private readonly bool _treatZeroTextureTexelAsTransparent =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY");
     private readonly bool _preserveNonZeroTextureBytes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PRESERVE_NONZERO_TEXTURE_BYTES"));
+    private readonly bool _visualizeZeroTextureFallback =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK"));
     private bool _suppressZeroTextureBytesForCurrentWrite;
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
@@ -25510,8 +25520,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
            $"tri={_directTriangleCommandCount}+{_setupTriangleCommandCount} fill={_fastFillCount} swap={_swapBufferCount} stat={_statusReadCount} " +
            $"lfb={_lfbWriteCount} tex={_textureWriteCount} buf={_frontBufferIndex}/{_backBufferIndex}/{GetColorBufferCount()} " +
+           $"texw={_textureMappedWriteCount}/{_textureMappedNonZeroWriteCount}/{_textureMappedZeroWriteCount}/{_textureTouchedWordCount}/0x{_textureTouchedFirstWord:X}/0x{_textureTouchedLastWord:X} " +
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
+           $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} " +
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
            $"t5={_fifoType5SpaceCounts[0]}:{_fifoType5SpaceWordCounts[0]}/{_fifoType5SpaceCounts[1]}:{_fifoType5SpaceWordCounts[1]}/" +
            $"{_fifoType5SpaceCounts[2]}:{_fifoType5SpaceWordCounts[2]}/{_fifoType5SpaceCounts[3]}:{_fifoType5SpaceWordCounts[3]} " +
@@ -25520,6 +25532,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"ffw={_fastFillWhiteBufferCounts[0]}/{_fastFillWhiteBufferCounts[1]}/{_fastFillWhiteBufferCounts[2]} " +
            $"ffk={_fastFillBlackBufferCounts[0]}/{_fastFillBlackBufferCounts[1]}/{_fastFillBlackBufferCounts[2]} " +
            $"ffo={_fastFillOtherBufferCounts[0]}/{_fastFillOtherBufferCounts[1]}/{_fastFillOtherBufferCounts[2]} " +
+           $"rb={_rasterBufferPixelCounts[0]}/{_rasterBufferPixelCounts[1]}/{_rasterBufferPixelCounts[2]} rlast={_lastDrawBufferIndex} " +
            $"ffs={_fastFillSuppressedWhiteCount}/{_fastFillSuppressedBlackCount}/{_fastFillSuppressedOtherCount} " +
            $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
            GetFastFillSwapPcDebugStatus() +
@@ -28146,6 +28159,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             ushort color = fallbackColor;
             float s = 0;
             float t = 0;
+            float q = 1;
             bool hasTexture = false;
             if (((command >> 28) & 1u) != 0)
             {
@@ -28175,8 +28189,11 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             if (((command >> 12) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
                 return;
-            if (((command >> 13) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+            if (((command >> 13) & 1u) != 0 &&
+                !TryReadFloat(wordsNeeded, ref source, out q))
+            {
                 return;
+            }
             if (((command >> 14) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
                 return;
             if (((command >> 15) & 1u) != 0)
@@ -28189,8 +28206,11 @@ internal class VoodooBringupBackend : IVoodooBackend
 
                 hasTexture = true;
             }
-            if (((command >> 16) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+            if (((command >> 16) & 1u) != 0 &&
+                !TryReadFloat(wordsNeeded, ref source, out q))
+            {
                 return;
+            }
             if (((command >> 17) & 1u) != 0)
             {
                 if (!TryReadFloat(wordsNeeded, ref source, out s) ||
@@ -28202,7 +28222,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 hasTexture = true;
             }
 
-            PushSetupVertex(new SetupVertex(x, y, color, s, t, hasTexture), code, vertex, ((command >> 22) & 1u) != 0);
+            PushSetupVertex(new SetupVertex(x, y, color, s, t, q, hasTexture), code, vertex, ((command >> 22) & 1u) != 0);
         }
     }
 
@@ -28349,6 +28369,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             color,
             FloatFromRegister(_registers[0xa3]),
             FloatFromRegister(_registers[0xa4]),
+            1,
             _registers[0xa3] != 0 || _registers[0xa4] != 0);
     }
 
@@ -28429,6 +28450,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         bool positive = area > 0;
         int bufferIndex = GetDrawBufferIndex();
+        _lastDrawBufferIndex = bufferIndex;
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
@@ -28445,6 +28467,9 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0)
                 {
                     buffer[(row + x) & (LfbPixels - 1)] = color;
+                    _solidRasterPixelCount++;
+                    if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
+                        _rasterBufferPixelCounts[bufferIndex]++;
                     _lfbWriteCount++;
                 }
             }
@@ -28489,6 +28514,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         bool positive = area > 0;
         int bufferIndex = GetDrawBufferIndex();
+        _lastDrawBufferIndex = bufferIndex;
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
@@ -28517,15 +28543,26 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (texel == 0)
                 {
                     _texturedZeroPixelCount++;
+                    if (_visualizeZeroTextureFallback)
+                    {
+                        texel = fallbackColor != 0 ? fallbackColor : (ushort)0xffff;
+                        _texturedFallbackPixelCount++;
+                    }
                     if (_treatZeroTextureTexelAsTransparent)
                     {
-                        coveredAny = true;
-                        continue;
+                        if (!_visualizeZeroTextureFallback)
+                        {
+                            coveredAny = true;
+                            continue;
+                        }
                     }
                 }
 
                 buffer[(row + x) & (LfbPixels - 1)] = texel;
                 coveredAny = true;
+                _texturedRasterPixelCount++;
+                if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
+                    _rasterBufferPixelCounts[bufferIndex]++;
                 _lfbWriteCount++;
             }
         }
@@ -28535,11 +28572,23 @@ internal class VoodooBringupBackend : IVoodooBackend
         return coveredAny;
     }
 
-    private static float GetTextureS(SetupVertex vertex)
-        => float.IsFinite(vertex.S) ? vertex.S : vertex.X;
+    private float GetTextureS(SetupVertex vertex)
+    {
+        if (!float.IsFinite(vertex.S))
+            return vertex.X;
+        return _fixTexturePerspectiveDivide && float.IsFinite(vertex.Q) && MathF.Abs(vertex.Q) > 0.000001f
+            ? vertex.S / vertex.Q
+            : vertex.S;
+    }
 
-    private static float GetTextureT(SetupVertex vertex)
-        => float.IsFinite(vertex.T) ? vertex.T : vertex.Y;
+    private float GetTextureT(SetupVertex vertex)
+    {
+        if (!float.IsFinite(vertex.T))
+            return vertex.Y;
+        return _fixTexturePerspectiveDivide && float.IsFinite(vertex.Q) && MathF.Abs(vertex.Q) > 0.000001f
+            ? vertex.T / vertex.Q
+            : vertex.T;
+    }
 
     private ushort SampleTextureRgb565(float s, float t)
     {
@@ -29482,7 +29531,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
     }
 
-    private readonly record struct SetupVertex(float X, float Y, ushort Color, float S, float T, bool HasTexture);
+    private readonly record struct SetupVertex(float X, float Y, ushort Color, float S, float T, float Q, bool HasTexture);
 
     private static void Clear(EutherFrameTarget target, uint bgra)
         => FillRect(target, 0, 0, target.Width, target.Height, bgra);
