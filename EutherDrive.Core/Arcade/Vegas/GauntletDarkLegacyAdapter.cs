@@ -43,6 +43,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS", "0x510"),
         ("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK", "1"),
     ];
 
@@ -25460,6 +25461,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PRESERVE_NONZERO_TEXTURE_BYTES"));
     private readonly bool _visualizeZeroTextureFallback =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK"));
+    private readonly int _experimentTextureBaseBias =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS"), 0);
     private bool _suppressZeroTextureBytesForCurrentWrite;
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
@@ -27389,6 +27392,21 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static int ParseOptionalPositiveInt(string? raw, int fallback)
         => int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
 
+    private static int ParseOptionalInt(string? raw, int fallback)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        string value = raw.Trim();
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value[2..], System.Globalization.NumberStyles.HexNumber, null, out int hex))
+        {
+            return hex;
+        }
+
+        return int.TryParse(value, out int parsed) ? parsed : fallback;
+    }
+
     private void CountSwapPc(uint command, bool dontSwap, bool clearBackBuffer)
     {
         if (!_profileFastFillSwapPcs)
@@ -28605,7 +28623,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint mode = ReadTextureRegister(RegTextureMode);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
-        uint baseAddress = GetTextureLodOffset(0, sixteenBit ? 2 : 1);
+        uint baseAddress = GetTextureLodOffset(0, sixteenBit ? 2 : 1, applySampleBias: true);
         uint texelIndex = (uint)(y * width + x);
         if (sixteenBit)
         {
@@ -28668,10 +28686,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         return ((lod >> 20) & 1u) != 0 ? Math.Max(1u, 256u >> aspect) : 256u;
     }
 
-    private uint GetTextureLodOffset(int targetLod, int bytesPerTexel)
+    private uint GetTextureLodOffset(int targetLod, int bytesPerTexel, bool applySampleBias = false)
     {
         uint textureLod = ReadTextureRegister(RegTextureLod);
         uint baseAddress = ReadTextureRegister(RegTextureBaseAddr) & (TextureBytes - 1u);
+        if (applySampleBias && _experimentTextureBaseBias != 0)
+            baseAddress = (uint)((baseAddress + _experimentTextureBaseBias) & (TextureBytes - 1));
         uint width = GetTextureWidth();
         uint height = GetTextureHeight();
         uint lodMask = ((textureLod >> 19) & 1u) != 0
@@ -28823,10 +28843,30 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string nearbyStatus = result == 0 ? $" {GetNearbyTextureWordStatus(byteAddress)}" : "";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXSAMPLE] st=({s:F3},{t:F3}) xy=({x},{y}) size={width}x{height} " +
             $"mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addr=0x{byteAddress:X6} " +
-            $"word=0x{word:X8} raw=0x{raw:X4} result=0x{result:X4}{pcStatus}");
+            $"word=0x{word:X8} raw=0x{raw:X4} result=0x{result:X4}{nearbyStatus}{pcStatus}");
+    }
+
+    private string GetNearbyTextureWordStatus(uint byteAddress)
+    {
+        int center = (int)((byteAddress >> 2) & (TextureWords - 1));
+        for (int distance = 1; distance <= 4096; distance++)
+        {
+            int low = (center - distance) & (TextureWords - 1);
+            uint lowWord = _textureMemory[low];
+            if (lowWord != 0)
+                return $"near=-{distance}:0x{low * 4:X6}=0x{lowWord:X8}";
+
+            int high = (center + distance) & (TextureWords - 1);
+            uint highWord = _textureMemory[high];
+            if (highWord != 0)
+                return $"near=+{distance}:0x{high * 4:X6}=0x{highWord:X8}";
+        }
+
+        return "near=none";
     }
 
     private static int ParseDrawTraceLimit(string name, int fallback)
