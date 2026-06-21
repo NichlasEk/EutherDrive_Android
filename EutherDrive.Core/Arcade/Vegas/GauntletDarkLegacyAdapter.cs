@@ -25572,6 +25572,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK"));
     private readonly bool _experimentSuppressNonNeutralFastFill =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_NON_NEUTRAL_FASTFILL"));
+    private readonly bool _experimentSuppressWhiteFastFillAfterRaster =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_WHITE_FASTFILL_AFTER_RASTER"));
     private readonly bool _fixRgbBufferMask =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_RGB_BUFFER_MASK"));
     private readonly bool _fixVoodooRegisterWriteMasks =
@@ -26783,7 +26785,12 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"fbz=0x{_registers[RegFbzMode]:X8}{pcStatus}");
         }
 
+        int bufferIndex = GetDrawBufferIndex();
         if ((_experimentSuppressNonNeutralFastFill && color != 0 && color != 0xffff) ||
+            (_experimentSuppressWhiteFastFillAfterRaster &&
+             color == 0xffff &&
+             (uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length &&
+             _rasterBufferPixelCounts[bufferIndex] > 0) ||
             (_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0) ||
             ShouldSuppressRgbBufferWrite())
         {
@@ -26799,7 +26806,6 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         }
 
-        int bufferIndex = GetDrawBufferIndex();
         TraceFastFillSwapOrder("fastfill", RegFastfillCommand, color);
         CountFastFillPc(color, suppressed: false, bufferIndex);
         if ((uint)bufferIndex < (uint)_fastFillBufferCounts.Length)
