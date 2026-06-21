@@ -27,6 +27,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0x510"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
@@ -25476,6 +25477,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_REGISTER_TEXTURE_Q"));
     private readonly bool _experimentReverse8BitTextureSampleLanes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
+    private readonly bool _fixTextureBaseAddressShift =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT")) ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_BASE_SHIFT"));
     private readonly bool _fixDisplayBufferSelection =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
     private readonly bool _fixFastFillColorWriteMask =
@@ -28796,7 +28800,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint GetTextureLodOffset(int targetLod, int bytesPerTexel, bool applySampleBias = false)
     {
         uint textureLod = ReadTextureRegister(RegTextureLod);
-        uint baseAddress = ReadTextureRegister(RegTextureBaseAddr) & (TextureBytes - 1u);
+        uint baseAddress = GetTextureBaseAddress();
         if (applySampleBias && _textureSampleBaseBias != 0)
             baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
         uint width = GetTextureWidth();
@@ -28819,6 +28823,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return baseAddress;
+    }
+
+    private uint GetTextureBaseAddress()
+    {
+        uint baseAddress = ReadTextureRegister(RegTextureBaseAddr);
+        if (_fixTextureBaseAddressShift)
+            baseAddress = (baseAddress & 0xfffffu) << 3;
+        return baseAddress & (TextureBytes - 1u);
     }
 
     private void DrawLfbLine(float ax, float ay, float bx, float by, ushort color)

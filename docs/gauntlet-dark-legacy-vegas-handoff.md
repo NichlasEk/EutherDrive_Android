@@ -48,6 +48,7 @@ EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1
 EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER=1
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK=1
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT=1
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP=1
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0x510
 EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA=1
@@ -203,6 +204,25 @@ addr=0x010214 word=0x22000000 raw=0x0000 result=0x0000
 was tested as a lane-order control and is worse at f260:
 `frameHash=0xa1847678`, `nonBlack=104693`, `colored=103673`, zero texture
 samples `26141544` versus baseline `23945064`. Keep it opt-in only.
+
+MAME's Voodoo TMU state applies a base-address mask/shift before computing LOD
+offsets: `(texBaseAddr & 0xfffff) << 3`. The EutherDrive sampler/upload path was
+using `textureBaseAddr` directly and compensating only with the small `0x510`
+sample bias. `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT=1` now
+matches the MAME/Voodoo base layout and is promoted to baseline. Verified f260:
+
+```text
+frameHash=0xba352c0c
+framebuffer nonBlack=122641 colored=120051
+voodoo textureMap touched=40952 first=0x000000 last=0x027fdc
+voodoo textured zero=21008130
+```
+
+This improves the previous QIO baseline (`0x65570284`, `112373/110841`, zero
+`23945064`). At f420 the final framebuffer hash/coverage stays the same
+(`0x772ab040`, `292034/291360`), but texture sampling improves internally: zero
+texture samples drop from `40841642` to `35777926`, and touched texture coverage
+expands from `148352` to `178922`.
 
 Two more guarded probes were tested after this baseline:
 
