@@ -25458,6 +25458,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR_INVALID_READ"));
     private readonly bool _experimentMameCommandFifoMaskReadIndex =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX"));
+    private readonly bool _experimentMameCommandFifoWrapReadToWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_READ_TO_WINDOW"));
     private readonly bool _experimentMameCommandFifoMaskLocalJump =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_LOCAL_JUMP"));
     private readonly bool _experimentMameCommandFifoRequireValidStorage =
@@ -25707,7 +25709,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
 
-    private uint PeekCommandFifoWord() => _cmdFifoRam[CommandFifoStorageIndex(_cmdFifoReadIndex)];
+    private uint PeekCommandFifoWord() => ReadCommandFifoWordAt(_cmdFifoReadIndex);
 
     private string GetCommandFifoDecodeStopDebugStatus()
     {
@@ -26846,7 +26848,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         while (guard++ < 2048 && decodedThisCall < packetLimit && IsCommandFifoPacketReady())
         {
             int packetStart = _cmdFifoReadIndex;
-            uint command = _cmdFifoRam[CommandFifoStorageIndex(packetStart)];
+            uint command = ReadCommandFifoWordAt(packetStart);
             if (_fixMameCommandFifoModel &&
                 _experimentMameCommandFifoYieldOnType5Boundary &&
                 decodedThisCall > 0 &&
@@ -26980,8 +26982,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _fifoBuffer.Clear();
             for (int i = 0; i < wordsNeeded; i++)
             {
-                int index = CommandFifoStorageIndex(packetStart + i);
-                _fifoBuffer.Add(_cmdFifoRam[index]);
+                _fifoBuffer.Add(ReadCommandFifoWordAt(packetStart + i));
             }
 
             _cmdFifoJumped = false;
@@ -27010,7 +27011,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 for (int i = 0; i < wordsNeeded; i++)
                 {
-                    int validIndex = CommandFifoStorageIndex(packetStart + i);
+                    int validIndex = CommandFifoReadStorageIndex(packetStart + i);
                     if (_cmdFifoValid[validIndex])
                     {
                         _cmdFifoValid[validIndex] = false;
@@ -27279,9 +27280,36 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private int DecodeCommandFifoReadIndex(int value)
-        => _fixMameCommandFifoModel && !_experimentMameCommandFifoMaskReadIndex
+    {
+        if (_fixMameCommandFifoModel && _experimentMameCommandFifoWrapReadToWindow)
+            return WrapCommandFifoReadIndexToWindow(value);
+        return _fixMameCommandFifoModel && !_experimentMameCommandFifoMaskReadIndex
             ? value
             : CommandFifoStorageIndex(value);
+    }
+
+    private uint ReadCommandFifoWordAt(int logicalIndex)
+        => _cmdFifoRam[CommandFifoReadStorageIndex(logicalIndex)];
+
+    private int CommandFifoReadStorageIndex(int logicalIndex)
+        => CommandFifoStorageIndex(NormalizeCommandFifoReadIndex(logicalIndex));
+
+    private int NormalizeCommandFifoReadIndex(int logicalIndex)
+        => _fixMameCommandFifoModel && _experimentMameCommandFifoWrapReadToWindow
+            ? WrapCommandFifoReadIndexToWindow(logicalIndex)
+            : logicalIndex;
+
+    private int WrapCommandFifoReadIndexToWindow(int value)
+    {
+        int windowStart = Math.Max(0, _cmdFifoRamBase >> 2);
+        int windowEnd = Math.Max(windowStart + 1, _cmdFifoRamEnd >> 2);
+        int windowWords = windowEnd - windowStart;
+        int relative = value - windowStart;
+        relative %= windowWords;
+        if (relative < 0)
+            relative += windowWords;
+        return windowStart + relative;
+    }
 
     private int CommandFifoStorageIndex(int value)
         => value & CommandFifoStorageMask();
@@ -27345,17 +27373,18 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private bool IsCommandFifoWordValidForRead(int logicalIndex)
     {
-        int storageIndex = CommandFifoStorageIndex(logicalIndex);
+        int readIndex = NormalizeCommandFifoReadIndex(logicalIndex);
+        int storageIndex = CommandFifoStorageIndex(readIndex);
         if (!_cmdFifoValid[storageIndex])
             return false;
         return !_fixMameCommandFifoModel ||
                !_experimentMameCommandFifoRequireStorageGeneration ||
-               _cmdFifoStorageLogicalIndex[storageIndex] == logicalIndex;
+               _cmdFifoStorageLogicalIndex[storageIndex] == readIndex;
     }
 
     private uint ReadCommandFifoStreamingWord()
     {
-        uint value = _cmdFifoRam[CommandFifoStorageIndex(_cmdFifoReadIndex)];
+        uint value = ReadCommandFifoWordAt(_cmdFifoReadIndex);
         _cmdFifoReadIndex = DecodeCommandFifoReadIndex(_cmdFifoReadIndex + 1);
         _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
         _cmdFifoDepthWordsStreamed++;
@@ -29039,7 +29068,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private bool ShouldSuppressRgbBufferWrite()
-        => _fixRgbBufferMask && (_registers[RegFbzMode] & 0x200u) == 0;
+        => _fixRgbBufferMask && (_registers[RegFbzMode] & 0x400u) == 0;
 
     private bool ShouldCullSetupTriangle()
     {
