@@ -224,6 +224,11 @@ This improves the previous QIO baseline (`0x65570284`, `112373/110841`, zero
 texture samples drop from `40841642` to `35777926`, and touched texture coverage
 expands from `148352` to `178922`.
 
+The older `0x510` sample bias was re-tested after promoting the MAME base shift.
+Removing it is still worse at f260: `frameHash=0xce140ef4`, `121435/118796`,
+zero texture samples `21353238`. Keep `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0x510`
+in the baseline until a more exact LOD/detail/source-offset fix replaces it.
+
 Two more guarded probes were tested after this baseline:
 
 ```text
