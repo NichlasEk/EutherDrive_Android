@@ -28,6 +28,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0x510"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
@@ -25479,6 +25480,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
     private readonly bool _experimentTextureFilterHalfTexel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FILTER_HALF_TEXEL"));
+    private readonly bool _fixTextureBilinearFilter =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER")) ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BILINEAR_FILTER"));
     private readonly bool _fixTextureBaseAddressShift =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_BASE_SHIFT"));
@@ -28739,6 +28743,24 @@ internal class VoodooBringupBackend : IVoodooBackend
             ? TextureCoordinateToIndex((height - 1) - t, height)
             : TextureCoordinateToIndex(t, height);
         uint baseAddress = GetTextureLodOffset(0, sixteenBit ? 2 : 1, applySampleBias: true);
+        if (_fixTextureBilinearFilter && filtered)
+            return SampleTextureRgb565Bilinear(s, t, width, height, mode, format, sixteenBit, baseAddress);
+
+        return SampleTextureRgb565Nearest(s, t, width, height, x, y, mode, format, sixteenBit, baseAddress);
+    }
+
+    private ushort SampleTextureRgb565Nearest(
+        float s,
+        float t,
+        int width,
+        int height,
+        int x,
+        int y,
+        uint mode,
+        int format,
+        bool sixteenBit,
+        uint baseAddress)
+    {
         uint texelIndex = (uint)(y * width + x);
         if (sixteenBit)
         {
@@ -28771,6 +28793,93 @@ internal class VoodooBringupBackend : IVoodooBackend
         };
         TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteOffset, source, value, texel);
         return texel;
+    }
+
+    private ushort SampleTextureRgb565Bilinear(
+        float s,
+        float t,
+        int width,
+        int height,
+        uint mode,
+        int format,
+        bool sixteenBit,
+        uint baseAddress)
+    {
+        float u = s - 0.5f;
+        float v = t - 0.5f;
+        int x0 = TextureCoordinateToIndex(u, width);
+        int y0 = _fixTextureTOriginFlip
+            ? TextureCoordinateToIndex((height - 1) - v, height)
+            : TextureCoordinateToIndex(v, height);
+        int x1 = TextureCoordinateToIndex(u + 1.0f, width);
+        int y1 = _fixTextureTOriginFlip
+            ? TextureCoordinateToIndex((height - 1) - (v + 1.0f), height)
+            : TextureCoordinateToIndex(v + 1.0f, height);
+        float fx = Math.Clamp(u - MathF.Floor(u), 0.0f, 1.0f);
+        float fy = Math.Clamp(v - MathF.Floor(v), 0.0f, 1.0f);
+
+        ushort c00 = ReadTextureRgb565At(x0, y0, width, format, sixteenBit, baseAddress, out uint byteAddress00, out uint word00, out uint raw00);
+        ushort c10 = ReadTextureRgb565At(x1, y0, width, format, sixteenBit, baseAddress, out _, out _, out _);
+        ushort c01 = ReadTextureRgb565At(x0, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
+        ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
+        ushort result = BilinearRgb565(c00, c10, c01, c11, fx, fy);
+        TraceTextureSample(s, t, width, height, x0, y0, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress00, word00, raw00, result);
+        return result;
+    }
+
+    private ushort ReadTextureRgb565At(
+        int x,
+        int y,
+        int width,
+        int format,
+        bool sixteenBit,
+        uint baseAddress,
+        out uint byteAddress,
+        out uint word,
+        out uint raw)
+    {
+        uint texelIndex = (uint)(y * width + x);
+        if (sixteenBit)
+        {
+            byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);
+            word = ReadTexture32(byteAddress & ~3u);
+            ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
+            raw = packed;
+            return format switch
+            {
+                10 => ConvertRgb565Lane(packed, 0),
+                11 => ConvertXrgb1555Lane(packed, 0, hasAlphaBit: true),
+                12 => ConvertArgb4444ToRgb565(packed),
+                _ => packed
+            };
+        }
+
+        byteAddress = (baseAddress + texelIndex) & (TextureBytes - 1u);
+        word = ReadTexture32(byteAddress & ~3u);
+        uint lane = byteAddress & 3u;
+        if (_experimentReverse8BitTextureSampleLanes)
+            lane = 3u - lane;
+        byte value = (byte)(word >> (int)(lane * 8u));
+        raw = value;
+        return format switch
+        {
+            0 => ConvertRgb332ToRgb565(value),
+            3 => GrayscaleToRgb565(value),
+            4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
+            _ => PseudoPaletteToRgb565(value)
+        };
+    }
+
+    private static ushort BilinearRgb565(ushort c00, ushort c10, ushort c01, ushort c11, float fx, float fy)
+    {
+        float w00 = (1.0f - fx) * (1.0f - fy);
+        float w10 = fx * (1.0f - fy);
+        float w01 = (1.0f - fx) * fy;
+        float w11 = fx * fy;
+        int r = (int)MathF.Round((((c00 >> 11) & 0x1f) * w00) + (((c10 >> 11) & 0x1f) * w10) + (((c01 >> 11) & 0x1f) * w01) + (((c11 >> 11) & 0x1f) * w11));
+        int g = (int)MathF.Round((((c00 >> 5) & 0x3f) * w00) + (((c10 >> 5) & 0x3f) * w10) + (((c01 >> 5) & 0x3f) * w01) + (((c11 >> 5) & 0x3f) * w11));
+        int b = (int)MathF.Round(((c00 & 0x1f) * w00) + ((c10 & 0x1f) * w10) + ((c01 & 0x1f) * w01) + ((c11 & 0x1f) * w11));
+        return (ushort)((Math.Clamp(r, 0, 31) << 11) | (Math.Clamp(g, 0, 63) << 5) | Math.Clamp(b, 0, 31));
     }
 
     private static int WrapTextureCoordinate(float value, int size)

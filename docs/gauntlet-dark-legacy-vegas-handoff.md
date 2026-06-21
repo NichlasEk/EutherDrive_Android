@@ -49,6 +49,7 @@ EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER=1
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK=1
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT=1
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER=1
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP=1
 EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0x510
 EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA=1
@@ -242,6 +243,23 @@ bias it gives f260 `frameHash=0x26bd60f8`, `122376/119784`, zero texture samples
 gives `frameHash=0x2ba3f015`, `121679/119036`, zero texture samples `21283498`.
 Keep it opt-in as a filter/coordinate probe until full bilinear/LOD selection is
 implemented.
+
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER=1` is now promoted to
+baseline. It samples four neighboring texels and blends RGB565 when
+`textureMode` requests filtering. This is the first texture-side change in this
+slice that materially improves real scene coverage without changing the QIO or
+command stream:
+
+```text
+f260 bilinear: frameHash=0x6a8add11 nonBlack=156790 colored=156768
+               zero texture samples=11241516
+f420 bilinear: frameHash=0x772ab040 nonBlack=292034 colored=291360
+               zero texture samples=19147268
+```
+
+The f420 framebuffer hash/coverage intentionally remains equal to the prior best
+visual baseline, while its internal zero-texture count drops sharply from the
+post-base-shift `35777926`.
 
 Two more guarded probes were tested after this baseline:
 
