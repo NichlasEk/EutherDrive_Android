@@ -25220,10 +25220,23 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegZaColor = 0x130 >> 2;
     private const int RegColor0 = 0x144 >> 2;
     private const int RegColor1 = 0x148 >> 2;
+    private const int RegFstartR = 0x0a0 >> 2;
+    private const int RegFstartG = 0x0a4 >> 2;
+    private const int RegFstartB = 0x0a8 >> 2;
     private const int RegFstartS = 0x0b4 >> 2;
     private const int RegFstartT = 0x0b8 >> 2;
     private const int RegFstartW = 0x0bc >> 2;
-    private const int RegFdWdY = 0x0e4 >> 2;
+    private const int RegFdRdX = 0x0c0 >> 2;
+    private const int RegFdGdX = 0x0c4 >> 2;
+    private const int RegFdBdX = 0x0c8 >> 2;
+    private const int RegFdSdX = 0x0d4 >> 2;
+    private const int RegFdTdX = 0x0d8 >> 2;
+    private const int RegFdRdY = 0x0e0 >> 2;
+    private const int RegFdGdY = 0x0e4 >> 2;
+    private const int RegFdBdY = 0x0e8 >> 2;
+    private const int RegFdSdY = 0x0f4 >> 2;
+    private const int RegFdTdY = 0x0f8 >> 2;
+    private const int RegFdWdY = 0x0fc >> 2;
     private const int RegCmdFifoBaseAddr = 0x1e0 >> 2;
     private const int RegCmdFifoRdPtr = 0x1e8 >> 2;
     private const int RegCmdFifoAddressMin = 0x1ec >> 2;
@@ -25522,8 +25535,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP"));
     private readonly bool _fixSetupRegisterTextureQ =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_REGISTER_TEXTURE_Q"));
+    private readonly bool _fixSetupVertexCoordinateWrap =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_VERTEX_COORDINATE_WRAP"));
     private readonly bool _fixSetupCulling =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_CULLING"));
+    private readonly bool _experimentDirectGradientTexture =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DIRECT_GRADIENT_TEXTURE"));
+    private readonly bool _experimentFloatTriangleColorGradient =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FLOAT_TRIANGLE_COLOR_GRADIENT"));
     private readonly bool _experimentReverse8BitTextureSampleLanes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
     private readonly bool _experimentTextureFilterHalfTexel =
@@ -28479,6 +28498,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         int code = (int)((command >> 3) & 7u);
         ushort fallbackColor = GetDrawColor();
         int source = 1;
+        ushort color = fallbackColor;
+        float s = 0;
+        float t = 0;
+        float q = 1;
+        bool hasTmu0Texture = false;
+        bool hasTexture = ((command >> 15) & 1u) != 0 || ((command >> 17) & 1u) != 0;
 
         _registers[0x98] = ((command >> 10) & 0xffu) | (((command >> 22) & 0xfu) << 16);
         for (int vertex = 0; vertex < count && source < wordsNeeded; vertex++)
@@ -28489,12 +28514,6 @@ internal class VoodooBringupBackend : IVoodooBackend
                 return;
             }
 
-            ushort color = fallbackColor;
-            float s = 0;
-            float t = 0;
-            float q = 1;
-            bool hasTmu0Texture = false;
-            bool hasTexture = false;
             if (((command >> 28) & 1u) != 0)
             {
                 if (((command >> 10) & 3u) != 0)
@@ -28542,7 +28561,6 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
 
                 hasTmu0Texture = true;
-                hasTexture = true;
             }
             if (((command >> 16) & 1u) != 0 &&
                 !TryReadFloat(wordsNeeded, ref source, out q))
@@ -28562,10 +28580,20 @@ internal class VoodooBringupBackend : IVoodooBackend
                     s = s1;
                     t = t1;
                 }
-                hasTexture = true;
             }
 
-            PushSetupVertex(new SetupVertex(x, y, color, s, t, q, hasTexture), code, vertex, ((command >> 22) & 1u) != 0);
+            PushSetupVertex(
+                new SetupVertex(
+                    SetupVertexCoordinate(x),
+                    SetupVertexCoordinate(y),
+                    color,
+                    s,
+                    t,
+                    q,
+                    hasTexture),
+                code,
+                vertex,
+                ((command >> 22) & 1u) != 0);
         }
 
         if (_fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command))
@@ -28696,6 +28724,32 @@ internal class VoodooBringupBackend : IVoodooBackend
         TraceDraw($"ftri color=0x{color:X4} xy=({FloatFromRegister(_registers[0x22]):F1},{FloatFromRegister(_registers[0x23]):F1})/({FloatFromRegister(_registers[0x24]):F1},{FloatFromRegister(_registers[0x25]):F1})/({FloatFromRegister(_registers[0x26]):F1},{FloatFromRegister(_registers[0x27]):F1}) rgb=({FloatFromRegister(_registers[0x28]):F3},{FloatFromRegister(_registers[0x29]):F3},{FloatFromRegister(_registers[0x2a]):F3}) fbz=0x{_registers[RegFbzMode]:X8}");
         if (ShouldSuppressRgbBufferWrite())
             return;
+        if (_experimentDirectGradientTexture &&
+            FillGradientTexturedTriangle(
+                FloatFromRegister(_registers[0x22]),
+                FloatFromRegister(_registers[0x23]),
+                FloatFromRegister(_registers[0x24]),
+                FloatFromRegister(_registers[0x25]),
+                FloatFromRegister(_registers[0x26]),
+                FloatFromRegister(_registers[0x27]),
+                color))
+        {
+            return;
+        }
+
+        if (_experimentFloatTriangleColorGradient &&
+            FillGradientColorTriangle(
+                FloatFromRegister(_registers[0x22]),
+                FloatFromRegister(_registers[0x23]),
+                FloatFromRegister(_registers[0x24]),
+                FloatFromRegister(_registers[0x25]),
+                FloatFromRegister(_registers[0x26]),
+                FloatFromRegister(_registers[0x27]),
+                color))
+        {
+            return;
+        }
+
         DrawTriangleWire(
             FloatFromRegister(_registers[0x22]),
             FloatFromRegister(_registers[0x23]),
@@ -28724,8 +28778,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             : 1;
 
         return new SetupVertex(
-            FloatFromRegister(_registers[0x99]),
-            FloatFromRegister(_registers[0x9a]),
+            SetupVertexCoordinate(_registers[0x99]),
+            SetupVertexCoordinate(_registers[0x9a]),
             color,
             s,
             t,
@@ -28741,6 +28795,17 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         float fallback = FloatFromRegister(_registers[fallbackRegister]);
         return float.IsFinite(fallback) ? fallback : value;
+    }
+
+    private float SetupVertexCoordinate(uint registerValue)
+        => SetupVertexCoordinate(FloatFromRegister(registerValue));
+
+    private float SetupVertexCoordinate(float value)
+    {
+        if (!_fixSetupVertexCoordinateWrap || !float.IsFinite(value))
+            return value;
+
+        return unchecked((short)(int)(value * 16.0f)) / 16.0f;
     }
 
     private void PushSetupVertex(SetupVertex vertex, int code, int vertexIndex, bool fanMode)
@@ -28878,6 +28943,91 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static float Edge(float ax, float ay, float bx, float by, float px, float py)
         => (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 
+    private bool FillGradientColorTriangle(
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        ushort fallbackColor)
+    {
+        if (!float.IsFinite(ax) || !float.IsFinite(ay) ||
+            !float.IsFinite(bx) || !float.IsFinite(by) ||
+            !float.IsFinite(cx) || !float.IsFinite(cy))
+        {
+            return false;
+        }
+
+        float startR = FloatFromRegister(_registers[RegFstartR]);
+        float startG = FloatFromRegister(_registers[RegFstartG]);
+        float startB = FloatFromRegister(_registers[RegFstartB]);
+        float dRdX = FloatFromRegister(_registers[RegFdRdX]);
+        float dGdX = FloatFromRegister(_registers[RegFdGdX]);
+        float dBdX = FloatFromRegister(_registers[RegFdBdX]);
+        float dRdY = FloatFromRegister(_registers[RegFdRdY]);
+        float dGdY = FloatFromRegister(_registers[RegFdGdY]);
+        float dBdY = FloatFromRegister(_registers[RegFdBdY]);
+        if (!float.IsFinite(startR) || !float.IsFinite(startG) || !float.IsFinite(startB) ||
+            !float.IsFinite(dRdX) || !float.IsFinite(dGdX) || !float.IsFinite(dBdX) ||
+            !float.IsFinite(dRdY) || !float.IsFinite(dGdY) || !float.IsFinite(dBdY))
+        {
+            return false;
+        }
+
+        float area = Edge(ax, ay, bx, by, cx, cy);
+        if (!float.IsFinite(area) || MathF.Abs(area) < 0.001f)
+            return false;
+
+        GetClip(out int clipX0, out int clipX1, out int clipY0, out int clipY1);
+        int minX = Math.Clamp((int)MathF.Floor(MathF.Min(ax, MathF.Min(bx, cx))), clipX0, clipX1);
+        int maxX = Math.Clamp((int)MathF.Ceiling(MathF.Max(ax, MathF.Max(bx, cx))), clipX0, clipX1);
+        int minY = Math.Clamp((int)MathF.Floor(MathF.Min(ay, MathF.Min(by, cy))), clipY0, clipY1);
+        int maxY = Math.Clamp((int)MathF.Ceiling(MathF.Max(ay, MathF.Max(by, cy))), clipY0, clipY1);
+        if (maxX <= minX || maxY <= minY)
+            return false;
+
+        bool positive = area > 0;
+        int bufferIndex = GetDrawBufferIndex();
+        _lastDrawBufferIndex = bufferIndex;
+        MaterializePendingClear(bufferIndex);
+        InvalidateFastFillCache(bufferIndex);
+        ushort[] buffer = _colorBuffers[bufferIndex];
+        bool coveredAny = false;
+        for (int y = minY; y < maxY; y++)
+        {
+            float py = y + 0.5f;
+            int row = y * LfbRowPixels;
+            for (int x = minX; x < maxX; x++)
+            {
+                float px = x + 0.5f;
+                float e0 = Edge(bx, by, cx, cy, px, py);
+                float e1 = Edge(cx, cy, ax, ay, px, py);
+                float e2 = Edge(ax, ay, bx, by, px, py);
+                if (!(positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0))
+                    continue;
+
+                float dx = px - ax;
+                float dy = py - ay;
+                ushort color = FloatColorToRgb565(
+                    startR + dx * dRdX + dy * dRdY,
+                    startG + dx * dGdX + dy * dGdY,
+                    startB + dx * dBdX + dy * dBdY);
+                if (color == 0)
+                    color = fallbackColor;
+
+                buffer[(row + x) & (LfbPixels - 1)] = color;
+                coveredAny = true;
+                _solidRasterPixelCount++;
+                if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
+                    _rasterBufferPixelCounts[bufferIndex]++;
+                _lfbWriteCount++;
+            }
+        }
+
+        return coveredAny;
+    }
+
     private bool FillTexturedTriangle(SetupVertex a, SetupVertex b, SetupVertex c, ushort fallbackColor)
     {
         if (!float.IsFinite(a.X) || !float.IsFinite(a.Y) ||
@@ -29000,6 +29150,200 @@ internal class VoodooBringupBackend : IVoodooBackend
         else
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         return coveredAny;
+    }
+
+    private bool FillGradientTexturedTriangle(
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        ushort fallbackColor)
+    {
+        if (!IsTextureRasterEnabled() ||
+            !float.IsFinite(ax) || !float.IsFinite(ay) ||
+            !float.IsFinite(bx) || !float.IsFinite(by) ||
+            !float.IsFinite(cx) || !float.IsFinite(cy))
+        {
+            return false;
+        }
+
+        float startS = FloatFromRegister(_registers[RegFstartS]);
+        float startT = FloatFromRegister(_registers[RegFstartT]);
+        float dSdX = FloatFromRegister(_registers[RegFdSdX]);
+        float dTdX = FloatFromRegister(_registers[RegFdTdX]);
+        float dSdY = FloatFromRegister(_registers[RegFdSdY]);
+        float dTdY = FloatFromRegister(_registers[RegFdTdY]);
+        if (!float.IsFinite(startS) || !float.IsFinite(startT) ||
+            !float.IsFinite(dSdX) || !float.IsFinite(dTdX) ||
+            !float.IsFinite(dSdY) || !float.IsFinite(dTdY))
+        {
+            return false;
+        }
+
+        float area = Edge(ax, ay, bx, by, cx, cy);
+        if (!float.IsFinite(area) || MathF.Abs(area) < 0.001f)
+            return false;
+
+        GetClip(out int clipX0, out int clipX1, out int clipY0, out int clipY1);
+        int minX = Math.Clamp((int)MathF.Floor(MathF.Min(ax, MathF.Min(bx, cx))), clipX0, clipX1);
+        int maxX = Math.Clamp((int)MathF.Ceiling(MathF.Max(ax, MathF.Max(bx, cx))), clipX0, clipX1);
+        int minY = Math.Clamp((int)MathF.Floor(MathF.Min(ay, MathF.Min(by, cy))), clipY0, clipY1);
+        int maxY = Math.Clamp((int)MathF.Ceiling(MathF.Max(ay, MathF.Max(by, cy))), clipY0, clipY1);
+        if (maxX <= minX || maxY <= minY)
+            return false;
+
+        bool positive = area > 0;
+        int bufferIndex = GetDrawBufferIndex();
+        _lastDrawBufferIndex = bufferIndex;
+        MaterializePendingClear(bufferIndex);
+        InvalidateFastFillCache(bufferIndex);
+        ushort[] buffer = _colorBuffers[bufferIndex];
+        bool coveredAny = false;
+        int coveredPixels = 0;
+        int zeroPixels = 0;
+        for (int y = minY; y < maxY; y++)
+        {
+            float py = y + 0.5f;
+            int row = y * LfbRowPixels;
+            for (int x = minX; x < maxX; x++)
+            {
+                float px = x + 0.5f;
+                float e0 = Edge(bx, by, cx, cy, px, py);
+                float e1 = Edge(cx, cy, ax, ay, px, py);
+                float e2 = Edge(ax, ay, bx, by, px, py);
+                if (!(positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0))
+                    continue;
+
+                float s = startS + ((px - ax) * dSdX) + ((py - ay) * dSdY);
+                float t = startT + ((px - ax) * dTdX) + ((py - ay) * dTdY);
+                ushort texel = SampleTextureRgb565(s, t);
+                _texturedPixelCount++;
+                coveredPixels++;
+                if (texel == 0)
+                {
+                    _texturedZeroPixelCount++;
+                    zeroPixels++;
+                    if (_visualizeZeroTextureFallback)
+                    {
+                        texel = fallbackColor != 0 ? fallbackColor : (ushort)0xffff;
+                        _texturedFallbackPixelCount++;
+                    }
+                    else if (_treatZeroTextureTexelAsTransparent)
+                    {
+                        coveredAny = true;
+                        continue;
+                    }
+                }
+
+                if (_experimentFbzColorPathRgbCombine)
+                    texel = ApplyFbzColorPathRgb(texel, fallbackColor);
+
+                buffer[(row + x) & (LfbPixels - 1)] = texel;
+                coveredAny = true;
+                _texturedRasterPixelCount++;
+                if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
+                    _rasterBufferPixelCounts[bufferIndex]++;
+                _lfbWriteCount++;
+            }
+        }
+
+        if (coveredAny)
+            _texturedTriangleCoveredCount++;
+        else
+            _texturedTriangleRejectedCount++;
+        _texturedTriangleCount++;
+        TraceGradientTexturedTriangle(
+            coveredAny,
+            ax,
+            ay,
+            bx,
+            by,
+            cx,
+            cy,
+            fallbackColor,
+            area,
+            minX,
+            maxX,
+            minY,
+            maxY,
+            coveredPixels,
+            zeroPixels,
+            startS,
+            startT,
+            dSdX,
+            dTdX,
+            dSdY,
+            dTdY);
+        return coveredAny;
+    }
+
+    private bool IsTextureRasterEnabled()
+    {
+        if (((_registers[RegFbiInit3] >> 6) & 1u) != 0)
+            return false;
+
+        if (_fixTmuRegisterBanks)
+            return IsTextureRasterEnabledForTmu(0) || IsTextureRasterEnabledForTmu(1);
+
+        return ((ReadTextureRegister(RegTextureLod) & 0x3fu) < 32u) &&
+            ReadTextureRegister(RegTextureMode) != 0xffffffffu;
+    }
+
+    private bool IsTextureRasterEnabledForTmu(int tmu)
+    {
+        if ((uint)tmu > 1u ||
+            !_tmuRegisterValid[tmu][RegTextureMode] ||
+            !_tmuRegisterValid[tmu][RegTextureLod])
+        {
+            return false;
+        }
+
+        return (_tmuRegisters[tmu][RegTextureLod] & 0x3fu) < 32u &&
+            _tmuRegisters[tmu][RegTextureMode] != 0xffffffffu;
+    }
+
+    private void TraceGradientTexturedTriangle(
+        bool coveredAny,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        ushort fallbackColor,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int coveredPixels,
+        int zeroPixels,
+        float startS,
+        float startT,
+        float dSdX,
+        float dTdX,
+        float dSdY,
+        float dTdY)
+    {
+        if (!_traceTexturedTriangleCovered || _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
+            return;
+
+        uint mode = ReadTextureRegister(RegTextureMode);
+        uint lod = ReadTextureRegister(RegTextureLod);
+        uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
+        int format = (int)((mode >> 8) & 0x0fu);
+        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
+        uint resolvedBase = GetTextureLodOffset(targetLod, format is >= 8 ? 2 : 1, applySampleBias: true);
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXCOVER] grad=1 covered={(coveredAny ? 1 : 0)} color=0x{fallbackColor:X4} area={area:F3} bbox=({minX},{minY})-({maxX},{maxY}) " +
+            $"pixels={coveredPixels} zero={zeroPixels} mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} " +
+            $"xy=({ax:F3},{ay:F3})/({bx:F3},{by:F3})/({cx:F3},{cy:F3}) " +
+            $"st=({startS:F3},{startT:F3}) dsx=({dSdX:F6},{dTdX:F6}) dsy=({dSdY:F6},{dTdY:F6}) " +
+            $"fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8}{pcStatus}");
     }
 
     private void TraceTexturedTriangleCovered(
@@ -29485,7 +29829,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"[GAUNTDL:VOODOO-SETUP] color=0x{color:X4} tex={(textured ? 1 : 0)} " +
             $"xy=({_setupVertices[0].X:F3},{_setupVertices[0].Y:F3})/({_setupVertices[1].X:F3},{_setupVertices[1].Y:F3})/({_setupVertices[2].X:F3},{_setupVertices[2].Y:F3}) " +
             $"st=({_setupVertices[0].S:F3},{_setupVertices[0].T:F3})/({_setupVertices[1].S:F3},{_setupVertices[1].T:F3})/({_setupVertices[2].S:F3},{_setupVertices[2].T:F3}) " +
-            $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} fixed=({FixedVertexCoordinate(_registers[0x99]):F3},{FixedVertexCoordinate(_registers[0x9A]):F3}) " +
+            $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} rawfloat=({FloatFromRegister(_registers[0x99]):F3},{FloatFromRegister(_registers[0x9A]):F3}) " +
+            $"wrapped=({SetupVertexCoordinate(_registers[0x99]):F3},{SetupVertexCoordinate(_registers[0x9A]):F3}) " +
             $"clip=({clipX0},{clipY0})-({clipX1},{clipY1}) setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8}{pcStatus}");
     }
 

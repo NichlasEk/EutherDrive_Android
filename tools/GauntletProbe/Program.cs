@@ -1861,7 +1861,33 @@ static void DumpVoodooColorBuffers(object voodoo)
         DumpRgb565Buffer(buffer, width, height, stridePixels, path);
         RamSurfaceScore score = ScoreRgb565Buffer(buffer, width, height, stridePixels);
         Console.WriteLine($"voodooBufferDump={path} nz={score.NonZero} colored={score.Colored} unique={score.UniqueColors}");
+        DumpBestVoodooBufferWindow(buffer, index, width, height, stridePixels, prefix);
     }
+}
+
+static void DumpBestVoodooBufferWindow(ushort[] buffer, int index, int width, int height, int stridePixels, string prefix)
+{
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFER_SCAN") != "1")
+        return;
+
+    int maxY = Math.Max(0, (buffer.Length / stridePixels) - height);
+    int stepY = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFER_SCAN_STEP"), 16);
+    int bestY = 0;
+    RamSurfaceScore bestScore = default;
+    for (int y = 0; y <= maxY; y += stepY)
+    {
+        RamSurfaceScore score = ScoreRgb565BufferWindow(buffer, width, height, stridePixels, y);
+        if (score.Score > bestScore.Score)
+        {
+            bestScore = score;
+            bestY = y;
+        }
+    }
+
+    Console.WriteLine($"voodooBufferBestWindow=buf{index}:y={bestY}:nz={bestScore.NonZero}:colored={bestScore.Colored}:unique={bestScore.UniqueColors}:score={bestScore.Score}");
+    string path = $"{prefix}_buf{index}_best_y{bestY}.ppm";
+    DumpRgb565BufferWindow(buffer, width, height, stridePixels, bestY, path);
+    Console.WriteLine($"voodooBufferBestDump={path}");
 }
 
 static void DumpRamSurfaceCandidates(object memory)
@@ -1984,6 +2010,9 @@ static RamSurfaceScore ScoreRgb565Surface(byte[] ram, int offset, RamSurfaceForm
 }
 
 static RamSurfaceScore ScoreRgb565Buffer(ushort[] buffer, int width, int height, int stridePixels)
+    => ScoreRgb565BufferWindow(buffer, width, height, stridePixels, startY: 0);
+
+static RamSurfaceScore ScoreRgb565BufferWindow(ushort[] buffer, int width, int height, int stridePixels, int startY)
 {
     int nonZero = 0;
     int colored = 0;
@@ -1992,7 +2021,7 @@ static RamSurfaceScore ScoreRgb565Buffer(ushort[] buffer, int width, int height,
     int stepY = Math.Max(1, height / 96);
     for (int y = 0; y < height; y += stepY)
     {
-        int row = y * stridePixels;
+        int row = (startY + y) * stridePixels;
         for (int x = 0; x < width; x += stepX)
         {
             ushort rgb = buffer[row + x];
@@ -2034,6 +2063,9 @@ static void DumpRgb565Surface(byte[] ram, int offset, RamSurfaceFormat format, s
 }
 
 static void DumpRgb565Buffer(ushort[] buffer, int width, int height, int stridePixels, string path)
+    => DumpRgb565BufferWindow(buffer, width, height, stridePixels, startY: 0, path);
+
+static void DumpRgb565BufferWindow(ushort[] buffer, int width, int height, int stridePixels, int startY, string path)
 {
     using var stream = File.Create(path);
     using var writer = new StreamWriter(stream, leaveOpen: true);
@@ -2041,7 +2073,7 @@ static void DumpRgb565Buffer(ushort[] buffer, int width, int height, int strideP
     writer.Flush();
     for (int y = 0; y < height; y++)
     {
-        int row = y * stridePixels;
+        int row = (startY + y) * stridePixels;
         for (int x = 0; x < width; x++)
         {
             ushort rgb = buffer[row + x];
