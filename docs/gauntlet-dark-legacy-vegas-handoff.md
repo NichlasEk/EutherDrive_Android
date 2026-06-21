@@ -301,6 +301,33 @@ instead of hardcoding `1`, but it is currently neutral on f420:
 `frameHash=0x772ab040`, `nonBlack=292034`, `colored=291360`, with the same
 textured reject and zero-texel counts as baseline. Keep it opt-in.
 
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE=1
+```
+
+This variant reads setup-register `Q/W0` and divides S/T after barycentric
+interpolation per pixel instead of dividing each vertex before interpolation.
+It is also neutral after bilinear: f260 stays at `frameHash=0x6a8add11`,
+`nonBlack=156790`, `colored=156768`, zero texture samples `11241516`; f420
+stays at `frameHash=0x772ab040`, `nonBlack=292034`, `colored=291360`, zero
+texture samples `19147268`. Keep it as an opt-in probe, not baseline.
+
+Texture sample tracing (`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES=1`)
+on the current f260 baseline shows many zero results from individual byte lanes
+inside nearby non-zero texture words, not a total miss of loaded texture RAM.
+MAME confirms texture format 0 is direct RGB332, so this is not simply a
+paletted-format issue. `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SPARSE_8BIT_TEXTURE_UPLOAD=1`
+is neutral at f260 (`0x6a8add11`, zero texture samples `11241516`), so the
+zeros are not explained by later sparse zero writes overwriting non-zero bytes.
+
+MAME's texture download `write_ptr` aligns the destination pointer to a 32-bit
+boundary before writing the four byte lanes. The guarded probe
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_DOWNLOAD_ALIGN32=1` mirrors that
+alignment, but is slightly worse at f260: `frameHash=0x5ad5ef96`,
+`nonBlack=156789`, `colored=156767`, zero texture samples `11241802`. Keep it
+opt-in while investigating whether our higher-level texture download offset is
+already pre-aligned differently from MAME.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.

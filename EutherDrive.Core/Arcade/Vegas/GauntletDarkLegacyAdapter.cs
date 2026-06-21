@@ -25471,6 +25471,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SPARSE_8BIT_TEXTURE_UPLOAD");
     private readonly bool _fixLinearTextureDownloadAddressing =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_LINEAR_TEXTURE_DOWNLOAD_ADDRESSING"));
+    private readonly bool _fixTextureDownloadAlign32 =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_DOWNLOAD_ALIGN32"));
     private readonly bool _fixTextureTOriginFlip =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP"));
     private readonly bool _fixTextureCoordinateClamp =
@@ -25497,6 +25499,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS");
     private readonly bool _fixTexturePerspectiveDivide =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE");
+    private readonly bool _experimentTexturePerspectiveInterpolate =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DROP_LEAKED_TYPE5_HEADERS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -26236,6 +26240,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint yMask = Math.Max(1u, height >> (int)lod) - 1u;
         uint texel = (tt & yMask) * (xMask + 1u) + (ts & xMask);
         uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
+        if (_fixTextureDownloadAlign32)
+            byteOffset &= ~3u;
 
         if (bytesPerTexel == 1)
         {
@@ -28468,7 +28474,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             color,
             FloatFromRegister(_registers[0xa3]),
             FloatFromRegister(_registers[0xa4]),
-            _fixSetupRegisterTextureQ ? FloatFromRegister(_registers[0xa2]) : 1,
+            _fixSetupRegisterTextureQ || _experimentTexturePerspectiveInterpolate ? FloatFromRegister(_registers[0xa2]) : 1,
             _registers[0xa3] != 0 || _registers[0xa4] != 0);
     }
 
@@ -28642,8 +28648,24 @@ internal class VoodooBringupBackend : IVoodooBackend
                 float wa = e0 * invArea;
                 float wb = e1 * invArea;
                 float wc = e2 * invArea;
-                float s = GetTextureS(a) * wa + GetTextureS(b) * wb + GetTextureS(c) * wc;
-                float t = GetTextureT(a) * wa + GetTextureT(b) * wb + GetTextureT(c) * wc;
+                float s;
+                float t;
+                if (_experimentTexturePerspectiveInterpolate)
+                {
+                    s = InterpolateTextureS(a, b, c, wa, wb, wc);
+                    t = InterpolateTextureT(a, b, c, wa, wb, wc);
+                    float q = InterpolateTextureQ(a, b, c, wa, wb, wc);
+                    if (float.IsFinite(q) && MathF.Abs(q) > 0.000001f)
+                    {
+                        s /= q;
+                        t /= q;
+                    }
+                }
+                else
+                {
+                    s = GetTextureS(a) * wa + GetTextureS(b) * wb + GetTextureS(c) * wc;
+                    t = GetTextureT(a) * wa + GetTextureT(b) * wb + GetTextureT(c) * wc;
+                }
                 ushort texel = SampleTextureRgb565(s, t);
                 _texturedPixelCount++;
                 if (texel == 0)
@@ -28729,6 +28751,21 @@ internal class VoodooBringupBackend : IVoodooBackend
             ? vertex.T / vertex.Q
             : vertex.T;
     }
+
+    private static float InterpolateTextureS(SetupVertex a, SetupVertex b, SetupVertex c, float wa, float wb, float wc)
+        => TextureSOrX(a) * wa + TextureSOrX(b) * wb + TextureSOrX(c) * wc;
+
+    private static float InterpolateTextureT(SetupVertex a, SetupVertex b, SetupVertex c, float wa, float wb, float wc)
+        => TextureTOrY(a) * wa + TextureTOrY(b) * wb + TextureTOrY(c) * wc;
+
+    private static float InterpolateTextureQ(SetupVertex a, SetupVertex b, SetupVertex c, float wa, float wb, float wc)
+        => a.Q * wa + b.Q * wb + c.Q * wc;
+
+    private static float TextureSOrX(SetupVertex vertex)
+        => float.IsFinite(vertex.S) ? vertex.S : vertex.X;
+
+    private static float TextureTOrY(SetupVertex vertex)
+        => float.IsFinite(vertex.T) ? vertex.T : vertex.Y;
 
     private ushort SampleTextureRgb565(float s, float t)
     {
