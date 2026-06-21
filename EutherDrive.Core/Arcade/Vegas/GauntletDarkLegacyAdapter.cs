@@ -25519,6 +25519,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP"));
     private readonly bool _fixSetupRegisterTextureQ =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_REGISTER_TEXTURE_Q"));
+    private readonly bool _fixSetupCulling =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_CULLING"));
     private readonly bool _experimentReverse8BitTextureSampleLanes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
     private readonly bool _experimentTextureFilterHalfTexel =
@@ -25535,6 +25537,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
     private readonly bool _fixFastFillColorWriteMask =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK"));
+    private readonly bool _fixRgbBufferMask =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_RGB_BUFFER_MASK"));
     private readonly bool _fixTmuRegisterBanks =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS");
     private readonly bool _fixTexturePerspectiveDivide =
@@ -26686,7 +26690,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"fbz=0x{_registers[RegFbzMode]:X8}{pcStatus}");
         }
 
-        if (_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0)
+        if ((_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0) ||
+            ShouldSuppressRgbBufferWrite())
         {
             TraceFastFillSwapOrder("fastfill-suppressed", RegFastfillCommand, color);
             if (color == 0xffff)
@@ -28603,6 +28608,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         _directTriangleCommandCount++;
         ushort color = GetIntegerDrawColor();
         TraceDraw($"itri color=0x{color:X4} xy=({FixedVertexCoordinate(_registers[0x02]):F1},{FixedVertexCoordinate(_registers[0x03]):F1})/({FixedVertexCoordinate(_registers[0x04]):F1},{FixedVertexCoordinate(_registers[0x05]):F1})/({FixedVertexCoordinate(_registers[0x06]):F1},{FixedVertexCoordinate(_registers[0x07]):F1}) fbz=0x{_registers[RegFbzMode]:X8}");
+        if (ShouldSuppressRgbBufferWrite())
+            return;
         DrawTriangleWire(
             FixedVertexCoordinate(_registers[0x02]),
             FixedVertexCoordinate(_registers[0x03]),
@@ -28618,6 +28625,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         _directTriangleCommandCount++;
         ushort color = GetFloatDrawColor();
         TraceDraw($"ftri color=0x{color:X4} xy=({FloatFromRegister(_registers[0x22]):F1},{FloatFromRegister(_registers[0x23]):F1})/({FloatFromRegister(_registers[0x24]):F1},{FloatFromRegister(_registers[0x25]):F1})/({FloatFromRegister(_registers[0x26]):F1},{FloatFromRegister(_registers[0x27]):F1}) rgb=({FloatFromRegister(_registers[0x28]):F3},{FloatFromRegister(_registers[0x29]):F3},{FloatFromRegister(_registers[0x2a]):F3}) fbz=0x{_registers[RegFbzMode]:X8}");
+        if (ShouldSuppressRgbBufferWrite())
+            return;
         DrawTriangleWire(
             FloatFromRegister(_registers[0x22]),
             FloatFromRegister(_registers[0x23]),
@@ -28690,6 +28699,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool textured = _setupVertices[0].HasTexture || _setupVertices[1].HasTexture || _setupVertices[2].HasTexture;
         TraceDraw($"stri color=0x{color:X4} xy=({_setupVertices[0].X:F1},{_setupVertices[0].Y:F1})/({_setupVertices[1].X:F1},{_setupVertices[1].Y:F1})/({_setupVertices[2].X:F1},{_setupVertices[2].Y:F1}) st=({_setupVertices[0].S:F1},{_setupVertices[0].T:F1})/({_setupVertices[1].S:F1},{_setupVertices[1].T:F1})/({_setupVertices[2].S:F1},{_setupVertices[2].T:F1}) tex={(textured ? 1 : 0)} tmode=0x{ReadTextureRegister(RegTextureMode):X8} tbase=0x{ReadTextureRegister(RegTextureBaseAddr):X8} setup=0x{_registers[0x98]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
         TraceSetupTriangle(color, textured);
+        if (ShouldCullSetupTriangle())
+            return;
+        if (ShouldSuppressRgbBufferWrite())
+            return;
         if (textured)
             _texturedTriangleCount++;
         if (textured && FillTexturedTriangle(_setupVertices[0], _setupVertices[1], _setupVertices[2], color))
@@ -28709,6 +28722,28 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (textured && _treatZeroTextureTexelAsTransparent)
             return;
         DrawTriangleWire(_setupVertices[0].X, _setupVertices[0].Y, _setupVertices[1].X, _setupVertices[1].Y, _setupVertices[2].X, _setupVertices[2].Y, color);
+    }
+
+    private bool ShouldSuppressRgbBufferWrite()
+        => _fixRgbBufferMask && (_registers[RegFbzMode] & 0x200u) == 0;
+
+    private bool ShouldCullSetupTriangle()
+    {
+        if (!_fixSetupCulling || ((_registers[0x98] >> 17) & 1u) == 0)
+            return false;
+
+        SetupVertex sv0 = _setupVertices[0];
+        SetupVertex sv1 = _setupVertices[1];
+        SetupVertex sv2 = _setupVertices[2];
+        float divisor = (sv0.X - sv1.X) * (sv0.Y - sv2.Y) - (sv0.X - sv2.X) * (sv0.Y - sv1.Y);
+        int cullingSign = (int)((_registers[0x98] >> 18) & 1u);
+        bool fanMode = ((_registers[0x98] >> 16) & 1u) != 0;
+        bool disablePingPongCorrection = ((_registers[0x98] >> 19) & 1u) != 0;
+        if (!fanMode && !disablePingPongCorrection)
+            cullingSign ^= (_setupVertexCount - 3) & 1;
+
+        int divisorSign = divisor < 0 ? 1 : 0;
+        return divisorSign == cullingSign;
     }
 
     private void DrawTriangleWire(float ax, float ay, float bx, float by, float cx, float cy, ushort color)
