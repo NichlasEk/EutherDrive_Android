@@ -25512,6 +25512,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS") ??
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS"),
             0);
+    private readonly int _experimentTextureForceLod =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FORCE_LOD"), 0);
     private bool _suppressZeroTextureBytesForCurrentWrite;
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
@@ -28733,8 +28735,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_textureWriteCount == 0 || !float.IsFinite(s) || !float.IsFinite(t))
             return 0;
 
-        int width = (int)GetTextureWidth();
-        int height = (int)GetTextureHeight();
+        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
+        int width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
+        int height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
         uint mode = ReadTextureRegister(RegTextureMode);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
@@ -28748,7 +28751,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int y = _fixTextureTOriginFlip
             ? TextureCoordinateToIndex((height - 1) - t, height)
             : TextureCoordinateToIndex(t, height);
-        uint baseAddress = GetTextureLodOffset(0, sixteenBit ? 2 : 1, applySampleBias: true);
+        uint baseAddress = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
         if (_fixTextureBilinearFilter && filtered)
             return SampleTextureRgb565Bilinear(s, t, width, height, mode, format, sixteenBit, baseAddress);
 
