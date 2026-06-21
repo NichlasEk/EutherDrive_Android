@@ -25412,6 +25412,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
     private readonly int _traceType3PacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS_LIMIT"), 96);
+    private readonly bool _traceType3NonFiniteTexture =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_NONFINITE_ST"));
+    private readonly int _traceType3NonFiniteTextureLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_NONFINITE_ST_LIMIT"), 32);
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
@@ -25650,6 +25654,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _nonNeutralFastFillTraceCount;
     private int _type0PacketTraceCount;
     private int _type3PacketTraceCount;
+    private int _type3NonFiniteTextureTraceCount;
     private int _type5PayloadTraceCount;
     private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
@@ -28731,6 +28736,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         float q = 1;
         bool hasTmu0Texture = false;
         bool hasTexture = ((command >> 15) & 1u) != 0 || ((command >> 17) & 1u) != 0;
+        bool hasNonFiniteTextureCoordinate = false;
 
         _registers[0x98] = ((command >> 10) & 0xffu) | (((command >> 22) & 0xfu) << 16);
         for (int vertex = 0; vertex < count && source < wordsNeeded; vertex++)
@@ -28787,6 +28793,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     return;
                 }
 
+                hasNonFiniteTextureCoordinate |= !float.IsFinite(s) || !float.IsFinite(t);
                 hasTmu0Texture = true;
             }
             if (((command >> 16) & 1u) != 0 &&
@@ -28807,6 +28814,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     s = s1;
                     t = t1;
                 }
+                hasNonFiniteTextureCoordinate |= !float.IsFinite(s1) || !float.IsFinite(t1);
             }
 
             PushSetupVertex(
@@ -28829,6 +28837,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             for (int i = 0; i < dummyWords; i++)
                 _ = ReadCommandFifoStreamingWord();
         }
+
+        if (hasNonFiniteTextureCoordinate)
+            TraceType3NonFiniteTexturePacket(command, wordsNeeded);
     }
 
     private void TraceType3Packet(uint command, int wordsNeeded)
@@ -28836,6 +28847,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_traceType3Packets || _type3PacketTraceCount++ >= _traceType3PacketsLimit)
             return;
 
+        string packet = FormatFifoPacketWords(wordsNeeded);
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE3] cmd=0x{command:x8} words={wordsNeeded} count={(command >> 6) & 0xfu} " +
+            $"code={(command >> 3) & 7u} flags=0x{(command >> 10) & 0xffffu:x4} " +
+            $"rd=0x{_cmdFifoReadIndex * 4:x8} mame={(_fixMameCommandFifoModel ? 1 : 0)} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} packet=0x{packet}{pcStatus}");
+    }
+
+    private string FormatFifoPacketWords(int wordsNeeded)
+    {
         int count = Math.Min(wordsNeeded, Math.Min(_fifoBuffer.Count, 32));
         Span<char> wordBuffer = stackalloc char[32 * 11];
         int offset = 0;
@@ -28847,13 +28870,22 @@ internal class VoodooBringupBackend : IVoodooBackend
             offset += written;
         }
 
+        return wordBuffer[..offset].ToString();
+    }
+
+    private void TraceType3NonFiniteTexturePacket(uint command, int wordsNeeded)
+    {
+        if (!_traceType3NonFiniteTexture || _type3NonFiniteTextureTraceCount++ >= _traceType3NonFiniteTextureLimit)
+            return;
+
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         Console.WriteLine(
-            $"[GAUNTDL:VOODOO-TYPE3] cmd=0x{command:x8} words={wordsNeeded} count={(command >> 6) & 0xfu} " +
+            $"[GAUNTDL:VOODOO-TYPE3-NONFINITE-ST] cmd=0x{command:x8} words={wordsNeeded} count={(command >> 6) & 0xfu} " +
             $"code={(command >> 3) & 7u} flags=0x{(command >> 10) & 0xffffu:x4} " +
-            $"rd=0x{_cmdFifoReadIndex * 4:x8} mame={(_fixMameCommandFifoModel ? 1 : 0)} " +
-            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} packet=0x{wordBuffer[..offset].ToString()}{pcStatus}");
+            $"rd=0x{_cmdFifoReadIndex * 4:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} packet=0x{FormatFifoPacketWords(wordsNeeded)} " +
+            $"xy=({_setupVertices[0].X:F3},{_setupVertices[0].Y:F3})/({_setupVertices[1].X:F3},{_setupVertices[1].Y:F3})/({_setupVertices[2].X:F3},{_setupVertices[2].Y:F3}) " +
+            $"stq=({_setupVertices[0].S:F3},{_setupVertices[0].T:F3},{_setupVertices[0].Q:F6})/({_setupVertices[1].S:F3},{_setupVertices[1].T:F3},{_setupVertices[1].Q:F6})/({_setupVertices[2].S:F3},{_setupVertices[2].T:F3},{_setupVertices[2].Q:F6}){pcStatus}");
     }
 
     private void DecodeFifoType5(uint command, int wordsNeeded)
