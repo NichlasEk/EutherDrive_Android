@@ -25216,6 +25216,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegZaColor = 0x130 >> 2;
     private const int RegColor0 = 0x144 >> 2;
     private const int RegColor1 = 0x148 >> 2;
+    private const int RegFstartS = 0x0b4 >> 2;
+    private const int RegFstartT = 0x0b8 >> 2;
+    private const int RegFstartW = 0x0bc >> 2;
+    private const int RegFdWdY = 0x0e4 >> 2;
     private const int RegCmdFifoBaseAddr = 0x1e0 >> 2;
     private const int RegCmdFifoRdPtr = 0x1e8 >> 2;
     private const int RegCmdFifoAddressMin = 0x1ec >> 2;
@@ -27423,6 +27427,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static bool IsRasterSetupRegister(uint register)
         => register is
             >= 0x02u and <= 0x2au or
+            >= RegFstartS and <= RegFdWdY or
             >= 0x98u and <= 0xa9u or
             RegTriangleCommand or RegFtriangleCommand;
 
@@ -28368,7 +28373,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         => register is RegTriangleCommand or RegFtriangleCommand or RegFbzColorPath or RegFbzMode or RegLfbMode or
             RegClipLeftRight or RegClipLowYHighY or RegFastfillCommand or RegSwapbufferCommand or
             RegColor0 or RegColor1 or 0x98u or 0x99u or 0x9au or 0x9bu or 0x9cu or 0x9du or 0x9eu or
-            0xa8u or 0xa9u or RegTextureMode or RegTextureLod or RegTextureBaseAddr;
+            RegFstartS or RegFstartT or RegFstartW or 0xa8u or 0xa9u or RegTextureMode or RegTextureLod or RegTextureBaseAddr;
 
     private void DecodeFifoType3(uint command, int wordsNeeded)
     {
@@ -28604,14 +28609,30 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (color == 0)
             color = GetDrawColor();
 
+        float s = SetupFloatOrFallback(RegFstartS, 0xa3);
+        float t = SetupFloatOrFallback(RegFstartT, 0xa4);
+        float q = _fixSetupRegisterTextureQ || _experimentTexturePerspectiveInterpolate
+            ? SetupFloatOrFallback(RegFstartW, 0xa2)
+            : 1;
+
         return new SetupVertex(
             FloatFromRegister(_registers[0x99]),
             FloatFromRegister(_registers[0x9a]),
             color,
-            FloatFromRegister(_registers[0xa3]),
-            FloatFromRegister(_registers[0xa4]),
-            _fixSetupRegisterTextureQ || _experimentTexturePerspectiveInterpolate ? FloatFromRegister(_registers[0xa2]) : 1,
-            _registers[0xa3] != 0 || _registers[0xa4] != 0);
+            s,
+            t,
+            q,
+            _registers[RegFstartS] != 0 || _registers[RegFstartT] != 0 || _registers[0xa3] != 0 || _registers[0xa4] != 0);
+    }
+
+    private float SetupFloatOrFallback(int register, int fallbackRegister)
+    {
+        float value = FloatFromRegister(_registers[register]);
+        if (float.IsFinite(value) && _registers[register] != 0)
+            return value;
+
+        float fallback = FloatFromRegister(_registers[fallbackRegister]);
+        return float.IsFinite(fallback) ? fallback : value;
     }
 
     private void PushSetupVertex(SetupVertex vertex, int code, int vertexIndex, bool fanMode)
