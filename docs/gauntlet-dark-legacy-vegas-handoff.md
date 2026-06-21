@@ -373,6 +373,24 @@ payload values, not a local type-3 field-shift bug. Keep type-3 layout probes
 lower priority than texture source/sample addressing unless a new packet form
 appears.
 
+`EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS=1` adds an opt-in
+debug-status histogram for zero-result texture samples. It is neutral by
+design. On the f260 baseline it reports:
+
+```text
+texzero=11241516/0x000510/0x01040D/
+  0x00C000:3333044:nz135:tw1024/
+  0x00E000:1333618:nz847:tw1024/
+  0x00D000:1296438:nz875:tw1024
+```
+
+The hottest zero-sample region is fully touched but very sparse
+(`0x00c000` has only `135/1024` nonzero words), so the remaining issue is
+closer to texture source/upload contents than a total sampler range miss.
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY=1` is neutral at
+f260 (`0x6a8add11`, `156790/156768`, zero texture samples `11241516`), so this
+does not look like a simple zero-as-mask/alpha policy issue.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.

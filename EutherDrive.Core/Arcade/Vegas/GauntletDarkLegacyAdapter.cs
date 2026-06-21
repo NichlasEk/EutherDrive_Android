@@ -25197,6 +25197,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int LfbRows = LfbPixels / LfbRowPixels;
     private const int TextureBytes = 8 * 1024 * 1024;
     private const int TextureWords = TextureBytes / 4;
+    private const int TextureZeroSampleBucketShift = 12;
+    private const int TextureZeroSampleBucketCount = TextureBytes >> TextureZeroSampleBucketShift;
     private const int CmdFifoWords = 1 << 16;
     private const int CmdFifoMask = CmdFifoWords - 1;
     private const int CmdFifoFramebufferWords = LfbBytes / 4;
@@ -25238,6 +25240,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly List<uint> _fifoBuffer = new();
     private readonly uint[] _textureMemory = new uint[TextureWords];
     private readonly bool[] _textureTouchedWords = new bool[TextureWords];
+    private readonly int[] _textureZeroSampleBuckets = new int[TextureZeroSampleBucketCount];
     private readonly uint[][] _tmuRegisters =
     [
         new uint[0x100],
@@ -25357,6 +25360,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceTexturedTriangleCoveredLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED_LIMIT"), 80);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
+    private readonly bool _debugTextureZeroSampleBuckets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS"));
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
     private readonly int _traceType0PacketsLimit =
@@ -25556,6 +25561,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _drawTraceCount;
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
+    private int _textureZeroSampleBucketTotal;
+    private uint _textureZeroSampleFirstAddress = uint.MaxValue;
+    private uint _textureZeroSampleLastAddress;
     private int _nonNeutralFastFillTraceCount;
     private int _type0PacketTraceCount;
     private int _type3PacketTraceCount;
@@ -25590,6 +25598,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"tri={_directTriangleCommandCount}+{_setupTriangleCommandCount} fill={_fastFillCount} swap={_swapBufferCount} stat={_statusReadCount} " +
            $"lfb={_lfbWriteCount} tex={_textureWriteCount} buf={_frontBufferIndex}/{_backBufferIndex}/{GetColorBufferCount()} " +
            $"texw={_textureMappedWriteCount}/{_textureMappedNonZeroWriteCount}/{_textureMappedZeroWriteCount}/{_textureTouchedWordCount}/0x{_textureTouchedFirstWord:X}/0x{_textureTouchedLastWord:X} " +
+           GetTextureZeroSampleBucketDebugStatus() +
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
            $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} " +
@@ -28897,6 +28906,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 12 => ConvertArgb4444ToRgb565(packed),
                 _ => packed
             };
+            TrackZeroTextureSample(byteAddress, result);
             TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress, word, packed, result);
             return result;
         }
@@ -28914,6 +28924,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
             _ => PseudoPaletteToRgb565(value)
         };
+        TrackZeroTextureSample(byteOffset, texel);
         TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteOffset, source, value, texel);
         return texel;
     }
@@ -28946,8 +28957,23 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort c01 = ReadTextureRgb565At(x0, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
         ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
         ushort result = BilinearRgb565(c00, c10, c01, c11, fx, fy);
+        TrackZeroTextureSample(byteAddress00, result);
         TraceTextureSample(s, t, width, height, x0, y0, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress00, word00, raw00, result);
         return result;
+    }
+
+    private void TrackZeroTextureSample(uint byteAddress, ushort result)
+    {
+        if (!_debugTextureZeroSampleBuckets || result != 0)
+            return;
+
+        uint address = byteAddress & (TextureBytes - 1u);
+        _textureZeroSampleBucketTotal++;
+        _textureZeroSampleBuckets[address >> TextureZeroSampleBucketShift]++;
+        if (address < _textureZeroSampleFirstAddress)
+            _textureZeroSampleFirstAddress = address;
+        if (address > _textureZeroSampleLastAddress)
+            _textureZeroSampleLastAddress = address;
     }
 
     private ushort ReadTextureRgb565At(
@@ -29375,6 +29401,72 @@ internal class VoodooBringupBackend : IVoodooBackend
             return "";
 
         return $"tmu0={FormatTmuDebugStatus(0)} tmu1={FormatTmuDebugStatus(1)} ";
+    }
+
+    private string GetTextureZeroSampleBucketDebugStatus()
+    {
+        if (!_debugTextureZeroSampleBuckets)
+            return "";
+
+        Span<int> topBuckets = stackalloc int[3] { -1, -1, -1 };
+        Span<int> topCounts = stackalloc int[3];
+        for (int i = 0; i < _textureZeroSampleBuckets.Length; i++)
+        {
+            int count = _textureZeroSampleBuckets[i];
+            if (count <= topCounts[2])
+                continue;
+
+            if (count > topCounts[0])
+            {
+                topCounts[2] = topCounts[1];
+                topBuckets[2] = topBuckets[1];
+                topCounts[1] = topCounts[0];
+                topBuckets[1] = topBuckets[0];
+                topCounts[0] = count;
+                topBuckets[0] = i;
+            }
+            else if (count > topCounts[1])
+            {
+                topCounts[2] = topCounts[1];
+                topBuckets[2] = topBuckets[1];
+                topCounts[1] = count;
+                topBuckets[1] = i;
+            }
+            else
+            {
+                topCounts[2] = count;
+                topBuckets[2] = i;
+            }
+        }
+
+        uint first = _textureZeroSampleFirstAddress == uint.MaxValue ? 0u : _textureZeroSampleFirstAddress;
+        return $"texzero={_textureZeroSampleBucketTotal}/0x{first:X6}/0x{_textureZeroSampleLastAddress:X6}/" +
+               FormatTextureZeroSampleBucket(topBuckets[0], topCounts[0]) + "/" +
+               FormatTextureZeroSampleBucket(topBuckets[1], topCounts[1]) + "/" +
+               FormatTextureZeroSampleBucket(topBuckets[2], topCounts[2]) + " ";
+    }
+
+    private string FormatTextureZeroSampleBucket(int bucket, int count)
+    {
+        if (bucket < 0)
+            return "-";
+
+        int firstWord = bucket << (TextureZeroSampleBucketShift - 2);
+        int wordCount = 1 << (TextureZeroSampleBucketShift - 2);
+        int nonZeroWords = 0;
+        int touchedWords = 0;
+        for (int i = 0; i < wordCount; i++)
+        {
+            int index = firstWord + i;
+            if ((uint)index >= TextureWords)
+                break;
+            if (_textureMemory[index] != 0)
+                nonZeroWords++;
+            if (_textureTouchedWords[index])
+                touchedWords++;
+        }
+
+        return $"0x{bucket << TextureZeroSampleBucketShift:X6}:{count}:nz{nonZeroWords}:tw{touchedWords}";
     }
 
     private bool HasTmuRegister(int tmu)
