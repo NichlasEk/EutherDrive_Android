@@ -25383,6 +25383,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint _lastSwapCommand;
     private readonly Dictionary<ulong, FastFillPcStats> _fastFillPcStats = [];
     private readonly Dictionary<ulong, SwapPcStats> _swapPcStats = [];
+    private readonly Dictionary<string, SolidTriangleStats> _solidTriangleStats = [];
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
     private readonly bool _traceSetupTriangles = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SETUP_TRIANGLES") == "1";
@@ -25559,6 +25560,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
     private readonly bool _fixFastFillColorWriteMask =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK"));
+    private readonly bool _experimentSuppressNonNeutralFastFill =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_NON_NEUTRAL_FASTFILL"));
     private readonly bool _fixRgbBufferMask =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_RGB_BUFFER_MASK"));
     private readonly bool _fixVoodooRegisterWriteMasks =
@@ -25597,6 +25600,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
     private readonly bool _profileStatusPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1";
     private readonly bool _profileFastFillSwapPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS") == "1";
+    private readonly bool _profileSolidTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_SOLID_TRIANGLES"));
+    private readonly bool _experimentSuppressLargeSolidTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES"));
     private readonly bool _profileCommandFifoPacketPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FIFO_PACKET_PCS") == "1";
     private readonly bool _traceFastFillSwapOrder =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER"));
@@ -25681,6 +25688,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"ffs={_fastFillSuppressedWhiteCount}/{_fastFillSuppressedBlackCount}/{_fastFillSuppressedOtherCount} " +
            $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
            GetFastFillSwapPcDebugStatus() +
+           GetSolidTriangleDebugStatus() +
            GetCommandFifoPacketPcDebugStatus() +
            GetCommandFifoDecodeCallPcDebugStatus() +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/{_cmdFifoValidCount}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
@@ -26765,7 +26773,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"fbz=0x{_registers[RegFbzMode]:X8}{pcStatus}");
         }
 
-        if ((_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0) ||
+        if ((_experimentSuppressNonNeutralFastFill && color != 0 && color != 0xffff) ||
+            (_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0) ||
             ShouldSuppressRgbBufferWrite())
         {
             TraceFastFillSwapOrder("fastfill-suppressed", RegFastfillCommand, color);
@@ -27684,6 +27693,81 @@ internal class VoodooBringupBackend : IVoodooBackend
         stats.LastSuppressed = suppressed;
     }
 
+    private void CountSolidTriangle(
+        string source,
+        ushort color,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY)
+    {
+        if (!_profileSolidTriangles)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
+        string key = $"{pc:x16}:{source}:{color:X4}:{_registers[RegFbzMode]:X8}:{_registers[RegFbzColorPath]:X8}";
+        if (!_solidTriangleStats.TryGetValue(key, out SolidTriangleStats? stats))
+        {
+            stats = new SolidTriangleStats
+            {
+                Pc = pc,
+                Source = source,
+                Color = color,
+                FbzMode = _registers[RegFbzMode],
+                FbzColorPath = _registers[RegFbzColorPath]
+            };
+            _solidTriangleStats[key] = stats;
+        }
+
+        stats.Total++;
+        stats.TotalBoxPixels += boxPixels;
+        if (boxPixels >= stats.MaxBoxPixels)
+        {
+            stats.MaxBoxPixels = boxPixels;
+            stats.LastArea = area;
+            stats.LastMinX = minX;
+            stats.LastMaxX = maxX;
+            stats.LastMinY = minY;
+            stats.LastMaxY = maxY;
+            stats.LastAx = ax;
+            stats.LastAy = ay;
+            stats.LastBx = bx;
+            stats.LastBy = by;
+            stats.LastCx = cx;
+            stats.LastCy = cy;
+            stats.LastCommandFifoReadIndex = _cmdFifoReadIndex;
+            stats.LastBufferIndex = GetDrawBufferIndex();
+        }
+    }
+
+    private string GetSolidTriangleDebugStatus()
+    {
+        if (!_profileSolidTriangles)
+            return "";
+
+        if (_solidTriangleStats.Count == 0)
+            return "solidtri=none ";
+
+        return "solidtri=" + string.Join(",", _solidTriangleStats
+            .OrderByDescending(pair => pair.Value.TotalBoxPixels)
+            .ThenByDescending(pair => pair.Value.MaxBoxPixels)
+            .ThenBy(pair => pair.Key)
+            .Take(8)
+            .Select(pair =>
+                $"0x{pair.Value.Pc:x16}:{pair.Value.Source}:{pair.Value.Total}/sum{pair.Value.TotalBoxPixels}/max{pair.Value.MaxBoxPixels}" +
+                $"/c{pair.Value.Color:X4}/b{pair.Value.LastBufferIndex}/box{pair.Value.LastMinX}-{pair.Value.LastMaxX}x{pair.Value.LastMinY}-{pair.Value.LastMaxY}" +
+                $"/xy{pair.Value.LastAx:F1},{pair.Value.LastAy:F1}:{pair.Value.LastBx:F1},{pair.Value.LastBy:F1}:{pair.Value.LastCx:F1},{pair.Value.LastCy:F1}" +
+                $"/area{pair.Value.LastArea:F1}/fbz{pair.Value.FbzMode:X8}/cp{pair.Value.FbzColorPath:X8}/rd{pair.Value.LastCommandFifoReadIndex:X}")) + " ";
+    }
+
     private void TraceFastFillSwapOrder(string kind, uint register, uint value)
     {
         if (!_traceFastFillSwapOrder || _fastFillSwapOrderTraceCount >= _traceFastFillSwapOrderLimit)
@@ -28357,6 +28441,31 @@ internal class VoodooBringupBackend : IVoodooBackend
         public uint LastCommand;
     }
 
+    private sealed class SolidTriangleStats
+    {
+        public ulong Pc;
+        public string Source = "";
+        public int Total;
+        public long TotalBoxPixels;
+        public long MaxBoxPixels;
+        public ushort Color;
+        public uint FbzMode;
+        public uint FbzColorPath;
+        public float LastArea;
+        public float LastAx;
+        public float LastAy;
+        public float LastBx;
+        public float LastBy;
+        public float LastCx;
+        public float LastCy;
+        public int LastMinX;
+        public int LastMaxX;
+        public int LastMinY;
+        public int LastMaxY;
+        public int LastCommandFifoReadIndex;
+        public int LastBufferIndex;
+    }
+
     private sealed class CommandFifoPacketPcStats
     {
         public int Total;
@@ -28714,7 +28823,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             FixedVertexCoordinate(_registers[0x05]),
             FixedVertexCoordinate(_registers[0x06]),
             FixedVertexCoordinate(_registers[0x07]),
-            color);
+            color,
+            "itri");
     }
 
     private void DrawFloatTriangle()
@@ -28757,7 +28867,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             FloatFromRegister(_registers[0x25]),
             FloatFromRegister(_registers[0x26]),
             FloatFromRegister(_registers[0x27]),
-            color);
+            color,
+            "ftri");
     }
 
     private SetupVertex ReadCurrentSetupVertex()
@@ -28855,7 +28966,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _texturedTriangleRejectedCount++;
         if (textured && _treatZeroTextureTexelAsTransparent)
             return;
-        DrawTriangleWire(_setupVertices[0].X, _setupVertices[0].Y, _setupVertices[1].X, _setupVertices[1].Y, _setupVertices[2].X, _setupVertices[2].Y, color);
+        DrawTriangleWire(_setupVertices[0].X, _setupVertices[0].Y, _setupVertices[1].X, _setupVertices[1].Y, _setupVertices[2].X, _setupVertices[2].Y, color, "stri");
     }
 
     private bool ShouldSuppressRgbBufferWrite()
@@ -28880,18 +28991,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         return divisorSign == cullingSign;
     }
 
-    private void DrawTriangleWire(float ax, float ay, float bx, float by, float cx, float cy, ushort color)
+    private void DrawTriangleWire(float ax, float ay, float bx, float by, float cx, float cy, ushort color, string source)
     {
         if (color == 0)
             color = 0xffff;
 
-        FillTriangle(ax, ay, bx, by, cx, cy, color);
+        FillTriangle(ax, ay, bx, by, cx, cy, color, source);
         DrawLfbLine(ax, ay, bx, by, color);
         DrawLfbLine(bx, by, cx, cy, color);
         DrawLfbLine(cx, cy, ax, ay, color);
     }
 
-    private void FillTriangle(float ax, float ay, float bx, float by, float cx, float cy, ushort color)
+    private void FillTriangle(float ax, float ay, float bx, float by, float cx, float cy, ushort color, string source)
     {
         if (!float.IsFinite(ax) || !float.IsFinite(ay) ||
             !float.IsFinite(bx) || !float.IsFinite(by) ||
@@ -28910,6 +29021,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         int minY = Math.Clamp((int)MathF.Floor(MathF.Min(ay, MathF.Min(by, cy))), clipY0, clipY1);
         int maxY = Math.Clamp((int)MathF.Ceiling(MathF.Max(ay, MathF.Max(by, cy))), clipY0, clipY1);
         if (maxX <= minX || maxY <= minY)
+            return;
+
+        CountSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY);
+        long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
+        if (_experimentSuppressLargeSolidTriangles && boxPixels >= 640L * 480L)
             return;
 
         bool positive = area > 0;
@@ -29791,10 +29907,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         uint clipX = _registers[RegClipLeftRight];
         uint clipY = _registers[RegClipLowYHighY];
-        x0 = Math.Clamp((int)((clipX >> 16) & 0x7ff), 0, 1024);
-        x1 = Math.Clamp((int)(clipX & 0x7ff), 0, 1024);
-        y0 = Math.Clamp((int)((clipY >> 16) & 0x7ff), 0, LfbRows);
-        y1 = Math.Clamp((int)(clipY & 0x7ff), 0, LfbRows);
+        x0 = Math.Clamp((int)((clipX >> 16) & 0x3ff), 0, 1024);
+        x1 = Math.Clamp((int)(clipX & 0x3ff), 0, 1024);
+        y0 = Math.Clamp((int)((clipY >> 16) & 0x3ff), 0, LfbRows);
+        y1 = Math.Clamp((int)(clipY & 0x3ff), 0, LfbRows);
         if (x1 <= x0)
         {
             x0 = 0;
