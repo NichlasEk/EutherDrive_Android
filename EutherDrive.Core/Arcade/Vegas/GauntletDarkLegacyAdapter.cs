@@ -25510,6 +25510,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
+    private readonly bool _experimentTextureUploadTmuBanks =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DROP_LEAKED_TYPE5_HEADERS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -26225,8 +26227,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (lod > 8)
             return;
 
-        uint mode = ReadTextureRegister(RegTextureMode);
-        uint texLod = ReadTextureRegister(RegTextureLod);
+        int tmu = (int)((wordOffset >> 19) & 0x03u);
+        uint mode = _experimentTextureUploadTmuBanks && tmu <= 1
+            ? ReadTextureRegisterForTmu(tmu, RegTextureMode)
+            : ReadTextureRegister(RegTextureMode);
+        uint texLod = _experimentTextureUploadTmuBanks && tmu <= 1
+            ? ReadTextureRegisterForTmu(tmu, RegTextureLod)
+            : ReadTextureRegister(RegTextureLod);
+        uint textureBase = _experimentTextureUploadTmuBanks && tmu <= 1
+            ? ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr)
+            : ReadTextureRegister(RegTextureBaseAddr);
         if (((texLod >> 25) & 1u) != 0)
             value = BinaryPrimitives.ReverseEndianness(value);
         if (((texLod >> 26) & 1u) != 0)
@@ -26240,15 +26250,18 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         }
 
-        bool seq8Downld = ((mode >> 31) & 1u) != 0 || (_fixSequential8BitTextureDownload && bytesPerTexel == 1);
+        uint seqMode = _experimentTextureUploadTmuBanks
+            ? ReadTextureRegisterForTmu(0, RegTextureMode)
+            : mode;
+        bool seq8Downld = ((seqMode >> 31) & 1u) != 0 || (_fixSequential8BitTextureDownload && bytesPerTexel == 1);
         uint tt = (wordOffset >> 7) & 0xffu;
         uint ts = (wordOffset << ((seq8Downld && bytesPerTexel == 1) ? 2 : 1)) & 0xffu;
-        uint width = GetTextureWidth();
-        uint height = GetTextureHeight();
+        uint width = GetTextureWidth(texLod);
+        uint height = GetTextureHeight(texLod);
         uint xMask = Math.Max(1u, width >> (int)lod) - 1u;
         uint yMask = Math.Max(1u, height >> (int)lod) - 1u;
         uint texel = (tt & yMask) * (xMask + 1u) + (ts & xMask);
-        uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
+        uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel, texLod, textureBase) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
         if (_fixTextureDownloadAlign32)
             byteOffset &= ~3u;
 
@@ -27335,6 +27348,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                 return _tmuRegisters[1][register];
         }
 
+        return _registers[register];
+    }
+
+    private uint ReadTextureRegisterForTmu(int tmu, int register)
+    {
+        if ((uint)tmu <= 1u && _tmuRegisterValid[tmu][register])
+            return _tmuRegisters[tmu][register];
         return _registers[register];
     }
 
@@ -29006,15 +29026,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         => (textureMode & 0x6u) != 0;
 
     private uint GetTextureWidth()
+        => GetTextureWidth(ReadTextureRegister(RegTextureLod));
+
+    private static uint GetTextureWidth(uint lod)
     {
-        uint lod = ReadTextureRegister(RegTextureLod);
         int aspect = (int)((lod >> 21) & 0x03u);
         return ((lod >> 20) & 1u) != 0 ? 256u : Math.Max(1u, 256u >> aspect);
     }
 
     private uint GetTextureHeight()
+        => GetTextureHeight(ReadTextureRegister(RegTextureLod));
+
+    private static uint GetTextureHeight(uint lod)
     {
-        uint lod = ReadTextureRegister(RegTextureLod);
         int aspect = (int)((lod >> 21) & 0x03u);
         return ((lod >> 20) & 1u) != 0 ? Math.Max(1u, 256u >> aspect) : 256u;
     }
@@ -29022,11 +29046,19 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint GetTextureLodOffset(int targetLod, int bytesPerTexel, bool applySampleBias = false)
     {
         uint textureLod = ReadTextureRegister(RegTextureLod);
-        uint baseAddress = GetTextureBaseAddress();
+        uint baseAddress = GetTextureBaseAddress(ReadTextureRegister(RegTextureBaseAddr));
         if (applySampleBias && _textureSampleBaseBias != 0)
             baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
-        uint width = GetTextureWidth();
-        uint height = GetTextureHeight();
+        return GetTextureLodOffsetFromBase(targetLod, bytesPerTexel, textureLod, baseAddress);
+    }
+
+    private uint GetTextureLodOffset(int targetLod, int bytesPerTexel, uint textureLod, uint textureBaseRegister)
+        => GetTextureLodOffsetFromBase(targetLod, bytesPerTexel, textureLod, GetTextureBaseAddress(textureBaseRegister));
+
+    private static uint GetTextureLodOffsetFromBase(int targetLod, int bytesPerTexel, uint textureLod, uint baseAddress)
+    {
+        uint width = GetTextureWidth(textureLod);
+        uint height = GetTextureHeight(textureLod);
         uint lodMask = ((textureLod >> 19) & 1u) != 0
             ? (((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
             : 0x1ffu;
@@ -29048,8 +29080,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private uint GetTextureBaseAddress()
+        => GetTextureBaseAddress(ReadTextureRegister(RegTextureBaseAddr));
+
+    private uint GetTextureBaseAddress(uint rawBaseAddress)
     {
-        uint baseAddress = ReadTextureRegister(RegTextureBaseAddr);
+        uint baseAddress = rawBaseAddress;
         if (_fixTextureBaseAddressShift)
             baseAddress = (baseAddress & 0xfffffu) << 3;
         return baseAddress & (TextureBytes - 1u);

@@ -356,6 +356,14 @@ non-finite S/T fallback from screen X/Y to `0`, but it is worse at f260:
 samples `14496768`. Keep it opt-in; the useful artifact is the covered-triangle
 trace, not this fallback policy.
 
+MAME also routes texture downloads through the TMU number embedded in the
+texture offset and takes `seq_8_downld` from TMU0. The guarded upload probe
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS=1` mirrors that
+for mode/lod/base selection during texture writes. It is neutral at f260:
+`frameHash=0x6a8add11`, `nonBlack=156790`, `colored=156768`, zero texture
+samples `11241516`. Keep it opt-in; the remaining visible issue is not fixed
+by selecting upload registers from the offset TMU bank alone.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.
