@@ -25472,6 +25472,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_TYPE5_PACKET_WINDOW"));
     private readonly bool _experimentMameCommandFifoDropInvalidType5Header =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DROP_INVALID_TYPE5_HEADER"));
+    private readonly bool _experimentMameCommandFifoDropInvalidPacketHeader =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DROP_INVALID_PACKET_HEADER"));
+    private readonly bool _experimentMameCommandFifoKeepDecodedValid =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_KEEP_DECODED_VALID"));
+    private readonly bool _experimentMameCommandFifoIgnoreSelfRegisterWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_IGNORE_SELF_REGISTER_WRITES"));
+    private readonly bool _experimentMameCommandFifoDropImplausibleRegisterPacket =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DROP_IMPLAUSIBLE_REGISTER_PACKET"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN"));
     private readonly bool _experimentMameCommandFifoSkipInvalidStorage =
@@ -26875,6 +26883,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                 wordsNeeded = 1;
             if (wordsNeeded <= 0)
                 wordsNeeded = 1;
+            if (_fixMameCommandFifoModel &&
+                _experimentMameCommandFifoDropImplausibleRegisterPacket &&
+                IsImplausibleCommandFifoRegisterPacket(command, wordsNeeded) &&
+                TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-implausible-register-packet"))
+            {
+                continue;
+            }
             if (_fixMameCommandFifoModel && _cmdFifoDepth < wordsNeeded)
             {
                 if (TryTruncateMameCommandFifoPartialType4(command, wordsNeeded, out int truncatedWordsNeeded))
@@ -26905,6 +26920,12 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _cmdFifoAddressMin >= _cmdFifoRamBase &&
                 !IsMameCommandFifoPacketInsideAddressWindow(packetStart, wordsNeeded))
             {
+                if (_experimentMameCommandFifoDropInvalidPacketHeader &&
+                    TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-outside-window"))
+                {
+                    continue;
+                }
+
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "packet-outside-window");
                 TraceCommandFifoDecodeStop("packet-outside-window", command, wordsNeeded);
                 return;
@@ -26913,6 +26934,12 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _experimentMameCommandFifoRequireValidPacketWindow &&
                 !HasCommandFifoWords(packetStart, wordsNeeded))
             {
+                if (_experimentMameCommandFifoDropInvalidPacketHeader &&
+                    TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-invalid-packet"))
+                {
+                    continue;
+                }
+
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "invalid-packet-window");
                 TraceCommandFifoDecodeStop("invalid-packet-window", command, wordsNeeded);
                 return;
@@ -26979,13 +27006,16 @@ internal class VoodooBringupBackend : IVoodooBackend
             bool packetDidWork = IsCommandFifoPacketWork(command);
             _fifoPacketCount++;
             decodedThisCall++;
-            for (int i = 0; i < wordsNeeded; i++)
+            if (!_fixMameCommandFifoModel || !_experimentMameCommandFifoKeepDecodedValid)
             {
-                int validIndex = CommandFifoStorageIndex(packetStart + i);
-                if (_cmdFifoValid[validIndex])
+                for (int i = 0; i < wordsNeeded; i++)
                 {
-                    _cmdFifoValid[validIndex] = false;
-                    _cmdFifoValidCount = Math.Max(0, _cmdFifoValidCount - 1);
+                    int validIndex = CommandFifoStorageIndex(packetStart + i);
+                    if (_cmdFifoValid[validIndex])
+                    {
+                        _cmdFifoValid[validIndex] = false;
+                        _cmdFifoValidCount = Math.Max(0, _cmdFifoValidCount - 1);
+                    }
                 }
             }
             if (!packetConsumedByHandler)
@@ -27036,6 +27066,37 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         DecodeCommandFifoPackets(trigger);
+    }
+
+    private bool TryDropInvalidCommandFifoPacketHeader(int packetStart, uint command, int wordsNeeded, string reason)
+    {
+        if (wordsNeeded <= 1)
+            return false;
+
+        int validIndex = CommandFifoStorageIndex(packetStart);
+        if (_cmdFifoValid[validIndex])
+        {
+            _cmdFifoValid[validIndex] = false;
+            _cmdFifoValidCount = Math.Max(0, _cmdFifoValidCount - 1);
+        }
+
+        _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
+        _cmdFifoDepthWordsDecoded++;
+        _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + 1);
+        TraceCommandFifoDecodeStop(reason, command, wordsNeeded);
+        return true;
+    }
+
+    private static bool IsImplausibleCommandFifoRegisterPacket(uint command, int wordsNeeded)
+    {
+        uint type = command & 7u;
+        if (type == 1u)
+            return (command >> 16) > 1024u || wordsNeeded > 1025;
+        if (type == 2u)
+            return wordsNeeded > 30;
+        if (type == 4u)
+            return wordsNeeded > 22;
+        return false;
     }
 
     private bool IsCommandFifoPacketReady()
@@ -27477,6 +27538,14 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void WriteCmdFifoRegister(uint target, uint value)
     {
         uint register = target & 0xffu;
+        if (_fixMameCommandFifoModel &&
+            _experimentMameCommandFifoIgnoreSelfRegisterWrites &&
+            register is RegCmdFifoBaseAddr or RegCmdFifoRdPtr or RegCmdFifoAddressMin or RegCmdFifoAddressMax or RegCmdFifoDepth or RegCmdFifoHoles)
+        {
+            CountCommandFifoTargetRegisterPc(register, value);
+            RecordVoodooEvent($"ignore cmdfifo self-register write reg[{register:x2}]=0x{value:x8}");
+            return;
+        }
         if (_fixDropLeakedType5RegisterHeaders &&
             IsRasterSetupRegister(register) &&
             IsType5TexturePacketHeader(value))
@@ -29459,7 +29528,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"pixels={coveredPixels} zero={zeroPixels} mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} " +
             $"xy=({ax:F3},{ay:F3})/({bx:F3},{by:F3})/({cx:F3},{cy:F3}) " +
             $"st=({startS:F3},{startT:F3}) dsx=({dSdX:F6},{dTdX:F6}) dsy=({dSdY:F6},{dTdY:F6}) " +
-            $"fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8}{pcStatus}");
+            $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
+            $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
     }
 
     private void TraceTexturedTriangleCovered(
@@ -29491,7 +29561,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"pixels={coveredPixels} zero={zeroPixels} mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
-            $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8}{pcStatus}");
+            $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
+            $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
     }
 
     private void TraceTexturedTriangleReject(
