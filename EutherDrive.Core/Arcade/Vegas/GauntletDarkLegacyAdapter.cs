@@ -25487,6 +25487,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_SPACE0_ENDIAN"));
     private readonly bool _experimentMameCommandFifoType5Streaming =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TYPE5_STREAMING"));
+    private readonly bool _experimentMameCommandFifoStreamPacketWords =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STREAM_PACKET_WORDS"));
     private readonly bool _experimentMameCommandFifoRegisterWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REGISTER_WINDOW"));
     private readonly bool _experimentMameCommandFifoFullDepthHolesRegisters =
@@ -26874,8 +26876,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             CountCommandFifoPacketPc(command, wordsNeeded, packetStart);
             bool packetConsumedByHandler = false;
             if (_fixMameCommandFifoModel &&
-                _experimentMameCommandFifoType5Streaming &&
-                (command & 7u) == 5u)
+                ShouldStreamCommandFifoPacketWords(command))
             {
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + 1);
                 _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - 1);
@@ -27207,6 +27208,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         return value;
     }
 
+    private bool ShouldStreamCommandFifoPacketWords(uint command)
+        => _experimentMameCommandFifoStreamPacketWords
+            ? (command & 7u) is 1u or 2u or 3u or 4u or 5u
+            : _experimentMameCommandFifoType5Streaming && (command & 7u) == 5u;
+
     private static bool IsCommandFifoPacketWork(uint command)
         => (command & 7u) is 1u or 2u or 3u or 4u or 5u;
 
@@ -27323,38 +27329,51 @@ internal class VoodooBringupBackend : IVoodooBackend
         int count = (int)(command >> 16);
         int increment = ((command >> 15) & 1u) != 0 ? 1 : 0;
         uint target = (command >> 3) & 0xfffu;
-        int available = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 1));
+        bool streaming = _fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command);
+        int available = streaming ? count : Math.Min(count, Math.Max(0, _fifoBuffer.Count - 1));
         for (int i = 0; i < available; i++, target += (uint)increment)
         {
-            uint value = _fifoBuffer[1 + i];
+            uint value = streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[1 + i];
             WriteCmdFifoRegister(target, value);
         }
     }
 
     private void DecodeFifoType2(uint command)
     {
+        bool streaming = _fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command);
         int source = 1;
-        for (uint regbit = 3; regbit <= 31 && source < _fifoBuffer.Count; regbit++)
+        for (uint regbit = 3; regbit <= 31 && (streaming || source < _fifoBuffer.Count); regbit++)
         {
             if (((command >> (int)regbit) & 1u) != 0)
-                WriteCmdFifoRegister(RegBltSrcBaseAddr + regbit - 3u, _fifoBuffer[source++]);
+            {
+                uint value = streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[source++];
+                WriteCmdFifoRegister(RegBltSrcBaseAddr + regbit - 3u, value);
+            }
         }
     }
 
     private void DecodeFifoType4(uint command)
     {
         uint target = (command >> 3) & 0xfffu;
+        bool streaming = _fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command);
         int source = 1;
         for (int bit = 15; bit <= 28; bit++, target++)
         {
             if (((command >> bit) & 1u) == 0)
                 continue;
 
-            if (source >= _fifoBuffer.Count)
+            if (!streaming && source >= _fifoBuffer.Count)
                 return;
 
-            uint value = _fifoBuffer[source++];
+            uint value = streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[source++];
             WriteCmdFifoRegister(target, value);
+        }
+
+        if (streaming)
+        {
+            int dummyWords = (int)(command >> 29);
+            for (int i = 0; i < dummyWords; i++)
+                _ = ReadCommandFifoStreamingWord();
         }
     }
 
@@ -28474,6 +28493,13 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             PushSetupVertex(new SetupVertex(x, y, color, s, t, q, hasTexture), code, vertex, ((command >> 22) & 1u) != 0);
         }
+
+        if (_fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command))
+        {
+            int dummyWords = (int)(command >> 29);
+            for (int i = 0; i < dummyWords; i++)
+                _ = ReadCommandFifoStreamingWord();
+        }
     }
 
     private void TraceType3Packet(uint command, int wordsNeeded)
@@ -28507,7 +28533,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (count <= 0 || wordsNeeded < 2 + count)
             return;
 
-        bool streaming = _fixMameCommandFifoModel && _experimentMameCommandFifoType5Streaming;
+        bool streaming = _fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command);
         uint target = (streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[1]) / 4u;
         uint space = command >> 30;
         _fifoType5SpaceCounts[space & 3u]++;
@@ -30177,6 +30203,19 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private bool TryReadWord(int wordsNeeded, ref int source, out uint value)
     {
+        if (_fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(_currentCommandFifoCommand))
+        {
+            if (source >= wordsNeeded)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = ReadCommandFifoStreamingWord();
+            source++;
+            return true;
+        }
+
         if (source >= wordsNeeded || source >= _fifoBuffer.Count)
         {
             value = 0;
@@ -30201,6 +30240,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private bool SkipWord(int wordsNeeded, ref int source)
     {
+        if (_fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(_currentCommandFifoCommand))
+        {
+            if (source >= wordsNeeded)
+                return false;
+            _ = ReadCommandFifoStreamingWord();
+            source++;
+            return true;
+        }
+
         if (source >= wordsNeeded || source >= _fifoBuffer.Count)
             return false;
         source++;
