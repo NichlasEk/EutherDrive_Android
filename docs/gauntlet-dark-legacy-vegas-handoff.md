@@ -379,14 +379,16 @@ design. On the f260 baseline it reports:
 
 ```text
 texzero=11241516/0x000510/0x01040D/
-  0x00C000:3333044:nz135:tw1024/
-  0x00E000:1333618:nz847:tw1024/
-  0x00D000:1296438:nz875:tw1024
+  0x00C000:3333044:nz135:tw1024:w226/1256478/
+  0x00E000:1333618:nz847:tw1024:w1897/1174423/
+  0x00D000:1296438:nz875:tw1024:w1760/1205280
 ```
 
 The hottest zero-sample region is fully touched but very sparse
-(`0x00c000` has only `135/1024` nonzero words), so the remaining issue is
-closer to texture source/upload contents than a total sampler range miss.
+(`0x00c000` has only `135/1024` nonzero words) and was written mostly with
+zero bytes (`226` nonzero writes versus `1,256,478` zero writes), so the
+remaining issue is closer to texture source/upload contents than a total sampler
+range miss.
 `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY=1` is neutral at
 f260 (`0x6a8add11`, `156790/156768`, zero texture samples `11241516`), so this
 does not look like a simple zero-as-mask/alpha policy issue.

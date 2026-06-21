@@ -25241,6 +25241,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly uint[] _textureMemory = new uint[TextureWords];
     private readonly bool[] _textureTouchedWords = new bool[TextureWords];
     private readonly int[] _textureZeroSampleBuckets = new int[TextureZeroSampleBucketCount];
+    private readonly int[] _textureZeroWriteBuckets = new int[TextureZeroSampleBucketCount];
+    private readonly int[] _textureNonZeroWriteBuckets = new int[TextureZeroSampleBucketCount];
     private readonly uint[][] _tmuRegisters =
     [
         new uint[0x100],
@@ -26349,6 +26351,18 @@ internal class VoodooBringupBackend : IVoodooBackend
             _textureMappedZeroWriteCount++;
         else
             _textureMappedNonZeroWriteCount++;
+
+        if (_debugTextureZeroSampleBuckets)
+        {
+            int bucket = wordOffset >> (TextureZeroSampleBucketShift - 2);
+            if ((uint)bucket < _textureZeroWriteBuckets.Length)
+            {
+                if (value == 0)
+                    _textureZeroWriteBuckets[bucket]++;
+                else
+                    _textureNonZeroWriteBuckets[bucket]++;
+            }
+        }
 
         if (!_textureTouchedWords[wordOffset])
         {
@@ -29466,7 +29480,9 @@ internal class VoodooBringupBackend : IVoodooBackend
                 touchedWords++;
         }
 
-        return $"0x{bucket << TextureZeroSampleBucketShift:X6}:{count}:nz{nonZeroWords}:tw{touchedWords}";
+        int zeroWrites = _textureZeroWriteBuckets[bucket];
+        int nonZeroWrites = _textureNonZeroWriteBuckets[bucket];
+        return $"0x{bucket << TextureZeroSampleBucketShift:X6}:{count}:nz{nonZeroWords}:tw{touchedWords}:w{nonZeroWrites}/{zeroWrites}";
     }
 
     private bool HasTmuRegister(int tmu)
