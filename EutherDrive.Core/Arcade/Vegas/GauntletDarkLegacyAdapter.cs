@@ -25244,6 +25244,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _textureZeroSampleBuckets = new int[TextureZeroSampleBucketCount];
     private readonly int[] _textureZeroWriteBuckets = new int[TextureZeroSampleBucketCount];
     private readonly int[] _textureNonZeroWriteBuckets = new int[TextureZeroSampleBucketCount];
+    private readonly int[] _textureSampleRawBuckets = new int[0x10000];
+    private readonly int[] _textureSampleColorBuckets = new int[0x10000];
+    private readonly int[] _textureSampleAddressBuckets = new int[TextureZeroSampleBucketCount];
     private readonly uint[][] _tmuRegisters =
     [
         new uint[0x100],
@@ -25365,6 +25368,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _debugTextureZeroSampleBuckets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS"));
+    private readonly bool _debugTextureSamples =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_SAMPLES"));
     private readonly ulong[] _traceTextureWriteBuckets =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS"));
     private readonly int _traceTextureWriteBucketsLimit =
@@ -25572,6 +25577,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _textureZeroSampleBucketTotal;
     private uint _textureZeroSampleFirstAddress = uint.MaxValue;
     private uint _textureZeroSampleLastAddress;
+    private long _textureSampleDebugTotal;
+    private uint _textureSampleFirstAddress = uint.MaxValue;
+    private uint _textureSampleLastAddress;
     private int _nonNeutralFastFillTraceCount;
     private int _type0PacketTraceCount;
     private int _type3PacketTraceCount;
@@ -25607,6 +25615,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"lfb={_lfbWriteCount} tex={_textureWriteCount} buf={_frontBufferIndex}/{_backBufferIndex}/{GetColorBufferCount()} " +
            $"texw={_textureMappedWriteCount}/{_textureMappedNonZeroWriteCount}/{_textureMappedZeroWriteCount}/{_textureTouchedWordCount}/0x{_textureTouchedFirstWord:X}/0x{_textureTouchedLastWord:X} " +
            GetTextureZeroSampleBucketDebugStatus() +
+           GetTextureSampleDebugStatus() +
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
            $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} " +
@@ -26485,15 +26494,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         int frontCount = GetBufferNonZeroCount(_frontBufferIndex);
         int frontActiveCount = GetVisibleBufferActiveColorCount(_frontBufferIndex);
         int frontWhiteCount = GetVisibleBufferWhiteCount(_frontBufferIndex);
+        int frontUniqueCount = GetVisibleBufferUniqueColorCount(_frontBufferIndex, 128);
         bool frontIsWhiteClearDominated = frontWhiteCount > 240_000 && frontActiveCount < 32_000;
+        bool frontIsLowDetailFill = frontUniqueCount <= 8 && frontActiveCount > 240_000;
         bool frontIsUsable = !frontIsWhiteClearDominated && frontCount > 1024 && frontActiveCount > 1024;
 
         int bestIndex = _frontBufferIndex;
         int bestCount = frontCount;
         int bestActiveCount = frontActiveCount;
+        int bestUniqueCount = frontUniqueCount;
         int fallbackIndex = _backBufferIndex;
         int fallbackActiveCount = 0;
         int fallbackNonWhiteCount = 0;
+        int fallbackUniqueCount = 0;
         int count = _colorBuffers.Length;
         for (int i = 0; i < count; i++)
         {
@@ -26504,29 +26517,38 @@ internal class VoodooBringupBackend : IVoodooBackend
             int candidateActiveCount = GetVisibleBufferActiveColorCount(i);
             int candidateWhiteCount = GetVisibleBufferWhiteCount(i);
             int candidateNonWhiteCount = Math.Max(0, candidateCount - candidateWhiteCount);
+            int candidateUniqueCount = GetVisibleBufferUniqueColorCount(i, 128);
+            bool candidateIsLowDetailFill = candidateUniqueCount <= 8 && candidateActiveCount > 240_000;
             if (IsPendingClearBuffer(i) && candidateActiveCount <= 1024)
                 continue;
 
-            if (candidateActiveCount > fallbackActiveCount ||
-                candidateActiveCount == fallbackActiveCount && candidateNonWhiteCount > fallbackNonWhiteCount)
+            if ((!candidateIsLowDetailFill && fallbackUniqueCount <= 8) ||
+                candidateActiveCount > fallbackActiveCount && (candidateUniqueCount >= fallbackUniqueCount || fallbackUniqueCount <= 8) ||
+                candidateActiveCount == fallbackActiveCount && candidateUniqueCount > fallbackUniqueCount ||
+                candidateActiveCount == fallbackActiveCount && candidateUniqueCount == fallbackUniqueCount && candidateNonWhiteCount > fallbackNonWhiteCount)
             {
                 fallbackIndex = i;
                 fallbackActiveCount = candidateActiveCount;
                 fallbackNonWhiteCount = candidateNonWhiteCount;
+                fallbackUniqueCount = candidateUniqueCount;
             }
 
             if (candidateCount > 1024 &&
                 candidateActiveCount > 1024 &&
                 (!frontIsUsable ||
-                 candidateActiveCount > bestActiveCount + 32_768 ||
-                 candidateActiveCount >= bestActiveCount * 2 ||
+                 frontIsLowDetailFill && candidateUniqueCount >= bestUniqueCount + 16 ||
+                 !candidateIsLowDetailFill && candidateUniqueCount >= bestUniqueCount + 32 && candidateActiveCount >= bestActiveCount * 2 / 3 ||
+                 !candidateIsLowDetailFill && candidateActiveCount > bestActiveCount + 32_768 ||
+                 !candidateIsLowDetailFill && candidateActiveCount >= bestActiveCount * 2 ||
                  bestActiveCount <= 1024 && candidateCount > bestCount ||
                  frontIsWhiteClearDominated && candidateActiveCount >= bestActiveCount * 3 / 4))
             {
                 bestIndex = i;
                 bestCount = candidateCount;
                 bestActiveCount = candidateActiveCount;
+                bestUniqueCount = candidateUniqueCount;
                 frontIsWhiteClearDominated = false;
+                frontIsLowDetailFill = false;
             }
         }
 
@@ -28967,6 +28989,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _ => packed
             };
             TrackZeroTextureSample(byteAddress, result);
+            TrackTextureSampleDebug(byteAddress, packed, result);
             TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress, word, packed, result);
             return result;
         }
@@ -28985,6 +29008,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _ => PseudoPaletteToRgb565(value)
         };
         TrackZeroTextureSample(byteOffset, texel);
+        TrackTextureSampleDebug(byteOffset, value, texel);
         TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteOffset, source, value, texel);
         return texel;
     }
@@ -29018,6 +29042,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
         ushort result = BilinearRgb565(c00, c10, c01, c11, fx, fy);
         TrackZeroTextureSample(byteAddress00, result);
+        TrackTextureSampleDebug(byteAddress00, raw00, result);
         TraceTextureSample(s, t, width, height, x0, y0, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress00, word00, raw00, result);
         return result;
     }
@@ -29034,6 +29059,22 @@ internal class VoodooBringupBackend : IVoodooBackend
             _textureZeroSampleFirstAddress = address;
         if (address > _textureZeroSampleLastAddress)
             _textureZeroSampleLastAddress = address;
+    }
+
+    private void TrackTextureSampleDebug(uint byteAddress, uint raw, ushort result)
+    {
+        if (!_debugTextureSamples)
+            return;
+
+        uint address = byteAddress & (TextureBytes - 1u);
+        _textureSampleDebugTotal++;
+        _textureSampleRawBuckets[raw & 0xffffu]++;
+        _textureSampleColorBuckets[result]++;
+        _textureSampleAddressBuckets[address >> TextureZeroSampleBucketShift]++;
+        if (address < _textureSampleFirstAddress)
+            _textureSampleFirstAddress = address;
+        if (address > _textureSampleLastAddress)
+            _textureSampleLastAddress = address;
     }
 
     private ushort ReadTextureRgb565At(
@@ -29506,6 +29547,67 @@ internal class VoodooBringupBackend : IVoodooBackend
                FormatTextureZeroSampleBucket(topBuckets[2], topCounts[2]) + " ";
     }
 
+    private string GetTextureSampleDebugStatus()
+    {
+        if (!_debugTextureSamples)
+            return "";
+
+        Span<int> rawIndexes = stackalloc int[4] { -1, -1, -1, -1 };
+        Span<int> rawCounts = stackalloc int[4];
+        Span<int> colorIndexes = stackalloc int[4] { -1, -1, -1, -1 };
+        Span<int> colorCounts = stackalloc int[4];
+        Span<int> addressBuckets = stackalloc int[4] { -1, -1, -1, -1 };
+        Span<int> addressCounts = stackalloc int[4];
+        CollectTopBuckets(_textureSampleRawBuckets, rawIndexes, rawCounts);
+        CollectTopBuckets(_textureSampleColorBuckets, colorIndexes, colorCounts);
+        CollectTopBuckets(_textureSampleAddressBuckets, addressBuckets, addressCounts);
+
+        uint first = _textureSampleFirstAddress == uint.MaxValue ? 0u : _textureSampleFirstAddress;
+        return $"texsamp={_textureSampleDebugTotal}/0x{first:X6}/0x{_textureSampleLastAddress:X6}" +
+               $"/raw{FormatTopHexBuckets(rawIndexes, rawCounts, 4)}" +
+               $"/rgb{FormatTopHexBuckets(colorIndexes, colorCounts, 4)}" +
+               $"/addr{FormatTopAddressBuckets(addressBuckets, addressCounts)} ";
+    }
+
+    private static void CollectTopBuckets(ReadOnlySpan<int> buckets, Span<int> topIndexes, Span<int> topCounts)
+    {
+        for (int i = 0; i < buckets.Length; i++)
+        {
+            int count = buckets[i];
+            for (int slot = 0; slot < topCounts.Length; slot++)
+            {
+                if (count <= topCounts[slot])
+                    continue;
+
+                for (int move = topCounts.Length - 1; move > slot; move--)
+                {
+                    topCounts[move] = topCounts[move - 1];
+                    topIndexes[move] = topIndexes[move - 1];
+                }
+
+                topCounts[slot] = count;
+                topIndexes[slot] = i;
+                break;
+            }
+        }
+    }
+
+    private static string FormatTopHexBuckets(ReadOnlySpan<int> indexes, ReadOnlySpan<int> counts, int digits)
+    {
+        string[] parts = new string[indexes.Length];
+        for (int i = 0; i < indexes.Length; i++)
+            parts[i] = indexes[i] < 0 ? "-" : $"0x{indexes[i].ToString($"X{digits}")}:{counts[i]}";
+        return string.Join(",", parts);
+    }
+
+    private static string FormatTopAddressBuckets(ReadOnlySpan<int> buckets, ReadOnlySpan<int> counts)
+    {
+        string[] parts = new string[buckets.Length];
+        for (int i = 0; i < buckets.Length; i++)
+            parts[i] = buckets[i] < 0 ? "-" : $"0x{(buckets[i] << TextureZeroSampleBucketShift):X6}:{counts[i]}";
+        return string.Join(",", parts);
+    }
+
     private string FormatTextureZeroSampleBucket(int bucket, int count)
     {
         if (bucket < 0)
@@ -29616,6 +29718,31 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return count;
+    }
+
+    private int GetVisibleBufferUniqueColorCount(int index, int stopAfter)
+    {
+        if ((uint)index >= (uint)_colorBuffers.Length)
+            return 0;
+
+        HashSet<ushort> colors = [];
+        ushort[] buffer = _colorBuffers[index];
+        for (int y = 0; y < 480; y += 4)
+        {
+            int row = y * 1024;
+            for (int x = 0; x < 640; x += 4)
+            {
+                ushort pixel = buffer[(row + x) & (LfbPixels - 1)];
+                if (pixel == 0)
+                    continue;
+
+                colors.Add(pixel);
+                if (colors.Count >= stopAfter)
+                    return colors.Count;
+            }
+        }
+
+        return colors.Count;
     }
 
     private void SwapBuffers(uint command)
