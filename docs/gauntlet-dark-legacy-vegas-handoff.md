@@ -407,12 +407,37 @@ The bad data is therefore present before the final texture RAM write. Next
 target should be the source memory/FIFO payload feeding the `800fe5d4` type-5
 texture upload path, especially around the synthetic indexed texture sources.
 
+Raw sidecar inspection shows the known indexed payloads are sparse in their
+first `0x2000` bytes but much denser in later chunks; for example `gei` at
+`0x14a6f600` has `3705/8192` nonzero bytes at `+0x0000`, then `6371/8192` at
+`+0x2000`. Promoting
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS=1`
+into the bring-up preset lets distinct-source seeding copy the known payload's
+full length instead of the narrower partial window. This is the first clear
+source-side graphics improvement in this slice:
+
+```text
+f260 full indexed source payloads:
+  frameHash=0x53dd32ff nonBlack=157599 colored=157577
+  zero texture samples=11010142
+
+f420 full indexed source payloads:
+  frameHash=0x7a8e5a5d nonBlack=307200 colored=307200
+  zero texture samples=18748644 textureMapTouched=287296
+```
+
+Compared with the prior f420 baseline (`0x772ab040`, `292034/291360`, zero
+texture samples `19147268`, touched `40952`), this fully fills the framebuffer
+and unlocks substantially more texture-map coverage. Next target: inspect the
+resulting framebuffer/PNG and then narrow any state drift from full payloads
+before removing the experiment label.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.
 
-Next target: fix the remaining texture sampling/source issue for covered
-triangles without regressing the f260/f420 QIO baseline.
+Next target: inspect the new full-payload framebuffer output and continue
+reducing wrong texture/color while preserving the full f420 coverage.
 
 ## 2026-06-11 Checkpoint Probe: Indexed Header Default Regression
 
