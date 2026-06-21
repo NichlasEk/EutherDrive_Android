@@ -25392,6 +25392,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT"), 240);
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
+    private readonly bool _traceType0JumpsOnly = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_JUMPS_ONLY"));
     private readonly int _traceType0PacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS_LIMIT"), 240);
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
@@ -25445,8 +25446,6 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX"));
     private readonly bool _experimentMameCommandFifoMaskLocalJump =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_LOCAL_JUMP"));
-    private readonly bool _fixMameCommandFifoLocalJumpByteTarget =
-        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_FIFO_LOCAL_JUMP_BYTE_TARGET"));
     private readonly bool _experimentMameCommandFifoRequireValidStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE"));
     private readonly bool _experimentMameCommandFifoRequireValidPacketWindow =
@@ -27361,9 +27360,8 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private int DecodeCommandFifoLocalJumpTarget(int target)
     {
-        int wordTarget = _fixMameCommandFifoModel && _fixMameCommandFifoLocalJumpByteTarget
-            ? target >> 2
-            : target;
+        // MAME builds a byte target from these bits and divides back to a word index.
+        int wordTarget = target;
         return _fixMameCommandFifoModel && _experimentMameCommandFifoMaskLocalJump
             ? CommandFifoStorageIndex(wordTarget)
             : DecodeCommandFifoReadIndex(wordTarget);
@@ -27371,7 +27369,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceType0Packet(uint command, int function, int target, int readBefore, int readAfter)
     {
-        if (!_traceType0Packets || _type0PacketTraceCount++ >= _traceType0PacketsLimit)
+        if (!_traceType0Packets || (_traceType0JumpsOnly && function != 3) || _type0PacketTraceCount++ >= _traceType0PacketsLimit)
             return;
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
