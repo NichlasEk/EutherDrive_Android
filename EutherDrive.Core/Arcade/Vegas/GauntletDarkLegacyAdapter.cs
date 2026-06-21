@@ -25626,6 +25626,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint _lastCommandFifoDecodeStopNext2;
     private ulong _lastCommandFifoDecodeStopPc;
     private int _commandFifoDecodeStopCount;
+    private uint _lastDecodedCommandFifoCommand;
+    private int _lastDecodedCommandFifoWords;
+    private int _lastDecodedCommandFifoPacketStart;
+    private int _lastDecodedCommandFifoReadAfter;
     private uint _currentCommandFifoCommand;
     private int _currentCommandFifoPacketStart;
     private int _currentCommandFifoWordsNeeded;
@@ -25681,6 +25685,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"{_lastCommandFifoDecodeStopWordsNeeded}/{_lastCommandFifoDecodeStopDepth}/" +
             $"0x{_lastCommandFifoDecodeStopReadIndex * 4:X}/0x{_lastCommandFifoDecodeStopStorageIndex * 4:X}/" +
             $"0x{_lastCommandFifoDecodeStopNext1:X8}/0x{_lastCommandFifoDecodeStopNext2:X8}{pcStatus}/" +
+            $"last=0x{_lastDecodedCommandFifoCommand:X8}:{_lastDecodedCommandFifoWords}:" +
+            $"0x{_lastDecodedCommandFifoPacketStart * 4:X}:0x{_lastDecodedCommandFifoReadAfter * 4:X}/" +
             $"{_commandFifoDecodeStopCount} ";
     }
 
@@ -26964,6 +26970,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _cmdFifoBulkDecodeRemainingWords = Math.Max(0, _cmdFifoBulkDecodeRemainingWords - wordsNeeded);
             if (!_cmdFifoJumped && !packetConsumedByHandler)
                 _cmdFifoReadIndex = DecodeCommandFifoReadIndex(packetStart + wordsNeeded);
+            _lastDecodedCommandFifoCommand = command;
+            _lastDecodedCommandFifoWords = wordsNeeded;
+            _lastDecodedCommandFifoPacketStart = packetStart;
+            _lastDecodedCommandFifoReadAfter = _cmdFifoReadIndex;
             if (_fixMameCommandFifoModel &&
                 _experimentMameCommandFifoOperationPendingGate &&
                 _commandFifoPacketIssuedRenderWork)
@@ -27491,15 +27501,23 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!IsTmuTextureRegister(register))
             return false;
 
-        int tmu = DecodeTmuIndex(target);
-        if (tmu < 0)
+        uint chipmask = DecodeChipmask(target);
+        if ((chipmask & 0x6u) == 0)
             return false;
 
         int index = (int)register;
-        _tmuRegisters[tmu][index] = value;
-        _tmuRegisterValid[tmu][index] = true;
+        if ((chipmask & 0x2u) != 0)
+        {
+            _tmuRegisters[0][index] = value;
+            _tmuRegisterValid[0][index] = true;
+        }
+        if ((chipmask & 0x4u) != 0)
+        {
+            _tmuRegisters[1][index] = value;
+            _tmuRegisterValid[1][index] = true;
+        }
         _registerWriteCount++;
-        RecordVoodooEvent($"tmu{tmu}[{register:x2}]=0x{value:x8}");
+        RecordVoodooEvent($"tmu[{chipmask:x1}:{register:x2}]=0x{value:x8}");
         return true;
     }
 
@@ -27513,13 +27531,10 @@ internal class VoodooBringupBackend : IVoodooBackend
             >= 0x98u and <= 0xa9u or
             RegTriangleCommand or RegFtriangleCommand;
 
-    private static int DecodeTmuIndex(uint target)
+    private static uint DecodeChipmask(uint target)
     {
-        if ((target & 0x400u) != 0)
-            return 1;
-        if ((target & 0x200u) != 0)
-            return 0;
-        return -1;
+        uint chipmask = (target >> 8) & 0xfu;
+        return chipmask == 0 ? 0xfu : chipmask;
     }
 
     private uint ReadTextureRegister(int register)
