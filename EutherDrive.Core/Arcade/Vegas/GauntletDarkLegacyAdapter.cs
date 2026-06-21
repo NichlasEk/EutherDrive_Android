@@ -25224,7 +25224,15 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegCmdFifoHoles = 0x1f8 >> 2;
     private const int RegTextureMode = 0x300 >> 2;
     private const int RegTextureLod = 0x304 >> 2;
+    private const int RegTextureDetail = 0x308 >> 2;
     private const int RegTextureBaseAddr = 0x30c >> 2;
+    private const int RegTextureBaseAddr1 = 0x310 >> 2;
+    private const int RegTextureBaseAddr2 = 0x314 >> 2;
+    private const int RegTextureBaseAddr38 = 0x318 >> 2;
+    private const int RegTrexInit0 = 0x31c >> 2;
+    private const int RegTrexInit1 = 0x320 >> 2;
+    private const int RegNccTable = 0x324 >> 2;
+    private const int RegNccTableEnd = RegNccTable + 24;
     private const uint RegBltSrcBaseAddr = 0x2c0u >> 2;
     private const int RegFbiInit2 = 0x218 >> 2;
     private const int RegFbiInit3 = 0x21c >> 2;
@@ -27410,9 +27418,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private static bool IsTmuTextureRegister(uint register)
-        => register == (uint)RegTextureMode ||
-           register == (uint)RegTextureLod ||
-           register == (uint)RegTextureBaseAddr;
+        => register is >= RegTextureMode and < RegNccTableEnd;
 
     private static bool IsRasterSetupRegister(uint register)
         => register is
@@ -29003,6 +29009,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort texel = format switch
         {
             0 => ConvertRgb332ToRgb565(value),
+            1 => ConvertNccToRgb565(value, mode),
             3 => GrayscaleToRgb565(value),
             4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
             _ => PseudoPaletteToRgb565(value)
@@ -29114,6 +29121,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         return format switch
         {
             0 => ConvertRgb332ToRgb565(value),
+            1 => ConvertNccToRgb565(value, ReadTextureRegister(RegTextureMode)),
             3 => GrayscaleToRgb565(value),
             4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
             _ => PseudoPaletteToRgb565(value)
@@ -29636,14 +29644,41 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool HasTmuRegister(int tmu)
         => _tmuRegisterValid[tmu][RegTextureMode] ||
            _tmuRegisterValid[tmu][RegTextureLod] ||
-           _tmuRegisterValid[tmu][RegTextureBaseAddr];
+           _tmuRegisterValid[tmu][RegTextureBaseAddr] ||
+           HasTmuNccTable(tmu, 0) ||
+           HasTmuNccTable(tmu, 1);
 
     private string FormatTmuDebugStatus(int tmu)
     {
         string mode = _tmuRegisterValid[tmu][RegTextureMode] ? _tmuRegisters[tmu][RegTextureMode].ToString("X8") : "--------";
         string lod = _tmuRegisterValid[tmu][RegTextureLod] ? _tmuRegisters[tmu][RegTextureLod].ToString("X8") : "--------";
         string baseAddress = _tmuRegisterValid[tmu][RegTextureBaseAddr] ? _tmuRegisters[tmu][RegTextureBaseAddr].ToString("X8") : "--------";
-        return $"{mode}/{lod}/{baseAddress}";
+        return $"{mode}/{lod}/{baseAddress}/ncc{GetTmuNccNonZeroCount(tmu, 0)}/{GetTmuNccNonZeroCount(tmu, 1)}";
+    }
+
+    private bool HasTmuNccTable(int tmu, int table)
+    {
+        int start = RegNccTable + table * 12;
+        for (int i = 0; i < 12; i++)
+        {
+            if (_tmuRegisterValid[tmu][start + i])
+                return true;
+        }
+
+        return false;
+    }
+
+    private int GetTmuNccNonZeroCount(int tmu, int table)
+    {
+        int start = RegNccTable + table * 12;
+        int count = 0;
+        for (int i = 0; i < 12; i++)
+        {
+            if (_tmuRegisterValid[tmu][start + i] && _tmuRegisters[tmu][start + i] != 0)
+                count++;
+        }
+
+        return count;
     }
 
     private int GetBufferNonZeroCount(int index)
@@ -30299,6 +30334,46 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private static ushort GrayscaleToRgb565(byte value)
         => (ushort)(((value >> 3) << 11) | ((value >> 2) << 5) | (value >> 3));
+
+    private ushort ConvertNccToRgb565(byte value, uint textureMode)
+    {
+        int tmu = GetTextureRegisterSourceTmu();
+        int table = (int)((textureMode >> 5) & 1u);
+        int start = RegNccTable + table * 12;
+        int yIndex = (value >> 4) & 0x0f;
+        uint yWord = ReadTmuOrFbiRegister(tmu, start + (yIndex >> 2));
+        int y = (int)((yWord >> ((yIndex & 3) * 8)) & 0xffu);
+        uint iWord = ReadTmuOrFbiRegister(tmu, start + 4 + ((value >> 2) & 3));
+        uint qWord = ReadTmuOrFbiRegister(tmu, start + 8 + (value & 3));
+        int r = Math.Clamp(y + SignExtend9((int)(iWord >> 18)) + SignExtend9((int)(qWord >> 18)), 0, 255);
+        int g = Math.Clamp(y + SignExtend9((int)(iWord >> 9)) + SignExtend9((int)(qWord >> 9)), 0, 255);
+        int b = Math.Clamp(y + SignExtend9((int)iWord) + SignExtend9((int)qWord), 0, 255);
+        return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    }
+
+    private int GetTextureRegisterSourceTmu()
+    {
+        if (!_fixTmuRegisterBanks)
+            return -1;
+        if (_tmuRegisterValid[0][RegTextureMode])
+            return 0;
+        if (_tmuRegisterValid[1][RegTextureMode])
+            return 1;
+        return -1;
+    }
+
+    private uint ReadTmuOrFbiRegister(int tmu, int register)
+    {
+        if ((uint)tmu <= 1u && _tmuRegisterValid[tmu][register])
+            return _tmuRegisters[tmu][register];
+        return _registers[register];
+    }
+
+    private static int SignExtend9(int value)
+    {
+        value &= 0x1ff;
+        return (value & 0x100) != 0 ? value - 0x200 : value;
+    }
 
     private static ushort PseudoPaletteToRgb565(byte value)
     {
