@@ -25588,6 +25588,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
+    private readonly bool _experimentRejectNonFiniteTextureCoordinates =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_REJECT_NONFINITE_TEXTURE_COORDS"));
     private readonly bool _experimentTextureUploadTmuBanks =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
@@ -29268,6 +29270,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             _texturedRejectNonFiniteCount++;
             TraceTexturedTriangleReject("nonfinite-xy", a, b, c, fallbackColor, 0.0f, 0, 0, 0, 0, 0, 0, 0, 0);
+            return false;
+        }
+        if (_experimentRejectNonFiniteTextureCoordinates &&
+            (!float.IsFinite(a.S) || !float.IsFinite(a.T) ||
+             !float.IsFinite(b.S) || !float.IsFinite(b.T) ||
+             !float.IsFinite(c.S) || !float.IsFinite(c.T)))
+        {
+            _texturedRejectNonFiniteCount++;
+            TraceTexturedTriangleReject("nonfinite-st", a, b, c, fallbackColor, 0.0f, 0, 0, 0, 0, 0, 0, 0, 0);
             return false;
         }
 
