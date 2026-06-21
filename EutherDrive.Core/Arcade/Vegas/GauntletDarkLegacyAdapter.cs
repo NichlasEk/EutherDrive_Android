@@ -25477,6 +25477,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_REGISTER_TEXTURE_Q"));
     private readonly bool _experimentReverse8BitTextureSampleLanes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
+    private readonly bool _experimentTextureFilterHalfTexel =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FILTER_HALF_TEXEL"));
     private readonly bool _fixTextureBaseAddressShift =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_BASE_SHIFT"));
@@ -28723,14 +28725,19 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int width = (int)GetTextureWidth();
         int height = (int)GetTextureHeight();
-
+        uint mode = ReadTextureRegister(RegTextureMode);
+        int format = (int)((mode >> 8) & 0x0fu);
+        bool sixteenBit = format is 10 or 11 or 12;
+        bool filtered = IsTextureFilteringEnabled(mode);
+        if (_experimentTextureFilterHalfTexel && filtered)
+        {
+            s -= 0.5f;
+            t -= 0.5f;
+        }
         int x = TextureCoordinateToIndex(s, width);
         int y = _fixTextureTOriginFlip
             ? TextureCoordinateToIndex((height - 1) - t, height)
             : TextureCoordinateToIndex(t, height);
-        uint mode = ReadTextureRegister(RegTextureMode);
-        int format = (int)((mode >> 8) & 0x0fu);
-        bool sixteenBit = format is 10 or 11 or 12;
         uint baseAddress = GetTextureLodOffset(0, sixteenBit ? 2 : 1, applySampleBias: true);
         uint texelIndex = (uint)(y * width + x);
         if (sixteenBit)
@@ -28782,6 +28789,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         => _fixTextureCoordinateClamp
             ? Math.Clamp((int)MathF.Floor(value), 0, Math.Max(0, size - 1))
             : WrapTextureCoordinate(value, size);
+
+    private static bool IsTextureFilteringEnabled(uint textureMode)
+        => (textureMode & 0x6u) != 0;
 
     private uint GetTextureWidth()
     {

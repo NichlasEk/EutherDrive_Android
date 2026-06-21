@@ -234,6 +234,15 @@ Neighbor probes after the base-shift fix still lose coverage versus `0x510`:
 texture samples `21312434`. This keeps the remaining issue pointed at
 LOD/filter/coordinate/source handling rather than a simple larger address bias.
 
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FILTER_HALF_TEXEL=1` adds a
+guarded half-texel coordinate offset when texture filtering is requested by
+`textureMode`. It does not beat the baseline yet. With the normal `0x510` sample
+bias it gives f260 `frameHash=0x26bd60f8`, `122376/119784`, zero texture samples
+`21083920`; with `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0` it
+gives `frameHash=0x2ba3f015`, `121679/119036`, zero texture samples `21283498`.
+Keep it opt-in as a filter/coordinate probe until full bilinear/LOD selection is
+implemented.
+
 Two more guarded probes were tested after this baseline:
 
 ```text
