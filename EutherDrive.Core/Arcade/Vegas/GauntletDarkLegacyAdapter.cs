@@ -25203,6 +25203,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int CmdFifoFramebufferMask = CmdFifoFramebufferWords - 1;
     private const int RegTriangleCommand = 0x80 >> 2;
     private const int RegFtriangleCommand = 0x100 >> 2;
+    private const int RegFbzColorPath = 0x104 >> 2;
     private const int RegFbzMode = 0x110 >> 2;
     private const int RegLfbMode = 0x114 >> 2;
     private const int RegClipLeftRight = 0x118 >> 2;
@@ -25483,6 +25484,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _fixTextureBilinearFilter =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BILINEAR_FILTER"));
+    private readonly bool _experimentFbzColorPathRgbCombine =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE"));
     private readonly bool _fixTextureBaseAddressShift =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_BASE_SHIFT"));
@@ -27449,7 +27452,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private static bool IsFastFillSwapOrderRegister(uint register)
-        => register is RegFbzMode or RegLfbMode or RegFastfillCommand or RegSwapbufferCommand or
+        => register is RegFbzColorPath or RegFbzMode or RegLfbMode or RegFastfillCommand or RegSwapbufferCommand or
             RegZaColor or RegColor0 or RegColor1 or RegClipLeftRight or RegClipLowYHighY;
 
     private static ulong[] ParseOptionalHexUlongList(string? raw)
@@ -28228,7 +28231,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private static bool IsInterestingEventRegister(uint register)
-        => register is RegTriangleCommand or RegFtriangleCommand or RegFbzMode or RegLfbMode or
+        => register is RegTriangleCommand or RegFtriangleCommand or RegFbzColorPath or RegFbzMode or RegLfbMode or
             RegClipLeftRight or RegClipLowYHighY or RegFastfillCommand or RegSwapbufferCommand or
             RegColor0 or RegColor1 or 0x98u or 0x99u or 0x9au or 0x9bu or 0x9cu or 0x9du or 0x9eu or
             0xa8u or 0xa9u or RegTextureMode or RegTextureLod or RegTextureBaseAddr;
@@ -28490,7 +28493,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         ushort color = _setupVertices[2].Color != 0 ? _setupVertices[2].Color : GetDrawColor();
         bool textured = _setupVertices[0].HasTexture || _setupVertices[1].HasTexture || _setupVertices[2].HasTexture;
-        TraceDraw($"stri color=0x{color:X4} xy=({_setupVertices[0].X:F1},{_setupVertices[0].Y:F1})/({_setupVertices[1].X:F1},{_setupVertices[1].Y:F1})/({_setupVertices[2].X:F1},{_setupVertices[2].Y:F1}) st=({_setupVertices[0].S:F1},{_setupVertices[0].T:F1})/({_setupVertices[1].S:F1},{_setupVertices[1].T:F1})/({_setupVertices[2].S:F1},{_setupVertices[2].T:F1}) tex={(textured ? 1 : 0)} tmode=0x{ReadTextureRegister(RegTextureMode):X8} tbase=0x{ReadTextureRegister(RegTextureBaseAddr):X8} setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
+        TraceDraw($"stri color=0x{color:X4} xy=({_setupVertices[0].X:F1},{_setupVertices[0].Y:F1})/({_setupVertices[1].X:F1},{_setupVertices[1].Y:F1})/({_setupVertices[2].X:F1},{_setupVertices[2].Y:F1}) st=({_setupVertices[0].S:F1},{_setupVertices[0].T:F1})/({_setupVertices[1].S:F1},{_setupVertices[1].T:F1})/({_setupVertices[2].S:F1},{_setupVertices[2].T:F1}) tex={(textured ? 1 : 0)} tmode=0x{ReadTextureRegister(RegTextureMode):X8} tbase=0x{ReadTextureRegister(RegTextureBaseAddr):X8} setup=0x{_registers[0x98]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
         TraceSetupTriangle(color, textured);
         if (textured)
             _texturedTriangleCount++;
@@ -28658,6 +28661,9 @@ internal class VoodooBringupBackend : IVoodooBackend
                         }
                     }
                 }
+
+                if (_experimentFbzColorPathRgbCombine)
+                    texel = ApplyFbzColorPathRgb(texel, fallbackColor);
 
                 buffer[(row + x) & (LfbPixels - 1)] = texel;
                 coveredAny = true;
@@ -29604,6 +29610,71 @@ internal class VoodooBringupBackend : IVoodooBackend
         return color == 0 ? (ushort)0xffff : color;
     }
 
+    private ushort ApplyFbzColorPathRgb(ushort texel, ushort iteratedColor)
+    {
+        uint fbzcp = _registers[RegFbzColorPath];
+        ushort color0 = ArgbToRgb565(_registers[RegColor0]);
+        ushort color1 = ArgbToRgb565(_registers[RegColor1]);
+        ushort other = ((fbzcp >> 0) & 0x03u) switch
+        {
+            0 => iteratedColor,
+            1 => texel,
+            2 => color1,
+            _ => 0
+        };
+        ushort local = ((fbzcp >> 7) & 1u) != 0
+            ? (((texel >> 15) & 1) != 0 ? color0 : iteratedColor)
+            : (((fbzcp >> 4) & 1u) == 0 ? iteratedColor : color0);
+
+        Rgb565ToBytes(other, out int or, out int og, out int ob);
+        Rgb565ToBytes(local, out int lr, out int lg, out int lb);
+        Rgb565ToBytes(texel, out int tr, out int tg, out int tb);
+        int r = ((fbzcp >> 8) & 1u) == 0 ? or : 0;
+        int g = ((fbzcp >> 8) & 1u) == 0 ? og : 0;
+        int b = ((fbzcp >> 8) & 1u) == 0 ? ob : 0;
+
+        if (((fbzcp >> 9) & 1u) != 0)
+        {
+            r -= lr;
+            g -= lg;
+            b -= lb;
+        }
+
+        (int mr, int mg, int mb) = ((fbzcp >> 10) & 0x07u) switch
+        {
+            1 => (lr, lg, lb),
+            5 => (tr, tg, tb),
+            _ => (255, 255, 255)
+        };
+        if (((fbzcp >> 13) & 1u) == 0)
+        {
+            mr = 255 - mr;
+            mg = 255 - mg;
+            mb = 255 - mb;
+        }
+
+        r = r * mr / 255;
+        g = g * mg / 255;
+        b = b * mb / 255;
+        switch ((fbzcp >> 14) & 0x03u)
+        {
+            case 1:
+                r += lr;
+                g += lg;
+                b += lb;
+                break;
+        }
+
+        if (((fbzcp >> 16) & 1u) != 0)
+        {
+            r = 255 - r;
+            g = 255 - g;
+            b = 255 - b;
+        }
+
+        return BytesToRgb565(r, g, b);
+    }
+
     private ushort GetIntegerDrawColor()
     {
         ushort color = GetIntegerDrawColorOrZero();
@@ -29731,6 +29802,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         g = (g << 2) | (g >> 4);
         b = (b << 3) | (b >> 2);
         return 0xff000000u | (r << 16) | (g << 8) | b;
+    }
+
+    private static void Rgb565ToBytes(ushort value, out int r, out int g, out int b)
+    {
+        r = ((value >> 11) & 0x1f) * 255 / 31;
+        g = ((value >> 5) & 0x3f) * 255 / 63;
+        b = (value & 0x1f) * 255 / 31;
+    }
+
+    private static ushort BytesToRgb565(int r, int g, int b)
+    {
+        r = Math.Clamp(r, 0, 255);
+        g = Math.Clamp(g, 0, 255);
+        b = Math.Clamp(b, 0, 255);
+        return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
     }
 
     private static ushort ArgbToRgb565(uint value)

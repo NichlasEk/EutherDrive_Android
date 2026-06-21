@@ -261,6 +261,17 @@ The f420 framebuffer hash/coverage intentionally remains equal to the prior best
 visual baseline, while its internal zero-texture count drops sharply from the
 post-base-shift `35777926`.
 
+Two post-bilinear controls were neutral. The guarded color-combine probe
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE=1` keeps f260
+and f420 identical to baseline (`0x6a8add11` and `0x772ab040` respectively);
+the active `fbzColorPath=0x0c482435` behaves as texel identity for the visible
+surface with the current color registers. Re-testing
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_REGISTER_TEXTURE_Q=1` together with
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE=1` is also neutral at
+f260/f420 after bilinear. The next texture-side target is therefore TMU
+selection/register-bank behavior or S/T fixed-point scaling, not a simple
+colorpath or Q divide toggle.
+
 Two more guarded probes were tested after this baseline:
 
 ```text
