@@ -364,6 +364,15 @@ for mode/lod/base selection during texture writes. It is neutral at f260:
 samples `11241516`. Keep it opt-in; the remaining visible issue is not fixed
 by selecting upload registers from the offset TMU bank alone.
 
+Focused type-3 packet tracing at the covered quad PC shows the dominant command
+is `0x0180a8cb` (`words=19`, `count=3`, `code=1`, `flags=0x602a`) from
+`pc=0xffffffff800c4e5c`. The packet shape is six payload words per vertex:
+`X/Y`, `Wb`, `W0`, then `S/T`. That matches the current decoder field count.
+The later fullscreen packets that carry `S=0xffc00000` are therefore guest
+payload values, not a local type-3 field-shift bug. Keep type-3 layout probes
+lower priority than texture source/sample addressing unless a new packet form
+appears.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.
