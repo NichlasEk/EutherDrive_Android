@@ -270,7 +270,10 @@ surface with the current color registers. Re-testing
 `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE=1` is also neutral at
 f260/f420 after bilinear. The next texture-side target is therefore TMU
 selection/register-bank behavior or S/T fixed-point scaling, not a simple
-colorpath or Q divide toggle.
+colorpath or Q divide toggle. `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS=1`
+was also re-tested after bilinear and is neutral at f260/f420 (`0x6a8add11` and
+`0x772ab040`), so the current visible wrong texture/color is not fixed by simply
+preferring the existing per-TMU register banks.
 
 Two more guarded probes were tested after this baseline:
 
