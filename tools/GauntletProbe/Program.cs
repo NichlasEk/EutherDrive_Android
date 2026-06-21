@@ -650,7 +650,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(3);
+        writer.Write(4);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -683,7 +683,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3))
+    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4))
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -937,7 +937,7 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
     ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_textureMemory"));
     ReadUIntArrayPrefixInto(reader, GetFieldValue<uint[]>(backend, "_cmdFifoRam"));
     ReadBoolArrayPrefixInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoValid"));
-    ReadSetupVertices(reader, (Array)GetField(backend, "_setupVertices"));
+    ReadSetupVertices(reader, (Array)GetField(backend, "_setupVertices"), version);
     ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_fifoPacketTypeCounts"));
     SetField(backend, "_registerWriteCount", reader.ReadInt32());
     SetField(backend, "_fifoWriteCount", reader.ReadInt32());
@@ -1139,10 +1139,11 @@ static void WriteSetupVertices(BinaryWriter writer, Array values)
         writer.Write(Convert.ToSingle(GetProperty(vertex, "X")));
         writer.Write(Convert.ToSingle(GetProperty(vertex, "Y")));
         writer.Write(Convert.ToUInt16(GetProperty(vertex, "Color")));
+        writer.Write(Convert.ToSingle(GetProperty(vertex, "Q")));
     }
 }
 
-static void ReadSetupVertices(BinaryReader reader, Array values)
+static void ReadSetupVertices(BinaryReader reader, Array values, int version)
 {
     int length = reader.ReadInt32();
     if (length != values.Length)
@@ -1153,7 +1154,8 @@ static void ReadSetupVertices(BinaryReader reader, Array values)
         float x = reader.ReadSingle();
         float y = reader.ReadSingle();
         ushort color = reader.ReadUInt16();
-        object vertex = Activator.CreateInstance(elementType, x, y, color, 0.0f, 0.0f, false)
+        float q = version >= 4 ? reader.ReadSingle() : 0.0f;
+        object vertex = Activator.CreateInstance(elementType, x, y, color, 0.0f, 0.0f, q, false)
             ?? throw new InvalidDataException("Could not construct setup vertex");
         values.SetValue(vertex, i);
     }

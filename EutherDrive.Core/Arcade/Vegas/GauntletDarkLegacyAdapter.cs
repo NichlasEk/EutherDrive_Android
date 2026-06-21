@@ -27,27 +27,17 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0x510"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK", "0x1fe"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_FILL_ALL", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "27"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "9"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ_FILL_REMAINING", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SELECTION", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_STATIC_DATA_LINK", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_HYDRATE", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_OVERLAY_SUPPRESS", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_TEXT_PUMP_SKIP", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS", "0x510"),
-        ("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK", "1"),
     ];
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
@@ -707,6 +697,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE");
     private readonly bool _enableRuntimeBgLoadModelAssetNameExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
+    private readonly bool _enableRuntimeBgLoadModelAssetStaticAliasSourceRepair =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelIndexedSourceHeadersRepair =
@@ -726,6 +718,7 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER"));
     private readonly ulong? _runtimeBgLoadModelDistinctSourceIndexedHeaderMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK") ??
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK");
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
@@ -10513,6 +10506,7 @@ internal sealed class MipsR5000Core
         const ulong assetTable = 0xffffffff8024f9a0UL;
         const ulong descriptorStride = 0x30UL;
         const uint repeatedStaticSource = 0x802e1718U;
+        uint staticAliasSource = IsMainRamRange(assetTable, 4UL) ? _memory.Read32(assetTable) : repeatedStaticSource;
 
         int repaired = 0;
         for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
@@ -10524,6 +10518,19 @@ internal sealed class MipsR5000Core
 
             uint source = _memory.Read32(entry);
             uint distinctSource = unchecked((uint)(0x802e1718UL + index * 0x2000UL));
+            bool repairedStaticAliasSource = false;
+            if (_enableRuntimeBgLoadModelAssetStaticAliasSourceRepair &&
+                source == staticAliasSource &&
+                source != distinctSource &&
+                TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out _) &&
+                IsMainRamRange(SignExtend32(distinctSource), 0x80UL) &&
+                !IsKnownRuntimeBgLoadModelSourceWindowEmpty(SignExtend32(distinctSource)))
+            {
+                _memory.Write32(entry, distinctSource);
+                source = distinctSource;
+                repairedStaticAliasSource = true;
+            }
+
             if (_memory.Read8(name) != 0)
                 continue;
             if (source == repeatedStaticSource || source == distinctSource)
@@ -10533,6 +10540,12 @@ internal sealed class MipsR5000Core
 
                 WriteAsciiTraceString(name, code, 0x20);
                 repaired++;
+                if (repairedStaticAliasSource && _runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:FIX] bgloadmodel-asset-static-alias-source pc={pc:x16} " +
+                        $"index={index} source={staticAliasSource:x8}->{distinctSource:x8} name={code}");
+                }
                 continue;
             }
 
@@ -25269,6 +25282,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _texturedRejectDegenerateCount;
     private int _texturedRejectClipCount;
     private int _texturedRejectEmptyRasterCount;
+    private int _texturedTriangleRejectTraceCount;
     private int _statusReadCount;
     private long _lfbWriteCount;
     private int _textureWriteCount;
@@ -25330,6 +25344,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _showDebugOverlay = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SHOW_VIDEO_OVERLAY") == "1";
     private readonly bool _traceDraw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW") == "1";
     private readonly bool _traceSetupTriangles = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SETUP_TRIANGLES") == "1";
+    private readonly bool _traceTexturedTriangleRejects =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_REJECTS"));
+    private readonly int _traceTexturedTriangleRejectsLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_REJECTS_LIMIT"), 80);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
@@ -25454,6 +25472,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP"));
     private readonly bool _fixTextureCoordinateClamp =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP"));
+    private readonly bool _fixSetupRegisterTextureQ =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_REGISTER_TEXTURE_Q"));
+    private readonly bool _experimentReverse8BitTextureSampleLanes =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
     private readonly bool _fixDisplayBufferSelection =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
     private readonly bool _fixFastFillColorWriteMask =
@@ -25462,14 +25484,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS");
     private readonly bool _fixTexturePerspectiveDivide =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE");
+    private readonly bool _fixDropLeakedType5RegisterHeaders =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DROP_LEAKED_TYPE5_HEADERS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY");
     private readonly bool _preserveNonZeroTextureBytes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PRESERVE_NONZERO_TEXTURE_BYTES"));
     private readonly bool _visualizeZeroTextureFallback =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK"));
-    private readonly int _experimentTextureBaseBias =
-        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS"), 0);
+    private readonly bool _visualizeTexturedTriangleEdges =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_VISUALIZE_TEXTURE_TRIANGLE_EDGES"));
+    private readonly int _textureSampleBaseBias =
+        ParseOptionalInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS") ??
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS"),
+            0);
     private bool _suppressZeroTextureBytesForCurrentWrite;
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
@@ -25575,6 +25604,14 @@ internal class VoodooBringupBackend : IVoodooBackend
     public virtual void WriteRegister(uint address, uint value)
     {
         uint register = (address >> 2) & 0xffu;
+        if (_fixDropLeakedType5RegisterHeaders &&
+            IsRasterSetupRegister(register) &&
+            IsType5TexturePacketHeader(value))
+        {
+            RecordVoodooEvent($"drop leaked type5 header direct reg[{register:x2}]=0x{value:x8}");
+            return;
+        }
+
         _registers[register] = value;
         _registerWriteCount++;
         TraceFastFillSwapOrder("reg", register, value);
@@ -26477,7 +26514,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (color == 0)
             color = ArgbToRgb565(_registers[RegColor0]);
         if (color == 0)
+        {
+            if (_fixDropLeakedType5RegisterHeaders && IsType5TexturePacketHeader(_registers[RegZaColor]))
+            {
+                RecordVoodooEvent($"drop leaked type5 fastfill za=0x{_registers[RegZaColor]:x8}");
+                return;
+            }
             color = (ushort)_registers[RegZaColor];
+        }
 
         TraceDraw($"fastfill clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} fbz=0x{_registers[RegFbzMode]:X8}");
         if (_traceNonNeutralFastFill && color != 0 && color != 0xffff && _nonNeutralFastFillTraceCount++ < 64)
@@ -27167,6 +27211,14 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void WriteCmdFifoRegister(uint target, uint value)
     {
         uint register = target & 0xffu;
+        if (_fixDropLeakedType5RegisterHeaders &&
+            IsRasterSetupRegister(register) &&
+            IsType5TexturePacketHeader(value))
+        {
+            RecordVoodooEvent($"drop leaked type5 header reg[{register:x2}]=0x{value:x8}");
+            return;
+        }
+
         CountCommandFifoTargetRegisterPc(register, value);
         TraceCommandFifoRegisterValue(target, value);
         if (_traceTmuRegisterWrites &&
@@ -27227,6 +27279,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         => register == (uint)RegTextureMode ||
            register == (uint)RegTextureLod ||
            register == (uint)RegTextureBaseAddr;
+
+    private static bool IsRasterSetupRegister(uint register)
+        => register is
+            >= 0x02u and <= 0x2au or
+            >= 0x98u and <= 0xa9u or
+            RegTriangleCommand or RegFtriangleCommand;
 
     private static int DecodeTmuIndex(uint target)
     {
@@ -28257,8 +28315,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_traceType3Packets || _type3PacketTraceCount++ >= 96)
             return;
 
-        int count = Math.Min(wordsNeeded, Math.Min(_fifoBuffer.Count, 16));
-        Span<char> wordBuffer = stackalloc char[16 * 11];
+        int count = Math.Min(wordsNeeded, Math.Min(_fifoBuffer.Count, 32));
+        Span<char> wordBuffer = stackalloc char[32 * 11];
         int offset = 0;
         for (int i = 0; i < count; i++)
         {
@@ -28395,7 +28453,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             color,
             FloatFromRegister(_registers[0xa3]),
             FloatFromRegister(_registers[0xa4]),
-            1,
+            _fixSetupRegisterTextureQ ? FloatFromRegister(_registers[0xa2]) : 1,
             _registers[0xa3] != 0 || _registers[0xa4] != 0);
     }
 
@@ -28429,9 +28487,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (textured && FillTexturedTriangle(_setupVertices[0], _setupVertices[1], _setupVertices[2], color))
         {
             _texturedTriangleCoveredCount++;
-            DrawLfbLine(_setupVertices[0].X, _setupVertices[0].Y, _setupVertices[1].X, _setupVertices[1].Y, color);
-            DrawLfbLine(_setupVertices[1].X, _setupVertices[1].Y, _setupVertices[2].X, _setupVertices[2].Y, color);
-            DrawLfbLine(_setupVertices[2].X, _setupVertices[2].Y, _setupVertices[0].X, _setupVertices[0].Y, color);
+            if (_visualizeTexturedTriangleEdges)
+            {
+                DrawLfbLine(_setupVertices[0].X, _setupVertices[0].Y, _setupVertices[1].X, _setupVertices[1].Y, color);
+                DrawLfbLine(_setupVertices[1].X, _setupVertices[1].Y, _setupVertices[2].X, _setupVertices[2].Y, color);
+                DrawLfbLine(_setupVertices[2].X, _setupVertices[2].Y, _setupVertices[0].X, _setupVertices[0].Y, color);
+            }
             return;
         }
 
@@ -28512,6 +28573,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             !float.IsFinite(c.X) || !float.IsFinite(c.Y))
         {
             _texturedRejectNonFiniteCount++;
+            TraceTexturedTriangleReject("nonfinite-xy", a, b, c, fallbackColor, 0.0f, 0, 0, 0, 0, 0, 0, 0, 0);
             return false;
         }
 
@@ -28519,11 +28581,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!float.IsFinite(area))
         {
             _texturedRejectNonFiniteCount++;
+            TraceTexturedTriangleReject("nonfinite-area", a, b, c, fallbackColor, area, 0, 0, 0, 0, 0, 0, 0, 0);
             return false;
         }
         if (MathF.Abs(area) < 0.001f)
         {
             _texturedRejectDegenerateCount++;
+            TraceTexturedTriangleReject("degenerate", a, b, c, fallbackColor, area, 0, 0, 0, 0, 0, 0, 0, 0);
             return false;
         }
 
@@ -28535,6 +28599,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (maxX <= minX || maxY <= minY)
         {
             _texturedRejectClipCount++;
+            TraceTexturedTriangleReject("clip", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
             return false;
         }
 
@@ -28595,7 +28660,38 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         if (!coveredAny)
             _texturedRejectEmptyRasterCount++;
+        if (!coveredAny)
+            TraceTexturedTriangleReject("empty-raster", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
         return coveredAny;
+    }
+
+    private void TraceTexturedTriangleReject(
+        string reason,
+        SetupVertex a,
+        SetupVertex b,
+        SetupVertex c,
+        ushort fallbackColor,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int clipX0,
+        int clipX1,
+        int clipY0,
+        int clipY1)
+    {
+        if (!_traceTexturedTriangleRejects || _texturedTriangleRejectTraceCount++ >= _traceTexturedTriangleRejectsLimit)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXREJECT] reason={reason} color=0x{fallbackColor:X4} area={area:F3} " +
+            $"bbox=({minX},{minY})-({maxX},{maxY}) clip=({clipX0},{clipY0})-({clipX1},{clipY1}) " +
+            $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
+            $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
+            $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8}{pcStatus}");
     }
 
     private float GetTextureS(SetupVertex vertex)
@@ -28651,7 +28747,10 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         uint byteOffset = (baseAddress + texelIndex) & (TextureBytes - 1u);
         uint source = ReadTexture32(byteOffset & ~3u);
-        byte value = (byte)(source >> (int)((byteOffset & 3u) * 8u));
+        uint lane = byteOffset & 3u;
+        if (_experimentReverse8BitTextureSampleLanes)
+            lane = 3u - lane;
+        byte value = (byte)(source >> (int)(lane * 8u));
         ushort texel = format switch
         {
             0 => ConvertRgb332ToRgb565(value),
@@ -28698,8 +28797,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         uint textureLod = ReadTextureRegister(RegTextureLod);
         uint baseAddress = ReadTextureRegister(RegTextureBaseAddr) & (TextureBytes - 1u);
-        if (applySampleBias && _experimentTextureBaseBias != 0)
-            baseAddress = (uint)((baseAddress + _experimentTextureBaseBias) & (TextureBytes - 1));
+        if (applySampleBias && _textureSampleBaseBias != 0)
+            baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
         uint width = GetTextureWidth();
         uint height = GetTextureHeight();
         uint lodMask = ((textureLod >> 19) & 1u) != 0

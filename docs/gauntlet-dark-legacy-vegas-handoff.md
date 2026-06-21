@@ -18,6 +18,8 @@ Update: 2026-06-10
 
 Update: 2026-06-11
 
+Update: 2026-06-20
+
 ## Scope
 
 This pass continued the Gauntlet Dark Legacy / Midway Vegas bring-up in `EutherDrive.Core/Arcade/Vegas/GauntletDarkLegacyAdapter.cs`.
@@ -28,6 +30,207 @@ The working strategy is still:
 - Use MAME `vegas.cpp` as the hardware map and expected behavior reference.
 - Fast-path expensive BIOS loops where they are deterministic and only affect bring-up speed.
 - Keep risky hardware guesses uncommitted unless they are proven by probe output.
+
+## 2026-06-20 Checkpoint: First Real Graphics Baseline
+
+The default Gauntlet baseline preset had drifted into several older diagnostic
+experiments that are still useful for probes but bad for UI/default bring-up:
+broad indexed-QIO hydration/short-read experiments, diagnostic text suppression,
+texture base bias, and zero-texture fallback visualization. Those can make the
+framebuffer go almost entirely white or flat green while counters still look
+busy.
+
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` is now the smallest tested stack that
+gets past the flat clear-color failure and preserves visible raster data:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER=1
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK=1
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP=1
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0x510
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK=0x1fe
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT=9
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE=1
+```
+
+The probe helper `tools/GauntletProbe/run-gauntdl-baseline.sh` was updated to
+match that stack. Keep broad BGLoadModel QIO hydration flags as opt-in
+diagnostics until they beat this visual baseline.
+
+The Voodoo bring-up backend also now drops leaked type-5 texture packet headers
+when they appear as raster setup register values or as ZA fastfill color
+fallbacks. The observed bad value was `0xc0000205`; without the guard it wrote
+`reg[02a]` and/or filled the whole output as `#004129`.
+
+Fresh warm snapshot created during this pass:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm
+```
+
+Verified command:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180 \
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=220,260 \
+EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS=1 \
+dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 260 200000 0
+```
+
+Earlier minimal-result, before the type-5 header guard and color-mask repair:
+
+```text
+checkpoint frame=220 pc=0xffffffff80019958 frameHash=0x8e14c17e
+drawPackets=248 directTriangles=802 setupTriangles=386
+packetTypes=0:737,1:28159,2:0,3:248,4:80403,5:26075,6:0,7:3
+
+checkpoint frame=260 pc=0xffffffff80106404 frameHash=0x8e14c17e
+drawPackets=666 directTriangles=2258 setupTriangles=1114
+packetTypes=0:1985,1:33386,2:0,3:666,4:97970,5:70735,6:0,7:3
+
+framebuffer=640x480 stride=2560 nonBlack=307200 colored=307199
+voodoo buffers=0:nz=307200:white=306757:colored=307200
+              1:nz=307200:white=1:colored=307200
+cmdstop=invalid-standard-window/0x0005A604/4/3/.../pc=0xFFFFFFFF80106B4C
+peek=0xC0000205:66
+```
+
+Current best f420 visual probe:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180 \
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=420 \
+EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl-f420-qio-scene.ppm \
+dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 420 200000 0
+```
+
+Result:
+
+```text
+checkpoint frame=420 pc=0xffffffff800199d8 frameHash=0x772ab040
+drawPackets=10734 directTriangles=2708 setupTriangles=1339
+packetTypes=0:4606,1:38706,2:36,3:10734,4:117052,5:104159,6:36,7:102
+
+framebuffer=640x480 stride=2560 nonBlack=292034 colored=291360
+voodoo buffers=0:nz=330880:white=0:colored=330880
+              1:nz=683000:white=11548:colored=682801
+              2:nz=655360:white=1:colored=655360
+voodoo texture=nzWords=136765:first=0x000000:last=0x247240
+voodoo textureMap=writes=25759684:nz=1438809:zero=24320875
+voodoo reg[02a]=0x00000000
+```
+
+The converted PNG at `/tmp/gauntdl-f420-qio-scene.png` shows the first real
+large triangle/scene rasterization path instead of only screen-space texture
+bands. Colors and texture selection are still wrong, but the command stream now
+contains live indexed-QIO model/texture activity and nonzero Voodoo setup
+registers.
+`EUTHERDRIVE_GAUNTDL_VISUALIZE_TEXTURE_TRIANGLE_EDGES=1` can still be used when
+the old setup-triangle wire overlay is useful for diagnostics, but it is no
+longer part of the default visual path.
+
+Texture coordinate clamping improved f260 coverage from the no-edge baseline
+`28104/27144` non-black/colored pixels to `30180/29444`. A sample base bias of
+`0x510` then improved the same f260 probe to `33879/32128` and reduced zero
+texture samples from `54420692` to `53207504`. Neighbor probes at f220 were
+worse (`0x500` -> `31822/30832`, `0x520` -> `32359/31880`), so this is a real
+offset signal rather than a broad "any bias helps" result. Promoting the
+distinct-source indexed-header mask from the old partial default `0x2` to
+`0x1fe` improved f260 again to `53792/50991` and reduced zero texture samples to
+`46599744`. The same mask held at f420 with the same hash and coverage
+(`0x6b6d05ff`, `53792/50991`) instead of falling into the later white-buffer
+plateau. Re-enabling the narrower QIO metadata/alias/indexed texture path after
+the Voodoo fixes produced the first full-scene signal: f260 improved to
+`frameHash=0x65570284`, `112373/110841`, and f420 improved again to
+`frameHash=0x772ab040`, `292034/291360`. The f420 run also showed indexed QIO
+activity for additional payloads (`riz`, stream indices 2/3/7/9) and real Voodoo
+floating setup register values. The t-origin flip experiment improved f220 less
+and remains off. Linear texture-download addressing was much worse at f260
+(`172/155`) and should stay off.
+
+Setup/texture-coordinate traces after the `0x510` baseline show repeated
+fullscreen quads from `pc=0xffffffff800c4e5c` with `S=NaN`, `T=0/256`, and
+screen-space `xy=(0,-1)/(512,383)/(0,383)` or the paired second triangle.
+The current sampler fallback maps non-finite `S` to screen `X`, which explains
+the visible screen-space bands. A probe that forced non-finite S/T to zero was
+worse at f260 (`frameHash=0xdab571fc`, `28161/28160`, zero samples
+`55083008`), so do not promote that. Render-record dumps still show
+`nonZeroToken=0` through f620 on the older band-only baseline and `s2` pointers
+in the `8020f268..8020f28b` text/layout buffer.
+
+A targeted reject trace was added behind
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_REJECTS=1`. On the clean f420 QIO
+baseline it shows the early high clip-reject count is dominated by repeated
+offscreen BGLoadModel quads, not by a useful clipped scene surface:
+
+```text
+[GAUNTDL:VOODOO-TEXREJECT] reason=clip color=0xFFFF area=-815348672.000
+bbox=(0,0)-(640,0) clip=(0,0)-(640,480)
+xy=(0.000,-16614.000)/(49076.000,0.000)/(0.000,0.000)
+stq=(0.000,171.531,1.000000)/(506.714,-0.010,1.000000)/(0.000,-0.010,1.000000)
+setup=0x0006002A fbz=0x00000460 pc=0xffffffff800c4e5c
+```
+
+So do not "fix" the clip counter by drawing those triangles; the useful next
+target is texture source/format/base handling for triangles that already cover.
+Sampler traces for the covered f260 quads show 8-bit RGB332-style sampling
+(`mode=0x8C24100F`, `lod=0x00002000`, size `256x256`, base `0x510`) reading
+many zero bytes near nonzero word lanes:
+
+```text
+[GAUNTDL:VOODOO-TEXSAMPLE] st=(2.500,253.667) xy=(2,253)
+addr=0x010212 word=0xBC760000 raw=0x0076 result=0x6DB5
+
+[GAUNTDL:VOODOO-TEXSAMPLE] st=(4.500,253.667) xy=(4,253)
+addr=0x010214 word=0x22000000 raw=0x0000 result=0x0000
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES=1`
+was tested as a lane-order control and is worse at f260:
+`frameHash=0xa1847678`, `nonBlack=104693`, `colored=103673`, zero texture
+samples `26141544` versus baseline `23945064`. Keep it opt-in only.
+
+Two more guarded probes were tested after this baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE=1
+```
+
+This repairs some entries such as `snm` and `stk` from the static alias source
+to their distinct hydrated source, but it is slightly worse at f420:
+`frameHash=0xe4feb8ac`, `nonBlack=292028`, `colored=291357`. Keep it opt-in
+until a later source-table fix makes it positive.
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_REGISTER_TEXTURE_Q=1
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE=1
+```
+
+This lets setup-register vertices take `Q/W0` from Voodoo register `0x0a2`
+instead of hardcoding `1`, but it is currently neutral on f420:
+`frameHash=0x772ab040`, `nonBlack=292034`, `colored=291360`, with the same
+textured reject and zero-texel counts as baseline. Keep it opt-in.
+
+Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
+`tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
+defaulting old setup-vertex `Q` values to `0.0f`.
+
+Next target: fix the remaining texture sampling/source issue for covered
+triangles without regressing the f260/f420 QIO baseline.
 
 ## 2026-06-11 Checkpoint Probe: Indexed Header Default Regression
 
