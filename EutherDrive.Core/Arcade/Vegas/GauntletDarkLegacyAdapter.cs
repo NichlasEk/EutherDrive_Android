@@ -27109,6 +27109,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
         if (type == 4u)
             return wordsNeeded > 22;
+        if (type == 5u)
+        {
+            uint space = command >> 30;
+            uint count = (command >> 3) & 0x7ffffu;
+            return space == 2u && count > 0x10000u;
+        }
         return false;
     }
 
