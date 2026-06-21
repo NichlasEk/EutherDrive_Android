@@ -228,6 +228,11 @@ The older `0x510` sample bias was re-tested after promoting the MAME base shift.
 Removing it is still worse at f260: `frameHash=0xce140ef4`, `121435/118796`,
 zero texture samples `21353238`. Keep `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0x510`
 in the baseline until a more exact LOD/detail/source-offset fix replaces it.
+Neighbor probes after the base-shift fix still lose coverage versus `0x510`:
+`0x500` gives `frameHash=0x6bd76a26`, `120605/118262`, zero texture samples
+`21590426`; `0x520` gives `frameHash=0xde7be415`, `121577/118465`, zero
+texture samples `21312434`. This keeps the remaining issue pointed at
+LOD/filter/coordinate/source handling rather than a simple larger address bias.
 
 Two more guarded probes were tested after this baseline:
 
