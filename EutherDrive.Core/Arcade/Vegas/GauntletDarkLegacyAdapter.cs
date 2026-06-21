@@ -25395,6 +25395,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceType0PacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS_LIMIT"), 240);
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
+    private readonly int _traceType3PacketsLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS_LIMIT"), 96);
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
@@ -25443,6 +25445,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_READ_INDEX"));
     private readonly bool _experimentMameCommandFifoMaskLocalJump =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_MASK_LOCAL_JUMP"));
+    private readonly bool _fixMameCommandFifoLocalJumpByteTarget =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_FIFO_LOCAL_JUMP_BYTE_TARGET"));
     private readonly bool _experimentMameCommandFifoRequireValidStorage =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_REQUIRE_VALID_STORAGE"));
     private readonly bool _experimentMameCommandFifoRequireValidPacketWindow =
@@ -25539,6 +25543,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK"));
     private readonly bool _fixRgbBufferMask =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_RGB_BUFFER_MASK"));
+    private readonly bool _fixVoodooRegisterWriteMasks =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_REGISTER_WRITE_MASKS"));
     private readonly bool _fixTmuRegisterBanks =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS");
     private readonly bool _fixTexturePerspectiveDivide =
@@ -25682,6 +25688,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public virtual void WriteRegister(uint address, uint value)
     {
         uint register = (address >> 2) & 0xffu;
+        value = ApplyRegisterWriteMask(register, value);
         if (_fixDropLeakedType5RegisterHeaders &&
             IsRasterSetupRegister(register) &&
             IsType5TexturePacketHeader(value))
@@ -25774,6 +25781,50 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         CountCommandFifoRegisterWritePc(register, value);
     }
+
+    private uint ApplyRegisterWriteMask(uint register, uint value)
+    {
+        if (!_fixVoodooRegisterWriteMasks)
+            return value;
+
+        int width = GetRegisterWriteWidth(register);
+        if (width <= 0 || width >= 32)
+            return value;
+
+        return value & ((1u << width) - 1u);
+    }
+
+    private static int GetRegisterWriteWidth(uint register)
+        => register switch
+        {
+            >= 0x02u and <= 0x07u => 16,
+            >= 0x08u and <= 0x0au => 24,
+            0x0cu => 24,
+            >= 0x10u and <= 0x12u => 24,
+            >= 0x14u and <= 0x16u => 24,
+            RegFbzColorPath => 30,
+            0x42u => 8,
+            RegFbzMode => 22,
+            RegLfbMode => 17,
+            RegClipLeftRight or RegClipLowYHighY => 28,
+            0x48u => 2,
+            RegSwapbufferCommand => 10,
+            0x4bu => 24,
+            0x4du => 24,
+            0x4eu => 29,
+            0x4fu => 10,
+            0x61u => 26,
+            0x62u or 0x63u or 0x65u => 25,
+            0x66u or 0x67u => 31,
+            0x98u => 20,
+            0xa8u or 0xa9u => 1,
+            >= 0xb0u and <= 0xb2u => 22,
+            0xb5u or 0xb6u => 26,
+            0xbau => 16,
+            RegTextureDetail => 22,
+            RegTextureBaseAddr or RegTextureBaseAddr1 or RegTextureBaseAddr2 or RegTextureBaseAddr38 => 19,
+            _ => 32
+        };
 
     private void DecodeCommandFifoAfterRegisterWrite()
     {
@@ -27309,9 +27360,14 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private int DecodeCommandFifoLocalJumpTarget(int target)
-        => _fixMameCommandFifoModel && _experimentMameCommandFifoMaskLocalJump
-            ? CommandFifoStorageIndex(target)
-            : DecodeCommandFifoReadIndex(target);
+    {
+        int wordTarget = _fixMameCommandFifoModel && _fixMameCommandFifoLocalJumpByteTarget
+            ? target >> 2
+            : target;
+        return _fixMameCommandFifoModel && _experimentMameCommandFifoMaskLocalJump
+            ? CommandFifoStorageIndex(wordTarget)
+            : DecodeCommandFifoReadIndex(wordTarget);
+    }
 
     private void TraceType0Packet(uint command, int function, int target, int readBefore, int readAfter)
     {
@@ -28509,7 +28565,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceType3Packet(uint command, int wordsNeeded)
     {
-        if (!_traceType3Packets || _type3PacketTraceCount++ >= 96)
+        if (!_traceType3Packets || _type3PacketTraceCount++ >= _traceType3PacketsLimit)
             return;
 
         int count = Math.Min(wordsNeeded, Math.Min(_fifoBuffer.Count, 32));
@@ -28991,7 +29047,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"bbox=({minX},{minY})-({maxX},{maxY}) clip=({clipX0},{clipY0})-({clipX1},{clipY1}) " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
-            $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8}{pcStatus}");
+            $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} setup=0x{_registers[0x98]:X8} " +
+            $"cmd=0x{_currentCommandFifoCommand:X8} rd=0x{_cmdFifoReadIndex * 4:X8} fbz=0x{_registers[RegFbzMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8}{pcStatus}");
     }
 
     private float GetTextureS(SetupVertex vertex)
