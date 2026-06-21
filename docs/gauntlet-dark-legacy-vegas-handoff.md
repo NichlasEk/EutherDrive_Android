@@ -328,6 +328,21 @@ alignment, but is slightly worse at f260: `frameHash=0x5ad5ef96`,
 opt-in while investigating whether our higher-level texture download offset is
 already pre-aligned differently from MAME.
 
+Setup/type3 tracing (`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SETUP_TRIANGLES=1`)
+shows the early covered textured quads are very large setup-space triangles
+from PC `0xffffffff800c4e5c`, often with S/T ranges around `0..506` and
+`-0.010..171.531`, plus occasional NaN S values on later quads. Comparing the
+type3 packet layout against MAME confirmed that our decoder consumed the same
+field count, but it was only skipping `W0` and overwrote S0/T0 with S1/T1 when
+both TMU coordinate sets were present. The guarded probe
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST=1` reads `W0`
+into the setup vertex Q and keeps S0/T0 for the current simple TMU0 sampler
+when both S0/T0 and S1/T1 are present. It is neutral after bilinear: f260 stays
+at `frameHash=0x6a8add11`, `nonBlack=156790`, `colored=156768`, zero texture
+samples `11241516`; f420 stays at `frameHash=0x772ab040`, `nonBlack=292034`,
+`colored=291360`, zero texture samples `19147268`. Keep it opt-in until the
+renderer models both TMUs.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.

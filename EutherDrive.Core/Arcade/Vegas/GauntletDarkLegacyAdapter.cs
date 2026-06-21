@@ -25501,6 +25501,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE");
     private readonly bool _experimentTexturePerspectiveInterpolate =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE"));
+    private readonly bool _experimentType3PreferTmu0St =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DROP_LEAKED_TYPE5_HEADERS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -28265,6 +28267,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             float s = 0;
             float t = 0;
             float q = 1;
+            bool hasTmu0Texture = false;
             bool hasTexture = false;
             if (((command >> 28) & 1u) != 0)
             {
@@ -28299,8 +28302,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 return;
             }
-            if (((command >> 14) & 1u) != 0 && !SkipWord(wordsNeeded, ref source))
+            if (((command >> 14) & 1u) != 0 &&
+                !TryReadFloat(wordsNeeded, ref source, out q))
+            {
                 return;
+            }
             if (((command >> 15) & 1u) != 0)
             {
                 if (!TryReadFloat(wordsNeeded, ref source, out s) ||
@@ -28309,6 +28315,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     return;
                 }
 
+                hasTmu0Texture = true;
                 hasTexture = true;
             }
             if (((command >> 16) & 1u) != 0 &&
@@ -28318,12 +28325,17 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
             if (((command >> 17) & 1u) != 0)
             {
-                if (!TryReadFloat(wordsNeeded, ref source, out s) ||
-                    !TryReadFloat(wordsNeeded, ref source, out t))
+                if (!TryReadFloat(wordsNeeded, ref source, out float s1) ||
+                    !TryReadFloat(wordsNeeded, ref source, out float t1))
                 {
                     return;
                 }
 
+                if (!_experimentType3PreferTmu0St || !hasTmu0Texture)
+                {
+                    s = s1;
+                    t = t1;
+                }
                 hasTexture = true;
             }
 
