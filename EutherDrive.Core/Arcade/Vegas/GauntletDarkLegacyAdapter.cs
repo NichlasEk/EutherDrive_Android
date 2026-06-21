@@ -26010,7 +26010,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoHoles == 0 && address == _cmdFifoAddressMin + 4)
         {
             mode = 2;
-            if (!_experimentMameCommandFifoAccumulateAddressWindow)
+            if (_experimentMameCommandFifoExactHoleAccounting || !_experimentMameCommandFifoAccumulateAddressWindow)
                 _cmdFifoAddressMin = address;
             _cmdFifoAddressMax = address;
             _cmdFifoDepth++;
