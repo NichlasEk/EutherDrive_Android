@@ -25286,6 +25286,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _texturedRejectClipCount;
     private int _texturedRejectEmptyRasterCount;
     private int _texturedTriangleRejectTraceCount;
+    private int _texturedTriangleCoveredTraceCount;
     private int _statusReadCount;
     private long _lfbWriteCount;
     private int _textureWriteCount;
@@ -25351,6 +25352,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_REJECTS"));
     private readonly int _traceTexturedTriangleRejectsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_REJECTS_LIMIT"), 80);
+    private readonly bool _traceTexturedTriangleCovered =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED"));
+    private readonly int _traceTexturedTriangleCoveredLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED_LIMIT"), 80);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
@@ -25503,6 +25508,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE"));
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
+    private readonly bool _experimentTextureNonFiniteCoordinateZero =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DROP_LEAKED_TYPE5_HEADERS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -28643,6 +28650,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
         bool coveredAny = false;
+        int coveredPixels = 0;
+        int zeroPixels = 0;
         float invArea = 1.0f / area;
         for (int y = minY; y < maxY; y++)
         {
@@ -28680,9 +28689,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
                 ushort texel = SampleTextureRgb565(s, t);
                 _texturedPixelCount++;
+                coveredPixels++;
                 if (texel == 0)
                 {
                     _texturedZeroPixelCount++;
+                    zeroPixels++;
                     if (_visualizeZeroTextureFallback)
                     {
                         texel = fallbackColor != 0 ? fallbackColor : (ushort)0xffff;
@@ -28714,7 +28725,41 @@ internal class VoodooBringupBackend : IVoodooBackend
             _texturedRejectEmptyRasterCount++;
         if (!coveredAny)
             TraceTexturedTriangleReject("empty-raster", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
+        else
+            TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         return coveredAny;
+    }
+
+    private void TraceTexturedTriangleCovered(
+        SetupVertex a,
+        SetupVertex b,
+        SetupVertex c,
+        ushort fallbackColor,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int coveredPixels,
+        int zeroPixels)
+    {
+        if (!_traceTexturedTriangleCovered || _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
+            return;
+
+        uint mode = ReadTextureRegister(RegTextureMode);
+        uint lod = ReadTextureRegister(RegTextureLod);
+        uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
+        int format = (int)((mode >> 8) & 0x0fu);
+        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
+        uint resolvedBase = GetTextureLodOffset(targetLod, format is >= 8 ? 2 : 1, applySampleBias: true);
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXCOVER] color=0x{fallbackColor:X4} area={area:F3} bbox=({minX},{minY})-({maxX},{maxY}) " +
+            $"pixels={coveredPixels} zero={zeroPixels} mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} " +
+            $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
+            $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
+            $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8}{pcStatus}");
     }
 
     private void TraceTexturedTriangleReject(
@@ -28749,7 +28794,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private float GetTextureS(SetupVertex vertex)
     {
         if (!float.IsFinite(vertex.S))
-            return vertex.X;
+            return _experimentTextureNonFiniteCoordinateZero ? 0.0f : vertex.X;
         return _fixTexturePerspectiveDivide && float.IsFinite(vertex.Q) && MathF.Abs(vertex.Q) > 0.000001f
             ? vertex.S / vertex.Q
             : vertex.S;
@@ -28758,7 +28803,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private float GetTextureT(SetupVertex vertex)
     {
         if (!float.IsFinite(vertex.T))
-            return vertex.Y;
+            return _experimentTextureNonFiniteCoordinateZero ? 0.0f : vertex.Y;
         return _fixTexturePerspectiveDivide && float.IsFinite(vertex.Q) && MathF.Abs(vertex.Q) > 0.000001f
             ? vertex.T / vertex.Q
             : vertex.T;

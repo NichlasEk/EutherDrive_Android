@@ -343,6 +343,19 @@ samples `11241516`; f420 stays at `frameHash=0x772ab040`, `nonBlack=292034`,
 `colored=291360`, zero texture samples `19147268`. Keep it opt-in until the
 renderer models both TMUs.
 
+Covered-triangle tracing
+(`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED=1`) confirms that the
+dominant f260 covered texture work includes repeated near-fullscreen quads from
+PC `0xffffffff800c4e5c` with `S=NaN`, `T=0/256`, `Q=1`, mode `0x8c24100f`,
+LOD `0x00002000`, and resolved base `0x510`. The largest traced quads cover
+about `98k` pixels each and still produce `15k..23k` zero texels per triangle.
+The guarded probe
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO=1` changes
+non-finite S/T fallback from screen X/Y to `0`, but it is worse at f260:
+`frameHash=0x1585bfd5`, `nonBlack=145408`, `colored=145408`, zero texture
+samples `14496768`. Keep it opt-in; the useful artifact is the covered-triangle
+trace, not this fallback policy.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.
