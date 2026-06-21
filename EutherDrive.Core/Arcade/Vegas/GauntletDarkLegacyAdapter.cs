@@ -22639,6 +22639,8 @@ internal sealed class VegasVoodooPciDevice
     private readonly int _traceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_PCI_LIMIT", 512);
     private readonly bool _experimentStrictCommandFifoEnable =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_CMD_FIFO_STRICT_ENABLE"));
+    private readonly bool _experimentCommandFifoDirectEndian =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DIRECT_ENDIAN"));
     private IVoodooBackend? _voodoo;
     private uint _bar0 = 0xff000000u;
     private bool _bar0Probe;
@@ -22756,6 +22758,8 @@ internal sealed class VegasVoodooPciDevice
             if (offset >= 0x00200000u &&
                 (IsCommandFifoEnabled || (!_experimentStrictCommandFifoEnable && IsGlideCommandFifoWindow(offset))))
             {
+                if (_experimentCommandFifoDirectEndian && (offset & 0x00040000u) != 0)
+                    value = BinaryPrimitives.ReverseEndianness(value);
                 _voodoo?.WriteFifo((offset >> 2) & 0xffffu, value);
                 Trace($"fifo write off={offset:x6} value={value:x8}");
             }
