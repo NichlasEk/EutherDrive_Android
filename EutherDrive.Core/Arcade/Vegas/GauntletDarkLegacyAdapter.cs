@@ -26893,8 +26893,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 wordsNeeded = 1;
             if (_fixMameCommandFifoModel &&
                 _experimentMameCommandFifoDropImplausibleRegisterPacket &&
-                IsImplausibleCommandFifoRegisterPacket(command, wordsNeeded) &&
-                TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-implausible-register-packet"))
+                IsImplausibleCommandFifoPacket(command, wordsNeeded) &&
+                TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-implausible-packet"))
             {
                 continue;
             }
@@ -27094,13 +27094,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         return true;
     }
 
-    private static bool IsImplausibleCommandFifoRegisterPacket(uint command, int wordsNeeded)
+    private static bool IsImplausibleCommandFifoPacket(uint command, int wordsNeeded)
     {
         uint type = command & 7u;
         if (type == 1u)
             return (command >> 16) > 1024u || wordsNeeded > 1025;
         if (type == 2u)
             return wordsNeeded > 30;
+        if (type == 3u)
+        {
+            uint code = (command >> 3) & 7u;
+            uint vertices = (command >> 6) & 0x0fu;
+            return code > 2u || vertices == 0u;
+        }
         if (type == 4u)
             return wordsNeeded > 22;
         return false;
