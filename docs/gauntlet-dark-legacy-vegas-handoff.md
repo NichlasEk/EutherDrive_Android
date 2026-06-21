@@ -393,6 +393,20 @@ range miss.
 f260 (`0x6a8add11`, `156790/156768`, zero texture samples `11241516`), so this
 does not look like a simple zero-as-mask/alpha policy issue.
 
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=c,d,e` traces only
+texture writes that resolve into the hot 4 KB buckets. The first `0x00c000`
+writes at f220 are all zero payloads from the type-5 texture service:
+
+```text
+[GAUNTDL:VOODOO-TEXWRITE] bucket=0x00C000 word=0x018B84 addr=0x00C000
+  value=0x00000000 nzb=0 lod=3 ts=0x10 tt=0x17 bpp=1 seq8=1
+  mode=0x00000100 tlod=0x0000080C tbase=0x1FFFEDA2 pc=0xffffffff800fe5d4
+```
+
+The bad data is therefore present before the final texture RAM write. Next
+target should be the source memory/FIFO payload feeding the `800fe5d4` type-5
+texture upload path, especially around the synthetic indexed texture sources.
+
 Snapshot format was bumped to v4 because `SetupVertex` now includes `Q`.
 `tools/GauntletProbe` remains backward compatible with v1-v3 snapshots by
 defaulting old setup-vertex `Q` values to `0.0f`.

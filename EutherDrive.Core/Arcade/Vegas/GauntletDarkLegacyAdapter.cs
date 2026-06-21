@@ -25364,6 +25364,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _debugTextureZeroSampleBuckets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS"));
+    private readonly ulong[] _traceTextureWriteBuckets =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS"));
+    private readonly int _traceTextureWriteBucketsLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT"), 240);
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
     private readonly int _traceType0PacketsLimit =
@@ -25563,6 +25567,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _drawTraceCount;
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
+    private int _textureWriteBucketTraceCount;
     private int _textureZeroSampleBucketTotal;
     private uint _textureZeroSampleFirstAddress = uint.MaxValue;
     private uint _textureZeroSampleLastAddress;
@@ -26275,6 +26280,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel, texLod, textureBase) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
         if (_fixTextureDownloadAlign32)
             byteOffset &= ~3u;
+        TraceTextureWriteBucket(wordOffset, byteOffset, value, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
 
         if (bytesPerTexel == 1)
         {
@@ -26299,6 +26305,45 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         _textureWriteCount++;
+    }
+
+    private void TraceTextureWriteBucket(
+        uint wordOffset,
+        uint byteOffset,
+        uint value,
+        uint mode,
+        uint texLod,
+        uint textureBase,
+        uint lod,
+        uint ts,
+        uint tt,
+        int bytesPerTexel,
+        bool seq8Downld)
+    {
+        if (_traceTextureWriteBuckets.Length == 0 || _textureWriteBucketTraceCount >= _traceTextureWriteBucketsLimit)
+            return;
+
+        uint bucket = (byteOffset & (TextureBytes - 1u)) >> TextureZeroSampleBucketShift;
+        if (!_traceTextureWriteBuckets.Contains(bucket))
+            return;
+
+        int nonZeroBytes = 0;
+        if ((byte)value != 0)
+            nonZeroBytes++;
+        if ((byte)(value >> 8) != 0)
+            nonZeroBytes++;
+        if ((byte)(value >> 16) != 0)
+            nonZeroBytes++;
+        if ((byte)(value >> 24) != 0)
+            nonZeroBytes++;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXWRITE] n={++_textureWriteBucketTraceCount} bucket=0x{bucket << TextureZeroSampleBucketShift:X6} " +
+            $"word=0x{wordOffset:X6} addr=0x{byteOffset:X6} value=0x{value:X8} nzb={nonZeroBytes} " +
+            $"lod={lod} ts=0x{ts:X2} tt=0x{tt:X2} bpp={bytesPerTexel} seq8={(seq8Downld ? 1 : 0)} " +
+            $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8}{pcStatus}");
     }
 
     private void WriteTextureLinear32(uint wordOffset, uint value, int bytesPerTexel)
