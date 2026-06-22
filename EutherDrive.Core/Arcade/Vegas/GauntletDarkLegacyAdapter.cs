@@ -742,6 +742,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_FROM_BODY"));
     private readonly bool _experimentSkipMetadataTexturePayloads =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_METADATA_TEXTURE_PAYLOADS"));
+    private readonly bool _experimentSkipZeroBaseTexturePayloadRuns =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -3933,6 +3935,36 @@ internal sealed class MipsR5000Core
         ulong skippedInstructions = 0;
 
         TraceTextureUploadPayloadRun(pc, source, sourceBase, currentPacketAddress, payloadWords, index, limit, sp, state, fifo, room);
+
+        if (_experimentSkipZeroBaseTexturePayloadRuns && sourceBase == 0)
+        {
+            if (_textureUploadMetadataSkipTraceCount++ < 64)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] skip-zero-base-texture-payload-run " +
+                    $"source=0x{source:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+                    $"sourceBase=0x{sourceBase:x8} packet=0x{currentPacketAddress:x8} " +
+                    $"index={index}/{limit} words={payloadWords} packets={packets}");
+            }
+
+            ulong skippedZeroBaseInstructions = packets * (30UL + (ulong)(payloadWords / 2U) * 9UL);
+            _gpr[2] = 1;
+            _gpr[3] = 0x01ffffffUL;
+            _gpr[4] = SignExtend32(fifo);
+            _gpr[5] = payloadWords;
+            _gpr[17] = SignExtend32(unchecked(currentPacketAddress + (packets - 1U) * 0x200U));
+            _gpr[18] = limit + 1U;
+            _gpr[19] = packetBytes;
+            _gpr[22] = SignExtend32(unchecked((uint)(source + sourceBytes)));
+            _gpr[23] = SignExtend32(header);
+            _gpr[0] = 0;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+            AdvanceCp0Count(_cp0CountStep * Math.Max(1UL, skippedZeroBaseInstructions));
+            _instructionCounter += Math.Max(1UL, skippedZeroBaseInstructions);
+            Pc = exit;
+            return true;
+        }
 
         _memory.BeginVoodooCommandFifoBulkWrite();
         uint writtenPackets = 0;

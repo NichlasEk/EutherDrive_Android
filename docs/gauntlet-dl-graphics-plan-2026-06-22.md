@@ -282,6 +282,22 @@ EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x10000
   framebuffer=31560/31560
   This reproduces the known partial-output regression. Keep it as a rejected
   control.
+
+Additional negative control after the `0x8000` default:
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS=1
+  This skips type-5 payload runs whose stack source base is zero while still
+  advancing the emulated caller state. It hit the repeated f220 run:
+  source=0xffffffff80312998 sourceBase=0x00000000 index=0/255 words=64
+  packets=256.
+
+  Result:
+  f220 frameHash=0x1c5e37c9 direct/setup=169/68
+  framebuffer=300325/248699 textureMap.touched=48926
+
+  This rejects treating those zero-base runs as disposable upload noise. They
+  are suspicious because of the caller state, but the writes still feed visible
+  output and should be traced upstream rather than suppressed.
 ```
 
 The trace now annotates type-5 upload sources with BGLoadModel payload matches.
