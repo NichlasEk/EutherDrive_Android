@@ -933,3 +933,37 @@ bytes from the overlapping hydrated source windows; the remaining suspicion is
 that the runtime structures feeding the zero-base repeated upload are being
 assembled with the wrong pointers, extents, or sequence before the fast FIFO
 copy sees them.
+
+## 2026-06-22 Zero-Base Caller State Words
+
+Extended the existing `TEXUPLOAD-CALLER` trace with temporary registers and
+state/stack words used by the caller setup path. The f220 trace shows that
+`sp+0x1c` is not randomly corrupted: the caller writes the current Glide state
+base word from `state+0x08`, and that word is zero in this mode.
+
+Normal earlier passage:
+
+```text
+pc=0xffffffff800fe344 op=0x8e080008 t0=0 state08=00000000 sp1c=8024f9d0
+pc=0xffffffff800fe34c op=0xafa8001c t0=0 state08=00000000 sp1c=8024f9d0
+pc=0xffffffff800fe350 ... sp1c=00000000 sp74=0000001f
+```
+
+Repeated pnk/geb passage:
+
+```text
+pc=0xffffffff800fe418 op=0xac5e0000 s6=0xffffffff80312998 state374=a8235a5c state37c=0000ffe4 sp1c=00000000 sp74=000000ff
+pc=0xffffffff800fe448 op=0x8fa80074 t0=0xff state374=a8235a6c state37c=0000ffd4 sp1c=00000000 sp74=000000ff
+pc=0xffffffff800fe5d4 source=0xffffffff80312998 sourceBase=0x00000000 packet=0x00000000 index=0/255 words=64
+```
+
+Verification stayed stable:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+```
+
+Conclusion: zero `sourceBase` is probably intended Glide texture-base state,
+not the root cause by itself. The next useful target is lower in the Voodoo
+path: verify whether the command FIFO consumer interprets these repeated
+zero-base uploads with the right texture address, format, and memory layout.

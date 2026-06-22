@@ -4224,11 +4224,16 @@ internal sealed class MipsR5000Core
             $"ra=0x{_gpr[31]:x16} sp=0x{sp:x16} " +
             $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
             $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t8=0x{_gpr[24]:x16} t9=0x{_gpr[25]:x16} " +
             $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
             $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{s6:x16} s7=0x{_gpr[23]:x16} " +
             $"{DescribeKnownRuntimeBgLoadModelUploadSource(s6)} " +
+            $"state08={ReadTraceWord(_gpr[16] + 0x08UL):x8} state298={ReadTraceWord(_gpr[16] + 0x298UL):x8} " +
+            $"state374={ReadTraceWord(_gpr[16] + 0x374UL):x8} state37c={ReadTraceWord(_gpr[16] + 0x37cUL):x8} " +
             $"sp18={ReadTraceWord(sp + 0x18UL):x8} sp1c={ReadTraceWord(sp + 0x1cUL):x8} " +
             $"sp20={ReadTraceWord(sp + 0x20UL):x8} sp24={ReadTraceWord(sp + 0x24UL):x8} " +
+            $"sp50={ReadTraceWord(sp + 0x50UL):x8} sp58={ReadTraceWord(sp + 0x58UL):x8} " +
+            $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
             $"sp78={ReadTraceWord(sp + 0x78UL):x8}");
     }
