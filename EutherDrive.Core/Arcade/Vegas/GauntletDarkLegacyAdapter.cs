@@ -25609,12 +25609,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING"));
     private readonly bool _experimentTextureMameFixedFetch =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH"));
+    private readonly bool _experimentTextureUseLodMin =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_USE_LOD_MIN"));
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_S"));
     private readonly bool _experimentType3UseSkippedWordAsT =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_T"));
+    private readonly bool _experimentType3NonFiniteSAsX =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_NONFINITE_S_AS_X"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _experimentRejectNonFiniteTextureCoordinates =
@@ -28926,6 +28930,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                     s = t;
                     t = skippedWordAsS;
                 }
+                else if (_experimentType3NonFiniteSAsX && !float.IsFinite(s))
+                {
+                    s = x;
+                }
                 hasNonFiniteTextureCoordinate |= !float.IsFinite(s) || !float.IsFinite(t);
                 hasTmu0Texture = true;
             }
@@ -29844,7 +29852,7 @@ sampledTexel:
         uint lod = ReadTextureRegister(RegTextureLod);
         uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
         int format = (int)((mode >> 8) & 0x0fu);
-        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
+        int targetLod = GetTextureTargetLod(lod);
         uint resolvedBase = GetTextureLodOffset(targetLod, format is >= 8 ? 2 : 1, applySampleBias: true);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
@@ -29877,7 +29885,7 @@ sampledTexel:
         uint lod = ReadTextureRegister(RegTextureLod);
         uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
         int format = (int)((mode >> 8) & 0x0fu);
-        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
+        int targetLod = GetTextureTargetLod(lod);
         uint resolvedBase = GetTextureLodOffset(targetLod, format is >= 8 ? 2 : 1, applySampleBias: true);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
@@ -29958,8 +29966,9 @@ sampledTexel:
         if (_textureWriteCount == 0)
             return 0;
 
-        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
         uint mode = ReadTextureRegister(RegTextureMode);
+        uint textureLod = ReadTextureRegister(RegTextureLod);
+        int targetLod = GetTextureTargetLod(textureLod);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
         int width;
@@ -30042,13 +30051,19 @@ sampledTexel:
         return (shifted & 0xff) * (1.0f / 255.0f);
     }
 
+    private int GetTextureTargetLod(uint textureLod)
+        => _experimentTextureUseLodMin
+            ? Math.Clamp((int)(textureLod & 0x3fu), 0, 8)
+            : Math.Clamp(_experimentTextureForceLod, 0, 8);
+
     private ushort SampleTextureRgb565(float s, float t)
     {
         if (_textureWriteCount == 0 || !float.IsFinite(s) || !float.IsFinite(t))
             return 0;
 
-        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
         uint mode = ReadTextureRegister(RegTextureMode);
+        uint textureLod = ReadTextureRegister(RegTextureLod);
+        int targetLod = GetTextureTargetLod(textureLod);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
         int width;
