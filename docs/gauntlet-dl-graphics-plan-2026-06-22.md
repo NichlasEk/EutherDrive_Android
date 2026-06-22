@@ -220,9 +220,31 @@ EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES=
   hydration is not enough.
 
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
-  Fresh warm did not remove DWF metadata; the hot upload still read
-  source=0xffffffff802ed500 text="DWF_GEIBEARD2". This rejects a pure
-  inter-slot-overlap explanation.
+  The first run used this literal before the positive-int parser accepted hex,
+  so it silently fell back to the default `0x2000` stride and was not a valid
+  control.
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=131072
+  This is the real `0x20000` stride control. It moved indexed source windows to
+  non-overlapping addresses:
+  index=1 code=gei dest=ffffffff80301718
+  index=2 code=snm dest=ffffffff80321718
+  index=3 code=stk dest=ffffffff80341718
+
+  The f220 output changed substantially:
+  frameHash=0xf138aaf3 direct/setup=167/67
+  framebuffer=307200/164736
+  textureMap.touched=66260
+
+  This proves the compact `0x2000` stride affects runtime state, but the large
+  stride is not yet a promotable default because triangle activity collapses
+  versus the f220 baseline:
+  baseline f220 frameHash=0xe806de53 direct/setup=424/194
+  baseline f220 framebuffer=157608/157586
+
+  After this result the positive-int env parser was updated to accept both
+  decimal and `0x` hex values, so future stride probes can use the same notation
+  as the rest of the Gauntlet bring-up flags.
 ```
 
 The trace now annotates type-5 upload sources with BGLoadModel payload matches.
@@ -409,9 +431,8 @@ textureMap.writes=3256648 touched=34112
 ```
 
 Conclusion: the visible failure is not solved by suppressing the ASCII DWF
-packets after they reach type-5 upload. The next useful target is upstream:
+packets after they reach type-5 upload. Larger indexed-source spacing also
+changes real runtime state, so the next useful target is upstream but narrower:
 trace the BGLoadModel indexed source construction and asset-table selection
-that make adjacent source windows (`gei`, `snm`, `stk`, etc.) overlap in the
-`DescribeKnownRuntimeBgLoadModelUploadSource` output. The suspicious symptom is
-that one source address often matches several asset windows, so the stride or
-copy placement may still be too compact for the real asset layout.
+until we can identify the smallest source-window layout change that preserves
+triangle activity while avoiding the bad metadata-as-texture upload path.

@@ -2085,7 +2085,25 @@ static void DumpRgb565BufferWindow(ushort[] buffer, int width, int height, int s
 }
 
 static int ParsePositiveInt(string? value, int fallback)
-    => int.TryParse(value, out int parsed) && parsed > 0 ? parsed : fallback;
+{
+    if (string.IsNullOrWhiteSpace(value))
+        return fallback;
+
+    value = value.Trim();
+    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+    {
+        return int.TryParse(
+                value[2..],
+                System.Globalization.NumberStyles.HexNumber,
+                null,
+                out int hexParsed) &&
+            hexParsed > 0
+                ? hexParsed
+                : fallback;
+    }
+
+    return int.TryParse(value, out int parsed) && parsed > 0 ? parsed : fallback;
+}
 
 readonly record struct RamSurfaceFormat(int Width, int Height, int Stride);
 readonly record struct RamSurfaceScore(int NonZero, int Colored, int UniqueColors, long Score);

@@ -473,7 +473,27 @@ internal sealed class GauntletDarkLegacyMachine
     private static int ParsePositiveInt(string name, int fallback)
     {
         string? raw = Environment.GetEnvironmentVariable(name);
-        return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
+        return TryParsePositiveInt(raw, out int parsed) ? parsed : fallback;
+    }
+
+    private static bool TryParsePositiveInt(string? raw, out int parsed)
+    {
+        parsed = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            return int.TryParse(
+                    raw[2..],
+                    System.Globalization.NumberStyles.HexNumber,
+                    null,
+                    out parsed) &&
+                parsed > 0;
+        }
+
+        return int.TryParse(raw, out parsed) && parsed > 0;
     }
 }
 
@@ -19964,7 +19984,27 @@ internal sealed class MipsR5000Core
     private static int ParsePositiveInt(string name, int fallback)
     {
         string? raw = Environment.GetEnvironmentVariable(name);
-        return int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
+        return TryParsePositiveInt(raw, out int parsed) ? parsed : fallback;
+    }
+
+    private static bool TryParsePositiveInt(string? raw, out int parsed)
+    {
+        parsed = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            return int.TryParse(
+                    raw[2..],
+                    System.Globalization.NumberStyles.HexNumber,
+                    null,
+                    out parsed) &&
+                parsed > 0;
+        }
+
+        return int.TryParse(raw, out parsed) && parsed > 0;
     }
 
     private static int ParseStepBudget()
