@@ -594,3 +594,43 @@ start of the caller prep window, not introduced by the type-5 fast path. The
 next useful target is one level earlier: trace the BGLoadModel asset/record
 selection that leaves `s6=0xffffffff80312998`, `sp1c=0`, and `sp74=0xff` for
 the pnk/geb candidate.
+
+## 2026-06-22 Asset Parser Control
+
+Ran the focused pnk/geb caller trace together with the existing asset-parser
+trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER=1
+```
+
+The run confirms the indexed `geb` payload is seeded as a normal BGLoadModel
+source window before the zero-base upload:
+
+```text
+bgloadmodel-distinct-source-indexed-header index=6 code=geb
+dest=ffffffff80311718 bytes=0000b130
+sourceWords=... 5c=0000b330,60=0000001f,64=00000017
+```
+
+Later caller prep still enters the upload path with the offset source:
+
+```text
+pc=0xffffffff800fe350 s3=0xffffffff80312998 s6=0xffffffff80312998
+sp1c=00000000 sp74=000000ff
+bgsrc=5:pnk(... hdr=bad),6:geb(... hdr=ok)
+```
+
+The visual checkpoint remains unchanged:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+framebuffer=307200/307200
+```
+
+Conclusion: the existing asset-parser trace proves `geb` is hydrated, but it
+does not yet expose the exact source-table or record transition that turns the
+`geb` base `0xffffffff80311718` into caller source `0xffffffff80312998` with a
+zero packet base. Next trace should focus on the source-table record slot
+selected immediately after the `index=6 code=geb` hydration and before the
+`0x800fe350` caller prep.
