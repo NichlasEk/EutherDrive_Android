@@ -753,3 +753,40 @@ render work and clamping it is destructive. Keep this experiment as a negative
 control only; the next target should move away from simple limit correction and
 look at how the source window should be populated beyond `geb`'s nominal disk
 payload length.
+
+## 2026-06-22 Bucket C/D/E Control On Current Baseline
+
+Re-ran the older current-target bucket trace on the promoted `0x8000` stride
+baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=c,d,e
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1
+```
+
+The trace shows the current default writes real texture data into bucket
+`0x00c000` from the type-5 service at `0xffffffff800fe5d4`:
+
+```text
+bucket=0x00C000 word=0x018000 addr=0x00C000 value=0xFDFF0000
+mode=0x00000100 tlod=0x00000808 tbase=0x1FFFEE00 pc=0xffffffff800fe5d4
+```
+
+The repeated `geb+0x1280` upload remains present:
+
+```text
+source=0xffffffff80312998 sourceBase=0x00000000 index=0/255 words=64
+```
+
+Verification stays on the current baseline:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+framebuffer=307200/307200
+textureMap.touched=55200
+```
+
+Conclusion: the bucket trace no longer points at a missing broad texture write
+path for f220. The texture upload is active and productive; next work should
+target correctness of the source bytes/window composition rather than command
+FIFO delivery or packet-base mechanics.
