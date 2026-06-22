@@ -25596,12 +25596,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS"));
     private readonly bool _experimentTextureMameFetchAddressing =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING"));
+    private readonly bool _experimentTextureMameFixedFetch =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH"));
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _experimentRejectNonFiniteTextureCoordinates =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_REJECT_NONFINITE_TEXTURE_COORDS"));
+    private readonly bool _experimentSuppressLargeNonFiniteSTextureTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_NONFINITE_S_TEXTURE_TRIANGLES"));
     private readonly bool _experimentTextureUploadTmuBanks =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
@@ -29398,6 +29402,16 @@ internal class VoodooBringupBackend : IVoodooBackend
             TraceTexturedTriangleReject("clip", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
             return false;
         }
+        if (_experimentSuppressLargeNonFiniteSTextureTriangles &&
+            !float.IsFinite(a.S) &&
+            !float.IsFinite(b.S) &&
+            !float.IsFinite(c.S) &&
+            (long)(maxX - minX) * (maxY - minY) >= 128L * 128L)
+        {
+            _texturedRejectNonFiniteCount++;
+            TraceTexturedTriangleReject("large-nonfinite-s", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
+            return true;
+        }
 
         bool positive = area > 0;
         int bufferIndex = GetDrawBufferIndex();
@@ -29441,12 +29455,21 @@ internal class VoodooBringupBackend : IVoodooBackend
                 float wc = e2 * invArea;
                 float s;
                 float t;
+                ushort texel;
                 if (_experimentTextureMameSetupGradients)
                 {
                     int dx = x - setupAx;
                     int dy = y - setupAy;
-                    s = (float)((startS + dy * (double)dSdY + dx * (double)dSdX) * (1.0 / (1 << 24)) / 256.0);
-                    t = (float)((startT + dy * (double)dTdY + dx * (double)dTdX) * (1.0 / (1 << 24)) / 256.0);
+                    long iterS = unchecked(startS + dy * dSdY + dx * dSdX);
+                    long iterT = unchecked(startT + dy * dTdY + dx * dTdX);
+                    if (_experimentTextureMameFixedFetch)
+                    {
+                        texel = SampleTextureRgb565MameFixed(iterS, iterT);
+                        goto sampledTexel;
+                    }
+
+                    s = (float)(iterS * (1.0 / (1 << 24)) / 256.0);
+                    t = (float)(iterT * (1.0 / (1 << 24)) / 256.0);
                 }
                 else if (_experimentTexturePerspectiveInterpolate)
                 {
@@ -29464,7 +29487,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                     s = GetTextureS(a) * wa + GetTextureS(b) * wb + GetTextureS(c) * wc;
                     t = GetTextureT(a) * wa + GetTextureT(b) * wb + GetTextureT(c) * wc;
                 }
-                ushort texel = SampleTextureRgb565(s, t);
+                texel = SampleTextureRgb565(s, t);
+sampledTexel:
                 _texturedPixelCount++;
                 coveredPixels++;
                 if (texel == 0)
@@ -29516,6 +29540,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (value <= long.MinValue)
             return long.MinValue;
         return (long)value;
+    }
+
+    private static int MameSetupCastToInt32(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return int.MinValue;
+        if (value >= int.MaxValue)
+            return int.MaxValue;
+        if (value <= int.MinValue)
+            return int.MinValue;
+        return (int)value;
     }
 
     private bool FillGradientTexturedTriangle(
@@ -29808,6 +29843,95 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private static float TextureTOrY(SetupVertex vertex)
         => float.IsFinite(vertex.T) ? vertex.T : vertex.Y;
+
+    private ushort SampleTextureRgb565MameFixed(long iterS, long iterT)
+    {
+        if (_textureWriteCount == 0)
+            return 0;
+
+        int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
+        uint mode = ReadTextureRegister(RegTextureMode);
+        int format = (int)((mode >> 8) & 0x0fu);
+        bool sixteenBit = format is 10 or 11 or 12;
+        int width;
+        int height;
+        uint baseAddress;
+        if (_experimentTextureMameFetchAddressing)
+        {
+            TextureFetchLayout layout = GetMameTextureFetchLayout(targetLod, mode);
+            width = layout.Width;
+            height = layout.Height;
+            baseAddress = layout.BaseAddress;
+        }
+        else
+        {
+            width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
+            height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
+            baseAddress = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
+        }
+
+        int s24_8 = MameSetupCastToInt32(iterS * (1.0 / (1 << 24)));
+        int t24_8 = MameSetupCastToInt32(iterT * (1.0 / (1 << 24)));
+        if (IsTextureFilteringEnabled(mode))
+        {
+            s24_8 -= 0x80;
+            t24_8 -= 0x80;
+        }
+
+        bool clampS = _experimentTextureMameFixedFetch ? (mode & 0x40u) != 0 : _fixTextureCoordinateClamp;
+        bool clampT = _experimentTextureMameFixedFetch ? (mode & 0x80u) != 0 : _fixTextureCoordinateClamp;
+        int x = Coordinate24_8ToTexelIndex(s24_8, width, targetLod, clampS);
+        int y = Coordinate24_8ToTexelIndex(t24_8, height, targetLod, clampT);
+        if (_fixTextureTOriginFlip)
+            y = Math.Max(0, height - 1) - y;
+
+        ushort result;
+        uint byteAddress;
+        uint word;
+        uint raw;
+        if (IsTextureFilteringEnabled(mode))
+        {
+            int x1 = Coordinate24_8ToTexelIndex(s24_8 + (1 << (targetLod + 8)), width, targetLod, clampS);
+            int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), height, targetLod, clampT);
+            if (_fixTextureTOriginFlip)
+                y1 = Math.Max(0, height - 1) - y1;
+
+            ushort c00 = ReadTextureRgb565At(x, y, width, format, sixteenBit, baseAddress, out byteAddress, out word, out raw);
+            ushort c10 = ReadTextureRgb565At(x1, y, width, format, sixteenBit, baseAddress, out _, out _, out _);
+            ushort c01 = ReadTextureRgb565At(x, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
+            ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
+            float fx = Coordinate24_8Fraction(s24_8, targetLod);
+            float fy = Coordinate24_8Fraction(t24_8, targetLod);
+            result = BilinearRgb565(c00, c10, c01, c11, fx, fy);
+        }
+        else
+        {
+            result = ReadTextureRgb565At(x, y, width, format, sixteenBit, baseAddress, out byteAddress, out word, out raw);
+        }
+        TrackZeroTextureSample(byteAddress, result);
+        TrackTextureSampleDebug(byteAddress, raw, result);
+        TraceTextureSample(s24_8 / 256.0f, t24_8 / 256.0f, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress, word, raw, result);
+        return result;
+    }
+
+    private static int Coordinate24_8ToTexelIndex(int value24_8, int size, int lod, bool clamp)
+    {
+        int texel = value24_8 >> (lod + 8);
+        if (clamp)
+            return Math.Clamp(texel, 0, Math.Max(0, size - 1));
+        if (size <= 1)
+            return 0;
+        texel %= size;
+        if (texel < 0)
+            texel += size;
+        return texel;
+    }
+
+    private static float Coordinate24_8Fraction(int value24_8, int lod)
+    {
+        int shifted = value24_8 >> Math.Clamp(lod, 0, 8);
+        return (shifted & 0xff) * (1.0f / 255.0f);
+    }
 
     private ushort SampleTextureRgb565(float s, float t)
     {
