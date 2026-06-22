@@ -718,6 +718,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES");
     private readonly int _runtimeBgLoadModelIndexedSourceStride =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE", 0x2000);
+    private readonly bool _enableRuntimeBgLoadModelIndexedSourcePayloadFromBodyExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_FROM_BODY"));
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -873,6 +875,7 @@ internal sealed class MipsR5000Core
     private int _s8DeadTraceCount;
     private int _textureUploadProvenanceTraceCount;
     private int _textureUploadPayloadAsciiTraceCount;
+    private int _textureUploadPayloadRunTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
     private int _runtimeStatusBitfieldReadTraceCount;
@@ -3904,6 +3907,8 @@ internal sealed class MipsR5000Core
         uint mask = 0x01ffffffU;
         ulong skippedInstructions = 0;
 
+        TraceTextureUploadPayloadRun(pc, source, sourceBase, currentPacketAddress, payloadWords, index, limit, sp, state, fifo, room);
+
         _memory.BeginVoodooCommandFifoBulkWrite();
         try
         {
@@ -4007,6 +4012,36 @@ internal sealed class MipsR5000Core
             $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} words={payloadWords} " +
             $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
             $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
+    }
+
+    private void TraceTextureUploadPayloadRun(
+        ulong pc,
+        ulong source,
+        uint sourceBase,
+        uint currentPacketAddress,
+        uint payloadWords,
+        uint index,
+        uint limit,
+        ulong sp,
+        ulong state,
+        uint fifo,
+        uint room)
+    {
+        if (!_traceTextureUploadPayload || _textureUploadPayloadRunTraceCount++ >= 96)
+            return;
+
+        uint stackSourceBase = IsMainRamRange(sp + 0x1cUL, 4) ? _memory.Read32(sp + 0x1cUL) : 0;
+        uint stackLimit = IsMainRamRange(sp + 0x74UL, 4) ? _memory.Read32(sp + 0x74UL) : 0;
+        uint stateFifo = IsMainRamRange(state + 0x374UL, 4) ? _memory.Read32(state + 0x374UL) : 0;
+        uint stateRoom = IsMainRamRange(state + 0x37cUL, 4) ? _memory.Read32(state + 0x37cUL) : 0;
+
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-RUN] pc=0x{pc:x16} ra=0x{_gpr[31]:x16} " +
+            $"source=0x{source:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+            $"sourceBase=0x{sourceBase:x8}/sp1c=0x{stackSourceBase:x8} packet=0x{currentPacketAddress:x8} " +
+            $"index={index}/{limit}/sp74={stackLimit} words={payloadWords} " +
+            $"s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s4=0x{_gpr[20]:x16} s6=0x{_gpr[22]:x16} " +
+            $"fifo=0x{fifo:x8}/state=0x{stateFifo:x8} room=0x{room:x8}/state=0x{stateRoom:x8}");
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)
@@ -13037,14 +13072,33 @@ internal sealed class MipsR5000Core
         if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out code, out textureByteOffset, out uint textureByteLength))
             return false;
 
-        if (textureByteLength < requestedBytes)
+        ulong readByteOffset = textureByteOffset;
+        uint availableBytes = textureByteLength;
+        if (_enableRuntimeBgLoadModelIndexedSourcePayloadFromBodyExperiment && requestedBytes > 0x120U)
+        {
+            uint headerBytes = Math.Min(0x80U, textureByteLength);
+            if (!_memory.TryReadDiskByteOffsetToMemory(textureByteOffset, destination, headerBytes, out _, out _))
+                return false;
+
+            uint bodyOffset = IsMainRamRange(destination + 0x5cUL, 4)
+                ? _memory.Read32(destination + 0x5cUL)
+                : 0;
+            if (bodyOffset == 0 || bodyOffset >= textureByteLength)
+                return false;
+
+            readByteOffset = textureByteOffset + bodyOffset;
+            availableBytes = textureByteLength - bodyOffset;
+        }
+
+        if (availableBytes < requestedBytes)
         {
             for (uint offset = 0; offset < requestedBytes; offset++)
                 _memory.Write8(destination + offset, 0);
         }
 
-        uint copyBytes = Math.Min(requestedBytes, textureByteLength);
-        return _memory.TryReadDiskByteOffsetToMemory(textureByteOffset, destination, copyBytes, out firstWord, out _);
+        uint copyBytes = Math.Min(requestedBytes, availableBytes);
+        textureByteOffset = readByteOffset;
+        return _memory.TryReadDiskByteOffsetToMemory(readByteOffset, destination, copyBytes, out firstWord, out _);
     }
 
     private bool IsKnownRuntimeBgLoadModelSourceWindowEmpty(ulong source)

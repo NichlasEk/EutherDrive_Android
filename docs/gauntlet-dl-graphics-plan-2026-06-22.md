@@ -276,3 +276,60 @@ Next concrete trace:
    BGLoadModel asset-table updates and QIO stream-limit repairs.
 3. Only after the real cursor source is known, try a narrowly gated cursor
    repair. Do not reintroduce metadata suppress/drop as a fix.
+
+## 2026-06-22 Cursor And Body-View Probe
+
+The payload trace now emits a run header before the fast path consumes a
+type-5 packet run. The DWF upload is not an isolated single packet; it appears
+inside a longer run entered from the same caller:
+
+```text
+[GAUNTDL:TEXUPLOAD-RUN] pc=0xffffffff800fe5d4 ra=0xffffffff800fe338
+source=0xffffffff802ed420
+bgsrc=1:gei+0x9d08(body=0xa0d0/-0x3c8 len=0xa13c hdr60=0x00000020 hdr64=0x00000016)
+sourceBase=0x00060000/sp1c=0x00060000 packet=0x00060000
+index=0/31/sp74=31 words=8
+s1=0x0000000000060000 s2=0x0000000000000000
+s4=0x0000000000000008 s6=0xffffffff802ed420
+```
+
+The same run later reaches the known bad metadata packets:
+
+```text
+packet=7 index=7/31 packetSource=0x00060e00
+source=0xffffffff802ed500 text="DWF_GEIBEARD2"
+```
+
+This shifts the investigation from a single text packet to the caller/cursor
+that selects `source=0xffffffff802ed420` for a `sourceBase=0x60000`,
+`words=8`, `limit=31` upload run.
+
+Rejected experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_FROM_BODY=1
+```
+
+This hydrates indexed source windows from the payload header body offset rather
+than from the start of the file. It removes the early DWF payload trace, but it
+is not a fix:
+
+```text
+f260 frameHash=0x378e1d3a direct/setup=235/101
+framebuffer=307200/307199
+textureMap.touched=492288
+```
+
+The run also starts producing broad `sourceBase=0x00000000` and
+`sourceBase=0x00200000` type-5 uploads with `words=64`, which is a clear
+state/cursor regression compared with the baseline f260:
+
+```text
+f260 frameHash=0xe806de53 direct/setup=710/337
+framebuffer=157608/157586
+```
+
+Keep `INDEXED_SOURCE_PAYLOAD_FROM_BODY` as an opt-in diagnostic only. The next
+useful target is narrower: trace or repair the preparation path around
+`ra=0xffffffff800fe338` / `pc=0xffffffff800fe5d4` so the source cursor for the
+`0x60000` packet run is understood before changing payload layout again.
