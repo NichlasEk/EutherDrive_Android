@@ -967,3 +967,43 @@ Conclusion: zero `sourceBase` is probably intended Glide texture-base state,
 not the root cause by itself. The next useful target is lower in the Voodoo
 path: verify whether the command FIFO consumer interprets these repeated
 zero-base uploads with the right texture address, format, and memory layout.
+
+## 2026-06-22 Focused Voodoo Type5 Zero-Target Trace
+
+Extended the Voodoo Type5 payload trace so it keeps logging focused texture
+writes after the broad trace cap when the packet is:
+
+```text
+space=3 targetWord=0 count=64
+```
+
+The f220 repro now captures the late zero-base sequence that previously landed
+after the general Type5 trace limit. Normal earlier packets still look like
+small texture header/data uploads:
+
+```text
+[GAUNTDL:VOODOO-TYPE5-FOCUS] pc=0xffffffff800fe614 targetWord=0 count=64 nz=40 first=0x02000000/dec=0x00000002
+```
+
+The suspected repeated pnk/geb upload is different. It reaches the Voodoo Type5
+consumer as a texture-space write to word zero, but the first payload word is the
+runtime pointer-like word already seen in main RAM:
+
+```text
+[GAUNTDL:TEXUPLOAD-RUN] pc=0xffffffff800fe5d4 source=0xffffffff80312998 sourceBase=0x00000000 packet=0x00000000 index=0/255 words=64
+[GAUNTDL:VOODOO-TYPE5-FOCUS] pc=0xffffffff800fe5d4 space=3 targetWord=0x00000000 count=64 nz=49 first=0x8012e528/dec=0x28e51280 second=0x07f3fc00/dec=0x00fcf307 last=0x00982fc5/dec=0xc52f9800 depth=16896
+```
+
+Verification stayed stable:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+```
+
+Conclusion: the command FIFO consumer is not mis-routing these packets; it is
+faithfully writing the repeated zero-target texture packets into TMU texture
+memory. The bad-looking first word is already in the source payload before
+Voodoo consumes it. The next target should move upward again: identify why the
+upload source window at `0xffffffff80312998` contains a runtime pointer and
+mixed control-looking words when the BG source overlap says it is near the known
+`geb` indexed texture body.

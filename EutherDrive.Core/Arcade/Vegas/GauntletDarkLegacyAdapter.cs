@@ -26392,6 +26392,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _type3PacketTraceCount;
     private int _type3NonFiniteTextureTraceCount;
     private int _type5PayloadTraceCount;
+    private int _type5PayloadFocusedZeroTargetTraceCount;
     private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
     private int _commandFifoModelTraceCount;
@@ -29764,8 +29765,20 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceType5Payload(uint command, uint targetWord, uint space, int count)
     {
-        if (!_traceType5Payloads || _type5PayloadTraceCount++ >= 96)
+        if (!_traceType5Payloads)
             return;
+
+        bool focusedZeroTarget = space == 3 && targetWord == 0 && count == 64;
+        bool focusedAfterCap = _type5PayloadTraceCount >= 96;
+        if (focusedAfterCap)
+        {
+            if (!focusedZeroTarget || _type5PayloadFocusedZeroTargetTraceCount++ >= 64)
+                return;
+        }
+        else
+        {
+            _type5PayloadTraceCount++;
+        }
 
         int nonZero = 0;
         uint first = count > 0 && _fifoBuffer.Count > 2 ? _fifoBuffer[2] : 0;
@@ -29779,11 +29792,17 @@ internal class VoodooBringupBackend : IVoodooBackend
             last = value;
         }
 
+        uint decodedFirst = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(first) : first;
+        uint decodedSecond = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(second) : second;
+        uint decodedLast = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(last) : last;
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string tag = focusedAfterCap ? "VOODOO-TYPE5-FOCUS" : "VOODOO-TYPE5";
         Console.WriteLine(
-            $"[GAUNTDL:VOODOO-TYPE5] cmd=0x{command:x8} space={space} targetWord=0x{targetWord:x8} " +
-            $"count={count} nz={nonZero} first=0x{first:x8} second=0x{second:x8} last=0x{last:x8}{pcStatus}");
+            $"[GAUNTDL:{tag}] cmd=0x{command:x8} space={space} targetWord=0x{targetWord:x8} " +
+            $"count={count} nz={nonZero} first=0x{first:x8}/dec=0x{decodedFirst:x8} " +
+            $"second=0x{second:x8}/dec=0x{decodedSecond:x8} last=0x{last:x8}/dec=0x{decodedLast:x8} " +
+            $"rd=0x{_cmdFifoReadIndex * 4:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{pcStatus}");
     }
 
     private void BeginSetupTriangle()
