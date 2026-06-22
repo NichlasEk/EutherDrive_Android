@@ -833,3 +833,33 @@ upload span intentionally cross the promoted `0x8000` indexed-source windows.
 The next fix candidate should target the source-window population/overlap
 semantics around `pnk`/`geb`/`nin`/`stg`, not the Voodoo FIFO path, zero-base
 packet address, or header count clamp.
+
+## 2026-06-22 Zero-Base Span Disk-Word Control
+
+Extended the span trace to include the first RAM word at each segment and the
+first disk word for every overlapping candidate, without writing disk data into
+RAM.
+
+Focused f220 result:
+
+```text
+segments=5:pnk@0x9280=bc754d4b|6:geb@0x1280=07f00c05;mem=8012e528+0x0..+0xc00,
+         6:geb@0x1e80=00000000;mem=00000000+0xc00..+0x6d80,
+         6:geb@0x8000=3dfe8d84|7:nin@0x0=00000000;mem=3dfe8d84+0x6d80..+0x9eb0,
+         7:nin@0x3130=43490000;mem=00000000+0x9eb0..+0xed80,
+         7:nin@0x8000=be276d7c|8:stg@0x0=00000000;mem=00000000+0xed80..+0x10000
+```
+
+Verification stayed stable:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+```
+
+Conclusion: source-window overlap is not behaving like a simple final disk
+payload copy. The start of the repeated upload contains neither the `pnk` nor
+`geb` disk word, the `geb|nin` overlap preserves the `geb` word, and later
+`nin`/`stg` regions are zero where candidate disk words can be nonzero. The next
+candidate should trace or repair who writes those source bytes after hydration,
+especially around `0xffffffff80312998`, before trying another stride or upload
+limit experiment.

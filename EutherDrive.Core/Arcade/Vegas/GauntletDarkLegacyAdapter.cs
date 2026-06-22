@@ -4296,7 +4296,7 @@ internal sealed class MipsR5000Core
         StringBuilder matches = new();
         for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
-            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out uint textureByteLength))
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out ulong byteOffset, out uint textureByteLength))
                 continue;
 
             ulong candidateBase = destinationBase + index * sourceStride;
@@ -4306,11 +4306,18 @@ internal sealed class MipsR5000Core
                 if (matches.Length > 0)
                     matches.Append('|');
 
+                ulong candidateOffset = address - candidateBase;
                 matches.Append(index);
                 matches.Append(':');
                 matches.Append(code);
                 matches.Append("@0x");
-                matches.Append((address - candidateBase).ToString("x"));
+                matches.Append(candidateOffset.ToString("x"));
+                if (_memory.TryReadDiskByteOffsetWord(byteOffset + candidateOffset, out uint diskWord))
+                {
+                    matches.Append('=');
+                    matches.Append(diskWord.ToString("x8"));
+                }
+
                 nextBoundary = Math.Min(nextBoundary, candidateEnd);
             }
 
@@ -4318,7 +4325,13 @@ internal sealed class MipsR5000Core
                 nextBoundary = Math.Min(nextBoundary, candidateBase);
         }
 
-        return matches.Length == 0 ? "none" : matches.ToString();
+        if (matches.Length == 0)
+            return "none";
+
+        uint memoryWord = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
+        matches.Append(";mem=");
+        matches.Append(memoryWord.ToString("x8"));
+        return matches.ToString();
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)
@@ -20845,6 +20858,42 @@ internal sealed class VegasMemoryMap
             remaining -= (uint)count;
         }
 
+        return true;
+    }
+
+    public bool TryReadDiskByteOffsetWord(ulong byteOffset, out uint word)
+    {
+        word = 0;
+        if (_disk is null)
+            return false;
+
+        uint sectorSize = (uint)_disk.Geometry.BytesPerSector;
+        ulong startLba = byteOffset / sectorSize;
+        uint sectorOffset = (uint)(byteOffset % sectorSize);
+        if (startLba >= _disk.Geometry.TotalSectors ||
+            !_disk.TryReadSector(startLba, out byte[] sector))
+        {
+            return false;
+        }
+
+        if (sectorOffset <= sectorSize - 4U)
+        {
+            word = BinaryPrimitives.ReadUInt32LittleEndian(sector.AsSpan((int)sectorOffset, 4));
+            return true;
+        }
+
+        Span<byte> bytes = stackalloc byte[4];
+        int firstCount = (int)(sectorSize - sectorOffset);
+        sector.AsSpan((int)sectorOffset, firstCount).CopyTo(bytes);
+        ulong nextLba = startLba + 1UL;
+        if (nextLba >= _disk.Geometry.TotalSectors ||
+            !_disk.TryReadSector(nextLba, out byte[] nextSector))
+        {
+            return false;
+        }
+
+        nextSector.AsSpan(0, 4 - firstCount).CopyTo(bytes[firstCount..]);
+        word = BinaryPrimitives.ReadUInt32LittleEndian(bytes);
         return true;
     }
 
