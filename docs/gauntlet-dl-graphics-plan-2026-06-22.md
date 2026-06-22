@@ -333,3 +333,29 @@ Keep `INDEXED_SOURCE_PAYLOAD_FROM_BODY` as an opt-in diagnostic only. The next
 useful target is narrower: trace or repair the preparation path around
 `ra=0xffffffff800fe338` / `pc=0xffffffff800fe5d4` so the source cursor for the
 `0x60000` packet run is understood before changing payload layout again.
+
+Additional control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISABLE_OUTER_PAYLOAD_FASTPATH=1
+```
+
+Result at f220:
+
+```text
+frameHash=0x2b9ec036 direct/setup=305/135
+framebuffer=258395/258144
+textureMap.touched=33984
+```
+
+Baseline f220 remains:
+
+```text
+frameHash=0xe806de53 direct/setup=424/194
+framebuffer=157608/157586
+```
+
+So the outer-payload fast path changes output, but disabling it is not a
+visual or behavioral fix. Keep this as a control only. The active line of work
+is still to understand why the caller at `ra=0xffffffff800fe338` supplies the
+`0x60000` run source cursor that crosses the `gei` DWF metadata region.
