@@ -359,3 +359,59 @@ So the outer-payload fast path changes output, but disabling it is not a
 visual or behavioral fix. Keep this as a control only. The active line of work
 is still to understand why the caller at `ra=0xffffffff800fe338` supplies the
 `0x60000` run source cursor that crosses the `gei` DWF metadata region.
+
+## 2026-06-22 Caller Prep Trace And Metadata-Skip Control
+
+Added `TEXUPLOAD-CALLER`, gated by
+`EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1`, to record the caller
+prep window around `0x800fe2f0..0x800fe5d4`. The f220 run stayed on the
+baseline image:
+
+```text
+frameHash=0xe806de53 direct/setup=424/194
+framebuffer=157608/157586
+```
+
+The trace confirms the upload loop is prepared by normal caller state, not by
+an isolated bad fast-path packet. In the first pass, `s6` starts at the
+BGLoadModel destination base and `sp+0x1c` is later written by the caller:
+
+```text
+pc=0xffffffff800fe2f0 s6=0xffffffff802e1718 sp1c=8024f9d0 sp74=0000000f
+pc=0xffffffff800fe384 op=0xafa8001c ... sp1c=00000000
+pc=0xffffffff800fe388 ... sp1c=00020000
+```
+
+The run consumed by the fast path then uses the stack-fed packet base and the
+current source cursor:
+
+```text
+[GAUNTDL:TEXUPLOAD-RUN] pc=0xffffffff800fe5d4 ra=0xffffffff800fe338
+source=0xffffffff802ed420 bgsrc=1:gei+0x9d08(body=0xa0d0/-0x3c8 ...)
+sourceBase=0x00060000/sp1c=0x00060000 packet=0x00060000
+index=0/31/sp74=31 words=8
+```
+
+Added an opt-in negative control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_METADATA_TEXTURE_PAYLOADS=1
+```
+
+This skips obvious ASCII metadata payloads like `DWF_GEIBEARD2`,
+`DWF_GEIUPPERTOR`, and `DWF_NAME` while still advancing the source cursor and
+loop index. It is not a fix:
+
+```text
+skip-metadata f220 frameHash=0xe806de53 direct/setup=422/193
+framebuffer=157608/157586
+textureMap.writes=3256648 touched=34112
+```
+
+Conclusion: the visible failure is not solved by suppressing the ASCII DWF
+packets after they reach type-5 upload. The next useful target is upstream:
+trace the BGLoadModel indexed source construction and asset-table selection
+that make adjacent source windows (`gei`, `snm`, `stk`, etc.) overlap in the
+`DescribeKnownRuntimeBgLoadModelUploadSource` output. The suspicious symptom is
+that one source address often matches several asset windows, so the stride or
+copy placement may still be too compact for the real asset layout.

@@ -720,6 +720,8 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE", 0x2000);
     private readonly bool _enableRuntimeBgLoadModelIndexedSourcePayloadFromBodyExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_FROM_BODY"));
+    private readonly bool _experimentSkipMetadataTexturePayloads =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_METADATA_TEXTURE_PAYLOADS"));
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -876,6 +878,8 @@ internal sealed class MipsR5000Core
     private int _textureUploadProvenanceTraceCount;
     private int _textureUploadPayloadAsciiTraceCount;
     private int _textureUploadPayloadRunTraceCount;
+    private int _textureUploadPayloadCallerTraceCount;
+    private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
     private int _runtimeStatusBitfieldReadTraceCount;
@@ -1462,6 +1466,7 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
 
+        TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
         TraceInstruction(pc, op);
 
         ulong s8BeforeExecute = _gpr[30];
@@ -3910,11 +3915,28 @@ internal sealed class MipsR5000Core
         TraceTextureUploadPayloadRun(pc, source, sourceBase, currentPacketAddress, payloadWords, index, limit, sp, state, fifo, room);
 
         _memory.BeginVoodooCommandFifoBulkWrite();
+        uint writtenPackets = 0;
         try
         {
             for (uint packet = 0; packet < packets; packet++, index++)
             {
                 uint packetSourceAddress = unchecked(currentPacketAddress + packet * 0x200U);
+                if (_experimentSkipMetadataTexturePayloads && IsLikelyTextureMetadataPayload(source, payloadWords))
+                {
+                    if (_textureUploadMetadataSkipTraceCount++ < 64)
+                    {
+                        Console.WriteLine(
+                            $"[GAUNTDL:EXPERIMENT] skip-metadata-texture-payload packet={packet} index={index}/{limit} " +
+                            $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} " +
+                            $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+                            $"words={payloadWords} text=\"{ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32))}\"");
+                    }
+
+                    source = SignExtend32((uint)(source + payloadWords * 4UL));
+                    skippedInstructions += 30UL + (ulong)(payloadWords / 2U) * 9UL;
+                    continue;
+                }
+
                 TraceTextureUploadPayload(packet, packetSourceAddress, source, sourceBase, payloadWords, index, limit);
                 TraceGlideFifoOuterPayloadOddWords(packet, packetSourceAddress, source, payloadWords, header);
                 if (_fixVoodooMameCommandFifoModel)
@@ -3943,6 +3965,7 @@ internal sealed class MipsR5000Core
                 }
 
                 skippedInstructions += 30UL + (ulong)(payloadWords / 2U) * 9UL;
+                writtenPackets++;
             }
         }
         finally
@@ -3950,7 +3973,7 @@ internal sealed class MipsR5000Core
             _memory.EndVoodooCommandFifoBulkWrite();
         }
 
-        uint updatedRoom = room - (uint)totalPacketBytes;
+        uint updatedRoom = room - writtenPackets * packetBytes;
         _memory.Write32(state + 0x374UL, fifo);
         _memory.Write32(state + 0x37cUL, updatedRoom);
 
@@ -3990,13 +4013,7 @@ internal sealed class MipsR5000Core
         uint first2 = IsMainRamRange(source + 0x08UL, 4) ? _memory.Read32(source + 0x08UL) : 0;
         uint first3 = IsMainRamRange(source + 0x0cUL, 4) ? _memory.Read32(source + 0x0cUL) : 0;
         string text = ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32));
-        bool likelyMetadataPayload =
-            text.Contains("DWF_", StringComparison.Ordinal) ||
-            text.Contains("WEAP_", StringComparison.Ordinal) ||
-            text.Contains("HOLD", StringComparison.Ordinal) ||
-            text.Contains("UPPER", StringComparison.Ordinal) ||
-            text.Contains("TORSO", StringComparison.Ordinal) ||
-            first0 is 0x4457465fU or 0x57454150U;
+        bool likelyMetadataPayload = IsLikelyTextureMetadataPayload(first0, text);
         if (_textureUploadPayloadTraceCount >= _traceTextureUploadPayloadLimit)
         {
             if (!likelyMetadataPayload || _textureUploadPayloadAsciiTraceCount++ >= 64)
@@ -4013,6 +4030,24 @@ internal sealed class MipsR5000Core
             $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
             $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
     }
+
+    private bool IsLikelyTextureMetadataPayload(ulong source, uint payloadWords)
+    {
+        if (!_traceTextureUploadPayload && !_experimentSkipMetadataTexturePayloads)
+            return false;
+
+        uint first = IsMainRamRange(source, 4) ? _memory.Read32(source) : 0;
+        string text = ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32));
+        return IsLikelyTextureMetadataPayload(first, text);
+    }
+
+    private static bool IsLikelyTextureMetadataPayload(uint firstWord, string text)
+        => text.Contains("DWF_", StringComparison.Ordinal) ||
+           text.Contains("WEAP_", StringComparison.Ordinal) ||
+           text.Contains("HOLD", StringComparison.Ordinal) ||
+           text.Contains("UPPER", StringComparison.Ordinal) ||
+           text.Contains("TORSO", StringComparison.Ordinal) ||
+           firstWord is 0x4457465fU or 0x57454150U;
 
     private void TraceTextureUploadPayloadRun(
         ulong pc,
@@ -4042,6 +4077,41 @@ internal sealed class MipsR5000Core
             $"index={index}/{limit}/sp74={stackLimit} words={payloadWords} " +
             $"s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s4=0x{_gpr[20]:x16} s6=0x{_gpr[22]:x16} " +
             $"fifo=0x{fifo:x8}/state=0x{stateFifo:x8} room=0x{room:x8}/state=0x{stateRoom:x8}");
+    }
+
+    private void TraceTextureUploadPayloadCallerPrep(
+        ulong pc,
+        uint op,
+        bool branchFromPreviousInstruction,
+        ulong branchTarget)
+    {
+        const ulong callerTraceStart = 0x000fe2f0UL;
+        const ulong callerTraceEnd = 0x000fe5d4UL;
+
+        if (!_traceTextureUploadPayload || _textureUploadPayloadCallerTraceCount >= 256)
+            return;
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        if (physicalPc < callerTraceStart || physicalPc > callerTraceEnd)
+            return;
+
+        _textureUploadPayloadCallerTraceCount++;
+
+        ulong sp = _gpr[29];
+        ulong s6 = _gpr[22];
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-CALLER] pc=0x{pc:x16} op=0x{op:x8} " +
+            $"branchPrev={(branchFromPreviousInstruction ? 1 : 0)} branchTarget=0x{branchTarget:x16} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{sp:x16} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{s6:x16} s7=0x{_gpr[23]:x16} " +
+            $"{DescribeKnownRuntimeBgLoadModelUploadSource(s6)} " +
+            $"sp18={ReadTraceWord(sp + 0x18UL):x8} sp1c={ReadTraceWord(sp + 0x1cUL):x8} " +
+            $"sp20={ReadTraceWord(sp + 0x20UL):x8} sp24={ReadTraceWord(sp + 0x24UL):x8} " +
+            $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
+            $"sp78={ReadTraceWord(sp + 0x78UL):x8}");
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)
