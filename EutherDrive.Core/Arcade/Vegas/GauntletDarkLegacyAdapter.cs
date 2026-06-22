@@ -25594,6 +25594,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE"));
     private readonly bool _experimentTextureMameSetupGradients =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS"));
+    private readonly bool _experimentTextureMameFetchAddressing =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING"));
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
@@ -29813,22 +29815,37 @@ internal class VoodooBringupBackend : IVoodooBackend
             return 0;
 
         int targetLod = Math.Clamp(_experimentTextureForceLod, 0, 8);
-        int width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
-        int height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
         uint mode = ReadTextureRegister(RegTextureMode);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
+        int width;
+        int height;
+        uint baseAddress;
+        if (_experimentTextureMameFetchAddressing)
+        {
+            TextureFetchLayout layout = GetMameTextureFetchLayout(targetLod, mode);
+            width = layout.Width;
+            height = layout.Height;
+            baseAddress = layout.BaseAddress;
+        }
+        else
+        {
+            width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
+            height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
+            baseAddress = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
+        }
         bool filtered = IsTextureFilteringEnabled(mode);
         if (_experimentTextureFilterHalfTexel && filtered)
         {
             s -= 0.5f;
             t -= 0.5f;
         }
-        int x = TextureCoordinateToIndex(s, width);
+        bool clampS = !_experimentTextureMameFetchAddressing || (mode & 0x40u) != 0;
+        bool clampT = !_experimentTextureMameFetchAddressing || (mode & 0x80u) != 0;
+        int x = TextureCoordinateToIndex(s, width, clampS);
         int y = _fixTextureTOriginFlip
-            ? TextureCoordinateToIndex((height - 1) - t, height)
-            : TextureCoordinateToIndex(t, height);
-        uint baseAddress = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
+            ? TextureCoordinateToIndex((height - 1) - t, height, clampT)
+            : TextureCoordinateToIndex(t, height, clampT);
         if (_fixTextureBilinearFilter && filtered)
             return SampleTextureRgb565Bilinear(s, t, width, height, mode, format, sixteenBit, baseAddress);
 
@@ -29898,14 +29915,16 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         float u = s - 0.5f;
         float v = t - 0.5f;
-        int x0 = TextureCoordinateToIndex(u, width);
+        bool clampS = !_experimentTextureMameFetchAddressing || (mode & 0x40u) != 0;
+        bool clampT = !_experimentTextureMameFetchAddressing || (mode & 0x80u) != 0;
+        int x0 = TextureCoordinateToIndex(u, width, clampS);
         int y0 = _fixTextureTOriginFlip
-            ? TextureCoordinateToIndex((height - 1) - v, height)
-            : TextureCoordinateToIndex(v, height);
-        int x1 = TextureCoordinateToIndex(u + 1.0f, width);
+            ? TextureCoordinateToIndex((height - 1) - v, height, clampT)
+            : TextureCoordinateToIndex(v, height, clampT);
+        int x1 = TextureCoordinateToIndex(u + 1.0f, width, clampS);
         int y1 = _fixTextureTOriginFlip
-            ? TextureCoordinateToIndex((height - 1) - (v + 1.0f), height)
-            : TextureCoordinateToIndex(v + 1.0f, height);
+            ? TextureCoordinateToIndex((height - 1) - (v + 1.0f), height, clampT)
+            : TextureCoordinateToIndex(v + 1.0f, height, clampT);
         float fx = Math.Clamp(u - MathF.Floor(u), 0.0f, 1.0f);
         float fy = Math.Clamp(v - MathF.Floor(v), 0.0f, 1.0f);
 
@@ -30019,7 +30038,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private int TextureCoordinateToIndex(float value, int size)
-        => _fixTextureCoordinateClamp
+        => TextureCoordinateToIndex(value, size, _fixTextureCoordinateClamp);
+
+    private static int TextureCoordinateToIndex(float value, int size, bool clamp)
+        => clamp
             ? Math.Clamp((int)MathF.Floor(value), 0, Math.Max(0, size - 1))
             : WrapTextureCoordinate(value, size);
 
@@ -30078,6 +30100,50 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return baseAddress;
+    }
+
+    private readonly record struct TextureFetchLayout(int Width, int Height, uint BaseAddress);
+
+    private TextureFetchLayout GetMameTextureFetchLayout(int targetLod, uint textureMode)
+    {
+        uint textureLod = ReadTextureRegister(RegTextureLod);
+        uint widthMask = 0xffu;
+        uint heightMask = 0xffu;
+        int aspect = (int)((textureLod >> 21) & 0x03u);
+        if (((textureLod >> 20) & 1u) != 0)
+            heightMask >>= aspect;
+        else
+            widthMask >>= aspect;
+
+        uint lodMask = 0x1ffu;
+        if (((textureLod >> 19) & 1u) != 0)
+            lodMask = ((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u;
+
+        uint baseAddress = GetTextureBaseAddress(ReadTextureRegister(RegTextureBaseAddr));
+        if (_textureSampleBaseBias != 0)
+            baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
+
+        int bppShift = (int)(((textureMode >> 8) & 0x0fu) >> 3);
+        int lodLimit = Math.Clamp(targetLod, 0, 8);
+        for (int lod = 1; lod <= lodLimit; lod++)
+        {
+            int previousLod = lod - 1;
+            if (((lodMask >> previousLod) & 1u) != 0)
+            {
+                uint size = ((widthMask >> previousLod) + 1u) * ((heightMask >> previousLod) + 1u);
+                if (previousLod >= 4 && size < 4u)
+                    size = 4u;
+                baseAddress = (baseAddress + (size << bppShift)) & (TextureBytes - 1u);
+            }
+        }
+
+        int ownedLod = lodLimit;
+        if (((lodMask >> ownedLod) & 1u) == 0 && ownedLod < 8)
+            ownedLod++;
+
+        int width = Math.Max(1, (int)((widthMask >> ownedLod) + 1u));
+        int height = Math.Max(1, (int)((heightMask >> ownedLod) + 1u));
+        return new TextureFetchLayout(width, height, baseAddress);
     }
 
     private uint GetTextureBaseAddress()
