@@ -678,3 +678,36 @@ Conclusion: `0xffffffff80312998` is not the hydrated `geb` body start; it is
 table repair and header hydration are therefore doing their current job. The
 next target is the later caller source/packet-base setup that converts the
 selected `geb` source window into `s6=80312998`, `sp1c=0`, and `sp74=0xff`.
+
+## 2026-06-22 Type-5 Zero-Base Target Control
+
+Ran the f220 repro with:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1
+```
+
+The zero packet base is decoded as a normal texture-space type-5 stream:
+
+```text
+cmd=0xc0000205 space=3 targetWord=0x00000000 count=64
+cmd=0xc0000205 space=3 targetWord=0x00000080 count=64
+cmd=0xc0000205 space=3 targetWord=0x00000100 count=64
+...
+source=0xffffffff80312998 sourceBase=0x00000000/sp1c=0x00000000
+index=0/255 words=64
+```
+
+Verification stayed unchanged:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+framebuffer=307200/307200
+```
+
+Conclusion: `sp1c=0` is likely the intended texture target base for this
+upload batch, not by itself a bad pointer. The remaining suspicious part is the
+source cursor choice (`geb+0x1280`) and overlap with the bad `pnk` window; next
+work should compare the selected source cursor against the hydrated `geb`
+record/header fields rather than forcing a non-zero packet base.
