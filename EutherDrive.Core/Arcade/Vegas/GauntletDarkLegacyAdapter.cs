@@ -903,6 +903,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadProvenanceTraceCount;
     private int _textureUploadPayloadAsciiTraceCount;
     private int _textureUploadPayloadRunTraceCount;
+    private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
     private int _textureUploadPayloadFocusedCallerTraceCount;
     private int _textureUploadPayloadLimitClampTraceCount;
@@ -4163,6 +4164,8 @@ internal sealed class MipsR5000Core
             $"index={index}/{limit}/sp74={stackLimit} words={payloadWords} " +
             $"s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s4=0x{_gpr[20]:x16} s6=0x{_gpr[22]:x16} " +
             $"fifo=0x{fifo:x8}/state=0x{stateFifo:x8} room=0x{room:x8}/state=0x{stateRoom:x8}");
+
+        TraceTextureUploadPayloadSpanComposition(source, sourceBase, payloadWords, index, limit);
     }
 
     private void TraceTextureUploadPayloadCallerPrep(
@@ -4228,6 +4231,86 @@ internal sealed class MipsR5000Core
         }
 
         return false;
+    }
+
+    private void TraceTextureUploadPayloadSpanComposition(
+        ulong source,
+        uint sourceBase,
+        uint payloadWords,
+        uint index,
+        uint limit)
+    {
+        if (!_traceTextureUploadPayload ||
+            payloadWords == 0 ||
+            index > limit ||
+            sourceBase != 0 ||
+            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source))
+        {
+            return;
+        }
+
+        if (_textureUploadPayloadSpanTraceCount++ >= 48)
+            return;
+
+        uint packets = limit - index + 1U;
+        ulong sourceBytes = (ulong)packets * payloadWords * 4UL;
+        ulong cursor = source;
+        ulong end = source + sourceBytes;
+        StringBuilder builder = new();
+        int segmentCount = 0;
+
+        while (cursor < end && segmentCount < 10)
+        {
+            ulong nextBoundary = end;
+            string label = DescribeKnownRuntimeBgLoadModelUploadSpanSegment(cursor, out nextBoundary);
+            if (nextBoundary <= cursor || nextBoundary > end)
+                nextBoundary = end;
+
+            if (segmentCount > 0)
+                builder.Append(',');
+
+            builder.Append(label);
+            builder.Append("+0x");
+            builder.Append((cursor - source).ToString("x"));
+            builder.Append("..+0x");
+            builder.Append((nextBoundary - source).ToString("x"));
+
+            cursor = nextBoundary;
+            segmentCount++;
+        }
+
+        if (cursor < end)
+            builder.Append(",...");
+
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-SPAN] source=0x{source:x16} bytes=0x{sourceBytes:x} " +
+            $"packets={packets} words={payloadWords} index={index}/{limit} segments={builder}");
+    }
+
+    private string DescribeKnownRuntimeBgLoadModelUploadSpanSegment(ulong address, out ulong nextBoundary)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+
+        nextBoundary = ulong.MaxValue;
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out uint textureByteLength))
+                continue;
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            ulong candidateEnd = candidateBase + textureByteLength;
+            if (address >= candidateBase && address < candidateEnd)
+            {
+                nextBoundary = candidateEnd;
+                return $"{index}:{code}@0x{address - candidateBase:x}";
+            }
+
+            if (address < candidateBase)
+                nextBoundary = Math.Min(nextBoundary, candidateBase);
+        }
+
+        return "none";
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)

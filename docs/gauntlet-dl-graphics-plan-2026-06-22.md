@@ -61,24 +61,30 @@ Every promoted graphics change must beat or preserve:
 
 Continue texture-source/upload debugging. The current evidence points at the
 Gauntlet BGLoadModel/indexed-source window that feeds the type-5 Voodoo upload
-loop, not at a broad Voodoo sampler fix.
+loop, not at a broad Voodoo sampler fix, a missing FIFO delivery path, or a
+simple indexed-loop limit correction.
 
 Immediate targets:
 
-1. Trace the type-5 outer payload loop at `0xffffffff800fe5d4` with:
+1. Trace complete upload-source span composition for the repeated
+   `source=0xffffffff80312998` / `geb+0x1280` run. The current suspicious case
+   copies `0x10000` bytes from a source window whose nominal `geb` payload is
+   only `0xb130` bytes, so the next question is whether the run intentionally
+   crosses into later indexed windows or reads an unmodelled gap.
+2. Compare span segments against the promoted `0x8000` indexed-source stride
+   and the known negative controls:
+   larger strides, zero-base skip, metadata suppression, and header-limit clamp.
+3. If the span proves the runtime expects cross-window data, test a narrow source
+   population fix; keep it opt-in until it preserves f420 coverage and improves
+   the visual dump.
+4. Every candidate still needs a visual dump, not only frame hashes.
+
+Useful trace command:
 
    ```sh
    EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1
    EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=8
-   EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=c,d,e
    ```
-
-2. Compare `packetSource`, `source`, and the BGLoadModel source header fields
-   (`0x5c` body offset, `0x60` count/stride-ish fields) for `gei`/index 1.
-3. Find why payload bytes around `source=0xffffffff802ed500` are treated as
-   texture-upload payload even though they decode as model metadata names.
-4. Keep suppress/drop experiments opt-in only unless they preserve f420 setup
-   activity and improve the visual dump.
 
 The old removed Voodoo experiment set remains useful as a regression matrix:
 
@@ -790,3 +796,38 @@ Conclusion: the bucket trace no longer points at a missing broad texture write
 path for f220. The texture upload is active and productive; next work should
 target correctness of the source bytes/window composition rather than command
 FIFO delivery or packet-base mechanics.
+
+## 2026-06-22 Zero-Base Upload Span Composition
+
+Added `[GAUNTDL:TEXUPLOAD-SPAN]`, gated by the existing
+`EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1` trace, to summarize
+zero-base indexed upload source spans across known BGLoadModel source windows.
+
+The focused f220 trace shows the repeated suspicious upload is a real
+cross-window copy:
+
+```text
+source=0xffffffff80312998 bytes=0x10000 packets=256 words=64 index=0/255
+segments=5:pnk@0x9280+0x0..+0xc00,
+         6:geb@0x1e80+0xc00..+0x9eb0,
+         7:nin@0x3130+0x9eb0..+0x10000
+```
+
+The corresponding run still reports the overlapping source descriptions:
+
+```text
+bgsrc=5:pnk+0x9280(... hdr=bad),6:geb+0x1280(... hdr=ok)
+sourceBase=0x00000000/sp1c=0x00000000 index=0/255 words=64
+```
+
+Verification remains unchanged on baseline:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+```
+
+Conclusion: the `0xff` limit is not simply wrong; the current default makes this
+upload span intentionally cross the promoted `0x8000` indexed-source windows.
+The next fix candidate should target the source-window population/overlap
+semantics around `pnk`/`geb`/`nin`, not the Voodoo FIFO path, zero-base packet
+address, or header count clamp.
