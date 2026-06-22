@@ -863,3 +863,73 @@ payload copy. The start of the repeated upload contains neither the `pnk` nor
 candidate should trace or repair who writes those source bytes after hydration,
 especially around `0xffffffff80312998`, before trying another stride or upload
 limit experiment.
+
+## 2026-06-22 Zero-Base Source Writer Trace
+
+Used the existing filtered memory trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_MEM=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_WRITES_ONLY=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=0xffffffff80312998:256
+```
+
+The first upload word is overwritten by runtime writes, not by the disk
+hydration path:
+
+```text
+pc=ffffffff8004c850 write32 ffffffff80312998 8012e588
+...
+pc=ffffffff8004c850 write32 ffffffff80312998 8012e528
+pc=ffffffff8004c858 write32 ffffffff803129a0 803129a4
+```
+
+Other nearby writes also treat this range as live runtime structure data:
+
+```text
+pc=ffffffff800a7710 write32 ffffffff803129d0 000157e8
+pc=ffffffff800a773c write32 ffffffff803129c0 00002000
+pc=ffffffff800a7768 write32 ffffffff803129c0 00000afd
+pc=ffffffff800a780c write32 ffffffff803129c4 00000bcf
+```
+
+Verification stayed stable:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+```
+
+Conclusion: the promoted source-window addresses collide with runtime-owned
+state by the time the zero-base texture upload consumes them. A broad stride
+move was already a negative control, so the next narrow experiment should happen
+at upload read time: for known zero-base indexed texture uploads, substitute
+candidate disk words for source bytes without changing the persistent runtime
+RAM layout.
+
+Added an opt-in upload-read control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS=1
+```
+
+At f220 it did substitute candidate disk words from the overlapping known source
+windows:
+
+```text
+zero-base-upload-disk-word addr=0xffffffff80312998 6:geb@0x1280 mem=0x8012e528->disk=0x07f00c05
+zero-base-upload-disk-word addr=0xffffffff803129d4 5:pnk@0x92bc mem=0x00000000->disk=0x0000fffd
+```
+
+But the rendered checkpoint stayed on the same hash and lost some draw setup
+activity:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1685/827 framebuffer=307200/307200
+```
+
+Conclusion: direct disk-word substitution is another negative control. The
+failure is likely not that the FIFO upload should simply read the original asset
+bytes from the overlapping hydrated source windows; the remaining suspicion is
+that the runtime structures feeding the zero-base repeated upload are being
+assembled with the wrong pointers, extents, or sequence before the fast FIFO
+copy sees them.

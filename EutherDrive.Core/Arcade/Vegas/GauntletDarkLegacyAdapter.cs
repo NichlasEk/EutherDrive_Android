@@ -746,6 +746,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
     private readonly bool _experimentClampIndexedTextureUploadLimit =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
+    private readonly bool _experimentZeroBaseUploadDiskWords =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS"));
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -907,6 +909,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadCallerTraceCount;
     private int _textureUploadPayloadFocusedCallerTraceCount;
     private int _textureUploadPayloadLimitClampTraceCount;
+    private int _textureUploadPayloadDiskWordTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
@@ -4041,11 +4044,27 @@ internal sealed class MipsR5000Core
 
                 for (uint word = 0; word < payloadWords; word++)
                 {
+                    uint payloadWord = _memory.Read32(source);
+                    if (_experimentZeroBaseUploadDiskWords &&
+                        sourceBase == 0 &&
+                        TryReadKnownRuntimeBgLoadModelUploadDiskWord(source, out uint diskWord, out string diskSource))
+                    {
+                        if (_textureUploadPayloadDiskWordTraceCount++ < 64 && payloadWord != diskWord)
+                        {
+                            Console.WriteLine(
+                                $"[GAUNTDL:EXPERIMENT] zero-base-upload-disk-word " +
+                                $"addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8} " +
+                                $"packet={packet} index={index}/{limit} word={word}/{payloadWords}");
+                        }
+
+                        payloadWord = diskWord;
+                    }
+
                     if (_fixVoodooMameCommandFifoModel)
-                        WriteGlideFifoWord(ref fifo, _memory.Read32(source), fifoRingBase, fifoRingBytes);
+                        WriteGlideFifoWord(ref fifo, payloadWord, fifoRingBase, fifoRingBytes);
                     else
                     {
-                        _memory.Write32(fifo, _memory.Read32(source));
+                        _memory.Write32(fifo, payloadWord);
                         fifo += 4U;
                     }
                     source = SignExtend32((uint)(source + 4UL));
@@ -4332,6 +4351,56 @@ internal sealed class MipsR5000Core
         matches.Append(";mem=");
         matches.Append(memoryWord.ToString("x8"));
         return matches.ToString();
+    }
+
+    private bool TryReadKnownRuntimeBgLoadModelUploadDiskWord(
+        ulong address,
+        out uint word,
+        out string sourceDescription)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+
+        word = 0;
+        sourceDescription = "";
+        uint fallbackWord = 0;
+        string fallbackDescription = "";
+        bool hasFallback = false;
+
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out ulong byteOffset, out uint textureByteLength))
+                continue;
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            ulong candidateEnd = candidateBase + textureByteLength;
+            if (address < candidateBase || address >= candidateEnd)
+                continue;
+
+            ulong candidateOffset = address - candidateBase;
+            if (!_memory.TryReadDiskByteOffsetWord(byteOffset + candidateOffset, out uint candidateWord))
+                continue;
+
+            string candidateDescription = $"{index}:{code}@0x{candidateOffset:x}";
+            fallbackWord = candidateWord;
+            fallbackDescription = candidateDescription;
+            hasFallback = true;
+            if (candidateWord == 0)
+                continue;
+
+            word = candidateWord;
+            sourceDescription = candidateDescription;
+        }
+
+        if (sourceDescription.Length > 0)
+            return true;
+
+        if (!hasFallback)
+            return false;
+
+        word = fallbackWord;
+        sourceDescription = fallbackDescription;
+        return true;
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)
