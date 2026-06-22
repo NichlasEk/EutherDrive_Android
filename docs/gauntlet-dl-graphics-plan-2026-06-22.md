@@ -1046,3 +1046,39 @@ plausible payload bytes, while word 0 points at unrelated text/metadata. The
 next narrow target is the source-start calculation or descriptor interpretation
 for this upload run: why the fastpath starts at the descriptor/pointer pair
 instead of the indexed data at or after `0xffffffff803129a4`.
+
+## 2026-06-22 Zero-Base Pointer-Start Fix
+
+Promoted the narrow source-start correction for known zero-base BGLoadModel
+texture upload windows. When the upload source is a known runtime BGLoadModel
+candidate, `sourceBase == 0`, and word 2 points exactly at `source+0x0c`, the
+fastpath now starts the payload at that pointed-to data word instead of sending
+the descriptor/pointer trio as texture data.
+
+The focused f220 repro changed from sending a metadata pointer as the first
+Type5 texture payload word:
+
+```text
+old first=0x8012e528/dec=0x28e51280
+```
+
+to sending the plausible indexed payload data:
+
+```text
+[GAUNTDL:TEXUPLOAD-PTRSTART] source=0xffffffff80312998->ffffffff803129a4 first=8012e528/07f3fc00/803129a4/07e3fc01
+[GAUNTDL:VOODOO-TYPE5-FOCUS] first=0x07e3fc01/dec=0x01fce307 second=0x07fffdfc/dec=0xfcfdff07
+```
+
+Verification:
+
+```text
+f220 default path frameHash=0x3a5175a3 direct/setup=1851/906
+f420 default path frameHash=0x44d3a578 direct/setup=12514/6237
+f420 framebuffer=307200/307200 textureMap.touched=327796
+visual dump=/tmp/gauntdl-pointer-start-default-f420.png
+```
+
+This preserves the current f420 full-frame green baseline and fixes the hot
+zero-base upload's descriptor-as-texture-data error. It is still not final game
+graphics; the next target is why the f420 scene remains a flat green frame with
+the diagonal artifact despite the corrected Type5 payload start.

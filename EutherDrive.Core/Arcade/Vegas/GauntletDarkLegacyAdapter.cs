@@ -911,6 +911,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadLimitClampTraceCount;
     private int _textureUploadPayloadDiskWordTraceCount;
     private int _textureUploadPayloadPointerTraceCount;
+    private int _textureUploadPayloadPointerStartTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
@@ -3926,6 +3927,8 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        source = NormalizeZeroBaseTextureUploadSourceStart(source, sourceBase, sourceBytes, payloadWords, index, limit);
+
         uint fifo = pc == packetEntry ? (uint)_gpr[4] : _memory.Read32(state + 0x374UL);
         if ((fifo & 3U) != 0 || fifo is < 0xa8000000U or > 0xa83ffff8U)
         {
@@ -4102,6 +4105,40 @@ internal sealed class MipsR5000Core
         _instructionCounter += Math.Max(1UL, skippedInstructions);
         Pc = exit;
         return true;
+    }
+
+    private ulong NormalizeZeroBaseTextureUploadSourceStart(
+        ulong source,
+        uint sourceBase,
+        ulong sourceBytes,
+        uint payloadWords,
+        uint index,
+        uint limit)
+    {
+        if (sourceBase != 0 ||
+            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) ||
+            !IsMainRamRange(source + 0x08UL, 4))
+        {
+            return source;
+        }
+
+        ulong candidate = SignExtend32(_memory.Read32(source + 0x08UL));
+        if (candidate != source + 0x0cUL ||
+            !IsMainRamRange(candidate, sourceBytes))
+        {
+            return source;
+        }
+
+        if (_traceTextureUploadPayload && _textureUploadPayloadPointerStartTraceCount++ < 64)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:TEXUPLOAD-PTRSTART] " +
+                $"source=0x{source:x16}->{candidate:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+                $"bytes=0x{sourceBytes:x} index={index}/{limit} words={payloadWords} " +
+                $"first={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8}");
+        }
+
+        return candidate;
     }
 
     private void TraceZeroBaseTextureUploadPointerWord(
