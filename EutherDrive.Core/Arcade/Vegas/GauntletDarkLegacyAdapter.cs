@@ -25400,6 +25400,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED"));
     private readonly int _traceTexturedTriangleCoveredLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED_LIMIT"), 80);
+    private readonly int _traceTextureMinRenderFrame =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME"), 0);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _debugTextureZeroSampleBuckets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS"));
@@ -29866,7 +29868,8 @@ sampledTexel:
         float dSdY,
         float dTdY)
     {
-        if (!_traceTexturedTriangleCovered || _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
+        if (!_traceTexturedTriangleCovered || _renderFrame < _traceTextureMinRenderFrame ||
+            _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
             return;
 
         uint mode = ReadTextureRegister(RegTextureMode);
@@ -29899,7 +29902,8 @@ sampledTexel:
         int coveredPixels,
         int zeroPixels)
     {
-        if (!_traceTexturedTriangleCovered || _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
+        if (!_traceTexturedTriangleCovered || _renderFrame < _traceTextureMinRenderFrame ||
+            _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
             return;
 
         uint mode = ReadTextureRegister(RegTextureMode);
@@ -29935,7 +29939,8 @@ sampledTexel:
         int clipY0,
         int clipY1)
     {
-        if (!_traceTexturedTriangleRejects || _texturedTriangleRejectTraceCount++ >= _traceTexturedTriangleRejectsLimit)
+        if (!_traceTexturedTriangleRejects || _renderFrame < _traceTextureMinRenderFrame ||
+            _texturedTriangleRejectTraceCount++ >= _traceTexturedTriangleRejectsLimit)
             return;
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
