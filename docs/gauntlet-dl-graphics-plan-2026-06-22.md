@@ -711,3 +711,45 @@ upload batch, not by itself a bad pointer. The remaining suspicious part is the
 source cursor choice (`geb+0x1280`) and overlap with the bad `pnk` window; next
 work should compare the selected source cursor against the hydrated `geb`
 record/header fields rather than forcing a non-zero packet base.
+
+## 2026-06-22 Indexed Upload Limit Clamp Control
+
+Added an opt-in clamp experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT=1
+```
+
+The experiment only applies when `sourceBase/sp1c == 0` and the upload source
+matches a plausible BGLoadModel header. For the repeated `geb` case it clamps
+the caller limit from `0xff` to the header count word:
+
+```text
+clamp-indexed-texture-upload-limit
+source=0xffffffff80312998 code=geb header=0xffffffff80311718
+sourceOffset=0x1280 limit=255->31 stride=00000017
+bytes=10000->2000 len=b130
+```
+
+This is not a fix. It sharply reduces render output:
+
+```text
+clamp f220 frameHash=0x3f3146a7 direct/setup=197/81
+framebuffer=269450/205980
+textureMap.touched=48928
+```
+
+Control remains:
+
+```text
+default f220 frameHash=0x21c0914a direct/setup=1834/901
+framebuffer=307200/307200
+textureMap.touched=55200
+```
+
+Conclusion: even though the `geb` header count is plausible, it is not the
+runtime upload loop limit for this caller path. The `0xff` batch is doing real
+render work and clamping it is destructive. Keep this experiment as a negative
+control only; the next target should move away from simple limit correction and
+look at how the source window should be populated beyond `geb`'s nominal disk
+payload length.

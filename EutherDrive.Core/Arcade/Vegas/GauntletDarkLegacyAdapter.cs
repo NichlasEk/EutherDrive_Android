@@ -744,6 +744,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_METADATA_TEXTURE_PAYLOADS"));
     private readonly bool _experimentSkipZeroBaseTexturePayloadRuns =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
+    private readonly bool _experimentClampIndexedTextureUploadLimit =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -903,6 +905,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadRunTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
     private int _textureUploadPayloadFocusedCallerTraceCount;
+    private int _textureUploadPayloadLimitClampTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
@@ -3880,6 +3883,35 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        uint sourceBase = _memory.Read32(sp + 0x1cUL);
+        uint originalLimit = limit;
+        if (_experimentClampIndexedTextureUploadLimit &&
+            sourceBase == 0 &&
+            TryGetPlausibleKnownRuntimeBgLoadModelUploadHeaderForSource(
+                source,
+                out string sourceCode,
+                out ulong sourceHeader,
+                out long sourceOffset,
+                out uint headerLimit,
+                out uint headerStride,
+                out uint textureByteLength) &&
+            headerLimit < limit &&
+            index <= headerLimit)
+        {
+            limit = headerLimit;
+            if (_textureUploadPayloadLimitClampTraceCount++ < 32)
+            {
+                ulong originalSourceBytes = (ulong)(originalLimit - index + 1U) * payloadWords * 4UL;
+                ulong clampedSourceBytes = (ulong)(limit - index + 1U) * payloadWords * 4UL;
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] clamp-indexed-texture-upload-limit " +
+                    $"source=0x{source:x16} code={sourceCode} header=0x{sourceHeader:x16} " +
+                    $"sourceOffset=0x{sourceOffset:x} limit={originalLimit}->{limit} " +
+                    $"stride={headerStride:x8} words={payloadWords} " +
+                    $"bytes={originalSourceBytes:x}->{clampedSourceBytes:x} len={textureByteLength:x}");
+            }
+        }
+
         uint packetBytes = checked(payloadWords * 4U + 8U);
         uint packets = limit - index + 1U;
         ulong sourceBytes = (ulong)packets * payloadWords * 4UL;
@@ -3915,7 +3947,6 @@ internal sealed class MipsR5000Core
             }
         }
 
-        uint sourceBase = _memory.Read32(sp + 0x1cUL);
         uint currentPacketAddress = pc == roomReadyEntry || pc == packetEntry
             ? (uint)_gpr[17]
             : unchecked(sourceBase + index * 0x200U);
@@ -4258,6 +4289,62 @@ internal sealed class MipsR5000Core
         }
 
         return matches == 0 ? "bgsrc=none" : builder.ToString();
+    }
+
+    private bool TryGetPlausibleKnownRuntimeBgLoadModelUploadHeaderForSource(
+        ulong source,
+        out string code,
+        out ulong header,
+        out long sourceOffset,
+        out uint countWord,
+        out uint strideWord,
+        out uint textureByteLength)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+
+        code = "";
+        header = 0;
+        sourceOffset = 0;
+        countWord = 0;
+        strideWord = 0;
+        textureByteLength = 0;
+
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string candidateCode, out _, out uint candidateTextureByteLength))
+                continue;
+
+            ulong candidateHeader = destinationBase + index * sourceStride;
+            ulong candidateEnd = candidateHeader + candidateTextureByteLength;
+            if (source < candidateHeader || source >= candidateEnd)
+                continue;
+
+            if (!IsMainRamRange(candidateHeader + 0x64UL, 4))
+                continue;
+
+            uint bodyOffset = _memory.Read32(candidateHeader + 0x5cUL);
+            uint candidateCountWord = _memory.Read32(candidateHeader + 0x60UL);
+            uint candidateStrideWord = _memory.Read32(candidateHeader + 0x64UL);
+            if (!IsPlausibleKnownRuntimeBgLoadModelUploadHeader(
+                    bodyOffset,
+                    candidateCountWord,
+                    candidateStrideWord,
+                    candidateTextureByteLength))
+            {
+                continue;
+            }
+
+            code = candidateCode;
+            header = candidateHeader;
+            sourceOffset = unchecked((long)(source - candidateHeader));
+            countWord = candidateCountWord;
+            strideWord = candidateStrideWord;
+            textureByteLength = candidateTextureByteLength;
+            return true;
+        }
+
+        return false;
     }
 
     private static bool IsPlausibleKnownRuntimeBgLoadModelUploadHeader(
