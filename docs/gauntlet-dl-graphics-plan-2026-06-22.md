@@ -634,3 +634,47 @@ does not yet expose the exact source-table or record transition that turns the
 zero packet base. Next trace should focus on the source-table record slot
 selected immediately after the `index=6 code=geb` hydration and before the
 `0x800fe350` caller prep.
+
+## 2026-06-22 Focused Geb Source Slot Trace
+
+Added a narrow `bgloadmodel-geb-source` trace gated by
+`EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER=1`. It snapshots source
+table slot 6, side table slot 6, the hydrated `geb` header window, and the
+registers at the asset-parser handoff points.
+
+The focused f220 run confirms hydration and slot rewrite:
+
+```text
+bgloadmodel-distinct-source-indexed-header index=6 code=geb
+dest=ffffffff80311718 bytes=0000b130
+sourceWords=... 5c=0000b330,60=0000001f,64=00000017
+
+bgloadmodel-geb-source phase=after-indexed-header
+slot=ffffffff802529b8:802e1718
+header=ffffffff80311718 bodyOffset=0000b330 body=ffffffff8031ca48
+
+bgloadmodel-distinct-source pc=ffffffff800aae98 index=6
+slot=ffffffff802529b8:802e1718->80311718
+```
+
+The later caller still enters the texture upload loop with:
+
+```text
+source=0xffffffff80312998
+bgsrc=6:geb+0x1280(body=0xb330/-0xa0b0 ... hdr=ok)
+sourceBase=0x00000000/sp1c=0x00000000
+index=0/255 words=64
+```
+
+Verification stayed unchanged:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+framebuffer=307200/307200
+```
+
+Conclusion: `0xffffffff80312998` is not the hydrated `geb` body start; it is
+`geb+0x1280`, while the header-reported body offset is `0xb330`. The source
+table repair and header hydration are therefore doing their current job. The
+next target is the later caller source/packet-base setup that converts the
+selected `geb` source window into `s6=80312998`, `sp1c=0`, and `sp74=0xff`.

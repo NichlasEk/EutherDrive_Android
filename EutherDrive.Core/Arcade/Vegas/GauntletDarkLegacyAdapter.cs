@@ -880,6 +880,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelStateDeltaTraceCount;
     private int _runtimeBgLoadModelQioRequestTraceCount;
     private int _runtimeBgLoadModelAssetParserTraceCount;
+    private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
     private int _runtimeBgLoadModelLateStreamScanTraceCount;
@@ -1072,6 +1073,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
+        TraceKnownRuntimeBgLoadModelGebSourceState(pc, "step");
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
         TraceKnownRuntimeBgLoadModelRecords(pc);
@@ -11026,6 +11028,9 @@ internal sealed class MipsR5000Core
                 $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(destination)}");
         }
 
+        if (index == 6)
+            TraceKnownRuntimeBgLoadModelGebSourceState(0, "after-indexed-header");
+
         return true;
     }
 
@@ -13633,6 +13638,41 @@ internal sealed class MipsR5000Core
         return $"index={index:x8} sourceSlot={sourceSlot:x16}:{ReadTraceWord(sourceSlot):x8}->{(uint)_gpr[18]:x8} " +
                $"sideSlot={sideSlot:x16}:{ReadTraceWord(sideSlot):x8}->{(uint)_gpr[16]:x8} " +
                $"s2Text=\"{ReadAsciiTraceString(_gpr[18], 32)}\" s0Text=\"{ReadAsciiTraceString(_gpr[16], 32)}\"";
+    }
+
+    private void TraceKnownRuntimeBgLoadModelGebSourceState(ulong pc, string phase)
+    {
+        if (!_traceRuntimeBgLoadModelAssetParser || _runtimeBgLoadModelGebSourceTraceCount >= 64)
+            return;
+
+        if (phase == "step" &&
+            pc is not (0xffffffff800aac18UL or 0xffffffff800aac24UL or
+                       0xffffffff800aadb8UL or 0xffffffff800aaddcUL or
+                       0xffffffff800aadf0UL or 0xffffffff800aae98UL))
+        {
+            return;
+        }
+
+        const ulong index = 6UL;
+        const ulong sourceTableSlot = 0xffffffff802529a0UL + index * 4UL;
+        const ulong sideTableSlot = 0xffffffff802549a0UL + index * 4UL;
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong header = destinationBase + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        uint bodyOffset = IsMainRamRange(header + 0x5cUL, 4) ? _memory.Read32(header + 0x5cUL) : 0;
+        ulong body = header + bodyOffset;
+
+        _runtimeBgLoadModelGebSourceTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-geb-source phase={phase} pc={pc:x16} op={ReadTraceWord(pc):x8} " +
+            $"slot={sourceTableSlot:x16}:{ReadTraceWord(sourceTableSlot):x8} " +
+            $"side={sideTableSlot:x16}:{ReadTraceWord(sideTableSlot):x8} " +
+            $"header={header:x16} bodyOffset={bodyOffset:x8} body={body:x16} " +
+            $"headerWords={TraceKnownRuntimeBgLoadModelAssetParserWords(header)} " +
+            $"bodyFirst={ReadTraceWord(body + 0x00UL):x8}/{ReadTraceWord(body + 0x04UL):x8}/" +
+            $"{ReadTraceWord(body + 0x08UL):x8}/{ReadTraceWord(body + 0x0cUL):x8} " +
+            $"regs s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"s6={_gpr[22]:x16} sp1c={ReadTraceWord(_gpr[29] + 0x1cUL):x8} " +
+            $"asset={TraceKnownRuntimeBgLoadModelAssetTableSummary(6)}");
     }
 
     private void TraceKnownRuntimeBgLoadModelQioRequests(ulong pc, string phase)
