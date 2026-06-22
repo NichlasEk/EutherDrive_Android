@@ -28871,7 +28871,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
                 if (((command >> 11) & 1u) != 0)
                 {
-                    if (_experimentType3UseSkippedWordAsS)
+                    if (_experimentType3UseSkippedWordAsS || _experimentType3UseSkippedWordAsT)
                     {
                         if (!TryReadFloat(wordsNeeded, ref source, out skippedWordAsS))
                             return;
@@ -28885,7 +28885,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             if (((command >> 12) & 1u) != 0)
             {
-                if (_experimentType3UseSkippedWordAsS)
+                if (_experimentType3UseSkippedWordAsS || _experimentType3UseSkippedWordAsT)
                 {
                     if (!TryReadFloat(wordsNeeded, ref source, out skippedWordAsS))
                         return;
