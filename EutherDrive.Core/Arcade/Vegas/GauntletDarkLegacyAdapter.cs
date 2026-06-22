@@ -4293,6 +4293,7 @@ internal sealed class MipsR5000Core
         ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
 
         nextBoundary = ulong.MaxValue;
+        StringBuilder matches = new();
         for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
             if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out uint textureByteLength))
@@ -4302,15 +4303,22 @@ internal sealed class MipsR5000Core
             ulong candidateEnd = candidateBase + textureByteLength;
             if (address >= candidateBase && address < candidateEnd)
             {
-                nextBoundary = candidateEnd;
-                return $"{index}:{code}@0x{address - candidateBase:x}";
+                if (matches.Length > 0)
+                    matches.Append('|');
+
+                matches.Append(index);
+                matches.Append(':');
+                matches.Append(code);
+                matches.Append("@0x");
+                matches.Append((address - candidateBase).ToString("x"));
+                nextBoundary = Math.Min(nextBoundary, candidateEnd);
             }
 
             if (address < candidateBase)
                 nextBoundary = Math.Min(nextBoundary, candidateBase);
         }
 
-        return "none";
+        return matches.Length == 0 ? "none" : matches.ToString();
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)

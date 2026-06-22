@@ -808,9 +808,11 @@ cross-window copy:
 
 ```text
 source=0xffffffff80312998 bytes=0x10000 packets=256 words=64 index=0/255
-segments=5:pnk@0x9280+0x0..+0xc00,
-         6:geb@0x1e80+0xc00..+0x9eb0,
-         7:nin@0x3130+0x9eb0..+0x10000
+segments=5:pnk@0x9280|6:geb@0x1280+0x0..+0xc00,
+         6:geb@0x1e80+0xc00..+0x6d80,
+         6:geb@0x8000|7:nin@0x0+0x6d80..+0x9eb0,
+         7:nin@0x3130+0x9eb0..+0xed80,
+         7:nin@0x8000|8:stg@0x0+0xed80..+0x10000
 ```
 
 The corresponding run still reports the overlapping source descriptions:
@@ -829,5 +831,5 @@ f220 frameHash=0x21c0914a direct/setup=1834/901
 Conclusion: the `0xff` limit is not simply wrong; the current default makes this
 upload span intentionally cross the promoted `0x8000` indexed-source windows.
 The next fix candidate should target the source-window population/overlap
-semantics around `pnk`/`geb`/`nin`, not the Voodoo FIFO path, zero-base packet
-address, or header count clamp.
+semantics around `pnk`/`geb`/`nin`/`stg`, not the Voodoo FIFO path, zero-base
+packet address, or header count clamp.
