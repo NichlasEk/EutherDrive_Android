@@ -203,3 +203,76 @@ f420 frameHash=0x7f170d59 framebuffer=307200/307200 direct/setup=1196/577
 The f420 PNG regressed from the green baseline with diagonal artifact to an
 almost empty blue screen, and setup-triangle activity collapsed from `49045` to
 `577`. Do not promote this drop/suppress approach.
+
+## 2026-06-22 Payload Cursor Follow-Up
+
+Negative probes after commit `b84a50a1`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ=1
+  Did not trigger the body-read path in the f260 window. DWF metadata uploads
+  remained present and f260 stayed baseline-like:
+  frameHash=0xe806de53 direct/setup=710/337 framebuffer=157608/157586
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES=0x120
+  Fresh warm removed the early DWF payload trace, but stalled on "Loading Game."
+  with frameHash=0x89c6d1c2 and framebuffer=307200/81701. Header-only source
+  hydration is not enough.
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+  Fresh warm did not remove DWF metadata; the hot upload still read
+  source=0xffffffff802ed500 text="DWF_GEIBEARD2". This rejects a pure
+  inter-slot-overlap explanation.
+```
+
+The trace now annotates type-5 upload sources with BGLoadModel payload matches.
+Baseline f260 run:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-87341a65baec.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180 \
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=220,260 \
+EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS=1 \
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1 \
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=8 \
+dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 260 200000 0 \
+  > /tmp/gauntdl-payload-provenance-f260.log 2>&1
+```
+
+Key result:
+
+```text
+packet=7 index=7/31 packetSource=0x00060e00 sourceBase=0x00060000
+source=0xffffffff802ed500 words=8
+bgsrc=1:gei+0x9de8(body=0xa0d0/-0x2e8 len=0xa13c hdr60=0x00000020 hdr64=0x00000016)
+text="DWF_GEIBEARD2"
+
+packet=28 index=28/31 packetSource=0x00063800 sourceBase=0x00060000
+source=0xffffffff802ed7a0 words=8
+bgsrc=1:gei+0xa088(body=0xa0d0/-0x48 len=0xa13c hdr60=0x00000020 hdr64=0x00000016)
+text="DWF_GEIUPPERTOR"
+
+packet=1 index=1/15 packetSource=0x00080200 sourceBase=0x00080000
+source=0xffffffff802ed830 words=4
+bgsrc=1:gei+0xa118(body=0xa0d0/+0x48 len=0xa13c hdr60=0x00000020 hdr64=0x00000016)
+text="DWF_NAME"
+```
+
+The important correction is that "start at body offset" is too blunt: the bad
+ASCII run crosses the header body boundary, and `DWF_NAME` appears just after
+it. The next target is the caller/source-cursor setup for the type-5 loop,
+especially who seeds `_gpr[22]` before `sourceBase=0x60000` and why that source
+range is being treated as texture data.
+
+Next concrete trace:
+
+1. Add an opt-in trace around the caller path that enters
+   `TryFastPathKnownGlideFifoOuterPayloadLoopTail`, recording `_gpr[22]`,
+   `_gpr[17]`, `_gpr[18]`, `_gpr[20]`, `sp+0x1c`, `sp+0x74`, and `ra` before
+   the fast path consumes the packet run.
+2. Correlate the first transition into `sourceBase=0x60000` against
+   BGLoadModel asset-table updates and QIO stream-limit repairs.
+3. Only after the real cursor source is known, try a narrowly gated cursor
+   repair. Do not reintroduce metadata suppress/drop as a fix.

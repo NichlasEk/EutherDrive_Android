@@ -716,6 +716,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_MIN_INDEXED_SOURCE_PAYLOAD"));
     private readonly ulong? _runtimeBgLoadModelIndexedSourcePayloadBytesOverride =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES");
+    private readonly int _runtimeBgLoadModelIndexedSourceStride =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE", 0x2000);
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -3908,7 +3910,7 @@ internal sealed class MipsR5000Core
             for (uint packet = 0; packet < packets; packet++, index++)
             {
                 uint packetSourceAddress = unchecked(currentPacketAddress + packet * 0x200U);
-                TraceTextureUploadPayload(packet, packetSourceAddress, source, payloadWords, index, limit);
+                TraceTextureUploadPayload(packet, packetSourceAddress, source, sourceBase, payloadWords, index, limit);
                 TraceGlideFifoOuterPayloadOddWords(packet, packetSourceAddress, source, payloadWords, header);
                 if (_fixVoodooMameCommandFifoModel)
                 {
@@ -3966,7 +3968,14 @@ internal sealed class MipsR5000Core
         return true;
     }
 
-    private void TraceTextureUploadPayload(uint packet, uint packetSourceAddress, ulong source, uint payloadWords, uint index, uint limit)
+    private void TraceTextureUploadPayload(
+        uint packet,
+        uint packetSourceAddress,
+        ulong source,
+        uint sourceBase,
+        uint payloadWords,
+        uint index,
+        uint limit)
     {
         if (!_traceTextureUploadPayload)
             return;
@@ -3995,8 +4004,68 @@ internal sealed class MipsR5000Core
 
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-PAYLOAD] packet={packet} index={index}/{limit} " +
-            $"packetSource=0x{packetSourceAddress:x8} source=0x{source:x16} words={payloadWords} " +
+            $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} words={payloadWords} " +
+            $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
             $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
+    }
+
+    private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        StringBuilder builder = new();
+        int matches = 0;
+
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out uint textureByteLength))
+                continue;
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            ulong candidateEnd = candidateBase + textureByteLength;
+            if (source < candidateBase || source >= candidateEnd)
+                continue;
+
+            if (!IsMainRamRange(candidateBase + 0x64UL, 4))
+                continue;
+
+            uint bodyOffset = _memory.Read32(candidateBase + 0x5cUL);
+            uint countWord = _memory.Read32(candidateBase + 0x60UL);
+            uint strideWord = _memory.Read32(candidateBase + 0x64UL);
+            long sourceOffset = unchecked((long)(source - candidateBase));
+            long bodyDelta = unchecked(sourceOffset - bodyOffset);
+            if (matches++ == 0)
+                builder.Append("bgsrc=");
+            else
+                builder.Append(',');
+
+            builder.Append(index);
+            builder.Append(':');
+            builder.Append(code);
+            builder.Append("+0x");
+            builder.Append(sourceOffset.ToString("x"));
+            builder.Append("(body=0x");
+            builder.Append(bodyOffset.ToString("x"));
+            builder.Append('/');
+            builder.Append(FormatSignedHex(bodyDelta));
+            builder.Append(" len=0x");
+            builder.Append(textureByteLength.ToString("x"));
+            builder.Append(" hdr60=0x");
+            builder.Append(countWord.ToString("x8"));
+            builder.Append(" hdr64=0x");
+            builder.Append(strideWord.ToString("x8"));
+            builder.Append(')');
+
+            if (matches >= 8)
+                break;
+        }
+
+        return matches == 0 ? "bgsrc=none" : builder.ToString();
+    }
+
+    private static string FormatSignedHex(long value)
+    {
+        return value < 0 ? $"-0x{(-value):x}" : $"+0x{value:x}";
     }
 
     private void WriteGlideFifoWord(ref uint fifo, uint value, uint ringBase, uint ringBytes)
@@ -10559,7 +10628,7 @@ internal sealed class MipsR5000Core
                 break;
 
             uint source = _memory.Read32(entry);
-            uint distinctSource = unchecked((uint)(0x802e1718UL + index * 0x2000UL));
+            uint distinctSource = unchecked((uint)(0x802e1718UL + index * (ulong)_runtimeBgLoadModelIndexedSourceStride));
             bool repairedStaticAliasSource = false;
             if (_enableRuntimeBgLoadModelAssetStaticAliasSourceRepair &&
                 source == staticAliasSource &&
@@ -10623,7 +10692,7 @@ internal sealed class MipsR5000Core
     {
         code = "";
         const ulong destinationBase = 0xffffffff802e1718UL;
-        const ulong sourceStride = 0x2000UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
 
         for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
@@ -10662,7 +10731,7 @@ internal sealed class MipsR5000Core
             return;
 
         ulong slot = sourceTable + index * 4UL;
-        ulong source = 0xffffffff802e1718UL + index * 0x2000UL;
+        ulong source = 0xffffffff802e1718UL + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
         if (!IsMainRamRange(slot, 4) || !IsMainRamRange(source, 0x80))
             return;
 
@@ -12381,7 +12450,7 @@ internal sealed class MipsR5000Core
         ulong destination = 0;
         for (ulong candidate = 1; candidate <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; candidate++)
         {
-            ulong candidateDestination = destinationBase + candidate * requestedBytes;
+            ulong candidateDestination = destinationBase + candidate * (ulong)_runtimeBgLoadModelIndexedSourceStride;
             if (!IsMainRamRange(candidateDestination, requestedBytes) ||
                 !IsKnownRuntimeBgLoadModelSourceWindowEmpty(candidateDestination) ||
                 !TryGetKnownRuntimeBgLoadModelTexturePayload(candidate, out _, out _, out _))
@@ -12669,7 +12738,7 @@ internal sealed class MipsR5000Core
         const ulong requestCreateObjectPc = 0xffffffff800c9678UL;
         const ulong qio = 0xffffffff80217c58UL;
         const ulong destinationBase = 0xffffffff802e1718UL;
-        const ulong sourceStride = 0x2000UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
         const uint requestedBytes = 0x2000U;
         const uint callback = 0x800ab4e4U;
         const uint pendingStatus = 0xffffffffU;
@@ -12725,7 +12794,7 @@ internal sealed class MipsR5000Core
     {
         const ulong qio = 0xffffffff80217c58UL;
         const ulong destinationBase = 0xffffffff802e1718UL;
-        const ulong sourceStride = 0x2000UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
         const uint requestedBytes = 0x120U;
         const uint callback = 0x800ab4e4U;
         const uint objectStatus = 0x300bU;
@@ -12893,7 +12962,7 @@ internal sealed class MipsR5000Core
         const ulong stateBase = 0xffffffff80210000UL;
         const ulong sourceCursorBase = 0xffffffff802e2158UL;
         const ulong loadedSourceBase = 0xffffffff802e1718UL;
-        const ulong sourceStride = 0x2000UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
 
         if (!_enableRuntimeBgLoadModelIndexedTextureQioExperiment ||
             _runtimeBgLoadModelIndexedTextureQioStreamLimit <= 0 ||
