@@ -553,3 +553,44 @@ Conclusion: the repeated zero-base upload source overlaps both `pnk` and
 the next target upstream of the type-5 write loop: trace why the caller enters
 the zero-base run with `s6=0xffffffff80312998` and `sp1c=0`, rather than
 dropping the run after it is already prepared.
+
+## 2026-06-22 Focused Zero-Base Caller Trace
+
+The caller trace cap was extended with a narrow bypass for the pnk/geb
+zero-base case: after the general 256-line caller cap, keep logging only when
+`s6 >= 0xffffffff80300000`, the address is inside a known BGLoadModel upload
+source window, and `sp+0x1c == 0`.
+
+The focused f220 run captured the missing caller prep immediately before the
+zero-base upload run:
+
+```text
+pc=0xffffffff800fe350 s3=0xffffffff80312998 s6=0xffffffff80312998
+s4=0x40 s5=0x100 sp1c=00000000 sp74=000000ff
+bgsrc=5:pnk(... hdr=bad),6:geb(... hdr=ok)
+```
+
+By `pc=0xffffffff800fe584`, the same caller state is still live:
+
+```text
+s6=0xffffffff80312998 sp1c=00000000 sp74=000000ff
+```
+
+The resulting run is the repeated zero-base upload:
+
+```text
+source=0xffffffff80312998 sourceBase=0x00000000 index=0/255 words=64
+```
+
+Verification stayed unchanged:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+framebuffer=307200/307200
+```
+
+Conclusion: the bad-looking zero-base packet setup is already present at the
+start of the caller prep window, not introduced by the type-5 fast path. The
+next useful target is one level earlier: trace the BGLoadModel asset/record
+selection that leaves `s6=0xffffffff80312998`, `sp1c=0`, and `sp74=0xff` for
+the pnk/geb candidate.

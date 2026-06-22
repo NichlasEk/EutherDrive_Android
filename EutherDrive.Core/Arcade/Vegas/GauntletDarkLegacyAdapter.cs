@@ -901,6 +901,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadAsciiTraceCount;
     private int _textureUploadPayloadRunTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
+    private int _textureUploadPayloadFocusedCallerTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
@@ -4140,17 +4141,28 @@ internal sealed class MipsR5000Core
         const ulong callerTraceStart = 0x000fe2f0UL;
         const ulong callerTraceEnd = 0x000fe5d4UL;
 
-        if (!_traceTextureUploadPayload || _textureUploadPayloadCallerTraceCount >= 256)
+        if (!_traceTextureUploadPayload)
             return;
 
         ulong physicalPc = pc & 0x1fffffffUL;
         if (physicalPc < callerTraceStart || physicalPc > callerTraceEnd)
             return;
 
-        _textureUploadPayloadCallerTraceCount++;
-
         ulong sp = _gpr[29];
         ulong s6 = _gpr[22];
+        bool focusedZeroBase = s6 >= 0xffffffff80300000UL &&
+                               IsKnownRuntimeBgLoadModelUploadSourceCandidate(s6) &&
+                               ReadTraceWord(sp + 0x1cUL) == 0;
+        if (_textureUploadPayloadCallerTraceCount >= 256)
+        {
+            if (!focusedZeroBase || _textureUploadPayloadFocusedCallerTraceCount++ >= 256)
+                return;
+        }
+        else
+        {
+            _textureUploadPayloadCallerTraceCount++;
+        }
+
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-CALLER] pc=0x{pc:x16} op=0x{op:x8} " +
             $"branchPrev={(branchFromPreviousInstruction ? 1 : 0)} branchTarget=0x{branchTarget:x16} " +
@@ -4164,6 +4176,25 @@ internal sealed class MipsR5000Core
             $"sp20={ReadTraceWord(sp + 0x20UL):x8} sp24={ReadTraceWord(sp + 0x24UL):x8} " +
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
             $"sp78={ReadTraceWord(sp + 0x78UL):x8}");
+    }
+
+    private bool IsKnownRuntimeBgLoadModelUploadSourceCandidate(ulong source)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out uint textureByteLength))
+                continue;
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            ulong candidateEnd = candidateBase + textureByteLength;
+            if (source >= candidateBase && source < candidateEnd)
+                return true;
+        }
+
+        return false;
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)
