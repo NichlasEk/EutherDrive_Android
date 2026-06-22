@@ -25486,6 +25486,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_IGNORE_SELF_REGISTER_WRITES"));
     private readonly bool _experimentMameCommandFifoDropImplausibleRegisterPacket =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DROP_IMPLAUSIBLE_REGISTER_PACKET"));
+    private readonly bool _experimentDropImplausibleCommandFifoRegisterPackets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_REGISTER_PACKETS"));
+    private readonly bool _experimentStopImplausibleCommandFifoRegisterPackets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKETS"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN"));
     private readonly bool _experimentMameCommandFifoSkipInvalidStorage =
@@ -25622,6 +25626,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_SOLID_TRIANGLES"));
     private readonly bool _experimentSuppressLargeSolidTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES"));
+    private readonly bool _traceLargeDirectTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LARGE_DIRECT_TRIANGLES"));
+    private readonly int _traceLargeDirectTrianglesLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LARGE_DIRECT_TRIANGLES_LIMIT"), 80);
     private readonly bool _profileCommandFifoPacketPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FIFO_PACKET_PCS") == "1";
     private readonly bool _traceFastFillSwapOrder =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER"));
@@ -25661,6 +25669,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoModelTraceCount;
     private int _commandFifoModelStallTraceCount;
     private int _commandFifoRegisterValueTraceCount;
+    private int _largeDirectTriangleTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
     private int _lastCommandFifoDecodeStopWordsNeeded;
@@ -26898,8 +26907,15 @@ internal class VoodooBringupBackend : IVoodooBackend
                 wordsNeeded = 1;
             if (wordsNeeded <= 0)
                 wordsNeeded = 1;
-            if (_fixMameCommandFifoModel &&
-                _experimentMameCommandFifoDropImplausibleRegisterPacket &&
+            if (_experimentStopImplausibleCommandFifoRegisterPackets &&
+                IsImplausibleCommandFifoPacket(command, wordsNeeded))
+            {
+                CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "implausible-packet");
+                TraceCommandFifoDecodeStop("implausible-packet", command, wordsNeeded);
+                return;
+            }
+            if ((_experimentDropImplausibleCommandFifoRegisterPackets ||
+                 (_fixMameCommandFifoModel && _experimentMameCommandFifoDropImplausibleRegisterPacket)) &&
                 IsImplausibleCommandFifoPacket(command, wordsNeeded) &&
                 TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-implausible-packet"))
             {
@@ -29175,6 +29191,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         CountSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY);
         long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
+        TraceLargeDirectTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, boxPixels);
         if (_experimentSuppressLargeSolidTriangles && boxPixels >= 640L * 480L)
             return;
 
@@ -29204,6 +29221,44 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
             }
         }
+    }
+
+    private void TraceLargeDirectTriangle(
+        string source,
+        ushort color,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        long boxPixels)
+    {
+        if (!_traceLargeDirectTriangles ||
+            source != "itri" ||
+            boxPixels < 640L * 240L ||
+            _largeDirectTriangleTraceCount++ >= _traceLargeDirectTrianglesLimit)
+        {
+            return;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-LARGE-ITRI] n={_largeDirectTriangleTraceCount} color=0x{color:X4} " +
+            $"box={minX}-{maxX}x{minY}-{maxY} pixels={boxPixels} area={area:F3} " +
+            $"xy=({ax:F3},{ay:F3})/({bx:F3},{by:F3})/({cx:F3},{cy:F3}) " +
+            $"rawxy=0x{_registers[0x02]:X8}/0x{_registers[0x03]:X8}/0x{_registers[0x04]:X8}/0x{_registers[0x05]:X8}/0x{_registers[0x06]:X8}/0x{_registers[0x07]:X8} " +
+            $"fbz=0x{_registers[RegFbzMode]:X8} cp=0x{_registers[RegFbzColorPath]:X8} lfb=0x{_registers[RegLfbMode]:X8} " +
+            $"c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} za=0x{_registers[RegZaColor]:X8} " +
+            $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8} " +
+            $"decode={(_decodingCommandFifo ? 1 : 0)} trigger={_commandFifoDecodeTrigger} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} fifoPackets={_fifoPacketCount} draws={_fifoDrawPacketCount}{pcStatus}");
     }
 
     private static float Edge(float ax, float ay, float bx, float by, float px, float py)
