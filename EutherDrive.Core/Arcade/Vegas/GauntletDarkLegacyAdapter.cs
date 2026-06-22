@@ -25653,6 +25653,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_SOLID_TRIANGLES"));
     private readonly bool _experimentSuppressLargeSolidTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES"));
+    private readonly bool _experimentSuppressImplausibleBulkDirectTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES"));
     private readonly bool _traceLargeDirectTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LARGE_DIRECT_TRIANGLES"));
     private readonly int _traceLargeDirectTrianglesLimit =
@@ -29317,6 +29319,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         CountSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY);
         long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
         TraceLargeDirectTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, boxPixels);
+        if (ShouldSuppressImplausibleBulkDirectTriangle(source, boxPixels))
+            return;
         if (_experimentSuppressLargeSolidTriangles && boxPixels >= 640L * 480L)
             return;
 
@@ -29346,6 +29350,23 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
             }
         }
+    }
+
+    private bool ShouldSuppressImplausibleBulkDirectTriangle(string source, long boxPixels)
+    {
+        if (!_experimentSuppressImplausibleBulkDirectTriangles ||
+            (source != "itri" && source != "ftri") ||
+            boxPixels < 640L * 240L ||
+            !_decodingCommandFifo ||
+            _commandFifoDecodeTrigger != "bulk-end" ||
+            (_currentCommandFifoCommand & 7u) != 1u)
+        {
+            return false;
+        }
+
+        uint target = (_currentCommandFifoCommand >> 3) & 0xfffu;
+        int count = (int)(_currentCommandFifoCommand >> 16);
+        return target >= 0x400u || count > 0x400;
     }
 
     private void TraceLargeDirectTriangle(
