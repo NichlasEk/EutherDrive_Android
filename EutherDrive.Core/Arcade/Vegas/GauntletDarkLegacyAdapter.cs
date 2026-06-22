@@ -910,6 +910,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadFocusedCallerTraceCount;
     private int _textureUploadPayloadLimitClampTraceCount;
     private int _textureUploadPayloadDiskWordTraceCount;
+    private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
@@ -4045,6 +4046,7 @@ internal sealed class MipsR5000Core
                 for (uint word = 0; word < payloadWords; word++)
                 {
                     uint payloadWord = _memory.Read32(source);
+                    TraceZeroBaseTextureUploadPointerWord(source, sourceBase, packet, index, limit, word, payloadWord);
                     if (_experimentZeroBaseUploadDiskWords &&
                         sourceBase == 0 &&
                         TryReadKnownRuntimeBgLoadModelUploadDiskWord(source, out uint diskWord, out string diskSource))
@@ -4100,6 +4102,38 @@ internal sealed class MipsR5000Core
         _instructionCounter += Math.Max(1UL, skippedInstructions);
         Pc = exit;
         return true;
+    }
+
+    private void TraceZeroBaseTextureUploadPointerWord(
+        ulong source,
+        uint sourceBase,
+        uint packet,
+        uint index,
+        uint limit,
+        uint word,
+        uint payloadWord)
+    {
+        if (!_traceTextureUploadPayload ||
+            sourceBase != 0 ||
+            _textureUploadPayloadPointerTraceCount >= 96 ||
+            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) ||
+            (payloadWord & 3U) != 0 ||
+            payloadWord == 0x80000000U ||
+            (payloadWord & 0xe0000000U) is not (0x80000000U or 0xa0000000U))
+        {
+            return;
+        }
+
+        ulong pointer = SignExtend32(payloadWord);
+        if (!IsMainRamRange(pointer, 0x10UL))
+            return;
+
+        _textureUploadPayloadPointerTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-PTR] source=0x{source:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+            $"packet={packet} index={index}/{limit} word={word} ptr=0x{pointer:x16} " +
+            $"ptrWords={ReadTraceWord(pointer):x8}/{ReadTraceWord(pointer + 0x04UL):x8}/" +
+            $"{ReadTraceWord(pointer + 0x08UL):x8}/{ReadTraceWord(pointer + 0x0cUL):x8}");
     }
 
     private void TraceTextureUploadPayload(

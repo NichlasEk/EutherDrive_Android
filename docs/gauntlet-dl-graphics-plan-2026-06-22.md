@@ -1007,3 +1007,42 @@ Voodoo consumes it. The next target should move upward again: identify why the
 upload source window at `0xffffffff80312998` contains a runtime pointer and
 mixed control-looking words when the BG source overlap says it is near the known
 `geb` indexed texture body.
+
+## 2026-06-22 Zero-Base Upload Pointer Probe
+
+Added a focused `TEXUPLOAD-PTR` trace for zero-base BGLoadModel upload windows.
+It only reports aligned KSEG-like words that also resolve to main RAM, keeping
+the trace centered on plausible runtime pointers rather than low-value texture
+data.
+
+The f220 repro shows two stable pointer-looking words at the start of the
+suspected `0xffffffff80312998` upload window:
+
+```text
+[GAUNTDL:TEXUPLOAD-PTR] source=0xffffffff80312998 packet=0 index=0/255 word=0 ptr=0xffffffff8012e528 ptrWords=656d616e/746e6f66/00000000/726f6373
+[GAUNTDL:TEXUPLOAD-PTR] source=0xffffffff803129a0 packet=0 index=0/255 word=2 ptr=0xffffffff803129a4 ptrWords=07e3fc01/07fffdfc/07ec0c0a/07fc0c03
+```
+
+`0x8012e528` decodes as ASCII-looking metadata (`name`, `font`, then `scor` in
+little-endian word view), not indexed texture payload. The second pointer points
+back into the same upload window, where the words match the color/index-looking
+run that Voodoo later receives after endian correction.
+
+The matching Type5 consumer trace still shows the first payload word being sent
+to texture word zero:
+
+```text
+[GAUNTDL:VOODOO-TYPE5-FOCUS] pc=0xffffffff800fe5d4 space=3 targetWord=0x00000000 count=64 first=0x8012e528/dec=0x28e51280
+```
+
+Verification stayed stable:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+```
+
+Conclusion: this is unlikely to be a simple dereference fix. Word 2 points at
+plausible payload bytes, while word 0 points at unrelated text/metadata. The
+next narrow target is the source-start calculation or descriptor interpretation
+for this upload run: why the fastpath starts at the descriptor/pointer pair
+instead of the indexed data at or after `0xffffffff803129a4`.
