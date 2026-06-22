@@ -25613,6 +25613,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_S"));
+    private readonly bool _experimentType3UseSkippedWordAsT =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_T"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _experimentRejectNonFiniteTextureCoordinates =
@@ -28916,6 +28918,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                     !float.IsFinite(s))
                 {
                     s = skippedWordAsS;
+                }
+                else if (_experimentType3UseSkippedWordAsT &&
+                         float.IsFinite(skippedWordAsS) &&
+                         !float.IsFinite(s))
+                {
+                    s = t;
+                    t = skippedWordAsS;
                 }
                 hasNonFiniteTextureCoordinate |= !float.IsFinite(s) || !float.IsFinite(t);
                 hasTmu0Texture = true;
