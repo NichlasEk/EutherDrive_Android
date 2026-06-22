@@ -737,7 +737,7 @@ internal sealed class MipsR5000Core
     private readonly ulong? _runtimeBgLoadModelIndexedSourcePayloadBytesOverride =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES");
     private readonly int _runtimeBgLoadModelIndexedSourceStride =
-        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE", 0x2000);
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE", 0x8000);
     private readonly bool _enableRuntimeBgLoadModelIndexedSourcePayloadFromBodyExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_FROM_BODY"));
     private readonly bool _experimentSkipMetadataTexturePayloads =

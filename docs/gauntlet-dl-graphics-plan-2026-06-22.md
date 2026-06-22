@@ -245,6 +245,43 @@ EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=131072
   After this result the positive-int env parser was updated to accept both
   decimal and `0x` hex values, so future stride probes can use the same notation
   as the rest of the Gauntlet bring-up flags.
+
+Stride sweep after the parser fix:
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x4000
+  f220 frameHash=0x5c7e44ef direct/setup=345/156
+  framebuffer=179549/179530 textureMap.touched=23104
+  Better than baseline coverage but still partial.
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x8000
+  f220 frameHash=0x21c0914a direct/setup=1834/901
+  framebuffer=307200/307200 textureMap.touched=55200
+  Payload trace no longer showed `DWF_` metadata packets in the f220 type-5
+  upload path.
+
+  f260 frameHash=0x21c0914a direct/setup=6761/3371
+  framebuffer stayed fully covered.
+
+  f420 frameHash=0x44d3a578 direct/setup=12520/6255
+  framebuffer=307200/307200 textureMap.touched=309364
+  frameDump=/tmp/gauntdl-stride-0x8000-f420.ppm
+
+  This preserves the f420 visual hash and coverage while fixing the early
+  f220/f260 partial-output window, so `0x8000` was promoted as the default
+  indexed-source stride.
+
+  Default-path verification without the stride env override matched the
+  candidate:
+  f260 frameHash=0x21c0914a direct/setup=6761/3371
+  f420 frameHash=0x44d3a578 direct/setup=12520/6255
+  framebuffer=307200/307200
+  frameDump=/tmp/gauntdl-default-0x8000-f420.ppm
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x10000
+  f220 frameHash=0xd0412930 direct/setup=167/67
+  framebuffer=31560/31560
+  This reproduces the known partial-output regression. Keep it as a rejected
+  control.
 ```
 
 The trace now annotates type-5 upload sources with BGLoadModel payload matches.
