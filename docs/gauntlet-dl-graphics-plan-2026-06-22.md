@@ -298,6 +298,27 @@ EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS=1
   This rejects treating those zero-base runs as disposable upload noise. They
   are suspicious because of the caller state, but the writes still feed visible
   output and should be traced upstream rather than suppressed.
+
+Additional stride controls between the promoted `0x8000` and rejected
+`0x10000`:
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0xa000
+  f220 frameHash=0x31ae53b0 direct/setup=429/198
+  framebuffer=307200/191854 textureMap.touched=58570
+  Keeps full nonBlack coverage but loses too much colored coverage.
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0xc000
+  f220 frameHash=0x74c81599 direct/setup=169/68
+  framebuffer=307200/292706 textureMap.touched=71468
+  Keeps near-full colored coverage but collapses triangle activity.
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0xe000
+  f220 frameHash=0x8d14d76b direct/setup=291/130
+  framebuffer=198161/197956 textureMap.touched=91316
+  Partial coverage again.
+
+Conclusion: keep `0x8000` as the best current default. Larger strides reduce
+some address overlap but degrade the early frame more than they help.
 ```
 
 The trace now annotates type-5 upload sources with BGLoadModel payload matches.
