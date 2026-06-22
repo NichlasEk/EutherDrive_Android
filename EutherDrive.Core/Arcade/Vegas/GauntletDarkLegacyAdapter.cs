@@ -4189,6 +4189,11 @@ internal sealed class MipsR5000Core
             uint bodyOffset = _memory.Read32(candidateBase + 0x5cUL);
             uint countWord = _memory.Read32(candidateBase + 0x60UL);
             uint strideWord = _memory.Read32(candidateBase + 0x64UL);
+            bool plausibleHeader = IsPlausibleKnownRuntimeBgLoadModelUploadHeader(
+                bodyOffset,
+                countWord,
+                strideWord,
+                textureByteLength);
             long sourceOffset = unchecked((long)(source - candidateBase));
             long bodyDelta = unchecked(sourceOffset - bodyOffset);
             if (matches++ == 0)
@@ -4211,6 +4216,8 @@ internal sealed class MipsR5000Core
             builder.Append(countWord.ToString("x8"));
             builder.Append(" hdr64=0x");
             builder.Append(strideWord.ToString("x8"));
+            builder.Append(" hdr=");
+            builder.Append(plausibleHeader ? "ok" : "bad");
             builder.Append(')');
 
             if (matches >= 8)
@@ -4218,6 +4225,20 @@ internal sealed class MipsR5000Core
         }
 
         return matches == 0 ? "bgsrc=none" : builder.ToString();
+    }
+
+    private static bool IsPlausibleKnownRuntimeBgLoadModelUploadHeader(
+        uint bodyOffset,
+        uint countWord,
+        uint strideWord,
+        uint textureByteLength)
+    {
+        const uint payloadLengthTolerance = 0x400U;
+
+        return bodyOffset > 0 &&
+               bodyOffset <= textureByteLength + payloadLengthTolerance &&
+               countWord is > 0 and < 0x10000U &&
+               strideWord is > 0 and < 0x10000U;
     }
 
     private static string FormatSignedHex(long value)

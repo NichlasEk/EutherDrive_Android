@@ -510,3 +510,46 @@ changes real runtime state, so the next useful target is upstream but narrower:
 trace the BGLoadModel indexed source construction and asset-table selection
 until we can identify the smallest source-window layout change that preserves
 triangle activity while avoiding the bad metadata-as-texture upload path.
+
+## 2026-06-22 Upload Source Header Marker
+
+Added a trace-only `hdr=ok|bad` marker to `bgsrc=` entries emitted by
+`DescribeKnownRuntimeBgLoadModelUploadSource()`. The marker classifies the
+candidate BGLoadModel upload header fields at `+0x5c/+0x60/+0x64`, so
+overlapping source windows can be separated without changing runtime behavior.
+
+Verified command shape:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-87341a65baec.warm \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180 \
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=220 \
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1 \
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=8 \
+dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 220 200000 0
+```
+
+Key f220 trace:
+
+```text
+source=0xffffffff80312998
+bgsrc=5:pnk+0x9280(body=0x3d682f9a/... hdr60=0xbd252696 hdr64=0x44000000 hdr=bad),
+      6:geb+0x1280(body=0xb330/... hdr60=0x0000001f hdr64=0x00000017 hdr=ok)
+sourceBase=0x00000000/sp1c=0x00000000 index=0/255 words=64
+```
+
+Verification stayed on the promoted `0x8000` stride result:
+
+```text
+f220 frameHash=0x21c0914a direct/setup=1834/901
+framebuffer=307200/307200
+textureMap.touched=55200
+```
+
+Conclusion: the repeated zero-base upload source overlaps both `pnk` and
+`geb`, but only the `geb` candidate has a plausible upload header. This keeps
+the next target upstream of the type-5 write loop: trace why the caller enters
+the zero-base run with `s6=0xffffffff80312998` and `sp1c=0`, rather than
+dropping the run after it is already prepared.
