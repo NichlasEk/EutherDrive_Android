@@ -25592,6 +25592,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE");
     private readonly bool _experimentTexturePerspectiveInterpolate =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE"));
+    private readonly bool _experimentTextureMameSetupGradients =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS"));
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
@@ -29405,6 +29407,20 @@ internal class VoodooBringupBackend : IVoodooBackend
         int coveredPixels = 0;
         int zeroPixels = 0;
         float invArea = 1.0f / area;
+        double dx1 = a.Y - c.Y;
+        double dx2 = a.Y - b.Y;
+        double dy1 = a.X - b.X;
+        double dy2 = a.X - c.X;
+        double setupDivisor = 1.0 / area;
+        const double TextureSetupScale = 65536.0 * 65536.0;
+        long startS = MameSetupCastToInt64(a.S * TextureSetupScale);
+        long startT = MameSetupCastToInt64(a.T * TextureSetupScale);
+        long dSdX = MameSetupCastToInt64(((a.S - b.S) * dx1 - (a.S - c.S) * dx2) * TextureSetupScale * setupDivisor);
+        long dTdX = MameSetupCastToInt64(((a.T - b.T) * dx1 - (a.T - c.T) * dx2) * TextureSetupScale * setupDivisor);
+        long dSdY = MameSetupCastToInt64(((a.S - c.S) * dy1 - (a.S - b.S) * dy2) * TextureSetupScale * setupDivisor);
+        long dTdY = MameSetupCastToInt64(((a.T - c.T) * dy1 - (a.T - b.T) * dy2) * TextureSetupScale * setupDivisor);
+        int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
+        int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
@@ -29423,7 +29439,14 @@ internal class VoodooBringupBackend : IVoodooBackend
                 float wc = e2 * invArea;
                 float s;
                 float t;
-                if (_experimentTexturePerspectiveInterpolate)
+                if (_experimentTextureMameSetupGradients)
+                {
+                    int dx = x - setupAx;
+                    int dy = y - setupAy;
+                    s = (float)((startS + dy * (double)dSdY + dx * (double)dSdX) * (1.0 / (1 << 24)) / 256.0);
+                    t = (float)((startT + dy * (double)dTdY + dx * (double)dTdX) * (1.0 / (1 << 24)) / 256.0);
+                }
+                else if (_experimentTexturePerspectiveInterpolate)
                 {
                     s = InterpolateTextureS(a, b, c, wa, wb, wc);
                     t = InterpolateTextureT(a, b, c, wa, wb, wc);
@@ -29480,6 +29503,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         else
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         return coveredAny;
+    }
+
+    private static long MameSetupCastToInt64(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return long.MinValue;
+        if (value >= long.MaxValue)
+            return long.MaxValue;
+        if (value <= long.MinValue)
+            return long.MinValue;
+        return (long)value;
     }
 
     private bool FillGradientTexturedTriangle(
