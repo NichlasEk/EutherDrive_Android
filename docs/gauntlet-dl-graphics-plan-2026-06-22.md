@@ -1126,3 +1126,25 @@ green fill symptom but also remove most scene work. The next useful target is
 not suppressing bad packets, but correcting command FIFO read/depth/window state
 so `bulk-end` does not repeatedly decode stale low offsets like `rd=0x8` after
 a Type5 bulk upload.
+
+MAME command-FIFO controls were also re-tested from the same f180 warm snapshot:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL=1
+  f220 frameHash=0x365c1baf direct/setup=301/134 framebuffer=307200/307200
+  texWrites=60125 texture mapped writes=0
+
+MAME_CMD_FIFO_MODEL + REQUIRE_VALID_PACKET_WINDOW + READY_VALID_PACKET_WINDOW
+  f220 frameHash=0x365c1baf direct/setup=301/134 framebuffer=307200/307200
+
+MAME_CMD_FIFO_MODEL + REQUIRE_READ_IN_ADDRESS_WINDOW + ACCUMULATE_ADDRESS_WINDOW
+  f220 frameHash=0x365c1baf direct/setup=301/134 framebuffer=307200/307200
+
+MAME_CMD_FIFO_MODEL + WRAP_READ_TO_WINDOW + REQUIRE_PACKET_IN_ADDRESS_WINDOW
+  f220 frameHash=0xe0d35bbf direct/setup=166/67 framebuffer=300325/145279
+```
+
+These are not promotion candidates. The current non-MAME default still carries
+more render work (`1851/906`) and preserves the corrected Type5 texture upload
+path. Keep MAME-FIFO work as a separate model repair, not as a quick preset
+toggle for the current graphics bring-up.
