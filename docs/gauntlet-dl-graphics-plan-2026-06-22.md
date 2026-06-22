@@ -1082,3 +1082,47 @@ This preserves the current f420 full-frame green baseline and fixes the hot
 zero-base upload's descriptor-as-texture-data error. It is still not final game
 graphics; the next target is why the f420 scene remains a flat green frame with
 the diagonal artifact despite the corrected Type5 payload start.
+
+## 2026-06-22 Bulk-End FIFO Follow-Up
+
+After the pointer-start fix, f220/f420 still land on the same green full-frame
+surface with a diagonal artifact. Fastfill/swap profiling shows the dominant
+fill path is not a normal clear-only sequence:
+
+```text
+ffpc=0xffffffff800fe5d4:859/w12/k270/o577/s664
+swpc=0xffffffff800fe5d4:656/c111/d0
+```
+
+The suspicious fills are emitted while decoding command FIFO at `bulk-end`.
+The focused bulk trace shows several bulk writes begin with a valid Type5
+header, but the read pointer is outside the just-written bulk window and points
+at stale/float-looking data:
+
+```text
+bulk=0x0003aa1c-0x0000b218 words=16896 inside=1 start=0xc0000205
+stop reason=invalid-standard-window cmd=0xbed49fb1 type=1 words=48853 rd=0x00000008 next=0x3f371306/0x3e29fd26
+
+bulk=0x0000ab4c-0x0001b348 words=16896 inside=0 word=0xbfa59869 start=0xc0000205
+bulk=0x0001bf38-0x0002c734 words=16896 inside=0 word=0xbfa59869 start=0xc0000205
+```
+
+Negative controls:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKETS=1
+  f220 frameHash=0x224aafbc direct/setup=223/92 framebuffer=31673/31673
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_REGISTER_PACKETS=1
+  f220 frameHash=0x224aafbc direct/setup=223/92 framebuffer=31673/31673
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_SKIP_OUTSIDE_READ=1
+  Local opt-in guard tested and removed. It was neutral:
+  f220 frameHash=0x3a5175a3 direct/setup=1851/906 framebuffer=306327/306319
+```
+
+Conclusion: do not promote broad implausible-packet stop/drop. They remove the
+green fill symptom but also remove most scene work. The next useful target is
+not suppressing bad packets, but correcting command FIFO read/depth/window state
+so `bulk-end` does not repeatedly decode stale low offsets like `rd=0x8` after
+a Type5 bulk upload.
