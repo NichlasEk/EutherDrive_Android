@@ -775,6 +775,9 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_STATIC_DATA_LINK");
     private readonly bool _traceRuntimeFormatBufferFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_FORMAT_BUFFER_FASTPATH") == "1";
     private readonly bool _traceTextureUploadProvenance = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PROVENANCE") == "1";
+    private readonly bool _traceTextureUploadPayload = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD") == "1";
+    private readonly int _traceTextureUploadPayloadLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT", 96);
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
     private readonly bool _traceRuntimeStatusBitfieldRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_STATUS_BITFIELD_READ") == "1";
@@ -867,6 +870,7 @@ internal sealed class MipsR5000Core
     private int _lowPcTransitionTraceCount;
     private int _s8DeadTraceCount;
     private int _textureUploadProvenanceTraceCount;
+    private int _textureUploadPayloadAsciiTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
     private int _runtimeStatusBitfieldReadTraceCount;
@@ -875,6 +879,7 @@ internal sealed class MipsR5000Core
     private int _runtimeDiagnosticMenuScanFastPathTraceCount;
     private int _runtimeDiagnosticStateZeroMaskFastPathTraceCount;
     private int _runtimeStringCopyFastPathTraceCount;
+    private int _textureUploadPayloadTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
     private bool _hasRd0CallbackRaRestore;
     private ulong _rd0CallbackRestorePc;
@@ -3903,6 +3908,7 @@ internal sealed class MipsR5000Core
             for (uint packet = 0; packet < packets; packet++, index++)
             {
                 uint packetSourceAddress = unchecked(currentPacketAddress + packet * 0x200U);
+                TraceTextureUploadPayload(packet, packetSourceAddress, source, payloadWords, index, limit);
                 TraceGlideFifoOuterPayloadOddWords(packet, packetSourceAddress, source, payloadWords, header);
                 if (_fixVoodooMameCommandFifoModel)
                 {
@@ -3958,6 +3964,39 @@ internal sealed class MipsR5000Core
         _instructionCounter += Math.Max(1UL, skippedInstructions);
         Pc = exit;
         return true;
+    }
+
+    private void TraceTextureUploadPayload(uint packet, uint packetSourceAddress, ulong source, uint payloadWords, uint index, uint limit)
+    {
+        if (!_traceTextureUploadPayload)
+            return;
+
+        uint first0 = IsMainRamRange(source + 0x00UL, 4) ? _memory.Read32(source + 0x00UL) : 0;
+        uint first1 = IsMainRamRange(source + 0x04UL, 4) ? _memory.Read32(source + 0x04UL) : 0;
+        uint first2 = IsMainRamRange(source + 0x08UL, 4) ? _memory.Read32(source + 0x08UL) : 0;
+        uint first3 = IsMainRamRange(source + 0x0cUL, 4) ? _memory.Read32(source + 0x0cUL) : 0;
+        string text = ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32));
+        bool likelyMetadataPayload =
+            text.Contains("DWF_", StringComparison.Ordinal) ||
+            text.Contains("WEAP_", StringComparison.Ordinal) ||
+            text.Contains("HOLD", StringComparison.Ordinal) ||
+            text.Contains("UPPER", StringComparison.Ordinal) ||
+            text.Contains("TORSO", StringComparison.Ordinal) ||
+            first0 is 0x4457465fU or 0x57454150U;
+        if (_textureUploadPayloadTraceCount >= _traceTextureUploadPayloadLimit)
+        {
+            if (!likelyMetadataPayload || _textureUploadPayloadAsciiTraceCount++ >= 64)
+                return;
+        }
+        else
+        {
+            _textureUploadPayloadTraceCount++;
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-PAYLOAD] packet={packet} index={index}/{limit} " +
+            $"packetSource=0x{packetSourceAddress:x8} source=0x{source:x16} words={payloadWords} " +
+            $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
     }
 
     private void WriteGlideFifoWord(ref uint fifo, uint value, uint ringBase, uint ringBytes)

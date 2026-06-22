@@ -59,7 +59,28 @@ Every promoted graphics change must beat or preserve:
 
 ## Current Next Target
 
-Isolate the removed Voodoo experiments. The first candidate set was:
+Continue texture-source/upload debugging. The current evidence points at the
+Gauntlet BGLoadModel/indexed-source window that feeds the type-5 Voodoo upload
+loop, not at a broad Voodoo sampler fix.
+
+Immediate targets:
+
+1. Trace the type-5 outer payload loop at `0xffffffff800fe5d4` with:
+
+   ```sh
+   EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1
+   EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=8
+   EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=c,d,e
+   ```
+
+2. Compare `packetSource`, `source`, and the BGLoadModel source header fields
+   (`0x5c` body offset, `0x60` count/stride-ish fields) for `gei`/index 1.
+3. Find why payload bytes around `source=0xffffffff802ed500` are treated as
+   texture-upload payload even though they decode as model metadata names.
+4. Keep suppress/drop experiments opt-in only unless they preserve f420 setup
+   activity and improve the visual dump.
+
+The old removed Voodoo experiment set remains useful as a regression matrix:
 
 ```text
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET
@@ -132,3 +153,53 @@ Conclusion: the failed default stack was a bad bundle, not a single mandatory
 fix. None of the removed flags should return to `BRINGUP_BASELINE` now. The
 next useful graphics work is texture-source/upload debugging, not broad FIFO
 experiment promotion.
+
+## 2026-06-22 Texture Payload Provenance
+
+Added opt-in payload tracing:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=<n>
+```
+
+With `TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=8`, the ASCII-trigger captured the hot
+metadata source that later appears as Voodoo texture writes:
+
+```text
+packet=7 index=7/31 packetSource=0x00060e00 source=0xffffffff802ed500 words=8 text="DWF_GEIBEARD2"
+packet=10 index=10/31 packetSource=0x00061400 source=0xffffffff802ed560 words=8 text="DWF_GEIBRADE3"
+packet=13 index=13/31 packetSource=0x00061a00 source=0xffffffff802ed5c0 words=8 text="DWF_GEILEFTHEEL"
+packet=28 index=28/31 packetSource=0x00063800 source=0xffffffff802ed7a0 words=8 text="DWF_GEIUPPERTOR"
+```
+
+The matching texture-write bucket showed the same data being written through
+the type-5 path into the hot `0x00C000` texture bucket:
+
+```text
+bucket=0x00C000 addr=0x00C000 value=0x4457465F pc=0xffffffff800fe5d4
+```
+
+This makes the next bug narrower: a `gei` indexed source/body window is feeding
+metadata names into a type-5 texture-space upload. The source is approximately
+`0x9de8` bytes into `0xffffffff802e3718`; the seeded header reports body offset
+`0xa0d0`, so the parser/loop may be starting before the intended body window or
+using the wrong cursor/limit.
+
+Rejected experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SUPPRESS_KNOWN_METADATA_TEXTURE_UPLOADS=1
+```
+
+Suppressing those packets preserved f260 framebuffer coverage but was not a
+real fix:
+
+```text
+f260 frameHash=0xe806de53 framebuffer=157608/157586
+f420 frameHash=0x7f170d59 framebuffer=307200/307200 direct/setup=1196/577
+```
+
+The f420 PNG regressed from the green baseline with diagonal artifact to an
+almost empty blue screen, and setup-triangle activity collapsed from `49045` to
+`577`. Do not promote this drop/suppress approach.
