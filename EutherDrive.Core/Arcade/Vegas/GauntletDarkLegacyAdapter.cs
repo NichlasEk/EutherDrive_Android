@@ -22639,6 +22639,8 @@ internal sealed class VegasVoodooPciDevice
     private readonly int _traceLimit = ParseTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_PCI_LIMIT", 512);
     private readonly bool _experimentStrictCommandFifoEnable =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_CMD_FIFO_STRICT_ENABLE"));
+    private readonly bool _experimentCommandFifoLowOffsetWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_LOW_OFFSET_WRITES"));
     private readonly bool _experimentCommandFifoDirectEndian =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DIRECT_ENDIAN"));
     private IVoodooBackend? _voodoo;
@@ -22755,8 +22757,11 @@ internal sealed class VegasVoodooPciDevice
 
         if (offset < 0x00400000u)
         {
-            if (offset >= 0x00200000u &&
-                (IsCommandFifoEnabled || (!_experimentStrictCommandFifoEnable && IsGlideCommandFifoWindow(offset))))
+            if ((offset >= 0x00200000u &&
+                 (IsCommandFifoEnabled || (!_experimentStrictCommandFifoEnable && IsGlideCommandFifoWindow(offset)))) ||
+                (_experimentCommandFifoLowOffsetWrites &&
+                 offset >= 0x00001000u &&
+                 (IsCommandFifoEnabled || !_experimentStrictCommandFifoEnable)))
             {
                 if (_experimentCommandFifoDirectEndian && (offset & 0x00040000u) != 0)
                     value = BinaryPrimitives.ReverseEndianness(value);
@@ -26869,7 +26874,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             Console.WriteLine(
                 $"[GAUNTDL:VOODOO-FILL] clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} " +
                 $"c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} za=0x{_registers[RegZaColor]:X8} " +
-                $"fbz=0x{_registers[RegFbzMode]:X8}{pcStatus}");
+                $"fbz=0x{_registers[RegFbzMode]:X8} " +
+                $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8} " +
+                $"trigger={_commandFifoDecodeTrigger}{pcStatus}");
         }
 
         int bufferIndex = GetDrawBufferIndex();
@@ -27996,6 +28003,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"c0=0x{_registers[RegColor0]:x8} c1=0x{_registers[RegColor1]:x8} za=0x{_registers[RegZaColor]:x8} " +
             $"fbz=0x{_registers[RegFbzMode]:x8} lfb=0x{_registers[RegLfbMode]:x8} " +
             $"front={_frontBufferIndex} back={_backBufferIndex} rd=0x{_cmdFifoReadIndex:x6} " +
+            $"cmd=0x{_currentCommandFifoCommand:x8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:x8} trigger={_commandFifoDecodeTrigger} " +
             $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} fifoPackets={_fifoPacketCount} draws={_fifoDrawPacketCount} " +
             $"fills={_fastFillCount} swaps={_swapBufferCount}");
     }
