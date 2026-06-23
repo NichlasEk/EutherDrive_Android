@@ -1345,3 +1345,20 @@ plausible and prevents the full `geb` payload from overwriting the start of the
 promote a plain `0x8000` payload cap. The next fix needs to preserve the
 runtime layout that keeps the baseline alive while targeting the specific
 zero-filled body regions seen by the cross-window upload.
+
+Negative disk-word substitution control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS=1
+  f220 frameHash=0x21c0914a direct/setup=1798/882
+  f260 frameHash=0x21c0914a direct/setup=6712/3339
+  f420 frameHash=0xd11222dc direct/setup=13280/6626
+  f420 framebuffer=307200/307200 textureMap.touched=323252
+```
+
+This replaces too much live runtime data. The trace shows substitutions such as
+`geb@0x129c mem=0x0c0b0101->disk=0x040b0101` and
+`geb@0x12a8 mem=0x00000afd->disk=0xffff1348`, so it is not just filling
+zero-body holes. Keep `ZERO_BASE_UPLOAD_DISK_WORDS` diagnostic-only. A future
+variant would need a much narrower guard, for example only late zero-filled
+body ranges that are not part of the descriptor/runtime fields.
