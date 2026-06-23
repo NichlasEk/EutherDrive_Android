@@ -59,24 +59,25 @@ Every promoted graphics change must beat or preserve:
 
 ## Current Next Target
 
-Continue texture-source/upload debugging. The current evidence points at the
-Gauntlet BGLoadModel/indexed-source window that feeds the type-5 Voodoo upload
-loop, not at a broad Voodoo sampler fix, a missing FIFO delivery path, or a
-simple indexed-loop limit correction.
+Continue indexed-source hydration debugging. The current evidence points at the
+Gauntlet BGLoadModel source-window population that feeds the type-5 Voodoo
+upload loop, not at a broad Voodoo sampler fix, a missing FIFO delivery path,
+or a simple indexed-loop limit correction.
 
 Immediate targets:
 
-1. Trace complete upload-source span composition for the repeated
-   `source=0xffffffff80312998` / `geb+0x1280` run. The current suspicious case
-   copies `0x10000` bytes from a source window whose nominal `geb` payload is
-   only `0xb130` bytes, so the next question is whether the run intentionally
-   crosses into later indexed windows or reads an unmodelled gap.
-2. Compare span segments against the promoted `0x8000` indexed-source stride
-   and the known negative controls:
-   larger strides, zero-base skip, metadata suppression, and header-limit clamp.
-3. If the span proves the runtime expects cross-window data, test a narrow source
-   population fix; keep it opt-in until it preserves f420 coverage and improves
-   the visual dump.
+1. Inspect `TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource` and
+   `HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources` for how much
+   of each promoted `0x8000` indexed source window is populated after the
+   initial request.
+2. Trace or repair the `requestedBytes` /
+   `_runtimeBgLoadModelIndexedSourcePayloadBytesOverride` path so later
+   `geb -> nin -> stg` upload spans do not read zero-filled body regions when
+   the real source model should contain texture payload.
+3. Keep the pointer-start correction (`0xffffffff80312998` ->
+   `0xffffffff803129a4`) as the current baseline. Do not clamp the upload span
+   to `geb`'s nominal payload; the evidence shows the 0x10000 upload crosses
+   indexed source windows by design.
 4. Every candidate still needs a visual dump, not only frame hashes.
 
 Useful trace command:
@@ -1267,3 +1268,63 @@ These are not promotion candidates. The current non-MAME default still carries
 more render work (`1851/906`) and preserves the corrected Type5 texture upload
 path. Keep MAME-FIFO work as a separate model repair, not as a quick preset
 toggle for the current graphics bring-up.
+
+## 2026-06-23 Type5 Parity and Upload Span Recheck
+
+After proving the Type5-only stale-packet drop changes counters but not pixels,
+reran the texture-upload span trace on the current default f420 path:
+
+```sh
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-87341a65baec.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=220,260,420
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=24
+```
+
+Verification stayed on the current visual baseline:
+
+```text
+f220 frameHash=0x3a5175a3 direct/setup=1851/906
+f260 frameHash=0x3a5175a3 direct/setup=6765/3363
+f420 frameHash=0x44d3a578 direct/setup=12514/6237
+f420 textureMap.touched=327796
+```
+
+The hot repeated upload still starts at the runtime descriptor pointer and is
+normalized by the pointer-start fix before Voodoo consumes payload words:
+
+```text
+TEXUPLOAD-PTRSTART source=0xffffffff80312998->ffffffff803129a4
+  bgsrc=5:pnk+0x9280(... hdr=bad),6:geb+0x1280(... hdr=ok)
+  bytes=0x10000 index=0/255 words=64
+  first=8012e528/07f3fc00/803129a4/07e3fc01
+
+TEXUPLOAD-RUN source=0xffffffff803129a4
+  bgsrc=5:pnk+0x928c(... hdr=bad),6:geb+0x128c(... hdr=ok)
+  sourceBase=0x00000000/sp1c=0x00000000 index=0/255 words=64
+```
+
+The full span confirms the upload crosses the promoted `0x8000` indexed-source
+windows:
+
+```text
+segments=
+  5:pnk@0x928c=0000ffff|6:geb@0x128c=07e3fc01;mem=07e3fc01+0x0..+0xbf4,
+  6:geb@0x1e80=00000000;mem=00000000+0xbf4..+0x6d74,
+  6:geb@0x8000=3dfe8d84|7:nin@0x0=00000000;mem=3dfe8d84+0x6d74..+0x9ea4,
+  7:nin@0x3130=43490000;mem=00000000+0x9ea4..+0xed74,
+  7:nin@0x8000=be276d7c|8:stg@0x0=00000000;mem=00000000+0xed74..+0x10000
+```
+
+Conclusion: the 0x10000 upload is not a single `geb` payload and should not be
+clamped to `geb`'s nominal body length. The pointer-start correction is still
+right: it skips descriptor/pointer words and starts at the actual payload
+(`07e3fc01`). The remaining visual problem is more likely in indexed source
+hydration/population semantics: later `nin`/`stg` body portions are still zero
+when the cross-window upload reaches them, while the overlap boundary preserves
+the previous `geb` word. The next code target is
+`TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource` /
+`HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources`, especially the
+`requestedBytes` and indexed-source payload-byte override paths.
