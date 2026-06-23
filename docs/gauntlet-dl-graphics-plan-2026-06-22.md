@@ -1221,6 +1221,18 @@ Conclusion: do not drop the smaller invalid Type1 standard-window packet. It
 changes the frame hash, but by collapsing most triangle work and corrupting the
 framebuffer path rather than advancing toward correct graphics.
 
+Another negative combo:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE5_PACKETS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_LOW_READ=1
+  f220 frameHash=0xf66139ba direct/setup=358/159 framebuffer=281671/229273
+```
+
+Conclusion: the old low-read bulk resync remains a collapse even after the
+pointer-start fix and Type5-only drop. It should stay opt-in and is not a path
+to promote.
+
 These are not promotion candidates. The current non-MAME default still carries
 more render work (`1851/906`) and preserves the corrected Type5 texture upload
 path. Keep MAME-FIFO work as a separate model repair, not as a quick preset
