@@ -1328,3 +1328,20 @@ the previous `geb` word. The next code target is
 `TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource` /
 `HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources`, especially the
 `requestedBytes` and indexed-source payload-byte override paths.
+
+Negative cap control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_BYTES=0x8000
+  f220 frameHash=0x21c0914a direct/setup=941/454
+  f260 frameHash=0x21c0914a direct/setup=5855/2911
+  f420 frameHash=0xace2e494 direct/setup=11863/5915
+  f420 framebuffer=304122/244205 textureMap.touched=597810
+```
+
+This cap makes the indexed headers for `pnk`, `geb`, `nin`, and `stg`
+plausible and prevents the full `geb` payload from overwriting the start of the
+`nin` source window, but it regresses the frame hash and color coverage. Do not
+promote a plain `0x8000` payload cap. The next fix needs to preserve the
+runtime layout that keeps the baseline alive while targeting the specific
+zero-filled body regions seen by the cross-window upload.
