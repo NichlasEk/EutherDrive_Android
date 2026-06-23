@@ -755,6 +755,8 @@ internal sealed class MipsR5000Core
     private readonly ulong? _runtimeBgLoadModelDistinctSourceIndexedHeaderMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK") ??
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK");
+    private readonly ulong _runtimeBgLoadModelOverwriteIndexedSourceMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK") ?? 0UL;
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment =
@@ -11349,10 +11351,11 @@ internal sealed class MipsR5000Core
         bool sourceSeedable = partialSeedabilityEnabled
             ? IsKnownRuntimeBgLoadModelIndexedSourceHeaderSeedable(destination)
             : IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination);
+        bool overwriteAllowsIndex = (_runtimeBgLoadModelOverwriteIndexedSourceMask & (1UL << (int)index)) != 0;
         if (!indexedHeaderEnabled ||
             !indexedTexturePayloadEnabled ||
             !maskAllowsIndex ||
-            !sourceSeedable)
+            (!sourceSeedable && !overwriteAllowsIndex))
         {
             TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
                 "distinct-source-skip",
@@ -11360,7 +11363,7 @@ internal sealed class MipsR5000Core
                 destination,
                 requestedBytes,
                 $"indexedHeader={indexedHeaderEnabled} texturePayload={indexedTexturePayloadEnabled} " +
-                $"mask={maskAllowsIndex} seedable={sourceSeedable} partial={partialSeedabilityEnabled}");
+                $"mask={maskAllowsIndex} seedable={sourceSeedable} overwrite={overwriteAllowsIndex} partial={partialSeedabilityEnabled}");
             return false;
         }
 
@@ -11386,7 +11389,7 @@ internal sealed class MipsR5000Core
             index,
             destination,
             requestedBytes,
-            $"code={code} disk={textureByteOffset:x8} first={firstWord:x8}");
+            $"code={code} disk={textureByteOffset:x8} first={firstWord:x8} overwrite={overwriteAllowsIndex && !sourceSeedable}");
 
         if (_runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount++ < 16)
         {

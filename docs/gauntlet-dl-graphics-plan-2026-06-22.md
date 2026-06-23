@@ -1386,3 +1386,27 @@ phase=distinct-source-hydrate index=8 dest=ffffffff80321718 bytes=0000accc code=
 overflowing `geb` payload. That makes the next candidate narrower than a global
 payload cap: handle overlap seedability for index 7 without changing the live
 runtime descriptor words that the broad disk-word substitution damaged.
+
+Added a default-off overwrite probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK=0x80
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION=1
+  f220 frameHash=0x21c0914a direct/setup=1066/514
+  f260 frameHash=0x21c0914a direct/setup=6358/3160
+  f420 frameHash=0x44d3a578 direct/setup=12233/6096
+  f420 framebuffer=307200/307200 textureMap.touched=539424
+```
+
+The probe confirms the chain reaction:
+
+```text
+index=7 code=nin overwrite=True
+index=8 seedable=False sourceWords=00=be276d7c,04=3e0483fb,...
+```
+
+Forcing only `nin` to seed fixes that one header but makes `stg` the next
+overlapped non-seedable window. Because f220/f260 regress, keep
+`OVERWRITE_INDEXED_SOURCE_MASK` as a diagnostic only. The next useful
+experiment should either model chained overlap deliberately or trace the game
+reader's expected window ownership before writing more payload bytes.
