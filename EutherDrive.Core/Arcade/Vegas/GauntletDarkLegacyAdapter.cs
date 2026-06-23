@@ -830,6 +830,8 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT", 96);
     private readonly ulong? _traceTextureUploadRunSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE");
+    private readonly bool _traceTextureUploadCallerTransitions =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_CALLER_TRANSITIONS"));
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
     private readonly bool _traceRuntimeStatusBitfieldRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_STATUS_BITFIELD_READ") == "1";
@@ -933,6 +935,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadDiskWordTraceCount;
     private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadPayloadPointerStartTraceCount;
+    private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
@@ -1523,10 +1526,13 @@ internal sealed class MipsR5000Core
 
         TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
         TraceInstruction(pc, op);
+        TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
+            CaptureTextureUploadCallerTransitionSnapshot(pc);
 
         ulong s8BeforeExecute = _gpr[30];
         Execute(pc, op);
         _gpr[0] = 0;
+        TraceTextureUploadCallerTransition(pc, op, textureUploadCallerBefore);
         AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
         TraceSuspiciousS8Transition(pc, op, s8BeforeExecute);
@@ -4228,6 +4234,138 @@ internal sealed class MipsR5000Core
     private bool AllowsTextureUploadRunSourceTrace(ulong source)
         => !_traceTextureUploadRunSource.HasValue || source == _traceTextureUploadRunSource.Value;
 
+    private readonly struct TextureUploadCallerTransitionSnapshot
+    {
+        public TextureUploadCallerTransitionSnapshot(
+            bool active,
+            ulong sp,
+            ulong s0,
+            ulong s6,
+            uint state08,
+            uint state374,
+            uint state37c,
+            uint sp1c,
+            uint sp74,
+            uint s6Word00,
+            uint s6Word04,
+            uint s6Word08,
+            uint s6Word0c)
+        {
+            Active = active;
+            Sp = sp;
+            S0 = s0;
+            S6 = s6;
+            State08 = state08;
+            State374 = state374;
+            State37c = state37c;
+            Sp1c = sp1c;
+            Sp74 = sp74;
+            S6Word00 = s6Word00;
+            S6Word04 = s6Word04;
+            S6Word08 = s6Word08;
+            S6Word0c = s6Word0c;
+        }
+
+        public bool Active { get; }
+        public ulong Sp { get; }
+        public ulong S0 { get; }
+        public ulong S6 { get; }
+        public uint State08 { get; }
+        public uint State374 { get; }
+        public uint State37c { get; }
+        public uint Sp1c { get; }
+        public uint Sp74 { get; }
+        public uint S6Word00 { get; }
+        public uint S6Word04 { get; }
+        public uint S6Word08 { get; }
+        public uint S6Word0c { get; }
+    }
+
+    private TextureUploadCallerTransitionSnapshot CaptureTextureUploadCallerTransitionSnapshot(ulong pc)
+    {
+        const ulong callerTraceStart = 0x000fe2f0UL;
+        const ulong callerTraceEnd = 0x000fe5d4UL;
+
+        if (!_traceTextureUploadPayload || !_traceTextureUploadCallerTransitions)
+            return default;
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        if (physicalPc < callerTraceStart || physicalPc > callerTraceEnd)
+            return default;
+
+        ulong sp = _gpr[29];
+        ulong s0 = _gpr[16];
+        ulong s6 = _gpr[22];
+        return new TextureUploadCallerTransitionSnapshot(
+            true,
+            sp,
+            s0,
+            s6,
+            ReadTraceWord(s0 + 0x08UL),
+            ReadTraceWord(s0 + 0x374UL),
+            ReadTraceWord(s0 + 0x37cUL),
+            ReadTraceWord(sp + 0x1cUL),
+            ReadTraceWord(sp + 0x74UL),
+            ReadTraceWord(s6 + 0x00UL),
+            ReadTraceWord(s6 + 0x04UL),
+            ReadTraceWord(s6 + 0x08UL),
+            ReadTraceWord(s6 + 0x0cUL));
+    }
+
+    private bool MatchesTextureUploadRunSourceTrace(TextureUploadCallerTransitionSnapshot snapshot)
+    {
+        if (!_traceTextureUploadRunSource.HasValue)
+            return true;
+
+        ulong target = _traceTextureUploadRunSource.Value;
+        return snapshot.S6 == target || SignExtend32(snapshot.S6Word08) == target;
+    }
+
+    private static bool HasTextureUploadCallerTransition(
+        TextureUploadCallerTransitionSnapshot before,
+        TextureUploadCallerTransitionSnapshot after)
+        => before.Sp != after.Sp ||
+           before.S0 != after.S0 ||
+           before.S6 != after.S6 ||
+           before.State08 != after.State08 ||
+           before.State374 != after.State374 ||
+           before.State37c != after.State37c ||
+           before.Sp1c != after.Sp1c ||
+           before.Sp74 != after.Sp74 ||
+           before.S6Word00 != after.S6Word00 ||
+           before.S6Word04 != after.S6Word04 ||
+           before.S6Word08 != after.S6Word08 ||
+           before.S6Word0c != after.S6Word0c;
+
+    private void TraceTextureUploadCallerTransition(
+        ulong pc,
+        uint op,
+        TextureUploadCallerTransitionSnapshot before)
+    {
+        if (!before.Active || _textureUploadPayloadCallerTransitionTraceCount >= 160)
+            return;
+
+        TextureUploadCallerTransitionSnapshot after = CaptureTextureUploadCallerTransitionSnapshot(pc);
+        if (!after.Active ||
+            !HasTextureUploadCallerTransition(before, after) ||
+            (!MatchesTextureUploadRunSourceTrace(before) && !MatchesTextureUploadRunSourceTrace(after)))
+        {
+            return;
+        }
+
+        _textureUploadPayloadCallerTransitionTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-CALLER-CHANGE] pc=0x{pc:x16} op=0x{op:x8} " +
+            $"sp=0x{before.Sp:x16}->0x{after.Sp:x16} s0=0x{before.S0:x16}->0x{after.S0:x16} " +
+            $"s6=0x{before.S6:x16}->0x{after.S6:x16} " +
+            $"state08={before.State08:x8}->{after.State08:x8} " +
+            $"state374={before.State374:x8}->{after.State374:x8} " +
+            $"state37c={before.State37c:x8}->{after.State37c:x8} " +
+            $"sp1c={before.Sp1c:x8}->{after.Sp1c:x8} sp74={before.Sp74:x8}->{after.Sp74:x8} " +
+            $"s6w={before.S6Word00:x8}/{before.S6Word04:x8}/{before.S6Word08:x8}/{before.S6Word0c:x8}->" +
+            $"{after.S6Word00:x8}/{after.S6Word04:x8}/{after.S6Word08:x8}/{after.S6Word0c:x8}");
+    }
+
     private void TraceZeroBaseTextureUploadPointerWord(
         ulong source,
         uint sourceBase,
@@ -4359,7 +4497,7 @@ internal sealed class MipsR5000Core
         const ulong callerTraceStart = 0x000fe2f0UL;
         const ulong callerTraceEnd = 0x000fe5d4UL;
 
-        if (!_traceTextureUploadPayload)
+        if (!_traceTextureUploadPayload || _traceTextureUploadCallerTransitions)
             return;
 
         ulong physicalPc = pc & 0x1fffffffUL;

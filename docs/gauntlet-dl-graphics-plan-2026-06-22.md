@@ -1590,3 +1590,55 @@ runs. It catches the early caller around `pc=0xffffffff800fe2f0` with
 `sp1c=1`, then the later run where `sourceBase/sp1c` has settled to zero.
 That makes the next target the caller state transition and descriptor setup
 around the `800fe2f0..800fe5d4` path, not another payload substitution probe.
+
+## 2026-06-23 Texture Upload Caller Transition Trace
+
+Added a default-off transition trace for the caller prep window:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_CALLER_TRANSITIONS=1
+```
+
+It works with the existing focused payload trace and `RUN_SOURCE` filter. When
+enabled, it suppresses the full `TEXUPLOAD-CALLER` register dump and emits only
+`TEXUPLOAD-CALLER-CHANGE` rows where the focused descriptor or its `+0x08`
+source pointer matches:
+
+```text
+TRACE_TEXTURE_UPLOAD_PAYLOAD=1
+TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT=0
+TRACE_TEXTURE_UPLOAD_RUN_SOURCE=0xffffffff803129a4
+TRACE_TEXTURE_UPLOAD_CALLER_TRANSITIONS=1
+```
+
+Verified f220 still matches the baseline:
+
+```text
+frameHash=0x3a5175a3
+direct/setup=1851/906
+framebuffer=306327/306319
+textureMap.touched=73632
+```
+
+The focused transition trace reduces the hot path to three repeated state
+changes before each run:
+
+```text
+pc=0xffffffff800fe34c op=0xafa8001c sp1c=00000001->00000000
+pc=0xffffffff800fe438 op=0xac820374 state374 += 0x10
+pc=0xffffffff800fe444 op=0xac83037c state37c=0000ffe4->0000ffd4
+```
+
+The descriptor words remain stable while this happens:
+
+```text
+s6=0xffffffff80312998
+s6w=8012e528/07f3fc00/803129a4/07e3fc01
+```
+
+Conclusion: the zero-base source is not caused by a descriptor mutation inside
+the immediate upload caller. The caller copies zero from `state+0x08` into
+`sp+0x1c` at `800fe34c`, then advances FIFO cursor/room normally. The next
+target is upstream ownership of the Glide state word at `state+0x08` and why
+this descriptor sequence is paired with the cross-window `pnk/geb/nin/stg`
+source span.
