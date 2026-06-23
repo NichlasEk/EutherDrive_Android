@@ -785,6 +785,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_QIO_OBJECT_STATE"));
     private readonly int _traceRuntimeBgLoadModelIndexedQioObjectStateLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_QIO_OBJECT_STATE_LIMIT", 80);
+    private readonly bool _traceRuntimeBgLoadModelIndexedSourceHydration =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION"));
+    private readonly int _traceRuntimeBgLoadModelIndexedSourceHydrationLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION_LIMIT", 120);
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -862,6 +866,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
     private int _runtimeBgLoadModelIndexedQioObjectStateTraceCount;
+    private int _runtimeBgLoadModelIndexedSourceHydrationTraceCount;
     private int _runtimeLoadingResetHelperTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
@@ -11340,16 +11345,48 @@ internal sealed class MipsR5000Core
 
         ulong indexedHeaderMask = _runtimeBgLoadModelDistinctSourceIndexedHeaderMask ??
             (_enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair ? 0x2UL : ulong.MaxValue);
+        bool maskAllowsIndex = (indexedHeaderMask & (1UL << (int)index)) != 0;
+        bool sourceSeedable = partialSeedabilityEnabled
+            ? IsKnownRuntimeBgLoadModelIndexedSourceHeaderSeedable(destination)
+            : IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination);
         if (!indexedHeaderEnabled ||
             !indexedTexturePayloadEnabled ||
-            (indexedHeaderMask & (1UL << (int)index)) == 0 ||
-            !(partialSeedabilityEnabled
-                ? IsKnownRuntimeBgLoadModelIndexedSourceHeaderSeedable(destination)
-                : IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination)) ||
-            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
+            !maskAllowsIndex ||
+            !sourceSeedable)
         {
+            TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+                "distinct-source-skip",
+                index,
+                destination,
+                requestedBytes,
+                $"indexedHeader={indexedHeaderEnabled} texturePayload={indexedTexturePayloadEnabled} " +
+                $"mask={maskAllowsIndex} seedable={sourceSeedable} partial={partialSeedabilityEnabled}");
             return false;
         }
+
+        if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(
+            index,
+            destination,
+            requestedBytes,
+            out string code,
+            out ulong textureByteOffset,
+            out uint firstWord))
+        {
+            TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+                "distinct-source-hydrate-fail",
+                index,
+                destination,
+                requestedBytes,
+                "payload-read-failed");
+            return false;
+        }
+
+        TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+            "distinct-source-hydrate",
+            index,
+            destination,
+            requestedBytes,
+            $"code={code} disk={textureByteOffset:x8} first={firstWord:x8}");
 
         if (_runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount++ < 16)
         {
@@ -13563,10 +13600,32 @@ internal sealed class MipsR5000Core
         {
             ulong destination = destinationBase + index * sourceStride;
             if (!IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination))
+            {
+                TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+                    "remaining-skip-nonempty",
+                    index,
+                    destination,
+                    requestedBytes,
+                    $"stride={sourceStride:x}");
                 continue;
+            }
             if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out _, out _, out _))
+            {
+                TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+                    "remaining-hydrate-fail",
+                    index,
+                    destination,
+                    requestedBytes,
+                    $"stride={sourceStride:x}");
                 continue;
+            }
 
+            TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+                "remaining-hydrate",
+                index,
+                destination,
+                requestedBytes,
+                $"stride={sourceStride:x}");
             hydrated++;
         }
 
@@ -13614,6 +13673,25 @@ internal sealed class MipsR5000Core
         uint copyBytes = Math.Min(requestedBytes, availableBytes);
         textureByteOffset = readByteOffset;
         return _memory.TryReadDiskByteOffsetToMemory(readByteOffset, destination, copyBytes, out firstWord, out _);
+    }
+
+    private void TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+        string phase,
+        ulong index,
+        ulong destination,
+        uint requestedBytes,
+        string detail)
+    {
+        if (!_traceRuntimeBgLoadModelIndexedSourceHydration ||
+            _runtimeBgLoadModelIndexedSourceHydrationTraceCount++ >= _traceRuntimeBgLoadModelIndexedSourceHydrationLimit)
+        {
+            return;
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-indexed-source-hydration phase={phase} " +
+            $"index={index} dest={destination:x16} bytes={requestedBytes:x8} " +
+            $"{detail} sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(destination)}");
     }
 
     private bool IsKnownRuntimeBgLoadModelSourceWindowEmpty(ulong source)

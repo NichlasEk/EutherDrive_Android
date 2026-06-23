@@ -1362,3 +1362,27 @@ This replaces too much live runtime data. The trace shows substitutions such as
 zero-body holes. Keep `ZERO_BASE_UPLOAD_DISK_WORDS` diagnostic-only. A future
 variant would need a much narrower guard, for example only late zero-filled
 body ranges that are not part of the descriptor/runtime fields.
+
+Added a non-mutating hydration trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION_LIMIT=80
+  f220 frameHash=0x3a5175a3 direct/setup=1851/906
+  f260 frameHash=0x3a5175a3 direct/setup=6765/3363
+```
+
+The trace confirms the overlap blocker directly:
+
+```text
+phase=distinct-source-hydrate index=6 dest=ffffffff80311718 bytes=0000b130 code=geb
+phase=distinct-source-skip index=7 dest=ffffffff80319718 bytes=0000b130
+  mask=True seedable=False partial=True
+  sourceWords=00=3dfe8d84,04=3dc1d0a4,08=bdc0e993,0c=c3814000,...
+phase=distinct-source-hydrate index=8 dest=ffffffff80321718 bytes=0000accc code=stg
+```
+
+`nin` is skipped because its first words have already been populated by the
+overflowing `geb` payload. That makes the next candidate narrower than a global
+payload cap: handle overlap seedability for index 7 without changing the live
+runtime descriptor words that the broad disk-word substitution damaged.
