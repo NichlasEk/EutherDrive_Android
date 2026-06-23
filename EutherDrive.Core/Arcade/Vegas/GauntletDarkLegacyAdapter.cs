@@ -828,6 +828,8 @@ internal sealed class MipsR5000Core
     private readonly bool _traceTextureUploadPayload = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD") == "1";
     private readonly int _traceTextureUploadPayloadLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT", 96);
+    private readonly ulong? _traceTextureUploadRunSource =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE");
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
     private readonly bool _traceRuntimeStatusBitfieldRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_STATUS_BITFIELD_READ") == "1";
@@ -4209,7 +4211,9 @@ internal sealed class MipsR5000Core
             return source;
         }
 
-        if (_traceTextureUploadPayload && _textureUploadPayloadPointerStartTraceCount++ < 64)
+        if (_traceTextureUploadPayload &&
+            AllowsTextureUploadRunSourceTrace(candidate) &&
+            _textureUploadPayloadPointerStartTraceCount++ < 64)
         {
             Console.WriteLine(
                 $"[GAUNTDL:TEXUPLOAD-PTRSTART] " +
@@ -4220,6 +4224,9 @@ internal sealed class MipsR5000Core
 
         return candidate;
     }
+
+    private bool AllowsTextureUploadRunSourceTrace(ulong source)
+        => !_traceTextureUploadRunSource.HasValue || source == _traceTextureUploadRunSource.Value;
 
     private void TraceZeroBaseTextureUploadPointerWord(
         ulong source,
@@ -4262,8 +4269,11 @@ internal sealed class MipsR5000Core
         uint index,
         uint limit)
     {
-        if (!_traceTextureUploadPayload)
+        if (!_traceTextureUploadPayload ||
+            !AllowsTextureUploadRunSourceTrace(source))
+        {
             return;
+        }
 
         uint first0 = IsMainRamRange(source + 0x00UL, 4) ? _memory.Read32(source + 0x00UL) : 0;
         uint first1 = IsMainRamRange(source + 0x04UL, 4) ? _memory.Read32(source + 0x04UL) : 0;
@@ -4319,7 +4329,9 @@ internal sealed class MipsR5000Core
         uint fifo,
         uint room)
     {
-        if (!_traceTextureUploadPayload || _textureUploadPayloadRunTraceCount++ >= 96)
+        if (!_traceTextureUploadPayload ||
+            !AllowsTextureUploadRunSourceTrace(source) ||
+            _textureUploadPayloadRunTraceCount++ >= 96)
             return;
 
         uint stackSourceBase = IsMainRamRange(sp + 0x1cUL, 4) ? _memory.Read32(sp + 0x1cUL) : 0;
@@ -4356,6 +4368,15 @@ internal sealed class MipsR5000Core
 
         ulong sp = _gpr[29];
         ulong s6 = _gpr[22];
+        if (_traceTextureUploadRunSource.HasValue)
+        {
+            bool matchesSource = s6 == _traceTextureUploadRunSource.Value;
+            if (!matchesSource && IsMainRamRange(s6 + 0x08UL, 4))
+                matchesSource = SignExtend32(_memory.Read32(s6 + 0x08UL)) == _traceTextureUploadRunSource.Value;
+            if (!matchesSource)
+                return;
+        }
+
         bool focusedZeroBase = s6 >= 0xffffffff80300000UL &&
                                IsKnownRuntimeBgLoadModelUploadSourceCandidate(s6) &&
                                ReadTraceWord(sp + 0x1cUL) == 0;
@@ -4416,6 +4437,7 @@ internal sealed class MipsR5000Core
         uint limit)
     {
         if (!_traceTextureUploadPayload ||
+            !AllowsTextureUploadRunSourceTrace(source) ||
             payloadWords == 0 ||
             index > limit ||
             sourceBase != 0 ||

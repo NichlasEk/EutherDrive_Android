@@ -1537,3 +1537,56 @@ earlier `0x4000` slice visibly regresses coverage. The remaining bug is not
 best modeled as "copy disk words into zero payload holes"; the next useful
 target is to trace the source-window ownership or selector that decides why
 the hot cross-window upload reads from these `nin`/`stg` regions in this order.
+
+## 2026-06-23 Focused Texture Upload Run Trace
+
+Added a default-off trace filter for the existing texture upload payload
+diagnostics:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE
+```
+
+With `TRACE_TEXTURE_UPLOAD_PAYLOAD=1`, setting the run source to the normalized
+hot pointer keeps the payload, run, span, pointer-start, and caller-prep output
+centered on:
+
+```text
+TRACE_TEXTURE_UPLOAD_RUN_SOURCE=0xffffffff803129a4
+```
+
+Focused f220 baseline verification:
+
+```text
+WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-87341a65baec.warm
+WARMUP_FRAMES=180 FRAME_CHECKPOINTS=220
+  f220 frameHash=0x3a5175a3
+  direct/setup=1851/906
+  framebuffer=306327/306319
+  textureMap.touched=73632
+```
+
+The hot caller descriptor starts at `0xffffffff80312998` and normalizes to the
+payload run at `0xffffffff803129a4`:
+
+```text
+PTRSTART source=0xffffffff80312998->ffffffff803129a4
+RUN source=0xffffffff803129a4 index=0/255 words=64
+PAYLOAD first=0x07e3fc01/0x07fffdfc/0x07ec0c0a/0x07fc0c03
+```
+
+The span is still the cross-window sequence from `pnk` into `geb`, then `nin`,
+then `stg`, with zero-filled gaps in the live source window:
+
+```text
+pnk@0x928c -> geb@0x128c
+geb@0x1e80 zero gap -> geb@0x8000
+nin@0x0 zero gap -> nin@0x3130
+nin@0x8000 -> stg@0x0 zero tail
+```
+
+Caller-prep trace now shows the matching descriptor before unrelated upload
+runs. It catches the early caller around `pc=0xffffffff800fe2f0` with
+`sp1c=1`, then the later run where `sourceBase/sp1c` has settled to zero.
+That makes the next target the caller state transition and descriptor setup
+around the `800fe2f0..800fe5d4` path, not another payload substitution probe.
