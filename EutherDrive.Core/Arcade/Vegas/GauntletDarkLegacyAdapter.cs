@@ -748,6 +748,12 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS"));
+    private readonly ulong _experimentZeroBaseUploadZeroDiskWordIndexedSourceMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_INDEX_MASK") ?? 0UL;
+    private readonly ulong _experimentZeroBaseUploadZeroDiskWordMinOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MIN_OFFSET") ?? 0UL;
+    private readonly ulong _experimentZeroBaseUploadZeroDiskWordMaxOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MAX_OFFSET") ?? ulong.MaxValue;
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -757,6 +763,10 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK");
     private readonly ulong _runtimeBgLoadModelOverwriteIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK") ?? 0UL;
+    private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK") ?? 0UL;
+    private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MIN_OFFSET") ?? 0UL;
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment =
@@ -4071,6 +4081,21 @@ internal sealed class MipsR5000Core
 
                         payloadWord = diskWord;
                     }
+                    else if (_experimentZeroBaseUploadZeroDiskWordIndexedSourceMask != 0 &&
+                        sourceBase == 0 &&
+                        payloadWord == 0 &&
+                        TryReadKnownRuntimeBgLoadModelUploadZeroDiskWord(source, out diskWord, out diskSource))
+                    {
+                        if (_textureUploadPayloadDiskWordTraceCount++ < 64)
+                        {
+                            Console.WriteLine(
+                                $"[GAUNTDL:EXPERIMENT] zero-base-upload-zero-disk-word " +
+                                $"addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8} " +
+                                $"packet={packet} index={index}/{limit} word={word}/{payloadWords}");
+                        }
+
+                        payloadWord = diskWord;
+                    }
 
                     if (_fixVoodooMameCommandFifoModel)
                         WriteGlideFifoWord(ref fifo, payloadWord, fifoRingBase, fifoRingBytes);
@@ -4112,6 +4137,49 @@ internal sealed class MipsR5000Core
         _instructionCounter += Math.Max(1UL, skippedInstructions);
         Pc = exit;
         return true;
+    }
+
+    private bool TryReadKnownRuntimeBgLoadModelUploadZeroDiskWord(
+        ulong address,
+        out uint word,
+        out string sourceDescription)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+
+        word = 0;
+        sourceDescription = "";
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if ((_experimentZeroBaseUploadZeroDiskWordIndexedSourceMask & (1UL << (int)index)) == 0 ||
+                !TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out ulong byteOffset, out uint textureByteLength))
+            {
+                continue;
+            }
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            ulong candidateEnd = candidateBase + textureByteLength;
+            if (address < candidateBase || address >= candidateEnd)
+                continue;
+
+            ulong candidateOffset = address - candidateBase;
+            if (candidateOffset < _experimentZeroBaseUploadZeroDiskWordMinOffset ||
+                candidateOffset > _experimentZeroBaseUploadZeroDiskWordMaxOffset)
+            {
+                continue;
+            }
+
+            if (!_memory.TryReadDiskByteOffsetWord(byteOffset + candidateOffset, out uint candidateWord) ||
+                candidateWord == 0)
+            {
+                continue;
+            }
+
+            word = candidateWord;
+            sourceDescription = $"{index}:{code}@0x{candidateOffset:x}";
+        }
+
+        return sourceDescription.Length > 0;
     }
 
     private ulong NormalizeZeroBaseTextureUploadSourceStart(
@@ -11352,10 +11420,10 @@ internal sealed class MipsR5000Core
             ? IsKnownRuntimeBgLoadModelIndexedSourceHeaderSeedable(destination)
             : IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination);
         bool overwriteAllowsIndex = (_runtimeBgLoadModelOverwriteIndexedSourceMask & (1UL << (int)index)) != 0;
+        bool overlapZeroFillAllowsIndex = (_runtimeBgLoadModelOverlapZeroFillIndexedSourceMask & (1UL << (int)index)) != 0;
         if (!indexedHeaderEnabled ||
             !indexedTexturePayloadEnabled ||
-            !maskAllowsIndex ||
-            (!sourceSeedable && !overwriteAllowsIndex))
+            !maskAllowsIndex)
         {
             TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
                 "distinct-source-skip",
@@ -11363,7 +11431,43 @@ internal sealed class MipsR5000Core
                 destination,
                 requestedBytes,
                 $"indexedHeader={indexedHeaderEnabled} texturePayload={indexedTexturePayloadEnabled} " +
-                $"mask={maskAllowsIndex} seedable={sourceSeedable} overwrite={overwriteAllowsIndex} partial={partialSeedabilityEnabled}");
+                $"mask={maskAllowsIndex} seedable={sourceSeedable} overwrite={overwriteAllowsIndex} " +
+                $"overlapZeroFill={overlapZeroFillAllowsIndex} partial={partialSeedabilityEnabled}");
+            return false;
+        }
+
+        if (!sourceSeedable && !overwriteAllowsIndex)
+        {
+            if (overlapZeroFillAllowsIndex &&
+                TryHydrateKnownRuntimeBgLoadModelIndexedTextureSourceZeroFill(
+                    index,
+                    destination,
+                    requestedBytes,
+                    out string zeroFillCode,
+                    out ulong zeroFillTextureByteOffset,
+                    out uint zeroFillFirstWord,
+                    out uint zeroFilledBytes,
+                    out uint zeroFillFirstOffset))
+            {
+                TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+                    "distinct-source-overlap-zero-fill",
+                    index,
+                    destination,
+                    requestedBytes,
+                    $"code={zeroFillCode} disk={zeroFillTextureByteOffset:x8} first={zeroFillFirstWord:x8} " +
+                    $"filledBytes={zeroFilledBytes:x8} firstFilledOffset={zeroFillFirstOffset:x8} " +
+                    $"minOffset={_runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset:x}");
+                return true;
+            }
+
+            TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
+                "distinct-source-skip",
+                index,
+                destination,
+                requestedBytes,
+                $"indexedHeader={indexedHeaderEnabled} texturePayload={indexedTexturePayloadEnabled} " +
+                $"mask={maskAllowsIndex} seedable={sourceSeedable} overwrite={overwriteAllowsIndex} " +
+                $"overlapZeroFill={overlapZeroFillAllowsIndex} partial={partialSeedabilityEnabled}");
             return false;
         }
 
@@ -13676,6 +13780,58 @@ internal sealed class MipsR5000Core
         uint copyBytes = Math.Min(requestedBytes, availableBytes);
         textureByteOffset = readByteOffset;
         return _memory.TryReadDiskByteOffsetToMemory(readByteOffset, destination, copyBytes, out firstWord, out _);
+    }
+
+    private bool TryHydrateKnownRuntimeBgLoadModelIndexedTextureSourceZeroFill(
+        ulong index,
+        ulong destination,
+        uint requestedBytes,
+        out string code,
+        out ulong textureByteOffset,
+        out uint firstWord,
+        out uint filledBytes,
+        out uint firstFilledOffset)
+    {
+        code = "";
+        textureByteOffset = 0;
+        firstWord = 0;
+        filledBytes = 0;
+        firstFilledOffset = 0;
+        if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out code, out textureByteOffset, out uint textureByteLength))
+            return false;
+
+        uint copyBytes = Math.Min(requestedBytes, textureByteLength);
+        if (copyBytes < 4U || !IsMainRamRange(destination, copyBytes))
+            return false;
+
+        if (!_memory.TryReadDiskByteOffsetWord(textureByteOffset, out firstWord))
+            return false;
+
+        uint startOffset = (uint)Math.Min(_runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset, copyBytes - 4U);
+        startOffset &= 0xfffffffcU;
+        bool sawFirstFill = false;
+        for (uint offset = startOffset; offset <= copyBytes - 4U; offset += 4U)
+        {
+            ulong target = destination + offset;
+            if (_memory.Read32(target) != 0)
+                continue;
+
+            if (!_memory.TryReadDiskByteOffsetWord(textureByteOffset + offset, out uint diskWord) ||
+                diskWord == 0)
+            {
+                continue;
+            }
+
+            _memory.Write32(target, diskWord);
+            filledBytes += 4U;
+            if (!sawFirstFill)
+            {
+                firstFilledOffset = offset;
+                sawFirstFill = true;
+            }
+        }
+
+        return filledBytes != 0;
     }
 
     private void TraceKnownRuntimeBgLoadModelIndexedSourceHydration(

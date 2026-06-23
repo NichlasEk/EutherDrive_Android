@@ -1410,3 +1410,64 @@ overlapped non-seedable window. Because f220/f260 regress, keep
 `OVERWRITE_INDEXED_SOURCE_MASK` as a diagnostic only. The next useful
 experiment should either model chained overlap deliberately or trace the game
 reader's expected window ownership before writing more payload bytes.
+
+Added a default-off overlap zero-fill probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MIN_OFFSET
+```
+
+The broad index-7 run confirms that preserving existing nonzero words is not
+enough when the write happens during BGLoadModel source hydration:
+
+```text
+OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK=0x80
+  index=7 code=nin filledBytes=0x79ac firstFilledOffset=0x44
+  f220 frameHash=0x1c5e37c9 direct/setup=169/68
+  f260 frameHash=0x1c5e37c9 direct/setup=169/68
+  f420 frameHash=0x8a1fd828 direct/setup=2215/1091
+  f420 framebuffer=246825/246825
+```
+
+Restricting the same BGLoadModel write to the upload-span hole still collapses
+early rendering:
+
+```text
+OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK=0x80
+OVERLAP_ZERO_FILL_INDEXED_SOURCE_MIN_OFFSET=0x3130
+  index=7 code=nin filledBytes=0x7828 firstFilledOffset=0x3130
+  f220 frameHash=0x1c5e37c9 direct/setup=169/68
+  f260 frameHash=0x1c5e37c9 direct/setup=169/68
+```
+
+Conclusion: do not hydrate `nin`'s missing body bytes into the live source
+window during BGLoadModel. The game/runtime still observes that window before
+the later Type5 upload path, so filling the hole early changes control flow or
+record interpretation.
+
+Added a separate upload-time zero-word substitution probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_INDEX_MASK
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MIN_OFFSET
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MAX_OFFSET
+```
+
+Narrow range test:
+
+```text
+ZERO_BASE_UPLOAD_ZERO_DISK_WORD_INDEX_MASK=0x80
+ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MIN_OFFSET=0x3130
+ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MAX_OFFSET=0x7fff
+  f220 frameHash=0x21c0914a direct/setup=1680/823
+  f260 frameHash=0x21c0914a direct/setup=6594/3280
+  f420 frameHash=0x44d3a578 direct/setup=12343/6154
+  f420 framebuffer=307200/307200 textureMap.touched=303092
+```
+
+This is better than mutating the BGLoadModel source window and preserves the
+f420 hash/coverage, but it still regresses the earlier checkpoints to the same
+family as the `0x8000` payload cap. Keep it diagnostic-only. The next target
+should narrow by upload call/site or by the later hot repeated
+`0xffffffff803129a4` run, not merely by indexed source offset.
