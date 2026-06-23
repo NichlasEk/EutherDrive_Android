@@ -754,6 +754,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MIN_OFFSET") ?? 0UL;
     private readonly ulong _experimentZeroBaseUploadZeroDiskWordMaxOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MAX_OFFSET") ?? ulong.MaxValue;
+    private readonly ulong? _experimentZeroBaseUploadZeroDiskWordRunSource =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_RUN_SOURCE");
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -3945,6 +3947,7 @@ internal sealed class MipsR5000Core
         }
 
         source = NormalizeZeroBaseTextureUploadSourceStart(source, sourceBase, sourceBytes, payloadWords, index, limit);
+        ulong uploadRunSource = source;
 
         uint fifo = pc == packetEntry ? (uint)_gpr[4] : _memory.Read32(state + 0x374UL);
         if ((fifo & 3U) != 0 || fifo is < 0xa8000000U or > 0xa83ffff8U)
@@ -4084,6 +4087,8 @@ internal sealed class MipsR5000Core
                     else if (_experimentZeroBaseUploadZeroDiskWordIndexedSourceMask != 0 &&
                         sourceBase == 0 &&
                         payloadWord == 0 &&
+                        (!_experimentZeroBaseUploadZeroDiskWordRunSource.HasValue ||
+                            uploadRunSource == _experimentZeroBaseUploadZeroDiskWordRunSource.Value) &&
                         TryReadKnownRuntimeBgLoadModelUploadZeroDiskWord(source, out diskWord, out diskSource))
                     {
                         if (_textureUploadPayloadDiskWordTraceCount++ < 64)

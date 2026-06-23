@@ -1471,3 +1471,69 @@ f420 hash/coverage, but it still regresses the earlier checkpoints to the same
 family as the `0x8000` payload cap. Keep it diagnostic-only. The next target
 should narrow by upload call/site or by the later hot repeated
 `0xffffffff803129a4` run, not merely by indexed source offset.
+
+## 2026-06-23 Zero-Word Run-Source Narrowing
+
+Added a default-off run-source guard for the upload-time zero-word substitution
+probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_RUN_SOURCE
+```
+
+The guard is evaluated after the pointer-start correction, so the hot repeated
+zero-base upload can be isolated at:
+
+```text
+RUN_SOURCE=0xffffffff803129a4
+```
+
+Exact hot-run substitution still preserves the final f420 baseline but changes
+the earlier checkpoints and should not be promoted:
+
+```text
+INDEX_MASK=0x80 MIN_OFFSET=0x3130 MAX_OFFSET=0x7fff
+RUN_SOURCE=0xffffffff803129a4
+  first substitution: 7:nin@0x3130 packet=158 index=158/255 word=41/64
+  f220 frameHash=0x21c0914a direct/setup=1680/823
+  f260 frameHash=0x21c0914a direct/setup=6594/3280
+  f420 frameHash=0x44d3a578 direct/setup=12343/6154
+  f420 framebuffer=307200/307200 textureMap.touched=303092
+```
+
+Offset sweep on the same exact run:
+
+```text
+MIN_OFFSET=0x4000
+  first substitution: 7:nin@0x4000 packet=173 index=173/255 word=29/64
+  f220 frameHash=0xe7622f57 direct/setup=1680/823
+  f260 frameHash=0xe7622f57 direct/setup=6594/3280
+  f260 framebuffer=221976/221976 textureMap.touched=48928
+
+MIN_OFFSET=0x6000
+  first substitution: 7:nin@0x6004 packet=205 index=205/255 word=30/64
+  f220 frameHash=0x21c0914a direct/setup=1686/826
+  f260 frameHash=0x21c0914a direct/setup=6600/3283
+  f260 framebuffer=307200/307200 textureMap.touched=52704
+
+MIN_OFFSET=0x7000
+  first substitution: 7:nin@0x7000 packet=221 index=221/255 word=29/64
+  f220 frameHash=0x21c0914a direct/setup=1696/830
+  f260 frameHash=0x21c0914a direct/setup=6610/3287
+  f260 framebuffer=307200/307200 textureMap.touched=51552
+
+MIN_OFFSET=0x7800
+  first substitution: 7:nin@0x7800 packet=229 index=229/255 word=29/64
+  f220 frameHash=0x21c0914a direct/setup=1696/830
+  f260 frameHash=0x21c0914a direct/setup=6610/3287
+  f260 framebuffer=307200/307200 textureMap.touched=54496
+```
+
+Conclusion: narrowing to the exact hot `0xffffffff803129a4` upload and then to
+late `nin` offsets avoids the severe BGLoadModel mutation collapse, but it is
+still not a neutral or promotable graphics fix. The late ranges preserve the
+frame hash while changing triangle/FIFO/texture-map accounting, and the
+earlier `0x4000` slice visibly regresses coverage. The remaining bug is not
+best modeled as "copy disk words into zero payload holes"; the next useful
+target is to trace the source-window ownership or selector that decides why
+the hot cross-window upload reads from these `nin`/`stg` regions in this order.
