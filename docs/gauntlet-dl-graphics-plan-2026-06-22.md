@@ -1208,6 +1208,19 @@ the earliest absurd Type5 stale read is pinning command-FIFO progress and that
 advancing past it exposes the next, smaller invalid-window problem without
 collapsing the scene like the broad implausible-packet stop/drop controls did.
 
+Negative follow-up:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE5_PACKETS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_INVALID_STANDARD_TYPE1_PACKETS=1
+  Local opt-in guard tested and removed.
+  f220 frameHash=0x854372de direct/setup=477/218 framebuffer=213937/193910
+```
+
+Conclusion: do not drop the smaller invalid Type1 standard-window packet. It
+changes the frame hash, but by collapsing most triangle work and corrupting the
+framebuffer path rather than advancing toward correct graphics.
+
 These are not promotion candidates. The current non-MAME default still carries
 more render work (`1851/906`) and preserves the corrected Type5 texture upload
 path. Keep MAME-FIFO work as a separate model repair, not as a quick preset
