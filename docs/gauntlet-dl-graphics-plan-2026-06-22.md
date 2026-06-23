@@ -1208,6 +1208,36 @@ the earliest absurd Type5 stale read is pinning command-FIFO progress and that
 advancing past it exposes the next, smaller invalid-window problem without
 collapsing the scene like the broad implausible-packet stop/drop controls did.
 
+Visual dump follow-up:
+
+```text
+Default f420:
+  EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl-default-f420.ppm
+  EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_PREFIX=/tmp/gauntdl-default-f420
+  frameHash=0x44d3a578 direct/setup=12514/6237
+
+Type5-only f420:
+  EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE5_PACKETS=1
+  EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl-type5-f420.ppm
+  EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_PREFIX=/tmp/gauntdl-type5-f420
+  frameHash=0x44d3a578 direct/setup=13019/6488
+```
+
+The PPM hashes are byte-identical for the final frame and all three dumped
+Voodoo color buffers:
+
+```text
+final frame sha256=f13e47a9dbf3c7a0eecd0fb311fc895e1290187acef3859f6772fab4c7bd8171
+buf0 sha256=4becbb4364725216079d02693ce542f10f1988faf735151f010bf9ad82b2940f
+buf1 sha256=ec0d75f3c4d9478eb5a1e9676af1ce873cf3876f660b077bdb72ed0254fed530
+buf2 sha256=6cd3891d427cd38a782780d13b16488058ab73bcf84bf6c339b671631d07e5b1
+```
+
+Conclusion: the extra Type5-only draw/setup accounting is not visible and does
+not alter any dumped color buffer. Treat this as diagnostic only; future fixes
+should target the data feeding the visible buffers, not promote Type5 packet
+dropping on the basis of higher counters.
+
 Negative follow-up:
 
 ```text
