@@ -1144,6 +1144,70 @@ MAME_CMD_FIFO_MODEL + WRAP_READ_TO_WINDOW + REQUIRE_PACKET_IN_ADDRESS_WINDOW
   f220 frameHash=0xe0d35bbf direct/setup=166/67 framebuffer=300325/145279
 ```
 
+Additional non-MAME self-register guard control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_CMD_FIFO_SELF_REGISTER_WRITES=1
+  Local opt-in guard tested and removed. It did not emit any
+  "ignore cmdfifo self-register" events and was neutral:
+  f220 frameHash=0x3a5175a3 direct/setup=1851/906 framebuffer=306327/306319
+  cmdstop=invalid-standard-window/0x3C0D2F2D/.../rd=0x2F0
+```
+
+Conclusion: the observed command-FIFO register pollution is not fixed by
+ignoring decoded FIFO self-register writes at `WriteCmdFifoRegister`; that path
+does not appear to receive the offending writes in this run. The next narrower
+trace should capture Type1 packets whose register range targets
+`cmdFifoBaseAddr`, `cmdFifoRdPtr`, `cmdFifoAMin/AMax`, `cmdFifoDepth`, or
+`cmdFifoHoles`, including packet start/read index and caller PC, so legitimate
+FIFO control packets can be separated from stale float-data packets.
+
+That trace was added as:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SELF_REG_PACKETS=1
+```
+
+The trace shows the Type1 self-register-looking writes are downstream of stale
+reads, not the first cause. The first focused f220 sequence starts with repeated
+invalid Type5 stops at `rd=0x13404`:
+
+```text
+stop reason=invalid-standard-window cmd=0xbc292a85 type=5 words=337234
+  rd=0x00013404 depth=22948.. valid=1.. pc=0xffffffff800c4e5c
+```
+
+Only after later bulk-end stale reads do the float-looking Type1 packets target
+the command-FIFO control register range:
+
+```text
+CMDFIFO-SELFREG cmd=0xbed49fb1 target=0x3f6 count=48852
+  packetStart=0x00000008 trigger=bulk-end values=0x3f371306/0x3e29fd26/...
+
+CMDFIFO-SELFREG cmd=0xbfa59869 target=0x30d count=49061
+  packetStart=0x00000008 trigger=bulk-end values=0x3dc1bf80/0x42080000/...
+```
+
+This makes the next useful experiment narrower than the previous broad
+implausible-packet controls: drop only implausible Type5 headers so the read
+pointer is not pinned on the first stale huge texture packet.
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE5_PACKETS=1
+  f220 frameHash=0x3a5175a3 direct/setup=1986/973 framebuffer=306327/306319
+  default f220 was direct/setup=1851/906 at the same hash/framebuffer.
+
+  f420 frameHash=0x44d3a578 direct/setup=13019/6488 framebuffer=307200/307200
+  default f420 was direct/setup=12514/6237 at the same hash/framebuffer.
+  cmdstop moved to invalid-standard-window/0x00012609/2 at rd=0x2dfb0.
+```
+
+Conclusion: the Type5-only drop is not a final graphics fix because the visible
+frame hash remains unchanged, but it is a useful default-off control. It proves
+the earliest absurd Type5 stale read is pinning command-FIFO progress and that
+advancing past it exposes the next, smaller invalid-window problem without
+collapsing the scene like the broad implausible-packet stop/drop controls did.
+
 These are not promotion candidates. The current non-MAME default still carries
 more render work (`1851/906`) and preserves the corrected Type5 texture upload
 path. Keep MAME-FIFO work as a separate model repair, not as a quick preset

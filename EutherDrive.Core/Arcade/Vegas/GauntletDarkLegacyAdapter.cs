@@ -26211,6 +26211,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_BULK_END"));
     private readonly int _traceCommandFifoBulkEndLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_BULK_END_LIMIT"), 120);
+    private readonly bool _traceCommandFifoSelfRegisterPackets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SELF_REG_PACKETS"));
+    private readonly int _traceCommandFifoSelfRegisterPacketsLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SELF_REG_PACKETS_LIMIT"), 120);
     private readonly bool _experimentResetCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
     private readonly bool _experimentRewindCommandFifoOnBulkWrite =
@@ -26271,6 +26275,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_REGISTER_PACKETS"));
     private readonly bool _experimentStopImplausibleCommandFifoRegisterPackets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKETS"));
+    private readonly bool _experimentDropImplausibleCommandFifoType5Packets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE5_PACKETS"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_RESYNC_INVALID_STORAGE_TO_AMIN"));
     private readonly bool _experimentMameCommandFifoSkipInvalidStorage =
@@ -26470,6 +26476,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoModelStallTraceCount;
     private int _commandFifoRegisterValueTraceCount;
     private int _commandFifoBulkEndTraceCount;
+    private int _commandFifoSelfRegisterPacketTraceCount;
     private int _largeDirectTriangleTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
@@ -27773,6 +27780,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                 TraceCommandFifoDecodeStop("implausible-packet", command, wordsNeeded);
                 return;
             }
+            if (_experimentDropImplausibleCommandFifoType5Packets &&
+                (command & 7u) == 5u &&
+                IsImplausibleCommandFifoPacket(command, wordsNeeded) &&
+                TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-implausible-type5"))
+            {
+                continue;
+            }
             if ((_experimentDropImplausibleCommandFifoRegisterPackets ||
                  (_fixMameCommandFifoModel && _experimentMameCommandFifoDropImplausibleRegisterPacket)) &&
                 IsImplausibleCommandFifoPacket(command, wordsNeeded) &&
@@ -28418,12 +28432,57 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint target = (command >> 3) & 0xfffu;
         bool streaming = _fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command);
         int available = streaming ? count : Math.Min(count, Math.Max(0, _fifoBuffer.Count - 1));
+        TraceCommandFifoType1SelfRegisterPacket(command, target, count, increment, available, streaming);
         for (int i = 0; i < available; i++, target += (uint)increment)
         {
             uint value = streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[1 + i];
             WriteCmdFifoRegister(target, value);
         }
     }
+
+    private void TraceCommandFifoType1SelfRegisterPacket(uint command, uint target, int count, int increment, int available, bool streaming)
+    {
+        if (!_traceCommandFifoSelfRegisterPackets ||
+            _commandFifoSelfRegisterPacketTraceCount >= _traceCommandFifoSelfRegisterPacketsLimit ||
+            !TouchesCommandFifoControlRegister(target, (uint)Math.Max(0, available), (uint)increment))
+        {
+            return;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string values = string.Join("/", _fifoBuffer.Skip(1).Take(Math.Min(6, Math.Max(0, available))).Select(value => $"0x{value:x8}"));
+        if (values.Length == 0)
+            values = "none";
+        _commandFifoSelfRegisterPacketTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO-SELFREG] n={_commandFifoSelfRegisterPacketTraceCount} " +
+            $"cmd=0x{command:x8} target=0x{target:x3} count={count} inc={increment} avail={available} streaming={(streaming ? 1 : 0)} " +
+            $"packetStart=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"storage=0x{CommandFifoStorageIndex(_currentCommandFifoPacketStart) * 4:x5} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} trigger={_commandFifoDecodeTrigger} " +
+            $"values={values}{pcStatus}");
+    }
+
+    private static bool TouchesCommandFifoControlRegister(uint target, uint count, uint increment)
+    {
+        if (count == 0)
+            return false;
+
+        uint register = target;
+        for (uint i = 0; i < count; i++)
+        {
+            if (IsCommandFifoControlRegister(register & 0xffu))
+                return true;
+            register += increment;
+        }
+
+        return false;
+    }
+
+    private static bool IsCommandFifoControlRegister(uint register)
+        => register is RegCmdFifoBaseAddr or RegCmdFifoRdPtr or RegCmdFifoAddressMin or RegCmdFifoAddressMax or RegCmdFifoDepth or RegCmdFifoHoles;
 
     private void DecodeFifoType2(uint command)
     {
