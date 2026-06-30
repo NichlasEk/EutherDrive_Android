@@ -2,6 +2,7 @@ using System.Collections;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
@@ -40,6 +41,13 @@ warmupSnapshotPath = ResolveWarmupSnapshotPath(warmupSnapshotPath, adapter, warm
 bool forceSaveWarmupSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SAVE_WARMUP") == "1";
 bool allowLoadWarmupSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_WARMUP") != "0";
 bool loadedWarmupSnapshot = false;
+var summaryContext = new ProbeSummaryContext
+{
+    Enabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SUMMARY") == "1",
+    ModuleId = GetGauntletModuleId(),
+    WarmupSnapshotPath = warmupSnapshotPath,
+    WarmupState = string.IsNullOrWhiteSpace(warmupSnapshotPath) ? "none" : "cold"
+};
 if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
     allowLoadWarmupSnapshot &&
     !forceSaveWarmupSnapshot &&
@@ -47,6 +55,7 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
 {
     LoadWarmupSnapshot(adapter, warmupSnapshotPath, warmupFrames, cpuStepsPerFrameConfig);
     loadedWarmupSnapshot = true;
+    summaryContext.WarmupState = "loaded";
     Console.Error.WriteLine($"warmupSnapshotLoaded={warmupSnapshotPath}");
 }
 
@@ -54,16 +63,20 @@ long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
 var runStopwatch = Stopwatch.StartNew();
 if (!loadedWarmupSnapshot)
 {
-    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames, stopPc, frameCheckpoints);
+    if (!string.IsNullOrWhiteSpace(warmupSnapshotPath))
+        summaryContext.WarmupState = "building";
+
+    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames, stopPc, frameCheckpoints, summaryContext);
 
     if (!string.IsNullOrWhiteSpace(warmupSnapshotPath))
     {
         SaveWarmupSnapshot(adapter, warmupSnapshotPath, warmupFrames, cpuStepsPerFrameConfig);
+        summaryContext.WarmupState = "saved";
         Console.Error.WriteLine($"warmupSnapshotSaved={warmupSnapshotPath}");
     }
 }
 
-RunUntilFrame(adapter, frames, stopPc, frameCheckpoints);
+RunUntilFrame(adapter, frames, stopPc, frameCheckpoints, summaryContext);
 runStopwatch.Stop();
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
@@ -331,14 +344,14 @@ static int ParseWarmupFrames(int targetFrames)
     return Math.Min(parsed, targetFrames);
 }
 
-static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, ulong? stopPc, int[] frameCheckpoints)
+static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, ulong? stopPc, int[] frameCheckpoints, ProbeSummaryContext summaryContext)
 {
     while (adapter.FrameCounter.GetValueOrDefault() < targetFrames)
     {
         long frame = adapter.FrameCounter.GetValueOrDefault();
         ApplyInputFromEnvironment(adapter, frame);
         adapter.RunFrame();
-        PrintFrameCheckpointIfRequested(adapter, frameCheckpoints);
+        PrintFrameCheckpointIfRequested(adapter, frameCheckpoints, summaryContext);
         if (stopPc.HasValue && TryGetCpuPc(adapter, out ulong pc) && pc == stopPc.Value)
         {
             Console.Error.WriteLine($"stopPc=0x{pc:x16} frame={adapter.FrameCounter.GetValueOrDefault()}");
@@ -362,7 +375,7 @@ static int[] ParseFrameCheckpoints(string? raw)
         .ToArray();
 }
 
-static void PrintFrameCheckpointIfRequested(GauntletDarkLegacyAdapter adapter, int[] frameCheckpoints)
+static void PrintFrameCheckpointIfRequested(GauntletDarkLegacyAdapter adapter, int[] frameCheckpoints, ProbeSummaryContext summaryContext)
 {
     if (frameCheckpoints.Length == 0)
         return;
@@ -371,7 +384,8 @@ static void PrintFrameCheckpointIfRequested(GauntletDarkLegacyAdapter adapter, i
     if (Array.BinarySearch(frameCheckpoints, (int)frame) < 0)
         return;
 
-    uint frameHash = HashFrame(adapter.GetFrameBuffer(out int width, out int height, out int stride), width, height, stride);
+    ReadOnlySpan<byte> frameBuffer = adapter.GetFrameBuffer(out int width, out int height, out int stride);
+    uint frameHash = HashFrame(frameBuffer, width, height, stride);
     object machine = GetField(adapter, "_machine");
     object cpu = GetProperty(machine, "Cpu");
     object voodoo = GetProperty(machine, "Voodoo");
@@ -388,6 +402,119 @@ static void PrintFrameCheckpointIfRequested(GauntletDarkLegacyAdapter adapter, i
         $"fastFills={GetIntField(backend, "_fastFillCount")} " +
         $"swaps={GetIntField(backend, "_swapBufferCount")} " +
         $"packetTypes={string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}"))}");
+
+    PrintFrameSummaryIfRequested(summaryContext, frame, frameHash, frameBuffer, width, height, stride, cpu, backend, packetTypes);
+}
+
+static string GetGauntletModuleId()
+    => typeof(GauntletDarkLegacyAdapter).Assembly.ManifestModule.ModuleVersionId.ToString("N")[..12];
+
+static void PrintFrameSummaryIfRequested(
+    ProbeSummaryContext context,
+    long frame,
+    uint frameHash,
+    ReadOnlySpan<byte> frameBuffer,
+    int width,
+    int height,
+    int stride,
+    object cpu,
+    object backend,
+    int[] packetTypes)
+{
+    if (!context.Enabled)
+        return;
+
+    (int nonBlack, int colored) = CountFramePixels(frameBuffer, width, height, stride);
+    string frameSha256 = HashFrameRgbSha256(frameBuffer, width, height, stride);
+    string snapshot = string.IsNullOrWhiteSpace(context.WarmupSnapshotPath) ? "none" : context.WarmupSnapshotPath;
+
+    Console.WriteLine(
+        $"summary gauntdl frame={frame} module={context.ModuleId} snapshot={snapshot} warmup={context.WarmupState} " +
+        $"pc=0x{GetProperty(cpu, "Pc"):x16} frameHash=0x{frameHash:x8} frameSha256={frameSha256} " +
+        $"framebuffer={width}x{height}:{nonBlack}:{colored} " +
+        $"drawPackets={GetIntField(backend, "_fifoDrawPacketCount")} " +
+        $"directTriangles={GetIntField(backend, "_directTriangleCommandCount")} " +
+        $"setupTriangles={GetIntField(backend, "_setupTriangleCommandCount")} " +
+        $"texWrites={GetIntField(backend, "_textureWriteCount")} " +
+        $"textureMap={FormatTextureMapSummary(backend)} " +
+        $"cmdstop={FormatCommandFifoStopSummary(backend)} " +
+        $"packetTypes={string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}"))}");
+}
+
+static (int NonBlack, int Colored) CountFramePixels(ReadOnlySpan<byte> frame, int width, int height, int stride)
+{
+    int nonBlack = 0;
+    int colored = 0;
+    for (int y = 0; y < height; y++)
+    {
+        int row = y * stride;
+        for (int x = 0; x < width; x++)
+        {
+            byte b = frame[row + x * 4 + 0];
+            byte g = frame[row + x * 4 + 1];
+            byte r = frame[row + x * 4 + 2];
+            if ((r | g | b) != 0)
+                nonBlack++;
+            if (r != g || g != b)
+                colored++;
+        }
+    }
+
+    return (nonBlack, colored);
+}
+
+static string HashFrameRgbSha256(ReadOnlySpan<byte> frame, int width, int height, int stride)
+{
+    byte[] rgb = new byte[checked(width * height * 3)];
+    int destination = 0;
+    for (int y = 0; y < height; y++)
+    {
+        int row = y * stride;
+        for (int x = 0; x < width; x++)
+        {
+            rgb[destination++] = frame[row + x * 4 + 2];
+            rgb[destination++] = frame[row + x * 4 + 1];
+            rgb[destination++] = frame[row + x * 4 + 0];
+        }
+    }
+
+    return Convert.ToHexString(SHA256.HashData(rgb)).ToLowerInvariant();
+}
+
+static string FormatTextureMapSummary(object backend)
+    => $"{GetLongField(backend, "_textureMappedWriteCount")}:" +
+       $"{GetLongField(backend, "_textureMappedNonZeroWriteCount")}:" +
+       $"{GetLongField(backend, "_textureMappedZeroWriteCount")}:" +
+       $"{GetIntField(backend, "_textureTouchedWordCount")}:" +
+       $"0x{Math.Max(GetIntField(backend, "_textureTouchedFirstWord"), 0) * 4:x6}:" +
+       $"0x{Math.Max(GetIntField(backend, "_textureTouchedLastWord"), 0) * 4:x6}";
+
+static string FormatCommandFifoStopSummary(object backend)
+{
+    int count = GetIntField(backend, "_commandFifoDecodeStopCount");
+    if (count == 0)
+        return "none";
+
+    string reason = (string)GetField(backend, "_lastCommandFifoDecodeStopReason");
+    uint command = (uint)GetField(backend, "_lastCommandFifoDecodeStopCommand");
+    int wordsNeeded = GetIntField(backend, "_lastCommandFifoDecodeStopWordsNeeded");
+    int depth = GetIntField(backend, "_lastCommandFifoDecodeStopDepth");
+    int readIndex = GetIntField(backend, "_lastCommandFifoDecodeStopReadIndex");
+    int storageIndex = GetIntField(backend, "_lastCommandFifoDecodeStopStorageIndex");
+    uint next1 = (uint)GetField(backend, "_lastCommandFifoDecodeStopNext1");
+    uint next2 = (uint)GetField(backend, "_lastCommandFifoDecodeStopNext2");
+    ulong pc = (ulong)GetField(backend, "_lastCommandFifoDecodeStopPc");
+    uint lastCommand = (uint)GetField(backend, "_lastDecodedCommandFifoCommand");
+    int lastWords = GetIntField(backend, "_lastDecodedCommandFifoWords");
+    int lastPacketStart = GetIntField(backend, "_lastDecodedCommandFifoPacketStart");
+    int lastReadAfter = GetIntField(backend, "_lastDecodedCommandFifoReadAfter");
+
+    string pcStatus = pc == 0 ? "" : $"/pc=0x{pc:x16}";
+    return
+        $"{reason}/0x{command:x8}/{wordsNeeded}/{depth}/" +
+        $"0x{readIndex * 4:x}/0x{storageIndex * 4:x}/" +
+        $"0x{next1:x8}/0x{next2:x8}{pcStatus}/" +
+        $"last=0x{lastCommand:x8}:{lastWords}:0x{lastPacketStart * 4:x}:0x{lastReadAfter * 4:x}/{count}";
 }
 
 static bool TryGetCpuPc(GauntletDarkLegacyAdapter adapter, out ulong pc)
@@ -2108,3 +2235,11 @@ static int ParsePositiveInt(string? value, int fallback)
 readonly record struct RamSurfaceFormat(int Width, int Height, int Stride);
 readonly record struct RamSurfaceScore(int NonZero, int Colored, int UniqueColors, long Score);
 readonly record struct RamSurfaceCandidate(int Offset, RamSurfaceFormat Format, RamSurfaceScore Score);
+
+sealed class ProbeSummaryContext
+{
+    public bool Enabled { get; init; }
+    public string ModuleId { get; init; } = "";
+    public string? WarmupSnapshotPath { get; init; }
+    public string WarmupState { get; set; } = "none";
+}
