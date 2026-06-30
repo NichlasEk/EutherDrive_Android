@@ -4447,13 +4447,28 @@ internal sealed class MipsR5000Core
         uint first2 = IsMainRamRange(source + 0x08UL, 4) ? _memory.Read32(source + 0x08UL) : 0;
         uint first3 = IsMainRamRange(source + 0x0cUL, 4) ? _memory.Read32(source + 0x0cUL) : 0;
         string text = ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32));
+        string diskCompare = FormatKnownRuntimeBgLoadModelUploadDiskCompare(source, 4);
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-FIFO-TARGET] packet={packet} index={index}/{limit} " +
             $"fifo=0x{fifo:x8} fifoLow=0x{fifoLow:x6} fifoBase=0x{fifoBase:x8} fifoDelta=0x{fifoDelta:x6} " +
             $"fifoRingBase=0x{fifoRingBase:x8} fifoRingDelta=0x{fifoRingDelta:x6} " +
             $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} words={payloadWords} " +
             $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
-            $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
+            $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} disk={diskCompare} text=\"{text}\"");
+    }
+
+    private string FormatKnownRuntimeBgLoadModelUploadDiskCompare(ulong source, int words)
+    {
+        StringBuilder builder = new();
+        for (int i = 0; i < words; i++)
+        {
+            if (i > 0)
+                builder.Append('/');
+
+            builder.Append(DescribeKnownRuntimeBgLoadModelUploadSpanSegment(source + (ulong)i * 4UL, out _));
+        }
+
+        return builder.ToString();
     }
 
     private void TraceTextureUploadPayload(

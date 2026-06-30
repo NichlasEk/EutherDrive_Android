@@ -596,6 +596,38 @@ that `gei+0x3850` span is the correct texture stream for this slot, or whether
 the indexed-source body/header stride is selecting a geometry/float payload as
 texture input.
 
+Disk comparison on the same focused FIFO packet:
+
+```text
+log=/tmp/gauntdl-e27b-f420-fifopacket24388-diskcmp.log
+
+gei@0x3850=42800000;mem=42800000
+gei@0x3854=43000000;mem=43000000
+gei@0x3858=00000000;mem=00000000
+gei@0x385c=3ecd8dbe;mem=3ecd8dbe
+```
+
+The overlapping `snm` interpretation also appears in the diagnostic string, but
+its header is already marked bad and its disk words do not match RAM. The
+relevant conclusion is that the `gei+0x3850` RAM source is not corrupted; it
+matches the disk bytes exactly.
+
+Broad body-offset hydration is a negative control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_PAYLOAD_FROM_BODY=1
+log=/tmp/gauntdl-e27b-f420-bodypayload-fifopacket24388.log
+
+frameHash=0x7631e7d3
+frameSha256=8dcaa4271b58ff31d1954efd8d9edff0bbec9fc34625af30382fcc9cb51a5149
+direct/setup=1153/341 drawPackets=19014 texWrites=6976235
+framebuffer=640x480:67860:67860
+```
+
+That flag removes the exact `packet=0x00024388` chain and changes the command
+stream too broadly. Treat it as diagnostic evidence that body-offset selection
+matters, not as a candidate fix.
+
 ### FIFO Alias Control
 
 A focused non-MAME command FIFO trace for the f220 stop word `0xbc292a85`
@@ -1250,12 +1282,11 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Inspect the `gei` indexed-source span that feeds FIFO packet `0x00024388`.
-   The upload source is now proven as `source=0xffffffff802e6f68`,
-   `bgsrc=1:gei+0x3850`, with first words
-   `0x42800000/0x43000000/0x00000000/0x3ecd8dbe`. Compare this span with the
-   hydrated/disk `gei` body and its header/stride metadata before changing
-   texture sampling or Type5 endian policy.
+1. Trace why the uploader chooses `gei+0x3850` for packet index 67 even though
+   the `gei` source header reports `body=0xa0d0`. RAM matches disk at
+   `gei@0x3850`, so the next target is source selection/cursor math, not memory
+   corruption. Avoid promoting the broad `INDEXED_SOURCE_PAYLOAD_FROM_BODY=1`
+   control; it removes the `0x24388` chain and drops visible work.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
