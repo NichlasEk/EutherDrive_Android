@@ -745,6 +745,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_METADATA_TEXTURE_PAYLOADS"));
     private readonly bool _experimentSkipZeroBaseTexturePayloadRuns =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
+    private readonly bool _experimentZeroBaseUploadSkipUnknownPrefix =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
     private readonly bool _experimentClampIndexedTextureUploadLimit =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
@@ -944,6 +946,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadDiskWordTraceCount;
     private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadPayloadPointerStartTraceCount;
+    private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
     private int _textureUploadFifoPacketTraceCount;
@@ -4216,9 +4219,37 @@ internal sealed class MipsR5000Core
         uint index,
         uint limit)
     {
-        if (sourceBase != 0 ||
-            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) ||
-            !IsMainRamRange(source + 0x08UL, 4))
+        if (sourceBase != 0)
+            return source;
+
+        bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidate(source);
+        if (_experimentZeroBaseUploadSkipUnknownPrefix &&
+            !knownSource &&
+            TryFindNextKnownRuntimeBgLoadModelUploadSource(
+                source,
+                source + sourceBytes,
+                out ulong nextKnownSource,
+                out ulong nextKnownIndex,
+                out string nextKnownCode))
+        {
+            if (_textureUploadPayloadPointerStartTraceCount < 64 &&
+                _zeroBaseUploadUnknownPrefixTraceSources.Add(source))
+            {
+                _textureUploadPayloadPointerStartTraceCount++;
+                ulong prefixBytes = nextKnownSource - source;
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] zero-base-upload-skip-unknown-prefix " +
+                    $"source=0x{source:x16}->0x{nextKnownSource:x16} prefix=0x{prefixBytes:x} " +
+                    $"index={index}/{limit} words={payloadWords} next={nextKnownIndex}:{nextKnownCode} " +
+                    $"runFirst={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8} " +
+                    $"span={FormatKnownRuntimeBgLoadModelUploadSpan(source, nextKnownSource + Math.Min(sourceBytes, 0x2000UL), 8)}");
+            }
+
+            return nextKnownSource;
+        }
+
+        if (!knownSource || !IsMainRamRange(source + 0x08UL, 4))
         {
             return source;
         }
@@ -4242,6 +4273,57 @@ internal sealed class MipsR5000Core
         }
 
         return candidate;
+    }
+
+    private bool TryFindNextKnownRuntimeBgLoadModelUploadSource(
+        ulong start,
+        ulong end,
+        out ulong source,
+        out ulong index,
+        out string code)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        const ulong maxUnknownPrefixBytes = 0x2000UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+
+        source = 0;
+        index = 0;
+        code = "";
+        if (end <= start)
+            return false;
+
+        ulong best = ulong.MaxValue;
+        ulong bestIndex = 0;
+        string bestCode = "";
+        for (ulong candidateIndex = 1; candidateIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; candidateIndex++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(candidateIndex, out string candidateCode, out _, out _))
+                continue;
+
+            ulong candidate = destinationBase + candidateIndex * sourceStride;
+            if (candidate <= start ||
+                candidate >= end ||
+                candidate - start > maxUnknownPrefixBytes ||
+                !IsMainRamRange(candidate, 4))
+            {
+                continue;
+            }
+
+            if (candidate < best)
+            {
+                best = candidate;
+                bestIndex = candidateIndex;
+                bestCode = candidateCode;
+            }
+        }
+
+        if (best == ulong.MaxValue)
+            return false;
+
+        source = best;
+        index = bestIndex;
+        code = bestCode;
+        return true;
     }
 
     private bool AllowsTextureUploadRunSourceTrace(ulong source)
@@ -4449,17 +4531,60 @@ internal sealed class MipsR5000Core
         uint first1 = IsMainRamRange(source + 0x04UL, 4) ? _memory.Read32(source + 0x04UL) : 0;
         uint first2 = IsMainRamRange(source + 0x08UL, 4) ? _memory.Read32(source + 0x08UL) : 0;
         uint first3 = IsMainRamRange(source + 0x0cUL, 4) ? _memory.Read32(source + 0x0cUL) : 0;
+        uint runFirst0 = IsMainRamRange(uploadRunSource + 0x00UL, 4) ? _memory.Read32(uploadRunSource + 0x00UL) : 0;
+        uint runFirst1 = IsMainRamRange(uploadRunSource + 0x04UL, 4) ? _memory.Read32(uploadRunSource + 0x04UL) : 0;
+        uint runFirst2 = IsMainRamRange(uploadRunSource + 0x08UL, 4) ? _memory.Read32(uploadRunSource + 0x08UL) : 0;
+        uint runFirst3 = IsMainRamRange(uploadRunSource + 0x0cUL, 4) ? _memory.Read32(uploadRunSource + 0x0cUL) : 0;
         string text = ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32));
         string diskCompare = FormatKnownRuntimeBgLoadModelUploadDiskCompare(source, 4);
         ulong runDelta = source >= uploadRunSource ? source - uploadRunSource : 0;
+        ulong runTraceEnd = source + payloadWords * 4UL;
+        string runSpan = FormatKnownRuntimeBgLoadModelUploadSpan(uploadRunSource, runTraceEnd, 12);
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-FIFO-TARGET] packet={packet} index={index}/{limit} " +
             $"fifo=0x{fifo:x8} fifoLow=0x{fifoLow:x6} fifoBase=0x{fifoBase:x8} fifoDelta=0x{fifoDelta:x6} " +
             $"fifoRingBase=0x{fifoRingBase:x8} fifoRingDelta=0x{fifoRingDelta:x6} " +
             $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} " +
-            $"runSource=0x{uploadRunSource:x16} runDelta=0x{runDelta:x} runStart={uploadRunStartIndex} words={payloadWords} " +
+            $"runSource=0x{uploadRunSource:x16} runDelta=0x{runDelta:x} runStart={uploadRunStartIndex} " +
+            $"runFirst=0x{runFirst0:x8}/0x{runFirst1:x8}/0x{runFirst2:x8}/0x{runFirst3:x8} " +
+            $"runSpan={runSpan} words={payloadWords} " +
             $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
             $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} disk={diskCompare} text=\"{text}\"");
+    }
+
+    private string FormatKnownRuntimeBgLoadModelUploadSpan(ulong start, ulong end, int maxSegments)
+    {
+        if (end <= start || maxSegments <= 0)
+            return "empty";
+
+        ulong cursor = start;
+        StringBuilder builder = new();
+        int segmentCount = 0;
+
+        while (cursor < end && segmentCount < maxSegments)
+        {
+            ulong nextBoundary = end;
+            string label = DescribeKnownRuntimeBgLoadModelUploadSpanSegment(cursor, out nextBoundary);
+            if (nextBoundary <= cursor || nextBoundary > end)
+                nextBoundary = end;
+
+            if (segmentCount > 0)
+                builder.Append(',');
+
+            builder.Append(label);
+            builder.Append("+0x");
+            builder.Append((cursor - start).ToString("x"));
+            builder.Append("..+0x");
+            builder.Append((nextBoundary - start).ToString("x"));
+
+            cursor = nextBoundary;
+            segmentCount++;
+        }
+
+        if (cursor < end)
+            builder.Append(",...");
+
+        return builder.ToString();
     }
 
     private string FormatKnownRuntimeBgLoadModelUploadDiskCompare(ulong source, int words)
@@ -4675,37 +4800,11 @@ internal sealed class MipsR5000Core
 
         uint packets = limit - index + 1U;
         ulong sourceBytes = (ulong)packets * payloadWords * 4UL;
-        ulong cursor = source;
-        ulong end = source + sourceBytes;
-        StringBuilder builder = new();
-        int segmentCount = 0;
-
-        while (cursor < end && segmentCount < 10)
-        {
-            ulong nextBoundary = end;
-            string label = DescribeKnownRuntimeBgLoadModelUploadSpanSegment(cursor, out nextBoundary);
-            if (nextBoundary <= cursor || nextBoundary > end)
-                nextBoundary = end;
-
-            if (segmentCount > 0)
-                builder.Append(',');
-
-            builder.Append(label);
-            builder.Append("+0x");
-            builder.Append((cursor - source).ToString("x"));
-            builder.Append("..+0x");
-            builder.Append((nextBoundary - source).ToString("x"));
-
-            cursor = nextBoundary;
-            segmentCount++;
-        }
-
-        if (cursor < end)
-            builder.Append(",...");
+        string segments = FormatKnownRuntimeBgLoadModelUploadSpan(source, source + sourceBytes, 10);
 
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-SPAN] source=0x{source:x16} bytes=0x{sourceBytes:x} " +
-            $"packets={packets} words={payloadWords} index={index}/{limit} segments={builder}");
+            $"packets={packets} words={payloadWords} index={index}/{limit} segments={segments}");
     }
 
     private string DescribeKnownRuntimeBgLoadModelUploadSpanSegment(ulong address, out ulong nextBoundary)

@@ -631,6 +631,22 @@ packet index 67 inside a longer zero-base upload run that starts at
 per-packet cursor math for zero-base indexed uploads, not a local corruption of
 the packet payload.
 
+The follow-up `runSpan` trace makes that boundary explicit:
+
+```text
+log=/tmp/gauntdl-e27b-f420-fifopacket24388-runspan.log
+
+runSource=0xffffffff802e2c68 runDelta=0x4300 runStart=0
+runFirst=0x0001e69c/0x00001188/0x0000000b/0x00000000
+runSpan=none+0x0..+0xab0,
+        1:gei@0x0=00000000;mem=00000000+0xab0..+0x2ab0,
+        1:gei@0x2000=bc891a33|2:snm@0x0=00000000;mem=bc891a33+0x2ab0..+0x4400
+```
+
+So the upload run begins `0xab0` bytes before the `gei` payload base, then
+crosses the `gei` and overlapping `snm` windows. That `none` prefix looks like
+a descriptor/control span, not disk-backed texture payload.
+
 MAME's Voodoo 2 CMDFIFO path byte-swizzles direct FIFO writes when mapped
 address bit 18 is set, so the narrow direct-endian control was re-run without
 the broad MAME FIFO model:
@@ -657,6 +673,30 @@ fix. It keeps the same `gei+0x3850` -> Type5 -> `0x02F000` chain and collapses
 the f420 image from the 2183-color non-flat baseline to a three-color frame.
 Do not promote it; keep MAME's swizzle rule as a reference for FIFO tracing
 only.
+
+Skipping the unknown prefix to start the run at `gei@0` is also a negative
+control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX=1
+log=/tmp/gauntdl-e27b-f420-skipunknownprefix-fifopacket24388.log
+dump=/tmp/gauntdl-e27b-f420-skipunknownprefix.ppm
+
+source=0xffffffff802e2c68->0xffffffff802e3718 prefix=0xab0 next=1:gei
+packet=67 source=0xffffffff802e7a18 runSource=0xffffffff802e3718
+bgsrc=1:gei+0x4300
+
+frameHash=0x0e416805
+frameSha256=46863cd6ab05f81ba15d8e9a804318d63d28f8b79178b39c80ea606d0ef0ca54
+colors=2
+AE vs baseline selected PPM = 307200
+direct/setup=8181/2568 drawPackets=21369 texWrites=4248625
+```
+
+This proves the prefix matters, but blindly dropping it is not the fix: command
+and texture work stay high while the visible frame collapses to a two-color
+image. Keep the experiment as a bracket around source-cursor math; do not
+promote it.
 
 Broad body-offset hydration is a negative control:
 
@@ -1316,6 +1356,7 @@ Keep these diagnostic-only unless they become part of a proven causal repair:
 - Type5-only stale packet drop;
 - zero-word disk substitution;
 - broad BGLoadModel source mutation;
+- zero-base upload unknown-prefix skip;
 - MAME FIFO model toggles as one-shot preset swaps.
 
 Promotion bar:
@@ -1328,12 +1369,11 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Trace the run start and per-packet cursor math for the zero-base upload that
-   reaches `gei+0x3850` at packet index 67. The run starts at
-   `0xffffffff802e2c68`; `gei+0x3850` appears at `runDelta=0x4300`; RAM matches
-   disk at that span. Avoid promoting the broad
-   `INDEXED_SOURCE_PAYLOAD_FROM_BODY=1` control; it removes the `0x24388` chain
-   and drops visible work.
+1. Trace who creates the zero-base upload run that starts at
+   `0xffffffff802e2c68`. `runSpan` shows a `0xab0` non-payload prefix before
+   `gei@0`, and skipping that prefix collapses f420 to two colors. The next
+   useful target is the caller/descriptor state that chooses this run start,
+   not direct-endian, broad body-offset hydration, or blind prefix skipping.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
