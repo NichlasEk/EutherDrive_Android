@@ -578,6 +578,28 @@ RMSE=907.807 (0.0138523 normalized)
 Conclusion: full indexed-source payloads are not the primary cause of the
 current non-flat e27b visual family either.
 
+Historical-code comparison using the same `e27b9a6b6d3d` f180 warm state:
+
+```text
+worktree=/tmp/eutherdrive-gauntlet-73c41842
+commit=73c41842 Advance Gauntlet graphics baseline
+snapshot=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+dump=/tmp/gauntdl-73c41842-e27b-f420.png
+log=/tmp/gauntdl-73c41842-e27b-f420.log
+
+f420 frameHash=0x96f6b24f
+direct/setup=4831/2404 drawPackets=22410 texWrites=4795569
+framebuffer=640x480:307200:307200
+colors=2
+dominant=#31106B
+```
+
+Visual inspection: this is a near-solid purple screen, not the current
+`e27b9a6b6d3d` non-flat diagonal/noisy-band family. So the available e27b warm
+state is not sufficient by itself to reproduce the current non-flat output in
+the older `73c41842` code. The 2183-color family requires both the e27b lineage
+and later code changes after that historical checkpoint.
+
 ### 7. Promote Only Visible or Causal Fixes
 
 Keep these diagnostic-only unless they become part of a proven causal repair:
@@ -620,5 +642,7 @@ are not enough.
    `FIX_VOODOO_MAME_CMD_FIFO_MODEL` preset.
 5. Treat `FULL_INDEXED_SOURCE_PAYLOADS=0` as non-causal for the current f420
    visual state unless a narrower earlier-frame oracle proves otherwise.
-6. Preserve the current assembly/last-writer tracing as diagnostics, but stop
+6. Do not use `73c41842` as a direct oracle for the current e27b family. It can
+   load the snapshot, but it collapses to a two-color screen.
+7. Preserve the current assembly/last-writer tracing as diagnostics, but stop
    treating transient `invalid-standard-window` as the main repair target.
