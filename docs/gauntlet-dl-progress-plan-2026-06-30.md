@@ -310,11 +310,117 @@ oracle. The MAME-gradient path is useful as a negative control because it
 changes counters heavily, but it currently drives every sampled textured pixel
 to zero. Do not promote those flags as the next fix.
 
-Next better probe: focus on texture address/data validity and command-FIFO
-window validity around the `0x0180A8CB` setup family. The persistent signs are
-still `textureMap=writes=0:nz=0:zero=0:touched=0` at f220, concentrated
-sampling in the later f420 trace, and the `cmdstop=invalid-standard-window`
-failure immediately after this packet family.
+### e27b f420 Texture/Q Control Matrix
+
+The same W/Q controls were re-run against the better current visual oracle,
+`e27b9a6b6d3d` warm state at f420, because the f220 oracle above is the broken
+`0xd1549bb3` stride family. Baseline f420 remains:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+direct/setup=6028/3002 drawPackets=21375 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+textured=tri:12850:covered:1330:rejected:11520:pixels:114141590:zero:36703663
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/...
+```
+
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED=1` plus
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES=1` shows the first dominant
+covered triangle repeatedly sampling the same narrow texture address band:
+
+```text
+[GAUNTDL:VOODOO-TEXSAMPLE]
+st=(0.005,3.516) xy=(0,3) size=256x256
+mode=0x8C24100F lod=0x000020C6 regbase=0x00005D82 base=0x02F120
+addr=0x02F420 word=0x000000DA raw=0x00DA result=0xDEB5
+pc=0xffffffff800c4e5c
+
+[GAUNTDL:VOODOO-TEXSAMPLE]
+st=(1.502,3.516) xy=(1,3) size=256x256
+mode=0x8C24100F lod=0x000020C6 regbase=0x00005D82 base=0x02F120
+addr=0x02F421 word=0x000000DA raw=0x0000 result=0x0000
+near=+1:0x02F424=0x3CF34001
+pc=0xffffffff800c4e5c
+```
+
+The final bucket summary for that run matches the earlier texture sample
+profile:
+
+```text
+texsamp=114141590/0x000510/0x781410
+raw0x0000:68424466,0x0054:5754633,0x00C6:5753609,0x000D:4846839
+rgb0x0000:36703663,0x0001:2437899,0x0002:1896688,0x0003:1353689
+addr0x02F000:89207680,0x00C000:1569312,0x00D000:1569312,0x00B000:1569236
+```
+
+That makes the problem more specific than "no texture uploads": texture memory
+is populated, but the hot sampler path is spending most of its time in a tiny
+address neighborhood under `base=0x02F120`.
+
+Two f420 W/Q controls were then run without sample tracing:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE=1
+  frameHash=0x035dcece
+  frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+  direct/setup=6028/3002 drawPackets=21375 texWrites=4296625
+  textured zero=36703663
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE=1
+  frameHash=0x035dcece
+  frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+  direct/setup=6028/3002 drawPackets=21375 texWrites=4296625
+  textured zero=36703603
+```
+
+The dumped PPMs for baseline sample trace, perspective-divide, and
+perspective-interpolate are byte-identical:
+
+```text
+aac2b0bd684a02d7eece6ddcda9aca4781d9db0d7542f20ba062d03812afd24a
+```
+
+Conclusion: W/Q use is still worth comparing against MAME, but the current
+flags are not a visual fix for either the f220 bad family or the f420 e27b
+visual oracle. The stronger next probe is texture address/layout calculation:
+for the same `0x0180A8CB` triangles, compare current resolved base/LOD/size and
+sample byte addresses against a MAME-style fetch model without changing the
+drawn image first.
+
+### FIFO Alias Control
+
+A focused non-MAME command FIFO trace for the f220 stop word `0xbc292a85`
+showed that the value is not a mysterious Type3 field-order bug. It is a real
+FIFO payload word written at logical `0x000c6014` and later read through storage
+alias `0x14` as if it were a command:
+
+```text
+stop reason=invalid-standard-window cmd=0xbc292a85 type=5 words=337234
+rd=0x00000014 storage=0x00014 readValid=1 storedLogical=0x000c6014
+validWindow=1..64/64 next=0x0180a8cb/0x473fb400
+w0=0x00014:v1/lg0x000c6014/cur0xbc292a85/last=fifo/seq6/lg0x000c6014/addr0x000c6014/val0xbc292a85/pc0xffffffff800c4e5c
+w1=0x00018:v1/lg0x000c6018/cur0x0180a8cb/last=fifo/seq7/lg0x000c6018/addr0x000c6018/val0x0180a8cb/pc0xffffffff800c4e5c
+```
+
+The broad MAME command-FIFO preset remains a negative control, not a fix. At
+f220 it removes the final `cmdstop`, but also drops all textured triangle work
+and keeps the same bad visible hash:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL=1
+frameHash=0xd1549bb3
+direct/setup=301/134 drawPackets=8743 texWrites=108005
+textured=tri:0:covered:0:rejected:0:pixels:0:zero:0
+packetTypes=0:11,1:11213,2:0,3:8743,4:31720,5:5712,6:1,7:0
+```
+
+Conclusion: keep FIFO ownership diagnostics, but do not promote
+`FIX_VOODOO_MAME_CMD_FIFO_MODEL` and do not treat the latest
+`invalid-standard-window` alone as the main repair target. The trace proves a
+read-window/storage alias problem exists; the visual oracle still says the next
+high-value work is texture layout/sampling around the active e27b f420 draw
+family.
 
 ## 2026-06-30 Execution Update
 
@@ -936,29 +1042,35 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Reproduce or bracket the older `0x772ab040` visual scene family. The original
+1. Add a non-mutating texture fetch comparison trace for the active
+   `0x0180A8CB` e27b/f420 family. It should print current vs MAME-style
+   resolved texture width/height/base, target LOD, clamp bits, sample `x/y`, and
+   byte address for the first covered pixels, while still drawing with the
+   current path. This is the narrowest next probe because f420 now proves W/Q
+   flags are image-identical and the sampler is concentrated near `0x02F420`.
+2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
    A cold f180 rerun at `73c41842` is still flat-fill. The available sibling
    `e27b9a6b6d3d` snapshot does produce a distinct non-flat f420 image, so use
    it as the current best alternate visual oracle while continuing to watch for
    the missing `446392c984c8` state.
-2. Use a visual oracle, not just counters:
+3. Use a visual oracle, not just counters:
    `frameHash`, SHA, histogram, and a saved PNG for f420. `0x44d3a578` with the
    four-color `#52EB9C` histogram is the current flat family; `0x035dcece` with
    2183 colors is the current non-flat sibling family; `0x772ab040` with
    `292034/291360` was the older scene family.
-3. Keep the stride regression guard from this pass:
+4. Keep the stride regression guard from this pass:
    `0xd1549bb3`, `0xBC292A85`, and `direct/setup=301/134` mean the bad
    `0x8000` indexed-source stride family is back.
-4. Compare our CMDFIFO model against current MAME `voodoo_2.cpp` semantics:
+5. Compare our CMDFIFO model against current MAME `voodoo_2.cpp` semantics:
    mapped write swizzling, `address_min/address_max`, `holes`, `depth`, and
    `read_index` should be treated as one causal unit. Do this as tracing or a
    narrow model fix, not as packet dropping or the broad existing
    `FIX_VOODOO_MAME_CMD_FIFO_MODEL` preset.
-5. Treat `FULL_INDEXED_SOURCE_PAYLOADS=0` as non-causal for the current f420
+6. Treat `FULL_INDEXED_SOURCE_PAYLOADS=0` as non-causal for the current f420
    visual state unless a narrower earlier-frame oracle proves otherwise.
-6. Do not use `73c41842` as a direct oracle for the current e27b family. It can
+7. Do not use `73c41842` as a direct oracle for the current e27b family. It can
    load the snapshot, but it collapses to a two-color screen.
-7. Preserve the current assembly/last-writer tracing as diagnostics, but stop
+8. Preserve the current assembly/last-writer tracing as diagnostics, but stop
    treating transient `invalid-standard-window` as the main repair target.
