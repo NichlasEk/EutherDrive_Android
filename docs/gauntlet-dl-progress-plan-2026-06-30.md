@@ -219,34 +219,47 @@ code=(cmd >> 3) & 7 = 1
 flags=((cmd >> 10) & 0xff) | (((cmd >> 22) & 0xf) << 16) = 0x0006002a
 ```
 
-With the current field order, bits 10, 11, 13, 15, and 16 mean each vertex is
-decoded as:
+A raw-packet-only hand read initially made the field order look suspicious. The
+trace-only field decoder below rejects that candidate by printing the exact
+word index consumed by the current decoder.
+
+Follow-up trace-only code now adds
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_FIELDS=1`. With a packet trace limit of
+1, the first packet decodes as:
 
 ```text
-x, y, r, g, b, skip, q, s, t, q2
+[GAUNTDL:VOODOO-TYPE3-FIELDS] cmd=0x0180a8cb words=19 count=3 code=1 setup=0x0006002a decode=current pc=0xffffffff800c4e5c
+[GAUNTDL:VOODOO-TYPE3-FIELDS] v0 w1:x=0x00000000(0) w2:y=0xc681cc00(-16614) w3:alpha11=0x437f0000(255) w4:wb13=0x3f800000(1) w5:s0_15=0x00000000(0) w6:t0_15=0x432b87d1(171.530533)
+[GAUNTDL:VOODOO-TYPE3-FIELDS] v1 w7:x=0x473fb400(49076) w8:y=0x00000000(0) w9:alpha11=0x437f0000(255) w10:wb13=0x3f800000(1) w11:s0_15=0x43fd5b56(506.713562) w12:t0_15=0xbc292a85(-0.0103250789)
+[GAUNTDL:VOODOO-TYPE3-FIELDS] v2 w13:x=0x00000000(0) w14:y=0x00000000(0) w15:alpha11=0x437f0000(255) w16:wb13=0x3f800000(1) w17:s0_15=0x00000000(0) w18:t0_15=0xbc292a85(-0.0103250789)
 ```
 
-The first packet therefore starts as:
+For `0x0180A8CB`, command bit 10 is not set, while bits 11, 13, and 15 are set.
+That means the current consumer reads:
 
 ```text
-v0 x=0x00000000 y=0xc681cc00 r=0x437f0000 g=0x3f800000 b=0x00000000
-   skip=0x432b87d1 q=0x473fb400 s=0x00000000 t=0x437f0000 q2=0x3f800000
+x, y, alpha, Wb, S0, T0
 ```
 
-That field assignment lines up suspiciously with the later texture-covered
-triangle:
+The MAME `voodoo_2.cpp` packet-3 implementation uses the same order: X/Y are
+always read, bit 11 is unpacked alpha, bit 13 sets Wb/W0/W1, and bit 15 sets
+S0/T0. Reference:
+<https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_2.cpp>.
+The packet field order is therefore not the immediate visual bug.
 
-```text
-xy=(0.000,-16231.000)/(49076.000,382.000)/(0.000,382.000)
-stq=(0.000,0.172,0.001000)/(0.507,0.000,0.001000)/(0.000,0.000,0.001000)
-```
+The stronger next target is how this bring-up renderer uses the decoded setup
+state:
 
-The raw words contain plausible screen coordinates such as `0x473fb400`
-(`49076.0`) and `0x43bf0000` (`382.0`), but the current decode also uses nearby
-words as texture/q data in a way that can produce huge clipped triangles and
-texture-address collapse. The next low-risk code step is a trace-only Type3
-field decoder that prints each consumed word index and interpreted float. That
-will make the wrong-order candidate testable before changing runtime decode.
+1. We currently consume alpha but do not store it in `SetupVertex` or set alpha
+   gradients.
+2. We store only one texture `Q` field where MAME keeps Wb, W0, and W1 separate.
+3. The default texture path linearly samples S/T and only uses W/Q under
+   experiment/fix flags; MAME writes W and S/T setup gradients before drawing.
+
+Next runtime tests should compare `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE`,
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE`, and
+the MAME-style setup-gradient/fixed-fetch flags against the same f220/f420
+oracles.
 
 ## 2026-06-30 Execution Update
 

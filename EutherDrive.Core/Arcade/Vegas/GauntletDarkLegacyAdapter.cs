@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -26599,6 +26600,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
     private readonly int _traceType3PacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS_LIMIT"), 96);
+    private readonly bool _traceType3PacketFields =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_FIELDS"));
     private readonly bool _traceType3NonFiniteTexture =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_NONFINITE_ST"));
     private readonly int _traceType3NonFiniteTextureLimit =
@@ -30413,7 +30416,142 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"code={(command >> 3) & 7u} flags=0x{(command >> 10) & 0xffffu:x4} " +
             $"rd=0x{_cmdFifoReadIndex * 4:x8} mame={(_fixMameCommandFifoModel ? 1 : 0)} " +
             $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} packet=0x{packet}{pcStatus}");
+        TraceType3PacketFields(command, wordsNeeded, pcStatus);
     }
+
+    private void TraceType3PacketFields(uint command, int wordsNeeded, string pcStatus)
+    {
+        if (!_traceType3PacketFields)
+            return;
+
+        int count = (int)((command >> 6) & 0xfu);
+        int source = 1;
+        uint setupFlags = ((command >> 10) & 0xffu) | (((command >> 22) & 0xfu) << 16);
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE3-FIELDS] cmd=0x{command:x8} words={wordsNeeded} count={count} " +
+            $"code={(command >> 3) & 7u} setup=0x{setupFlags:x8} decode=current{pcStatus}");
+
+        for (int vertex = 0; vertex < count; vertex++)
+        {
+            StringBuilder line = new(320);
+            line.Append($"[GAUNTDL:VOODOO-TYPE3-FIELDS] v{vertex}");
+            if (!AppendType3Field(line, wordsNeeded, ref source, "x") ||
+                !AppendType3Field(line, wordsNeeded, ref source, "y"))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+
+            if (((command >> 28) & 1u) != 0)
+            {
+                if (((command >> 10) & 3u) != 0 &&
+                    !AppendType3Field(line, wordsNeeded, ref source, "argb", asFloat: false))
+                {
+                    Console.WriteLine(line);
+                    return;
+                }
+            }
+            else
+            {
+                if (((command >> 10) & 1u) != 0)
+                {
+                    if (!AppendType3Field(line, wordsNeeded, ref source, "r") ||
+                        !AppendType3Field(line, wordsNeeded, ref source, "g") ||
+                        !AppendType3Field(line, wordsNeeded, ref source, "b"))
+                    {
+                        Console.WriteLine(line);
+                        return;
+                    }
+                }
+                if (((command >> 11) & 1u) != 0 &&
+                    !AppendType3Field(line, wordsNeeded, ref source, "alpha11"))
+                {
+                    Console.WriteLine(line);
+                    return;
+                }
+            }
+
+            if (((command >> 12) & 1u) != 0 &&
+                !AppendType3Field(line, wordsNeeded, ref source, "z12"))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+            if (((command >> 13) & 1u) != 0 &&
+                !AppendType3Field(line, wordsNeeded, ref source, "wb13"))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+            if (((command >> 14) & 1u) != 0 &&
+                !AppendType3Field(line, wordsNeeded, ref source, "w0_14"))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+            if (((command >> 15) & 1u) != 0)
+            {
+                if (!AppendType3Field(line, wordsNeeded, ref source, "s0_15") ||
+                    !AppendType3Field(line, wordsNeeded, ref source, "t0_15"))
+                {
+                    Console.WriteLine(line);
+                    return;
+                }
+            }
+            if (((command >> 16) & 1u) != 0 &&
+                !AppendType3Field(line, wordsNeeded, ref source, "w1_16"))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+            if (((command >> 17) & 1u) != 0)
+            {
+                if (!AppendType3Field(line, wordsNeeded, ref source, "s1_17") ||
+                    !AppendType3Field(line, wordsNeeded, ref source, "t1_17"))
+                {
+                    Console.WriteLine(line);
+                    return;
+                }
+            }
+
+            Console.WriteLine(line);
+        }
+
+        int dummyWords = (int)(command >> 29);
+        for (int i = 0; i < dummyWords; i++)
+        {
+            StringBuilder line = new(96);
+            line.Append("[GAUNTDL:VOODOO-TYPE3-FIELDS] ");
+            if (!AppendType3Field(line, wordsNeeded, ref source, $"dummy{i}", asFloat: false))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+            Console.WriteLine(line);
+        }
+
+        if (source != wordsNeeded)
+            Console.WriteLine($"[GAUNTDL:VOODOO-TYPE3-FIELDS] consumed={source}/{wordsNeeded}");
+    }
+
+    private bool AppendType3Field(StringBuilder builder, int wordsNeeded, ref int source, string name, bool asFloat = true)
+    {
+        if (source >= wordsNeeded || source >= _fifoBuffer.Count)
+        {
+            builder.Append($" w{source}:{name}=<missing>");
+            return false;
+        }
+
+        uint word = _fifoBuffer[source];
+        builder.Append($" w{source}:{name}=0x{word:x8}");
+        if (asFloat)
+            builder.Append($"({FormatDebugFloat(FloatFromRegister(word))})");
+        source++;
+        return true;
+    }
+
+    private static string FormatDebugFloat(float value)
+        => float.IsFinite(value) ? value.ToString("G9", CultureInfo.InvariantCulture) : value.ToString(CultureInfo.InvariantCulture);
 
     private string FormatFifoPacketWords(int wordsNeeded)
     {
