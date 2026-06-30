@@ -181,6 +181,73 @@ coordinates are being interpreted by the raster path, but it is not the visual
 fix. Next probe should trace raw Type3 packet words for `0x0180A8CB` and compare
 the per-vertex field decode against MAME/Voodoo setup expectations.
 
+### Type3 Packet Trace Follow-up
+
+A short f220 Type3 packet trace from the same e27b warm state confirms that the
+dominant setup family is raw packet `0x0180A8CB`, emitted from
+`pc=0xffffffff800c4e5c`:
+
+```text
+[GAUNTDL:VOODOO-TYPE3]
+cmd=0x0180a8cb words=19 count=3 code=1 flags=0x602a rd=0x0003b440 mame=0 depth=19 holes=0
+packet=0x0180a8cb/00000000/c681cc00/437f0000/3f800000/00000000/432b87d1/473fb400/00000000/437f0000/3f800000/43fd5b56/bc292a85/00000000/00000000/437f0000/3f800000/00000000/bc292a85
+pc=0xffffffff800c4e5c
+
+[GAUNTDL:VOODOO-TYPE3]
+cmd=0x0180a8cb words=19 count=3 code=1 flags=0x602a rd=0x0003b48c mame=0 depth=19 holes=0
+packet=0x0180a8cb/473fb400/00000000/437f0000/3f800000/43fd5b56/bc292a85/00000000/c681cc00/437f0000/3f800000/00000000/432b87d1/473fb400/c681cc00/437f0000/3f800000/43fd5b56/432b87d1
+pc=0xffffffff800c4e5c
+```
+
+The run ended on the current bad f220 family:
+
+```text
+frameHash=0xd1549bb3
+drawPackets=12791 directTriangles=301 setupTriangles=134 texWrites=108005
+packetTypes=0:17,1:15669,2:0,3:12791,4:46035,5:5712,6:1,7:0
+cmdstop=invalid-standard-window/0xBC292A85/337234/27020/0x14/0x14/v1/lg0xC6014/vw64/0x0180A8CB/0x473FB400/pc=0xFFFFFFFF800C4E5C/...
+voodoo textured=tri:4048:covered:540:rejected:3508:pixels:58890240:zero:21497265:rejects:nf:0:deg:0:clip:2968:empty:540
+textureMap=writes=0:nz=0:zero=0:touched=0
+framebuffer=640x480 stride=2560 nonBlack=307200 colored=297042
+```
+
+Current command decode for `0x0180A8CB` derives:
+
+```text
+count=(cmd >> 6) & 0xf = 3
+code=(cmd >> 3) & 7 = 1
+flags=((cmd >> 10) & 0xff) | (((cmd >> 22) & 0xf) << 16) = 0x0006002a
+```
+
+With the current field order, bits 10, 11, 13, 15, and 16 mean each vertex is
+decoded as:
+
+```text
+x, y, r, g, b, skip, q, s, t, q2
+```
+
+The first packet therefore starts as:
+
+```text
+v0 x=0x00000000 y=0xc681cc00 r=0x437f0000 g=0x3f800000 b=0x00000000
+   skip=0x432b87d1 q=0x473fb400 s=0x00000000 t=0x437f0000 q2=0x3f800000
+```
+
+That field assignment lines up suspiciously with the later texture-covered
+triangle:
+
+```text
+xy=(0.000,-16231.000)/(49076.000,382.000)/(0.000,382.000)
+stq=(0.000,0.172,0.001000)/(0.507,0.000,0.001000)/(0.000,0.000,0.001000)
+```
+
+The raw words contain plausible screen coordinates such as `0x473fb400`
+(`49076.0`) and `0x43bf0000` (`382.0`), but the current decode also uses nearby
+words as texture/q data in a way that can produce huge clipped triangles and
+texture-address collapse. The next low-risk code step is a trace-only Type3
+field decoder that prints each consumed word index and interpreted float. That
+will make the wrong-order candidate testable before changing runtime decode.
+
 ## 2026-06-30 Execution Update
 
 Implemented the first work slice and used it to isolate the current plateau.
