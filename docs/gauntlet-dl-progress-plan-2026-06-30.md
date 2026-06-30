@@ -126,9 +126,23 @@ before the older `state+0x08` texture-source investigation can continue.
 Use modern MAME as the primary reference for Midway Vegas machine behavior and
 Voodoo command FIFO semantics:
 
-- https://github.com/mamedev/mame/blob/master/src/mame/midway/vegas.cpp
+- https://github.com/mamedev/mame/blob/master/src/mame/williams/vegas.cpp
 - https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo.cpp
 - https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_2.cpp
+
+The old `src/mame/midway/vegas.cpp` path is stale. GitHub tree lookup on
+2026-06-30 shows the current Vegas driver at `src/mame/williams/vegas.cpp`.
+The useful MAME comparison points for this slice are:
+
+- `vegas.cpp`: Gauntlet DL is documented as Vegas/Durango + Vegas SIO +
+  Voodoo 2 with 2 TMUs at 4 MB each.
+- `voodoo_2.cpp`: CMDFIFO write handling owns `depth`, `holes`,
+  `address_min/address_max`, and `read_index` as one model.
+- `voodoo_2.cpp`: CMDFIFO only executes when `depth >= words_needed(command)`;
+  the packet word counts come from the command low-three-bit packet type.
+- `voodoo_2.cpp`: mapped register writes become CMDFIFO writes when
+  `cmdfifo_enable()` is set, with bit-18 byte swizzling applied before the
+  direct FIFO write.
 
 Use MAME 2003-Plus only as a secondary readability reference for older Voodoo
 raster/texture code. It does not appear to carry the useful Vegas/Gauntlet DL
@@ -467,6 +481,50 @@ The old documented visual-scene family may therefore depend on the missing
 `446392c984c8` warm snapshot/state lineage, or on a narrower runtime condition
 than commit selection alone.
 
+Missing-snapshot search and alternate lineage check:
+
+```text
+missing:
+  /tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm
+
+searched:
+  /tmp
+  /home/nichlas
+  /run/media/nichlas
+
+available sibling:
+  /tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+```
+
+Current HEAD from the available `e27b9a6b6d3d` f180 warm state produces a
+different f420 visual family:
+
+```text
+dump=/tmp/gauntdl-current-e27b-f420.png
+log=/tmp/gauntdl-current-e27b-f420.log
+
+f420 frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+direct/setup=6028/3002 drawPackets=21375 texWrites=4296625
+framebuffer=640x480:305614:305508
+colors=2183
+dominant=#000C00
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/...
+```
+
+The saved PNG is still not a real scene, but it is no longer the four-color
+flat field. It shows a large diagonal overdraw shape with a noisy horizontal
+band. This makes `e27b9a6b6d3d` the best currently reproducible visual-state
+oracle until the missing `446392c984c8` snapshot is found.
+
+Conclusion: snapshot lineage is now proven to matter independently of commit
+selection. The next repair loop should preserve both visual families:
+
+- `head-default-after-stridefix-f180.warm` -> flat `0x44d3a578`/four-color
+  family;
+- `gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm` ->
+  non-flat `0x035dcece`/2183-color family.
+
 ### 7. Promote Only Visible or Causal Fixes
 
 Keep these diagnostic-only unless they become part of a proven causal repair:
@@ -489,18 +547,22 @@ are not enough.
 
 1. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
-   is no longer present. A cold f180 rerun at `73c41842` is still flat-fill, so
-   first try to locate an archived copy or alternate descendant of that snapshot
-   before spending much more time on code-only bisect.
+   is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
+   A cold f180 rerun at `73c41842` is still flat-fill. The available sibling
+   `e27b9a6b6d3d` snapshot does produce a distinct non-flat f420 image, so use
+   it as the current best alternate visual oracle while continuing to watch for
+   the missing `446392c984c8` state.
 2. Use a visual oracle, not just counters:
    `frameHash`, SHA, histogram, and a saved PNG for f420. `0x44d3a578` with the
-   four-color `#52EB9C` histogram is the current bad visual family; `0x772ab040`
-   with `292034/291360` was the older scene family.
+   four-color `#52EB9C` histogram is the current flat family; `0x035dcece` with
+   2183 colors is the current non-flat sibling family; `0x772ab040` with
+   `292034/291360` was the older scene family.
 3. Keep the stride regression guard from this pass:
    `0xd1549bb3`, `0xBC292A85`, and `direct/setup=301/134` mean the bad
    `0x8000` indexed-source stride family is back.
-4. Once the first visual drift commit is identified, inspect only the behavior
-   it changes. Do not promote FIFO packet drops, MAME FIFO toggles, or
-   BGLoadModel payload mutations unless they improve the saved f420 image.
+4. Compare our CMDFIFO model against current MAME `voodoo_2.cpp` semantics:
+   mapped write swizzling, `address_min/address_max`, `holes`, `depth`, and
+   `read_index` should be treated as one causal unit. Do this as tracing or a
+   narrow model fix, not as packet dropping.
 5. Preserve the current assembly/last-writer tracing as diagnostics, but stop
    treating transient `invalid-standard-window` as the main repair target.
