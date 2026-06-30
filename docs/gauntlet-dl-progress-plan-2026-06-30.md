@@ -371,16 +371,84 @@ decoder is either starting one word late for this paired write pattern, or the
 FIFO accounting is making a header-style word visible before the preceding
 payload/header pair is consumed as intended.
 
+Follow-up paired tracing with:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY_PCS=ffffffff801066c4,ffffffff801066c8,ffffffff801031a8
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY_COMMANDS=0x00011609,0x00012609,0xff802000,0xffffffff
+```
+
+shows the actual pattern:
+
+```text
+0xffffffff
+0x00011609
+0xff802000
+0x00012609
+0xff802000
+```
+
+The assembly trace runs before the per-write decode call. In the non-MAME
+baseline path, `0x00011609 + 0xff802000` becomes a complete Type1 packet as
+soon as the payload word arrives, then decode consumes both words and advances
+`rd` to the next header. The following `0x00012609` is therefore briefly visible
+with `depth=1` until its own payload arrives. The final `cmdstop` can simply be
+the last transient partial-packet state observed at a frame boundary, not the
+root visual blocker.
+
 Next success criteria:
 
 ```text
-Identify why decode starts on the 801066c4 0x00012609 word while the adjacent
-801066c8 payload-looking 0xff802000 word sits at rd-4. The next trace should
-capture the full 801066c4/801066c8 pair and the read-index transition that
-makes the FIFO expose the second word as a packet header.
+Stop treating the latest cmdstop row as the primary blocker unless it is shown
+to persist across payload arrival. Use frame dumps, visible hashes, and targeted
+decode/write traces as the oracle.
 ```
 
-### 6. Promote Only Visible or Causal Fixes
+### 6. Current Visual State: Restored Counters, Flat Output - Active
+
+Fresh restored-baseline dump:
+
+```text
+/tmp/gauntdl-restored-f420-20260630.ppm
+/tmp/gauntdl-restored-f420-20260630.png
+
+frameHash=0x44d3a578
+frameSha256=df2d3c5b979cfaa956134fd7e3cd7ab4c891e04e96bb85443299cf354eb52dee
+direct/setup=3288/49236 drawPackets=20459 texWrites=6903947
+framebuffer=640x480:307200:307200
+```
+
+The image is not a useful scene. It is almost entirely flat `#52EB9C`, with a
+thin `#FF4100` diagonal:
+
+```text
+colors=4
+306877 x #52EB9C
+321    x #FF4100
+1      x #31106B
+1      x #42FFF7
+```
+
+A cold f180-to-f420 control with:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS=0
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/full-off-after-stridefix-f180.warm
+```
+
+still produced the same visible hash and SHA:
+
+```text
+frameHash=0x44d3a578
+frameSha256=df2d3c5b979cfaa956134fd7e3cd7ab4c891e04e96bb85443299cf354eb52dee
+```
+
+The counters changed (`direct/setup=2805/1383`, `drawPackets=24621`,
+`texWrites=6244835`), but the final framebuffer histogram was identical. So the
+flat-output regression is not caused only by the full indexed-source payload
+flag. It is a broader drift from the older `0x772ab040` visual scene family.
+
+### 7. Promote Only Visible or Causal Fixes
 
 Keep these diagnostic-only unless they become part of a proven causal repair:
 
@@ -400,16 +468,19 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Trace the paired `801066c4`/`801066c8` command-FIFO writes for the
-   `0x00011609`, `0x00012609`, `0xff802000`, and `0xffffffff` pattern. Capture
-   FIFO destination address, logical index, read index, depth, and whether the
-   read pointer advances past the first word of each pair.
-2. Use `/tmp/eutherdrive-gauntlet-probe/head-default-after-stridefix-f180.warm`
-   as the warm start and keep `EUTHERDRIVE_GAUNTDL_SUMMARY=1` on every probe.
-3. Keep `0xd1549bb3`, `0xBC292A85`, and `direct/setup=301/134` as a regression
-   guard for any future BGLoadModel stride/source experiment.
-4. Compare `DecodeFifoType1` against the observed paired write ordering before
-   changing packet semantics. The leading hypothesis is read-window alignment,
-   not missing writer-side data.
-5. Promote no additional BGLoadModel/Voodoo experiments unless they improve
-   visible frames or restore the older high-work f420 counters.
+1. Reproduce or bracket the older `0x772ab040` visual scene family. The original
+   warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
+   is no longer present, so use git history around `73c41842` through
+   `329971c3` as the first comparison range.
+2. Use a visual oracle, not just counters:
+   `frameHash`, SHA, histogram, and a saved PNG for f420. `0x44d3a578` with the
+   four-color `#52EB9C` histogram is the current bad visual family; `0x772ab040`
+   with `292034/291360` was the older scene family.
+3. Keep the stride regression guard from this pass:
+   `0xd1549bb3`, `0xBC292A85`, and `direct/setup=301/134` mean the bad
+   `0x8000` indexed-source stride family is back.
+4. Once the first visual drift commit is identified, inspect only the behavior
+   it changes. Do not promote FIFO packet drops, MAME FIFO toggles, or
+   BGLoadModel payload mutations unless they improve the saved f420 image.
+5. Preserve the current assembly/last-writer tracing as diagnostics, but stop
+   treating transient `invalid-standard-window` as the main repair target.
