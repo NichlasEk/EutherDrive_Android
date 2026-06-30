@@ -26886,6 +26886,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _lastCommandFifoDecodeStopDepth;
     private int _lastCommandFifoDecodeStopReadIndex;
     private int _lastCommandFifoDecodeStopStorageIndex;
+    private int _lastCommandFifoDecodeStopStoredLogicalIndex;
+    private int _lastCommandFifoDecodeStopValidWindowWords;
+    private bool _lastCommandFifoDecodeStopReadValid;
     private uint _lastCommandFifoDecodeStopNext1;
     private uint _lastCommandFifoDecodeStopNext2;
     private ulong _lastCommandFifoDecodeStopPc;
@@ -26949,6 +26952,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"cmdstop={_lastCommandFifoDecodeStopReason}/0x{_lastCommandFifoDecodeStopCommand:X8}/" +
             $"{_lastCommandFifoDecodeStopWordsNeeded}/{_lastCommandFifoDecodeStopDepth}/" +
             $"0x{_lastCommandFifoDecodeStopReadIndex * 4:X}/0x{_lastCommandFifoDecodeStopStorageIndex * 4:X}/" +
+            $"v{(_lastCommandFifoDecodeStopReadValid ? 1 : 0)}/lg0x{_lastCommandFifoDecodeStopStoredLogicalIndex * 4:X}/" +
+            $"vw{_lastCommandFifoDecodeStopValidWindowWords}/" +
             $"0x{_lastCommandFifoDecodeStopNext1:X8}/0x{_lastCommandFifoDecodeStopNext2:X8}{pcStatus}/" +
             $"last=0x{_lastDecodedCommandFifoCommand:X8}:{_lastDecodedCommandFifoWords}:" +
             $"0x{_lastDecodedCommandFifoPacketStart * 4:X}:0x{_lastDecodedCommandFifoReadAfter * 4:X}/" +
@@ -27225,6 +27230,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         _cmdFifoValid[storageIndex] = true;
         _fifoWriteCount++;
         TraceCommandFifoValidity("write", storageIndex);
+        if (!_fixMameCommandFifoModel)
+            TraceCommandFifoStorageWrite(address, value);
 
         if (!_cmdFifoReadPointerWritten)
         {
@@ -28648,9 +28655,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         _lastCommandFifoDecodeStopWordsNeeded = wordsNeeded;
         _lastCommandFifoDecodeStopDepth = _cmdFifoDepth;
         _lastCommandFifoDecodeStopReadIndex = _cmdFifoReadIndex;
-        _lastCommandFifoDecodeStopStorageIndex = CommandFifoStorageIndex(_cmdFifoReadIndex);
-        _lastCommandFifoDecodeStopNext1 = _cmdFifoRam[CommandFifoStorageIndex(_lastCommandFifoDecodeStopStorageIndex + 1)];
-        _lastCommandFifoDecodeStopNext2 = _cmdFifoRam[CommandFifoStorageIndex(_lastCommandFifoDecodeStopStorageIndex + 2)];
+        _lastCommandFifoDecodeStopStorageIndex = CommandFifoReadStorageIndex(_cmdFifoReadIndex);
+        _lastCommandFifoDecodeStopReadValid = _cmdFifoValid[_lastCommandFifoDecodeStopStorageIndex];
+        _lastCommandFifoDecodeStopStoredLogicalIndex = _cmdFifoStorageLogicalIndex[_lastCommandFifoDecodeStopStorageIndex];
+        _lastCommandFifoDecodeStopValidWindowWords =
+            CountCommandFifoValidWindowWords(_cmdFifoReadIndex, Math.Min(wordsNeeded, 64));
+        _lastCommandFifoDecodeStopNext1 = ReadCommandFifoWordAt(_cmdFifoReadIndex + 1);
+        _lastCommandFifoDecodeStopNext2 = ReadCommandFifoWordAt(_cmdFifoReadIndex + 2);
         _lastCommandFifoDecodeStopPc = pc;
         _commandFifoDecodeStopCount++;
 
@@ -28665,15 +28676,33 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
-        int readStorage = CommandFifoStorageIndex(_cmdFifoReadIndex);
-        uint next1 = _cmdFifoRam[CommandFifoStorageIndex(readStorage + 1)];
-        uint next2 = _cmdFifoRam[CommandFifoStorageIndex(readStorage + 2)];
+        int readStorage = CommandFifoReadStorageIndex(_cmdFifoReadIndex);
+        bool readValid = _cmdFifoValid[readStorage];
+        int storedLogicalIndex = _cmdFifoStorageLogicalIndex[readStorage];
+        int validWindowWords = CountCommandFifoValidWindowWords(_cmdFifoReadIndex, Math.Min(wordsNeeded, 64));
+        uint next1 = ReadCommandFifoWordAt(_cmdFifoReadIndex + 1);
+        uint next2 = ReadCommandFifoWordAt(_cmdFifoReadIndex + 2);
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-CMDFIFO] stop reason={reason} cmd=0x{command:x8} type={command & 7u} " +
             $"words={wordsNeeded} rd=0x{_cmdFifoReadIndex * 4:x8} storage=0x{readStorage * 4:x5} " +
+            $"readValid={(readValid ? 1 : 0)} storedLogical=0x{storedLogicalIndex * 4:x8} " +
+            $"validWindow={validWindowWords}/{Math.Min(wordsNeeded, 64)} " +
             $"next=0x{next1:x8}/0x{next2:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
             $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} " +
             $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
+    }
+
+    private int CountCommandFifoValidWindowWords(int start, int count)
+    {
+        int valid = 0;
+        for (int i = 0; i < count; i++)
+        {
+            if (!IsCommandFifoWordValidForRead(start + i))
+                break;
+            valid++;
+        }
+
+        return valid;
     }
 
     private bool HasCommandFifoWords(int start, int count)

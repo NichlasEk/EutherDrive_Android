@@ -201,7 +201,7 @@ f260 0xe806de53 direct/setup=1090/528
 f420 0x44d3a578 direct/setup=3288/49236
 ```
 
-### 4. Resume `state+0x08` Upload-Source Tracing From f420
+### 4. Resume `state+0x08` Upload-Source Tracing From f420 - Done
 
 The June 23 trace now matters again because render/FIFO progress is back in the
 older family. The previous texture-source conclusion was:
@@ -214,14 +214,28 @@ The descriptor at 80312998/803129a4 is stable.
 Continue upstream ownership of that Glide state word from the restored f420
 baseline. Do not use the broken `0xd1549bb3` / `0xBC292A85` path for this work.
 
-Success criteria:
+Fresh restored-baseline traces:
 
 ```text
-Focused trace shows who last writes state+0x08 before 800fe34c, and whether that
-write matches MAME/Glide expected state for the corresponding upload descriptor.
+TEXUPLOAD-CALLER-CHANGE:
+  s0=0xffffffff80262d64
+  state08=00000000->00000000
+  s6=0xffffffff80312998
+
+TRACE_MEM writes-only 0xffffffff80262d6c:4 from warm f180 to f420:
+  no writes
+
+TRACE_MEM writes-only 0xffffffff80262d64:0x20 from cold to f180:
+  pc=ffffffff800103a4 write32 ffffffff80262d64 00000000 mainram
+  no writes to state+0x08
 ```
 
-### 5. Instrument Command-FIFO Ownership If f420 Still Stalls Visibly
+Conclusion: `state+0x08` is not a late-owned field in this path. It stays at
+RAM/default zero from cold boot through the restored f420 baseline, so the
+zero copied at `800fe34c` is probably intended Glide state for this upload
+mode, not the next causal blocker.
+
+### 5. Instrument Command-FIFO Ownership If f420 Still Stalls Visibly - Active
 
 The restored f420 baseline still ends with:
 
@@ -229,16 +243,82 @@ The restored f420 baseline still ends with:
 cmdstop=invalid-standard-window/0x00012609/2/1/0x3e108/...
 ```
 
-If source-state tracing does not improve visible output, add a narrow trace
-around writes that alter command FIFO base/min/max/depth/read pointer, bulk
-write start/end indices, packets decoded immediately before the Type2/Type3
-cmdstop, and caller PC/trigger path for the write/decode.
+The first restored f420 command-FIFO profile kept the same frame hash and showed
+that the dominant path is still `800fe5d4` bulk texture upload work, not a new
+BGLoadModel stride regression:
+
+```text
+f420 frameHash=0x44d3a578 frameSha256=df2d3c5b979cfaa956134fd7e3cd7ab4c891e04e96bb85443299cf354eb52dee
+cmdpc 0xffffffff800fe5d4: 114009 packets / 7678870 words / 109350 type5
+cmdcall bulk-end@0xffffffff800fe5d4: 113994 packets, mostly type5-only
+```
+
+The new stop diagnostic adds read-valid/generation/window data to `cmdstop`.
+It does not change emulation behavior. A focused run with:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_COMMANDS=0x00012609
+```
+
+showed repeated stop rows like:
+
+```text
+stop reason=invalid-standard-window cmd=0x00012609 type=1 words=2
+rd=0x00000174 storage=0x00174 readValid=1 storedLogical=0x000c6174
+validWindow=1/2 next=0x0001828c/0xffffffff depth=1 valid=1
+```
+
+and the final debug status:
+
+```text
+cmdstop=invalid-standard-window/0x00012609/2/1/0x3E108/0x3E108/v1/lg0x3E108/vw1/0xBEE5888D/0x3F1140CD/pc=0xFFFFFFFF801066C4
+```
+
+Conclusion: the current restored f420 stop is a valid first word with a missing
+or stale second word (`validWindow=1/2`), not an invalid read pointer by itself.
+The next useful trace is write ownership for the packet word after each
+`0x00012609` header, especially the storage offset paired with the final
+`rd=0x3e108` stop.
+
+The storage trace was made available in the non-MAME baseline by reusing
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE` for all command FIFO
+writes when a storage offset filter is present. A first fixed-offset probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE=0x3e108,0x3e10c
+```
+
+kept the baseline stable:
+
+```text
+f420 frameHash=0x44d3a578 frameSha256=df2d3c5b979cfaa956134fd7e3cd7ab4c891e04e96bb85443299cf354eb52dee
+```
+
+but showed that the final storage offsets are reused across unrelated FIFO
+generations:
+
+```text
+storage=0x3e108 value=0x437f0000 pc=0xffffffff800c4e5c
+storage=0x3e10c value=0x3a83126f pc=0xffffffff800c4e5c
+storage=0x3e108 value=0x00010209 pc=0xffffffff8010302c
+storage=0x3e10c value=0x0c482435 pc=0xffffffff80103030
+storage=0x3e108 value=0x00000000 pc=0xffffffff800fe614
+storage=0x3e10c value=0x0d000000 pc=0xffffffff800fe60c
+storage=0x3e108 value=0x00000000 pc=0xffffffff800fe5d4
+storage=0x3e10c value=0x00000000 pc=0xffffffff800fe5d4
+```
+
+This is another useful negative: fixed storage offsets do not identify the
+final `0x00012609` producer because the command FIFO storage is recycled. The
+next trace should be dynamic: when decode stops on `0x00012609`, report the
+last write metadata for the stop storage and stop storage+1.
 
 Success criteria:
 
 ```text
-First wrong transition identified as either host-side FIFO register state,
-bulk writer bookkeeping, packet-window validation, or snapshot serialization.
+For the final 0x00012609 stop, identify whether rd+4 was never written,
+was invalidated/consumed early, or was overwritten by a later bulk/write path.
 ```
 
 ### 6. Promote Only Visible or Causal Fixes
@@ -261,12 +341,15 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Resume the `state+0x08` ownership trace from the restored f420 baseline.
+1. Add a dynamic last-writer trace for command FIFO storage words. On
+   `cmdstop=...0x00012609`, print last writer PC/value/logical address for
+   the stop storage word and stop storage+1.
 2. Use `/tmp/eutherdrive-gauntlet-probe/head-default-after-stridefix-f180.warm`
    as the warm start and keep `EUTHERDRIVE_GAUNTDL_SUMMARY=1` on every probe.
 3. Keep `0xd1549bb3`, `0xBC292A85`, and `direct/setup=301/134` as a regression
    guard for any future BGLoadModel stride/source experiment.
-4. If `state+0x08` tracing does not explain the blank/incorrect visible state,
-   instrument the restored f420 Type2/Type3 cmdstop window around `0x00012609`.
+4. If the last writer shows `rd+4` was valid and then consumed/invalidated,
+   trace valid-bit clearing for that storage pair; if it was never valid, trace
+   the host packet assembly around `801066c4`.
 5. Promote no additional BGLoadModel/Voodoo experiments unless they improve
    visible frames or restore the older high-work f420 counters.
