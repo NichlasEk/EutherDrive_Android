@@ -26611,6 +26611,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceType3NonFiniteTextureLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_NONFINITE_ST_LIMIT"), 32);
     private readonly bool _traceType5Payloads = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOADS") == "1";
+    private readonly ulong[] _traceType5PayloadTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_WORDS"));
+    private readonly int _traceType5PayloadTargetLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_LIMIT"), 64);
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
     private readonly bool _traceCommandFifoModel = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL") == "1";
@@ -26898,6 +26902,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _type3NonFiniteTextureTraceCount;
     private int _type5PayloadTraceCount;
     private int _type5PayloadFocusedZeroTargetTraceCount;
+    private int _type5PayloadFocusedTargetTraceCount;
     private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
     private int _commandFifoModelTraceCount;
@@ -26929,6 +26934,15 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint _currentCommandFifoCommand;
     private int _currentCommandFifoPacketStart;
     private int _currentCommandFifoWordsNeeded;
+    private bool _currentType5TextureWriteActive;
+    private uint _currentType5TextureWriteCommand;
+    private uint _currentType5TextureWriteSpace;
+    private uint _currentType5TextureWriteTargetStart;
+    private uint _currentType5TextureWriteTargetWord;
+    private int _currentType5TextureWriteIndex;
+    private int _currentType5TextureWriteCount;
+    private bool _currentType5TextureWriteStreaming;
+    private int _currentType5TextureWriteReadIndex;
     private int _fastFillSwapOrderTraceCount;
     private int _commandFifoValidityTraceCount;
     private int _recentVoodooEventSequence;
@@ -27864,11 +27878,14 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string type5Status = _currentType5TextureWriteActive
+            ? $" type5=cmd=0x{_currentType5TextureWriteCommand:X8}:space={_currentType5TextureWriteSpace}:targetStart=0x{_currentType5TextureWriteTargetStart:X6}:target=0x{_currentType5TextureWriteTargetWord:X6}:i={_currentType5TextureWriteIndex}/{_currentType5TextureWriteCount}:packet=0x{_currentCommandFifoPacketStart * 4:X8}:rd=0x{_currentType5TextureWriteReadIndex * 4:X8}:stream={(_currentType5TextureWriteStreaming ? 1 : 0)}"
+            : "";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXWRITE] n={++_textureWriteBucketTraceCount} bucket=0x{bucket << TextureZeroSampleBucketShift:X6} " +
             $"word=0x{wordOffset:X6} addr=0x{byteOffset:X6} value=0x{value:X8} nzb={nonZeroBytes} " +
             $"lod={lod} ts=0x{ts:X2} tt=0x{tt:X2} bpp={bytesPerTexel} seq8={(seq8Downld ? 1 : 0)} " +
-            $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8}{pcStatus}");
+            $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8}{type5Status}{pcStatus}");
     }
 
     private void WriteTextureLinear32(uint wordOffset, uint value, int bytesPerTexel)
@@ -30601,41 +30618,64 @@ internal class VoodooBringupBackend : IVoodooBackend
         _fifoType5SpaceCounts[space & 3u]++;
         _fifoType5SpaceWordCounts[space & 3u] += count;
         TraceType5Payload(command, target, space, count);
-        for (int i = 0; i < count; i++, target++)
+        uint targetStart = target;
+        try
         {
-            uint value = streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[2 + i];
-            if (space == 3)
+            for (int i = 0; i < count; i++, target++)
             {
-                if (_fixType5TextureEndian)
-                    value = BinaryPrimitives.ReverseEndianness(value);
-                WriteTexturePort32(target, value);
+                uint value = streaming ? ReadCommandFifoStreamingWord() : _fifoBuffer[2 + i];
+                if (space == 3)
+                {
+                    _currentType5TextureWriteActive = true;
+                    _currentType5TextureWriteCommand = command;
+                    _currentType5TextureWriteSpace = space;
+                    _currentType5TextureWriteTargetStart = targetStart;
+                    _currentType5TextureWriteTargetWord = target;
+                    _currentType5TextureWriteIndex = i;
+                    _currentType5TextureWriteCount = count;
+                    _currentType5TextureWriteStreaming = streaming;
+                    _currentType5TextureWriteReadIndex = _cmdFifoReadIndex;
+                    if (_fixType5TextureEndian)
+                        value = BinaryPrimitives.ReverseEndianness(value);
+                    WriteTexturePort32(target, value);
+                }
+                else if (space == 0 && _fixMameCommandFifoModel)
+                {
+                    if (_experimentMameCommandFifoSpace0Endian)
+                        value = BinaryPrimitives.ReverseEndianness(value);
+                    int storageIndex = CommandFifoStorageIndex((int)target);
+                    _cmdFifoRam[storageIndex] = value;
+                    RecordCommandFifoStorageLastWrite(
+                        storageIndex,
+                        (int)target,
+                        (int)(target << 2),
+                        value,
+                        CmdFifoStorageWriteSourceType5Space0);
+                }
+                else if (space is 0 or 2)
+                    WriteLfb32(target << 2, value);
             }
-            else if (space == 0 && _fixMameCommandFifoModel)
-            {
-                if (_experimentMameCommandFifoSpace0Endian)
-                    value = BinaryPrimitives.ReverseEndianness(value);
-                int storageIndex = CommandFifoStorageIndex((int)target);
-                _cmdFifoRam[storageIndex] = value;
-                RecordCommandFifoStorageLastWrite(
-                    storageIndex,
-                    (int)target,
-                    (int)(target << 2),
-                    value,
-                    CmdFifoStorageWriteSourceType5Space0);
-            }
-            else if (space is 0 or 2)
-                WriteLfb32(target << 2, value);
+        }
+        finally
+        {
+            _currentType5TextureWriteActive = false;
         }
     }
 
     private void TraceType5Payload(uint command, uint targetWord, uint space, int count)
     {
-        if (!_traceType5Payloads)
+        bool focusedTarget = _traceType5PayloadTargetWords.Contains(targetWord);
+        if (!_traceType5Payloads && !focusedTarget)
             return;
 
         bool focusedZeroTarget = space == 3 && targetWord == 0 && count == 64;
         bool focusedAfterCap = _type5PayloadTraceCount >= 96;
-        if (focusedAfterCap)
+        if (focusedTarget)
+        {
+            if (_type5PayloadFocusedTargetTraceCount++ >= _traceType5PayloadTargetLimit)
+                return;
+        }
+        else if (focusedAfterCap)
         {
             if (!focusedZeroTarget || _type5PayloadFocusedZeroTargetTraceCount++ >= 64)
                 return;
@@ -30662,12 +30702,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint decodedLast = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(last) : last;
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
-        string tag = focusedAfterCap ? "VOODOO-TYPE5-FOCUS" : "VOODOO-TYPE5";
+        string tag = focusedTarget ? "VOODOO-TYPE5-TARGET" : focusedAfterCap ? "VOODOO-TYPE5-FOCUS" : "VOODOO-TYPE5";
         Console.WriteLine(
             $"[GAUNTDL:{tag}] cmd=0x{command:x8} space={space} targetWord=0x{targetWord:x8} " +
             $"count={count} nz={nonZero} first=0x{first:x8}/dec=0x{decodedFirst:x8} " +
             $"second=0x{second:x8}/dec=0x{decodedSecond:x8} last=0x{last:x8}/dec=0x{decodedLast:x8} " +
-            $"rd=0x{_cmdFifoReadIndex * 4:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{pcStatus}");
+            $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles}{pcStatus}");
     }
 
     private void BeginSetupTriangle()

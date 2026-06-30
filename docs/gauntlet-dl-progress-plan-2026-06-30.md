@@ -502,6 +502,59 @@ metadata and decide whether this bucket is receiving real texture bytes,
 geometry/float data, or correctly uploaded data that the sampler interprets
 through the wrong texture mode.
 
+Follow-up code now makes that correlation directly in the diagnostic stream:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_WORDS=2180
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_LIMIT=256
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=2f
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT=12
+```
+
+The target-focused f420 run stayed byte-for-byte on the same visual oracle:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+direct/setup=6028/3002 drawPackets=21375 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+```
+
+The exact Type5 packet that starts the traced bucket write is:
+
+```text
+[GAUNTDL:VOODOO-TYPE5-TARGET]
+cmd=0xc0000205 space=3 targetWord=0x00002180 count=64 nz=61
+first=0x42800000/dec=0x00008042 second=0x43000000/dec=0x00000043
+last=0xbcdf0d41/dec=0x410ddfbc
+packet=0x00024388 rd=0x00024388 depth=12474 holes=0 pc=0xffffffff800fe5d4
+```
+
+The first texture writes from that same packet are:
+
+```text
+[GAUNTDL:VOODOO-TEXWRITE]
+n=1 bucket=0x02F000 word=0x002180 addr=0x02F000 value=0x00008042
+type5=cmd=0xC0000205:space=3:targetStart=0x002180:target=0x002180:i=0/64:packet=0x00024388:rd=0x00024388:stream=0
+
+[GAUNTDL:VOODOO-TEXWRITE]
+n=4 bucket=0x02F000 word=0x002183 addr=0x02F00C value=0xBE8DCD3E
+type5=cmd=0xC0000205:space=3:targetStart=0x002180:target=0x002183:i=3/64:packet=0x00024388:rd=0x00024388:stream=0
+```
+
+That changes the working theory: the hot bucket is receiving Type5 texture-space
+data, but the raw FIFO payload starts with float-looking words
+`0x42800000/0x43000000` that only become the sparse 8-bit-looking texel words
+after the current Type5 texture endian conversion. The nearby upload payload
+trace still repeats `DWF_GEILOIN_F01` metadata, but that alone does not prove
+the source span for `packet=0x00024388`.
+
+Next focused step: trace the source/span that produced FIFO packet
+`0x00024388` or dump the 64 raw Type5 payload words for that packet and compare
+them against the expected texture stream. Do not change texture sampling yet;
+first decide whether the bad bucket is caused by wrong source selection, wrong
+FIFO target/fifo-base math, or Type5 texture endian policy.
+
 ### FIFO Alias Control
 
 A focused non-MAME command FIFO trace for the f220 stop word `0xbc292a85`
