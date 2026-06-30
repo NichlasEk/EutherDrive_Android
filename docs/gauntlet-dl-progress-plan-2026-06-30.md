@@ -314,11 +314,37 @@ final `0x00012609` producer because the command FIFO storage is recycled. The
 next trace should be dynamic: when decode stops on `0x00012609`, report the
 last write metadata for the stop storage and stop storage+1.
 
-Success criteria:
+Dynamic last-writer tracing is now available in the stop rows and final debug
+status. It keeps the restored baseline stable:
 
 ```text
-For the final 0x00012609 stop, identify whether rd+4 was never written,
-was invalidated/consumed early, or was overwritten by a later bulk/write path.
+checkpoint frame=420 frameHash=0x44d3a578
+frameSha256=df2d3c5b979cfaa956134fd7e3cd7ab4c891e04e96bb85443299cf354eb52dee
+direct/setup=3288/49236
+```
+
+The final restored f420 stop now carries the actual stop-window ownership:
+
+```text
+cmdstop=invalid-standard-window/0x00012609/2/1/0x3E108/0x3E108/v1/lg0x3E108/vw1
+w0=0x3e108:v1/lg0x0003e108/cur0x00012609
+   /last=fifo/seq63555/lg0x0003e108/addr0x0003e108
+   /val0x00012609/pc0xffffffff801066c4
+w1=0x3e10c:v0/lg0x0003e10c/cur0xbee5888d/last=none
+```
+
+Conclusion: `0x00012609` is a Type1 packet with `count=1`, so it requires one
+payload word after the header. The header word at `rd=0x3e108` is newly written
+by `801066c4`, but `rd+4` is not written in the f180-to-f420 window and remains
+invalid with a stale storage value. This points at host packet assembly around
+`801066c4`, not a valid-bit clear after a complete packet.
+
+Next success criteria:
+
+```text
+Identify why the 801066c4 writer emits the Type1 header without its payload:
+wrong bulk write length, wrong source pointer, wrong FIFO address increment,
+or decode racing a still-incomplete write burst.
 ```
 
 ### 6. Promote Only Visible or Causal Fixes
@@ -341,15 +367,14 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Add a dynamic last-writer trace for command FIFO storage words. On
-   `cmdstop=...0x00012609`, print last writer PC/value/logical address for
-   the stop storage word and stop storage+1.
+1. Trace host packet assembly around `801066c4` for `0x00012609` writes. Capture
+   the source pointer/value pair, FIFO destination address, write burst length,
+   and whether a second word should be emitted to `rd+4`.
 2. Use `/tmp/eutherdrive-gauntlet-probe/head-default-after-stridefix-f180.warm`
    as the warm start and keep `EUTHERDRIVE_GAUNTDL_SUMMARY=1` on every probe.
 3. Keep `0xd1549bb3`, `0xBC292A85`, and `direct/setup=301/134` as a regression
    guard for any future BGLoadModel stride/source experiment.
-4. If the last writer shows `rd+4` was valid and then consumed/invalidated,
-   trace valid-bit clearing for that storage pair; if it was never valid, trace
-   the host packet assembly around `801066c4`.
+4. If assembly shows a complete two-word packet before decode, trace scheduling
+   between write and decode; otherwise fix the writer-side length/address path.
 5. Promote no additional BGLoadModel/Voodoo experiments unless they improve
    visible frames or restore the older high-work f420 counters.
