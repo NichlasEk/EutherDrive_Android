@@ -549,11 +549,29 @@ after the current Type5 texture endian conversion. The nearby upload payload
 trace still repeats `DWF_GEILOIN_F01` metadata, but that alone does not prove
 the source span for `packet=0x00024388`.
 
-Next focused step: trace the source/span that produced FIFO packet
-`0x00024388` or dump the 64 raw Type5 payload words for that packet and compare
-them against the expected texture stream. Do not change texture sampling yet;
-first decide whether the bad bucket is caused by wrong source selection, wrong
-FIFO target/fifo-base math, or Type5 texture endian policy.
+Follow-up word dumping now confirms the packet-to-bucket transform exactly:
+
+```text
+log=/tmp/gauntdl-e27b-f420-type5target2180-words64-bucket2f.log
+
+packet=0x00024388 targetWord=0x00002180 count=64
+rawWords=0x42800000/0x43000000/0x00000000/0x3ecd8dbe/...
+decWords=0x00008042/0x00000043/0x00000000/0xbe8dcd3e/...
+
+bucket writes:
+0x002180 -> 0x00008042
+0x002181 -> 0x00000043
+0x002182 -> 0x00000000
+0x002183 -> 0xBE8DCD3E
+```
+
+So the Type5 texture endian conversion is what turns the float-looking raw
+stream into the active 8-bit texture-space bucket values. The remaining unknown
+is earlier: which CPU/FIFO source write span produces command-FIFO packet
+`0x00024388`, and whether that span is supposed to be texture bytes or command
+payload. Do not change texture sampling yet; first decide whether the bad bucket
+is caused by wrong source selection, wrong FIFO target/fifo-base math, or Type5
+texture endian policy.
 
 ### FIFO Alias Control
 
@@ -1209,13 +1227,12 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Use the new non-mutating texture fetch comparison trace to move one step
-   earlier or later from the hot `0x0180A8CB` samples. The immediate next target
-   is correlating `0x02F000` bucket writes at `pc=0xffffffff800fe5d4` with their
-   type-5 upload source pointer/run metadata. The trace already proves LOD0
-   current-vs-MAME layout is identical for the first samples, LOD-min is
-   visually negative, and the active bucket is populated by a late sequential
-   8-bit upload.
+1. Trace the CPU/FIFO source write span that produced command-FIFO packet
+   `0x00024388` at `pc=0xffffffff800fe5d4`. The bucket correlation is now
+   proven: Type5 packet target `0x2180` decodes directly into bucket `0x02F000`
+   writes. The open question is whether the packet source is wrong, the
+   FIFO target/fifo-base math is wrong, or the current Type5 texture endian
+   policy is hiding a deeper source-selection problem.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.

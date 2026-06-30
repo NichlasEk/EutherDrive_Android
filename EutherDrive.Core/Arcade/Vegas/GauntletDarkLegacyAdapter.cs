@@ -26615,6 +26615,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_WORDS"));
     private readonly int _traceType5PayloadTargetLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_LIMIT"), 64);
+    private readonly int _traceType5PayloadWords =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_WORDS"), 0);
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
     private readonly bool _traceCommandFifoModel = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL") == "1";
@@ -30702,13 +30704,37 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint decodedLast = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(last) : last;
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string wordStatus = focusedTarget && _traceType5PayloadWords > 0
+            ? $" rawWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: false)} decWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: true)}"
+            : "";
         string tag = focusedTarget ? "VOODOO-TYPE5-TARGET" : focusedAfterCap ? "VOODOO-TYPE5-FOCUS" : "VOODOO-TYPE5";
         Console.WriteLine(
             $"[GAUNTDL:{tag}] cmd=0x{command:x8} space={space} targetWord=0x{targetWord:x8} " +
             $"count={count} nz={nonZero} first=0x{first:x8}/dec=0x{decodedFirst:x8} " +
             $"second=0x{second:x8}/dec=0x{decodedSecond:x8} last=0x{last:x8}/dec=0x{decodedLast:x8} " +
             $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
-            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles}{pcStatus}");
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles}{wordStatus}{pcStatus}");
+    }
+
+    private string FormatType5PayloadWordList(int count, int limit, bool decoded)
+    {
+        int words = Math.Min(count, Math.Min(limit, Math.Max(0, _fifoBuffer.Count - 2)));
+        StringBuilder builder = new(words * 11);
+        for (int i = 0; i < words; i++)
+        {
+            if (i > 0)
+                builder.Append('/');
+
+            uint value = _fifoBuffer[i + 2];
+            if (decoded && _fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
+            builder.Append("0x");
+            builder.Append(value.ToString("x8", CultureInfo.InvariantCulture));
+        }
+
+        if (words < count)
+            builder.Append("/...");
+        return builder.ToString();
     }
 
     private void BeginSetupTriangle()
