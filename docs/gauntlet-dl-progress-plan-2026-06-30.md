@@ -76,6 +76,56 @@ Next technical focus:
    triangle interpretation against MAME Voodoo behavior, not by revisiting the
    pre-`76160800` front-buffer output.
 
+### Current Buffer Dump Follow-up
+
+`GauntletProbe` now writes RAM/Voodoo RGB565 dumps with the same bit-replicated
+RGB888 expansion used by the emulator frame path. Before this, buffer-dump PNGs
+looked visually right but produced false AE differences against `DumpFrame`
+because the probe used simple high-bit shifts.
+
+Current HEAD e27b/f420 with:
+
+```text
+EUTHERDRIVE_GAUNTDL_DUMP_FRAME=/tmp/gauntdl-current-e27b-f420-selected-fixedbuf.ppm
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_PREFIX=/tmp/gauntdl-current-e27b-f420-fixed
+```
+
+confirms the selected frame is exactly Voodoo color buffer 0:
+
+```text
+selected frame:
+  frameHash=0x035dcece colors=2183
+  signature=34d0c6517992a5d074a603b21fa0586abb23e19a8a3e7e39b1ff615ed38fa47b
+
+buf0:
+  colors=2183
+  signature=34d0c6517992a5d074a603b21fa0586abb23e19a8a3e7e39b1ff615ed38fa47b
+  AE vs selected = 0
+
+buf1:
+  colors=4
+  AE vs selected = 307200
+
+buf2:
+  colors=2
+  AE vs selected = 307200
+```
+
+Runtime status for the same run reports:
+
+```text
+buf=2/0/3 rlast=1
+voodoo buffers=0:nz=310569:white=190:colored=310569
+               1:nz=655360:white=0:colored=655360
+               2:nz=330880:white=0:colored=330880
+```
+
+So the display selector is doing the useful thing: it ignores the old purple
+front buffer and the green low-detail fill buffer, then presents `buf0`. The
+remaining graphics bug is inside the selected high-detail buffer itself: a large
+flat triangle/fill with a noisy horizontal texture band, not an incorrect final
+buffer choice.
+
 ## 2026-06-30 Execution Update
 
 Implemented the first work slice and used it to isolate the current plateau.

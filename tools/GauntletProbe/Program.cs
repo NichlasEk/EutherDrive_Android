@@ -2182,9 +2182,7 @@ static void DumpRgb565Surface(byte[] ram, int offset, RamSurfaceFormat format, s
         for (int x = 0; x < format.Width; x++)
         {
             ushort rgb = BinaryPrimitives.ReadUInt16LittleEndian(ram.AsSpan(row + x * 2, 2));
-            stream.WriteByte((byte)((rgb >> 8) & 0xf8));
-            stream.WriteByte((byte)((rgb >> 3) & 0xfc));
-            stream.WriteByte((byte)((rgb << 3) & 0xf8));
+            WriteRgb565(stream, rgb);
         }
     }
 }
@@ -2204,11 +2202,19 @@ static void DumpRgb565BufferWindow(ushort[] buffer, int width, int height, int s
         for (int x = 0; x < width; x++)
         {
             ushort rgb = buffer[row + x];
-            stream.WriteByte((byte)((rgb >> 8) & 0xf8));
-            stream.WriteByte((byte)((rgb >> 3) & 0xfc));
-            stream.WriteByte((byte)((rgb << 3) & 0xf8));
+            WriteRgb565(stream, rgb);
         }
     }
+}
+
+static void WriteRgb565(Stream stream, ushort rgb)
+{
+    int r = (rgb >> 11) & 0x1f;
+    int g = (rgb >> 5) & 0x3f;
+    int b = rgb & 0x1f;
+    stream.WriteByte((byte)((r << 3) | (r >> 2)));
+    stream.WriteByte((byte)((g << 2) | (g >> 4)));
+    stream.WriteByte((byte)((b << 3) | (b >> 2)));
 }
 
 static int ParsePositiveInt(string? value, int fallback)
