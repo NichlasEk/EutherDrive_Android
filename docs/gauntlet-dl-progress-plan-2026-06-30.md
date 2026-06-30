@@ -448,6 +448,25 @@ The counters changed (`direct/setup=2805/1383`, `drawPackets=24621`,
 flat-output regression is not caused only by the full indexed-source payload
 flag. It is a broader drift from the older `0x772ab040` visual scene family.
 
+First historical comparison:
+
+```text
+worktree=/tmp/eutherdrive-gauntlet-73c41842
+commit=73c41842 Advance Gauntlet graphics baseline
+snapshot=/tmp/eutherdrive-gauntlet-probe/73c41842-f180.warm
+dump=/tmp/gauntdl-73c41842-f420.png
+
+f420 frameHash=0x2ed3dbdd
+direct/setup=2805/1383 drawPackets=24621 texWrites=6244835
+framebuffer=640x480:307200:307199
+```
+
+This did not reproduce `0x772ab040` from a freshly generated f180 state. The
+image is still the same flat `#52EB9C` field with the thin `#FF4100` diagonal.
+The old documented visual-scene family may therefore depend on the missing
+`446392c984c8` warm snapshot/state lineage, or on a narrower runtime condition
+than commit selection alone.
+
 ### 7. Promote Only Visible or Causal Fixes
 
 Keep these diagnostic-only unless they become part of a proven causal repair:
@@ -470,8 +489,9 @@ are not enough.
 
 1. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
-   is no longer present, so use git history around `73c41842` through
-   `329971c3` as the first comparison range.
+   is no longer present. A cold f180 rerun at `73c41842` is still flat-fill, so
+   first try to locate an archived copy or alternate descendant of that snapshot
+   before spending much more time on code-only bisect.
 2. Use a visual oracle, not just counters:
    `frameHash`, SHA, histogram, and a saved PNG for f420. `0x44d3a578` with the
    four-color `#52EB9C` histogram is the current bad visual family; `0x772ab040`
