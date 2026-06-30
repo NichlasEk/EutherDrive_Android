@@ -261,6 +261,61 @@ Next runtime tests should compare `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPE
 the MAME-style setup-gradient/fixed-fetch flags against the same f220/f420
 oracles.
 
+### W/Texture Setup Experiment Matrix
+
+All runs used the same e27b warm state and f220 checkpoint. Baseline for this
+oracle remains:
+
+```text
+frameHash=0xd1549bb3
+directTriangles=301 setupTriangles=134 texWrites=108005
+textured=tri:4048:covered:540:rejected:3508:pixels:58890240:zero:21497265
+```
+
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_PERSPECTIVE_DIVIDE=1`:
+
+```text
+frameHash=0xd1549bb3
+directTriangles=301 setupTriangles=134 texWrites=108005
+textured=tri:4048:covered:540:rejected:3508:pixels:58890240:zero:21497265
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE=1`:
+
+```text
+frameHash=0xd1549bb3
+directTriangles=301 setupTriangles=134 texWrites=108005
+textured=tri:4048:covered:540:rejected:3508:pixels:58890240:zero:21497265
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1`:
+
+```text
+frameHash=0xd1549bb3
+lfbWrites=114891308
+textured=tri:4048:covered:540:rejected:3508:pixels:58890240:zero:58890240
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1`
+with `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH=1`:
+
+```text
+frameHash=0xd1549bb3
+lfbWrites=114891308
+textured=tri:4048:covered:540:rejected:3508:pixels:58890240:zero:58890240
+```
+
+Conclusion: the existing W/Q experiment flags do not move this f220 visual
+oracle. The MAME-gradient path is useful as a negative control because it
+changes counters heavily, but it currently drives every sampled textured pixel
+to zero. Do not promote those flags as the next fix.
+
+Next better probe: focus on texture address/data validity and command-FIFO
+window validity around the `0x0180A8CB` setup family. The persistent signs are
+still `textureMap=writes=0:nz=0:zero=0:touched=0` at f220, concentrated
+sampling in the later f420 trace, and the `cmdstop=invalid-standard-window`
+failure immediately after this packet family.
+
 ## 2026-06-30 Execution Update
 
 Implemented the first work slice and used it to isolate the current plateau.
