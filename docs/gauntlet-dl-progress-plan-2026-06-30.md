@@ -612,6 +612,25 @@ its header is already marked bad and its disk words do not match RAM. The
 relevant conclusion is that the `gei+0x3850` RAM source is not corrupted; it
 matches the disk bytes exactly.
 
+Run-source tracing adds the cursor context for that same packet:
+
+```text
+log=/tmp/gauntdl-e27b-f420-fifopacket24388-runsource.log
+
+packet=67 index=67/255 source=0xffffffff802e6f68
+runSource=0xffffffff802e2c68 runDelta=0x4300 runStart=0
+bgsrc=1:gei+0x3850(body=0xa0d0/-0x6880 len=0xa13c hdr=ok)
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+```
+
+So the `0x24388` FIFO packet is not a separate one-off source decision. It is
+packet index 67 inside a longer zero-base upload run that starts at
+`0xffffffff802e2c68`, and the suspect `gei+0x3850` span appears after advancing
+`0x4300` bytes through that run. The next target is therefore the run start and
+per-packet cursor math for zero-base indexed uploads, not a local corruption of
+the packet payload.
+
 Broad body-offset hydration is a negative control:
 
 ```text
@@ -1282,11 +1301,12 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Trace why the uploader chooses `gei+0x3850` for packet index 67 even though
-   the `gei` source header reports `body=0xa0d0`. RAM matches disk at
-   `gei@0x3850`, so the next target is source selection/cursor math, not memory
-   corruption. Avoid promoting the broad `INDEXED_SOURCE_PAYLOAD_FROM_BODY=1`
-   control; it removes the `0x24388` chain and drops visible work.
+1. Trace the run start and per-packet cursor math for the zero-base upload that
+   reaches `gei+0x3850` at packet index 67. The run starts at
+   `0xffffffff802e2c68`; `gei+0x3850` appears at `runDelta=0x4300`; RAM matches
+   disk at that span. Avoid promoting the broad
+   `INDEXED_SOURCE_PAYLOAD_FROM_BODY=1` control; it removes the `0x24388` chain
+   and drops visible work.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
