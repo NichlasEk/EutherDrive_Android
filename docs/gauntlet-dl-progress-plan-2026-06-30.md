@@ -388,6 +388,67 @@ for the same `0x0180A8CB` triangles, compare current resolved base/LOD/size and
 sample byte addresses against a MAME-style fetch model without changing the
 drawn image first.
 
+### Texture Fetch Compare Trace
+
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE=1` now adds an
+opt-in, non-mutating sampler comparison. It logs the current sampler layout and
+a MAME-style layout for the same `s/t` input, including target LOD, format,
+filter bit, clamp bits, resolved size/base, `x/y`, byte address, source word,
+raw texel, and converted RGB565. It is limited by
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE_LIMIT` and respects the
+existing `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME`.
+
+The f420 e27b control with the trace enabled is byte-for-byte visual neutral:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+direct/setup=6028/3002 drawPackets=21375 texWrites=4296625
+textured=tri:12850:covered:1330:rejected:11520:pixels:114141590:zero:36703663
+```
+
+The first hot samples show no base/size/address difference between the current
+LOD0 path and the existing MAME-style layout helper:
+
+```text
+[GAUNTDL:VOODOO-TEXFETCH]
+st=(0.005,3.516) mode=0x8C24100F lod=0x000020C6 targetLod=0 fmt=0 b16=0 filt=1
+cur=size=256x256:base=0x02F120:clamp=1/1:xy=0,3:addr=0x02F420:word=0x000000DA:raw=0x00DA:rgb=0xDED5
+mame=size=256x256:base=0x02F120:clamp=0/0:xy=0,3:addr=0x02F420:word=0x000000DA:raw=0x00DA:rgb=0xDED5
+deltaBase=0 deltaAddr=0 pc=0xffffffff800c4e5c
+```
+
+The only early difference is clamp policy: current clamps by default and the
+MAME-style side uses mode bits, but these first positive coordinates still land
+on the same byte address.
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_USE_LOD_MIN=1` was also tested
+against the f420 oracle because `lod=0x000020C6` implies a low-six-bit LOD of
+6. It is not a visual fix:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+lfbWrites=344147690
+textured=tri:12850:covered:1330:rejected:11520:pixels:114141590:zero:93326876
+```
+
+A one-frame trace with `TEXTURE_USE_LOD_MIN=1` shows why it gets worse for the
+dominant setup family:
+
+```text
+targetLod=6
+cur=size=4x4:base=0x044660:clamp=1/1:xy=0,3:addr=0x04466C:word=0x00000000:raw=0x0000:rgb=0x0000
+mame=size=4x4:base=0x044660:clamp=0/0:xy=0,3:addr=0x04466C:word=0x00000000:raw=0x0000:rgb=0x0000
+```
+
+Conclusion: do not promote LOD-min. For the current hot LOD0 path, the resolved
+base/size/address calculation matches the MAME-style helper for the first
+samples. The next useful trace should move one level earlier or later: either
+explain why setup-generated `s/t` only walks `x=0..1` across huge screen
+triangles, or inspect the upload/source that populates the active LOD0
+neighborhood around `0x02F420`.
+
 ### FIFO Alias Control
 
 A focused non-MAME command FIFO trace for the f220 stop word `0xbc292a85`
@@ -1042,12 +1103,12 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Add a non-mutating texture fetch comparison trace for the active
-   `0x0180A8CB` e27b/f420 family. It should print current vs MAME-style
-   resolved texture width/height/base, target LOD, clamp bits, sample `x/y`, and
-   byte address for the first covered pixels, while still drawing with the
-   current path. This is the narrowest next probe because f420 now proves W/Q
-   flags are image-identical and the sampler is concentrated near `0x02F420`.
+1. Use the new non-mutating texture fetch comparison trace to move one step
+   earlier or later from the hot `0x0180A8CB` samples: either explain why
+   setup-generated `s/t` only walks `x=0..1` across huge screen triangles, or
+   inspect the upload/source that populates the active LOD0 neighborhood around
+   `0x02F420`. The trace already proves LOD0 current-vs-MAME layout is identical
+   for the first samples and LOD-min is visually negative.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.

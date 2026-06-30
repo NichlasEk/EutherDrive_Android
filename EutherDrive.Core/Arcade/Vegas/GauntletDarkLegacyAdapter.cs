@@ -26584,6 +26584,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceTextureMinRenderFrame =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME"), 0);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
+    private readonly bool _traceTextureFetchCompare =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE"));
+    private readonly int _traceTextureFetchCompareLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE_LIMIT"), 160);
     private readonly bool _debugTextureZeroSampleBuckets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS"));
     private readonly bool _debugTextureSamples =
@@ -26880,6 +26884,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _drawTraceCount;
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
+    private int _textureFetchCompareTraceCount;
     private int _textureWriteBucketTraceCount;
     private int _textureZeroSampleBucketTotal;
     private uint _textureZeroSampleFirstAddress = uint.MaxValue;
@@ -31696,6 +31701,22 @@ sampledTexel:
         int y = _fixTextureTOriginFlip
             ? TextureCoordinateToIndex((height - 1) - t, height, clampT)
             : TextureCoordinateToIndex(t, height, clampT);
+        TraceTextureFetchCompare(
+            s,
+            t,
+            mode,
+            textureLod,
+            targetLod,
+            format,
+            sixteenBit,
+            filtered,
+            width,
+            height,
+            baseAddress,
+            clampS,
+            clampT,
+            x,
+            y);
         if (_fixTextureBilinearFilter && filtered)
             return SampleTextureRgb565Bilinear(s, t, width, height, mode, format, sixteenBit, baseAddress);
 
@@ -32142,6 +32163,73 @@ sampledTexel:
             $"[GAUNTDL:VOODOO-TEXSAMPLE] st=({s:F3},{t:F3}) xy=({x},{y}) size={width}x{height} " +
             $"mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addr=0x{byteAddress:X6} " +
             $"word=0x{word:X8} raw=0x{raw:X4} result=0x{result:X4}{nearbyStatus}{pcStatus}");
+    }
+
+    private void TraceTextureFetchCompare(
+        float s,
+        float t,
+        uint mode,
+        uint lod,
+        int targetLod,
+        int format,
+        bool sixteenBit,
+        bool filtered,
+        int currentWidth,
+        int currentHeight,
+        uint currentBase,
+        bool currentClampS,
+        bool currentClampT,
+        int currentX,
+        int currentY)
+    {
+        if (!_traceTextureFetchCompare ||
+            _renderFrame < _traceTextureMinRenderFrame ||
+            _textureFetchCompareTraceCount++ >= _traceTextureFetchCompareLimit)
+        {
+            return;
+        }
+
+        TextureFetchLayout mameLayout = GetMameTextureFetchLayout(targetLod, mode);
+        bool mameClampS = (mode & 0x40u) != 0;
+        bool mameClampT = (mode & 0x80u) != 0;
+        int mameX = TextureCoordinateToIndex(s, mameLayout.Width, mameClampS);
+        int mameY = _fixTextureTOriginFlip
+            ? TextureCoordinateToIndex((mameLayout.Height - 1) - t, mameLayout.Height, mameClampT)
+            : TextureCoordinateToIndex(t, mameLayout.Height, mameClampT);
+
+        ushort currentRgb = ReadTextureRgb565At(
+            currentX,
+            currentY,
+            currentWidth,
+            format,
+            sixteenBit,
+            currentBase,
+            out uint currentAddress,
+            out uint currentWord,
+            out uint currentRaw);
+        ushort mameRgb = ReadTextureRgb565At(
+            mameX,
+            mameY,
+            mameLayout.Width,
+            format,
+            sixteenBit,
+            mameLayout.BaseAddress,
+            out uint mameAddress,
+            out uint mameWord,
+            out uint mameRaw);
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        long baseDelta = (long)mameLayout.BaseAddress - currentBase;
+        long addressDelta = (long)mameAddress - currentAddress;
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXFETCH] st=({s:F3},{t:F3}) mode=0x{mode:X8} lod=0x{lod:X8} targetLod={targetLod} " +
+            $"fmt={format} b16={(sixteenBit ? 1 : 0)} filt={(filtered ? 1 : 0)} " +
+            $"cur=size={currentWidth}x{currentHeight}:base=0x{currentBase:X6}:clamp={(currentClampS ? 1 : 0)}/{(currentClampT ? 1 : 0)}:" +
+            $"xy={currentX},{currentY}:addr=0x{currentAddress:X6}:word=0x{currentWord:X8}:raw=0x{currentRaw:X4}:rgb=0x{currentRgb:X4} " +
+            $"mame=size={mameLayout.Width}x{mameLayout.Height}:base=0x{mameLayout.BaseAddress:X6}:clamp={(mameClampS ? 1 : 0)}/{(mameClampT ? 1 : 0)}:" +
+            $"xy={mameX},{mameY}:addr=0x{mameAddress:X6}:word=0x{mameWord:X8}:raw=0x{mameRaw:X4}:rgb=0x{mameRgb:X4} " +
+            $"deltaBase={baseDelta} deltaAddr={addressDelta}{pcStatus}");
     }
 
     private string GetNearbyTextureWordStatus(uint byteAddress)
