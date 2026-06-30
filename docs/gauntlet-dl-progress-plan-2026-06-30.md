@@ -631,6 +631,33 @@ packet index 67 inside a longer zero-base upload run that starts at
 per-packet cursor math for zero-base indexed uploads, not a local corruption of
 the packet payload.
 
+MAME's Voodoo 2 CMDFIFO path byte-swizzles direct FIFO writes when mapped
+address bit 18 is set, so the narrow direct-endian control was re-run without
+the broad MAME FIFO model:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DIRECT_ENDIAN=1
+log=/tmp/gauntdl-e27b-f420-directendian-fifopacket24388.log
+dump=/tmp/gauntdl-e27b-f420-directendian.ppm
+
+packet=67 index=67/255 source=0xffffffff802e6f68
+runSource=0xffffffff802e2c68 runDelta=0x4300
+rawWords=0x42800000/0x43000000/0x00000000/0x3ecd8dbe/...
+decWords=0x00008042/0x00000043/0x00000000/0xbe8dcd3e/...
+
+frameHash=0x69438b6a
+frameSha256=0c2f1e7475a197de12a50f71e82b23e34158231da189d5b57c78a61ed4d570ea
+colors=3
+AE vs baseline selected PPM = 307200
+direct/setup=6973/3451 drawPackets=16985 texWrites=3318385
+```
+
+That confirms direct-endian is not a no-op, but it is not a candidate visual
+fix. It keeps the same `gei+0x3850` -> Type5 -> `0x02F000` chain and collapses
+the f420 image from the 2183-color non-flat baseline to a three-color frame.
+Do not promote it; keep MAME's swizzle rule as a reference for FIFO tracing
+only.
+
 Broad body-offset hydration is a negative control:
 
 ```text
