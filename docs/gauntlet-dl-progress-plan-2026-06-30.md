@@ -573,6 +573,29 @@ payload. Do not change texture sampling yet; first decide whether the bad bucket
 is caused by wrong source selection, wrong FIFO target/fifo-base math, or Type5
 texture endian policy.
 
+The focused FIFO-packet upload trace now resolves that earlier source:
+
+```text
+log=/tmp/gauntdl-e27b-f420-fifopacket24388-type5target.log
+
+[GAUNTDL:TEXUPLOAD-FIFO-TARGET]
+packet=67 index=67/255 fifo=0xa82a4388 fifoLow=0x024388
+packetSource=0x00008600 sourceBase=0x00000000 source=0xffffffff802e6f68 words=64
+bgsrc=1:gei+0x3850(body=0xa0d0/-0x6880 len=0xa13c hdr60=0x00000020 hdr64=0x00000016 hdr=ok)
+first=0x42800000/0x43000000/0x00000000/0x3ecd8dbe text=""
+
+[GAUNTDL:VOODOO-TYPE5-TARGET]
+packet=0x00024388 targetWord=0x00002180
+rawWords=0x42800000/0x43000000/0x00000000/0x3ecd8dbe/...
+```
+
+So `packet=0x00024388` is not a DWF metadata upload. It is sourced from the
+`gei` indexed payload at `source+0x3850`, and the FIFO target word comes from
+`packetSource=0x00008600` -> `0x00002180`. The next causal question is whether
+that `gei+0x3850` span is the correct texture stream for this slot, or whether
+the indexed-source body/header stride is selecting a geometry/float payload as
+texture input.
+
 ### FIFO Alias Control
 
 A focused non-MAME command FIFO trace for the f220 stop word `0xbc292a85`
@@ -1227,12 +1250,12 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Trace the CPU/FIFO source write span that produced command-FIFO packet
-   `0x00024388` at `pc=0xffffffff800fe5d4`. The bucket correlation is now
-   proven: Type5 packet target `0x2180` decodes directly into bucket `0x02F000`
-   writes. The open question is whether the packet source is wrong, the
-   FIFO target/fifo-base math is wrong, or the current Type5 texture endian
-   policy is hiding a deeper source-selection problem.
+1. Inspect the `gei` indexed-source span that feeds FIFO packet `0x00024388`.
+   The upload source is now proven as `source=0xffffffff802e6f68`,
+   `bgsrc=1:gei+0x3850`, with first words
+   `0x42800000/0x43000000/0x00000000/0x3ecd8dbe`. Compare this span with the
+   hydrated/disk `gei` body and its header/stride metadata before changing
+   texture sampling or Type5 endian policy.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.

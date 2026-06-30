@@ -831,6 +831,14 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT", 96);
     private readonly ulong? _traceTextureUploadRunSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE");
+    private readonly ulong? _traceTextureUploadPacketSource =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE");
+    private readonly int _traceTextureUploadPacketSourceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE_LIMIT", 16);
+    private readonly ulong? _traceTextureUploadFifoPacket =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_FIFO_PACKET");
+    private readonly int _traceTextureUploadFifoPacketLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_FIFO_PACKET_LIMIT", 16);
     private readonly bool _traceTextureUploadCallerTransitions =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_CALLER_TRANSITIONS"));
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
@@ -937,6 +945,8 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadPayloadPointerStartTraceCount;
     private int _textureUploadPayloadCallerTransitionTraceCount;
+    private int _textureUploadPayloadPacketSourceTraceCount;
+    private int _textureUploadFifoPacketTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
@@ -4060,6 +4070,7 @@ internal sealed class MipsR5000Core
                     continue;
                 }
 
+                TraceTextureUploadFifoPacket(packet, packetSourceAddress, source, sourceBase, payloadWords, index, limit, fifo, fifoBase, fifoRingBase);
                 TraceTextureUploadPayload(packet, packetSourceAddress, source, sourceBase, payloadWords, index, limit);
                 TraceGlideFifoOuterPayloadOddWords(packet, packetSourceAddress, source, payloadWords, header);
                 if (_fixVoodooMameCommandFifoModel)
@@ -4399,6 +4410,52 @@ internal sealed class MipsR5000Core
             $"{ReadTraceWord(pointer + 0x08UL):x8}/{ReadTraceWord(pointer + 0x0cUL):x8}");
     }
 
+    private void TraceTextureUploadFifoPacket(
+        uint packet,
+        uint packetSourceAddress,
+        ulong source,
+        uint sourceBase,
+        uint payloadWords,
+        uint index,
+        uint limit,
+        uint fifo,
+        uint fifoBase,
+        uint fifoRingBase)
+    {
+        if (!_traceTextureUploadFifoPacket.HasValue ||
+            !AllowsTextureUploadRunSourceTrace(source))
+        {
+            return;
+        }
+
+        uint target = (uint)_traceTextureUploadFifoPacket.Value;
+        uint fifoLow = fifo & 0x0003ffffu;
+        uint fifoDelta = unchecked(fifo - fifoBase) & 0x0003ffffu;
+        uint fifoRingDelta = unchecked(fifo - fifoRingBase) & 0x0003ffffu;
+        if (fifoLow != target &&
+            fifoDelta != target &&
+            fifoRingDelta != target)
+        {
+            return;
+        }
+
+        if (_textureUploadFifoPacketTraceCount++ >= _traceTextureUploadFifoPacketLimit)
+            return;
+
+        uint first0 = IsMainRamRange(source + 0x00UL, 4) ? _memory.Read32(source + 0x00UL) : 0;
+        uint first1 = IsMainRamRange(source + 0x04UL, 4) ? _memory.Read32(source + 0x04UL) : 0;
+        uint first2 = IsMainRamRange(source + 0x08UL, 4) ? _memory.Read32(source + 0x08UL) : 0;
+        uint first3 = IsMainRamRange(source + 0x0cUL, 4) ? _memory.Read32(source + 0x0cUL) : 0;
+        string text = ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32));
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-FIFO-TARGET] packet={packet} index={index}/{limit} " +
+            $"fifo=0x{fifo:x8} fifoLow=0x{fifoLow:x6} fifoBase=0x{fifoBase:x8} fifoDelta=0x{fifoDelta:x6} " +
+            $"fifoRingBase=0x{fifoRingBase:x8} fifoRingDelta=0x{fifoRingDelta:x6} " +
+            $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} words={payloadWords} " +
+            $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+            $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
+    }
+
     private void TraceTextureUploadPayload(
         uint packet,
         uint packetSourceAddress,
@@ -4408,7 +4465,10 @@ internal sealed class MipsR5000Core
         uint index,
         uint limit)
     {
-        if (!_traceTextureUploadPayload ||
+        bool focusedPacketSource =
+            _traceTextureUploadPacketSource.HasValue &&
+            packetSourceAddress == (uint)_traceTextureUploadPacketSource.Value;
+        if ((!_traceTextureUploadPayload && !focusedPacketSource) ||
             !AllowsTextureUploadRunSourceTrace(source))
         {
             return;
@@ -4420,7 +4480,12 @@ internal sealed class MipsR5000Core
         uint first3 = IsMainRamRange(source + 0x0cUL, 4) ? _memory.Read32(source + 0x0cUL) : 0;
         string text = ReadAsciiTraceString(source, Math.Min((int)payloadWords * 4, 32));
         bool likelyMetadataPayload = IsLikelyTextureMetadataPayload(first0, text);
-        if (_textureUploadPayloadTraceCount >= _traceTextureUploadPayloadLimit)
+        if (focusedPacketSource)
+        {
+            if (_textureUploadPayloadPacketSourceTraceCount++ >= _traceTextureUploadPacketSourceLimit)
+                return;
+        }
+        else if (_textureUploadPayloadTraceCount >= _traceTextureUploadPayloadLimit)
         {
             if (!likelyMetadataPayload || _textureUploadPayloadAsciiTraceCount++ >= 64)
                 return;
@@ -4431,7 +4496,7 @@ internal sealed class MipsR5000Core
         }
 
         Console.WriteLine(
-            $"[GAUNTDL:TEXUPLOAD-PAYLOAD] packet={packet} index={index}/{limit} " +
+            $"[GAUNTDL:{(focusedPacketSource ? "TEXUPLOAD-PAYLOAD-TARGET" : "TEXUPLOAD-PAYLOAD")}] packet={packet} index={index}/{limit} " +
             $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} words={payloadWords} " +
             $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
             $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
