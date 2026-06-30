@@ -126,6 +126,61 @@ remaining graphics bug is inside the selected high-detail buffer itself: a large
 flat triangle/fill with a noisy horizontal texture band, not an incorrect final
 buffer choice.
 
+### Texture/Setup Trace Follow-up
+
+A focused texture trace without the broken min-render-frame gate shows the
+dominant early textured setup pattern:
+
+```text
+[GAUNTDL:VOODOO-TEXCOVER]
+pc=0xffffffff800c4e5c cmd=0x0180A8CB:19
+mode=0x8C24100F lod=0x000020C6 regbase=0x00005D82 base=0x02F120
+xy=(0.000,-16231.000)/(49076.000,382.000)/(0.000,382.000)
+stq=(0.000,0.172,0.001000)/(0.507,0.000,0.001000)/(0.000,0.000,0.001000)
+bbox=(0,41)-(640,382) pixels=218240 zero=59522
+```
+
+The paired rejects are mostly clipped or empty-raster triangles from the same
+PC/command family, with raw setup values such as:
+
+```text
+rawxy=0x432B87D1/0x473FB400 setup=0x0006002A fbz=0x437F0000
+```
+
+Texture sample debug on current HEAD at e27b/f420:
+
+```text
+texsamp=114141590/0x000510/0x781410
+raw0x0000:68424466,0x0054:5754633,0x00C6:5753609,0x000D:4846839
+rgb0x0000:36703663,0x0001:2437899,0x0002:1896688,0x0003:1353689
+addr0x02F000:89207680,0x00C000:1569312,0x00D000:1569312,0x00B000:1569236
+```
+
+That points at vertex/setup interpretation and texture-address concentration:
+most samples collapse into the `0x02F000` texture bucket and a very large share
+of samples are raw zero / black.
+
+Negative control: enabling only
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_VERTEX_COORDINATE_WRAP=1` changes the work
+profile but not the image:
+
+```text
+default:
+  frameHash=0x035dcece texturedPixels=114141590 zero=36703663
+  textured tri=12850 covered=1330 rejected=11520 clip=10327 empty=1137
+
+setup coordinate wrap:
+  frameHash=0x035dcece texturedPixels=36520452 zero=13662302
+  textured tri=12850 covered=1323 rejected=11527 clip=11201 empty=269
+  output signature=34d0c6517992a5d074a603b21fa0586abb23e19a8a3e7e39b1ff615ed38fa47b
+  AE vs default selected frame = 0
+```
+
+So wrapping setup XY is useful as a workload reducer and confirms the huge
+coordinates are being interpreted by the raster path, but it is not the visual
+fix. Next probe should trace raw Type3 packet words for `0x0180A8CB` and compare
+the per-vertex field decode against MAME/Voodoo setup expectations.
+
 ## 2026-06-30 Execution Update
 
 Implemented the first work slice and used it to isolate the current plateau.
