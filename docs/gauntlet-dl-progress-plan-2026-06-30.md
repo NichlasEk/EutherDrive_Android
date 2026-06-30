@@ -1,5 +1,81 @@
 # Gauntlet DL Progress Plan - 2026-06-30
 
+## 2026-06-30 e27b Warm-State Visual Bisect
+
+The alternate visual oracle is now pinned to a narrow and reproducible commit
+boundary. All runs used the current warm snapshot:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+```
+
+Common command shape:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=420
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- /home/nichlas/roms/MAME/Midway/Vegas/gauntd 420 200000
+```
+
+Bisect result:
+
+```text
+bad   329971c3 Promote Gauntlet full indexed payloads
+good  76160800 Improve Gauntlet Voodoo buffer diagnostics
+first good visual boundary: 76160800
+```
+
+Representative e27b/f420 results:
+
+```text
+73c41842  bad  frameHash=0x96f6b24f colors=2    AE vs 7d6841f7/329971c3 = 0
+7d6841f7  bad  frameHash=0x96f6b24f colors=2    AE vs 73c41842 = 0
+329971c3  bad  frameHash=0x96f6b24f colors=2    AE vs 73c41842 = 0
+
+76160800  good frameHash=0x035dcece colors=2183 AE vs current = 0
+94095bb5  good frameHash=0x035dcece colors=2183 AE vs current = 0
+b556f733  good frameHash=0x035dcece colors=2183 AE vs current = 0
+c46d2981  good frameHash=0x035dcece colors=2183 AE vs current = 0
+64a54861  good frameHash=0x035dcece colors=2183 AE vs current = 0
+```
+
+The good PNG signature for the current non-flat family is:
+
+```text
+size=640x480 colors=2183 mean=13248.2
+signature=34d0c6517992a5d074a603b21fa0586abb23e19a8a3e7e39b1ff615ed38fa47b
+```
+
+The important detail is that the draw/texture workload did not suddenly appear
+at `76160800`. The bad and good sides both report the same major work counters:
+
+```text
+drawPackets=22410 directTriangles=4831 setupTriangles=2404 texWrites=4795569
+textureMap.touched=588032
+```
+
+The commit message says "buffer diagnostics", but the behavior-changing hunk is
+in `ChooseRenderBufferIndex()`: it adds visible unique-color counting, detects
+low-detail full-screen fills, and prefers a higher-detail color buffer over the
+front buffer when the front buffer is mostly a clear/fill surface. So this
+bisect proves the older two-color purple image was primarily a presented-buffer
+selection problem, not absence of Voodoo command/raster work.
+
+Next technical focus:
+
+1. Keep `76160800` as the exact display-buffer selection boundary and do not
+   chase the older two-color output as a renderer regression.
+2. Use `EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_PREFIX` on current HEAD at
+   e27b/f420 to inspect `buf0`, `buf1`, and `buf2` directly.
+3. Treat the current `0x035dcece` image as the real plateau: rendering is
+   non-flat and selected correctly, but the image is still a diagonal/noisy band
+   rather than scene geometry.
+4. Continue from current HEAD by comparing texture sample/TMU state and setup
+   triangle interpretation against MAME Voodoo behavior, not by revisiting the
+   pre-`76160800` front-buffer output.
+
 ## 2026-06-30 Execution Update
 
 Implemented the first work slice and used it to isolate the current plateau.
