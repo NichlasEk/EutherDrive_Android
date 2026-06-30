@@ -26615,6 +26615,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE"));
     private readonly int _traceCommandFifoModelLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_LIMIT"), 240);
+    private readonly bool _traceCommandFifoAssembly =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY"));
+    private readonly ulong[] _traceCommandFifoAssemblyPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY_PCS"));
+    private readonly ulong[] _traceCommandFifoAssemblyCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY_COMMANDS"));
+    private readonly int _traceCommandFifoAssemblyLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY_LIMIT"), 240);
     private readonly bool _traceCommandFifoValidity =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_VALIDITY"));
     private readonly int _traceCommandFifoValidityLimit =
@@ -26886,6 +26894,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _tmuRegisterWriteTraceCount;
     private int _commandFifoModelTraceCount;
     private int _commandFifoModelStallTraceCount;
+    private int _commandFifoAssemblyTraceCount;
     private int _commandFifoRegisterValueTraceCount;
     private int _commandFifoBulkEndTraceCount;
     private int _commandFifoSelfRegisterPacketTraceCount;
@@ -27253,6 +27262,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         _cmdFifoValid[storageIndex] = true;
         _fifoWriteCount++;
         TraceCommandFifoValidity("write", storageIndex);
+        TraceCommandFifoAssemblyWrite(wordOffset, storageIndex, logicalWriteIndex, address, value, storageWasValid);
         if (!_fixMameCommandFifoModel)
             TraceCommandFifoStorageWrite(address, value);
 
@@ -27468,6 +27478,38 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"base=0x{_cmdFifoRamBase:x5} end=0x{_cmdFifoRamEnd:x5} rd=0x{_cmdFifoReadIndex * 4:x8} " +
             $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
             $"fbi7=0x{_registers[RegFbiInit7]:x8}{pcStatus}");
+    }
+
+    private void TraceCommandFifoAssemblyWrite(
+        uint wordOffset,
+        int storageIndex,
+        int logicalWriteIndex,
+        int address,
+        uint value,
+        bool storageWasValid)
+    {
+        if (!_traceCommandFifoAssembly)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceCommandFifoAssemblyPcs.Length != 0 && !_traceCommandFifoAssemblyPcs.Contains(pc))
+            return;
+        if (_traceCommandFifoAssemblyCommands.Length != 0 && !_traceCommandFifoAssemblyCommands.Contains(value))
+            return;
+        if (_commandFifoAssemblyTraceCount++ >= _traceCommandFifoAssemblyLimit)
+            return;
+
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string word0 = FormatCommandFifoStorageIndexDebug(storageIndex);
+        string word1 = FormatCommandFifoStorageIndexDebug(logicalWriteIndex + 1);
+        string wordPrev = FormatCommandFifoStorageIndexDebug(logicalWriteIndex - 1);
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO-ASSEMBLY] n={_commandFifoAssemblyTraceCount} " +
+            $"wordOffset=0x{wordOffset:x5} addr=0x{address:x8} storage=0x{storageIndex * 4:x5} " +
+            $"logical=0x{logicalWriteIndex * 4:x8} value=0x{value:x8} validBefore={(storageWasValid ? 1 : 0)} " +
+            $"rd=0x{_cmdFifoReadIndex * 4:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
+            $"bulk={_cmdFifoBulkWriteDepth}/0x{_cmdFifoBulkStartIndex * 4:x8}/0x{_cmdFifoBulkLastIndex * 4:x8}/{_cmdFifoBulkWriteWordCount}/{(_cmdFifoBulkSawWrite ? 1 : 0)} " +
+            $"prev={wordPrev} w0={word0} w1={word1}{pcStatus}");
     }
 
     public void BeginCommandFifoBulkWrite()
@@ -28709,7 +28751,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     private string FormatCommandFifoStorageWordDebug(int logicalIndex)
     {
         int readIndex = NormalizeCommandFifoReadIndex(logicalIndex);
-        int storageIndex = CommandFifoStorageIndex(readIndex);
+        return FormatCommandFifoStorageIndexDebug(readIndex);
+    }
+
+    private string FormatCommandFifoStorageIndexDebug(int storageIndex)
+    {
+        storageIndex = CommandFifoStorageIndex(storageIndex);
         string lastWriter = FormatCommandFifoStorageLastWriter(storageIndex);
         return
             $"0x{storageIndex * 4:x5}:v{(_cmdFifoValid[storageIndex] ? 1 : 0)}/" +

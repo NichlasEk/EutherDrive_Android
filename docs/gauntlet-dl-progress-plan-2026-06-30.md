@@ -339,12 +339,45 @@ by `801066c4`, but `rd+4` is not written in the f180-to-f420 window and remains
 invalid with a stale storage value. This points at host packet assembly around
 `801066c4`, not a valid-bit clear after a complete packet.
 
+The command-FIFO assembly trace is now available with:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY_PCS=ffffffff801066c4
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY_LIMIT=460
+```
+
+It also keeps the restored f420 baseline stable:
+
+```text
+checkpoint frame=420 frameHash=0x44d3a578
+frameSha256=df2d3c5b979cfaa956134fd7e3cd7ab4c891e04e96bb85443299cf354eb52dee
+cmdstop=invalid-standard-window/0x00012609/2/1/0x3e108/...
+```
+
+The corrected storage-index debug confirms the repeated writer layout:
+
+```text
+0x00012609 row:
+  prev=.../val0xff802000/pc0xffffffff801066c8
+  w0=.../val0x00012609/pc0xffffffff801066c4
+  w1=.../v0/.../cur0x00000000 or stale
+```
+
+Representative final rows show `depth=1` at the read position after each
+`0x00012609` write, with the apparent payload immediately before the header,
+not after it. That means `801066c4` is not simply omitting payload data. The
+decoder is either starting one word late for this paired write pattern, or the
+FIFO accounting is making a header-style word visible before the preceding
+payload/header pair is consumed as intended.
+
 Next success criteria:
 
 ```text
-Identify why the 801066c4 writer emits the Type1 header without its payload:
-wrong bulk write length, wrong source pointer, wrong FIFO address increment,
-or decode racing a still-incomplete write burst.
+Identify why decode starts on the 801066c4 0x00012609 word while the adjacent
+801066c8 payload-looking 0xff802000 word sits at rd-4. The next trace should
+capture the full 801066c4/801066c8 pair and the read-index transition that
+makes the FIFO expose the second word as a packet header.
 ```
 
 ### 6. Promote Only Visible or Causal Fixes
@@ -367,14 +400,16 @@ are not enough.
 
 ## Next Concrete Work Slice
 
-1. Trace host packet assembly around `801066c4` for `0x00012609` writes. Capture
-   the source pointer/value pair, FIFO destination address, write burst length,
-   and whether a second word should be emitted to `rd+4`.
+1. Trace the paired `801066c4`/`801066c8` command-FIFO writes for the
+   `0x00011609`, `0x00012609`, `0xff802000`, and `0xffffffff` pattern. Capture
+   FIFO destination address, logical index, read index, depth, and whether the
+   read pointer advances past the first word of each pair.
 2. Use `/tmp/eutherdrive-gauntlet-probe/head-default-after-stridefix-f180.warm`
    as the warm start and keep `EUTHERDRIVE_GAUNTDL_SUMMARY=1` on every probe.
 3. Keep `0xd1549bb3`, `0xBC292A85`, and `direct/setup=301/134` as a regression
    guard for any future BGLoadModel stride/source experiment.
-4. If assembly shows a complete two-word packet before decode, trace scheduling
-   between write and decode; otherwise fix the writer-side length/address path.
+4. Compare `DecodeFifoType1` against the observed paired write ordering before
+   changing packet semantics. The leading hypothesis is read-window alignment,
+   not missing writer-side data.
 5. Promote no additional BGLoadModel/Voodoo experiments unless they improve
    visible frames or restore the older high-work f420 counters.
