@@ -525,6 +525,28 @@ selection. The next repair loop should preserve both visual families:
 - `gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm` ->
   non-flat `0x035dcece`/2183-color family.
 
+MAME-CMDFIFO model control from the same `e27b9a6b6d3d` f180 warm state:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL=1
+
+dump=/tmp/gauntdl-current-e27b-mamefifo-f420.png
+log=/tmp/gauntdl-current-e27b-mamefifo-f420.log
+
+f420 frameHash=0x67bfcd31
+frameSha256=5f271c6522ef8eeb1e3ffa4c658ab76302359675ed4dd99d0021b4f625bef0d1
+direct/setup=470/205 drawPackets=9589 texWrites=225317
+framebuffer=640x480:307200:277093
+colors=4
+dominant=#52CB10
+cmdstop=depth/0xbc3dc2dc/15/5/0xbe57e498/0x3e498/...
+```
+
+Visual inspection: this is another flat/geometry-test style image, not an
+improvement over the default `e27b9a6b6d3d` 2183-color output. MAME-CMDFIFO
+comparison remains useful for targeted tracing, but the existing broad
+`FIX_VOODOO_MAME_CMD_FIFO_MODEL` preset should not be promoted as a visual fix.
+
 ### 7. Promote Only Visible or Causal Fixes
 
 Keep these diagnostic-only unless they become part of a proven causal repair:
@@ -563,6 +585,7 @@ are not enough.
 4. Compare our CMDFIFO model against current MAME `voodoo_2.cpp` semantics:
    mapped write swizzling, `address_min/address_max`, `holes`, `depth`, and
    `read_index` should be treated as one causal unit. Do this as tracing or a
-   narrow model fix, not as packet dropping.
+   narrow model fix, not as packet dropping or the broad existing
+   `FIX_VOODOO_MAME_CMD_FIFO_MODEL` preset.
 5. Preserve the current assembly/last-writer tracing as diagnostics, but stop
    treating transient `invalid-standard-window` as the main repair target.
