@@ -449,6 +449,59 @@ explain why setup-generated `s/t` only walks `x=0..1` across huge screen
 triangles, or inspect the upload/source that populates the active LOD0
 neighborhood around `0x02F420`.
 
+### LOD0 Bucket Write Trace
+
+The existing bucket write trace was then aimed at the dominant sampled bucket:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=2f
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT=40
+```
+
+The f420 result stayed on the same visual oracle:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+```
+
+Bucket `0x02F000` is actively written late in the f420 run by the type-5
+service at `pc=0xffffffff800fe5d4`:
+
+```text
+[GAUNTDL:VOODOO-TEXWRITE]
+n=1 bucket=0x02F000 word=0x002180 addr=0x02F000 value=0x00008042 nzb=2
+lod=0 ts=0x00 tt=0x43 bpp=1 seq8=1
+mode=0x00000000 tlod=0x00000800 tbase=0x000055A0 pc=0xffffffff800fe5d4
+
+[GAUNTDL:VOODOO-TEXWRITE]
+n=4 bucket=0x02F000 word=0x002183 addr=0x02F00C value=0xBE8DCD3E nzb=4
+lod=0 ts=0x0C tt=0x43 bpp=1 seq8=1
+mode=0x00000000 tlod=0x00000800 tbase=0x000055A0 pc=0xffffffff800fe5d4
+```
+
+The first 40 traced writes continue sequentially from `0x02F000` through
+`0x02F09C`, all with `seq8=1`, `lod=0`, `tlod=0x00000800`, and
+`tbase=0x000055A0`. The values are a mix of sparse zeros and
+float-looking words such as `0xBE8DCD3E`, `0x04EFEBBE`, `0xDC6122BD`,
+`0xE19950BD`, and `0xB123F5BE`.
+
+This is an important split:
+
+- Fetch at `pc=0xffffffff800c4e5c` samples the same bucket through
+  `mode=0x8C24100F`, `lod=0x000020C6`, `regbase=0x00005D82`,
+  `base=0x02F120`.
+- Upload at `pc=0xffffffff800fe5d4` writes the bucket with
+  `mode=0x00000000`, `tlod=0x00000800`, and `tbase=0x000055A0`.
+
+Conclusion: the hot LOD0 bucket is not missing, but the data being uploaded
+there looks suspicious for 8-bit texture content. The next focused probe should
+correlate these `0x02F000` writes with the type-5 upload source pointer/run
+metadata and decide whether this bucket is receiving real texture bytes,
+geometry/float data, or correctly uploaded data that the sampler interprets
+through the wrong texture mode.
+
 ### FIFO Alias Control
 
 A focused non-MAME command FIFO trace for the f220 stop word `0xbc292a85`
@@ -1104,11 +1157,12 @@ are not enough.
 ## Next Concrete Work Slice
 
 1. Use the new non-mutating texture fetch comparison trace to move one step
-   earlier or later from the hot `0x0180A8CB` samples: either explain why
-   setup-generated `s/t` only walks `x=0..1` across huge screen triangles, or
-   inspect the upload/source that populates the active LOD0 neighborhood around
-   `0x02F420`. The trace already proves LOD0 current-vs-MAME layout is identical
-   for the first samples and LOD-min is visually negative.
+   earlier or later from the hot `0x0180A8CB` samples. The immediate next target
+   is correlating `0x02F000` bucket writes at `pc=0xffffffff800fe5d4` with their
+   type-5 upload source pointer/run metadata. The trace already proves LOD0
+   current-vs-MAME layout is identical for the first samples, LOD-min is
+   visually negative, and the active bucket is populated by a late sequential
+   8-bit upload.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
