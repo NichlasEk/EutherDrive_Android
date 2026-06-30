@@ -547,6 +547,37 @@ improvement over the default `e27b9a6b6d3d` 2183-color output. MAME-CMDFIFO
 comparison remains useful for targeted tracing, but the existing broad
 `FIX_VOODOO_MAME_CMD_FIFO_MODEL` preset should not be promoted as a visual fix.
 
+Full-indexed-source-payload control from the same `e27b9a6b6d3d` f180 warm
+state:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS=0
+
+dump=/tmp/gauntdl-current-e27b-fulloff-f420.png
+log=/tmp/gauntdl-current-e27b-fulloff-f420.log
+
+f420 frameHash=0x47258dc9
+frameSha256=059abfa3719496db4085da7f433255af364ed2fd6d3736f060ab0aed17fe6ca6
+direct/setup=6028/3002 drawPackets=21375 texWrites=4296625
+framebuffer=640x480:305622:305511
+colors=2178
+dominant=#000C00
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/...
+```
+
+This changes the `gei` indexed-header byte count in the log from `0x0000a13c`
+to `0x00009f60`, so the flag is active after the warm state. However, the f420
+PNG is visually the same diagonal/noisy-band family as default `e27b9a6b6d3d`.
+Pixel diff against `/tmp/gauntdl-current-e27b-f420.png`:
+
+```text
+AE=227 / 307200 pixels
+RMSE=907.807 (0.0138523 normalized)
+```
+
+Conclusion: full indexed-source payloads are not the primary cause of the
+current non-flat e27b visual family either.
+
 ### 7. Promote Only Visible or Causal Fixes
 
 Keep these diagnostic-only unless they become part of a proven causal repair:
@@ -587,5 +618,7 @@ are not enough.
    `read_index` should be treated as one causal unit. Do this as tracing or a
    narrow model fix, not as packet dropping or the broad existing
    `FIX_VOODOO_MAME_CMD_FIFO_MODEL` preset.
-5. Preserve the current assembly/last-writer tracing as diagnostics, but stop
+5. Treat `FULL_INDEXED_SOURCE_PAYLOADS=0` as non-causal for the current f420
+   visual state unless a narrower earlier-frame oracle proves otherwise.
+6. Preserve the current assembly/last-writer tracing as diagnostics, but stop
    treating transient `invalid-standard-window` as the main repair target.
