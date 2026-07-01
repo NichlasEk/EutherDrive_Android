@@ -960,6 +960,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadDiskWordTraceCount;
     private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadPayloadPointerStartTraceCount;
+    private int _textureUploadPayloadLinkTraceCount;
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
@@ -4093,6 +4094,7 @@ internal sealed class MipsR5000Core
 
                 TraceTextureUploadFifoPacket(packet, packetSourceAddress, source, sourceBase, payloadWords, index, limit, uploadRunSource, uploadRunStartIndex, fifo, fifoBase, fifoRingBase);
                 TraceTextureUploadPayload(packet, packetSourceAddress, source, sourceBase, payloadWords, index, limit);
+                TraceTextureUploadLink(packet, packetSourceAddress, source, sourceBase, payloadWords, index, limit, fifo, fifoBase, fifoRingBase, fifoRingBytes);
                 TraceGlideFifoOuterPayloadOddWords(packet, packetSourceAddress, source, payloadWords, header);
                 if (_fixVoodooMameCommandFifoModel)
                 {
@@ -4744,6 +4746,53 @@ internal sealed class MipsR5000Core
             $"packetSource=0x{packetSourceAddress:x8} sourceBase=0x{sourceBase:x8} source=0x{source:x16} words={payloadWords} " +
             $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
             $"first=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} text=\"{text}\"");
+    }
+
+    private void TraceTextureUploadLink(
+        uint packet,
+        uint packetSourceAddress,
+        ulong source,
+        uint sourceBase,
+        uint payloadWords,
+        uint index,
+        uint limit,
+        uint fifo,
+        uint fifoBase,
+        uint fifoRingBase,
+        uint fifoRingBytes)
+    {
+        bool focusedSource = _traceTextureUploadPayload && AllowsTextureUploadRunSourceTrace(source);
+        bool focusedPacketSource = _traceTextureUploadPacketSource.HasValue &&
+                                   packetSourceAddress == (uint)_traceTextureUploadPacketSource.Value;
+        if ((!focusedSource && !focusedPacketSource) ||
+            _textureUploadPayloadLinkTraceCount++ >= 96)
+        {
+            return;
+        }
+
+        uint packetSourceOffset = unchecked(packetSourceAddress - fifoBase) & 0x01ffffffU;
+        uint targetWord = packetSourceOffset / 4U;
+        uint fifoLow = fifo & 0x0003ffffU;
+        uint fifoDelta = unchecked(fifo - fifoBase) & 0x0003ffffU;
+        uint fifoRingDelta = unchecked(fifo - fifoRingBase) & 0x0003ffffU;
+        uint first0 = IsMainRamRange(source + 0x00UL, 4) ? _memory.Read32(source + 0x00UL) : 0;
+        uint first1 = IsMainRamRange(source + 0x04UL, 4) ? _memory.Read32(source + 0x04UL) : 0;
+        uint first2 = IsMainRamRange(source + 0x08UL, 4) ? _memory.Read32(source + 0x08UL) : 0;
+        uint first3 = IsMainRamRange(source + 0x0cUL, 4) ? _memory.Read32(source + 0x0cUL) : 0;
+        uint swapped0 = BinaryPrimitives.ReverseEndianness(first0);
+        uint swapped1 = BinaryPrimitives.ReverseEndianness(first1);
+        uint swapped2 = BinaryPrimitives.ReverseEndianness(first2);
+        uint swapped3 = BinaryPrimitives.ReverseEndianness(first3);
+
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-LINK] packet={packet} index={index}/{limit} " +
+            $"packetSource=0x{packetSourceAddress:x8} packetOffset=0x{packetSourceOffset:x8} targetWord=0x{targetWord:x8} " +
+            $"sourceBase=0x{sourceBase:x8} source=0x{source:x16} words={payloadWords} " +
+            $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+            $"fifo=0x{fifo:x8} fifoLow=0x{fifoLow:x6} fifoBase=0x{fifoBase:x8} fifoDelta=0x{fifoDelta:x6} " +
+            $"fifoRingBase=0x{fifoRingBase:x8} fifoRingBytes=0x{fifoRingBytes:x8} fifoRingDelta=0x{fifoRingDelta:x6} " +
+            $"raw=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} " +
+            $"swap=0x{swapped0:x8}/0x{swapped1:x8}/0x{swapped2:x8}/0x{swapped3:x8}");
     }
 
     private bool IsLikelyTextureMetadataPayload(ulong source, uint payloadWords)

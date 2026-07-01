@@ -1866,16 +1866,83 @@ hydrated GEI bytes, the `0xab0` prefix before the GEI header, or the GEI header
 fields (`0x5c=0xa0d0`, `0x60=0x20`, `0x64=0x16`) when building Voodoo texture
 memory.
 
+### 2026-07-01 Type5 Upload Link Checkpoint
+
+`GauntletDarkLegacyAdapter` now has a trace-only
+`[GAUNTDL:TEXUPLOAD-LINK]` line which connects the CPU upload loop to the
+Voodoo Type5 decoder:
+
+```text
+packetSource -> packetOffset -> targetWord
+source -> first payload words
+fifo/fifoLow/fifoRingDelta -> later Type5 packet offset
+```
+
+This removes the previous manual guesswork between RAM source offsets and
+command-FIFO packet offsets.
+
+The focused f420 run used the e27b warm snapshot and:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE=00008600
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_WORDS=2180
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_LIMIT=256
+```
+
+The important matched pair is:
+
+```text
+[GAUNTDL:TEXUPLOAD-LINK]
+packetSource=0x00008600 packetOffset=0x00008600 targetWord=0x00002180
+source=0xffffffff80316ca4
+fifo=0xa82a4238 fifoLow=0x024238
+raw=0x00000000/0x01d90000/0x00000000/0x00000000
+swap=0x00000000/0x0000d901/0x00000000/0x00000000
+
+[GAUNTDL:VOODOO-TYPE5-TARGET]
+targetWord=0x00002180 packet=0x00024238
+rawWords=0x00000000/0x01d90000/...
+decWords=0x00000000/0x0000d901/...
+```
+
+So the currently observed `0x2180` Type5 texture write is not lossy between the
+CPU upload loop and the Type5 decoder. The raw payload word `0x01d90000` is
+delivered to the decoder and byte-swapped there to `0x0000d901`.
+
+This also clarifies two earlier confusing offsets:
+
+```text
+packetSource=0x00008600 -> targetWord=0x00002180
+packetSource=0x00208600 -> targetWord=0x00082180
+```
+
+`fifoBase` is zero in this run, so the non-zero-base packet source does not map
+to the same Type5 target. Separately, `802e6f68` is still a valid GEI-relative
+upload source (`gei+0x3850`), but its first payload words are
+`0x42800000/0x43000000/...`; it is not the source of the early `0x2180` payload
+with `0x01d90000`.
+
+The validation oracle stayed unchanged after the trace-only code:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
 ## Next Concrete Work Slice
 
-1. Pivot to Type5 upload/decode semantics. The source pointer `802e2c68` is an
-   arena pointer, `802e3718` is the hydrated GEI source at `runSource+0xab0`,
-   and `802e6f68` maps to `GEI+0x3850`. Next trace should compare the Type5
-   upload reader's source offsets, prefix handling, endian/stride selection, and
-   GEI header interpretation against the hydrated bytes and Voodoo texture-map
-   writes. Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel
-   hydration; use `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit
-   upload/decode traces.
+1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
+   `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
+   `packet` before reasoning about the source. The currently matched early
+   `0x2180` payload comes from `80316ca4` with raw
+   `0x00000000/0x01d90000/...`, not from the `802e6f68` GEI+0x3850 payload.
+   Next trace should follow how this decoded `0x0000d901` stream populates
+   Voodoo texture memory and whether the format/base/LOD state routes it into
+   the overused `0x02f000` texture bucket. Do not keep using raw `TRACE_MEM` for
+   emulator-side BGLoadModel hydration; use
+   `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
+   traces.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
