@@ -1788,15 +1788,94 @@ If pointer provenance is still needed, the next upstream allocation callsite is
 higher-value graphics target is now the payload content or upload decode for
 the arena bytes at `802e2c68`, not the already-proven stack handoff.
 
+### 2026-07-01 Indexed Source Hydration Checkpoint
+
+The next payload/content check explains why raw memory writes were not visible
+for the source bytes in the warm f180->f420 window. These two writes-only
+probes:
+
+```text
+log=/tmp/gauntdl-e27b-f420-mem-802e2c68-payload-writes.log
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff802e2c68:0xab0
+
+log=/tmp/gauntdl-e27b-f420-mem-802e3718-head-writes.log
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff802e3718:0x100
+```
+
+both stayed on the same oracle:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
+Neither log emitted `[GAUNTDL:MEM]` rows for those watched ranges. The logs only
+showed the existing BGLoadModel hooks, which means the bus-level memory trace
+does not observe emulator-side `_memory.Write*` hydration. It is still useful
+for CPU writes, but not for this runtime-repair payload seed path.
+
+The existing hydration trace is the right source of truth for this path:
+
+```text
+log=/tmp/gauntdl-e27b-f420-bgloadmodel-indexed-source-hydration.log
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION_LIMIT=240
+```
+
+For the relevant source, it reports:
+
+```text
+phase=distinct-source-hydrate
+index=1
+code=gei
+dest=ffffffff802e3718
+bytes=0000a13c
+disk=14a6f600
+first=00000000
+overwrite=False
+sourceWords=00=00000000,04=00000000,08=00000000,0c=00000000,
+            40=f00b0001,5c=0000a0d0,60=00000020,64=00000016,68=00000000
+```
+
+`bgloadmodel-distinct-source` then publishes that hydrated source through the
+source table:
+
+```text
+pc=ffffffff800aae98
+index=1
+slot=ffffffff802529a4:802e1718->802e3718
+cloned=False
+seededIndexedHeader=True
+```
+
+So the upload-source arena pointer chain and the BGLoadModel hydration path now
+line up as:
+
+```text
+runSource=802e2c68
+GEI source starts at runSource+0xab0 = 802e3718
+GEI source is hydrated by runtime repair from disk offset 0x14a6f600
+target Type5 source 802e6f68 is GEI+0x3850
+```
+
+This makes the remaining graphics target narrower. The source pointer is
+plumbed correctly, and the GEI payload seed is intentional runtime-repair state.
+The next likely defect is how the Type5 upload/decode path interprets the
+hydrated GEI bytes, the `0xab0` prefix before the GEI header, or the GEI header
+fields (`0x5c=0xa0d0`, `0x60=0x20`, `0x64=0x16`) when building Voodoo texture
+memory.
+
 ## Next Concrete Work Slice
 
-1. Pivot from stack selector ownership to payload/content provenance. The source
-   pointer `802e2c68` is now proven to be an arena pointer returned by
-   `800c9088`, using stable base `0x80228104=802db440` and cursor
-   `0x802280fc=0x7828`. Next trace should either watch writes into the arena
-   payload bytes at `802e2c68` for the target run or compare that memory region
-   against the GEI/Type5 upload decoder. Only follow `ra=800c8fa4` and the
-   helper size slot at `fp+0x20` if allocator callsite ownership is needed.
+1. Pivot to Type5 upload/decode semantics. The source pointer `802e2c68` is an
+   arena pointer, `802e3718` is the hydrated GEI source at `runSource+0xab0`,
+   and `802e6f68` maps to `GEI+0x3850`. Next trace should compare the Type5
+   upload reader's source offsets, prefix handling, endian/stride selection, and
+   GEI header interpretation against the hydrated bytes and Voodoo texture-map
+   writes. Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel
+   hydration; use `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit
+   upload/decode traces.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
