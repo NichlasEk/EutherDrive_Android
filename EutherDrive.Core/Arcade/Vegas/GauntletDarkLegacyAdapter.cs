@@ -833,6 +833,10 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT", 96);
     private readonly ulong? _traceTextureUploadRunSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE");
+    private readonly bool _traceTextureUploadSourceSelector =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR"));
+    private readonly int _traceTextureUploadSourceSelectorLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_LIMIT", 64);
     private readonly ulong? _traceTextureUploadPacketSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE");
     private readonly int _traceTextureUploadPacketSourceLimit =
@@ -939,6 +943,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadProvenanceTraceCount;
     private int _textureUploadPayloadAsciiTraceCount;
     private int _textureUploadPayloadRunTraceCount;
+    private int _textureUploadSourceSelectorTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
     private int _textureUploadPayloadFocusedCallerTraceCount;
@@ -1539,6 +1544,7 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
 
         TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
+        TraceTextureUploadSourceSelector(pc, op);
         TraceInstruction(pc, op);
         TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
             CaptureTextureUploadCallerTransitionSnapshot(pc);
@@ -4328,6 +4334,43 @@ internal sealed class MipsR5000Core
 
     private bool AllowsTextureUploadRunSourceTrace(ulong source)
         => !_traceTextureUploadRunSource.HasValue || source == _traceTextureUploadRunSource.Value;
+
+    private void TraceTextureUploadSourceSelector(ulong pc, uint op)
+    {
+        const ulong sourceSelectorPc = 0x000fe228UL;
+        const uint sourceSelectorOp = 0x8fb3006cU; // lw s3,0x6c(sp)
+
+        if (!_traceTextureUploadSourceSelector ||
+            _textureUploadSourceSelectorTraceCount >= _traceTextureUploadSourceSelectorLimit)
+            return;
+
+        if ((pc & 0x1fffffffUL) != sourceSelectorPc || op != sourceSelectorOp)
+            return;
+
+        ulong sp = _gpr[29];
+        ulong sourceSlot = sp + 0x6cUL;
+        if (!IsMainRamRange(sourceSlot, 4))
+            return;
+
+        ulong selectedSource = SignExtend32(_memory.Read32(sourceSlot));
+        if (_traceTextureUploadRunSource.HasValue &&
+            selectedSource != _traceTextureUploadRunSource.Value)
+            return;
+
+        _textureUploadSourceSelectorTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-SOURCE-SELECT] pc=0x{pc:x16} op=0x{op:x8} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{sp:x16} slot=0x{sourceSlot:x16} " +
+            $"selected=0x{selectedSource:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(selectedSource)} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
+            $"sp68={ReadTraceWord(sp + 0x68UL):x8} sp6c={ReadTraceWord(sp + 0x6cUL):x8} " +
+            $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
+            $"first={ReadTraceWord(selectedSource):x8}/{ReadTraceWord(selectedSource + 0x04UL):x8}/" +
+            $"{ReadTraceWord(selectedSource + 0x08UL):x8}/{ReadTraceWord(selectedSource + 0x0cUL):x8}");
+    }
 
     private readonly struct TextureUploadCallerTransitionSnapshot
     {

@@ -1367,13 +1367,78 @@ frame dumps without reducing live command/texture activity. Counter-only gains
 are not enough.
 ```
 
+### 2026-06-30 Source Selector Checkpoint
+
+Added a narrow trace-only selector probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE=ffffffff802e2c68
+```
+
+The probe logs only the upload wrapper source-select instruction:
+
+```text
+pc=0xffffffff800fe228 op=0x8fb3006c  # lw s3,0x6c(sp)
+```
+
+f420 with the `e27b9a6b6d3d` warm state stayed on the current non-flat
+baseline:
+
+```text
+log=/tmp/gauntdl-e27b-f420-source-selector2c68.log
+lines=186
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+draw/setup/direct=21375/3002/6028
+texWrites=4296625
+```
+
+The selector row corrected the stack address and confirmed that the pointer is
+already selected before the existing `TEXUPLOAD-CALLER` window:
+
+```text
+[GAUNTDL:TEXUPLOAD-SOURCE-SELECT]
+pc=0xffffffff800fe228 op=0x8fb3006c ra=0xffffffff80109704
+sp=0xffffffff807ffb48 slot=0xffffffff807ffbb4
+selected=0xffffffff802e2c68
+sp60=00000003 sp64=00000000 sp68=00000003 sp6c=802e2c68 sp70=00000000 sp74=000000ff
+first=0001e69c/00001188/0000000b/00000000
+```
+
+The previous fixed-stack trace at `807ffbbc` was one word past this selector
+slot in the relevant call frame, so treat it as stack-reuse noise unless a
+future trace correlates it with `sp` and PC. Re-running the memory write trace
+on the corrected selector slot confirmed the real writer:
+
+```text
+log=/tmp/gauntdl-e27b-f420-stack807ffbb4-writes.log
+lines=4735
+pc=ffffffff800ebf6c write32 ffffffff807ffbb4 800f0c44
+pc=ffffffff801096f0 write32 ffffffff807ffbb4 802e2c68
+```
+
+That run also kept the same f420 baseline:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
+Conclusion: `800fe228` consumes the selected upload run from `sp+0x6c`,
+and `801096f0` is the concrete writer for the `0xffffffff802e2c68`
+selector value. The next trace should inspect the `801096f0`
+callsite/register state and the preceding `800ebf6c` frame setup, not the old
+`807ffbbc` stack address.
+
 ## Next Concrete Work Slice
 
-1. Trace who creates the zero-base upload run that starts at
-   `0xffffffff802e2c68`. `runSpan` shows a `0xab0` non-payload prefix before
-   `gei@0`, and skipping that prefix collapses f420 to two colors. The next
-   useful target is the caller/descriptor state that chooses this run start,
-   not direct-endian, broad body-offset hydration, or blind prefix skipping.
+1. Trace the writer/caller for the `0xffffffff802e2c68` upload source selector:
+   `801096f0` writes the value into selector slot `807ffbb4`, then `800fe228`
+   loads it via `lw s3,0x6c(sp)`. Start with CPU trace or a narrow diagnostic
+   around `801096e0..80109704`, plus the preceding `800ebf6c -> 800f0c44`
+   frame setup. Do not keep using `807ffbbc` as the selector owner.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
