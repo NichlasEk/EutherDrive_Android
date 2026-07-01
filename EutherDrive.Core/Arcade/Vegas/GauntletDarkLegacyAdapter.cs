@@ -26997,6 +26997,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_DECODE_WINDOW"));
     private readonly bool _experimentCommandFifoBulkResyncLowRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_LOW_READ"));
+    private readonly bool _experimentCommandFifoBulkResyncStalePacket =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_STALE_PACKET"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
@@ -27288,6 +27290,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _currentType5TextureWriteReadIndex;
     private int _fastFillSwapOrderTraceCount;
     private int _commandFifoValidityTraceCount;
+    private int _commandFifoBulkResyncTraceCount;
     private int _recentVoodooEventSequence;
 
     public Func<ulong>? CpuPcProvider { get; set; }
@@ -27929,6 +27932,17 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
             _cmdFifoDepth = Math.Max(_cmdFifoDepth, _cmdFifoBulkWriteWordCount);
         }
+        if (_cmdFifoBulkWriteDepth == 0 &&
+            _experimentCommandFifoBulkResyncStalePacket &&
+            _cmdFifoBulkSawWrite &&
+            ShouldResyncCommandFifoStalePacketReadToBulkStart(out string stalePacketReason))
+        {
+            int oldReadIndex = _cmdFifoReadIndex;
+            uint oldReadWord = ReadCommandFifoWordAt(oldReadIndex);
+            _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
+            _cmdFifoDepth = Math.Max(_cmdFifoDepth, _cmdFifoBulkWriteWordCount);
+            TraceCommandFifoBulkResync("stale-packet", stalePacketReason, oldReadIndex, oldReadWord);
+        }
         if (_cmdFifoBulkWriteDepth == 0)
             TraceCommandFifoBulkEnd();
         if (_cmdFifoBulkWriteDepth == 0)
@@ -27946,6 +27960,68 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         uint startWord = ReadCommandFifoWordAt(_cmdFifoBulkStartIndex);
         return startWord != 0 && GetFifoPacketWordsNeeded(startWord) > 1;
+    }
+
+    private bool ShouldResyncCommandFifoStalePacketReadToBulkStart(out string reason)
+    {
+        reason = "";
+        if (IsCommandFifoReadIndexInsideBulkWrite())
+            return false;
+
+        uint startWord = ReadCommandFifoWordAt(_cmdFifoBulkStartIndex);
+        if (!IsType5TexturePacketHeader(startWord))
+            return false;
+
+        uint readWord = ReadCommandFifoWordAt(_cmdFifoReadIndex);
+        int wordsNeeded = GetFifoPacketWordsNeeded(readWord);
+        if (IsKnownGauntletRuntimeMisalignedFifoWord(readWord, wordsNeeded))
+            wordsNeeded = 1;
+        if (wordsNeeded <= 0)
+            wordsNeeded = 1;
+
+        if (IsImplausibleCommandFifoPacket(readWord, wordsNeeded))
+        {
+            reason = "implausible";
+            return true;
+        }
+
+        if (wordsNeeded > _cmdFifoBulkWriteWordCount + 64)
+        {
+            reason = "oversized";
+            return true;
+        }
+
+        if (wordsNeeded <= 1024 && !HasCommandFifoWords(_cmdFifoReadIndex, wordsNeeded))
+        {
+            reason = "invalid-window";
+            return true;
+        }
+
+        return false;
+    }
+
+    private void TraceCommandFifoBulkResync(string kind, string reason, int oldReadIndex, uint oldReadWord)
+    {
+        if (!_traceCommandFifoBulkEnd ||
+            _commandFifoBulkResyncTraceCount >= _traceCommandFifoBulkEndLimit)
+        {
+            return;
+        }
+
+        _commandFifoBulkResyncTraceCount++;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        int oldReadStorage = CommandFifoStorageIndex(oldReadIndex);
+        int startStorage = CommandFifoStorageIndex(_cmdFifoBulkStartIndex);
+        int lastStorage = CommandFifoStorageIndex(_cmdFifoBulkLastIndex);
+        uint startWord = ReadCommandFifoWordAt(_cmdFifoBulkStartIndex);
+        uint lastWord = ReadCommandFifoWordAt(_cmdFifoBulkLastIndex);
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO-BULK-RESYNC] n={_commandFifoBulkResyncTraceCount} kind={kind} reason={reason} " +
+            $"oldRd=0x{oldReadIndex * 4:x8}/0x{oldReadStorage * 4:x5} newRd=0x{_cmdFifoReadIndex * 4:x8}/0x{startStorage * 4:x5} " +
+            $"bulk=0x{_cmdFifoBulkStartIndex * 4:x8}-0x{_cmdFifoBulkLastIndex * 4:x8} storage=0x{startStorage * 4:x5}-0x{lastStorage * 4:x5} " +
+            $"words={_cmdFifoBulkWriteWordCount} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
+            $"oldWord=0x{oldReadWord:x8} start=0x{startWord:x8} last=0x{lastWord:x8}{pcStatus}");
     }
 
     private void TraceCommandFifoBulkEnd()

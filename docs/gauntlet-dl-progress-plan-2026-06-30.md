@@ -2148,6 +2148,39 @@ old low-ring word as the head of a fresh texture-service batch. The broad
 negative controls; the useful behavior is the narrow bulk/read ownership
 transition around `pc=800fe5d4`.
 
+Added an opt-in diagnostic/experiment for that exact shape:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_STALE_PACKET=1
+```
+
+It only runs at command-FIFO bulk end, only when the read head is outside the
+current bulk, and only when the current bulk starts with a Type5 texture packet
+while the read-head packet looks stale: implausible, oversized for the bulk, or
+short of a valid packet window. With
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_BULK_END=1`, it logs explicit
+`[GAUNTDL:VOODOO-CMDFIFO-BULK-RESYNC]` lines. The f420 probe proves it catches
+the target condition:
+
+```text
+oldRd=0x00000210/0x00210 newRd=0x000020a0/0x020a0
+oldWord=0xbda7eca1 start=0xc0000205 last=0xbe91b046
+```
+
+But it is negative as a fix. It changes the frame and packet mix but still ends
+on the same final command-FIFO stop:
+
+```text
+baseline frameHash=0x035dcece direct/setup=6028/3002 texWrites=4296625 textureMap.touched=599296
+stale-resync frameHash=0x340b271c direct/setup=321/141 texWrites=6629697 textureMap.touched=812706
+stale-resync cmdstop=invalid-standard-window/0xbda7eca1/.../0x210/0x210/0xbed9a6b6/...
+```
+
+So a simple "jump read head to Type5 bulk start" rule is too broad and still
+does not clear the terminal `0x210` state. Keep the flag as a diagnostic and
+use the resync log to find why the stale read head is recreated after the
+texture-service batches, rather than promoting it.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
@@ -2162,8 +2195,8 @@ transition around `pc=800fe5d4`.
    `target=0x2c1/0x2c3`, setting TMU0 to `lod=0x800`, `base=0x55a0` before
    `pc=800fe5d4` consumes the Type5 payload. Next work should compare our
    command FIFO source chain for `0x00059604` and the following Type5 upload,
-   then test a narrow standard-FIFO bulk/read-index ownership rule around
-   `rd=0x210` and `pc=800fe5d4`.
+   then trace why `rd=0x210` is recreated after the stale-packet resync catches
+   it at `pc=800fe5d4`.
    Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel hydration;
    use `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
    traces.
