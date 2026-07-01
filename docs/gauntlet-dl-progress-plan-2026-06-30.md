@@ -1631,13 +1631,54 @@ The currently proven source-selector chain is therefore:
 Next causal target is now `807ffc90`, not `800a7344`: trace who writes the
 caller stack argument consumed by `800ab3a0`.
 
+### 2026-06-30 Caller Argument Slot Checkpoint
+
+The next stack argument slot was traced directly:
+
+```text
+log=/tmp/gauntdl-e27b-f420-stack807ffc90-writes.log
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff807ffc90:4
+```
+
+The run again stayed on the same f420 e27b baseline:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
+Most writes to `807ffc90` are stack reuse noise, but the target value has one
+clear writer:
+
+```text
+pc=ffffffff800ab298 write32 ffffffff807ffc90 802e2c68
+```
+
+So the current upstream chain is now:
+
+```text
+800ab298 -> writes 807ffc90=802e2c68
+800ab3a0 -> loads 807ffc90 into a1
+800ab3b0 -> calls 800a7094 with a1=802e2c68
+800a70cc -> stores a1 to callee sp+0x6c (807ffc7c)
+800a7330 -> reloads t0 from callee sp+0x6c
+800a7344 -> stores computed v0 to callee sp+0x20 (807ffc30)
+8010957c -> later reads 807ffc30 into s0
+```
+
+Next trace should be a narrow CPU window around `800ab298` to identify which
+register supplies `802e2c68` and whether that value is a direct table entry,
+iterator cursor, or caller argument.
+
 ## Next Concrete Work Slice
 
-1. Trace the writer for the caller argument slot `807ffc90=802e2c68`, which
-   `800ab3a0` loads as `a1` before calling `800a7094`. The downstream chain
-   from `800ab3b0 -> 800a70cc -> 800a7330 -> 800a7344 -> 8010957c ->
-   801096c0/801096f0/800fe228` is now proven. Do not keep using `807ffbbc` or
-   `800a7344` as the selector owner.
+1. Trace a narrow CPU window around `800ab298`, the writer for
+   `807ffc90=802e2c68`, and identify the source register/address for that
+   value. The downstream chain from `800ab298 -> 800ab3a0 -> 800ab3b0 ->
+   800a70cc -> 800a7330 -> 800a7344 -> 8010957c ->
+   801096c0/801096f0/800fe228` is now proven. Do not keep using `807ffbbc`,
+   `800a7344`, or `807ffc90` as the selector owner.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
