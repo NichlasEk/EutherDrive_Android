@@ -1537,13 +1537,107 @@ address state for the write that populates `807ffc30=802e2c68`. Keep
 `8010957c` as the read point and `801096c0`/`801096f0`/`800fe228` as proven
 downstream consumers.
 
+### 2026-06-30 Source Argument Chain Checkpoint
+
+The `800a7344` writer is now resolved one level earlier. The combined CPU/mem
+trace used:
+
+```text
+log=/tmp/gauntdl-e27b-f420-pc800a7344-stack807ffc30.log
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN=ffffffff800a7344
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX=ffffffff800a7344
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff807ffc30:4
+```
+
+It kept the same f420 e27b baseline:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
+For the target write, `800a7344` is the delay-slot store:
+
+```text
+800a7344 op=afa20020  # sw v0,0x20(sp)
+sp=807ffc10
+v0=802e2c68
+write address=807ffc30
+```
+
+The wider CPU trace around that block shows the local formula:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-800a72f0-800a7344.log
+
+800a7328 lw v0,0x20(sp)   -> v0=0
+800a7330 lw t0,0x6c(sp)   -> t0=802e2c68
+800a7334 lw t1,0x70(sp)   -> t1=0
+800a7338 addu v0,t0,v0    -> v0=802e2c68
+800a733c subu v0,v0,t1    -> v0=802e2c68
+800a7340 jal 0x800a64fc
+800a7344 sw v0,0x20(sp)   -> 807ffc30=802e2c68
+```
+
+So `800a7344` is not the origin either. It copies an already-passed source
+argument from `sp+0x6c` through a local offset calculation.
+
+Tracing `sp+0x6c == 807ffc7c` found the source of that local argument slot:
+
+```text
+log=/tmp/gauntdl-e27b-f420-stack807ffc7c-writes.log
+
+pc=ffffffff800a70cc write32 ffffffff807ffc7c 802e2c68
+```
+
+The matching CPU trace shows `800a70cc` is function prologue argument save:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-800a70a0-800a70d0.log
+
+800a70cc op=afa5006c  # sw a1,0x6c(sp)
+sp=807ffc10
+a1=802e2c68
+```
+
+The callsite for that frame is `ra=800ab3b8`. A narrow callsite trace shows the
+argument is loaded from the caller stack frame:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-800ab390-800ab3b8.log
+
+800ab3a0 op=8fa50018  # lw a1,0x18(sp)
+sp=807ffc78
+source word address=807ffc90
+
+800ab3b0 jal 0x800a7094
+a0=813815a0 a1=802e2c68 a2=0 a3=1188
+```
+
+The currently proven source-selector chain is therefore:
+
+```text
+807ffc90 -> 800ab3a0 loads a1
+800ab3b0 -> calls 800a7094 with a1=802e2c68
+800a70cc -> stores a1 to callee sp+0x6c (807ffc7c)
+800a7330 -> reloads t0 from callee sp+0x6c
+800a7338/800a733c -> computes v0=t0+0-0
+800a7344 -> stores v0 to callee sp+0x20 (807ffc30)
+8010957c -> later reads 807ffc30 into s0
+801096c0/801096f0/800fe228 -> downstream upload-source consumers
+```
+
+Next causal target is now `807ffc90`, not `800a7344`: trace who writes the
+caller stack argument consumed by `800ab3a0`.
+
 ## Next Concrete Work Slice
 
-1. Trace the `800a7344` write that populates `807ffc30=802e2c68`. Capture the
-   source register/address state for that exact write, then walk back to the
-   stable owner of the pointer. Keep `8010957c` as the confirmed read point and
-   `801096c0`/`801096f0`/`800fe228` as downstream consumers. Do not keep using
-   `807ffbbc` as the selector owner.
+1. Trace the writer for the caller argument slot `807ffc90=802e2c68`, which
+   `800ab3a0` loads as `a1` before calling `800a7094`. The downstream chain
+   from `800ab3b0 -> 800a70cc -> 800a7330 -> 800a7344 -> 8010957c ->
+   801096c0/801096f0/800fe228` is now proven. Do not keep using `807ffbbc` or
+   `800a7344` as the selector owner.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
