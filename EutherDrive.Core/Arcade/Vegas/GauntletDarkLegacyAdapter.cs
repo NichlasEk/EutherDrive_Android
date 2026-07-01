@@ -28219,7 +28219,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"[GAUNTDL:VOODOO-TEXWRITE] n={++_textureWriteBucketTraceCount} bucket=0x{bucket << TextureZeroSampleBucketShift:X6} " +
             $"word=0x{wordOffset:X6} addr=0x{byteOffset:X6} value=0x{value:X8} nzb={nonZeroBytes} " +
             $"lod={lod} ts=0x{ts:X2} tt=0x{tt:X2} bpp={bytesPerTexel} seq8={(seq8Downld ? 1 : 0)} " +
-            $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8}{type5Status}{pcStatus}");
+            $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8} " +
+            $"global=0x{_registers[RegTextureMode]:X8}/0x{_registers[RegTextureLod]:X8}/0x{_registers[RegTextureBaseAddr]:X8} " +
+            $"tmu0={FormatTmuDebugStatus(0)} tmu1={FormatTmuDebugStatus(1)}{type5Status}{pcStatus}");
     }
 
     private void WriteTextureLinear32(uint wordOffset, uint value, int bytesPerTexel)

@@ -1985,6 +1985,48 @@ That makes the next likely bug either stale/default TMU state at upload time
 (`mode=0`, `tlod=0x800`, `tbase=0x55a0`) or an addressing formula mismatch for
 sequential 8-bit downloads, not a CPU-upload-to-Type5 transport loss.
 
+### 2026-07-01 Texture Upload TMU-State Checkpoint
+
+`TraceTextureWriteBucket()` now includes the selected global/TMU texture state
+on each bucket hit. A focused f420 run used:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=2f
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT=24
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_WORDS=2180
+```
+
+The first `0x2180` write now shows the selected upload state directly:
+
+```text
+[GAUNTDL:VOODOO-TEXWRITE]
+bucket=0x02F000 word=0x002180 addr=0x02F000 value=0x00008042
+lod=0 ts=0x00 tt=0x43 bpp=1 seq8=1
+mode=0x00000000 tlod=0x00000800 tbase=0x000055A0
+global=0x00000000/0x00000000/0x00000000
+tmu0=00000000/00000800/000055A0/ncc7/7
+tmu1=0C26100F/FF802000/00000000/ncc7/5
+type5=cmd=0xC0000205:space=3:targetStart=0x002180:target=0x002180:i=0/64:packet=0x00024388:rd=0x00024388:stream=0
+pc=0xffffffff800fe5d4
+```
+
+So the bad `0x02f000` mapping is not coming from global texture registers.
+`WriteTexturePort32()` is selecting TMU bank 0 for `word=0x2180`, and bank 0 is
+already carrying the default-looking `mode=0`, `tlod=0x800`, `tbase=0x55a0`
+state at the moment the Type5 packet is consumed. TMU bank 1 simultaneously has
+a different texture mode/LOD state, which means the next branch should focus on
+either the last writer of TMU0's upload registers or whether the Type5 texture
+download should be selecting another bank/state for this target range.
+
+The validation oracle stayed unchanged:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
 ## Next Concrete Work Slice
 
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
@@ -1994,9 +2036,12 @@ sequential 8-bit downloads, not a CPU-upload-to-Type5 transport loss.
    `0x00000000/0x01d90000/...`, not from the `802e6f68` GEI+0x3850 payload. The
    transport path into texture memory is now proven: `packet=0x24388` writes
    `targetStart=0x2180` into bucket `0x02f000` under `mode=0`, `tlod=0x800`,
-   `tbase=0x55a0`, `bpp=1`, `seq8=1`. Next trace should focus on who last wrote
-   that TMU mode/LOD/base state before the upload, and compare the current
-   sequential 8-bit download addressing formula against MAME/Glide
+   `tbase=0x55a0`, `bpp=1`, `seq8=1`. The expanded texture-write trace proves
+   this comes from selected `tmu0=00000000/00000800/000055A0`, not from global
+   texture registers, while `tmu1` carries a different texture state. Next trace
+   should identify the last writer of TMU0's upload registers or test whether
+   this Type5 target range should select the other bank/state before comparing
+   the current sequential 8-bit download addressing formula against MAME/Glide
    expectations. Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel
    hydration; use
    `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
