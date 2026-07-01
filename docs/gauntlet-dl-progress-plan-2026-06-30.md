@@ -2070,6 +2070,42 @@ drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
 
 ## Next Concrete Work Slice
 
+### 2026-07-01 MAME Texture Upload Parity Check
+
+Checked the current MAME Voodoo primary source against the traced upload path:
+
+- register-space chipmask decode uses bits 8..11, with zero expanded to the
+  active chip mask;
+- `textureMode`, `tLOD`, and `texBaseAddr` are TREX registers, and chipmask bit
+  1 writes TMU0 while bit 2 writes TMU1;
+- texture memory offset bits 19..20 select the TMU, and `seq_8_downld` comes
+  from TMU0;
+- texture-memory writes use `t * width + s`, then align the scaled write offset
+  with `& ~3`.
+
+That means our observed `cmd=0x00059604` writes to `target=0x2c1/0x2c3`
+legitimately program TMU0. The `target=0x2180` Type5 texture download also
+legitimately selects TMU0. The `0x02f000` write is therefore not explained by a
+wrong Type4 chipmask or wrong TMU select.
+
+Promoted `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_DOWNLOAD_ALIGN32=1` into the
+bringup baseline because MAME aligns texture downloads to the 32-bit write
+boundary. The warm f420 oracle with that flag stayed pixel-identical:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+textureMap baseline touched=608352
+textureMap align32 touched=599296
+```
+
+This is a correctness cleanup, not the visible fix: the current visible oracle
+does not move. The next useful slice should leave Type4/TMU decode alone and
+instead trace why the command FIFO reaches the `0x2180` texture upload source
+when the frame still terminates at the same `invalid-standard-window`
+`0xbda7eca1` command.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
@@ -2083,11 +2119,10 @@ drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
    writer is now known: `pc=800fe428` emits Type4 `cmd=0x00059604` to
    `target=0x2c1/0x2c3`, setting TMU0 to `lod=0x800`, `base=0x55a0` before
    `pc=800fe5d4` consumes the Type5 payload. Next work should compare our
-   Type4 target/chipmask/TMU-bank semantics for `0x00059604` against MAME/Glide,
-   or test whether this Type5 target range should select another bank/state
-   before revisiting the sequential 8-bit download addressing formula. Do not
-   keep using raw `TRACE_MEM` for emulator-side BGLoadModel hydration; use
-   `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
+   command FIFO source chain for `0x00059604` and the following Type5 upload,
+   then compare the eventual stop/read-index state against MAME's FIFO model.
+   Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel hydration;
+   use `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
    traces.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
