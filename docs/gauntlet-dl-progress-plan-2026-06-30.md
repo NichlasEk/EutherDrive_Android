@@ -1418,6 +1418,27 @@ pc=ffffffff800ebf6c write32 ffffffff807ffbb4 800f0c44
 pc=ffffffff801096f0 write32 ffffffff807ffbb4 802e2c68
 ```
 
+A follow-up exact CPU trace on `pc=801096f0` with a higher limit reached the
+target rows and explains the stack-frame offset:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-801096f0-limit6000.log
+lines=969
+first target row line=785
+pc=ffffffff801096f0 op=afaa001c  # sw t2,0x1c(sp)
+t2=s0=ffffffff802e2c68
+sp=ffffffff807ffb98
+ra=ffffffff801095c8
+t3=ffffffff8013af90
+s3=ffffffff807ffc20 s4=ffffffff80157f34 s5=ffffffff80157f50 s7=0000000000000003
+a1/s6 sweep=0x0..0x3f0000, a0/fp toggle=1/0
+```
+
+So `801096f0` writes `sp+0x1c == 807ffbb4` in its frame, and `800fe228`
+later reads the same word as `sp+0x6c == 807ffbb4` in the wrapper frame.
+The writer is therefore a selector store loop; the next causal trace must find
+where `t2/s0` is populated with `802e2c68` before this PC.
+
 That run also kept the same f420 baseline:
 
 ```text
@@ -1428,17 +1449,17 @@ drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
 
 Conclusion: `800fe228` consumes the selected upload run from `sp+0x6c`,
 and `801096f0` is the concrete writer for the `0xffffffff802e2c68`
-selector value. The next trace should inspect the `801096f0`
-callsite/register state and the preceding `800ebf6c` frame setup, not the old
-`807ffbbc` stack address.
+selector value. `801096f0` is not the origin of that pointer; trace the
+producer path that loads `t2/s0` before the store, not the old `807ffbbc`
+stack address.
 
 ## Next Concrete Work Slice
 
-1. Trace the writer/caller for the `0xffffffff802e2c68` upload source selector:
-   `801096f0` writes the value into selector slot `807ffbb4`, then `800fe228`
-   loads it via `lw s3,0x6c(sp)`. Start with CPU trace or a narrow diagnostic
-   around `801096e0..80109704`, plus the preceding `800ebf6c -> 800f0c44`
-   frame setup. Do not keep using `807ffbbc` as the selector owner.
+1. Trace the producer for the `0xffffffff802e2c68` upload source selector:
+   `801096f0` only stores `t2/s0` into selector slot `807ffbb4`, then
+   `800fe228` loads it via `lw s3,0x6c(sp)`. Start with a narrow trace around
+   the `ra=801095c8` path and `801095c8..801096f0`, filtered to rows where
+   `t2/s0 == 802e2c68`. Do not keep using `807ffbbc` as the selector owner.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
