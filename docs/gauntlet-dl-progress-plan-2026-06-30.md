@@ -1671,14 +1671,132 @@ Next trace should be a narrow CPU window around `800ab298` to identify which
 register supplies `802e2c68` and whether that value is a direct table entry,
 iterator cursor, or caller argument.
 
+### 2026-07-01 Arena Cursor Producer Checkpoint
+
+The `800ab298` writer is now resolved. The narrow CPU trace used:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-800ab270-800ab2a0.log
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN=ffffffff800ab270
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX=ffffffff800ab2a0
+```
+
+It stayed on the same e27b f420 visual oracle:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
+The target write is a MIPS delay-slot store. `800ab298` stores the return value
+from the previous call at `800ab28c`, not the call at `800ab294`:
+
+```text
+800ab28c jal 0x800c9088
+800ab290 sw a0,0x50(sp)
+800ab294 jal 0x800c910c
+800ab298 sw v0,0x18(sp)   -> 807ffc90=802e2c68
+```
+
+At the target row:
+
+```text
+sp=807ffc78
+v0=802e2c68
+store address=807ffc90
+```
+
+So `800ab298` is not the owner. It saves the return value from `800c9088`.
+
+The follow-up trace around `800c9088` used:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-800c9088-800c9108.log
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN=ffffffff800c9088
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX=ffffffff800c9108
+```
+
+For the target call (`ra=800ab294`), `800c9088` is an arena-pointer helper:
+
+```text
+800c90bc lw v1,0x80fc(v1)  -> reads cursor 0x00007828 from 0x802280fc
+800c90d0 sra v0,v0,2
+800c90d8 sll v0,v1,2       -> keeps aligned offset 0x00007828
+800c90e0 lw a0,0x8104(a0)  -> reads arena base 0x802db440 from 0x80228104
+800c90e4 addu v1,v0,a0     -> v1=802e2c68
+800c90e8 move v0,v1        -> returns v0=802e2c68
+800c9104 jr ra
+```
+
+The source pointer is therefore:
+
+```text
+0x802db440 + 0x00007828 = 0x802e2c68
+```
+
+The corresponding writes-only memory trace used:
+
+```text
+log=/tmp/gauntdl-e27b-f420-mem-802280fc-80228104-writes.log
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff802280fc:4,ffffffff80228104:4
+```
+
+It found no warm-run writes to `0x80228104`, so the arena base is stable during
+this window. The target cursor value is written by `800c9014`:
+
+```text
+pc=ffffffff800c9014 write32 ffffffff802280fc 00007828
+```
+
+The narrow CPU trace around that writer used:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-800c8fe0-800c9018.log
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MIN=ffffffff800c8fe0
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX=ffffffff800c9018
+```
+
+For the target cursor update:
+
+```text
+800c9004 lw v0,0x80fc(v0)  -> old cursor 0x00007828
+800c9008 lw v1,0x20(fp)    -> allocation size 0
+800c900c addu v0,v0,v1     -> new cursor 0x00007828
+800c9014 sw v0,0x80fc(at)  -> writes 0x802280fc=0x00007828
+```
+
+This resolves the current stack selector path as an arena allocation pointer,
+not a semantic texture table selector. The proven upstream chain is now:
+
+```text
+800c9014 -> writes arena cursor 0x802280fc=0x00007828
+800c9088 -> returns arena base 0x802db440 + cursor 0x7828 = 0x802e2c68
+800ab298 -> delay-slot stores v0 to caller stack 807ffc90
+800ab3a0 -> loads 807ffc90 into a1
+800ab3b0 -> calls 800a7094 with a1=802e2c68
+800a70cc -> stores a1 to callee sp+0x6c (807ffc7c)
+800a7330 -> reloads t0 from callee sp+0x6c
+800a7344 -> stores computed v0 to callee sp+0x20 (807ffc30)
+8010957c -> later reads 807ffc30 into s0
+801096c0/801096f0/800fe228 -> downstream upload-source consumers
+```
+
+Do not keep chasing `807ffc90` or `800ab298` as if they own the upload source.
+If pointer provenance is still needed, the next upstream allocation callsite is
+`ra=800c8fa4` with the allocation size in the helper frame at `fp+0x20`. The
+higher-value graphics target is now the payload content or upload decode for
+the arena bytes at `802e2c68`, not the already-proven stack handoff.
+
 ## Next Concrete Work Slice
 
-1. Trace a narrow CPU window around `800ab298`, the writer for
-   `807ffc90=802e2c68`, and identify the source register/address for that
-   value. The downstream chain from `800ab298 -> 800ab3a0 -> 800ab3b0 ->
-   800a70cc -> 800a7330 -> 800a7344 -> 8010957c ->
-   801096c0/801096f0/800fe228` is now proven. Do not keep using `807ffbbc`,
-   `800a7344`, or `807ffc90` as the selector owner.
+1. Pivot from stack selector ownership to payload/content provenance. The source
+   pointer `802e2c68` is now proven to be an arena pointer returned by
+   `800c9088`, using stable base `0x80228104=802db440` and cursor
+   `0x802280fc=0x7828`. Next trace should either watch writes into the arena
+   payload bytes at `802e2c68` for the target run or compare that memory region
+   against the GEI/Type5 upload decoder. Only follow `ra=800c8fa4` and the
+   helper size slot at `fp+0x20` if allocator callsite ownership is needed.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
