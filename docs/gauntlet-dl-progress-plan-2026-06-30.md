@@ -1930,17 +1930,75 @@ frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
 drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
 ```
 
+### 2026-07-01 Texture Bucket Routing Checkpoint
+
+The existing texture-write bucket trace can now be used with the Type5/upload
+link trace. For the overused sample bucket `0x02f000`, the filter value is
+`0x2f` because `TextureZeroSampleBucketShift == 12`:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS=2f
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT=96
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_WORDS=2180
+```
+
+The f420 run proves that the packet paired in the upload-link checkpoint writes
+directly into `0x02f000`:
+
+```text
+[GAUNTDL:VOODOO-TEXWRITE]
+bucket=0x02F000 word=0x002180 addr=0x02F000 value=0x00008042
+lod=0 ts=0x00 tt=0x43 bpp=1 seq8=1
+mode=0x00000000 tlod=0x00000800 tbase=0x000055A0
+type5=cmd=0xC0000205:space=3:targetStart=0x002180:target=0x002180:i=0/64:packet=0x00024388:rd=0x00024388
+
+[GAUNTDL:VOODOO-TEXWRITE]
+bucket=0x02F000 word=0x002181 addr=0x02F004 value=0x00000043
+lod=0 ts=0x04 tt=0x43 bpp=1 seq8=1
+mode=0x00000000 tlod=0x00000800 tbase=0x000055A0
+type5=cmd=0xC0000205:space=3:targetStart=0x002180:target=0x002181:i=1/64:packet=0x00024388:rd=0x00024388
+```
+
+The next packet starts at target `0x2200` and remains in the same bucket:
+
+```text
+bucket=0x02F000 word=0x002200 addr=0x02F100
+type5=targetStart=0x002200 packet=0x00024490
+```
+
+So the current dominant `0x02f000` texture bucket is not just a sample-side
+artifact. It is being populated by Type5 texture writes whose target words
+`0x2180..0x221f` map through the current upload addressing path as:
+
+```text
+lod=0
+ts=(wordOffset << 2) & 0xff
+tt=(wordOffset >> 7) & 0xff
+mode=0x00000000
+tlod=0x00000800
+tbase=0x000055A0
+bpp=1 seq8=1
+byteOffset=0x02F000...
+```
+
+That makes the next likely bug either stale/default TMU state at upload time
+(`mode=0`, `tlod=0x800`, `tbase=0x55a0`) or an addressing formula mismatch for
+sequential 8-bit downloads, not a CPU-upload-to-Type5 transport loss.
+
 ## Next Concrete Work Slice
 
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
    `0x2180` payload comes from `80316ca4` with raw
-   `0x00000000/0x01d90000/...`, not from the `802e6f68` GEI+0x3850 payload.
-   Next trace should follow how this decoded `0x0000d901` stream populates
-   Voodoo texture memory and whether the format/base/LOD state routes it into
-   the overused `0x02f000` texture bucket. Do not keep using raw `TRACE_MEM` for
-   emulator-side BGLoadModel hydration; use
+   `0x00000000/0x01d90000/...`, not from the `802e6f68` GEI+0x3850 payload. The
+   transport path into texture memory is now proven: `packet=0x24388` writes
+   `targetStart=0x2180` into bucket `0x02f000` under `mode=0`, `tlod=0x800`,
+   `tbase=0x55a0`, `bpp=1`, `seq8=1`. Next trace should focus on who last wrote
+   that TMU mode/LOD/base state before the upload, and compare the current
+   sequential 8-bit download addressing formula against MAME/Glide
+   expectations. Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel
+   hydration; use
    `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
    traces.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
