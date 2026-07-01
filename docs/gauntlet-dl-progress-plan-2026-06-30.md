@@ -2181,6 +2181,51 @@ does not clear the terminal `0x210` state. Keep the flag as a diagnostic and
 use the resync log to find why the stale read head is recreated after the
 texture-service batches, rather than promoting it.
 
+Pause checkpoint after the next probe: the follow-up profiler showed the final
+`0xbda7eca1` stop is recreated by the normal bulk-end decode at
+`pc=800fe5d4`, walking from the low wrapped tail (`rd0`) to word index `0x84`.
+It was not a direct register setter recreating the stale read head after the
+stale-packet resync.
+
+Added one more opt-in diagnostic to target that exact low-tail shape:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_WRAP_TAIL=1
+```
+
+Build still passes for the probe project:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+463 warnings, 0 errors
+```
+
+The f420 warm probe is strongly negative as a fix, but useful as a diagnostic:
+
+```text
+/tmp/gauntdl-e27b-f420-bulk-resync-wraptail.log
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+drawPackets=20163 directTriangles=317 setupTriangles=141 texWrites=2461873
+textureMap=9415472:4329754:5085718:296960:0x000000:0x3ffffc
+packetTypes=0:1017,1:26051,2:157,3:20163,4:73958,5:42946,6:48,7:103
+framebuffer=640x480:307200:307200
+cmdstop=invalid-standard-window/0x0005a604/4/3/0x31870/0x31870/0x00000000/0x00000800/pc=0xffffffff800fe420/last=0x0005a604:4:0x31870:0x31880/920972
+cmdrd=0xC620 cmd=22862/0/8046/0xFFFFFFFC/0xFFFFFFFC cmdio=0/0/0
+```
+
+This removes the terminal `0xbda7eca1/0x210` symptom, but it over-resyncs:
+texture coverage drops to `296960`, direct/setup triangles collapse to
+`317/141`, and the run stops earlier/elsewhere on TMU Type4 `0x0005a604` with
+only three valid words. The no-local-jump/no-command-IO tail also suggests this
+prevents later control/render stream progress instead of repairing ordering.
+
+Next work after the pause should refine the wrapped-Type5 case by
+distinguishing packet head from payload tail inside the wrapped bulk. The likely
+shape is tracking intra-bulk logical order or the Type5 packet byte count, not
+the broad rule "read is in the low wrapped tail, so jump to the high bulk
+start".
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early

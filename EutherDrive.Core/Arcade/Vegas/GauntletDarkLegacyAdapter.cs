@@ -26999,6 +26999,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_LOW_READ"));
     private readonly bool _experimentCommandFifoBulkResyncStalePacket =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_STALE_PACKET"));
+    private readonly bool _experimentCommandFifoBulkResyncWrapTail =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_WRAP_TAIL"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
@@ -27943,6 +27945,17 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoDepth = Math.Max(_cmdFifoDepth, _cmdFifoBulkWriteWordCount);
             TraceCommandFifoBulkResync("stale-packet", stalePacketReason, oldReadIndex, oldReadWord);
         }
+        if (_cmdFifoBulkWriteDepth == 0 &&
+            _experimentCommandFifoBulkResyncWrapTail &&
+            _cmdFifoBulkSawWrite &&
+            ShouldResyncCommandFifoWrappedBulkTailToStart())
+        {
+            int oldReadIndex = _cmdFifoReadIndex;
+            uint oldReadWord = ReadCommandFifoWordAt(oldReadIndex);
+            _cmdFifoReadIndex = _cmdFifoBulkStartIndex;
+            _cmdFifoDepth = Math.Max(_cmdFifoDepth, _cmdFifoBulkWriteWordCount);
+            TraceCommandFifoBulkResync("wrap-tail", "type5", oldReadIndex, oldReadWord);
+        }
         if (_cmdFifoBulkWriteDepth == 0)
             TraceCommandFifoBulkEnd();
         if (_cmdFifoBulkWriteDepth == 0)
@@ -27998,6 +28011,24 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return false;
+    }
+
+    private bool ShouldResyncCommandFifoWrappedBulkTailToStart()
+    {
+        if (_cmdFifoBulkStartIndex <= _cmdFifoBulkLastIndex)
+            return false;
+
+        uint startWord = ReadCommandFifoWordAt(_cmdFifoBulkStartIndex);
+        if (!IsType5TexturePacketHeader(startWord))
+            return false;
+
+        int readStorage = CommandFifoStorageIndex(_cmdFifoReadIndex);
+        int lastStorage = CommandFifoStorageIndex(_cmdFifoBulkLastIndex);
+        if (readStorage > lastStorage)
+            return false;
+
+        uint readWord = ReadCommandFifoWordAt(_cmdFifoReadIndex);
+        return !IsType5TexturePacketHeader(readWord);
     }
 
     private void TraceCommandFifoBulkResync(string kind, string reason, int oldReadIndex, uint oldReadWord)
