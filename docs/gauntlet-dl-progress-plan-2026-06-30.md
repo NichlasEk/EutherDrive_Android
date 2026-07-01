@@ -2106,6 +2106,48 @@ instead trace why the command FIFO reaches the `0x2180` texture upload source
 when the frame still terminates at the same `invalid-standard-window`
 `0xbda7eca1` command.
 
+### 2026-07-01 Command FIFO Bulk-Window Checkpoint
+
+The focused `bulk-end` trace confirms the latest blocker is a standard command
+FIFO read-window phase issue, not the texture upload target selection. The run
+used the current baseline and the warm f420 oracle:
+
+```text
+/tmp/gauntdl-e27b-f420-bulk-lowring.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/0xbed9a6b6/0xc2280000/pc=0xffffffff801066c8
+```
+
+The last-writer debug now proves the final stop words were normal FIFO writes
+from the texture service, not Type5-space0 backfill or anonymous stale data:
+
+```text
+w0=0x00210:v1/lg0x00000210/cur0xbda7eca1/last=fifo/seq133/lg0x00000210/addr0x00000210/val0xbda7eca1/pc0xffffffff800fe5d4
+w1=0x00214:v1/lg0x00000214/cur0xbed9a6b6/last=fifo/seq134/lg0x00000214/addr0x00000214/val0xbed9a6b6/pc0xffffffff800fe5d4
+```
+
+The new bulk-window trace shows the failing phase directly. After a valid
+texture batch starts at low storage, the read index remains on an older low
+word while later `0xc0000205` texture batches begin far ahead:
+
+```text
+n=233 rd=0x00000020/0x00020 bulk=0x00000020-0x0001081c inside=1 word=0xc0000205
+n=234 rd=0x00000000/0x00000 bulk=0x00031880-0x0000207c inside=1 word=0x000e0010
+n=235 rd=0x00000210/0x00210 bulk=0x000020a0-0x0001289c inside=0 word=0xbda7eca1
+n=236 rd=0x00000210/0x00210 bulk=0x000128c0-0x000230bc inside=0 word=0xbda7eca1
+n=237 rd=0x00000210/0x00210 bulk=0x000230e0-0x000338dc inside=0 word=0xbda7eca1
+```
+
+That narrows the next repair attempt: preserve the standard FIFO path, but add
+or probe a bulk-window/read-index rule that prevents decode from treating an
+old low-ring word as the head of a fresh texture-service batch. The broad
+`FIX_VOODOO_MAME_CMD_FIFO_MODEL` preset and its defer/yield variants remain
+negative controls; the useful behavior is the narrow bulk/read ownership
+transition around `pc=800fe5d4`.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
@@ -2120,7 +2162,8 @@ when the frame still terminates at the same `invalid-standard-window`
    `target=0x2c1/0x2c3`, setting TMU0 to `lod=0x800`, `base=0x55a0` before
    `pc=800fe5d4` consumes the Type5 payload. Next work should compare our
    command FIFO source chain for `0x00059604` and the following Type5 upload,
-   then compare the eventual stop/read-index state against MAME's FIFO model.
+   then test a narrow standard-FIFO bulk/read-index ownership rule around
+   `rd=0x210` and `pc=800fe5d4`.
    Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel hydration;
    use `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
    traces.
