@@ -837,6 +837,14 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR"));
     private readonly int _traceTextureUploadSourceSelectorLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_LIMIT", 64);
+    private readonly bool _traceTextureUploadSourceProducer =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER"));
+    private readonly int _traceTextureUploadSourceProducerLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LIMIT", 128);
+    private readonly ulong? _traceTextureUploadSourceProducerPcMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MIN");
+    private readonly ulong? _traceTextureUploadSourceProducerPcMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MAX");
     private readonly ulong? _traceTextureUploadPacketSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE");
     private readonly int _traceTextureUploadPacketSourceLimit =
@@ -944,6 +952,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadAsciiTraceCount;
     private int _textureUploadPayloadRunTraceCount;
     private int _textureUploadSourceSelectorTraceCount;
+    private int _textureUploadSourceProducerTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
     private int _textureUploadPayloadFocusedCallerTraceCount;
@@ -1545,6 +1554,7 @@ internal sealed class MipsR5000Core
 
         TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
         TraceTextureUploadSourceSelector(pc, op);
+        TraceTextureUploadSourceProducer(pc, op, "pre");
         TraceInstruction(pc, op);
         TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
             CaptureTextureUploadCallerTransitionSnapshot(pc);
@@ -1552,6 +1562,7 @@ internal sealed class MipsR5000Core
         ulong s8BeforeExecute = _gpr[30];
         Execute(pc, op);
         _gpr[0] = 0;
+        TraceTextureUploadSourceProducer(pc, op, "post");
         TraceTextureUploadCallerTransition(pc, op, textureUploadCallerBefore);
         AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
@@ -4370,6 +4381,51 @@ internal sealed class MipsR5000Core
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
             $"first={ReadTraceWord(selectedSource):x8}/{ReadTraceWord(selectedSource + 0x04UL):x8}/" +
             $"{ReadTraceWord(selectedSource + 0x08UL):x8}/{ReadTraceWord(selectedSource + 0x0cUL):x8}");
+    }
+
+    private void TraceTextureUploadSourceProducer(ulong pc, uint op, string phase)
+    {
+        if (!_traceTextureUploadSourceProducer ||
+            !_traceTextureUploadRunSource.HasValue ||
+            _textureUploadSourceProducerTraceCount >= _traceTextureUploadSourceProducerLimit)
+            return;
+
+        if (_traceTextureUploadSourceProducerPcMin.HasValue &&
+            pc < _traceTextureUploadSourceProducerPcMin.Value)
+            return;
+        if (_traceTextureUploadSourceProducerPcMax.HasValue &&
+            pc > _traceTextureUploadSourceProducerPcMax.Value)
+            return;
+
+        ulong target = _traceTextureUploadRunSource.Value;
+        ulong sp = _gpr[29];
+        uint sp1c = ReadTraceWord(sp + 0x1cUL);
+        uint sp4c = ReadTraceWord(sp + 0x4cUL);
+        uint sp6c = ReadTraceWord(sp + 0x6cUL);
+        bool matchT2 = _gpr[10] == target;
+        bool matchS0 = _gpr[16] == target;
+        bool matchSp1c = SignExtend32(sp1c) == target;
+        bool matchSp4c = SignExtend32(sp4c) == target;
+        bool matchSp6c = SignExtend32(sp6c) == target;
+
+        if (!matchT2 && !matchS0 && !matchSp1c && !matchSp4c && !matchSp6c)
+            return;
+
+        _textureUploadSourceProducerTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-SOURCE-PRODUCER] phase={phase} pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} " +
+            $"match={(matchT2 ? "t2," : "")}{(matchS0 ? "s0," : "")}{(matchSp1c ? "sp1c," : "")}{(matchSp4c ? "sp4c," : "")}{(matchSp6c ? "sp6c," : "")} " +
+            $"target=0x{target:x16} ra=0x{_gpr[31]:x16} sp=0x{sp:x16} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} " +
+            $"t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} t4=0x{_gpr[12]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"sp1c={sp1c:x8} sp40={ReadTraceWord(sp + 0x40UL):x8} sp44={ReadTraceWord(sp + 0x44UL):x8} " +
+            $"sp48={ReadTraceWord(sp + 0x48UL):x8} sp4c={sp4c:x8} sp50={ReadTraceWord(sp + 0x50UL):x8} sp6c={sp6c:x8} " +
+            $"s3w={ReadTraceWord(_gpr[19] + 0x00UL):x8}/{ReadTraceWord(_gpr[19] + 0x08UL):x8}/{ReadTraceWord(_gpr[19] + 0x0cUL):x8} " +
+            $"first={ReadTraceWord(target):x8}/{ReadTraceWord(target + 0x04UL):x8}/" +
+            $"{ReadTraceWord(target + 0x08UL):x8}/{ReadTraceWord(target + 0x0cUL):x8}");
     }
 
     private readonly struct TextureUploadCallerTransitionSnapshot

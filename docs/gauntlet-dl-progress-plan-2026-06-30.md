@@ -1453,13 +1453,97 @@ selector value. `801096f0` is not the origin of that pointer; trace the
 producer path that loads `t2/s0` before the store, not the old `807ffbbc`
 stack address.
 
+### 2026-06-30 Source Producer Checkpoint
+
+Added a second trace-only selector probe to follow the selected upload run
+pointer before `801096f0` stores it:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LIMIT=160
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MIN=ffffffff801095c0
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MAX=ffffffff801096f0
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE=ffffffff802e2c68
+```
+
+The broader generic CPU trace over `801095c8..801096f0` was too noisy and hit
+its trace limit before the target source appeared:
+
+```text
+log=/tmp/gauntdl-e27b-f420-cputrace-801095c8-801096f0-ra801095c8.log
+lines=20122
+```
+
+The new source-producer hook kept the same f420 e27b visual baseline stable:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
+The focused trace around `801095c0..801096f0` shows that `801096c0` and
+`801096f0` are still downstream, not the origin:
+
+```text
+log=/tmp/gauntdl-e27b-f420-source-producer-2c68.log
+
+801095c0 jal 0x801096ac:
+  s0=802e2c68 and caller sp+0x1c already equal the target source.
+
+801096c0 lw t2,0x4c(sp):
+  after the callee prologue shifts sp, the same word is at sp+0x4c and is
+  loaded into t2.
+
+801096f0 sw t2,0x1c(sp):
+  t2 is stored into the selector slot later consumed by 800fe228.
+```
+
+A second focused trace one call level earlier found the immediate producer for
+`s0`:
+
+```text
+log=/tmp/gauntdl-e27b-f420-source-producer-2c68-precall.log
+
+8010957c lw s0,0x10(s3)
+s3=807ffc20
+source word address=807ffc30
+```
+
+So the concrete downstream chain is now:
+
+```text
+807ffc30 -> 8010957c loads s0
+801095c0 -> calls 801096ac with s0 and caller sp+0x1c already set
+801096c0 -> loads t2 from callee sp+0x4c
+801096f0 -> stores t2 to callee sp+0x1c
+800fe228 -> consumes the same selector word as wrapper sp+0x6c
+```
+
+The write trace on `807ffc30` is noisy because the address is stack space, but
+it gives the next exact producer PC:
+
+```text
+log=/tmp/gauntdl-e27b-f420-stack807ffc30-writes.log
+
+pc=ffffffff80102a0c write32 ffffffff807ffc30 802e2c68
+pc=ffffffff80102a0c write32 ffffffff807ffc30 802e2c68
+pc=ffffffff800a7344 write32 ffffffff807ffc30 802e2c68
+```
+
+`800a7344` then repeats the same target write many times. That makes
+`800a7344` the next high-value trace target: inspect the source register and
+address state for the write that populates `807ffc30=802e2c68`. Keep
+`8010957c` as the read point and `801096c0`/`801096f0`/`800fe228` as proven
+downstream consumers.
+
 ## Next Concrete Work Slice
 
-1. Trace the producer for the `0xffffffff802e2c68` upload source selector:
-   `801096f0` only stores `t2/s0` into selector slot `807ffbb4`, then
-   `800fe228` loads it via `lw s3,0x6c(sp)`. Start with a narrow trace around
-   the `ra=801095c8` path and `801095c8..801096f0`, filtered to rows where
-   `t2/s0 == 802e2c68`. Do not keep using `807ffbbc` as the selector owner.
+1. Trace the `800a7344` write that populates `807ffc30=802e2c68`. Capture the
+   source register/address state for that exact write, then walk back to the
+   stable owner of the pointer. Keep `8010957c` as the confirmed read point and
+   `801096c0`/`801096f0`/`800fe228` as downstream consumers. Do not keep using
+   `807ffbbc` as the selector owner.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
    warm snapshot `/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-446392c984c8.warm`
    is no longer present under `/tmp`, `/home/nichlas`, or `/run/media/nichlas`.
