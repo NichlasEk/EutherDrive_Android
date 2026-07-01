@@ -26951,6 +26951,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_WORDS"), 0);
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
+    private readonly ulong[] _traceTmuRegisterWriteTargets =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITE_TARGETS"));
+    private readonly ulong[] _traceTmuRegisterWriteRegisters =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITE_REGISTERS"));
+    private readonly ulong[] _traceTmuRegisterWriteValues =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITE_VALUES"));
+    private readonly int _traceTmuRegisterWritesLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES_LIMIT"), 160);
     private readonly bool _traceCommandFifoModel = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL") == "1";
     private readonly ulong[] _traceCommandFifoModelPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_PCS"));
@@ -29490,21 +29498,62 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         CountCommandFifoTargetRegisterPc(register, value);
         TraceCommandFifoRegisterValue(target, value);
-        if (_traceTmuRegisterWrites &&
-            _tmuRegisterWriteTraceCount < 160 &&
-            IsTmuTextureRegister(register))
-        {
-            ulong pc = CpuPcProvider?.Invoke() ?? 0;
-            string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
-            Console.WriteLine($"[GAUNTDL:VOODOO-TMU] target=0x{target:x3} reg=0x{register:x2} value=0x{value:x8}{pcStatus}");
-            _tmuRegisterWriteTraceCount++;
-        }
+        bool traceTmuWrite = ShouldTraceTmuRegisterWrite(target, register, value);
+        string tmuBefore = traceTmuWrite ? FormatTextureRegisterWriteStatus() : "";
+        bool wroteTmuBank = _fixTmuRegisterBanks && TryWriteTmuRegister(target, value);
+        if (traceTmuWrite)
+            TraceTmuRegisterWrite(target, register, value, wroteTmuBank, tmuBefore);
 
-        if (_fixTmuRegisterBanks && TryWriteTmuRegister(target, value))
+        if (wroteTmuBank)
             return;
 
         WriteRegister(register << 2, value);
     }
+
+    private bool ShouldTraceTmuRegisterWrite(uint target, uint register, uint value)
+    {
+        if (!_traceTmuRegisterWrites ||
+            _tmuRegisterWriteTraceCount >= _traceTmuRegisterWritesLimit ||
+            !IsTmuTextureRegister(register))
+        {
+            return false;
+        }
+
+        if (_traceTmuRegisterWriteTargets.Length != 0 &&
+            !_traceTmuRegisterWriteTargets.Contains(target))
+        {
+            return false;
+        }
+        if (_traceTmuRegisterWriteRegisters.Length != 0 &&
+            !_traceTmuRegisterWriteRegisters.Contains(register))
+        {
+            return false;
+        }
+        if (_traceTmuRegisterWriteValues.Length != 0 &&
+            !_traceTmuRegisterWriteValues.Contains(value))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private void TraceTmuRegisterWrite(uint target, uint register, uint value, bool banked, string before)
+    {
+        _tmuRegisterWriteTraceCount++;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TMU] n={_tmuRegisterWriteTraceCount} target=0x{target:x3} chip=0x{DecodeChipmask(target):x1} " +
+            $"reg=0x{register:x2} value=0x{value:x8} banked={(banked ? 1 : 0)} " +
+            $"cmd=0x{_currentCommandFifoCommand:x8} packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"before={before} after={FormatTextureRegisterWriteStatus()}{pcStatus}");
+    }
+
+    private string FormatTextureRegisterWriteStatus()
+        => $"global={_registers[RegTextureMode]:X8}/{_registers[RegTextureLod]:X8}/{_registers[RegTextureBaseAddr]:X8}:" +
+           $"tmu0={FormatTmuDebugStatus(0)}:" +
+           $"tmu1={FormatTmuDebugStatus(1)}";
 
     private void TraceCommandFifoRegisterValue(uint target, uint value)
     {

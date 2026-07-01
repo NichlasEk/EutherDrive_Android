@@ -2019,6 +2019,47 @@ a different texture mode/LOD state, which means the next branch should focus on
 either the last writer of TMU0's upload registers or whether the Type5 texture
 download should be selecting another bank/state for this target range.
 
+The TMU write trace now has target/register/value filters:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITE_TARGETS=c3,2c3,4c3
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITE_REGISTERS=c1,c3
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITE_VALUES=800,55a0
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES_LIMIT=80
+```
+
+Using those filters closes the TMU0 writer question for the `0x2180` upload.
+The bad/default-looking state is written immediately before the Type5 texture
+payload by a Type4 register packet from the texture upload service:
+
+```text
+[GAUNTDL:VOODOO-TMU]
+target=0x2c1 chip=0x2 reg=0xc1 value=0x00000800
+cmd=0x00059604 pc=0xffffffff800fe428
+before=tmu0=00000000/FF802000/00000000
+after=tmu0=00000000/00000800/00000000
+
+[GAUNTDL:VOODOO-TMU]
+target=0x2c3 chip=0x2 reg=0xc3 value=0x000055a0
+cmd=0x00059604 packet=0x0001fe60 rd=0x0001fe60
+before=tmu0=00000000/00000800/00000000
+after=tmu0=00000000/00000800/000055A0
+pc=0xffffffff800fe428
+
+[GAUNTDL:VOODOO-TEXWRITE]
+bucket=0x02F000 word=0x002180 addr=0x02F000
+tmu0=00000000/00000800/000055A0
+type5=targetStart=0x002180:packet=0x00024388
+pc=0xffffffff800fe5d4
+```
+
+So this is no longer just stale state. The upload service itself emits the
+TMU0 LOD/base setup (`target=0x2c1/0x2c3`, chipmask `0x2`) immediately before
+the Type5 download consumes target `0x2180`. The next likely fork is either
+our Type4/chipmask/TMU-bank interpretation for `cmd=0x00059604`, or the upload
+service is legitimately programming TMU0 for a different texture and the Type5
+target/bank selection should not use TMU0 for this range.
+
 The validation oracle stayed unchanged:
 
 ```text
@@ -2038,12 +2079,14 @@ drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
    `targetStart=0x2180` into bucket `0x02f000` under `mode=0`, `tlod=0x800`,
    `tbase=0x55a0`, `bpp=1`, `seq8=1`. The expanded texture-write trace proves
    this comes from selected `tmu0=00000000/00000800/000055A0`, not from global
-   texture registers, while `tmu1` carries a different texture state. Next trace
-   should identify the last writer of TMU0's upload registers or test whether
-   this Type5 target range should select the other bank/state before comparing
-   the current sequential 8-bit download addressing formula against MAME/Glide
-   expectations. Do not keep using raw `TRACE_MEM` for emulator-side BGLoadModel
-   hydration; use
+   texture registers, while `tmu1` carries a different texture state. The last
+   writer is now known: `pc=800fe428` emits Type4 `cmd=0x00059604` to
+   `target=0x2c1/0x2c3`, setting TMU0 to `lod=0x800`, `base=0x55a0` before
+   `pc=800fe5d4` consumes the Type5 payload. Next work should compare our
+   Type4 target/chipmask/TMU-bank semantics for `0x00059604` against MAME/Glide,
+   or test whether this Type5 target range should select another bank/state
+   before revisiting the sequential 8-bit download addressing formula. Do not
+   keep using raw `TRACE_MEM` for emulator-side BGLoadModel hydration; use
    `TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION` or explicit upload/decode
    traces.
 2. Reproduce or bracket the older `0x772ab040` visual scene family. The original
