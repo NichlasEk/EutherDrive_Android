@@ -2328,6 +2328,51 @@ Next slice should trace writes around `pc=801066c8` and the last decoded
 `0x20c -> 0x210` transition, including last-writer metadata for storage
 `0x20c/0x210`, rather than adding more broad bulk-end gates.
 
+#### 2026-07-02 stop-on-unknown checkpoint
+
+Ran the f420 warm probe with the existing unknown-packet guard enabled:
+
+```bash
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_COMMANDS=0xbed16e7e,0xbda7eca1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE=0x20c,0x210,0x214
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO=1
+```
+
+This preserves the same baseline/non-flat sibling output:
+
+```text
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 direct/setup=6028/3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+packetTypes=0:2973,1:27428,2:103,3:21375,4:78556,5:70997,6:81,7:102
+```
+
+And the terminal stop remains unchanged:
+
+```text
+cmdstop=invalid-standard-window/0xBDA7ECA1/48552/7914/0x210/0x210/.../pc=0xFFFFFFFF801066C8/trig=write/.../last=0xBED16E7E:1:0x20C:0x210/1359814
+```
+
+So treating `0xBED16E7E` as an unknown FIFO header is not the fix. The trace
+also showed the same payload family being installed as Voodoo register values,
+for example final registers `0x09a=0xbed16e7e`, `0x09b=0xbda7eca1`,
+`0x09c=0xbed9a6b6`, and repeated self-register traces such as:
+
+```text
+reg-value target=0x02c reg=0x2c value=0xbed16e7e packet=0xb0000161 packetType=1 packetStart=0x0000f900 words=45057 rd=0x0000f900 pc=0xffffffff800fe5d4
+```
+
+Next slice should focus on why self-register Type1 packets with implausible
+counts are allowed to stream/register-write payload words from the Type5 data
+region, and why their consumed read head leaves the later write-triggered decode
+parked on `0x210`. A narrow candidate is to trace or gate implausible Type1
+self-register packets when `_fixMameCommandFifoModel` is active and the packet
+window is not fully valid/in-address-window, before considering any generic
+unknown-packet behavior.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
