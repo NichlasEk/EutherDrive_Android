@@ -2226,6 +2226,69 @@ shape is tracking intra-bulk logical order or the Type5 packet byte count, not
 the broad rule "read is in the low wrapped tail, so jump to the high bulk
 start".
 
+2026-07-02 payload-tail packet scan checkpoint: compared the local command FIFO
+bulk-end path against current MAME `voodoo_2.cpp` command FIFO behavior. MAME's
+FIFO dispatcher waits until enough words are present at the read head before
+dispatching, and Type5 packet length is `2 + word_count`; the local issue is
+therefore likely read-head/depth ownership around wrapped bulk writes, not the
+Type5 texture copy itself.
+
+Added trace-only packet classification for bulk-end/resync lines. With
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_BULK_END=1`, each line now reports
+whether the current read index is outside the just-written bulk, at a packet
+head, in a generic packet body, or inside Type5 data. Baseline behavior is
+unchanged:
+
+```text
+/tmp/gauntdl-e27b-f420-bulk-scan.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 direct/setup=6028/3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/.../0x210/0x210/...
+```
+
+The new scan explains why the broad wrap-tail rule was destructive. Many of the
+low-tail read heads are not packet heads; they are inside Type5 payload data:
+
+```text
+rd=0x000000c8 bulk=0x00000020-0x0001081c scan=type5-data:rel42/16896:pkt0:off42/66:cmd=0xc0000205:type=5
+rd=0x00000000 bulk=0x00031880-0x0000207c scan=type5-data:rel14816/16896:pkt224:off32/66:cmd=0xc0000205:type=5
+rd=0x00000000 bulk=0x00031910-0x0000210c scan=type5-data:rel14780/16896:pkt223:off62/66:cmd=0xc0000205:type=5
+```
+
+Two opt-in experiments confirm the shape without producing a shippable fix:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_PAYLOAD_READ=1
+frameHash=0x035dcece
+drawPackets=20435 direct/setup=6044/3010 texWrites=3586225
+textureMap=13912880:6842060:7070820:352640:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/.../0x210/0x210/...
+```
+
+Gating bulk-end decode when the read pointer is inside a Type5 payload preserves
+the visible hash but drops texture throughput and does not clear the terminal
+stale stop. It is useful only as a diagnostic.
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_PAYLOAD_TO_HEAD=1
+frameHash=0x828a27b0
+frameSha256=0b38c984ff8e3a9bcbf6c0d101e5ccb769b7ccc9e47720282bccf515079a6eb3
+drawPackets=19950 direct/setup=939/448 texWrites=2914929
+textureMap=11227696:5191649:6036047:316352:0x000000:0x48fffc
+cmdstop=invalid-standard-window/0x0005a604/4/3/0x31870/0x31870/0x00000000/0x00000800/pc=0xffffffff800fe420/last=0x0005a604:4:0x31870:0x31880/785265
+```
+
+Payload-to-head resync moves the failure from the old `0xbda7eca1/0x210` stale
+Type5 tail to the TMU Type4 `0x0005a604` stop, but it collapses direct/setup
+throughput and texture coverage. Keep these resync/gate flags diagnostic
+only. The next narrow step is a MAME-parity FIFO bookkeeping trace/fix: update
+`read_index`, `depth`, `holes`, and `address_min/address_max` as one causal
+state machine around wrapped writes, then dispatch only when the read head and
+depth describe a complete packet. Do not promote packet dropping or payload-head
+rewinding.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
