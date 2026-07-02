@@ -2328,9 +2328,9 @@ Next slice should trace writes around `pc=801066c8` and the last decoded
 `0x20c -> 0x210` transition, including last-writer metadata for storage
 `0x20c/0x210`, rather than adding more broad bulk-end gates.
 
-#### 2026-07-02 stop-on-unknown checkpoint
+#### 2026-07-02 stop-on-unknown checkpoints
 
-Ran the f420 warm probe with the existing unknown-packet guard enabled:
+The first f420 warm probe used the existing unknown-packet guard:
 
 ```bash
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_STOP_ON_UNKNOWN=1
@@ -2340,7 +2340,10 @@ EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE=0x20c,0x210,0x214
 EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO=1
 ```
 
-This preserves the same baseline/non-flat sibling output:
+That result must be treated as a MAME-model no-op under the current baseline:
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` does not enable
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL`, and the `ODD-FIFO` trace
+showed `mame=0`. It preserves the same baseline/non-flat sibling output:
 
 ```text
 frameHash=0x035dcece
@@ -2356,14 +2359,52 @@ And the terminal stop remains unchanged:
 cmdstop=invalid-standard-window/0xBDA7ECA1/48552/7914/0x210/0x210/.../pc=0xFFFFFFFF801066C8/trig=write/.../last=0xBED16E7E:1:0x20C:0x210/1359814
 ```
 
-So treating `0xBED16E7E` as an unknown FIFO header is not the fix. The trace
-also showed the same payload family being installed as Voodoo register values,
-for example final registers `0x09a=0xbed16e7e`, `0x09b=0xbda7eca1`,
+Added a separate default-off generic unknown-stop probe for the current
+non-MAME command FIFO model:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_STOP_ON_UNKNOWN=1
+```
+
+It is diagnostic only. The f420/e27b probe proves type6/type7 consumption is
+phase-relevant but not itself the repair:
+
+```text
+/tmp/gauntdl-e27b-f420-generic-stop-unknown.log
+frameHash=0xcabd6b3e
+frameSha256=07dd051ebbe204a70311b29603d3cf07fb61a83a6ca6922c2030ffc87b8d3141
+drawPackets=18997 direct/setup=1941/957 texWrites=3941041
+textureMap=15332144:7572061:7760083:562752:0x000000:0x60fefc
+packetTypes=0:2609,1:24819,2:55,3:18997,4:70141,5:65523,6:1,7:0
+cmdstop=unknown/0xBED9A6B6/1/7919/0x1FC/0x1FC/.../pc=0xFFFFFFFF801066C8/trig=write/last=0xBF13EE93:106:0x54:0x1FC/1388873
+```
+
+So simply refusing to consume unknown packet types is not a fix either. It moves
+the terminal read head away from `0x210`, but it reduces useful draw/setup work
+and still parks on stale Type5-looking payload at a later word. The trace also
+showed the same payload family being installed as Voodoo register values, for
+example final registers `0x09a=0xbed16e7e`, `0x09b=0xbda7eca1`,
 `0x09c=0xbed9a6b6`, and repeated self-register traces such as:
 
 ```text
 reg-value target=0x02c reg=0x2c value=0xbed16e7e packet=0xb0000161 packetType=1 packetStart=0x0000f900 words=45057 rd=0x0000f900 pc=0xffffffff800fe5d4
 ```
+
+Also re-ran the broad implausible-register stop:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKETS=1
+/tmp/gauntdl-e27b-f420-stop-implausible-register.log
+frameHash=0xc6733b0d
+drawPackets=20519 direct/setup=317/141 texWrites=3710513
+textureMap=14410032:7193695:7216337:535680:0x000000:0x690144
+cmdstop=implausible-packet/0x000E000B/1/8042/0x10/0x10/.../pc=0xFFFFFFFF801066C8/trig=write/last=0x0011000C:3:0x4:0x10/1292101
+```
+
+This is still a destructive diagnostic, not a fix. It catches earlier
+implausible Type1-style packets such as `0x3c1f15f1` and prevents the terminal
+`0xbda7eca1/0x210` symptom, but it collapses direct/setup work enough to rule
+out a broad Type1 stop/drop policy.
 
 Next slice should focus on why self-register Type1 packets with implausible
 counts are allowed to stream/register-write payload words from the Type5 data

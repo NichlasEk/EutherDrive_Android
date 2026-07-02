@@ -27007,6 +27007,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_STALE_READ"));
     private readonly bool _experimentCommandFifoBulkResyncPayloadToHead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_PAYLOAD_TO_HEAD"));
+    private readonly bool _experimentCommandFifoStopOnUnknown =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
@@ -28963,8 +28965,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 decodeCallFirstCommand = command;
             decodeCallLastCommand = command;
             decodeCallTypeMask |= 1u << (int)(command & 7u);
-            if (_fixMameCommandFifoModel &&
-                _experimentMameCommandFifoStopOnUnknown &&
+            if ((_experimentCommandFifoStopOnUnknown ||
+                 (_fixMameCommandFifoModel && _experimentMameCommandFifoStopOnUnknown)) &&
                 (command & 7u) > 5u)
             {
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "unknown");
