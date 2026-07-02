@@ -2289,6 +2289,45 @@ state machine around wrapped writes, then dispatch only when the read head and
 depth describe a complete packet. Do not promote packet dropping or payload-head
 rewinding.
 
+2026-07-02 stale-read gate checkpoint: added one more opt-in readiness probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_STALE_READ=1
+```
+
+It uses the stale-packet predicate from the earlier resync experiment but does
+not mutate `read_index` or `depth`; it only skips the current `bulk-end` decode
+when the active bulk starts with Type5 and the current read head is outside that
+bulk on an implausible/oversized/invalid packet. The f420 warm probe preserves
+the baseline frame and throughput:
+
+```text
+/tmp/gauntdl-e27b-f420-bulk-gate-stale-read-trigger.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 direct/setup=6028/3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+```
+
+The gate does catch the stale `0x210` family during `pc=800fe5d4` bulk service:
+
+```text
+reason=stale-read:implausible rd=0x00000210 bulk=0x000020a0-0x0001289c start=0xc0000205
+```
+
+But it is not a fix. The terminal stop is still the baseline stale packet, now
+shown with the added decode-trigger field:
+
+```text
+cmdstop=invalid-standard-window/0xBDA7ECA1/48552/7914/0x210/0x210/.../pc=0xFFFFFFFF801066C8/trig=write/last=0xBED16E7E:1:0x20C:0x210/1359661
+```
+
+So `bulk-end` readiness is only an early symptom. The stale read pointer remains
+live and the actual terminal stop is a later normal FIFO write-triggered decode.
+Next slice should trace writes around `pc=801066c8` and the last decoded
+`0x20c -> 0x210` transition, including last-writer metadata for storage
+`0x20c/0x210`, rather than adding more broad bulk-end gates.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early

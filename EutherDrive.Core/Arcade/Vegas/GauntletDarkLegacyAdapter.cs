@@ -27003,6 +27003,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_WRAP_TAIL"));
     private readonly bool _experimentCommandFifoBulkGatePayloadRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_PAYLOAD_READ"));
+    private readonly bool _experimentCommandFifoBulkGateStaleRead =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_STALE_READ"));
     private readonly bool _experimentCommandFifoBulkResyncPayloadToHead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_PAYLOAD_TO_HEAD"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
@@ -27275,6 +27277,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint _lastCommandFifoDecodeStopNext1;
     private uint _lastCommandFifoDecodeStopNext2;
     private ulong _lastCommandFifoDecodeStopPc;
+    private string _lastCommandFifoDecodeStopTrigger = "";
     private string _lastCommandFifoDecodeStopWord0Debug = "";
     private string _lastCommandFifoDecodeStopWord1Debug = "";
     private int _commandFifoDecodeStopCount;
@@ -27343,6 +27346,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             return "";
 
         string pcStatus = _lastCommandFifoDecodeStopPc != 0 ? $"/pc=0x{_lastCommandFifoDecodeStopPc:X}" : "";
+        string triggerStatus = _lastCommandFifoDecodeStopTrigger.Length != 0 ? $"/trig={_lastCommandFifoDecodeStopTrigger}" : "";
         string wordStatus = _lastCommandFifoDecodeStopWord0Debug.Length != 0
             ? $"/w0={_lastCommandFifoDecodeStopWord0Debug}/w1={_lastCommandFifoDecodeStopWord1Debug}"
             : "";
@@ -27352,7 +27356,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"0x{_lastCommandFifoDecodeStopReadIndex * 4:X}/0x{_lastCommandFifoDecodeStopStorageIndex * 4:X}/" +
             $"v{(_lastCommandFifoDecodeStopReadValid ? 1 : 0)}/lg0x{_lastCommandFifoDecodeStopStoredLogicalIndex * 4:X}/" +
             $"vw{_lastCommandFifoDecodeStopValidWindowWords}/" +
-            $"0x{_lastCommandFifoDecodeStopNext1:X8}/0x{_lastCommandFifoDecodeStopNext2:X8}{pcStatus}{wordStatus}/" +
+            $"0x{_lastCommandFifoDecodeStopNext1:X8}/0x{_lastCommandFifoDecodeStopNext2:X8}{pcStatus}{triggerStatus}{wordStatus}/" +
             $"last=0x{_lastDecodedCommandFifoCommand:X8}:{_lastDecodedCommandFifoWords}:" +
             $"0x{_lastDecodedCommandFifoPacketStart * 4:X}:0x{_lastDecodedCommandFifoReadAfter * 4:X}/" +
             $"{_commandFifoDecodeStopCount} ";
@@ -27971,16 +27975,28 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoDepth = Math.Max(_cmdFifoDepth, _cmdFifoBulkWriteWordCount - packetHeadBulkOffset);
             TraceCommandFifoBulkResync("payload-head", "body", oldReadIndex, oldReadWord);
         }
-        bool skipPayloadReadDecode =
-            _cmdFifoBulkWriteDepth == 0 &&
-            _experimentCommandFifoBulkGatePayloadRead &&
-            _cmdFifoBulkSawWrite &&
-            IsCommandFifoReadInCurrentBulkPacketBody();
-        if (skipPayloadReadDecode)
-            TraceCommandFifoBulkDecodeGate("payload-read", _cmdFifoReadIndex, ReadCommandFifoWordAt(_cmdFifoReadIndex));
+        bool skipBulkEndDecode = false;
+        string bulkEndDecodeGateReason = "";
+        if (_cmdFifoBulkWriteDepth == 0 && _cmdFifoBulkSawWrite)
+        {
+            if (_experimentCommandFifoBulkGatePayloadRead &&
+                IsCommandFifoReadInCurrentBulkPacketBody())
+            {
+                skipBulkEndDecode = true;
+                bulkEndDecodeGateReason = "payload-read";
+            }
+            else if (_experimentCommandFifoBulkGateStaleRead &&
+                     ShouldResyncCommandFifoStalePacketReadToBulkStart(out string staleReadReason))
+            {
+                skipBulkEndDecode = true;
+                bulkEndDecodeGateReason = $"stale-read:{staleReadReason}";
+            }
+        }
+        if (skipBulkEndDecode)
+            TraceCommandFifoBulkDecodeGate(bulkEndDecodeGateReason, _cmdFifoReadIndex, ReadCommandFifoWordAt(_cmdFifoReadIndex));
         if (_cmdFifoBulkWriteDepth == 0)
             TraceCommandFifoBulkEnd();
-        if (_cmdFifoBulkWriteDepth == 0 && !skipPayloadReadDecode)
+        if (_cmdFifoBulkWriteDepth == 0 && !skipBulkEndDecode)
             DecodeCommandFifoPacketsIfNotPending("bulk-end");
         if (_cmdFifoBulkWriteDepth == 0)
             _cmdFifoBulkDecodeRemainingWords = 0;
@@ -29482,6 +29498,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         _lastCommandFifoDecodeStopNext1 = ReadCommandFifoWordAt(_cmdFifoReadIndex + 1);
         _lastCommandFifoDecodeStopNext2 = ReadCommandFifoWordAt(_cmdFifoReadIndex + 2);
         _lastCommandFifoDecodeStopPc = pc;
+        _lastCommandFifoDecodeStopTrigger = _commandFifoDecodeTrigger;
         if (_traceCommandFifoModel)
         {
             _lastCommandFifoDecodeStopWord0Debug = FormatCommandFifoStorageWordDebug(_cmdFifoReadIndex);
@@ -29520,7 +29537,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"validWindow={validWindowWords}/{Math.Min(wordsNeeded, 64)} " +
             $"next=0x{next1:x8}/0x{next2:x8} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
             $"w0={word0} w1={word1} " +
-            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} trigger={_commandFifoDecodeTrigger} " +
             $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
     }
 
