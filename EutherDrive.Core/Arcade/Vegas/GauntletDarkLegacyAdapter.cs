@@ -26989,6 +26989,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SELF_REG_PACKETS"));
     private readonly int _traceCommandFifoSelfRegisterPacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SELF_REG_PACKETS_LIMIT"), 120);
+    private readonly bool _traceCommandFifoImplausiblePackets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_PACKETS"));
+    private readonly ulong[] _traceCommandFifoImplausiblePacketTypes =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_TYPES"));
+    private readonly ulong[] _traceCommandFifoImplausiblePacketCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_COMMANDS"));
+    private readonly ulong[] _traceCommandFifoImplausiblePacketPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_PCS"));
+    private readonly int _traceCommandFifoImplausiblePacketsLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_PACKETS_LIMIT"), 120);
     private readonly bool _experimentResetCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
     private readonly bool _experimentRewindCommandFifoOnBulkWrite =
@@ -27266,6 +27276,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoRegisterValueTraceCount;
     private int _commandFifoBulkEndTraceCount;
     private int _commandFifoSelfRegisterPacketTraceCount;
+    private int _commandFifoImplausiblePacketTraceCount;
     private int _largeDirectTriangleTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
@@ -28979,8 +28990,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                 wordsNeeded = 1;
             if (wordsNeeded <= 0)
                 wordsNeeded = 1;
+            bool implausiblePacket = IsImplausibleCommandFifoPacket(command, wordsNeeded);
+            if (implausiblePacket)
+                TraceCommandFifoImplausiblePacket(command, wordsNeeded, packetStart);
             if (_experimentStopImplausibleCommandFifoRegisterPackets &&
-                IsImplausibleCommandFifoPacket(command, wordsNeeded))
+                implausiblePacket)
             {
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "implausible-packet");
                 TraceCommandFifoDecodeStop("implausible-packet", command, wordsNeeded);
@@ -28988,14 +29002,14 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
             if (_experimentDropImplausibleCommandFifoType5Packets &&
                 (command & 7u) == 5u &&
-                IsImplausibleCommandFifoPacket(command, wordsNeeded) &&
+                implausiblePacket &&
                 TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-implausible-type5"))
             {
                 continue;
             }
             if ((_experimentDropImplausibleCommandFifoRegisterPackets ||
                  (_fixMameCommandFifoModel && _experimentMameCommandFifoDropImplausibleRegisterPacket)) &&
-                IsImplausibleCommandFifoPacket(command, wordsNeeded) &&
+                implausiblePacket &&
                 TryDropInvalidCommandFifoPacketHeader(packetStart, command, wordsNeeded, "drop-implausible-packet"))
             {
                 continue;
@@ -29218,6 +29232,56 @@ internal class VoodooBringupBackend : IVoodooBackend
             return space == 2u && count > 0x10000u;
         }
         return false;
+    }
+
+    private void TraceCommandFifoImplausiblePacket(uint command, int wordsNeeded, int packetStart)
+    {
+        if (!_traceCommandFifoImplausiblePackets)
+        {
+            return;
+        }
+
+        uint type = command & 7u;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceCommandFifoImplausiblePacketTypes.Length != 0 &&
+            !_traceCommandFifoImplausiblePacketTypes.Contains(type))
+        {
+            return;
+        }
+        if (_traceCommandFifoImplausiblePacketCommands.Length != 0 &&
+            !_traceCommandFifoImplausiblePacketCommands.Contains(command))
+        {
+            return;
+        }
+        if (_traceCommandFifoImplausiblePacketPcs.Length != 0 &&
+            !_traceCommandFifoImplausiblePacketPcs.Contains(pc))
+        {
+            return;
+        }
+        if (_commandFifoImplausiblePacketTraceCount >= _traceCommandFifoImplausiblePacketsLimit)
+        {
+            return;
+        }
+
+        _commandFifoImplausiblePacketTraceCount++;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string packetStatus = type switch
+        {
+            1u => $" target=0x{(command >> 3) & 0xfffu:x3} count={command >> 16} inc={(((command >> 15) & 1u) != 0 ? 1 : 0)}",
+            5u => $" space={command >> 30} count={(command >> 3) & 0x7ffffu}",
+            _ => ""
+        };
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO-IMPLAUSIBLE] n={_commandFifoImplausiblePacketTraceCount} " +
+            $"cmd=0x{command:x8} type={type} words={wordsNeeded}{packetStatus} " +
+            $"packetStart=0x{packetStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"storage=0x{CommandFifoReadStorageIndex(packetStart) * 4:x5} readStorage=0x{CommandFifoReadStorageIndex(_cmdFifoReadIndex) * 4:x5} " +
+            $"validWindow={CountCommandFifoValidWindowWords(packetStart, Math.Min(wordsNeeded, 64))}/64 " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} trigger={_commandFifoDecodeTrigger} " +
+            $"w0={FormatCommandFifoStorageWordDebug(packetStart)} " +
+            $"w1={FormatCommandFifoStorageWordDebug(packetStart + 1)} " +
+            $"w2={FormatCommandFifoStorageWordDebug(packetStart + 2)}{pcStatus}");
     }
 
     private bool IsCommandFifoPacketReady()

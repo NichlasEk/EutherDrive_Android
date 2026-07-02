@@ -2406,13 +2406,50 @@ implausible Type1-style packets such as `0x3c1f15f1` and prevents the terminal
 `0xbda7eca1/0x210` symptom, but it collapses direct/setup work enough to rule
 out a broad Type1 stop/drop policy.
 
-Next slice should focus on why self-register Type1 packets with implausible
-counts are allowed to stream/register-write payload words from the Type5 data
-region, and why their consumed read head leaves the later write-triggered decode
-parked on `0x210`. A narrow candidate is to trace or gate implausible Type1
-self-register packets when `_fixMameCommandFifoModel` is active and the packet
-window is not fully valid/in-address-window, before considering any generic
-unknown-packet behavior.
+Added a default-off implausible-packet trace, with optional type/command/PC
+filters:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_PACKETS=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_TYPES=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_COMMANDS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_PCS=...
+```
+
+The first all-types trace was visually neutral but got flooded by repeated
+Type5 stale header `0xbc292a85` at `packetStart=0x14`. The filtered Type1 trace
+preserves the exact f420/e27b baseline output:
+
+```text
+/tmp/gauntdl-e27b-f420-implausible-type1-trace.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 direct/setup=6028/3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/.../pc=0xffffffff801066c8/last=0xbed16e7e:1:0x20c:0x210/1359814
+```
+
+It gives two stronger causal handles than the generic stop/drop experiments:
+
+```text
+cmd=0xf00b0001 type=1 words=61452 target=0x000 count=61451 packetStart=0x0000be5c storage=0x0be5c lg0x000d1e5c pc0xffffffff800fe5d4
+cmd=0x3e959c11 type=1 words=16022 target=0x382 count=16021 packetStart=0x00000020 storage=0x00020 amin=0xfffffffc amax=0xfffffffc pc0xffffffff800fe5d4
+```
+
+The `0xf00b0001` family lines up with BGLoadModel indexed-source metadata:
+`sourceWords` shows offset `0x40=f00b0001` for the `gei` source. The later
+`0x3e959c11` family appears after the command FIFO address window has collapsed
+to `0xfffffffc/0xfffffffc`, with the first payload words
+`0xbb7f72cf/0x04a300ac`. That points at raw model/texture payload being treated
+as Type1 command headers, not at a missing generic unknown-packet rule.
+
+Next slice should focus on write ownership for those exact Type1 families:
+trace who installs `0xf00b0001`/`0x3e959c11` into command FIFO storage at
+`pc=800fe5d4`, how `address_min/address_max` becomes `0xfffffffc`, and why the
+later write-triggered decode still parks on `0x210`. A narrow candidate is to
+gate only implausible Type1 headers that are outside the live command FIFO
+address window or whose storage words come from BGLoadModel/source payload,
+before considering any generic packet drop behavior.
 
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
