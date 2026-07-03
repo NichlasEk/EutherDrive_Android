@@ -2501,6 +2501,77 @@ why payload words from `pc=800fe5d4` become eligible headers at `0x20`,
 `0x20c`, and `0x210`, and why the standard FIFO read pointer keeps returning to
 that payload window with `address_min/address_max=0xfffffffc`.
 
+#### 2026-07-03 command FIFO read-index checkpoint
+
+Added a default-off read-index transition trace for the command FIFO:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_READ_INDEX=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_READ_INDEX_STORAGE=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_READ_INDEX_PCS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_READ_INDEX_LIMIT=...
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:VOODOO-CMDFIFO-READ]
+```
+
+A focused f420/e27b run filtered to `0x20`, `0x20c`, `0x210`, and `0x214`
+is visually and behaviorally neutral:
+
+```text
+/tmp/gauntdl-e27b-f420-read-index-trace.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/0xbed9a6b6/0xc2280000/pc=0xffffffff801066c8/last=0xbed16e7e:1:0x20c:0x210/1359814
+```
+
+The new evidence is that the terminal `0x210` stop is not caused by an explicit
+resync to that address. During `bulk-end`, normal packet advancement consumes
+through a chain of one-word payload-looking packets while
+`address_min/address_max` are already collapsed:
+
+```text
+reason=packet-advance old=0x00000208/0x00208 new=0x0000020c/0x0020c oldWord=0x00000000 newWord=0xbed16e7e trigger=bulk-end command=0x00000000:1 pc=0xffffffff800fe5d4
+reason=packet-advance old=0x0000020c/0x0020c new=0x00000210/0x00210 oldWord=0xbed16e7e newWord=0xbda7eca1 trigger=bulk-end command=0xbed16e7e:1 pc=0xffffffff800fe5d4
+```
+
+Immediately after landing on `0xbda7eca1`, Type1 handling writes the command
+FIFO read pointer register and rewinds the local read index to zero:
+
+```text
+reason=reg-rdptr old=0x00000210/0x00210 new=0x00000000/0x00000 oldWord=0xbda7eca1 newWord=0x000e0010 trigger=bulk-end current=0xbda7eca1:48552:0x00000210 pc=0xffffffff800fe5d4
+```
+
+The same trace also confirms the final payload words were installed by the same
+bulk writer:
+
+```text
+0x20c: last=fifo/seq132/lg0x0000020c/addr0x0000020c/val0xbed16e7e/pc0xffffffff800fe5d4
+0x210: last=fifo/seq133/lg0x00000210/addr0x00000210/val0xbda7eca1/pc0xffffffff800fe5d4
+```
+
+This rules out self-register write suppression as the next primary fix target.
+The better experiment is to stop bulk-end decode from treating payload-owned
+words as new packet headers after the command FIFO address window collapses,
+without applying a broad Type1 drop. A useful narrow next probe is a
+default-off gate or trace that fires only when:
+
+```text
+trigger=bulk-end
+address_min=address_max=0xfffffffc
+packet start is in recently bulk-written payload storage
+decoded wordsNeeded is one for payload-looking Type0/Type1 chains
+```
+
+The expected safe shape is to pause/stop that local bulk-end decode window
+before it consumes into `0x20c/0x210`, then verify the f420/e27b visual oracle
+and direct/setup counters do not collapse.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
