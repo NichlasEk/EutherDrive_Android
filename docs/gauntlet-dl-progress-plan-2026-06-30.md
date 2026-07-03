@@ -2451,6 +2451,56 @@ gate only implausible Type1 headers that are outside the live command FIFO
 address window or whose storage words come from BGLoadModel/source payload,
 before considering any generic packet drop behavior.
 
+#### 2026-07-03 implausible self-register write checkpoint
+
+Added a default-off baseline/non-MAME experiment that keeps decoding
+implausible Type1 packets but suppresses only command FIFO control-register
+writes from packets that are both implausible and touch the self-register range:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_SELF_REG_WRITES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_SELF_REG_WRITES_LIMIT=80
+```
+
+The previous `...SELF_REG_PACKETS` spelling is accepted as a compatibility
+alias, but the current behavior is write-only. The trace marker is:
+
+```text
+[GAUNTDL:VOODOO-CMDFIFO-SELFREG-WRITE-IGNORE]
+```
+
+The first local version skipped the entire implausible self-register Type1
+packet. That must not be revived as a fix: it reproduced the broad
+implausible-stop collapse while still ending on the same terminal stale read:
+
+```text
+/tmp/gauntdl-e27b-f420-ignore-implausible-selfreg.log
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+drawPackets=21375 direct/setup=317/141 texWrites=4296625
+textureMap=16754480:8367795:8386685:558752:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/.../pc=0xffffffff801066c8/last=0xbed16e7e:1:0x20c:0x210/1359814
+```
+
+The committed write-only version is neutral on the f420/e27b oracle. It proves
+that command FIFO self-register writes from these implausible packets are real,
+but not sufficient to explain the terminal `0xbda7eca1 @ 0x210` stop:
+
+```text
+/tmp/gauntdl-e27b-f420-ignore-implausible-selfreg-writes.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 direct/setup=6028/3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/.../pc=0xffffffff801066c8/last=0xbed16e7e:1:0x20c:0x210/1359814
+```
+
+This narrows the next slice: do not spend more time on broad Type1 packet drops
+or self-register write suppression. The better target is packet/read ownership:
+why payload words from `pc=800fe5d4` become eligible headers at `0x20`,
+`0x20c`, and `0x210`, and why the standard FIFO read pointer keeps returning to
+that payload window with `address_min/address_max=0xfffffffc`.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early
