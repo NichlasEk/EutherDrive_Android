@@ -2572,6 +2572,57 @@ The expected safe shape is to pause/stop that local bulk-end decode window
 before it consumes into `0x20c/0x210`, then verify the f420/e27b visual oracle
 and direct/setup counters do not collapse.
 
+#### 2026-07-03 collapsed payload-chain gate checkpoint
+
+Added a default-off experiment for the collapsed-address-window payload case:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_COLLAPSED_PAYLOAD_CHAIN=1
+```
+
+The first form was intentionally narrow: only `bulk-end`, only
+`address_min/address_max=0xfffffffc`, only current bulk-written FIFO storage,
+and only one-word payload-looking chains. It is not enough to fix the terminal
+stop, but it is useful evidence because it changes the command/texture workload
+without changing the selected f420 image:
+
+```text
+/tmp/gauntdl-e27b-f420-collapsed-gate-on-clean.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=20869 directTriangles=6044 setupTriangles=3010 texWrites=4031217
+textureMap=15692848:7839270:7853578:591232:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/.../pc=0xffffffff801066c8
+```
+
+The broader form also gates implausible oversized Type1 packets after the
+address window has collapsed, including the later `write` decode path. That
+does catch the terminal packet:
+
+```text
+/tmp/gauntdl-e27b-f420-collapsed-gate-write-type1-on.log
+frameHash=0x828a27b0
+frameSha256=0b38c984ff8e3a9bcbf6c0d101e5ccb769b7ccc9e47720282bccf515079a6eb3
+drawPackets=19986 directTriangles=564 setupTriangles=262 texWrites=3456241
+textureMap=13392944:6711424:6681520:567296:0x000000:0x7fe444
+cmdstop=bulk-collapsed-payload-chain/0xbda7eca1/48552/7914/0x210/0x210/.../pc=0xffffffff801066c8
+```
+
+This broader form is also destructive. It changes the visual family and
+collapses real direct/setup work, so it must stay an experiment and must not be
+promoted as a fix. The useful conclusion is narrower: by the time the `write`
+decode sees `0xbda7eca1 @ 0x210`, the emulator has already lost enough FIFO
+ownership/order information that simply stopping implausible Type1 packets is
+too late and too blunt.
+
+Next work should move earlier than the `write` stop. The strongest next target
+is the producer/consumer boundary around `pc=800fe5d4`: trace the Type5 packet
+head, payload body, and read pointer as one unit and determine why the payload
+tail remains eligible command storage after the bulk transfer. A safer fix is
+likely to preserve packet body ownership or defer decode at the source boundary,
+not to suppress the eventual oversized Type1 header after it has already become
+the read pointer.
+
 1. Continue from the Type5 upload-link truth source. For target `0x2180`, use
    `[GAUNTDL:TEXUPLOAD-LINK]` to pair `packetSource`, `fifoLow`, and Type5
    `packet` before reasoning about the source. The currently matched early

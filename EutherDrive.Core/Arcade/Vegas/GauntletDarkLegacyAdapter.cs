@@ -27025,6 +27025,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_STALE_READ"));
     private readonly bool _experimentCommandFifoBulkResyncPayloadToHead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_PAYLOAD_TO_HEAD"));
+    private readonly bool _experimentCommandFifoBulkGateCollapsedPayloadChain =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_COLLAPSED_PAYLOAD_CHAIN"));
     private readonly bool _experimentCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
@@ -28385,14 +28387,17 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private bool IsCommandFifoReadIndexInsideBulkWrite()
+        => IsCommandFifoIndexInsideBulkWrite(_cmdFifoReadIndex);
+
+    private bool IsCommandFifoIndexInsideBulkWrite(int readIndex)
     {
         if (!_cmdFifoBulkSawWrite)
             return false;
         if (UseMameCommandFifoBulkLogicalWindow())
-            return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex && _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
+            return readIndex >= _cmdFifoBulkStartIndex && readIndex <= _cmdFifoBulkLastIndex;
         if (_cmdFifoBulkStartIndex <= _cmdFifoBulkLastIndex)
-            return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex && _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
-        return _cmdFifoReadIndex >= _cmdFifoBulkStartIndex || _cmdFifoReadIndex <= _cmdFifoBulkLastIndex;
+            return readIndex >= _cmdFifoBulkStartIndex && readIndex <= _cmdFifoBulkLastIndex;
+        return readIndex >= _cmdFifoBulkStartIndex || readIndex <= _cmdFifoBulkLastIndex;
     }
 
     private bool UseMameCommandFifoBulkLogicalWindow()
@@ -29057,6 +29062,12 @@ internal class VoodooBringupBackend : IVoodooBackend
             bool implausiblePacket = IsImplausibleCommandFifoPacket(command, wordsNeeded);
             if (implausiblePacket)
                 TraceCommandFifoImplausiblePacket(command, wordsNeeded, packetStart);
+            if (ShouldGateCollapsedBulkPayloadChain(command, wordsNeeded, packetStart, implausiblePacket))
+            {
+                CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "bulk-collapsed-payload-chain");
+                TraceCommandFifoDecodeStop("bulk-collapsed-payload-chain", command, wordsNeeded);
+                return;
+            }
             if (_experimentStopImplausibleCommandFifoRegisterPackets &&
                 implausiblePacket)
             {
@@ -29296,6 +29307,33 @@ internal class VoodooBringupBackend : IVoodooBackend
             return space == 2u && count > 0x10000u;
         }
         return false;
+    }
+
+    private bool ShouldGateCollapsedBulkPayloadChain(uint command, int wordsNeeded, int packetStart, bool implausiblePacket)
+    {
+        if (!_experimentCommandFifoBulkGateCollapsedPayloadChain ||
+            _cmdFifoAddressMin != -4 ||
+            _cmdFifoAddressMax != -4 ||
+            !_cmdFifoBulkSawWrite)
+        {
+            return false;
+        }
+
+        int storageIndex = CommandFifoReadStorageIndex(packetStart);
+        if (!_cmdFifoValid[storageIndex] ||
+            _cmdFifoStorageLastWriteSource[storageIndex] != CmdFifoStorageWriteSourceFifo)
+        {
+            return false;
+        }
+
+        uint type = command & 7u;
+        if (type == 1u && implausiblePacket)
+            return _commandFifoDecodeTrigger is "bulk-end" or "write";
+
+        return _commandFifoDecodeTrigger == "bulk-end" &&
+               IsCommandFifoIndexInsideBulkWrite(packetStart) &&
+               wordsNeeded == 1 &&
+               (command == 0 || type > 5u);
     }
 
     private void TraceCommandFifoImplausiblePacket(uint command, int wordsNeeded, int packetStart)
