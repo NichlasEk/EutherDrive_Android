@@ -3413,3 +3413,60 @@ Next continuation point:
 3. A narrow next probe should record max-drawn geometry separately from max
    candidate geometry, then trace the register-write packet sequence for the top
    remaining `solidtriDraw` buckets before adding more suppressors.
+
+#### 2026-07-04 max-drawn geometry and 224-line offscreen probe
+
+The solid profile now records max-drawn geometry separately from max candidate
+geometry:
+
+```text
+dlastX0-X1xY0-Y1/dbN/dxyA:B:C/dareaN/drdN
+```
+
+This matters because candidate max geometry often came from already-suppressed
+payload; `dlast` identifies the largest box that actually wrote pixels.
+
+Rerunning the `0xdf78e30d` offscreen stack with the new fields preserved the
+same selected image and exposed the top remaining `itri` offender:
+
+```text
+/tmp/gauntdl-offscreen-directsuppress-drawnmax-f420.ppm
+frameHash=0xdf78e30d
+solidRaster=8015229
+framebuffer=640x480:305614:115648
+
+top remaining itri:
+pc=800fe5d4 color=F860 draw=14 dp=398951 dbox=2007040
+dlast=0-640x0-224
+dxy=0.0,-0.1:1604.4,223.8:1305.5,0.0
+```
+
+That shape sat just under the old `640*240` screen-fill threshold, so the
+default-off offscreen-direct experiment now uses `640*224` for the
+screen-fill-outside branch. The rerun:
+
+```text
+/tmp/gauntdl-offscreen224-directsuppress-f420.ppm
+frameHash=0x2376d83f
+frameSha256=1c0ea9d464e4f9075797c79151a308ecb36212d6d594a6df81c0cea2e766f646
+solidRaster=7416358
+framebuffer=640x480:305614:111993
+```
+
+Visual result: more `itri` false surface is removed, but this is still not real
+graphics. The image shifts within the same false direct-solid family and leaves
+large `ftri` half-screen blocks from `pc=800fe5d4`:
+
+```text
+solidtriDraw top after 224-line gate:
+pc=800fe5d4 ftri color=F800 dlast=0-486x0-256
+pc=800fe5d4 ftri color=FFE0 dlast=0-525x0-256
+pc=800fe5d4 ftri color=0006 dlast=0-256x0-480
+pc=800fe5d4 ftri color=27FF dlast=0-256x0-480
+```
+
+Do not promote the 224-line gate as correctness. Its value is diagnostic: it
+proves the remaining visible f420 corruption has moved from near-screen `itri`
+to valid-looking `ftri` register triangles from the same `pc=800fe5d4` payload
+path. The next useful slice should trace the register packet sequence for those
+`ftri` commands around read indices `0xAB85`, `0xA138`, `0x2E1D`, and `0x800B`.

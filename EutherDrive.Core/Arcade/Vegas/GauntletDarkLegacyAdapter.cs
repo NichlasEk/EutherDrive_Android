@@ -31006,7 +31006,22 @@ internal class VoodooBringupBackend : IVoodooBackend
             stats.DrawnPixels += drawnPixels;
             stats.DrawnBoxPixels += boxPixels;
             if (boxPixels > stats.MaxDrawnBoxPixels)
+            {
                 stats.MaxDrawnBoxPixels = boxPixels;
+                stats.LastDrawnArea = area;
+                stats.LastDrawnMinX = minX;
+                stats.LastDrawnMaxX = maxX;
+                stats.LastDrawnMinY = minY;
+                stats.LastDrawnMaxY = maxY;
+                stats.LastDrawnAx = ax;
+                stats.LastDrawnAy = ay;
+                stats.LastDrawnBx = bx;
+                stats.LastDrawnBy = by;
+                stats.LastDrawnCx = cx;
+                stats.LastDrawnCy = cy;
+                stats.LastDrawnCommandFifoReadIndex = _cmdFifoReadIndex;
+                stats.LastDrawnBufferIndex = GetDrawBufferIndex();
+            }
         }
         if (boxPixels >= stats.MaxBoxPixels)
         {
@@ -31058,6 +31073,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         return $"0x{stats.Pc:x16}:{stats.Source}:{stats.Total}/sum{stats.TotalBoxPixels}/max{stats.MaxBoxPixels}" +
                $"/draw{stats.Drawn}/dp{stats.DrawnPixels}/dbox{stats.DrawnBoxPixels}/dmax{stats.MaxDrawnBoxPixels}" +
+               $"/dlast{stats.LastDrawnMinX}-{stats.LastDrawnMaxX}x{stats.LastDrawnMinY}-{stats.LastDrawnMaxY}/db{stats.LastDrawnBufferIndex}" +
+               $"/dxy{stats.LastDrawnAx:F1},{stats.LastDrawnAy:F1}:{stats.LastDrawnBx:F1},{stats.LastDrawnBy:F1}:{stats.LastDrawnCx:F1},{stats.LastDrawnCy:F1}" +
+               $"/darea{stats.LastDrawnArea:F1}/drd{stats.LastDrawnCommandFifoReadIndex:X}" +
                $"/simp{stats.SuppressedImplausible}/slrg{stats.SuppressedLarge}/soff{stats.SuppressedOffscreen}" +
                $"/c{stats.Color:X4}/b{stats.LastBufferIndex}/box{stats.LastMinX}-{stats.LastMaxX}x{stats.LastMinY}-{stats.LastMaxY}" +
                $"/xy{stats.LastAx:F1},{stats.LastAy:F1}:{stats.LastBx:F1},{stats.LastBy:F1}:{stats.LastCx:F1},{stats.LastCy:F1}" +
@@ -31764,6 +31782,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         public long DrawnPixels;
         public long DrawnBoxPixels;
         public long MaxDrawnBoxPixels;
+        public float LastDrawnArea;
+        public int LastDrawnMinX;
+        public int LastDrawnMaxX;
+        public int LastDrawnMinY;
+        public int LastDrawnMaxY;
+        public float LastDrawnAx;
+        public float LastDrawnAy;
+        public float LastDrawnBx;
+        public float LastDrawnBy;
+        public float LastDrawnCx;
+        public float LastDrawnCy;
+        public int LastDrawnCommandFifoReadIndex;
+        public int LastDrawnBufferIndex;
         public ushort Color;
         public uint FbzMode;
         public uint FbzColorPath;
@@ -32785,7 +32816,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             minX < -1024.0f || maxX > 1664.0f ||
             minY < -1024.0f || maxY > 1504.0f;
         bool screenFillOutside =
-            boxPixels >= 640L * 240L &&
+            boxPixels >= 640L * 224L &&
             (minX < -64.0f || maxX > 704.0f || minY < -64.0f || maxY > 544.0f);
 
         return (boxPixels >= 640L * 64L && farOutside) || screenFillOutside;
