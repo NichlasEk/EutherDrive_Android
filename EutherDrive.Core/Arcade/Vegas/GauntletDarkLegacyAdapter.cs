@@ -27073,6 +27073,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_PAYLOAD_READ"));
     private readonly bool _experimentCommandFifoBulkGateStaleRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_STALE_READ"));
+    private readonly bool _experimentCommandFifoWriteGateStaleRead =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_WRITE_GATE_STALE_READ"));
     private readonly bool _experimentCommandFifoBulkResyncPayloadToHead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_PAYLOAD_TO_HEAD"));
     private readonly bool _experimentCommandFifoBulkAdvancePayloadToNextHead =
@@ -27313,6 +27315,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES"));
     private readonly bool _experimentSuppressImplausibleBulkDirectTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES"));
+    private readonly bool _experimentSuppressOffscreenDirectTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_OFFSCREEN_DIRECT_TRIANGLES"));
     private readonly bool _experimentDisableTriangleWireEdges =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISABLE_TRIANGLE_WIRE_EDGES"));
     private readonly bool _traceLargeDirectTriangles =
@@ -27768,7 +27772,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoBulkWriteDepth == 0 &&
             (!_fixMameCommandFifoModel || !_experimentMameCommandFifoDeferWriteDecode))
         {
-            DecodeCommandFifoPacketsIfNotPending("write");
+            if (ShouldGateCommandFifoStaleWriteRead(out string staleWriteReason))
+                TraceCommandFifoBulkDecodeGate($"stale-write:{staleWriteReason}", _cmdFifoReadIndex, ReadCommandFifoWordAt(_cmdFifoReadIndex));
+            else
+                DecodeCommandFifoPacketsIfNotPending("write");
         }
     }
 
@@ -28282,6 +28289,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return false;
+    }
+
+    private bool ShouldGateCommandFifoStaleWriteRead(out string reason)
+    {
+        reason = "";
+        return _experimentCommandFifoWriteGateStaleRead &&
+               !_decodingCommandFifo &&
+               ShouldResyncCommandFifoStalePacketReadToBulkStart(out reason);
     }
 
     private bool ShouldResyncCommandFifoWrappedBulkTailToStart()
@@ -30901,6 +30916,62 @@ internal class VoodooBringupBackend : IVoodooBackend
         int maxX,
         int minY,
         int maxY)
+        => CountSolidTriangleCore(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, false, false, false, 0);
+
+    private void CountSuppressedSolidTriangle(
+        string source,
+        ushort color,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        bool implausible,
+        bool large,
+        bool offscreen)
+        => CountSolidTriangleCore(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, implausible, large, offscreen, 0);
+
+    private void CountDrawnSolidTriangle(
+        string source,
+        ushort color,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        long drawnPixels)
+        => CountSolidTriangleCore(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, false, false, false, drawnPixels);
+
+    private void CountSolidTriangleCore(
+        string source,
+        ushort color,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        bool suppressedImplausible,
+        bool suppressedLarge,
+        bool suppressedOffscreen,
+        long drawnPixels)
     {
         if (!_profileSolidTriangles)
             return;
@@ -30923,6 +30994,20 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         stats.Total++;
         stats.TotalBoxPixels += boxPixels;
+        if (suppressedImplausible)
+            stats.SuppressedImplausible++;
+        if (suppressedLarge)
+            stats.SuppressedLarge++;
+        if (suppressedOffscreen)
+            stats.SuppressedOffscreen++;
+        if (drawnPixels > 0)
+        {
+            stats.Drawn++;
+            stats.DrawnPixels += drawnPixels;
+            stats.DrawnBoxPixels += boxPixels;
+            if (boxPixels > stats.MaxDrawnBoxPixels)
+                stats.MaxDrawnBoxPixels = boxPixels;
+        }
         if (boxPixels >= stats.MaxBoxPixels)
         {
             stats.MaxBoxPixels = boxPixels;
@@ -30950,16 +31035,33 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_solidTriangleStats.Count == 0)
             return "solidtri=none ";
 
-        return "solidtri=" + string.Join(",", _solidTriangleStats
+        string candidates = string.Join(",", _solidTriangleStats
             .OrderByDescending(pair => pair.Value.TotalBoxPixels)
             .ThenByDescending(pair => pair.Value.MaxBoxPixels)
             .ThenBy(pair => pair.Key)
-            .Take(8)
-            .Select(pair =>
-                $"0x{pair.Value.Pc:x16}:{pair.Value.Source}:{pair.Value.Total}/sum{pair.Value.TotalBoxPixels}/max{pair.Value.MaxBoxPixels}" +
-                $"/c{pair.Value.Color:X4}/b{pair.Value.LastBufferIndex}/box{pair.Value.LastMinX}-{pair.Value.LastMaxX}x{pair.Value.LastMinY}-{pair.Value.LastMaxY}" +
-                $"/xy{pair.Value.LastAx:F1},{pair.Value.LastAy:F1}:{pair.Value.LastBx:F1},{pair.Value.LastBy:F1}:{pair.Value.LastCx:F1},{pair.Value.LastCy:F1}" +
-                $"/area{pair.Value.LastArea:F1}/fbz{pair.Value.FbzMode:X8}/cp{pair.Value.FbzColorPath:X8}/rd{pair.Value.LastCommandFifoReadIndex:X}")) + " ";
+            .Take(6)
+            .Select(pair => FormatSolidTriangleStats(pair.Value)));
+        string drawn = string.Join(",", _solidTriangleStats
+            .Where(pair => pair.Value.Drawn > 0)
+            .OrderByDescending(pair => pair.Value.DrawnBoxPixels)
+            .ThenByDescending(pair => pair.Value.DrawnPixels)
+            .ThenBy(pair => pair.Key)
+            .Take(6)
+            .Select(pair => FormatSolidTriangleStats(pair.Value)));
+        if (drawn.Length == 0)
+            drawn = "none";
+
+        return $"solidtri={candidates} solidtriDraw={drawn} ";
+    }
+
+    private static string FormatSolidTriangleStats(SolidTriangleStats stats)
+    {
+        return $"0x{stats.Pc:x16}:{stats.Source}:{stats.Total}/sum{stats.TotalBoxPixels}/max{stats.MaxBoxPixels}" +
+               $"/draw{stats.Drawn}/dp{stats.DrawnPixels}/dbox{stats.DrawnBoxPixels}/dmax{stats.MaxDrawnBoxPixels}" +
+               $"/simp{stats.SuppressedImplausible}/slrg{stats.SuppressedLarge}/soff{stats.SuppressedOffscreen}" +
+               $"/c{stats.Color:X4}/b{stats.LastBufferIndex}/box{stats.LastMinX}-{stats.LastMaxX}x{stats.LastMinY}-{stats.LastMaxY}" +
+               $"/xy{stats.LastAx:F1},{stats.LastAy:F1}:{stats.LastBx:F1},{stats.LastBy:F1}:{stats.LastCx:F1},{stats.LastCy:F1}" +
+               $"/area{stats.LastArea:F1}/fbz{stats.FbzMode:X8}/cp{stats.FbzColorPath:X8}/rd{stats.LastCommandFifoReadIndex:X}";
     }
 
     private void TraceFastFillSwapOrder(string kind, uint register, uint value)
@@ -31655,6 +31757,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int Total;
         public long TotalBoxPixels;
         public long MaxBoxPixels;
+        public int SuppressedImplausible;
+        public int SuppressedLarge;
+        public int SuppressedOffscreen;
+        public int Drawn;
+        public long DrawnPixels;
+        public long DrawnBoxPixels;
+        public long MaxDrawnBoxPixels;
         public ushort Color;
         public uint FbzMode;
         public uint FbzColorPath;
@@ -32568,13 +32677,28 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (maxX <= minX || maxY <= minY)
             return;
 
-        CountSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY);
         long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
         TraceLargeDirectTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, boxPixels);
-        if (ShouldSuppressImplausibleBulkDirectTriangle(source, boxPixels))
+        bool suppressImplausible = ShouldSuppressImplausibleBulkDirectTriangle(source, boxPixels);
+        if (suppressImplausible)
+        {
+            CountSuppressedSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, implausible: true, large: false, offscreen: false);
             return;
-        if (_experimentSuppressLargeSolidTriangles && boxPixels >= 640L * 480L)
+        }
+
+        bool suppressOffscreen = ShouldSuppressOffscreenDirectTriangle(source, ax, ay, bx, by, cx, cy, boxPixels);
+        if (suppressOffscreen)
+        {
+            CountSuppressedSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, implausible: false, large: false, offscreen: true);
             return;
+        }
+
+        bool suppressLarge = _experimentSuppressLargeSolidTriangles && boxPixels >= 640L * 480L;
+        if (suppressLarge)
+        {
+            CountSuppressedSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, implausible: false, large: true, offscreen: false);
+            return;
+        }
 
         bool positive = area > 0;
         int bufferIndex = GetDrawBufferIndex();
@@ -32582,6 +32706,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
+        long drawnPixels = 0;
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
@@ -32595,6 +32720,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0)
                 {
                     buffer[(row + x) & (LfbPixels - 1)] = color;
+                    drawnPixels++;
                     _solidRasterPixelCount++;
                     if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
                         _rasterBufferPixelCounts[bufferIndex]++;
@@ -32602,6 +32728,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
             }
         }
+        CountDrawnSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, drawnPixels);
     }
 
     private bool ShouldSuppressImplausibleBulkDirectTriangle(string source, long boxPixels)
@@ -32624,6 +32751,44 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint target = (_currentCommandFifoCommand >> 3) & 0xfffu;
         int count = (int)(_currentCommandFifoCommand >> 16);
         return target >= 0x400u || count > 0x400;
+    }
+
+    private bool ShouldSuppressOffscreenDirectTriangle(
+        string source,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        long boxPixels)
+    {
+        if (!_experimentSuppressOffscreenDirectTriangles ||
+            (source != "itri" && source != "ftri") ||
+            !_decodingCommandFifo ||
+            (_currentCommandFifoCommand & 7u) != 1u)
+        {
+            return false;
+        }
+
+        float minX = MathF.Min(ax, MathF.Min(bx, cx));
+        float maxX = MathF.Max(ax, MathF.Max(bx, cx));
+        float minY = MathF.Min(ay, MathF.Min(by, cy));
+        float maxY = MathF.Max(ay, MathF.Max(by, cy));
+        if (!float.IsFinite(minX) || !float.IsFinite(maxX) ||
+            !float.IsFinite(minY) || !float.IsFinite(maxY))
+        {
+            return true;
+        }
+
+        bool farOutside =
+            minX < -1024.0f || maxX > 1664.0f ||
+            minY < -1024.0f || maxY > 1504.0f;
+        bool screenFillOutside =
+            boxPixels >= 640L * 240L &&
+            (minX < -64.0f || maxX > 704.0f || minY < -64.0f || maxY > 544.0f);
+
+        return (boxPixels >= 640L * 64L && farOutside) || screenFillOutside;
     }
 
     private void TraceLargeDirectTriangle(

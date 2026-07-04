@@ -3326,3 +3326,90 @@ large-solid suppressor. The next useful probe should distinguish drawn vs.
 pre-suppressed solid triangle stats and should correlate the surviving
 buffer-1 visible errors with the same `pc=800fe5d4` command-FIFO payload
 ownership path.
+
+#### 2026-07-04 drawn-solid and offscreen-direct checkpoint
+
+The solid-triangle profiler now separates candidate, suppressed, and actually
+drawn solid triangles:
+
+```text
+solidtri=.../drawN/dpPIXELS/dboxBOX/dmaxMAX/simpN/slrgN/soffN/...
+solidtriDraw=...
+```
+
+This fixed the ambiguity from the previous profile: the useful visual stack
+still hashes to `0x971ff26b`, but the surviving drawn solids are also dominated
+by `pc=0xffffffff800fe5d4` into buffer 1. The largest drawn buckets are mixed
+`itri` and `ftri`:
+
+```text
+/tmp/gauntdl-directsuppress-noedges-solidprofile-drawn-f420.ppm
+frameHash=0x971ff26b
+solidRaster=9641199
+framebuffer=640x480:305614:143532
+
+solidtriDraw top:
+pc=800fe5d4 itri color=001F draw=21 dp=501249 dbox=2058308
+pc=800fe5d4 itri color=F860 draw=14 dp=398951 dbox=2007040
+pc=800fe5d4 ftri color=F800 draw=35 dp=410550 dbox=1691676
+```
+
+Added a default-off geometry suppressor for the next direct-payload probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_OFFSCREEN_DIRECT_TRIANGLES=1
+```
+
+It only applies while decoding Type1 command-FIFO `itri/ftri` work. It catches
+triangles that cover a substantial clip area while at least one vertex is far
+outside the visible frame, and records those hits as `soff`.
+
+With the previous useful stack plus the new flag:
+
+```text
+/tmp/gauntdl-offscreen-directsuppress-noedges-f420.ppm
+frameHash=0xdf78e30d
+frameSha256=00e76d30147d90c9b5198aa2175bcbd48a03c5de4bf765ae4f8ffdbae16dc008
+solidRaster=8015229
+framebuffer=640x480:305614:115648
+```
+
+Visual result: the frame moves again and loses some green/blue false solid
+surfaces, but it is still not real gameplay graphics. Large cyan/white/red
+direct-solid shapes remain. This is useful evidence and a readable diagnostic,
+not a promoted fix.
+
+Also added a default-off stale write-trigger gate:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_WRITE_GATE_STALE_READ=1
+```
+
+It reuses the existing stale Type5-payload read predicate, but only skips
+`trigger=write` decode; it does not mutate the read pointer or drop packets.
+This is a negative visual probe:
+
+```text
+/tmp/gauntdl-writegate-offscreen-directsuppress-f420.ppm
+frameHash=0xdf78e30d
+frameSha256=00e76d30147d90c9b5198aa2175bcbd48a03c5de4bf765ae4f8ffdbae16dc008
+drawPackets=22993
+direct/setup=6025/3001
+texWrites=4541041
+cmdstop=invalid-standard-window/0xbda7eca1/.../0x210/0x210/.../trig=write
+```
+
+It changes FIFO/textured workload but not the selected image or terminal stale
+stop. So the visible false graphics are already drawn before the terminal
+`0xbda7eca1 @ 0x210` symptom. Do not promote the write gate as a fix.
+
+Next continuation point:
+
+1. Keep the new drawn/suppressed solid profile and `soff` field as the visual
+   oracle for direct-payload experiments.
+2. The next real graphics target is earlier than the terminal stale stop:
+   explain why `pc=800fe5d4` is still issuing valid-looking `ftri` and
+   near-screen `itri` solid draws after the implausible/offscreen filters.
+3. A narrow next probe should record max-drawn geometry separately from max
+   candidate geometry, then trace the register-write packet sequence for the top
+   remaining `solidtriDraw` buckets before adding more suppressors.
