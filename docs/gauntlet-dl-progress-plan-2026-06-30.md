@@ -2668,3 +2668,93 @@ the read pointer.
    load the snapshot, but it collapses to a two-color screen.
 8. Preserve the current assembly/last-writer tracing as diagnostics, but stop
    treating transient `invalid-standard-window` as the main repair target.
+
+#### 2026-07-04 source-chain trace checkpoint
+
+Added a default-off bulk-end source-chain trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SOURCE_CHAIN=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SOURCE_CHAIN_PCS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SOURCE_CHAIN_STORAGE=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SOURCE_CHAIN_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_SOURCE_CHAIN_PACKETS=...
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:VOODOO-CMDFIFO-SOURCE]
+```
+
+It fires at `EndCommandFifoBulkWrite()` before the bulk-end decoder mutates the
+read pointer. Each row records the current read word, bulk write window, packet
+head scan, selected storage offsets, nearby read window, and last-writer chain.
+This is trace-only and default-off.
+
+Focused e27b/f420 baseline run:
+
+```text
+/tmp/gauntdl-e27b-f420-source-chain.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/0xbed9a6b6/0xc2280000/pc=0xffffffff801066c8/last=0xbed16e7e:1:0x20c:0x210/1359814
+```
+
+Key source-chain evidence:
+
+```text
+n=137 rd=0x00000210/0x00210 word=0xbda7eca1 type=1 words=48552
+bulk=0x000020a0-0x0001289c bulkWords=16896 inside=0
+lastDecoded=0xbed16e7e:1:0x0000020c->0x00000210
+position=scan=outside:rel63580/16896
+heads=p0@0x000020a0/0x020a0:cmd=0xc0000205:t=5:w=66:v=8/8...
+0x0020c=cur0xbed16e7e/last=fifo/seq132/lg0x0000020c/addr0x0000020c/pc0xffffffff800fe5d4
+0x00210=cur0xbda7eca1/last=fifo/seq133/lg0x00000210/addr0x00000210/pc0xffffffff800fe5d4
+```
+
+The source-chain trace confirms that `0xbda7eca1 @ 0x210` is stale payload
+storage from the same `pc=800fe5d4` bulk writer, not a new command head. It also
+shows that the current bulk upload has valid Type5 heads starting at `0x20a0`,
+while the read pointer remains outside that bulk on the old payload word.
+
+Negative probe: existing stale-packet resync is too broad.
+
+```text
+/tmp/gauntdl-e27b-f420-stale-resync.log
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_STALE_PACKET=1
+frameHash=0x340b271c
+drawPackets=25034 directTriangles=321 setupTriangles=141 texWrites=6629697
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/...
+```
+
+It catches the exact terminal symptom several times:
+
+```text
+kind=stale-packet reason=implausible oldRd=0x00000210/0x00210 newRd=0x000020a0/0x020a0
+oldWord=0xbda7eca1 start=0xc0000205
+```
+
+But it also over-resyncs many earlier oversized/invalid payload-looking reads,
+collapses direct/setup work, changes the visual family, and still terminates at
+the same `0xbda7eca1` stop. Keep it as a negative oracle.
+
+Current MAME `src/devices/video/voodoo_2.cpp` / `voodoo_2.h` comparison point:
+their `command_fifo::write()` updates `address_min`, `address_max`, `depth`, and
+`holes` as one unit; `execute_if_ready()` only checks `depth >=
+words_needed(peek_next())`; `read_next()` simply consumes from linear
+`m_read_index`. There is no separate per-word valid/invalidation model like our
+diagnostic standard path. The next useful fix should therefore move toward
+packet body ownership/depth semantics at the producer boundary, not toward more
+packet dropping after stale payload has become the read pointer.
+
+Next continuation point:
+
+1. Add or refine tracing around the exact `pc=800fe5d4` Type5 upload boundary so
+   one source-chain row can show old read pointer, new Type5 head, and
+   depth/holes/address-window changes before and after the first payload word.
+2. Avoid broad resync/gate experiments unless the f420 oracle stays near
+   `frameHash=0x035dcece` and `direct/setup ~= 6028/3002`.
+3. Compare a narrow MAME-style depth/hole update against the standard path for
+   the `0x20c -> 0x210` transition before promoting any behavior flag.
