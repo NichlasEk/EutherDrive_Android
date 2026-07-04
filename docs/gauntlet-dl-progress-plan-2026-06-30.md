@@ -2758,3 +2758,87 @@ Next continuation point:
    `frameHash=0x035dcece` and `direct/setup ~= 6028/3002`.
 3. Compare a narrow MAME-style depth/hole update against the standard path for
    the `0x20c -> 0x210` transition before promoting any behavior flag.
+
+#### 2026-07-04 producer-boundary checkpoint
+
+Added a default-off producer-boundary trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_PRODUCER_BOUNDARY=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_PRODUCER_BOUNDARY_PCS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_PRODUCER_BOUNDARY_STORAGE=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_PRODUCER_BOUNDARY_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_PRODUCER_BOUNDARY_WORDS=...
+```
+
+The marker is:
+
+```text
+[GAUNTDL:VOODOO-CMDFIFO-PRODUCER]
+```
+
+It records the begin/end read pointer, depth, holes, valid count, address
+window, current bulk packet heads, selected storage offsets, and the first words
+written by the producer before the bulk-end decoder gets another chance to move
+the read pointer. The trace is default-off and preserves the current f420 oracle.
+
+Focused trace-only run:
+
+```text
+/tmp/gauntdl-e27b-f420-producer-boundary.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+textureMap=16754480:8367795:8386685:599296:0x000000:0x7fe444
+cmdstop=invalid-standard-window/0xbda7eca1/48552/7914/0x210/0x210/.../pc=0xffffffff801066c8/last=0xbed16e7e:1:0x20c:0x210/1359814
+```
+
+Key evidence:
+
+```text
+n=112 bulk=0x00031880-0x0000207c rd=0x00000000
+position=type5-data:rel14816/16896:pkt224:off32/66
+0x0020c=cur0xbed16e7e/last=fifo/.../pc0xffffffff800fe5d4
+0x00210=cur0xbda7eca1/last=fifo/.../pc0xffffffff800fe5d4
+
+n=113 beginRd=0x00000210 beginWord=0xbda7eca1
+bulk=0x000020a0-0x0001289c inside=0
+```
+
+This proves the terminal `0xbda7eca1 @ 0x210` state is already stale before the
+next Type5 producer writes its valid heads at `0x20a0`. The bug is not the next
+producer head; it is the prior consumer/decode path that advances from
+`0x20c -> 0x210` into Type5 payload storage and leaves that payload eligible as
+the next command.
+
+Two default-off behavior probes were added and rejected as negative controls:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_ADVANCE_PAYLOAD_TO_NEXT_HEAD=1
+/tmp/gauntdl-e27b-f420-payload-next-head.log
+frameHash=0x6d791e91
+drawPackets=26134 directTriangles=317 setupTriangles=141 texWrites=7048753
+cmdstop=invalid-standard-window/0x00012609/.../0x7db0/...
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_INVALIDATE_PAYLOAD_REMAINDER=1
+/tmp/gauntdl-e27b-f420-payload-invalidate.log
+frameHash=0x6d791e91
+drawPackets=18405 directTriangles=317 setupTriangles=141 texWrites=2126321
+cmdstop=invalid-standard-window/0x0005a604/.../0x0/...
+```
+
+Both probes trigger on the target wrapped Type5 payload window, but both crush
+real direct/setup work and switch to the same wrong visual family. Do not promote
+either behavior. They are useful only as proof that moving or invalidating the
+read pointer after it is already inside payload is still the wrong boundary.
+
+Next continuation point:
+
+1. Keep the producer-boundary trace as the main truth source for the
+   `pc=800fe5d4` / `0x20c -> 0x210` transition.
+2. Stop iterating on payload-head jumps or payload invalidation unless an oracle
+   run stays near `frameHash=0x035dcece` and `direct/setup ~= 6028/3002`.
+3. Move to a narrow MAME-style FIFO ownership fix: update or trace
+   `address_min`, `address_max`, `depth`, `holes`, and linear `read_index` as a
+   single causal unit across the wrapped Type5 bulk, so the read side never
+   starts decoding inside the previous payload body.
