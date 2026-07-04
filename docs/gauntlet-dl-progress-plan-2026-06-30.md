@@ -2955,3 +2955,137 @@ Next continuation point:
 4. Revisit triangle depth/alpha only after the texture-source path is either
    fixed or proven correct; MAME has real depth/alpha/stipple handling, while
    the current bringup rasterizer still only applies a simplified color path.
+
+#### 2026-07-04 render-state/direct-payload visual breakthrough
+
+Added several default-off diagnostics around the f420 plateau. The important
+new flags are:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISABLE_TRIANGLE_WIRE_EDGES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB_DETAIL=1
+```
+
+`IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES` is the strongest non-destructive state
+fix so far. It ignores render/TMU state writes only when the current Type1
+packet is already implausible by the command FIFO model. This prevents payload
+words like `0x437f0000` from clobbering `fbzMode`, `lfbMode`, texture state, and
+global color state while preserving the draw count:
+
+```text
+/tmp/gauntdl-ignore-globalstate-f420.log
+frameHash=0x0f55e72a
+drawPackets=21375 directTriangles=6025 setupTriangles=3001
+fbz=0x00000460 lfbm=0x03880000
+```
+
+It is still not the final picture: the selected buffer remains a false
+cyan/yellow/noisy wedge. Buffer dumps show the selected frame is effectively
+buffer 1; buffer 0 is the stripe surface and buffer 2 is a cyan/red fill.
+
+Negative/neutral controls:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH=1
+frameHash=0x0f55e72a
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES=1
+frameHash=0x0f55e72a
+```
+
+The setup suppressor correctly catches the huge `pc=800c4e5c`,
+`cmd=0x0180A8CB` setup triangles, but the selected f420 frame is unchanged.
+Likewise, the MAME-style setup aux/depth experiment changes raster accounting
+but not the selected image. So the visible f420 wedge is not dominated by those
+setup texture triangles.
+
+Solid-triangle profiling found the visible buffer-1 culprit: huge direct
+`itri` fills are decoded from implausible Type1 payloads, mostly from
+`pc=800fe5d4` and `pc=80106a74`:
+
+```text
+[GAUNTDL:VOODOO-LARGE-ITRI]
+pc=0xffffffff800fe5d4 cmd=0x3E959C11 words=16022 trigger=bulk-end
+box=0-640x0-480 fbz=0x00000000 lfb=0x03880000
+
+[GAUNTDL:VOODOO-LARGE-ITRI]
+pc=0xffffffff80106a74 cmd=0x3E9EC751 words=16031 trigger=write
+box=0-640x41-645 fbz=0x00000460 lfb=0x3F800000
+```
+
+The existing `SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES` gate only handled the
+`bulk-end` shape. It now also suppresses large `itri/ftri` raster when
+`IsImplausibleCommandFifoPacket()` is true, regardless of the decode trigger.
+That is the first test that produced a real visible movement on the current
+f420 plateau:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES=1
+
+/tmp/gauntdl-directsuppress-renderstate-f420.png
+frameHash=0x96f9e8f3
+frameSha256=e971945b43864db3e4e5714965af301ce9dac51b1a5e43d24eb7d3d565f0fed6
+lfbWrites=231912849
+rast=9641199/102203530/0/12854/1512/11342/49/10315/971/44526238
+rb=59055433/52789296/0
+framebuffer=640x480:305614:166673
+```
+
+Visually this removes the old static full-screen false wedge and exposes a much
+more informative, still incorrect scene: white/fill surfaces, texture/noise band,
+and remaining false color polygons. This is progress toward real visible
+graphics, but not yet gameplay-correct output.
+
+`DISABLE_TRIANGLE_WIRE_EDGES` removes diagnostic edge overlay from
+`DrawTriangleWire()` and makes the same result easier to read:
+
+```text
+/tmp/gauntdl-directsuppress-noedges-renderstate-f420.png
+frameHash=0x971ff26b
+framebuffer=640x480:305614:143532
+```
+
+This is a display/debug aid, not a core fix. A stricter experiment that
+suppressed all direct `itri/ftri` from implausible Type1 payloads over-suppressed
+the frame and caused selection to fall back to the buffer-0 stripe surface:
+
+```text
+/tmp/gauntdl-directsuppress-all-noedges-renderstate-f420.png
+frameHash=0xa3750074
+solidRaster=161696
+```
+
+That stricter variant was reverted. Keep the large-triangle gate as the useful
+default-off diagnostic.
+
+LFB detail tracing also showed no direct LFB-aperture writes after loading the
+current f180 warm state in the early f220 window, so the large `lfbWrites`
+counters here are renderer/raster accounting, not fresh guest LFB writes.
+
+Build verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore /clp:ErrorsOnly
+Build succeeded, 343 warnings, 0 errors
+```
+
+Next continuation point:
+
+1. Keep the useful visual stack as an opt-in oracle:
+   `IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1` +
+   `SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES=1`, with optional
+   `DISABLE_TRIANGLE_WIRE_EDGES=1` for screenshot readability.
+2. Do not promote any of these flags into baseline yet. They are isolating the
+   payload corruption, not fixing FIFO ownership.
+3. Next narrow blocker is texture/setup correctness on buffer 1. At f420 the
+   useful visual stack still has `textured=12854 covered=1512 rejected=11342`
+   and `zero=44526238`, so the remaining image is dominated by bad texture
+   fetch/source data and rejected setup triangles.
+4. Continue by tracing buffer-1 texture samples after the direct-payload
+   suppressor, especially the path from `pc=800fe5d4` Type5 writes into the
+   sampled buckets, before changing color combine or display-buffer selection.

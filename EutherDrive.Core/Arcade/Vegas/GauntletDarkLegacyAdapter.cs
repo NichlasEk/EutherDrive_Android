@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using EutherDrive.Core.Savestates;
@@ -26742,17 +26743,21 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegFstartR = 0x0a0 >> 2;
     private const int RegFstartG = 0x0a4 >> 2;
     private const int RegFstartB = 0x0a8 >> 2;
+    private const int RegFstartZ = 0x0ac >> 2;
     private const int RegFstartS = 0x0b4 >> 2;
     private const int RegFstartT = 0x0b8 >> 2;
     private const int RegFstartW = 0x0bc >> 2;
     private const int RegFdRdX = 0x0c0 >> 2;
     private const int RegFdGdX = 0x0c4 >> 2;
     private const int RegFdBdX = 0x0c8 >> 2;
+    private const int RegFdZdX = 0x0cc >> 2;
     private const int RegFdSdX = 0x0d4 >> 2;
     private const int RegFdTdX = 0x0d8 >> 2;
+    private const int RegFdWdX = 0x0dc >> 2;
     private const int RegFdRdY = 0x0e0 >> 2;
     private const int RegFdGdY = 0x0e4 >> 2;
     private const int RegFdBdY = 0x0e8 >> 2;
+    private const int RegFdZdY = 0x0ec >> 2;
     private const int RegFdSdY = 0x0f4 >> 2;
     private const int RegFdTdY = 0x0f8 >> 2;
     private const int RegFdWdY = 0x0fc >> 2;
@@ -27134,6 +27139,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _experimentIgnoreImplausibleCommandFifoSelfRegisterWritesTraceLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_SELF_REG_WRITES_LIMIT"),
             ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_SELF_REG_PACKETS_LIMIT"), 80));
+    private readonly bool _experimentIgnoreImplausibleCommandFifoRenderStateWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES"));
+    private readonly int _experimentIgnoreImplausibleCommandFifoRenderStateWritesTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES_LIMIT"), 120);
     private readonly bool _experimentDropImplausibleCommandFifoType5Packets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE5_PACKETS"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
@@ -27260,8 +27269,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_REJECT_NONFINITE_TEXTURE_COORDS"));
     private readonly bool _experimentSuppressLargeNonFiniteSTextureTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_NONFINITE_S_TEXTURE_TRIANGLES"));
+    private readonly bool _experimentSuppressImplausibleSetupTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES"));
+    private readonly int _experimentSuppressImplausibleSetupTrianglesTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES_LIMIT"), 80);
     private readonly bool _experimentTextureUploadTmuBanks =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
+    private readonly bool _experimentSetupMameAuxDepth =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DROP_LEAKED_TYPE5_HEADERS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -27283,6 +27298,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
     private readonly bool _profileStatusPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1";
+    private readonly bool _traceLfbDetail =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB_DETAIL"));
+    private readonly int _traceLfbDetailLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LFB_DETAIL_LIMIT"), 160);
     private readonly bool _profileFastFillSwapPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS") == "1";
     private readonly bool _profileSolidTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_SOLID_TRIANGLES"));
@@ -27290,6 +27309,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES"));
     private readonly bool _experimentSuppressImplausibleBulkDirectTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES"));
+    private readonly bool _experimentDisableTriangleWireEdges =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISABLE_TRIANGLE_WIRE_EDGES"));
     private readonly bool _traceLargeDirectTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LARGE_DIRECT_TRIANGLES"));
     private readonly int _traceLargeDirectTrianglesLimit =
@@ -27349,6 +27370,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoSelfRegisterPacketTraceCount;
     private int _commandFifoImplausiblePacketTraceCount;
     private int _commandFifoImplausibleSelfRegisterPacketIgnoreTraceCount;
+    private int _commandFifoImplausibleRenderStateWriteIgnoreTraceCount;
+    private int _implausibleSetupTriangleIgnoreTraceCount;
+    private int _lfbDetailTraceCount;
     private int _largeDirectTriangleTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
@@ -28917,10 +28941,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
 
-        if (TryExpandLfbPixel(value, format, rgbaLanes, highHalf: false, out ushort first))
+        bool wroteFirst = false;
+        bool wroteSecond = false;
+        ushort first = 0;
+        ushort second = 0;
+        if (TryExpandLfbPixel(value, format, rgbaLanes, highHalf: false, out first))
+        {
             buffer[pixel & (LfbPixels - 1)] = first;
-        if (twoPixels && TryExpandLfbPixel(value, format, rgbaLanes, highHalf: true, out ushort second))
+            wroteFirst = true;
+        }
+        if (twoPixels && TryExpandLfbPixel(value, format, rgbaLanes, highHalf: true, out second))
+        {
             buffer[(pixel + 1) & (LfbPixels - 1)] = second;
+            wroteSecond = true;
+        }
+        TraceLfbWriteDetail("normal", offset, value, lfbMode, format, rgbaLanes, bufferIndex, pixel, wroteFirst, first, wroteSecond, second);
         _lfbWriteCount++;
     }
 
@@ -28938,9 +28973,41 @@ internal class VoodooBringupBackend : IVoodooBackend
         _lastFastFillValid[bufferIndex] = false;
         ushort[] buffer = _colorBuffers[bufferIndex];
         int pixel = y * LfbRowPixels + x;
-        buffer[pixel & (LfbPixels - 1)] = ConvertXrgb1555Lane0((ushort)value);
-        buffer[(pixel + 1) & (LfbPixels - 1)] = ConvertXrgb1555Lane0((ushort)(value >> 16));
+        ushort first = ConvertXrgb1555Lane0((ushort)value);
+        ushort second = ConvertXrgb1555Lane0((ushort)(value >> 16));
+        buffer[pixel & (LfbPixels - 1)] = first;
+        buffer[(pixel + 1) & (LfbPixels - 1)] = second;
+        TraceLfbWriteDetail("mode2011", offset, value, _registers[RegLfbMode], 0x11, 0, bufferIndex, pixel, firstValid: true, first, secondValid: true, second);
         _lfbWriteCount++;
+    }
+
+    private void TraceLfbWriteDetail(
+        string path,
+        uint offset,
+        uint value,
+        uint lfbMode,
+        int format,
+        int rgbaLanes,
+        int bufferIndex,
+        int pixel,
+        bool firstValid,
+        ushort first,
+        bool secondValid,
+        ushort second)
+    {
+        if (!_traceLfbDetail || _lfbDetailTraceCount++ >= _traceLfbDetailLimit)
+            return;
+
+        int normalizedPixel = pixel & (LfbPixels - 1);
+        int x = normalizedPixel & (LfbRowPixels - 1);
+        int y = normalizedPixel / LfbRowPixels;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-LFB-DETAIL] n={_lfbDetailTraceCount} path={path} off=0x{offset:x6} value=0x{value:x8} " +
+            $"mode=0x{lfbMode:x8} fmt={format} rgba={rgbaLanes} buf={bufferIndex} pix={normalizedPixel} xy={x},{y} " +
+            $"rgb={(firstValid ? $"0x{first:x4}" : "-")}/{(secondValid ? $"0x{second:x4}" : "-")} " +
+            $"front={_frontBufferIndex} back={_backBufferIndex} fbz=0x{_registers[RegFbzMode]:x8}{pcStatus}");
     }
 
     private void MirrorLfbWriteToCommandFifoStorage(uint offset, uint value)
@@ -30500,6 +30567,12 @@ internal class VoodooBringupBackend : IVoodooBackend
             RecordVoodooEvent($"drop leaked type5 header reg[{register:x2}]=0x{value:x8}");
             return;
         }
+        if (ShouldIgnoreImplausibleCommandFifoRenderStateWrite(register, value))
+        {
+            CountCommandFifoTargetRegisterPc(register, value);
+            TraceCommandFifoImplausibleRenderStateWriteIgnore(target, register, value);
+            return;
+        }
 
         CountCommandFifoTargetRegisterPc(register, value);
         TraceCommandFifoRegisterValue(target, value);
@@ -30513,6 +30586,45 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         WriteRegister(register << 2, value);
+    }
+
+    private bool ShouldIgnoreImplausibleCommandFifoRenderStateWrite(uint register, uint value)
+    {
+        if (!_experimentIgnoreImplausibleCommandFifoRenderStateWrites ||
+            (_currentCommandFifoCommand & 7u) != 1u ||
+            !IsImplausibleCommandFifoPacket(_currentCommandFifoCommand, _currentCommandFifoWordsNeeded))
+        {
+            return false;
+        }
+
+        if (IsCommandFifoControlRegister(register))
+            return false;
+
+        return IsGlobalRenderStateRegister(register) ||
+               IsTmuTextureRegister(register) ||
+               value == 0x437f0000u;
+    }
+
+    private static bool IsGlobalRenderStateRegister(uint register)
+        => register is RegFbzColorPath or RegFbzMode or RegLfbMode or
+            RegClipLeftRight or RegClipLowYHighY or
+            RegColor0 or RegColor1 or RegZaColor or
+            RegFastfillCommand or RegSwapbufferCommand;
+
+    private void TraceCommandFifoImplausibleRenderStateWriteIgnore(uint target, uint register, uint value)
+    {
+        if (_commandFifoImplausibleRenderStateWriteIgnoreTraceCount >= _experimentIgnoreImplausibleCommandFifoRenderStateWritesTraceLimit)
+            return;
+
+        _commandFifoImplausibleRenderStateWriteIgnoreTraceCount++;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO-RENDERSTATE-WRITE-IGNORE] n={_commandFifoImplausibleRenderStateWriteIgnoreTraceCount} " +
+            $"target=0x{target:x3} reg=0x{register:x2} value=0x{value:x8} " +
+            $"cmd=0x{_currentCommandFifoCommand:x8} words={_currentCommandFifoWordsNeeded} " +
+            $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8}{pcStatus}");
     }
 
     private bool ShouldTraceTmuRegisterWrite(uint target, uint register, uint value)
@@ -32277,7 +32389,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         TraceSetupTriangle(color, textured);
         if (ShouldCullSetupTriangle())
             return;
-        if (ShouldSuppressRgbBufferWrite())
+        if (ShouldSuppressImplausibleSetupTriangle(textured))
+            return;
+        if (ShouldSuppressRgbBufferWrite() && (!_experimentSetupMameAuxDepth || !textured))
             return;
         if (textured)
             _texturedTriangleCount++;
@@ -32322,12 +32436,75 @@ internal class VoodooBringupBackend : IVoodooBackend
         return divisorSign == cullingSign;
     }
 
+    private bool ShouldSuppressImplausibleSetupTriangle(bool textured)
+    {
+        if (!_experimentSuppressImplausibleSetupTriangles ||
+            !_decodingCommandFifo ||
+            (_currentCommandFifoCommand & 7u) != 3u)
+        {
+            return false;
+        }
+
+        SetupVertex sv0 = _setupVertices[0];
+        SetupVertex sv1 = _setupVertices[1];
+        SetupVertex sv2 = _setupVertices[2];
+        float minXf = MathF.Min(sv0.X, MathF.Min(sv1.X, sv2.X));
+        float maxXf = MathF.Max(sv0.X, MathF.Max(sv1.X, sv2.X));
+        float minYf = MathF.Min(sv0.Y, MathF.Min(sv1.Y, sv2.Y));
+        float maxYf = MathF.Max(sv0.Y, MathF.Max(sv1.Y, sv2.Y));
+        if (!float.IsFinite(minXf) || !float.IsFinite(maxXf) ||
+            !float.IsFinite(minYf) || !float.IsFinite(maxYf))
+        {
+            TraceImplausibleSetupTriangleIgnore(textured, "nonfinite", 0);
+            return true;
+        }
+
+        GetClip(out int clipX0, out int clipX1, out int clipY0, out int clipY1);
+        int minX = Math.Clamp((int)MathF.Floor(minXf), clipX0, clipX1);
+        int maxX = Math.Clamp((int)MathF.Ceiling(maxXf), clipX0, clipX1);
+        int minY = Math.Clamp((int)MathF.Floor(minYf), clipY0, clipY1);
+        int maxY = Math.Clamp((int)MathF.Ceiling(maxYf), clipY0, clipY1);
+        long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
+        float maxAbsCoordinate = MathF.Max(
+            MathF.Max(MathF.Abs(minXf), MathF.Abs(maxXf)),
+            MathF.Max(MathF.Abs(minYf), MathF.Abs(maxYf)));
+        bool hugeOffscreenCoordinate = maxAbsCoordinate > 8192.0f;
+        bool screenFillingFromFarOutside =
+            boxPixels >= 640L * 240L &&
+            (minXf < -1024.0f || maxXf > 2048.0f || minYf < -1024.0f || maxYf > 2048.0f);
+        if (!hugeOffscreenCoordinate && !screenFillingFromFarOutside)
+            return false;
+
+        TraceImplausibleSetupTriangleIgnore(textured, hugeOffscreenCoordinate ? "huge-coordinate" : "screen-fill-outside", boxPixels);
+        return true;
+    }
+
+    private void TraceImplausibleSetupTriangleIgnore(bool textured, string reason, long boxPixels)
+    {
+        if (_implausibleSetupTriangleIgnoreTraceCount >= _experimentSuppressImplausibleSetupTrianglesTraceLimit)
+            return;
+
+        _implausibleSetupTriangleIgnoreTraceCount++;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-IMPLAUSIBLE-SETUP-TRI-IGNORE] n={_implausibleSetupTriangleIgnoreTraceCount} " +
+            $"reason={reason} tex={(textured ? 1 : 0)} boxPixels={boxPixels} " +
+            $"xy=({_setupVertices[0].X:F3},{_setupVertices[0].Y:F3})/({_setupVertices[1].X:F3},{_setupVertices[1].Y:F3})/({_setupVertices[2].X:F3},{_setupVertices[2].Y:F3}) " +
+            $"st=({_setupVertices[0].S:F3},{_setupVertices[0].T:F3})/({_setupVertices[1].S:F3},{_setupVertices[1].T:F3})/({_setupVertices[2].S:F3},{_setupVertices[2].T:F3}) " +
+            $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8} " +
+            $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} cp=0x{_registers[RegFbzColorPath]:X8}{pcStatus}");
+    }
+
     private void DrawTriangleWire(float ax, float ay, float bx, float by, float cx, float cy, ushort color, string source)
     {
         if (color == 0)
             color = 0xffff;
 
         FillTriangle(ax, ay, bx, by, cx, cy, color, source);
+        if (_experimentDisableTriangleWireEdges)
+            return;
+
         DrawLfbLine(ax, ay, bx, by, color);
         DrawLfbLine(bx, by, cx, cy, color);
         DrawLfbLine(cx, cy, ax, ay, color);
@@ -32396,11 +32573,16 @@ internal class VoodooBringupBackend : IVoodooBackend
             (source != "itri" && source != "ftri") ||
             boxPixels < 640L * 240L ||
             !_decodingCommandFifo ||
-            _commandFifoDecodeTrigger != "bulk-end" ||
             (_currentCommandFifoCommand & 7u) != 1u)
         {
             return false;
         }
+
+        if (IsImplausibleCommandFifoPacket(_currentCommandFifoCommand, _currentCommandFifoWordsNeeded))
+            return true;
+
+        if (_commandFifoDecodeTrigger != "bulk-end")
+            return false;
 
         uint target = (_currentCommandFifoCommand >> 3) & 0xfffu;
         int count = (int)(_currentCommandFifoCommand >> 16);
@@ -32622,6 +32804,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         long dTdY = MameSetupCastToInt64(((a.T - c.T) * dy1 - (a.T - b.T) * dy2) * TextureSetupScale * setupDivisor);
         int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
         int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
+        uint fbzMode = _registers[RegFbzMode];
+        bool useMameAuxDepth = _experimentSetupMameAuxDepth;
+        bool mameRgbMask = !useMameAuxDepth || (fbzMode & 0x200u) != 0;
+        bool mameAuxMask = useMameAuxDepth && (fbzMode & 0x400u) != 0;
+        bool mameDepthTest = useMameAuxDepth && (fbzMode & 0x10u) != 0;
+        bool mameAlphaPlanes = useMameAuxDepth && (fbzMode & 0x40000u) != 0;
+        ushort zaColor = (ushort)_registers[RegZaColor];
+        int setupStartZ = unchecked((int)_registers[RegFstartZ]);
+        int setupDzDx = unchecked((int)_registers[RegFdZdX]);
+        int setupDzDy = unchecked((int)_registers[RegFdZdY]);
+        long setupStartW = MameFloatToInt64(_registers[RegFstartW], 32);
+        long setupDwDx = MameFloatToInt64(_registers[RegFdWdX], 32);
+        long setupDwDy = MameFloatToInt64(_registers[RegFdWdY], 32);
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
@@ -32634,6 +32829,20 @@ internal class VoodooBringupBackend : IVoodooBackend
                 float e2 = Edge(a.X, a.Y, b.X, b.Y, px, py);
                 if (!(positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0))
                     continue;
+
+                int pixel = (row + x) & (LfbPixels - 1);
+                int depthValue = 0;
+                if (useMameAuxDepth)
+                {
+                    int setupDx = x - setupAx;
+                    int setupDy = y - setupAy;
+                    int iterZ = unchecked(setupStartZ + (int)((long)setupDy * setupDzDy) + (int)((long)setupDx * setupDzDx));
+                    long iterW = unchecked(setupStartW + setupDy * setupDwDy + setupDx * setupDwDx);
+                    depthValue = ComputeMameSetupDepthValue(fbzMode, _registers[RegFbzColorPath], iterZ, iterW, zaColor);
+                    int depthSource = (fbzMode & 0x100000u) == 0 ? depthValue : zaColor;
+                    if (mameDepthTest && !MameDepthTest(fbzMode, _auxBuffer[pixel], depthSource))
+                        continue;
+                }
 
                 float wa = e0 * invArea;
                 float wb = e1 * invArea;
@@ -32714,12 +32923,17 @@ sampledTexel:
                 if (_experimentFbzColorPathRgbCombine)
                     texel = ApplyFbzColorPathRgb(texel, fallbackColor);
 
-                buffer[(row + x) & (LfbPixels - 1)] = texel;
+                if (mameRgbMask)
+                {
+                    buffer[pixel] = texel;
+                    _texturedRasterPixelCount++;
+                    if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
+                        _rasterBufferPixelCounts[bufferIndex]++;
+                    _lfbWriteCount++;
+                }
+                if (mameAuxMask)
+                    _auxBuffer[pixel] = mameAlphaPlanes ? (ushort)(texel >> 8) : (ushort)depthValue;
                 coveredAny = true;
-                _texturedRasterPixelCount++;
-                if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
-                    _rasterBufferPixelCounts[bufferIndex]++;
-                _lfbWriteCount++;
             }
         }
 
@@ -32753,6 +32967,90 @@ sampledTexel:
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         }
         return coveredAny;
+    }
+
+    private static int ComputeMameSetupDepthValue(uint fbzMode, uint fbzColorPath, int iterZ, long iterW, ushort zaColor)
+    {
+        int result;
+        if ((fbzMode & 0x08u) != 0)
+        {
+            result = (fbzMode & 0x200000u) == 0
+                ? ComputeMameWFloat(iterW)
+                : ComputeMameFloatDepth(iterZ);
+        }
+        else
+        {
+            result = MameClampedZ(iterZ, fbzColorPath);
+        }
+
+        if ((fbzMode & 0x10000u) != 0)
+            result = Math.Clamp(result + unchecked((short)zaColor), 0, 0xffff);
+        return result;
+    }
+
+    private static int ComputeMameWFloat(long iterW)
+    {
+        int exp = BitOperations.LeadingZeroCount(unchecked((ulong)iterW)) - 16;
+        if (exp < 0)
+            return 0;
+        if (exp >= 16)
+            return 0xffff;
+        return (int)(((uint)exp << 12) | (((ulong)iterW >> (35 - exp)) ^ 0x1fffu)) + 1;
+    }
+
+    private static int ComputeMameFloatDepth(int iterZ)
+    {
+        if ((iterZ & unchecked((int)0xf0000000u)) != 0)
+            return 0;
+        if ((iterZ & 0x0ffff000) == 0)
+            return 0xffff;
+
+        int exp = BitOperations.LeadingZeroCount((uint)iterZ) - 4;
+        return (int)(((uint)exp << 12) | (((uint)iterZ >> (15 - exp)) ^ 0x1fffu)) + 1;
+    }
+
+    private static int MameClampedZ(int iterZ, uint fbzColorPath)
+    {
+        if ((fbzColorPath & 0x10000000u) != 0)
+            return Math.Clamp(iterZ >> 12, 0, 0xffff);
+
+        uint result = (uint)iterZ >> 12;
+        if (result == 0xfffffu)
+            return 0;
+        if (result == 0x10000u)
+            return 0xffff;
+        return (int)(result & 0xffffu);
+    }
+
+    private static bool MameDepthTest(uint fbzMode, int depthDest, int depthSource)
+    {
+        return ((fbzMode >> 5) & 0x07u) switch
+        {
+            0 => false,
+            1 => depthSource < depthDest,
+            2 => depthSource == depthDest,
+            3 => depthSource <= depthDest,
+            4 => depthSource > depthDest,
+            5 => depthSource != depthDest,
+            6 => depthSource >= depthDest,
+            _ => true
+        };
+    }
+
+    private static long MameFloatToInt64(uint data, int fixedBits)
+    {
+        int exponent = (int)((data >> 23) & 0xffu) - 127 - 23 + fixedBits;
+        long result = (data & 0x7fffffu) | 0x800000u;
+        if (exponent < 0)
+        {
+            result = exponent > -64 ? result >> -exponent : 0;
+        }
+        else
+        {
+            result = exponent < 64 ? result << exponent : long.MaxValue;
+        }
+
+        return (data & 0x80000000u) != 0 ? -result : result;
     }
 
     private static long MameSetupCastToInt64(double value)
