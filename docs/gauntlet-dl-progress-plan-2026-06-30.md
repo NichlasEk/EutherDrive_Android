@@ -3089,3 +3089,43 @@ Next continuation point:
 4. Continue by tracing buffer-1 texture samples after the direct-payload
    suppressor, especially the path from `pc=800fe5d4` Type5 writes into the
    sampled buckets, before changing color combine or display-buffer selection.
+
+#### 2026-07-04 post-commit texture follow-up
+
+After commit `a01c2994`, a texture-summary run using the useful visual stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISABLE_TRIANGLE_WIRE_EDGES=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY=1
+```
+
+reproduced the readable image:
+
+```text
+/tmp/gauntdl-directsuppress-texsummary-f420.log
+frameHash=0x971ff26b
+frameSha256=f32f2de2dcaf3a27ca1f90d19b5906506ac89873ed955f1c3b78ac6eb424b055
+```
+
+The first 60 texture summaries are still the known huge setup triangles from
+`pc=800c4e5c`, `cmd=0x0180A8CB`, sampling bucket `0x02F000` with
+`fbz=0x437F0000`. However, stacking setup suppression on top of the useful
+visual stack was visually neutral:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES=1
+/tmp/gauntdl-direct-setup-suppress-noedges-f420.ppm
+frameHash=0x971ff26b
+lfbWrites=173915477
+textured=907:covered:693:rejected:214
+rb=2432226/52789296/0
+```
+
+So the hot setup triangles are still real bad work, but after direct-payload
+suppress they do not determine the selected buffer-1 image. The next trace needs
+to include the destination buffer index in `VOODOO-TEXSUMMARY` or otherwise
+filter texture summaries to the selected/rendered buffer. Without that, the
+trace keeps reporting buffer-0 setup noise while the visible f420 frame is
+selected from buffer 1.
