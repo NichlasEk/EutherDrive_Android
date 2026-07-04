@@ -3197,3 +3197,91 @@ RGB332 from `pc=800c4e5c`, plus a smaller amount of payload-looking work from
 mode/lod/base/TMU source against MAME and rerun the old sample-base/layout
 controls under this useful visual stack before changing color combine or buffer
 selection again.
+
+#### 2026-07-04 texture layout and TMU-source controls
+
+MAME reference points used for this slice:
+
+- `src/devices/video/voodoo.cpp`: `internal_texture_w()` selects the TMU from
+  texture-space address bits, reads `textureMode/tLOD` from that TMU, applies
+  `tdata_swizzle/tdata_swap`, then writes little-endian bytes.
+- `src/devices/video/voodoo_render.cpp`: `rasterizer_texture::recompute()`
+  derives `m_lodoffset[]` from `texBaseAddr`, `tLOD`, LOD split, aspect, bpp,
+  and optional multibase registers; `write_ptr()` aligns `scale * offs` to a
+  32-bit texture write.
+- `src/devices/video/voodoo_regs.h`: `textureMode` bits 0..7 drive
+  perspective/filter/clamp/format flags, while `tLOD` bits 0..31 provide
+  `lod_min`, `lod_max`, bias, split/aspect, multibase, swizzle, swap, and magic.
+
+Primary source links:
+
+```text
+https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo.cpp
+https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_render.cpp
+https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_regs.h
+```
+
+The visible-stack layout controls were rerun at f420:
+
+```text
+common:
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISABLE_TRIANGLE_WIRE_EDGES=1
+```
+
+Results:
+
+```text
+baseline useful stack
+frameHash=0x971ff26b
+framebuffer=640x480:305614:143532
+
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0
+frameHash=0x308f14bc
+framebuffer=640x480:305614:143532
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING=1
+frameHash=0x564c312a
+framebuffer=640x480:307200:173936
+
+MAME_TEXTURE_FETCH_ADDRESSING=1 + TEXTURE_SAMPLE_BASE_BIAS=0
+frameHash=0x12496e15
+framebuffer=640x480:307200:175980
+
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS=1
+frameHash=0xb5925ef8
+framebuffer=640x480:305614:143532
+
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TMU_REG_BANKS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU=1
+frameHash=0xb5925ef8
+framebuffer=640x480:305614:143532
+```
+
+Visual result:
+
+- `TEXTURE_SAMPLE_BASE_BIAS=0` changes the active buffer-1 texture fetch, but
+  still produces the same false large colored polygon family.
+- MAME fetch-layout, with or without the historical `0x510` sample bias,
+  collapses into horizontal texture bands rather than a scene.
+- TMU bank tracking and forced sample TMU1 also stay in the false polygon/stripe
+  family.
+
+The code now adds a diagnostic-only sample-source override:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU=0
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU=1
+```
+
+and `VOODOO-TEXSUMMARY` prints `tsrc=...` so future buffer-filtered traces show
+whether the sample came from global state, TMU0, or TMU1. This is not a promoted
+rendering fix.
+
+Conclusion: the current visible failure is not primarily caused by MAME LOD/base
+layout, sample-bias, or simple TMU source selection. The productive next branch
+is back upstream: why the command FIFO/payload path still produces the
+buffer-1 full-ish quads from `pc=800c4e5c` and the smaller payload-like triangle
+from `pc=800fe5d4`.

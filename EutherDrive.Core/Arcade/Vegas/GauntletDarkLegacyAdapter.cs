@@ -27277,6 +27277,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES_LIMIT"), 80);
     private readonly bool _experimentTextureUploadTmuBanks =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
+    private readonly int _experimentTextureSampleTmu =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU"), -1);
     private readonly bool _experimentSetupMameAuxDepth =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
@@ -30756,6 +30758,27 @@ internal class VoodooBringupBackend : IVoodooBackend
         return _registers[register];
     }
 
+    private uint ReadTextureSampleRegister(int register)
+    {
+        if ((uint)_experimentTextureSampleTmu <= 1u)
+            return ReadTextureRegisterForTmu(_experimentTextureSampleTmu, register);
+        return ReadTextureRegister(register);
+    }
+
+    private string GetTextureSampleRegisterSourceLabel()
+    {
+        if ((uint)_experimentTextureSampleTmu <= 1u)
+            return $"tmu{_experimentTextureSampleTmu}";
+        if (_fixTmuRegisterBanks)
+        {
+            if (_tmuRegisterValid[0][RegTextureMode])
+                return "tmu0";
+            if (_tmuRegisterValid[1][RegTextureMode])
+                return "tmu1";
+        }
+        return "global";
+    }
+
     private void RecordInterestingFifoEvent(uint command, int wordsNeeded)
     {
         if (!_recordVoodooEvents)
@@ -33270,12 +33293,15 @@ sampledTexel:
             _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
             return;
 
-        uint mode = ReadTextureRegister(RegTextureMode);
-        uint lod = ReadTextureRegister(RegTextureLod);
-        uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
+        uint mode = ReadTextureSampleRegister(RegTextureMode);
+        uint lod = ReadTextureSampleRegister(RegTextureLod);
+        uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int format = (int)((mode >> 8) & 0x0fu);
         int targetLod = GetTextureTargetLod(lod);
-        uint resolvedBase = GetTextureLodOffset(targetLod, format is >= 8 ? 2 : 1, applySampleBias: true);
+        uint sampleBase = GetTextureBaseAddress(registerBase);
+        if (_textureSampleBaseBias != 0)
+            sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
+        uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, format is >= 8 ? 2 : 1, lod, sampleBase);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         Console.WriteLine(
@@ -33304,12 +33330,15 @@ sampledTexel:
             _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
             return;
 
-        uint mode = ReadTextureRegister(RegTextureMode);
-        uint lod = ReadTextureRegister(RegTextureLod);
-        uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
+        uint mode = ReadTextureSampleRegister(RegTextureMode);
+        uint lod = ReadTextureSampleRegister(RegTextureLod);
+        uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int format = (int)((mode >> 8) & 0x0fu);
         int targetLod = GetTextureTargetLod(lod);
-        uint resolvedBase = GetTextureLodOffset(targetLod, format is >= 8 ? 2 : 1, applySampleBias: true);
+        uint sampleBase = GetTextureBaseAddress(registerBase);
+        if (_textureSampleBaseBias != 0)
+            sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
+        uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, format is >= 8 ? 2 : 1, lod, sampleBase);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         Console.WriteLine(
@@ -33344,9 +33373,9 @@ sampledTexel:
         if (_texturedTriangleSampleSummaryTraceCount++ >= _traceTexturedTriangleSampleSummaryLimit)
             return;
 
-        uint mode = ReadTextureRegister(RegTextureMode);
-        uint lod = ReadTextureRegister(RegTextureLod);
-        uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
+        uint mode = ReadTextureSampleRegister(RegTextureMode);
+        uint lod = ReadTextureSampleRegister(RegTextureLod);
+        uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = GetTextureTargetLod(lod);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
@@ -33362,9 +33391,12 @@ sampledTexel:
         }
         else
         {
-            width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
-            height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
-            resolvedBase = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
+            width = Math.Max(1, (int)GetTextureWidth(lod) >> targetLod);
+            height = Math.Max(1, (int)GetTextureHeight(lod) >> targetLod);
+            uint sampleBase = GetTextureBaseAddress(registerBase);
+            if (_textureSampleBaseBias != 0)
+                sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
+            resolvedBase = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, lod, sampleBase);
         }
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
@@ -33373,7 +33405,7 @@ sampledTexel:
             $"[GAUNTDL:VOODOO-TEXSUMMARY] n={_texturedTriangleSampleSummaryTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
             $"bbox=({minX},{minY})-({maxX},{maxY}) pixels={coveredPixels} zero={zeroPixels} samples={sampleCount} " +
             $"buf={bufferIndex} front={_frontBufferIndex} back={_backBufferIndex} rbuf={_lastRenderBufferIndex} " +
-            $"mode=0x{mode:X8} lod=0x{lod:X8} targetLod={targetLod} fmt={format} b16={(sixteenBit ? 1 : 0)} " +
+            $"tsrc={GetTextureSampleRegisterSourceLabel()} mode=0x{mode:X8} lod=0x{lod:X8} targetLod={targetLod} fmt={format} b16={(sixteenBit ? 1 : 0)} " +
             $"size={width}x{height} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addrs=0x{sampleFirstAddress:X6}-0x{sampleLastAddress:X6} " +
             $"raw={FormatTopTextureSampleBuckets(sampleRawBuckets, 4)} rgb={FormatTopTextureSampleBuckets(sampleColorBuckets, 4)} " +
             $"addr={FormatTopTextureAddressBuckets(sampleAddressBuckets)} " +
@@ -33480,8 +33512,9 @@ sampledTexel:
         if (_textureWriteCount == 0)
             return 0;
 
-        uint mode = ReadTextureRegister(RegTextureMode);
-        uint textureLod = ReadTextureRegister(RegTextureLod);
+        uint mode = ReadTextureSampleRegister(RegTextureMode);
+        uint textureLod = ReadTextureSampleRegister(RegTextureLod);
+        uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = GetTextureTargetLod(textureLod);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
@@ -33497,9 +33530,12 @@ sampledTexel:
         }
         else
         {
-            width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
-            height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
-            baseAddress = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
+            width = Math.Max(1, (int)GetTextureWidth(textureLod) >> targetLod);
+            height = Math.Max(1, (int)GetTextureHeight(textureLod) >> targetLod);
+            uint sampleBase = GetTextureBaseAddress(textureBase);
+            if (_textureSampleBaseBias != 0)
+                sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
+            baseAddress = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, textureLod, sampleBase);
         }
 
         int s24_8 = MameSetupCastToInt32(iterS * (1.0 / (1 << 24)));
@@ -33528,21 +33564,21 @@ sampledTexel:
             if (_fixTextureTOriginFlip)
                 y1 = Math.Max(0, height - 1) - y1;
 
-            ushort c00 = ReadTextureRgb565At(x, y, width, format, sixteenBit, baseAddress, out byteAddress, out word, out raw);
-            ushort c10 = ReadTextureRgb565At(x1, y, width, format, sixteenBit, baseAddress, out _, out _, out _);
-            ushort c01 = ReadTextureRgb565At(x, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
-            ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
+            ushort c00 = ReadTextureRgb565At(x, y, width, format, sixteenBit, mode, baseAddress, out byteAddress, out word, out raw);
+            ushort c10 = ReadTextureRgb565At(x1, y, width, format, sixteenBit, mode, baseAddress, out _, out _, out _);
+            ushort c01 = ReadTextureRgb565At(x, y1, width, format, sixteenBit, mode, baseAddress, out _, out _, out _);
+            ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, mode, baseAddress, out _, out _, out _);
             float fx = Coordinate24_8Fraction(s24_8, targetLod);
             float fy = Coordinate24_8Fraction(t24_8, targetLod);
             result = BilinearRgb565(c00, c10, c01, c11, fx, fy);
         }
         else
         {
-            result = ReadTextureRgb565At(x, y, width, format, sixteenBit, baseAddress, out byteAddress, out word, out raw);
+            result = ReadTextureRgb565At(x, y, width, format, sixteenBit, mode, baseAddress, out byteAddress, out word, out raw);
         }
         TrackZeroTextureSample(byteAddress, result);
         TrackTextureSampleDebug(byteAddress, raw, result);
-        TraceTextureSample(s24_8 / 256.0f, t24_8 / 256.0f, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress, word, raw, result);
+        TraceTextureSample(s24_8 / 256.0f, t24_8 / 256.0f, width, height, x, y, mode, textureLod, textureBase, baseAddress, byteAddress, word, raw, result);
         return result;
     }
 
@@ -33575,8 +33611,9 @@ sampledTexel:
         if (_textureWriteCount == 0 || !float.IsFinite(s) || !float.IsFinite(t))
             return 0;
 
-        uint mode = ReadTextureRegister(RegTextureMode);
-        uint textureLod = ReadTextureRegister(RegTextureLod);
+        uint mode = ReadTextureSampleRegister(RegTextureMode);
+        uint textureLod = ReadTextureSampleRegister(RegTextureLod);
+        uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = GetTextureTargetLod(textureLod);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = format is 10 or 11 or 12;
@@ -33592,9 +33629,12 @@ sampledTexel:
         }
         else
         {
-            width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
-            height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
-            baseAddress = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
+            width = Math.Max(1, (int)GetTextureWidth(textureLod) >> targetLod);
+            height = Math.Max(1, (int)GetTextureHeight(textureLod) >> targetLod);
+            uint sampleBase = GetTextureBaseAddress(textureBase);
+            if (_textureSampleBaseBias != 0)
+                sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
+            baseAddress = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, textureLod, sampleBase);
         }
         bool filtered = IsTextureFilteringEnabled(mode);
         if (_experimentTextureFilterHalfTexel && filtered)
@@ -33627,7 +33667,7 @@ sampledTexel:
         if (_fixTextureBilinearFilter && filtered)
             return SampleTextureRgb565Bilinear(s, t, width, height, mode, format, sixteenBit, baseAddress);
 
-        return SampleTextureRgb565Nearest(s, t, width, height, x, y, mode, format, sixteenBit, baseAddress);
+        return SampleTextureRgb565Nearest(s, t, width, height, x, y, mode, textureLod, textureBase, format, sixteenBit, baseAddress);
     }
 
     private ushort SampleTextureRgb565Nearest(
@@ -33638,6 +33678,8 @@ sampledTexel:
         int x,
         int y,
         uint mode,
+        uint textureLod,
+        uint textureBase,
         int format,
         bool sixteenBit,
         uint baseAddress)
@@ -33657,7 +33699,7 @@ sampledTexel:
             };
             TrackZeroTextureSample(byteAddress, result);
             TrackTextureSampleDebug(byteAddress, packed, result);
-            TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress, word, packed, result);
+            TraceTextureSample(s, t, width, height, x, y, mode, textureLod, textureBase, baseAddress, byteAddress, word, packed, result);
             return result;
         }
 
@@ -33677,7 +33719,7 @@ sampledTexel:
         };
         TrackZeroTextureSample(byteOffset, texel);
         TrackTextureSampleDebug(byteOffset, value, texel);
-        TraceTextureSample(s, t, width, height, x, y, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteOffset, source, value, texel);
+        TraceTextureSample(s, t, width, height, x, y, mode, textureLod, textureBase, baseAddress, byteOffset, source, value, texel);
         return texel;
     }
 
@@ -33706,14 +33748,14 @@ sampledTexel:
         float fx = Math.Clamp(u - MathF.Floor(u), 0.0f, 1.0f);
         float fy = Math.Clamp(v - MathF.Floor(v), 0.0f, 1.0f);
 
-        ushort c00 = ReadTextureRgb565At(x0, y0, width, format, sixteenBit, baseAddress, out uint byteAddress00, out uint word00, out uint raw00);
-        ushort c10 = ReadTextureRgb565At(x1, y0, width, format, sixteenBit, baseAddress, out _, out _, out _);
-        ushort c01 = ReadTextureRgb565At(x0, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
-        ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, baseAddress, out _, out _, out _);
+        ushort c00 = ReadTextureRgb565At(x0, y0, width, format, sixteenBit, mode, baseAddress, out uint byteAddress00, out uint word00, out uint raw00);
+        ushort c10 = ReadTextureRgb565At(x1, y0, width, format, sixteenBit, mode, baseAddress, out _, out _, out _);
+        ushort c01 = ReadTextureRgb565At(x0, y1, width, format, sixteenBit, mode, baseAddress, out _, out _, out _);
+        ushort c11 = ReadTextureRgb565At(x1, y1, width, format, sixteenBit, mode, baseAddress, out _, out _, out _);
         ushort result = BilinearRgb565(c00, c10, c01, c11, fx, fy);
         TrackZeroTextureSample(byteAddress00, result);
         TrackTextureSampleDebug(byteAddress00, raw00, result);
-        TraceTextureSample(s, t, width, height, x0, y0, mode, ReadTextureRegister(RegTextureLod), ReadTextureRegister(RegTextureBaseAddr), baseAddress, byteAddress00, word00, raw00, result);
+        TraceTextureSample(s, t, width, height, x0, y0, mode, ReadTextureSampleRegister(RegTextureLod), ReadTextureSampleRegister(RegTextureBaseAddr), baseAddress, byteAddress00, word00, raw00, result);
         return result;
     }
 
@@ -33758,6 +33800,7 @@ sampledTexel:
         int width,
         int format,
         bool sixteenBit,
+        uint textureMode,
         uint baseAddress,
         out uint byteAddress,
         out uint word,
@@ -33789,7 +33832,7 @@ sampledTexel:
         return format switch
         {
             0 => ConvertRgb332ToRgb565(value),
-            1 => ConvertNccToRgb565(value, ReadTextureRegister(RegTextureMode)),
+            1 => ConvertNccToRgb565(value, textureMode),
             3 => GrayscaleToRgb565(value),
             4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
             _ => PseudoPaletteToRgb565(value)
@@ -33889,7 +33932,7 @@ sampledTexel:
 
     private TextureFetchLayout GetMameTextureFetchLayout(int targetLod, uint textureMode)
     {
-        uint textureLod = ReadTextureRegister(RegTextureLod);
+        uint textureLod = ReadTextureSampleRegister(RegTextureLod);
         uint widthMask = 0xffu;
         uint heightMask = 0xffu;
         int aspect = (int)((textureLod >> 21) & 0x03u);
@@ -33902,7 +33945,7 @@ sampledTexel:
         if (((textureLod >> 19) & 1u) != 0)
             lodMask = ((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u;
 
-        uint baseAddress = GetTextureBaseAddress(ReadTextureRegister(RegTextureBaseAddr));
+        uint baseAddress = GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr));
         if (_textureSampleBaseBias != 0)
             baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
 
@@ -34115,6 +34158,7 @@ sampledTexel:
             currentWidth,
             format,
             sixteenBit,
+            mode,
             currentBase,
             out uint currentAddress,
             out uint currentWord,
@@ -34125,6 +34169,7 @@ sampledTexel:
             mameLayout.Width,
             format,
             sixteenBit,
+            mode,
             mameLayout.BaseAddress,
             out uint mameAddress,
             out uint mameWord,
@@ -35142,7 +35187,7 @@ sampledTexel:
 
     private ushort ConvertNccToRgb565(byte value, uint textureMode)
     {
-        int tmu = GetTextureRegisterSourceTmu();
+        int tmu = GetTextureSampleRegisterSourceTmu();
         int table = (int)((textureMode >> 5) & 1u);
         int start = RegNccTable + table * 12;
         int yIndex = (value >> 4) & 0x0f;
@@ -35165,6 +35210,13 @@ sampledTexel:
         if (_tmuRegisterValid[1][RegTextureMode])
             return 1;
         return -1;
+    }
+
+    private int GetTextureSampleRegisterSourceTmu()
+    {
+        if ((uint)_experimentTextureSampleTmu <= 1u)
+            return _experimentTextureSampleTmu;
+        return GetTextureRegisterSourceTmu();
     }
 
     private uint ReadTmuOrFbiRegister(int tmu, int register)
