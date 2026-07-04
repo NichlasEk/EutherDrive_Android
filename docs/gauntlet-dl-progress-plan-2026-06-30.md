@@ -2842,3 +2842,116 @@ Next continuation point:
    `address_min`, `address_max`, `depth`, `holes`, and linear `read_index` as a
    single causal unit across the wrapped Type5 bulk, so the read side never
    starts decoding inside the previous payload body.
+
+#### 2026-07-04 texture-triangle sample summary checkpoint
+
+Added a default-off per-textured-triangle sample summary trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_LIMIT=...
+```
+
+The marker is:
+
+```text
+[GAUNTDL:VOODOO-TEXSUMMARY]
+```
+
+The trace records the triangle bbox, covered/zero sample counts, texture mode,
+LOD, target size, resolved texture base, sampled byte-address range, dominant
+raw texel words, dominant RGB565 results, address buckets, setup/fbz state,
+current FIFO command, and CPU PC. It is default-off and preserves the current
+f420 oracle.
+
+Focused trace-only run:
+
+```text
+/tmp/gauntdl-texsummary-f420.log
+frameHash=0x035dcece
+frameSha256=2f8a78d7a651de1a13fd98c2f9ab4275006b04a99857d1930b2f46db724ef41a
+drawPackets=21375 directTriangles=6028 setupTriangles=3002 texWrites=4296625
+```
+
+The first large green surface is a setup triangle, not direct stale overdraw:
+
+```text
+cmd=0x0180A8CB pc=0xffffffff800c4e5c setup=0x0006002A
+mode=0x8C24100F lod=0x000020C6 fmt=0 b16=0 size=256x256
+regbase=0x00005D82 base=0x02F120
+xy=(0,-16231)/(49076,382)/(0,382)
+addr=0x02F000:218240 addrs=0x02F120-0x02F426
+raw=0x0000:136741,0x000D:14065,0x0054:14065,0x00C6:14065
+rgb=0x0000:59522,0x0001:7136,0x0002:4873,0x0003:3621
+```
+
+Other early rows repeat the same pattern for neighboring huge setup triangles.
+This makes the visible green plane a concrete texture-source problem: the
+setup rasterizer samples bucket `0x02F000`, with a resolved base around
+`0x02F120`, and interprets the contents as RGB332.
+
+Type3 packet tracing confirms the huge coordinates are in the packet body, not
+an obvious field-order parse bug:
+
+```text
+/tmp/gauntdl-type3-hot-f420.log
+frameHash=0x035dcece
+cmd=0x0180a8cb words=19 count=3 code=1 flags=0x602a pc=800c4e5c
+x=0 y=0xc67d9c00(-16231) x=0x473fb400(49076) y=0x43bf0000(382)
+```
+
+Texture-write bucket tracing then links the hot texture bytes to Type5 uploads
+from `pc=800fe5d4`:
+
+```text
+/tmp/gauntdl-texwrite-02f000-f420.log
+bucket=0x02F000 word=0x002180 addr=0x02F000 value=0x00008042
+cmd=0xC0000205 packet=0x24388 rd=0x24388 pc=0xffffffff800fe5d4
+mode=0x00000000 tlod=0x00000800 tbase=0x000055A0 bpp=1 seq8=1
+```
+
+The written values are byte-swapped float-like words such as `0x42800000`,
+`0x43000000`, and `0x3ECD8DBE` landing in 8-bit texture lanes. That explains
+why the first real setup triangles become a flat green/noisy plane: model or
+geometry-looking payload is currently being accepted as texture data for the
+bucket those triangles sample.
+
+Negative visual control:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0
+/tmp/gauntdl-bias0-f420.log
+frameHash=0x035dcece
+```
+
+Removing the `0x510` sample-base bias is neutral or worse. It keeps the same
+hash family and increases zero textured samples, so it is not the visible
+graphics fix.
+
+Available warm-state check:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/73c41842-f180.warm
+/tmp/gauntdl-current-73cwarm-f420.log
+frameHash=0x44d3a578
+frameSha256=df2d3c5b979cfaa956134fd7e3cd7ab4c891e04e96bb85443299cf354eb52dee
+drawPackets=24639 directTriangles=5471 setupTriangles=1198 texWrites=6254771
+```
+
+The rendered frame is still a full green plane with only a thin line near the
+top, so the available `73c41842` warm snapshot is not a usable replacement for
+the older missing scene-like `446392c984c8` oracle.
+
+Next continuation point:
+
+1. Treat the current visible failure as a texture-upload/source ownership bug,
+   not a color-combine-only issue and not a PPM dump issue.
+2. Trace the final producer/source path for the hot `0x02F000` writes from
+   `pc=800fe5d4`, including the origin of the float-like payload before it is
+   committed to texture RAM.
+3. Keep the earlier FIFO producer-boundary evidence in scope, because the same
+   Type5 path has already shown stale-payload command decoding at the
+   `0x20c -> 0x210` boundary.
+4. Revisit triangle depth/alpha only after the texture-source path is either
+   fixed or proven correct; MAME has real depth/alpha/stipple handling, while
+   the current bringup rasterizer still only applies a simplified color path.

@@ -26936,6 +26936,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceTextureMinRenderFrame =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME"), 0);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
+    private readonly bool _traceTexturedTriangleSampleSummary =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
+    private readonly int _traceTexturedTriangleSampleSummaryLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_LIMIT"), 16);
     private readonly bool _traceTextureFetchCompare =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE"));
     private readonly int _traceTextureFetchCompareLimit =
@@ -27312,6 +27316,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _drawTraceCount;
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
+    private int _texturedTriangleSampleSummaryTraceCount;
     private int _textureFetchCompareTraceCount;
     private int _textureWriteBucketTraceCount;
     private int _textureZeroSampleBucketTotal;
@@ -27320,6 +27325,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private long _textureSampleDebugTotal;
     private uint _textureSampleFirstAddress = uint.MaxValue;
     private uint _textureSampleLastAddress;
+    private bool _lastTextureSampleValid;
+    private uint _lastTextureSampleByteAddress;
+    private uint _lastTextureSampleRaw;
+    private ushort _lastTextureSampleResult;
     private int _nonNeutralFastFillTraceCount;
     private int _type0PacketTraceCount;
     private int _type3PacketTraceCount;
@@ -32589,6 +32598,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool coveredAny = false;
         int coveredPixels = 0;
         int zeroPixels = 0;
+        bool traceSampleSummary = _traceTexturedTriangleSampleSummary &&
+            _renderFrame >= _traceTextureMinRenderFrame &&
+            _texturedTriangleSampleSummaryTraceCount < _traceTexturedTriangleSampleSummaryLimit;
+        Dictionary<uint, int>? sampleRawBuckets = traceSampleSummary ? [] : null;
+        Dictionary<uint, int>? sampleColorBuckets = traceSampleSummary ? [] : null;
+        Dictionary<uint, int>? sampleAddressBuckets = traceSampleSummary ? [] : null;
+        int sampleCount = 0;
+        uint sampleFirstAddress = uint.MaxValue;
+        uint sampleLastAddress = 0;
         float invArea = 1.0f / area;
         double dx1 = a.Y - c.Y;
         double dx2 = a.Y - b.Y;
@@ -32623,6 +32641,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 float s;
                 float t;
                 ushort texel;
+                _lastTextureSampleValid = false;
                 if (_experimentTextureMameSetupGradients)
                 {
                     int dx = x - setupAx;
@@ -32656,6 +32675,21 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
                 texel = SampleTextureRgb565(s, t);
 sampledTexel:
+                if (traceSampleSummary && _lastTextureSampleValid)
+                {
+                    uint address = _lastTextureSampleByteAddress & (TextureBytes - 1u);
+                    sampleCount++;
+                    sampleRawBuckets![_lastTextureSampleRaw & 0xffffu] =
+                        sampleRawBuckets.TryGetValue(_lastTextureSampleRaw & 0xffffu, out int rawCount) ? rawCount + 1 : 1;
+                    sampleColorBuckets![_lastTextureSampleResult] =
+                        sampleColorBuckets.TryGetValue(_lastTextureSampleResult, out int colorCount) ? colorCount + 1 : 1;
+                    sampleAddressBuckets![address >> TextureZeroSampleBucketShift] =
+                        sampleAddressBuckets.TryGetValue(address >> TextureZeroSampleBucketShift, out int addressCount) ? addressCount + 1 : 1;
+                    if (address < sampleFirstAddress)
+                        sampleFirstAddress = address;
+                    if (address > sampleLastAddress)
+                        sampleLastAddress = address;
+                }
                 _texturedPixelCount++;
                 coveredPixels++;
                 if (texel == 0)
@@ -32694,7 +32728,30 @@ sampledTexel:
         if (!coveredAny)
             TraceTexturedTriangleReject("empty-raster", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
         else
+        {
+            if (traceSampleSummary)
+            {
+                TraceTexturedTriangleSampleSummary(
+                    a,
+                    b,
+                    c,
+                    fallbackColor,
+                    area,
+                    minX,
+                    maxX,
+                    minY,
+                    maxY,
+                    coveredPixels,
+                    zeroPixels,
+                    sampleCount,
+                    sampleFirstAddress == uint.MaxValue ? 0u : sampleFirstAddress,
+                    sampleLastAddress,
+                    sampleRawBuckets!,
+                    sampleColorBuckets!,
+                    sampleAddressBuckets!);
+            }
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
+        }
         return coveredAny;
     }
 
@@ -32948,6 +33005,90 @@ sampledTexel:
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
             $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
             $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
+    }
+
+    private void TraceTexturedTriangleSampleSummary(
+        SetupVertex a,
+        SetupVertex b,
+        SetupVertex c,
+        ushort fallbackColor,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int coveredPixels,
+        int zeroPixels,
+        int sampleCount,
+        uint sampleFirstAddress,
+        uint sampleLastAddress,
+        IReadOnlyDictionary<uint, int> sampleRawBuckets,
+        IReadOnlyDictionary<uint, int> sampleColorBuckets,
+        IReadOnlyDictionary<uint, int> sampleAddressBuckets)
+    {
+        if (_texturedTriangleSampleSummaryTraceCount++ >= _traceTexturedTriangleSampleSummaryLimit)
+            return;
+
+        uint mode = ReadTextureRegister(RegTextureMode);
+        uint lod = ReadTextureRegister(RegTextureLod);
+        uint registerBase = ReadTextureRegister(RegTextureBaseAddr);
+        int targetLod = GetTextureTargetLod(lod);
+        int format = (int)((mode >> 8) & 0x0fu);
+        bool sixteenBit = format is 10 or 11 or 12;
+        int width;
+        int height;
+        uint resolvedBase;
+        if (_experimentTextureMameFetchAddressing)
+        {
+            TextureFetchLayout layout = GetMameTextureFetchLayout(targetLod, mode);
+            width = layout.Width;
+            height = layout.Height;
+            resolvedBase = layout.BaseAddress;
+        }
+        else
+        {
+            width = Math.Max(1, (int)GetTextureWidth() >> targetLod);
+            height = Math.Max(1, (int)GetTextureHeight() >> targetLod);
+            resolvedBase = GetTextureLodOffset(targetLod, sixteenBit ? 2 : 1, applySampleBias: true);
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXSUMMARY] n={_texturedTriangleSampleSummaryTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
+            $"bbox=({minX},{minY})-({maxX},{maxY}) pixels={coveredPixels} zero={zeroPixels} samples={sampleCount} " +
+            $"mode=0x{mode:X8} lod=0x{lod:X8} targetLod={targetLod} fmt={format} b16={(sixteenBit ? 1 : 0)} " +
+            $"size={width}x{height} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addrs=0x{sampleFirstAddress:X6}-0x{sampleLastAddress:X6} " +
+            $"raw={FormatTopTextureSampleBuckets(sampleRawBuckets, 4)} rgb={FormatTopTextureSampleBuckets(sampleColorBuckets, 4)} " +
+            $"addr={FormatTopTextureAddressBuckets(sampleAddressBuckets)} " +
+            $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
+            $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
+            $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
+            $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
+    }
+
+    private static string FormatTopTextureSampleBuckets(IReadOnlyDictionary<uint, int> buckets, int digits)
+    {
+        if (buckets.Count == 0)
+            return "-";
+
+        return string.Join(",", buckets
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key)
+            .Take(4)
+            .Select(pair => $"0x{pair.Key.ToString($"X{digits}", CultureInfo.InvariantCulture)}:{pair.Value}"));
+    }
+
+    private static string FormatTopTextureAddressBuckets(IReadOnlyDictionary<uint, int> buckets)
+    {
+        if (buckets.Count == 0)
+            return "-";
+
+        return string.Join(",", buckets
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key)
+            .Take(4)
+            .Select(pair => $"0x{pair.Key << TextureZeroSampleBucketShift:X6}:{pair.Value}"));
     }
 
     private void TraceTexturedTriangleReject(
@@ -33272,10 +33413,15 @@ sampledTexel:
 
     private void TrackTextureSampleDebug(uint byteAddress, uint raw, ushort result)
     {
+        _lastTextureSampleValid = true;
+        _lastTextureSampleByteAddress = byteAddress & (TextureBytes - 1u);
+        _lastTextureSampleRaw = raw;
+        _lastTextureSampleResult = result;
+
         if (!_debugTextureSamples)
             return;
 
-        uint address = byteAddress & (TextureBytes - 1u);
+        uint address = _lastTextureSampleByteAddress;
         _textureSampleDebugTotal++;
         _textureSampleRawBuckets[raw & 0xffffu]++;
         _textureSampleColorBuckets[result]++;
