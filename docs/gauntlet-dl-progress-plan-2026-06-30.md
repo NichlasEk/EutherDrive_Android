@@ -3285,3 +3285,44 @@ layout, sample-bias, or simple TMU source selection. The productive next branch
 is back upstream: why the command FIFO/payload path still produces the
 buffer-1 full-ish quads from `pc=800c4e5c` and the smaller payload-like triangle
 from `pc=800fe5d4`.
+
+#### 2026-07-04 solid-triangle profile after texture controls
+
+`EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_SOLID_TRIANGLES=1` on the useful visual
+stack preserved the readable visual hash:
+
+```text
+/tmp/gauntdl-directsuppress-noedges-solidprofile-f420.ppm
+frameHash=0x971ff26b
+solidRaster=9641199
+framebuffer=640x480:305614:143532
+```
+
+The largest solid triangle candidates are still all `itri` from
+`pc=0xffffffff800fe5d4` into buffer 1, with `fbz=0x00000460` and
+`fbzcp=0x0C482435`. Representative top buckets:
+
+```text
+pc=800fe5d4 itri color=F800 count=98 sumBox=22299312 maxBox=307200 box=0-640x0-480
+pc=800fe5d4 itri color=001F count=91 sumBox=19157460 maxBox=307200 box=0-640x0-480
+pc=800fe5d4 itri color=FFE0 count=84 sumBox=18141998 maxBox=307200 box=0-640x0-480
+pc=800fe5d4 itri color=FFFF count=91 sumBox=16419361 maxBox=307200 box=0-640x0-480
+```
+
+However, the broad existing solid suppression control was visually neutral:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES=1
+/tmp/gauntdl-directsuppress-noedges-nosolidlarge-f420.ppm
+frameHash=0x971ff26b
+solidRaster=9641199
+framebuffer=640x480:305614:143532
+```
+
+That means the profile is counting large candidates before the current
+implausible-direct suppressor, or the remaining visible false surfaces are not
+removed by a simple `boxPixels >= 640*480` solid gate. Do not promote the broad
+large-solid suppressor. The next useful probe should distinguish drawn vs.
+pre-suppressed solid triangle stats and should correlate the surviving
+buffer-1 visible errors with the same `pc=800fe5d4` command-FIFO payload
+ownership path.
