@@ -26945,6 +26945,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly int _traceTexturedTriangleSampleSummaryLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_LIMIT"), 16);
+    private readonly int[] _traceTexturedTriangleSampleSummaryBuffers =
+        ParseOptionalIntList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_BUFFERS"));
     private readonly bool _traceTextureFetchCompare =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE"));
     private readonly int _traceTextureFetchCompareLimit =
@@ -30977,6 +30979,18 @@ internal class VoodooBringupBackend : IVoodooBackend
             .ToArray();
     }
 
+    private static int[] ParseOptionalIntList(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => ParseOptionalInt(item, int.MinValue))
+            .Where(value => value != int.MinValue)
+            .Distinct()
+            .ToArray();
+    }
+
     private static int ParseOptionalPositiveInt(string? raw, int fallback)
         => int.TryParse(raw, out int parsed) && parsed > 0 ? parsed : fallback;
 
@@ -32782,6 +32796,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int zeroPixels = 0;
         bool traceSampleSummary = _traceTexturedTriangleSampleSummary &&
             _renderFrame >= _traceTextureMinRenderFrame &&
+            ShouldTraceTexturedTriangleSampleSummaryBuffer(bufferIndex) &&
             _texturedTriangleSampleSummaryTraceCount < _traceTexturedTriangleSampleSummaryLimit;
         Dictionary<uint, int>? sampleRawBuckets = traceSampleSummary ? [] : null;
         Dictionary<uint, int>? sampleColorBuckets = traceSampleSummary ? [] : null;
@@ -32962,7 +32977,8 @@ sampledTexel:
                     sampleLastAddress,
                     sampleRawBuckets!,
                     sampleColorBuckets!,
-                    sampleAddressBuckets!);
+                    sampleAddressBuckets!,
+                    bufferIndex);
             }
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         }
@@ -33322,7 +33338,8 @@ sampledTexel:
         uint sampleLastAddress,
         IReadOnlyDictionary<uint, int> sampleRawBuckets,
         IReadOnlyDictionary<uint, int> sampleColorBuckets,
-        IReadOnlyDictionary<uint, int> sampleAddressBuckets)
+        IReadOnlyDictionary<uint, int> sampleAddressBuckets,
+        int bufferIndex)
     {
         if (_texturedTriangleSampleSummaryTraceCount++ >= _traceTexturedTriangleSampleSummaryLimit)
             return;
@@ -33355,6 +33372,7 @@ sampledTexel:
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXSUMMARY] n={_texturedTriangleSampleSummaryTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
             $"bbox=({minX},{minY})-({maxX},{maxY}) pixels={coveredPixels} zero={zeroPixels} samples={sampleCount} " +
+            $"buf={bufferIndex} front={_frontBufferIndex} back={_backBufferIndex} rbuf={_lastRenderBufferIndex} " +
             $"mode=0x{mode:X8} lod=0x{lod:X8} targetLod={targetLod} fmt={format} b16={(sixteenBit ? 1 : 0)} " +
             $"size={width}x{height} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addrs=0x{sampleFirstAddress:X6}-0x{sampleLastAddress:X6} " +
             $"raw={FormatTopTextureSampleBuckets(sampleRawBuckets, 4)} rgb={FormatTopTextureSampleBuckets(sampleColorBuckets, 4)} " +
@@ -33364,6 +33382,10 @@ sampledTexel:
             $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
             $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
     }
+
+    private bool ShouldTraceTexturedTriangleSampleSummaryBuffer(int bufferIndex)
+        => _traceTexturedTriangleSampleSummaryBuffers.Length == 0 ||
+           _traceTexturedTriangleSampleSummaryBuffers.Contains(bufferIndex);
 
     private static string FormatTopTextureSampleBuckets(IReadOnlyDictionary<uint, int> buckets, int digits)
     {

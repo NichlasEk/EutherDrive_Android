@@ -3129,3 +3129,71 @@ to include the destination buffer index in `VOODOO-TEXSUMMARY` or otherwise
 filter texture summaries to the selected/rendered buffer. Without that, the
 trace keeps reporting buffer-0 setup noise while the visible f420 frame is
 selected from buffer 1.
+
+#### 2026-07-04 buffer-filtered texture summary checkpoint
+
+`VOODOO-TEXSUMMARY` now reports the destination color buffer and can be filtered
+with:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_BUFFERS=1
+```
+
+The buffer-1 filtered run used the current useful visual stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISABLE_TRIANGLE_WIRE_EDGES=1
+```
+
+and stayed on the same readable visual family:
+
+```text
+/tmp/gauntdl-buf1-texsummary-f420.log
+frameHash=0x971ff26b
+frameSha256=f32f2de2dcaf3a27ca1f90d19b5906506ac89873ed955f1c3b78ac6eb424b055
+framebuffer=640x480:305614:143532
+rb=59055433/52789296/0 rlast=1
+```
+
+The first buffer-1 summaries are not the earlier huge buffer-0 coordinates.
+They are repeated full-ish quads on the active rendered buffer:
+
+```text
+pc=0xffffffff800c4e5c cmd=0x0180A8CB:19
+buf=1 front=1 back=0 rbuf=1
+bbox=(0,0)-(512,383) pixels=98303 zero=28317
+mode=0x8C24100F lod=0x00002000 targetLod=0 fmt=0 b16=0
+regbase=0x00000000 base=0x000510 addrs=0x000510-0x010310
+raw=0x0000:38203,0x003E:10060,0x00BE:8250,0x0042:5530
+rgb=0x0000:28317,0x27F5:2550,0x0005:1569,0x0002:1289
+```
+
+The opposite half of the same quad samples the high end of that same 64 KiB
+span and is also buffer 1:
+
+```text
+pc=0xffffffff800c4e5c cmd=0x0180A8CB:19
+buf=1 front=1 back=0 rbuf=1
+bbox=(0,0)-(512,383) pixels=98001
+raw=0x003E:27671,0x00BE:22637,0x00BF:12318,0x0000:11520
+addr=0x00F000:27137,0x00E000:24269,0x00D000:21401,0x00C000:18533
+```
+
+One later buffer-1 triangle still points at the previously suspicious payload
+producer:
+
+```text
+pc=0xffffffff800fe5d4 cmd=0x3DB1FAD1:15794
+buf=1 mode=0x00000000 lod=0x00000800 pixels=861
+raw=0x00E6:861 rgb=0xF935:861
+```
+
+So the selected f420 buffer is no longer hidden behind buffer-0 setup noise.
+It is dominated by buffer-1 texture work that samples low texture memory as
+RGB332 from `pc=800c4e5c`, plus a smaller amount of payload-looking work from
+`pc=800fe5d4`. The next branch should compare the active texture
+mode/lod/base/TMU source against MAME and rerun the old sample-base/layout
+controls under this useful visual stack before changing color combine or buffer
+selection again.
