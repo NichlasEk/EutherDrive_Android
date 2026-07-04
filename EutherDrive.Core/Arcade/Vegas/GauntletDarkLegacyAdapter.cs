@@ -27323,6 +27323,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LARGE_DIRECT_TRIANGLES"));
     private readonly int _traceLargeDirectTrianglesLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_LARGE_DIRECT_TRIANGLES_LIMIT"), 80);
+    private readonly int[] _traceDirectTriangleReadIndexes =
+        ParseOptionalIntList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DIRECT_TRIANGLE_READS"));
+    private readonly int _traceDirectTriangleReadsLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DIRECT_TRIANGLE_READS_LIMIT"), 80);
     private readonly bool _profileCommandFifoPacketPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FIFO_PACKET_PCS") == "1";
     private readonly bool _traceFastFillSwapOrder =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER"));
@@ -27382,6 +27386,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _implausibleSetupTriangleIgnoreTraceCount;
     private int _lfbDetailTraceCount;
     private int _largeDirectTriangleTraceCount;
+    private int _directTriangleReadTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
     private int _lastCommandFifoDecodeStopWordsNeeded;
@@ -32710,6 +32715,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
         TraceLargeDirectTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, boxPixels);
+        TraceFocusedDirectTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, boxPixels);
         bool suppressImplausible = ShouldSuppressImplausibleBulkDirectTriangle(source, boxPixels);
         if (suppressImplausible)
         {
@@ -32858,6 +32864,45 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8} " +
             $"decode={(_decodingCommandFifo ? 1 : 0)} trigger={_commandFifoDecodeTrigger} " +
             $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} fifoPackets={_fifoPacketCount} draws={_fifoDrawPacketCount}{pcStatus}");
+    }
+
+    private void TraceFocusedDirectTriangle(
+        string source,
+        ushort color,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        float cx,
+        float cy,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        long boxPixels)
+    {
+        if (_traceDirectTriangleReadIndexes.Length == 0 ||
+            (source != "itri" && source != "ftri") ||
+            _directTriangleReadTraceCount >= _traceDirectTriangleReadsLimit ||
+            !_traceDirectTriangleReadIndexes.Contains(_cmdFifoReadIndex))
+        {
+            return;
+        }
+
+        _directTriangleReadTraceCount++;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string raw = source == "ftri"
+            ? $"rawf=0x{_registers[0x22]:X8}/0x{_registers[0x23]:X8}/0x{_registers[0x24]:X8}/0x{_registers[0x25]:X8}/0x{_registers[0x26]:X8}/0x{_registers[0x27]:X8}/rgb0x{_registers[0x28]:X8}/0x{_registers[0x29]:X8}/0x{_registers[0x2A]:X8}"
+            : $"rawi=0x{_registers[0x02]:X8}/0x{_registers[0x03]:X8}/0x{_registers[0x04]:X8}/0x{_registers[0x05]:X8}/0x{_registers[0x06]:X8}/0x{_registers[0x07]:X8}/rgb0x{_registers[0x08]:X8}/0x{_registers[0x09]:X8}/0x{_registers[0x0A]:X8}";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-DIRECT-TRI-READ] n={_directTriangleReadTraceCount} source={source} color=0x{color:X4} " +
+            $"box={minX}-{maxX}x{minY}-{maxY} pixels={boxPixels} area={area:F3} " +
+            $"xy=({ax:F3},{ay:F3})/({bx:F3},{by:F3})/({cx:F3},{cy:F3}) {raw} " +
+            $"fbz=0x{_registers[RegFbzMode]:X8} cp=0x{_registers[RegFbzColorPath]:X8} lfb=0x{_registers[RegLfbMode]:X8} " +
+            $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex:X} " +
+            $"trigger={_commandFifoDecodeTrigger} depth={_cmdFifoDepth} holes={_cmdFifoHoles} packetCount={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
     }
 
     private static float Edge(float ax, float ay, float bx, float by, float px, float py)

@@ -3470,3 +3470,66 @@ proves the remaining visible f420 corruption has moved from near-screen `itri`
 to valid-looking `ftri` register triangles from the same `pc=800fe5d4` payload
 path. The next useful slice should trace the register packet sequence for those
 `ftri` commands around read indices `0xAB85`, `0xA138`, `0x2E1D`, and `0x800B`.
+
+#### 2026-07-04 focused direct-triangle read trace
+
+Added a trace-only filter for direct `itri/ftri` draws at selected command-FIFO
+read indexes:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DIRECT_TRIANGLE_READS=0xAB85,0xA138,0x2E1D,0x800B
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DIRECT_TRIANGLE_READS_LIMIT=...
+```
+
+The marker is:
+
+```text
+[GAUNTDL:VOODOO-DIRECT-TRI-READ]
+```
+
+Focused f420 run with the 224-line offscreen stack preserved the visual oracle:
+
+```text
+/tmp/gauntdl-offscreen224-directreadtrace-f420.ppm
+frameHash=0x2376d83f
+frameSha256=1c0ea9d464e4f9075797c79151a308ecb36212d6d594a6df81c0cea2e766f646
+solidRaster=7416358
+framebuffer=640x480:305614:111993
+```
+
+The trace proves the largest remaining `ftri` blocks are still stale/payload
+Type1 decode from `pc=800fe5d4`, not plausible scene geometry:
+
+```text
+rd=0xAB85 cmd=0xBDA7ECA1 words=48552 packet=0x00000210 trigger=bulk-end
+ftri color=F800 box=0-486x0-256
+rawf=43F30000/43800000/0000FFFE/3E40912F/BEC5E593/3EB77445
+
+rd=0xA138 cmd=0x3E1D9C71 words=15902 packet=0x00000044 trigger=bulk-end
+ftri color=FFE0 box=0-525x0-256
+rawf=44032000/43800000/0000FFFD/3E1EC504/3E914DC1/BE78072F
+
+rd=0x2E1D cmd=0x3EDF8581 words=16096 packet=0x0000F8D0 trigger=bulk-end
+ftri color=0006 box=0-256x0-480
+rawf=BE3B233A/BE942B6B/3E59FE8F/43F30000/43800000/0000FFFE
+
+rd=0x800B cmd=0x3EDF8581 words=16096 packet=0x0000F8D0 trigger=bulk-end
+ftri color=27FF box=0-256x0-480
+rawf=3E07F8D2/44032000/43800000/0000FFFE/3E1F6254/BE80031C
+```
+
+The same focused points also emit paired huge `itri` draws from the same packets,
+confirming that one stale Type1 payload packet is polluting both integer and
+float direct triangle register paths.
+
+Next continuation point:
+
+1. Do not add more geometry-only suppressors for these `ftri` blocks. They are
+   symptoms of stale Type1 payload decode and will keep moving.
+2. The next productive fix is upstream ownership: prevent `bulk-end` from
+   executing oversized Type1 packets whose packet head is known payload storage,
+   without reviving the broad implausible-Type1 stop that collapsed real
+   direct/setup work.
+3. A narrow candidate should combine `trigger=bulk-end`, `pc=800fe5d4`, oversized
+   Type1 (`words > 1025`), and storage provenance (`last=fifo` inside the known
+   payload-read family) before deciding to skip direct register draw effects.
