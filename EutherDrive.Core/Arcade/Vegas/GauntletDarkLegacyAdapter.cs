@@ -749,6 +749,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefix =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
+    private readonly bool _experimentZeroBaseUploadPointerStartUnknown =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN"));
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefixPackets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS"));
     private readonly ulong _experimentZeroBaseUploadSkipUnknownPrefixPacketsMaxBytes =
@@ -4357,6 +4359,31 @@ internal sealed class MipsR5000Core
             return source;
 
         bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidate(source);
+        if (_experimentZeroBaseUploadPointerStartUnknown &&
+            !knownSource &&
+            IsMainRamRange(source + 0x08UL, 4))
+        {
+            ulong pointerCandidate = SignExtend32(_memory.Read32(source + 0x08UL));
+            if (pointerCandidate == source + 0x0cUL &&
+                IsMainRamRange(pointerCandidate, sourceBytes))
+            {
+                if (_traceTextureUploadPayload &&
+                    AllowsTextureUploadRunSourceTrace(pointerCandidate) &&
+                    _textureUploadPayloadPointerStartTraceCount++ < 64)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] zero-base-upload-pointer-start-unknown " +
+                        $"source=0x{source:x16}->0x{pointerCandidate:x16} " +
+                        $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+                        $"bytes=0x{sourceBytes:x} index={index}/{limit} words={payloadWords} " +
+                        $"first={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                        $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8}");
+                }
+
+                return pointerCandidate;
+            }
+        }
+
         if (_experimentZeroBaseUploadSkipUnknownPrefix &&
             !knownSource &&
             TryFindNextKnownRuntimeBgLoadModelUploadSource(

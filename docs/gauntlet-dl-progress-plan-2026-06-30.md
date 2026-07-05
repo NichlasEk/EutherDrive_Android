@@ -4795,3 +4795,56 @@ Current conclusion:
 4. Next target should move upward to the source selector/hydration path that
    populates `0xffffffff80312998` and `0xffffffff802e2c68`, not further
    packet-address remapping.
+
+## 2026-07-05 - Unknown Zero-Base Pointer-Start Probe
+
+Added a default-off descriptor normalization probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN=1
+```
+
+Older pointer-start correction already handled known BGLoadModel sources whose
+descriptor word at `source+0x08` points to `source+0x0c`. With the current
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000`
+path, the critical `0xffffffff80312998` source is no longer classified as a
+known source, so that correction was skipped. This probe allows the same exact
+descriptor shape for unknown zero-base upload sources without changing the
+default path.
+
+Trace run proof:
+
+```text
+zero-base-upload-pointer-start-unknown source=0xffffffff80312998->0xffffffff803129a4 bgsrc=none bytes=0x2000 index=0/31 words=64 first=8012e528/00000000/803129a4/00000000
+TEXUPLOAD-RUN ... source=0xffffffff803129a4 s6=0xffffffff80312998 sourceBase=0x00000000 index=0/255
+```
+
+f420 run:
+
+```text
+/tmp/gauntdl-pointerunknown-fast-f420.log
+/tmp/gauntdl-pointerunknown-fast-f420.ppm
+/tmp/gauntdl-pointerunknown-fast-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+framebuffer=640x480:307200:307200
+textureMap=17190656:7460189:9730467:323136:0x000000:0x704284
+textured=tri:1013:covered:42:rejected:971:pixels:2711969:zero:38450
+cmdstop=invalid-standard-window/0x00012609/.../pc=0xffffffff801066c4
+```
+
+Visual inspection is still negative: the frame is two large flat colored
+polygons, not recognizable Gauntlet scene/model graphics. The probe is still
+useful because it restores an older descriptor-start invariant under the newer
+0x20000 source-stride experiment and produces a distinct frame hash instead of
+the stripe artifact family.
+
+Current conclusion:
+
+1. Keep `ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN` default-off until the upstream
+   source hydration problem is understood.
+2. The descriptor pointer word was a real local bug in the current experiment,
+   but fixing it alone does not produce real graphics.
+3. The next target is the payload content behind `0xffffffff803129a4` under the
+   0x20000 stride path: current trace shows zero/stale-looking words after the
+   descriptor, while older notes expected texture-looking words there.
