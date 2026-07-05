@@ -5195,3 +5195,38 @@ Current conclusion:
    descriptor fields (`+0x14`, `+0x1c`, and later floats) to derive the correct
    run extent/stride rather than forcing the whole `index=0/255` run through a
    single body pointer.
+
+Follow-up byte dumps from the f180 warm state:
+
+```text
+/tmp/gauntdl-descriptor-source18-bytes-f180.log
+/tmp/gauntdl-descriptor-nested-candidates-bytes-f180.log
+
+bytes[0xffffffff802e1788]:
++0x000: 01 00 00 00 04 00 00 00 ...
++0x01c: 68 27 31 80
++0x020: f8 17 2e 80
++0x090: 68 18 2e 80
+
+bytes[0xffffffff802e17f8]:
++0x000: 01 00 00 00 00 00 00 00 ...
++0x020: 68 18 2e 80
++0x090: b8 19 2e 80
+
+bytes[0xffffffff80312768]:
++0x000: 01 00 00 00 00 00 00 00 ...
++0x018: 88 17 2e 80
++0x020: d8 27 31 80
++0x088: 88 17 2e 80
+
+bytes[0xffffffff802e1868]:
++0x000: 04 00 00 00 04 00 00 00 ...
++0x020: b8 19 2e 80
++0x090: 48 19 2e 80
+```
+
+This makes the descriptor-source result clearer: `802e1788` is not raw texture
+payload. It is a model/scenegraph-style node with child pointers and matrix-like
+float blocks. Blindly dereferencing one more node is unlikely to produce stable
+graphics; the next target should find the node-to-material/texture payload link
+or the real upload run extent generated from this node tree.
