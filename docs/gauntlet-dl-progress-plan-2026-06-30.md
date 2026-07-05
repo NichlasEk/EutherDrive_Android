@@ -5728,3 +5728,88 @@ Current conclusion:
 3. Next work should trace or repair the index-9 asset object/body selection
    around `800aae60`/`800aae98`/`800aacb4`/`800b72fc`, including the point where
    asset entry `80312a08/0002006f` becomes `80312998/00000000`.
+
+## 2026-07-05 - Index-9 Overwrite Source Bracket
+
+The default-off indexed source overwrite mask now also permits replacing a
+nonzero source slot when the selected index bit is set:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK=0x200
+```
+
+Before this change, the mask could only permit destination overwrite after the
+source-slot gate had already rejected index 9. That made the experiment a no-op
+once slot `802529c4` contained descriptor `80312998`.
+
+Before-fix focused f300 run:
+
+```text
+/tmp/gauntdl-overwrite-index9-f300.log
+/tmp/gauntdl-overwrite-index9-f300.png
+frameHash=0x578ddca1
+```
+
+The result matched the source-limit baseline because index 9 was not actually
+overwritten.
+
+After-fix focused f300 run:
+
+```text
+/tmp/gauntdl-overwrite-index9-afterpatch-f300.log
+/tmp/gauntdl-overwrite-index9-afterpatch-f300.png
+frameHash=0xb38e8ea2
+directTriangles=819 setupTriangles=395
+textureMap=8605704:3887129:4718575:37438:0x000000:0x1900cc
+framebuffer=640x480:216812:216684
+```
+
+Key evidence:
+
+```text
+[GAUNTDL:TRACE] bgloadmodel-indexed-source-hydration phase=distinct-source-hydrate
+  index=9 dest=80401718 bytes=0000bca4 code=wtr disk=158b0600
+  sourceWords=40=f00b0001,5c=0000bc38,60=0000001f,64=00000015
+
+[GAUNTDL:FIX] bgloadmodel-distinct-source
+  pc=800aae98 index=9 slot=802529c4:80312998->80401718
+  cloned=False seededIndexedHeader=True
+```
+
+The source-state trace then shows the index-9 asset path using the hydrated
+runtime source:
+
+```text
+800aae98: s2=80401718 slot=80401718
+800aacb4: asset entry becomes 8040d350/0002006f/.../"font_story"
+800b72fc: asset entry becomes 8040d350/00000003/.../"font_story"
+```
+
+This is a real causal bracket: the frame hash, triangle counts, texture-map
+touches, and visible artifact all change. It is not yet correct visible game
+graphics. The bad descriptor upload is still alive:
+
+```text
+[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS] class=descriptor source=80312998 index=0/31 packets=32
+[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS] class=descriptor source=80312998 index=0/255 packets=256
+```
+
+CPU traces show why this did not fix the upload by itself:
+
+```text
+/tmp/gauntdl-overwrite-index9-cputrace-800ab100-800ab140-f300.log
+800ab100 receives a3=80312998 and moves it into s1 before the asset update path.
+
+/tmp/gauntdl-overwrite-index9-cputrace-80054750-80054790-f300.log
+80054784 calls the 800ab100 helper with a3=80312998; a3 is already the
+descriptor before this traced range.
+```
+
+Next continuation:
+
+1. Trace earlier in the same caller, starting around `800546f0..80054764`, to
+   identify the producer of `a3=80312998`.
+2. If that proves the call should receive the hydrated index-9 source/body,
+   test a narrow default-off argument remap at the call site. Candidate targets
+   are the seeded header `80401718` and the body pointer `8040d350`; choose only
+   after the producer trace explains which object the original code expects.

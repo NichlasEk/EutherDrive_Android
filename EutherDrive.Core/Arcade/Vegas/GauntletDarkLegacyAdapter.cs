@@ -12693,7 +12693,9 @@ internal sealed class MipsR5000Core
             return;
 
         uint current = _memory.Read32(slot);
-        if (current != 0 && current != staticSource)
+        bool overwriteAllowsIndex = index < 64UL &&
+            (_runtimeBgLoadModelOverwriteIndexedSourceMask & (1UL << (int)index)) != 0;
+        if (current != 0 && current != staticSource && !overwriteAllowsIndex)
             return;
 
         bool seededIndexedHeader = TrySeedKnownRuntimeBgLoadModelDistinctSourceIndexedHeader(index, source);
