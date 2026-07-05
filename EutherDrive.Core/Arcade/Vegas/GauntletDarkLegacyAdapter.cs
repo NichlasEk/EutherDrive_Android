@@ -893,6 +893,14 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MIN");
     private readonly ulong? _traceTextureUploadSourceProducerPcMax =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MAX");
+    private readonly bool _traceTextureUploadSourceLimitTable =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE"));
+    private readonly int _traceTextureUploadSourceLimitTableLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_LIMIT", 128);
+    private readonly ulong? _traceTextureUploadSourceLimitTablePcMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_PC_MIN");
+    private readonly ulong? _traceTextureUploadSourceLimitTablePcMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_PC_MAX");
     private readonly ulong? _traceTextureUploadPacketSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE");
     private readonly int _traceTextureUploadPacketSourceLimit =
@@ -1008,6 +1016,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadSourceSelectorTraceCount;
     private int _textureUploadSourceSelectorSetupTraceCount;
     private int _textureUploadSourceProducerTraceCount;
+    private int _textureUploadSourceLimitTableTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
     private int _textureUploadPayloadFocusedCallerTraceCount;
@@ -1620,6 +1629,7 @@ internal sealed class MipsR5000Core
         TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
+        TraceTextureUploadSourceLimitTable(pc, op, "pre");
         TraceInstruction(pc, op);
         TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
             CaptureTextureUploadCallerTransitionSnapshot(pc);
@@ -1629,6 +1639,7 @@ internal sealed class MipsR5000Core
         _gpr[0] = 0;
         TraceTextureUploadSourceSelectorSetup(pc, op, "post");
         TraceTextureUploadSourceProducer(pc, op, "post");
+        TraceTextureUploadSourceLimitTable(pc, op, "post");
         TraceTextureUploadCallerTransition(pc, op, textureUploadCallerBefore);
         AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
@@ -4720,7 +4731,16 @@ internal sealed class MipsR5000Core
     }
 
     private bool AllowsTextureUploadRunSourceTrace(ulong source)
-        => !_traceTextureUploadRunSource.HasValue || source == _traceTextureUploadRunSource.Value;
+        => !_traceTextureUploadRunSource.HasValue ||
+           source == CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value);
+
+    private static ulong CanonicalizeTraceAddress(ulong address)
+        => (address & 0xffffffff00000000UL) == 0 && (address & 0x80000000UL) != 0
+            ? SignExtend32((uint)address)
+            : address;
+
+    private static ulong CanonicalizeOptionalTraceAddress(ulong? address, ulong fallback)
+        => address.HasValue ? CanonicalizeTraceAddress(address.Value) : fallback;
 
     private void TraceTextureUploadSourceSelectorSetup(ulong pc, uint op, string phase)
     {
@@ -4910,7 +4930,7 @@ internal sealed class MipsR5000Core
             pc > _traceTextureUploadSourceProducerPcMax.Value)
             return;
 
-        ulong target = _traceTextureUploadRunSource.Value;
+        ulong target = CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value);
         ulong sp = _gpr[29];
         uint sp1c = ReadTraceWord(sp + 0x1cUL);
         uint sp4c = ReadTraceWord(sp + 0x4cUL);
@@ -4939,6 +4959,61 @@ internal sealed class MipsR5000Core
             $"s3w={ReadTraceWord(_gpr[19] + 0x00UL):x8}/{ReadTraceWord(_gpr[19] + 0x08UL):x8}/{ReadTraceWord(_gpr[19] + 0x0cUL):x8} " +
             $"first={ReadTraceWord(target):x8}/{ReadTraceWord(target + 0x04UL):x8}/" +
             $"{ReadTraceWord(target + 0x08UL):x8}/{ReadTraceWord(target + 0x0cUL):x8}");
+    }
+
+    private void TraceTextureUploadSourceLimitTable(ulong pc, uint op, string phase)
+    {
+        const ulong defaultPcMin = 0xffffffff801095b0UL;
+        const ulong defaultPcMax = 0xffffffff80109720UL;
+
+        if (!_traceTextureUploadSourceLimitTable ||
+            !_traceTextureUploadRunSource.HasValue ||
+            _textureUploadSourceLimitTableTraceCount >= _traceTextureUploadSourceLimitTableLimit)
+        {
+            return;
+        }
+
+        ulong pcMin = CanonicalizeOptionalTraceAddress(_traceTextureUploadSourceLimitTablePcMin, defaultPcMin);
+        ulong pcMax = CanonicalizeOptionalTraceAddress(_traceTextureUploadSourceLimitTablePcMax, defaultPcMax);
+        if (pc < pcMin || pc > pcMax)
+            return;
+
+        ulong target = CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value);
+        ulong sp = _gpr[29];
+        uint sp1c = ReadTraceWord(sp + 0x1cUL);
+        uint sp24 = ReadTraceWord(sp + 0x24UL);
+        uint sp40 = ReadTraceWord(sp + 0x40UL);
+        uint sp44 = ReadTraceWord(sp + 0x44UL);
+        uint sp48 = ReadTraceWord(sp + 0x48UL);
+        uint sp4c = ReadTraceWord(sp + 0x4cUL);
+        uint sp50 = ReadTraceWord(sp + 0x50UL);
+        uint sp54 = ReadTraceWord(sp + 0x54UL);
+        bool matchS0 = _gpr[16] == target;
+        bool matchT2 = _gpr[10] == target;
+        bool matchSp1c = SignExtend32(sp1c) == target;
+        bool matchSp4c = SignExtend32(sp4c) == target;
+        bool matchV0Table = IsMainRamRange(_gpr[2] + 0x04UL, 4) && ReadTraceWord(_gpr[2] + 0x04UL) is 0x20U or 0x100U;
+        bool matchLimit = sp24 is 0x1fU or 0xffU;
+        if (!matchS0 && !matchT2 && !matchSp1c && !matchSp4c)
+            return;
+
+        ulong callerSp = SignExtend32(unchecked((uint)(sp + 0x30UL)));
+        string tableWords = IsMainRamRange(_gpr[2], 0x10UL) ? FormatTraceWords(_gpr[2], 4) : "";
+        string targetWords = IsMainRamRange(target, 0x20UL) ? FormatTraceWords(target, 8) : "";
+
+        _textureUploadSourceLimitTableTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-SOURCE-LIMIT] phase={phase} pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} " +
+            $"match={(matchS0 ? "s0," : "")}{(matchT2 ? "t2," : "")}{(matchSp1c ? "sp1c," : "")}" +
+            $"{(matchSp4c ? "sp4c," : "")}{(matchV0Table ? "table," : "")}{(matchLimit ? "limit," : "")} " +
+            $"target=0x{target:x16} ra=0x{_gpr[31]:x16} sp=0x{sp:x16} callerSp=0x{callerSp:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} a2=0x{_gpr[6]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t2=0x{_gpr[10]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"sp1c={sp1c:x8} sp24={sp24:x8} sp40={sp40:x8} sp44={sp44:x8} sp48={sp48:x8} " +
+            $"sp4c={sp4c:x8} sp50={sp50:x8} sp54={sp54:x8} " +
+            $"caller1c={ReadTraceWord(callerSp + 0x1cUL):x8} caller24={ReadTraceWord(callerSp + 0x24UL):x8} " +
+            $"table={tableWords} targetFirst={targetWords}");
     }
 
     private readonly struct TextureUploadCallerTransitionSnapshot

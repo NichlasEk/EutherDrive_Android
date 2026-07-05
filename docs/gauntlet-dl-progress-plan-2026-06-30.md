@@ -5652,3 +5652,79 @@ Current conclusion:
    repair or trace the source/limit table selection around `801096ac`: why the
    caller chooses `80312998` as a texture payload source instead of deriving a
    bounded material/texture body span from the descriptor.
+
+## 2026-07-05 - Source Limit Table Trace
+
+Added a default-off focused trace for the caller/limit window around
+`801095b0..80109720`:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_LIMIT=64
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_PC_MIN=801095b0
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_PC_MAX=80109720
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:TEXUPLOAD-SOURCE-LIMIT]
+```
+
+This slice also fixed the texture-upload source filter so a bare 32-bit
+`EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE=80312998` is canonicalized
+to `0xffffffff80312998`. Without that, focused source traces could silently miss
+the signed runtime address.
+
+Focused f300 run:
+
+```text
+/tmp/gauntdl-source-limit-table-focused-f300.log
+frameHash=0x578ddca1
+drawPackets=18674 directTriangles=308 setupTriangles=139
+textureMap=8487424:3859486:4627938:47168:0x000000:0x1900cc
+framebuffer=640x480:249131:248011
+```
+
+Key evidence:
+
+```text
+801095b4 sw s0,0x1c(sp)
+  post: s0=80312998 sp1c=80312998
+
+801095c0 jal 801096ac
+  called with s0=80312998 and caller sp+0x1c=80312998
+
+801096ac prologue
+  caller sp+0x1c shifts to callee sp+0x4c
+
+801096c0 lw t2,0x4c(sp)
+  post: t2=80312998 sp4c=80312998
+
+801096d4/801096dc/801096f4/80109700
+  table=00000100/00000020/00000080/00000010
+  first bad run uses v0=0x20 -> sp24=0x1f
+  later bad run uses v0=0x100 -> sp24=0xff
+```
+
+The subsequent upload/classifier lines line up with the same descriptor:
+
+```text
+[GAUNTDL:TEXUPLOAD-RUN] source=0xffffffff80312998 sourceBase=0 packet=0 index=0/31 words=64
+[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS] class=descriptor packets=32
+
+[GAUNTDL:TEXUPLOAD-RUN] source=0xffffffff80312998 sourceBase=0 packet=0 index=0/255 words=64
+[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS] class=descriptor packets=256
+```
+
+Current conclusion:
+
+1. `801096ac` is downstream of the bad source choice. It receives `80312998`,
+   selects the extent (`0x20 -> 0x1f`, later `0x100 -> 0xff`), and forwards the
+   descriptor into the Type5 upload path.
+2. The active bug is not a Voodoo packet offset issue. It is an asset/parser
+   ownership issue where index 9 has already become the descriptor before this
+   helper runs.
+3. Next work should trace or repair the index-9 asset object/body selection
+   around `800aae60`/`800aae98`/`800aacb4`/`800b72fc`, including the point where
+   asset entry `80312a08/0002006f` becomes `80312998/00000000`.
