@@ -15654,8 +15654,25 @@ internal sealed class MipsR5000Core
 
         code = entry.Code;
         byteOffset = entry.ByteOffset;
-        byteLength = entry.ByteLength;
+        byteLength = ApplyKnownRuntimeBgLoadModelTexturePayloadLengthOverride(qioIndex, entry.ByteLength);
         return true;
+    }
+
+    private static uint ApplyKnownRuntimeBgLoadModelTexturePayloadLengthOverride(ulong qioIndex, uint defaultLength)
+    {
+        string indexedName = $"EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_PAYLOAD_INDEX{qioIndex}_LENGTH";
+        ulong? overrideLength = ParseOptionalHexUlong(indexedName);
+        if (!overrideLength.HasValue && qioIndex == 1)
+            overrideLength = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_PAYLOAD_GEI_LENGTH");
+
+        if (!overrideLength.HasValue ||
+            overrideLength.Value <= defaultLength ||
+            overrideLength.Value > uint.MaxValue)
+        {
+            return defaultLength;
+        }
+
+        return (uint)overrideLength.Value;
     }
 
     private void ApplyKnownRuntimeWorldDataAllocationRepair(ulong pc)

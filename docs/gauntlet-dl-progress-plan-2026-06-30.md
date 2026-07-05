@@ -4530,3 +4530,110 @@ Next trace target:
 EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_WORDS=100,200,300,d00,e00,f00,1100,1200,1300,1400,7d00,7e00,7f00,8900,8a00,8b00,8c00
 EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_LIMIT=200
 ```
+
+## 2026-07-05 - Upload Source Gap Probe
+
+The next f420 probe used the same stride/MAME texture stack plus the focused
+upload target list above:
+
+```text
+/tmp/gauntdl-stride20000-upload-targets-f420.log
+/tmp/gauntdl-stride20000-upload-targets-f420.ppm
+/tmp/gauntdl-stride20000-upload-targets-f420.png
+frameHash=0x68886c0f
+frameSha256=befa0463ab2223ddb6d97ac4fd08121e9e8bcdd512253b3b3c876b7d3e002f3b
+framebuffer=640x480:307200:173051
+textureMap=18297344:7949314:10348030:313172:0x000000:0x704284
+textured=tri:981:covered:828:rejected:153:pixels:77609945:zero:11835230
+```
+
+Visual inspection is still negative: horizontal colored stripes with a large
+white fill area, not scene graphics.
+
+The useful result is that the visible fullrect's low and high target buckets
+are now separated:
+
+```text
+17x each: targetWord=0x00000100/0x00000200/0x00000300/0x00000d00/0x00000e00/0x00000f00
+14x each: targetWord=0x00001100/0x00001200/0x00001300/0x00001400/0x00007d00/0x00007e00/0x00007f00
+0x00008900..0x00008c00: no TEXUPLOAD-LINK hits in this helper path
+```
+
+The low pages are copied from the gap after index 1's currently declared
+payload:
+
+```text
+targetWord=0x00000100 source=0xffffffff80312b98 bgsrc=none
+targetWord=0x00001100 source=0xffffffff80314b98 bgsrc=none
+```
+
+With `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000`,
+those addresses are index 1 `gei` plus roughly `0x11280..0x13280`, while the
+table currently declares `gei` as only `0xa13c` bytes. Raw disk inspection shows
+there is dense texture-looking data at those offsets:
+
+```text
+gauntd24.raw @ 0x14a80880 = gei+0x11280
+48688e8e 684f687e 7e7e8468 ...
+```
+
+The high pages do map to the next known payload, but their header metadata in
+RAM is still bad:
+
+```text
+targetWord=0x00007d00 source=0xffffffff80322398 bgsrc=2:snm+0xc80(... hdr=bad)
+targetWord=0x00007e00 source=0xffffffff80322598 bgsrc=2:snm+0xe80(... hdr=bad)
+targetWord=0x00007f00 source=0xffffffff80322798 bgsrc=2:snm+0x1080(... hdr=bad)
+```
+
+Added a default-off length override for known BGLoadModel texture payloads:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_PAYLOAD_INDEX1_LENGTH=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_PAYLOAD_GEI_LENGTH=...
+```
+
+The first behavior probe combined:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_PAYLOAD_INDEX1_LENGTH=0x20000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS=1
+```
+
+and was intentionally stopped after it failed to reach f420 in a useful time:
+
+```text
+/tmp/gauntdl-gei-extended-diskwords-f420.log
+last progress: frame=300
+no frame dump
+exit=143 after manual stop
+```
+
+It proves disk data exists and can be substituted:
+
+```text
+zero-base-upload-disk-word addr=0xffffffff803129a4 1:gei@0x1128c mem=0x00000000->disk=0x687e6884
+```
+
+but it is a negative visual/fix direction. Raw disk bytes in that gap are being
+fed back through command FIFO decode as texture packet words, producing massive
+stale register noise:
+
+```text
+cmd=0xd6a46639 words=54949 packet=0x0000007c pc=800fe5d4
+target=0xcc7 reg=0xc7 value=<texture-like bytes>
+```
+
+Current conclusion:
+
+1. Do not promote a blind `gei` length extension or broad
+   `ZERO_BASE_UPLOAD_DISK_WORDS` replacement.
+2. The current zero-base upload run is crossing BGLoadModel payload boundaries:
+   it starts in the gap after `gei`, then reaches `snm`, while the visible
+   texture targets are written as one continuous Type5 run.
+3. The next fix should be segment-aware: either split/stop zero-base upload
+   runs at known BGLoadModel payload boundaries, or repair the source/index
+   selector so the command FIFO receives Type5 payload structure and texture
+   bytes in the correct roles.
+4. Keep `TEXTURE_PAYLOAD_INDEX1_LENGTH` default-off as a diagnostic for mapping
+   disk offsets, not as a renderer fix.
