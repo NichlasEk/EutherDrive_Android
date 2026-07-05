@@ -924,6 +924,10 @@ internal sealed class MipsR5000Core
     private readonly bool _traceTextureUploadCallerTransitions =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_CALLER_TRANSITIONS"));
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
+    private readonly int _traceVertexFifoFastPathLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH_LIMIT", 128);
+    private readonly ulong[] _traceVertexFifoFastPathDestinations =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH_DESTINATIONS"));
     private readonly bool _traceLateRenderPump = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_LATE_RENDER_PUMP") == "1";
     private readonly bool _traceRuntimeStatusBitfieldRead = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_STATUS_BITFIELD_READ") == "1";
     private readonly bool _traceRuntimeRecordScanAllocate = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RECORD_SCAN_ALLOCATE") == "1";
@@ -1046,6 +1050,8 @@ internal sealed class MipsR5000Core
     private int _textureUploadMetadataSkipTraceCount;
     private int _textureUploadZeroBaseRunClassifierTraceCount;
     private int _vertexFifoFastPathTraceCount;
+    private int _vertexFifoFastPathOddPayloadTraceCount;
+    private int _vertexFifoFastPathRejectTraceCount;
     private int _lateRenderPumpTraceCount;
     private int _runtimeStatusBitfieldReadTraceCount;
     private int _runtimeDiagnosticOverlaySuppressTraceCount;
@@ -6019,7 +6025,8 @@ internal sealed class MipsR5000Core
         uint payloadWords,
         uint header)
     {
-        if (!_traceVertexFifoFastPath || _vertexFifoFastPathTraceCount >= 64)
+        int oddPayloadLimit = Math.Min(_traceVertexFifoFastPathLimit, 64);
+        if (!_traceVertexFifoFastPath || _vertexFifoFastPathOddPayloadTraceCount >= oddPayloadLimit)
             return;
 
         for (uint word = 0; word < payloadWords && word < 64U; word++)
@@ -6036,7 +6043,7 @@ internal sealed class MipsR5000Core
                 $"source=0x{source:x16} word={word} value=0x{value:x8} type={type} " +
                 $"next=0x{next0:x8}/0x{next1:x8} payloadWords={payloadWords} header=0x{header:x8} " +
                 $"s2={_gpr[18]:x16} limit={_memory.Read32(_gpr[29] + 0x74UL):x8}");
-            _vertexFifoFastPathTraceCount++;
+            _vertexFifoFastPathOddPayloadTraceCount++;
             return;
         }
     }
@@ -11392,6 +11399,8 @@ internal sealed class MipsR5000Core
                 $"range ctx={context:x16} dst={destination:x16} s0={source0:x16} s1={source1:x16} s2={source2:x16} ra={returnAddress:x16}");
         }
 
+        TraceVertexFifoFastPathEmit(context, destination, source0, source1, source2, returnAddress);
+
         _memory.Write32(context + 0x37cUL, unchecked((uint)_gpr[9]));
         if ((_gpr[11] & 0xffffffffUL) != 0)
         {
@@ -11431,9 +11440,63 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private void TraceVertexFifoFastPathEmit(
+        ulong context,
+        ulong destination,
+        ulong source0,
+        ulong source1,
+        ulong source2,
+        ulong returnAddress)
+    {
+        if (!_traceVertexFifoFastPath ||
+            !TraceVertexFifoFastPathDestinationMatches(destination) ||
+            _vertexFifoFastPathTraceCount++ >= _traceVertexFifoFastPathLimit)
+            return;
+
+        uint mode = (uint)_gpr[11];
+        uint room = IsMainRamRange(context + 0x37cUL, 4) ? _memory.Read32(context + 0x37cUL) : 0;
+        Console.WriteLine(
+            $"[GAUNTDL:VERTEX-FIFO] emit n={_vertexFifoFastPathTraceCount} " +
+            $"mode={(mode != 0 ? "unaligned" : "aligned")} ctx=0x{context:x16} dst=0x{destination:x16} room=0x{_gpr[9]:x8}/{room:x8} " +
+            $"src0=0x{source0:x16}:{FormatVertexFifoSourceWords(source0)} " +
+            $"src1=0x{source1:x16}:{FormatVertexFifoSourceWords(source1)} " +
+            $"src2=0x{source2:x16}:{FormatVertexFifoSourceWords(source2)} " +
+            $"ra=0x{returnAddress:x16} sp=0x{_gpr[29]:x16}");
+    }
+
+    private string FormatVertexFifoSourceWords(ulong source)
+    {
+        if (!IsMainRamRange(source, 0x18UL))
+            return "out-of-range";
+
+        return
+            $"{_memory.Read32(source + 0x00UL):x8}/" +
+            $"{_memory.Read32(source + 0x04UL):x8}/" +
+            $"{_memory.Read32(source + 0x08UL):x8}/" +
+            $"{_memory.Read32(source + 0x0cUL):x8}/" +
+            $"{_memory.Read32(source + 0x10UL):x8}/" +
+            $"{_memory.Read32(source + 0x14UL):x8}";
+    }
+
+    private bool TraceVertexFifoFastPathDestinationMatches(ulong destination)
+    {
+        if (_traceVertexFifoFastPathDestinations.Length == 0)
+            return true;
+
+        ulong low32 = (uint)destination;
+        ulong low29 = destination & 0x1fffffffUL;
+        ulong low24 = destination & 0x00ffffffUL;
+        ulong low20 = destination & 0x000fffffUL;
+        return _traceVertexFifoFastPathDestinations.Contains(destination) ||
+            _traceVertexFifoFastPathDestinations.Contains(low32) ||
+            _traceVertexFifoFastPathDestinations.Contains(low29) ||
+            _traceVertexFifoFastPathDestinations.Contains(low24) ||
+            _traceVertexFifoFastPathDestinations.Contains(low20);
+    }
+
     private bool TraceVertexFifoFastPathReject(string reason)
     {
-        if (_traceVertexFifoFastPath && _vertexFifoFastPathTraceCount++ < 32)
+        if (_traceVertexFifoFastPath && _vertexFifoFastPathRejectTraceCount++ < 32)
         {
             Console.WriteLine(
                 $"[GAUNTDL:VERTEX-FIFO] reject {reason} " +

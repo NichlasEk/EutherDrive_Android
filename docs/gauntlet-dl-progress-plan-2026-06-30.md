@@ -6240,3 +6240,92 @@ Current conclusion:
 3. The next useful target is the state that makes `800c4e5c` emit the
    full-screen texture pair with `S=0`, or the upstream runtime/FIFO state that
    causes this draw path to dominate instead of real model/scene geometry.
+
+## 2026-07-05 - Vertex FIFO Source Closure and Texture-Path Negatives
+
+Added a positive default-off trace for the runtime vertex FIFO fast path:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH=1
+EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH_DESTINATIONS=...
+```
+
+The destination filter now accepts full, low32, low29, low24, and low20
+addresses. The low20 comparison is required for focused Type3 reads such as
+`0x2c90c/0x2c958`, because the fast-path destination is
+`0xffffffffa822c90c/0xffffffffa822c958`.
+
+Focused f300 trace:
+
+```text
+/tmp/gauntdl-vertexdest-low20-type3-rd2c90c-rd2c958-warm-f300.log
+frameHash=0x5ef40570
+drawPackets=17111 directTriangles=647 setupTriangles=304
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+The visible fullrect packet pair is emitted directly by
+`TryFastPathKnownRuntimeVertexFifoEmit` from the source structs:
+
+```text
+rd=0x0002c90c
+src0=802e1a78: x=0 y=-1   s=0 t=256
+src1=802e1a50: x=512 y=383 s=0 t=0
+src2=802e1a28: x=0 y=383   s=0 t=0
+
+rd=0x0002c958
+src0=802e1a50: x=512 y=383 s=0 t=0
+src1=802e1a78: x=0 y=-1    s=0 t=256
+src2=802e1aa0: x=512 y=-1  s=0 t=256
+```
+
+Source-struct write tracing also shows those structs are freshly built before
+the emit by `800b0a38..800b0ba8`, so this is not stale FIFO storage. The
+constant-S fullrect is a real draw path.
+
+Three texture-path experiments were rechecked from the current best
+`body+0x3c8 + diskwords + clamp` f300 stack:
+
+```text
+MAME setup/fetch:
+  /tmp/gauntdl-current-mamesetup-fetch-warm-f300.log
+  /tmp/gauntdl-current-mamesetup-fetch-warm-f300.png
+  frameHash=0xe5aa97e0
+  visual=still horizontal stripes plus large solid fields
+
+ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY=1:
+  /tmp/gauntdl-boundary-stop-warm-f300.log
+  /tmp/gauntdl-boundary-stop-warm-f300.png
+  frameHash=0x5ef40570
+  visual=unchanged
+
+ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS=1:
+  /tmp/gauntdl-prefix-skip-packets-warm-f300.log
+  frameHash=0x5ef40570
+  visual=unchanged
+
+EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE=1:
+  /tmp/gauntdl-fbzcp-combine-warm-f300.log
+  frameHash=0x5ef40570
+  visual=unchanged
+```
+
+Disk inspection confirms why `body+0x3c8` was a plausible source target:
+
+```text
+wtr disk base 0x158b0600
+wtr header bodyOffset=0xbc38 len=0xbca4
+0x158bc238 contains metadata/text labels: BK_RED, BTMBK_RED, KNI_NAME
+0x158bc600 contains dense texture-looking bytes: 8191a1a0 a0a1a0b1 ...
+```
+
+Current conclusion:
+
+1. The vertex FIFO/source-struct ownership question is closed for this fullrect.
+2. The current visual blocker is still the texture upload/layout/sample path for
+   the real `pc=800c4e5c`, `cmd=0x0180A8CB`, `base=0x510` fullrect.
+3. Boundary-stop and prefix-skip did not fire because the best stack has already
+   normalized the source into a known `wtr` window; the next trace should focus
+   on Type5 target/address layout and writer buckets for the `wtr@0xc000`
+   texture-looking region, not generic unknown-prefix handling.
