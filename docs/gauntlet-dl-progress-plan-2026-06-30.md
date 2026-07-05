@@ -6570,3 +6570,52 @@ Current next plan:
    change the f300 image, so the next useful trace is a focused writer-bucket
    comparison for the visible fullrect sample buckets under source/FIFO
    S-from-X.
+
+### Source/FIFO S-from-X Writer Follow-up
+
+Ran the requested writer-backed texture summary with source/FIFO S-from-X active:
+
+```text
+/tmp/gauntdl-vertexfifo-s-from-x-writersummary-warm-f300.log
+frameHash=0x38bc79b5
+textureMap=writes=5171464:nz=581292:zero=4590172:touched=22910:first=0x000000:last=0x01660c
+textured=tri:8376:covered:1023:rejected:7353:pixels:108873600:zero:34469210
+```
+
+The first two large visible fullrect summaries now carry the repaired STQ in
+the packet-level trace:
+
+```text
+rd0x0002c90c stq=(0,256,1)/(256,0,1)/(0,0,1)
+  addrs=0x000510-0x00e82b
+  addr buckets=0x001000,0x002000,0x003000,0x004000
+  top writers=Type5 0xC0000205 targets 0x300/0x400/0x500, base=0
+
+rd0x0002c958 stq=(256,0,1)/(0,256,1)/(256,256,1)
+  addrs=0x00060e-0x00e90f
+  addr buckets=0x00d000,0x00c000,0x00b000,0x00a000
+  top writers=Type5 0xC0000205 targets 0x300/0xf00/0xe00, base=0x1c00/0x1800
+```
+
+This confirms the source/FIFO experiment is not just changing raster math: the
+visible fullrects now sample a wide address range and tie back to specific
+disk-backed Type5 uploads. The remaining bad image is therefore more likely
+wrong upload layout/source interpretation or WTR texel layout than pure Type3
+STQ field order.
+
+Negative A/B under the same source/FIFO S-from-X stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING=1
+/tmp/gauntdl-vertexfifo-s-from-x-mamefetch-warm-f300.log
+/tmp/gauntdl-vertexfifo-s-from-x-mamefetch-warm-f300.png
+frameHash=0x8de52f63
+zero=34533083
+AE vs source/FIFO S-from-X baseline=1249
+visual=no meaningful improvement; same noisy texture surface
+```
+
+Updated next step: do not spend more time on MAME fetch addressing alone. Trace
+or repair the Type5 upload source/layout for the visible writer buckets
+(`0x300`, `0x400`, `0x500`, `0xe00`, `0xf00`) and compare those writes against
+the raw `wtr@0xc000` disk bytes.
