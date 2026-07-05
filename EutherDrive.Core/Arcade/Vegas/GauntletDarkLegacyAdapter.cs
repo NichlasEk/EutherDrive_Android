@@ -755,6 +755,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
     private readonly bool _experimentZeroBaseUploadPointerStartUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN"));
+    private readonly ulong? _experimentZeroBaseUploadDescriptorSourcePointerOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_POINTER_OFFSET");
+    private readonly ulong? _experimentZeroBaseUploadDescriptorPacketAddressOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_PACKET_ADDRESS_OFFSET");
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefixPackets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS"));
     private readonly ulong _experimentZeroBaseUploadSkipUnknownPrefixPacketsMaxBytes =
@@ -4012,6 +4016,7 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        ulong originalSource = source;
         source = NormalizeZeroBaseTextureUploadSourceStart(source, sourceBase, sourceBytes, payloadWords, index, limit);
         ulong uploadRunSource = source;
         uint uploadRunStartIndex = index;
@@ -4063,6 +4068,33 @@ internal sealed class MipsR5000Core
         uint currentPacketAddress = pc == roomReadyEntry || pc == packetEntry
             ? (uint)_gpr[17]
             : unchecked(sourceBase + index * packetAddressStride);
+        if (_experimentZeroBaseUploadDescriptorPacketAddressOffset.HasValue &&
+            sourceBase == 0 &&
+            originalSource != source)
+        {
+            ulong packetAddressOffset = _experimentZeroBaseUploadDescriptorPacketAddressOffset.Value;
+            if (packetAddressOffset is >= 4UL and <= 0x80UL &&
+                (packetAddressOffset & 3UL) == 0 &&
+                IsMainRamRange(originalSource + packetAddressOffset, 4))
+            {
+                uint descriptorPacketAddress = _memory.Read32(originalSource + packetAddressOffset);
+                if ((descriptorPacketAddress & 3U) == 0 &&
+                    descriptorPacketAddress <= 0x01ffffffU)
+                {
+                    if (_traceTextureUploadPayload &&
+                        _textureUploadPayloadPointerStartTraceCount < 64)
+                    {
+                        Console.WriteLine(
+                            $"[GAUNTDL:EXPERIMENT] zero-base-upload-descriptor-packet-address " +
+                            $"source=0x{originalSource:x16}->0x{source:x16} offset=0x{packetAddressOffset:x} " +
+                            $"packet=0x{currentPacketAddress:x8}->0x{descriptorPacketAddress:x8} " +
+                            $"index={index}/{limit} words={payloadWords}");
+                    }
+
+                    currentPacketAddress = descriptorPacketAddress;
+                }
+            }
+        }
         uint fifoBase = _memory.Read32(state + 0x08UL);
         uint fifoRingBase = _memory.Read32(state + 0x378UL);
         uint fifoRingBytes = _memory.Read32(state + 0x380UL);
@@ -4369,6 +4401,39 @@ internal sealed class MipsR5000Core
             return source;
 
         bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidate(source);
+        if (_experimentZeroBaseUploadDescriptorSourcePointerOffset.HasValue &&
+            !knownSource)
+        {
+            ulong pointerOffset = _experimentZeroBaseUploadDescriptorSourcePointerOffset.Value;
+            if (pointerOffset is >= 4UL and <= 0x80UL &&
+                (pointerOffset & 3UL) == 0 &&
+                IsMainRamRange(source + pointerOffset, 4))
+            {
+                ulong pointerCandidate = SignExtend32(_memory.Read32(source + pointerOffset));
+                if (pointerCandidate != source &&
+                    pointerCandidate != 0 &&
+                    IsMainRamRange(pointerCandidate, sourceBytes))
+                {
+                    if (_traceTextureUploadPayload &&
+                        AllowsTextureUploadRunSourceTrace(pointerCandidate) &&
+                        _textureUploadPayloadPointerStartTraceCount++ < 64)
+                    {
+                        Console.WriteLine(
+                            $"[GAUNTDL:EXPERIMENT] zero-base-upload-descriptor-source-pointer " +
+                            $"source=0x{source:x16}->0x{pointerCandidate:x16} offset=0x{pointerOffset:x} " +
+                            $"{DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+                            $"bytes=0x{sourceBytes:x} index={index}/{limit} words={payloadWords} " +
+                            $"descriptor={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                            $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8}/" +
+                            $"{ReadTraceWord(source + 0x10UL):x8}/{ReadTraceWord(source + 0x14UL):x8}/" +
+                            $"{ReadTraceWord(source + 0x18UL):x8}/{ReadTraceWord(source + 0x1cUL):x8}");
+                    }
+
+                    return pointerCandidate;
+                }
+            }
+        }
+
         if (_experimentZeroBaseUploadPointerStartUnknown &&
             !knownSource &&
             IsMainRamRange(source + 0x08UL, 4))

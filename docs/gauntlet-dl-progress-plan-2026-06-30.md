@@ -5100,3 +5100,98 @@ Current conclusion:
 4. Next selector should key on producer/caller or payload structure instead of
    packet count. The producer trace still points at the handoff around
    `800af328..800a632c` and the later FIFO write path at `800fe5d4`.
+
+## 2026-07-05 - Descriptor Source Pointer Offset Probe
+
+Added two default-off descriptor offset probes for unknown zero-base upload
+runs:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_POINTER_OFFSET=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_PACKET_ADDRESS_OFFSET=...
+```
+
+These are diagnostic only. They apply after the caller has selected a zero-base
+source that is not already one of the known indexed BGLoadModel upload regions.
+The source pointer offset rewrites the upload source from a descriptor field;
+the packet address offset optionally rewrites the current packet/target address
+from another descriptor field.
+
+Negative control: disabling the whole outer-payload fastpath is not useful.
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISABLE_OUTER_PAYLOAD_FASTPATH=1
+/tmp/gauntdl-disable-outer-payload-fastpath-f220.log
+frame=220
+frameHash=0xd1549bb3
+frameSha256=fffa25c1da2cdbfc1c1c68503ef1524e30fc7a59a28597aea75a1863f95aac24
+textureMap=0:0:0:0:0x000000:0x000000
+cmdstop=invalid-standard-window/0xbc292a85/.../pc=0xffffffff800c4e5c
+```
+
+The interpreter fallback loses texture upload progress early, so do not pursue
+blanket fastpath disable as a graphics fix.
+
+Descriptor source pointer offset `0x18`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_POINTER_OFFSET=0x18
+/tmp/gauntdl-descriptor-source-offset18-f420.log
+/tmp/gauntdl-descriptor-source-offset18-f420.ppm
+/tmp/gauntdl-descriptor-source-offset18-f420.png
+
+zero-base-upload-descriptor-source-pointer
+source=0xffffffff80312998->0xffffffff802e1788
+offset=0x18
+descriptor=8012e528/00000000/803129a4/00000000/00090000/00000068/802e1788/00000000
+
+frameHash=0xbbe7fc19
+frameSha256=f8b8b29b9ffb37d65f38b45fa4b3552b42bc52e54561572d0883892696d1b8cc
+framebuffer=640x480:307200:307200
+drawPackets=23239 directTriangles=817 setupTriangles=393 texWrites=4930597
+textureMap=19290368:8366331:10924037:520182:0x000000:0x3efffc
+textured=tri:14544:covered:1137:rejected:13407:pixels:102135844:zero:34832345
+```
+
+Visual inspection is still wrong: mostly dark/olive full-screen coverage with a
+magenta vertical strip on the right and a small dark-blue corner wedge. This is
+not Gauntlet scene graphics. It is nevertheless a stronger signal than the
+`803129a4` zero/control source because it restores millions of texture writes.
+
+Descriptor source pointer offset `0x18` plus packet address offset `0x10`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_POINTER_OFFSET=0x18
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_PACKET_ADDRESS_OFFSET=0x10
+/tmp/gauntdl-descriptor-source18-packet10-f420.log
+/tmp/gauntdl-descriptor-source18-packet10-f420.ppm
+/tmp/gauntdl-descriptor-source18-packet10-f420.png
+
+zero-base-upload-descriptor-packet-address
+source=0xffffffff80312998->0xffffffff802e1788
+offset=0x10
+packet=0x00000000->0x00090000
+
+frameHash=0xbbe7fc19
+frameSha256=f8b8b29b9ffb37d65f38b45fa4b3552b42bc52e54561572d0883892696d1b8cc
+framebuffer=640x480:307200:307200
+drawPackets=23239 directTriangles=817 setupTriangles=393 texWrites=4930597
+textureMap=19290368:8366331:10924037:520182:0x000000:0x3efffc
+textured=tri:14544:covered:1137:rejected:13407:pixels:102135844:zero:33402761
+```
+
+Visual inspection is identical to source-offset-only, and the frame hash/SHA
+are identical. The packet-address offset changes texture sampling/accounting
+slightly but does not change the selected frame.
+
+Current conclusion:
+
+1. The descriptor layout is now partially confirmed:
+   `+0x08 -> 803129a4`, `+0x10 -> 00090000`, `+0x18 -> 802e1788`.
+2. `+0x18` is a real source candidate and is closer to the BGLoadModel payload
+   family, but it is not sufficient by itself.
+3. `+0x10` is not enough as a packet-address repair for the selected frame.
+4. Next useful probe should inspect the source words at `802e1788` and nearby
+   descriptor fields (`+0x14`, `+0x1c`, and later floats) to derive the correct
+   run extent/stride rather than forcing the whole `index=0/255` run through a
+   single body pointer.
