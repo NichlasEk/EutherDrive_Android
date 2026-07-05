@@ -4462,3 +4462,71 @@ Next continuation point:
 4. Keep `0x00000b80/0x00002e00` sparse `800fe5d4` writes and
    `0x00008900/0x00022400` direct `800fe7a0` writes as separate source-chain
    problems.
+
+## 2026-07-05 - Type3 Fullrect Ownership Trace
+
+Added default-off register and Type3 read filters:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_REGISTER_WRITE_TARGETS=a8,a9
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_REGISTER_WRITE_PCS=800c4e5c
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_READS=21034,21080,...
+```
+
+Register-write tracing rules out the first suspected direct-register path:
+
+```text
+/tmp/gauntdl-stride20000-regwrite-a8-f420.log
+frameHash=0x6d791e91
+```
+
+The first 240 `0xa8/0xa9` writes are stale/payload-looking writes from
+`pc=800fe5d4`, mostly while the decode context is `cmd=0xbda7eca1` or
+`cmd=0xbfa88d14`. Filtering the same trace to `pc=800c4e5c` produces no
+`VOODOO-REGWRITE` rows:
+
+```text
+/tmp/gauntdl-stride20000-regwrite-800c4e5c-f420.log
+frameHash=0x6d791e91
+```
+
+That means the visible `800c4e5c` full-screen artifact is not coming from
+ordinary `WriteRegister(0xa8/0xa9)` calls.
+
+The Type3 read-filter trace resolves the ownership instead:
+
+```text
+/tmp/gauntdl-stride20000-type3reads-f420.log
+frameHash=0x6d791e91
+```
+
+The visible fullrect packets are real Type3 packets decoded at `pc=800c4e5c`:
+
+```text
+rd=0x00021034 cmd=0x0180a8cb v0=(0,-1,s=0,t=256) v1=(512,383,s=0,t=0) v2=(0,383,s=0,t=0)
+rd=0x00021080 cmd=0x0180a8cb v0=(512,383,s=0,t=0) v1=(0,-1,s=0,t=256) v2=(512,-1,s=0,t=256)
+```
+
+The same clean 512x383 setup-textured pair repeats at
+`0x23d20/0x23d6c`, `0x3510c/0x35158`, `0x2989c/0x298e8`,
+`0x00ae8/0x00b34`, and `0x223d8/0x22424`.
+
+Current conclusion:
+
+1. Stop chasing Type3 geometry for this visible plane. The fullrect is real,
+   its screen coordinates are clean, and its S/T range is intentional-looking
+   (`S=0`, `T=0..256`).
+2. Keep the MAME texture fetch path and `0x20000` BGLoadModel source stride as
+   diagnostic conditions for now, because they expose the current artifact
+   without turning it into scene-like graphics.
+3. Focus next on texture data ownership for the real fullrect sample buckets:
+   `base=0x510`, sample addresses around `0x00f000..0x00c000`,
+   `0x003000..0x005000`, and Type5 upload targets from `pc=800fe614` and
+   `pc=800fe5d4`.
+
+Next trace target:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_WORDS=100,200,300,d00,e00,f00,1100,1200,1300,1400,7d00,7e00,7f00,8900,8a00,8b00,8c00
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_LIMIT=200
+```

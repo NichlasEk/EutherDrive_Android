@@ -27008,6 +27008,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
     private readonly int _traceType3PacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS_LIMIT"), 96);
+    private readonly ulong[] _traceType3PacketReadIndexes =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_READS"));
     private readonly bool _traceType3PacketFields =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_FIELDS"));
     private readonly bool _traceType3NonFiniteTexture =
@@ -27031,6 +27033,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITE_VALUES"));
     private readonly int _traceTmuRegisterWritesLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES_LIMIT"), 160);
+    private readonly ulong[] _traceRegisterWriteTargets =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_REGISTER_WRITE_TARGETS"));
+    private readonly ulong[] _traceRegisterWritePcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_REGISTER_WRITE_PCS"));
+    private readonly int _traceRegisterWritesLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_REGISTER_WRITES_LIMIT"), 160);
     private readonly bool _traceCommandFifoModel = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL") == "1";
     private readonly ulong[] _traceCommandFifoModelPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_PCS"));
@@ -27456,6 +27464,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _type5PayloadFocusedTargetTraceCount;
     private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
+    private int _registerWriteTraceCount;
     private int _commandFifoModelTraceCount;
     private int _commandFifoModelStallTraceCount;
     private int _commandFifoAssemblyTraceCount;
@@ -27600,6 +27609,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         _registers[register] = value;
         _registerWriteCount++;
+        TraceVoodooRegisterWrite(register, value);
         TraceFastFillSwapOrder("reg", register, value);
         if (IsInterestingEventRegister(register))
             RecordVoodooEvent($"reg[{register:x3}]=0x{value:x8}");
@@ -27681,6 +27691,37 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         CountCommandFifoRegisterWritePc(register, value);
+    }
+
+    private void TraceVoodooRegisterWrite(uint register, uint value)
+    {
+        if (_traceRegisterWriteTargets.Length == 0 ||
+            !_traceRegisterWriteTargets.Contains(register))
+        {
+            return;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceRegisterWritePcs.Length != 0 &&
+            !_traceRegisterWritePcs.Contains(pc) &&
+            !_traceRegisterWritePcs.Contains(pc & 0xffffffffUL))
+        {
+            return;
+        }
+        if (_registerWriteTraceCount >= _traceRegisterWritesLimit)
+            return;
+
+        _registerWriteTraceCount++;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-REGWRITE] n={_registerWriteTraceCount} reg=0x{register:x2} value=0x{value:x8} " +
+            $"decode={(_decodingCommandFifo ? 1 : 0)} cmd=0x{_currentCommandFifoCommand:x8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:x8}:rd0x{_cmdFifoReadIndex * 4:x8} " +
+            $"trigger={_commandFifoDecodeTrigger} depth={_cmdFifoDepth} holes={_cmdFifoHoles} " +
+            $"setup=0x{_registers[0x98]:x8} rawxy=0x{_registers[0x99]:x8}/0x{_registers[0x9a]:x8} " +
+            $"st=0x{_registers[RegFstartS]:x8}/0x{_registers[RegFstartT]:x8}/0x{_registers[0xa3]:x8}/0x{_registers[0xa4]:x8} " +
+            $"fbz=0x{_registers[RegFbzMode]:x8} fbzcp=0x{_registers[RegFbzColorPath]:x8} " +
+            $"tmode=0x{ReadTextureSampleRegister(RegTextureMode):x8} tlod=0x{ReadTextureSampleRegister(RegTextureLod):x8} " +
+            $"tbase=0x{ReadTextureSampleRegister(RegTextureBaseAddr):x8}{pcStatus}");
     }
 
     private uint ApplyRegisterWriteMask(uint register, uint value)
@@ -32850,9 +32891,19 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceType3Packet(uint command, int wordsNeeded)
     {
-        if (!_traceType3Packets || _type3PacketTraceCount++ >= _traceType3PacketsLimit)
+        if (!_traceType3Packets)
             return;
 
+        if (_traceType3PacketReadIndexes.Length != 0 &&
+            !_traceType3PacketReadIndexes.Contains((ulong)_cmdFifoReadIndex) &&
+            !_traceType3PacketReadIndexes.Contains((ulong)_cmdFifoReadIndex * 4UL))
+        {
+            return;
+        }
+        if (_type3PacketTraceCount >= _traceType3PacketsLimit)
+            return;
+
+        _type3PacketTraceCount++;
         string packet = FormatFifoPacketWords(wordsNeeded);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
