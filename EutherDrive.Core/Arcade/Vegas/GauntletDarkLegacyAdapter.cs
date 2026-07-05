@@ -27057,6 +27057,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_PCS"));
     private readonly int _traceCommandFifoImplausiblePacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_IMPLAUSIBLE_PACKETS_LIMIT"), 120);
+    private readonly bool _traceCommandFifoType1PacketOwnership =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP"));
+    private readonly ulong[] _traceCommandFifoType1PacketOwnershipCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP_COMMANDS"));
+    private readonly int _traceCommandFifoType1PacketOwnershipLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP_LIMIT"), 80);
     private readonly bool _experimentResetCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
     private readonly bool _experimentRewindCommandFifoOnBulkWrite =
@@ -27387,6 +27393,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoReadIndexTraceCount;
     private int _commandFifoSelfRegisterPacketTraceCount;
     private int _commandFifoImplausiblePacketTraceCount;
+    private int _commandFifoType1PacketOwnershipTraceCount;
     private int _commandFifoImplausibleSelfRegisterPacketIgnoreTraceCount;
     private int _commandFifoImplausibleRenderStateWriteIgnoreTraceCount;
     private int _commandFifoPayloadDirectTriangleCommandSuppressCount;
@@ -30437,6 +30444,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint target = (command >> 3) & 0xfffu;
         bool streaming = _fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command);
         int available = streaming ? count : Math.Min(count, Math.Max(0, _fifoBuffer.Count - 1));
+        TraceCommandFifoType1PacketOwnership(command, target, count, increment, available, streaming);
         TraceCommandFifoType1SelfRegisterPacket(command, target, count, increment, available, streaming);
         bool ignoreSelfRegisterWrites = ShouldIgnoreImplausibleCommandFifoSelfRegisterWrites(command, target, count, increment, streaming);
         if (ignoreSelfRegisterWrites)
@@ -30464,6 +30472,60 @@ internal class VoodooBringupBackend : IVoodooBackend
            !streaming &&
            IsImplausibleCommandFifoPacket(command, count + 1) &&
            TouchesCommandFifoControlRegister(target, (uint)Math.Max(0, count), (uint)increment);
+
+    private void TraceCommandFifoType1PacketOwnership(uint command, uint target, int count, int increment, int available, bool streaming)
+    {
+        if (!_traceCommandFifoType1PacketOwnership ||
+            _commandFifoType1PacketOwnershipTraceCount >= _traceCommandFifoType1PacketOwnershipLimit ||
+            (_traceCommandFifoType1PacketOwnershipCommands.Length != 0 &&
+             !_traceCommandFifoType1PacketOwnershipCommands.Contains(command)))
+        {
+            return;
+        }
+
+        _commandFifoType1PacketOwnershipTraceCount++;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        int packetStart = _currentCommandFifoPacketStart;
+        int packetStorage = CommandFifoReadStorageIndex(packetStart);
+        int readStorage = CommandFifoReadStorageIndex(_cmdFifoReadIndex);
+        int validWindowLimit = Math.Min(_currentCommandFifoWordsNeeded, 64);
+        int validWindowWords = CountCommandFifoValidWindowWords(packetStart, validWindowLimit);
+        string bulkPosition = FormatCommandFifoBulkPacketPosition(packetStart).TrimStart();
+        if (bulkPosition.Length == 0)
+            bulkPosition = "none";
+        bool type5Data = bulkPosition.StartsWith("scan=type5-data", StringComparison.Ordinal);
+        string words = FormatCommandFifoPacketOwnershipWords(packetStart, Math.Min(_currentCommandFifoWordsNeeded, 8));
+
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE1-OWNERSHIP] n={_commandFifoType1PacketOwnershipTraceCount} " +
+            $"cmd=0x{command:x8} words={_currentCommandFifoWordsNeeded} target=0x{target:x3} count={count} inc={increment} " +
+            $"avail={available} streaming={(streaming ? 1 : 0)} implausible={(IsImplausibleCommandFifoPacket(command, _currentCommandFifoWordsNeeded) ? 1 : 0)} " +
+            $"packet=0x{packetStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} storage=0x{packetStorage * 4:x5} readStorage=0x{readStorage * 4:x5} " +
+            $"validWindow={validWindowWords}/{validWindowLimit} depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} trigger={_commandFifoDecodeTrigger} " +
+            $"type5Data={(type5Data ? 1 : 0)} bulk={bulkPosition} words={words}{pcStatus}");
+    }
+
+    private string FormatCommandFifoPacketOwnershipWords(int packetStart, int count)
+    {
+        if (count <= 0)
+            return "none";
+
+        StringBuilder builder = new(count * 128);
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0)
+                builder.Append('|');
+            builder
+                .Append('w')
+                .Append(i.ToString(CultureInfo.InvariantCulture))
+                .Append('=')
+                .Append(FormatCommandFifoStorageWordDebug(packetStart + i));
+        }
+
+        return builder.ToString();
+    }
 
     private void TraceCommandFifoImplausibleSelfRegisterWriteIgnore(uint command, uint target, int count, int increment, int available, bool streaming)
     {

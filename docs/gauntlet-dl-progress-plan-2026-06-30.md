@@ -3616,3 +3616,67 @@ Next continuation point:
    few `0xBDA7ECA1`, `0x3E1D9C71`, and `0x3EDF8581` Type1 packets: packet start,
    storage last writer, current bulk window relation, valid-window length, depth,
    holes, and whether it is inside Type5 payload data.
+
+#### 2026-07-05 Type1 packet ownership trace
+
+Added a default-off pre-decode ownership trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP_COMMANDS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP_LIMIT=...
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:VOODOO-TYPE1-OWNERSHIP]
+```
+
+The f420 ownership run used the current visible stack, including the 224-line
+offscreen suppressor, but did not enable the payload direct-command suppressor:
+
+```text
+frameHash=0x2376d83f
+frameSha256=1c0ea9d464e4f9075797c79151a308ecb36212d6d594a6df81c0cea2e766f646
+direct/setup=6025/3001
+framebuffer=640x480:305614:111993
+cmdstop=invalid-standard-window/0xbda7eca1/48552
+pdtc=0
+```
+
+The focused Type1 packets all had the same important ownership shape:
+
+```text
+cmd=0xbda7eca1 words=48552 packet=0x00000210 validWindow=64/64
+amin=0xfffffffc amax=0xfffffffc trigger=bulk-end
+type5Data=0 bulk=scan=outside:rel29772/16896
+w0 last=fifo/pc0xffffffff800fe5d4
+
+cmd=0x3e1d9c71 words=15902 packet=0x00000044 validWindow=64/64
+amin=0x0016cffc amax=0x0016cffc trigger=bulk-end
+type5Data=0 bulk=scan=outside:rel59305/16896
+w0 last=fifo/pc0xffffffff800fe5d4
+
+cmd=0x3edf8581 words=16096 packet=0x0000f8d0 validWindow=64/64
+amin=0x00000000 amax=0xbf4f5da9 trigger=bulk-end
+type5Data=0 bulk=scan=outside:rel58308/16896
+w0 last=fifo/pc0xffffffff800fe5d4
+```
+
+This narrows the cause again. The bad Type1 packets are not currently classified
+as Type5 payload by the bulk scanner; they are valid old FIFO storage outside the
+current bulk write window. The direct-command suppressor was too late, because
+the stale packet has already installed thousands of bogus setup/register values
+by then.
+
+Next continuation point:
+
+1. Add a default-off decode gate before `DecodeFifoType1()` for oversized Type1
+   packets whose packet head is valid FIFO storage but `bulk=scan=outside` during
+   `bulk-end`/`write` decode.
+2. Prefer a stop/gate first, not header dropping, so the first behavior probe
+   proves whether avoiding register effects improves the visible frame without
+   consuming potentially real FIFO words.
+3. If stop/gate stalls too often, try a separate default-off header-drop variant
+   and compare f420 frame hash, `direct/setup`, and `cmdstop`.
